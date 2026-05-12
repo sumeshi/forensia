@@ -1,0 +1,30 @@
+id: windows-security-4768-tgt-request
+title: Kerberos TGT request outside business hours (Event 4768)
+severity: low
+confidence: 0.4
+tags:
+  - windows
+  - kerberos
+  - authentication
+attack:
+  - T1558
+query: |
+  SELECT
+      target_user,
+      src_ip,
+      COUNT(*) AS request_count,
+      MIN(timestamp) AS first_seen,
+      MAX(timestamp) AS last_seen
+  FROM evtx_events
+  WHERE event_id = 4768
+    AND COALESCE(target_user, '') NOT IN ('', '-')
+    AND COALESCE(src_ip, '') NOT IN ('', '-', '::1', '127.0.0.1')
+    AND (
+      EXTRACT(hour FROM timestamp) < 8
+      OR EXTRACT(hour FROM timestamp) >= 20
+    )
+  GROUP BY target_user, src_ip
+  HAVING COUNT(*) >= 3
+finding:
+  title: "深夜帯の Kerberos TGT 要求: {target_user} ({src_ip})"
+  summary: "{target_user} に対する Kerberos TGT 要求(4768)が {src_ip} から業務時間外に {request_count} 回発生 ({first_seen} ～ {last_seen})。不審な認証試行や横展開の事前活動の可能性がある。"

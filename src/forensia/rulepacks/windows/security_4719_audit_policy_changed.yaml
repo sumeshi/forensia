@@ -1,0 +1,23 @@
+id: windows-security-4719-audit-policy-changed
+title: System audit policy changed (Event 4719)
+severity: high
+confidence: 0.8
+tags:
+  - windows
+  - defense-evasion
+  - audit-policy
+attack:
+  - T1562.002
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      subject_user,
+      message
+  FROM evtx_events
+  WHERE event_id = 4719
+finding:
+  title: "監査ポリシー変更: {computer} ({subject_user})"
+  summary: "{timestamp} に {computer} で {subject_user} が監査ポリシーを変更(4719)。特定のカテゴリのログ記録を無効化しようとしている可能性。変更内容を詳細に確認。"

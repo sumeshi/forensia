@@ -1,0 +1,23 @@
+id: windows-system-7045-service-installed
+title: Service installed (System Event 7045)
+severity: high
+confidence: 0.7
+tags:
+  - windows
+  - persistence
+  - service
+attack:
+  - T1543.003
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      service_name,
+      subject_user,
+      message
+  FROM evtx_events
+  WHERE event_id = 7045
+finding:
+  title: "System サービスインストール: {service_name} @ {computer}"
+  summary: "{timestamp} に {computer} でサービス '{service_name}' がインストール(7045)された。実行者: {subject_user}。Security 4697 が無いケースでも永続化や PsExec 痕跡として要確認。"

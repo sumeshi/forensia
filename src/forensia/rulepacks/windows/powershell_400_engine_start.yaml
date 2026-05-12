@@ -1,0 +1,24 @@
+id: windows-powershell-400-engine-start
+title: PowerShell engine start (Event 400)
+severity: low
+confidence: 0.3
+tags:
+  - windows
+  - powershell
+  - execution
+attack:
+  - T1059.001
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      channel,
+      message
+  FROM evtx_events
+  WHERE event_id = 400
+    AND LOWER(COALESCE(channel, '')) LIKE '%powershell%'
+finding:
+  title: "PowerShell エンジン起動: {computer}"
+  summary: "{timestamp} に {computer} で PowerShell エンジン起動(400)を確認。対象チャネル: {channel}。ユーザ: {target_user}。継続する 4103/4104/4105 と合わせて実行内容を追跡する。"

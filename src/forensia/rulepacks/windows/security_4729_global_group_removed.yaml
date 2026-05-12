@@ -1,0 +1,23 @@
+id: windows-security-4729-global-group-removed
+title: User removed from global security group (Event 4729)
+severity: medium
+confidence: 0.5
+tags:
+  - windows
+  - account-management
+  - privilege
+attack:
+  - T1098
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      subject_user,
+      message
+  FROM evtx_events
+  WHERE event_id = 4729
+finding:
+  title: "グローバルグループからの削除: {target_user} @ {computer}"
+  summary: "{timestamp} に {computer} で {subject_user} がアカウント '{target_user}' をグローバルセキュリティグループから削除(4729)。権限剥奪や痕跡操作の可能性がある。"

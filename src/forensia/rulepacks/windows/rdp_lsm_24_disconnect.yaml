@@ -1,0 +1,25 @@
+id: windows-rdp-lsm-24-disconnect
+title: RDP session disconnect (LocalSessionManager Event 24)
+severity: low
+confidence: 0.3
+tags:
+  - windows
+  - rdp
+  - terminalservices
+attack:
+  - T1021.001
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      src_ip,
+      channel,
+      message
+  FROM evtx_events
+  WHERE event_id = 24
+    AND LOWER(COALESCE(channel, '')) LIKE '%localsessionmanager%'
+finding:
+  title: "RDP セッション切断: {target_user} @ {computer}"
+  summary: "{timestamp} に {computer} で LocalSessionManager の RDP セッション切断(24)を確認。送信元IP: {src_ip}。再接続や長時間放置の痕跡と合わせて確認する。"

@@ -1,0 +1,24 @@
+id: windows-powershell-4103-module-logging
+title: PowerShell module logging (Event 4103)
+severity: low
+confidence: 0.3
+tags:
+  - windows
+  - powershell
+  - logging
+attack:
+  - T1059.001
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      channel,
+      message
+  FROM evtx_events
+  WHERE event_id = 4103
+    AND LOWER(COALESCE(channel, '')) LIKE '%powershell%'
+finding:
+  title: "PowerShell モジュールログ: {computer}"
+  summary: "{timestamp} に {computer} で PowerShell モジュールログ(4103)を確認。ユーザ: {target_user}。メッセージ: {message}。攻撃スクリプトの関数呼び出し追跡に有用。"

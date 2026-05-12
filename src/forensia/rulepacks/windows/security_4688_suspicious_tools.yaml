@@ -1,0 +1,41 @@
+id: windows-security-4688-suspicious-tools
+title: LOLBas / dual-use tool execution via process creation (Event 4688)
+severity: medium
+confidence: 0.55
+tags:
+  - windows
+  - lolbas
+  - execution
+attack:
+  - T1218
+  - T1059.003
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      process_name,
+      command_line
+  FROM evtx_events
+  WHERE event_id = 4688
+    AND (
+        LOWER(process_name) LIKE '%\cmd.exe'
+        OR LOWER(process_name) LIKE '%\net.exe'
+        OR LOWER(process_name) LIKE '%\net1.exe'
+        OR LOWER(process_name) LIKE '%\wmic.exe'
+        OR LOWER(process_name) LIKE '%\reg.exe'
+        OR LOWER(process_name) LIKE '%\certutil.exe'
+        OR LOWER(process_name) LIKE '%\bitsadmin.exe'
+        OR LOWER(process_name) LIKE '%\mshta.exe'
+        OR LOWER(process_name) LIKE '%\wscript.exe'
+        OR LOWER(process_name) LIKE '%\cscript.exe'
+        OR LOWER(process_name) LIKE '%\rundll32.exe'
+        OR LOWER(process_name) LIKE '%\regsvr32.exe'
+        OR LOWER(process_name) LIKE '%\msiexec.exe'
+        OR LOWER(process_name) LIKE '%\sc.exe'
+        OR LOWER(process_name) LIKE '%\schtasks.exe'
+    )
+finding:
+  title: "LOLBas系ツール実行: {process_name} @ {computer}"
+  summary: "{timestamp} に {computer} で {target_user} が {process_name} を実行。コマンドライン: {command_line}。攻撃者がLiving-off-the-Landで使用する可能性のあるツール。"

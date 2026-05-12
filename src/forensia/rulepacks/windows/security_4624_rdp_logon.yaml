@@ -1,0 +1,24 @@
+id: windows-security-4624-rdp-logon
+title: Successful RDP logon
+severity: medium
+confidence: 0.7
+tags:
+  - windows
+  - rdp
+  - logon
+attack:
+  - T1021.001
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      src_ip,
+      logon_type
+  FROM evtx_events
+  WHERE event_id = 4624
+    AND logon_type = '10'
+finding:
+  title: "RDP logon for {target_user}"
+  summary: "{timestamp} に {computer} で {target_user} のRDPログオンが発生しました。送信元IP: {src_ip}"

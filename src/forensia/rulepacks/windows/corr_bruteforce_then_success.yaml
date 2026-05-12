@@ -1,0 +1,53 @@
+id: windows-corr-bruteforce-then-success
+title: Brute-force followed by successful logon within 10 minutes
+severity: critical
+confidence: 0.85
+tags:
+  - windows
+  - brute-force
+  - logon
+  - correlation
+attack:
+  - T1110
+query: |
+  WITH failures AS (
+      SELECT
+          src_ip,
+          computer,
+          target_user,
+          COUNT(*) AS fail_count,
+          MIN(timestamp) AS first_fail,
+          MAX(timestamp) AS last_fail
+      FROM evtx_events
+      WHERE event_id = 4625
+        AND src_ip IS NOT NULL
+        AND src_ip NOT IN ('', '-', '::1', '127.0.0.1')
+      GROUP BY src_ip, computer, target_user
+      HAVING COUNT(*) >= 5
+  ),
+  successes AS (
+      SELECT
+          src_ip,
+          computer,
+          target_user,
+          timestamp AS success_time
+      FROM evtx_events
+      WHERE event_id = 4624
+        AND logon_type IN ('3', '10')
+  )
+  SELECT
+      f.src_ip,
+      f.computer,
+      f.target_user,
+      f.fail_count,
+      f.last_fail,
+      s.success_time
+  FROM failures f
+  JOIN successes s
+    ON f.src_ip = s.src_ip
+   AND f.computer = s.computer
+   AND f.target_user = s.target_user
+   AND s.success_time BETWEEN f.last_fail AND f.last_fail + INTERVAL 10 MINUTE
+finding:
+  title: "ブルートフォース成功: {src_ip} → {computer} ({target_user})"
+  summary: "{src_ip} から {computer} の {target_user} に対して失敗 {fail_count} 回の後、{success_time} にログオン成功。ブルートフォース攻撃が成功した可能性が高い。"

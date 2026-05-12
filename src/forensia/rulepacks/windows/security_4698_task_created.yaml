@@ -1,0 +1,23 @@
+id: windows-security-4698-task-created
+title: Scheduled task created (Event 4698)
+severity: high
+confidence: 0.75
+tags:
+  - windows
+  - persistence
+  - scheduled-task
+attack:
+  - T1053.005
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      subject_user,
+      message
+  FROM evtx_events
+  WHERE event_id = 4698
+finding:
+  title: "スケジュールタスク作成: {computer} ({subject_user})"
+  summary: "{timestamp} に {computer} で {subject_user} がスケジュールタスクを作成。実行コマンドと作成ユーザを確認。永続化の典型的手法。"

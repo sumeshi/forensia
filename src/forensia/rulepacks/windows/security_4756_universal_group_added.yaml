@@ -1,0 +1,23 @@
+id: windows-security-4756-universal-group-added
+title: User added to universal security group (Event 4756)
+severity: high
+confidence: 0.7
+tags:
+  - windows
+  - account-management
+  - privilege-escalation
+attack:
+  - T1098
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      subject_user,
+      message
+  FROM evtx_events
+  WHERE event_id = 4756
+finding:
+  title: "ユニバーサルグループ追加: {target_user} @ {computer}"
+  summary: "{timestamp} に {computer} で {subject_user} がアカウント '{target_user}' をユニバーサルセキュリティグループに追加(4756)。ドメイン横断権限追加の可能性がある。"

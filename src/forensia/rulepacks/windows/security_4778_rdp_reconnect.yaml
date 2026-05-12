@@ -1,0 +1,22 @@
+id: windows-security-4778-rdp-reconnect
+title: RDP session reconnect (Event 4778)
+severity: medium
+confidence: 0.65
+tags:
+  - windows
+  - rdp
+  - lateral-movement
+attack:
+  - T1021.001
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      src_ip
+  FROM evtx_events
+  WHERE event_id = 4778
+finding:
+  title: "RDPセッション再接続: {target_user} @ {computer}"
+  summary: "{timestamp} に {target_user} が {computer} のRDPセッションに再接続(4778)。送信元IP: {src_ip}。攻撃者が既存セッションを再利用している可能性。"

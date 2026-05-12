@@ -1,0 +1,83 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+from forensia.api.progress import list_progress_events
+from forensia.api.service import (
+    get_case_dto,
+    get_case_stats_dto,
+    list_event_volume_dto,
+    list_ai_reviews_dto,
+    list_findings_dto,
+    list_hypotheses_dto,
+    list_mft_timeline_dto,
+    list_report_sections_dto,
+    list_sessions_dto,
+    list_steps_dto,
+)
+from forensia.core.case import Case
+from forensia.db.database import CaseDB
+
+
+def _snapshot_dir(case: Case) -> Path:
+    path = case.reports_dir / "api"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+
+
+def clear_api_snapshots(case: Case) -> None:
+    snapshot_dir = _snapshot_dir(case)
+    for path in snapshot_dir.glob("*"):
+        if path.is_file():
+            path.unlink()
+
+
+def write_api_snapshots(case: Case, db: CaseDB) -> None:
+    snapshot_dir = _snapshot_dir(case)
+    _write_json(snapshot_dir / "case.json", get_case_dto(case).model_dump(mode="json"))
+    _write_json(snapshot_dir / "stats.json", get_case_stats_dto(db).model_dump(mode="json"))
+    _write_json(snapshot_dir / "findings.json", [item.model_dump(mode="json") for item in list_findings_dto(db, limit=500)])
+    hypotheses = list_hypotheses_dto(db)
+    _write_json(snapshot_dir / "hypotheses.json", hypotheses.model_dump(mode="json"))
+    sessions = list_sessions_dto(db)
+    _write_json(snapshot_dir / "sessions.json", [item.model_dump(mode="json") for item in sessions])
+    steps_by_session = {
+        session.session_id: [item.model_dump(mode="json") for item in list_steps_dto(db, session.session_id)]
+        for session in sessions
+    }
+    _write_json(snapshot_dir / "session_steps.json", steps_by_session)
+    _write_json(
+        snapshot_dir / "report_sections.json",
+        [item.model_dump(mode="json") for item in list_report_sections_dto(db)],
+    )
+    _write_json(
+        snapshot_dir / "mft_timeline.json",
+        [item.model_dump(mode="json") for item in list_mft_timeline_dto(db, limit=500)],
+    )
+    for bucket in ("hour", "day"):
+        for source in ("all", "detected"):
+            _write_json(
+                snapshot_dir / f"event_volume_{bucket}_{source}.json",
+                [item.model_dump(mode="json") for item in list_event_volume_dto(db, bucket=bucket, source=source)],
+            )
+    _write_json(
+        snapshot_dir / "ai_reviews.json",
+        [item.model_dump(mode="json") for item in list_ai_reviews_dto(db)],
+    )
+    _write_json(
+        snapshot_dir / "progress_events.json",
+        list_progress_events(db, after_index=0, limit=1000),
+    )
+
+
+def load_snapshot(case: Case, name: str) -> Any | None:
+    path = _snapshot_dir(case) / name
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))

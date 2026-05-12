@@ -1,0 +1,22 @@
+id: windows-security-4720-account-created
+title: User account created (Event 4720)
+severity: high
+confidence: 0.75
+tags:
+  - windows
+  - account-management
+  - persistence
+attack:
+  - T1136.001
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      subject_user
+  FROM evtx_events
+  WHERE event_id = 4720
+finding:
+  title: "アカウント作成: {target_user} (作成者: {subject_user}) @ {computer}"
+  summary: "{timestamp} に {computer} で {subject_user} が新規アカウント '{target_user}' を作成。攻撃者によるバックドアアカウント作成の可能性。4732と組み合わせてAdministrators追加を確認。"

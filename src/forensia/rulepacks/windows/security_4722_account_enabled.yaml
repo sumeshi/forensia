@@ -1,0 +1,21 @@
+id: windows-security-4722-account-enabled
+title: User account enabled (Event 4722)
+severity: medium
+confidence: 0.6
+tags:
+  - windows
+  - account-management
+attack:
+  - T1098
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      subject_user
+  FROM evtx_events
+  WHERE event_id = 4722
+finding:
+  title: "アカウント有効化: {target_user} @ {computer}"
+  summary: "{timestamp} に {computer} で {subject_user} がアカウント '{target_user}' を有効化(4722)。無効化済みアカウントの再利用やバックドア化の可能性がある。"

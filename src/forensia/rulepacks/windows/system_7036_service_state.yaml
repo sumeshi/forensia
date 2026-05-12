@@ -1,0 +1,39 @@
+id: windows-system-7036-service-state
+title: Service state change for security or backup software (System Event 7036)
+severity: low
+confidence: 0.3
+tags:
+  - windows
+  - service
+  - defense-evasion
+attack:
+  - T1562.001
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      service_name,
+      message
+  FROM evtx_events
+  WHERE event_id = 7036
+    AND (
+      LOWER(COALESCE(service_name, '')) LIKE '%defender%'
+      OR LOWER(COALESCE(service_name, '')) LIKE '%sentinel%'
+      OR LOWER(COALESCE(service_name, '')) LIKE '%crowd%'
+      OR LOWER(COALESCE(service_name, '')) LIKE '%carbon%'
+      OR LOWER(COALESCE(service_name, '')) LIKE '%backup%'
+      OR LOWER(COALESCE(service_name, '')) LIKE '%veeam%'
+      OR LOWER(COALESCE(service_name, '')) LIKE '%sophos%'
+      OR LOWER(COALESCE(service_name, '')) LIKE '%symantec%'
+      OR LOWER(COALESCE(service_name, '')) LIKE '%trend%'
+      OR LOWER(COALESCE(service_name, '')) LIKE '%kaspersky%'
+      OR LOWER(COALESCE(service_name, '')) LIKE '%mcafee%'
+      OR LOWER(COALESCE(service_name, '')) LIKE '%avast%'
+      OR LOWER(COALESCE(service_name, '')) LIKE '%avira%'
+      OR LOWER(COALESCE(message, '')) LIKE '%running%'
+      OR LOWER(COALESCE(message, '')) LIKE '%stopped%'
+    )
+finding:
+  title: "重要サービス状態遷移: {service_name} @ {computer}"
+  summary: "{timestamp} に {computer} でサービス '{service_name}' の状態遷移(7036)を確認。詳細: {message}。EDR/AV/Backup 系サービス停止や再起動の文脈を確認する。"

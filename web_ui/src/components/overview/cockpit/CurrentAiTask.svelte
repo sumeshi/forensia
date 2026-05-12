@@ -1,0 +1,13 @@
+<script lang="ts">
+  export let stageLabel = "待機";
+  export let summary = "";
+  export let iteration = 0;
+</script>
+
+<section class="rounded-lg bg-mocha-mantle/70 px-3 py-3">
+  <div class="mb-2 flex items-center justify-between gap-2">
+    <span class="chip text-mocha-lavender">{stageLabel}</span>
+    <span class="text-xs text-mocha-subtext0">iter {iteration}</span>
+  </div>
+  <p class="text-sm text-mocha-subtext1">{summary}</p>
+</section>

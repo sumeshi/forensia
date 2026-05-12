@@ -1,0 +1,26 @@
+id: windows-security-4624-network-logon
+title: Network logon (LogonType=3)
+severity: medium
+confidence: 0.5
+tags:
+  - windows
+  - logon
+  - lateral-movement
+attack:
+  - T1021.002
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      subject_user,
+      src_ip,
+      logon_type
+  FROM evtx_events
+  WHERE event_id = 4624
+    AND logon_type = '3'
+    AND target_user NOT LIKE '%$'
+finding:
+  title: "ネットワークログオン: {target_user} → {computer}"
+  summary: "{timestamp} に {computer} で {target_user} がネットワーク認証(LogonType=3)に成功。送信元IP: {src_ip}。PsExec/WinRM/net useなど横展開の起点となる可能性あり。"

@@ -1,0 +1,29 @@
+id: windows-security-5140-admin-share-access
+title: Administrative share accessed (Event 5140)
+severity: high
+confidence: 0.75
+tags:
+  - windows
+  - lateral-movement
+  - smb
+attack:
+  - T1021.002
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      subject_user,
+      src_ip,
+      message
+  FROM evtx_events
+  WHERE event_id = 5140
+    AND (
+        LOWER(COALESCE(message, '')) LIKE '%admin$%'
+        OR LOWER(COALESCE(message, '')) LIKE '%c$%'
+        OR LOWER(COALESCE(message, '')) LIKE '%ipc$%'
+    )
+finding:
+  title: "管理共有アクセス: {src_ip} → {computer}"
+  summary: "{timestamp} に {src_ip} から {computer} の管理共有(ADMIN$/C$/IPC$)にアクセス。ユーザ: {subject_user}。PsExecやSMB横展開の典型的な痕跡。"

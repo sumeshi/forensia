@@ -1,0 +1,49 @@
+id: windows-corr-logon-then-task
+title: Network logon followed by scheduled task creation within 15 minutes
+severity: critical
+confidence: 0.85
+tags:
+  - windows
+  - lateral-movement
+  - persistence
+  - correlation
+attack:
+  - T1053.005
+  - T1021.002
+query: |
+  WITH net_logons AS (
+      SELECT
+          evidence_id,
+          timestamp AS logon_time,
+          computer,
+          src_ip,
+          target_user
+      FROM evtx_events
+      WHERE event_id = 4624
+        AND logon_type = '3'
+        AND target_user NOT LIKE '%$'
+  ),
+  task_creates AS (
+      SELECT
+          evidence_id,
+          timestamp AS task_time,
+          computer,
+          subject_user,
+          message
+      FROM evtx_events
+      WHERE event_id = 4698
+  )
+  SELECT
+      l.src_ip,
+      l.computer,
+      l.target_user,
+      l.logon_time,
+      t.task_time,
+      t.subject_user
+  FROM net_logons l
+  JOIN task_creates t
+    ON l.computer = t.computer
+   AND t.task_time BETWEEN l.logon_time AND l.logon_time + INTERVAL 15 MINUTE
+finding:
+  title: "ネットワークログオン後のスケジュールタスク作成: {src_ip} → {computer}"
+  summary: "{src_ip} から {computer} へのネットワークログオン({logon_time}) の後、{task_time} にスケジュールタスクが作成された。リモート持続化の典型的パターン。"

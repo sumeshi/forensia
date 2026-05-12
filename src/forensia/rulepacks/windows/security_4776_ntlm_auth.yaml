@@ -1,0 +1,25 @@
+id: windows-security-4776-ntlm-auth
+title: NTLM authentication attempt (Event 4776)
+severity: low
+confidence: 0.4
+tags:
+  - windows
+  - ntlm
+  - authentication
+attack:
+  - T1550
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      subject_user,
+      COALESCE(json_extract_string(raw_json, '$.PackageName'), '-') AS package_name,
+      COALESCE(json_extract_string(raw_json, '$.Workstation'), '-') AS workstation,
+      message
+  FROM evtx_events
+  WHERE event_id = 4776
+finding:
+  title: "NTLM 認証試行: {target_user} @ {computer}"
+  summary: "{timestamp} に {computer} で {target_user} の NTLM 認証試行(4776)を確認。PackageName: {package_name} / Workstation: {workstation}。認証元や古い認証方式の利用状況を確認。"

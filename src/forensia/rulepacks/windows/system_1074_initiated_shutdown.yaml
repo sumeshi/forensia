@@ -1,0 +1,22 @@
+id: windows-system-1074-initiated-shutdown
+title: Initiated shutdown or restart (System Event 1074)
+severity: medium
+confidence: 0.5
+tags:
+  - windows
+  - shutdown
+attack:
+  - T1529
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      subject_user,
+      process_name,
+      message
+  FROM evtx_events
+  WHERE event_id = 1074
+finding:
+  title: "ユーザ/プロセス起因のシャットダウン: {computer}"
+  summary: "{timestamp} に {computer} で {subject_user} または {process_name} に起因するシャットダウン/再起動(1074)を確認。詳細: {message}。攻撃後の再起動やサービス妨害の可能性を確認する。"

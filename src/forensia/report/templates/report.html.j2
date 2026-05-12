@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>{{ case_name }} Report</title>
+  <style>
+    body { font-family: sans-serif; margin: 2rem; background: #f4f0e8; color: #1b1b1b; }
+    h1, h2 { border-bottom: 1px solid #b5a58a; padding-bottom: 0.3rem; }
+    .card { background: #fffaf2; border: 1px solid #d8cbb5; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #d8cbb5; padding: 0.5rem; text-align: left; vertical-align: top; }
+    code { white-space: pre-wrap; }
+    .toolbar { margin: 1rem 0; }
+    .badge { display: inline-block; margin: 0.4rem 0.4rem 0 0; padding: 0.1rem 0.5rem; border: 1px solid #b5a58a; border-radius: 999px; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <h1>Executive Summary</h1>
+  <div class="card">
+    <p>Case: {{ case_name }}</p>
+    <p>Findings: {{ findings|length }}</p>
+    <p>Timeline Events: {{ timeline|length }}</p>
+  </div>
+
+  <h2>Report Draft</h2>
+  {% for section in report_sections %}
+  <div class="card">
+    <strong>{{ section.title }}</strong>
+    <p>Confidence: {{ section.confidence }} / Gaps: {{ section.gap_count }}</p>
+    <pre>{{ section.body }}</pre>
+  </div>
+  {% endfor %}
+
+  <h2>Case Metadata</h2>
+  <div class="card"><pre>{{ manifest }}</pre></div>
+
+  <h2>Key Findings</h2>
+  <div class="toolbar">
+    <label><input id="toggle-suppressed" type="checkbox"> suppressed を表示</label>
+  </div>
+  {% for finding in findings %}
+  <div class="card finding-card" data-status="{{ finding.status }}">
+    <strong>{{ finding.title }}</strong>
+    <p>{{ finding.summary }}</p>
+    <p>Severity: {{ finding.severity }} / Confidence: {{ finding.confidence }} / Status: {{ finding.status }}</p>
+    {% if finding.attack %}
+    <p>{% for technique in finding.attack %}<span class="badge">{{ technique }}</span>{% endfor %}</p>
+    {% endif %}
+    <p>AI Summary: {{ finding.ai_summary or "-" }}</p>
+  </div>
+  {% endfor %}
+
+  <h2>Incident Timeline</h2>
+  <div class="card">
+    <table>
+      <tr><th>Timestamp</th><th>Type</th><th>Description</th></tr>
+      {% for row in timeline %}
+      <tr><td>{{ row.timestamp }}</td><td>{{ row.timestamp_type }}</td><td>{{ row.description }}</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+
+  <h2>Finding Details</h2>
+  {% for finding in findings %}
+  <div class="card finding-card" data-status="{{ finding.status }}">
+    {% if finding.attack %}
+    <p>{% for technique in finding.attack %}<span class="badge">{{ technique }}</span>{% endfor %}</p>
+    {% endif %}
+    <pre>{{ finding.evidence }}</pre>
+  </div>
+  {% endfor %}
+
+  <h2>Evidence Details</h2>
+  <div class="card">
+    <p>EVTX events: {{ evtx_count }}</p>
+    <p>MFT entries: {{ mft_count }}</p>
+  </div>
+
+  <h2>AI Review Logs</h2>
+  {% for review in reviews %}
+  <div class="card">
+    <p>{{ review.finding_id }}: {{ review.verdict }}</p>
+    <p>{{ review.report_text }}</p>
+  </div>
+  {% endfor %}
+  <script>
+    (() => {
+      const toggle = document.getElementById("toggle-suppressed");
+      const cards = Array.from(document.querySelectorAll(".finding-card"));
+      const render = () => {
+        const showSuppressed = Boolean(toggle?.checked);
+        for (const card of cards) {
+          const suppressed = card.dataset.status === "suppressed";
+          card.style.display = !suppressed || showSuppressed ? "" : "none";
+        }
+      };
+      toggle?.addEventListener("change", render);
+      render();
+    })();
+  </script>
+</body>
+</html>

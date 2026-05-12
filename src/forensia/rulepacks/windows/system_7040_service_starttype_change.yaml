@@ -1,0 +1,23 @@
+id: windows-system-7040-service-starttype-change
+title: Service start type changed (System Event 7040)
+severity: medium
+confidence: 0.65
+tags:
+  - windows
+  - defense-evasion
+  - service
+attack:
+  - T1562.001
+  - T1543.003
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      service_name,
+      message
+  FROM evtx_events
+  WHERE event_id = 7040
+finding:
+  title: "サービス開始種別変更: {service_name} @ {computer}"
+  summary: "{timestamp} に {computer} でサービス '{service_name}' の開始種別が変更された。AVやバックアップサービスが無効化(Disabled)されていないか確認。"

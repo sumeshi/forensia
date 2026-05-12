@@ -1,0 +1,51 @@
+id: windows-corr-logon-then-logclear
+title: RDP or network logon followed by log clear within 30 minutes
+severity: critical
+confidence: 0.85
+tags:
+  - windows
+  - correlation
+  - anti-forensics
+attack:
+  - T1070.001
+  - T1021
+query: |
+  WITH logons AS (
+      SELECT
+          timestamp AS logon_time,
+          computer,
+          src_ip,
+          target_user,
+          logon_type
+      FROM evtx_events
+      WHERE event_id = 4624
+        AND logon_type IN ('3', '10')
+        AND COALESCE(target_user, '') NOT LIKE '%$'
+  ),
+  clears AS (
+      SELECT
+          timestamp AS clear_time,
+          computer,
+          event_id AS clear_event_id,
+          subject_user,
+          channel
+      FROM evtx_events
+      WHERE event_id IN (1102, 104)
+  )
+  SELECT
+      l.src_ip,
+      l.computer,
+      l.target_user,
+      l.logon_type,
+      l.logon_time,
+      c.clear_time,
+      c.clear_event_id,
+      c.subject_user,
+      c.channel
+  FROM logons l
+  JOIN clears c
+    ON l.computer = c.computer
+   AND c.clear_time BETWEEN l.logon_time AND l.logon_time + INTERVAL 30 MINUTE
+finding:
+  title: "ログオン後のログクリア: {target_user} @ {computer}"
+  summary: "{logon_time} に {src_ip} から {computer} へログオン種別 {logon_type} の認証成功後、{clear_time} にログクリア({clear_event_id})を確認。実行者: {subject_user}、チャネル: {channel}。侵害後の痕跡消去の可能性が高い。"

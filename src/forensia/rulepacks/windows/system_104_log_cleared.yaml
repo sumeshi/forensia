@@ -1,0 +1,23 @@
+id: windows-system-104-log-cleared
+title: Event log cleared (System Event 104)
+severity: high
+confidence: 0.9
+tags:
+  - windows
+  - anti-forensics
+  - log-tampering
+attack:
+  - T1070.001
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      subject_user,
+      channel
+  FROM evtx_events
+  WHERE event_id = 104
+finding:
+  title: "イベントログクリア (System 104): {computer}"
+  summary: "{timestamp} に {computer} で {channel} ログがクリア(System 104)。実行者: {subject_user}。Securityログ以外のApplicationやSystemログも消去された可能性。"

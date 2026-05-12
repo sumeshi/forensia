@@ -1,0 +1,49 @@
+id: windows-corr-logon-then-service
+title: Network logon followed by service install within 15 minutes
+severity: critical
+confidence: 0.85
+tags:
+  - windows
+  - lateral-movement
+  - persistence
+  - correlation
+attack:
+  - T1543.003
+  - T1021.002
+query: |
+  WITH net_logons AS (
+      SELECT
+          evidence_id,
+          timestamp AS logon_time,
+          computer,
+          src_ip,
+          target_user
+      FROM evtx_events
+      WHERE event_id = 4624
+        AND logon_type = '3'
+        AND target_user NOT LIKE '%$'
+  ),
+  svc_installs AS (
+      SELECT
+          evidence_id,
+          timestamp AS svc_time,
+          computer,
+          service_name,
+          subject_user
+      FROM evtx_events
+      WHERE event_id IN (4697, 7045)
+  )
+  SELECT
+      l.src_ip,
+      l.computer,
+      l.target_user,
+      l.logon_time,
+      s.svc_time,
+      s.service_name
+  FROM net_logons l
+  JOIN svc_installs s
+    ON l.computer = s.computer
+   AND s.svc_time BETWEEN l.logon_time AND l.logon_time + INTERVAL 15 MINUTE
+finding:
+  title: "ネットワークログオン後のサービスインストール: {src_ip} → {computer}"
+  summary: "{src_ip} から {computer} へのネットワークログオン({logon_time}) の後、{svc_time} にサービス '{service_name}' がインストールされた。PsExecやリモートサービス経由の持続化の典型的パターン。"

@@ -1,0 +1,48 @@
+id: windows-corr-account-created-then-admin-added
+title: Account created then added to Administrators within 30 minutes
+severity: critical
+confidence: 0.9
+tags:
+  - windows
+  - correlation
+  - persistence
+  - privilege-escalation
+attack:
+  - T1136.001
+  - T1098
+query: |
+  WITH created AS (
+      SELECT
+          timestamp AS created_time,
+          computer,
+          target_user,
+          subject_user AS creator
+      FROM evtx_events
+      WHERE event_id = 4720
+  ),
+  admin_added AS (
+      SELECT
+          timestamp AS added_time,
+          computer,
+          target_user,
+          subject_user AS adder,
+          message
+      FROM evtx_events
+      WHERE event_id = 4732
+        AND LOWER(COALESCE(message, '')) LIKE '%administrators%'
+  )
+  SELECT
+      c.computer,
+      c.target_user,
+      c.creator,
+      c.created_time,
+      a.adder,
+      a.added_time
+  FROM created c
+  JOIN admin_added a
+    ON c.computer = a.computer
+   AND c.target_user = a.target_user
+   AND a.added_time BETWEEN c.created_time AND c.created_time + INTERVAL 30 MINUTE
+finding:
+  title: "新規アカウント即時管理者化: {target_user} @ {computer}"
+  summary: "{created_time} に {creator} が作成したアカウント '{target_user}' が、{added_time} に {adder} により Administrators へ追加された。バックドアアカウント作成の可能性が極めて高い。"

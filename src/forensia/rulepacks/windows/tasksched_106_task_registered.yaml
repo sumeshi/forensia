@@ -1,0 +1,24 @@
+id: windows-tasksched-106-task-registered
+title: Scheduled task registered (TaskScheduler Event 106)
+severity: high
+confidence: 0.7
+tags:
+  - windows
+  - persistence
+  - scheduled-task
+attack:
+  - T1053.005
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      subject_user,
+      channel,
+      message
+  FROM evtx_events
+  WHERE event_id = 106
+    AND LOWER(COALESCE(channel, '')) LIKE '%taskscheduler%'
+finding:
+  title: "タスク登録: {computer} ({subject_user})"
+  summary: "{timestamp} に {computer} で TaskScheduler Operational のタスク登録(106)を確認。実行者: {subject_user}。メッセージ: {message}。4698 と相互補完して確認する。"

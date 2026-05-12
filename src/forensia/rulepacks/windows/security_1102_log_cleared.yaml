@@ -1,0 +1,22 @@
+id: windows-security-1102-log-cleared
+title: Security audit log cleared (Event 1102)
+severity: critical
+confidence: 0.95
+tags:
+  - windows
+  - anti-forensics
+  - log-tampering
+attack:
+  - T1070.001
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      subject_user
+  FROM evtx_events
+  WHERE event_id = 1102
+finding:
+  title: "[CRITICAL] Securityログクリア: {computer} ({subject_user})"
+  summary: "{timestamp} に {computer} で {subject_user} がSecurityイベントログをクリア(1102)。ログの信頼性が失われている。このイベント以前のログは欠損している可能性があり、調査結果全体の信頼性に影響する。"

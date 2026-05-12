@@ -1,0 +1,27 @@
+id: windows-security-4648-logon-explicit-creds
+title: Logon with explicit credentials (Event 4648)
+severity: high
+confidence: 0.75
+tags:
+  - windows
+  - logon
+  - lateral-movement
+  - pass-the-hash
+attack:
+  - T1078
+  - T1550
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      subject_user,
+      src_ip,
+      process_name
+  FROM evtx_events
+  WHERE event_id = 4648
+    AND target_user NOT LIKE '%$'
+finding:
+  title: "明示的資格情報によるログオン試行 (4648): {subject_user} → {target_user}"
+  summary: "{timestamp} に {computer} で {subject_user} が {target_user} の資格情報を明示的に使用してログオン試行。実行プロセス: {process_name}。Pass-the-Hash/PsExec/RUNASなど横展開ツールの典型的な痕跡。"

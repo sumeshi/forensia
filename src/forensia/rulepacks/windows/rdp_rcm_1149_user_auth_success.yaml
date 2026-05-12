@@ -1,0 +1,25 @@
+id: windows-rdp-rcm-1149-user-auth-success
+title: RDP user authentication success (RemoteConnectionManager Event 1149)
+severity: medium
+confidence: 0.5
+tags:
+  - windows
+  - rdp
+  - terminalservices
+attack:
+  - T1021.001
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      src_ip,
+      channel,
+      message
+  FROM evtx_events
+  WHERE event_id = 1149
+    AND LOWER(COALESCE(channel, '')) LIKE '%remoteconnectionmanager%'
+finding:
+  title: "RDP ユーザ認証成功: {target_user} @ {computer}"
+  summary: "{timestamp} に {computer} で RemoteConnectionManager のユーザ認証成功(1149)を確認。送信元IP: {src_ip}。このイベント単独では対話ログオン成功を断定せず、4624(LogonType=10) や LSM 21 と突合して判断すること。"

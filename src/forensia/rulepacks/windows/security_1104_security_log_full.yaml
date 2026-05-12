@@ -1,0 +1,22 @@
+id: windows-security-1104-security-log-full
+title: Security log full (Event 1104)
+severity: medium
+confidence: 0.6
+tags:
+  - windows
+  - log-management
+  - security-log
+attack:
+  - T1562.001
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      subject_user,
+      message
+  FROM evtx_events
+  WHERE event_id = 1104
+finding:
+  title: "Security ログ満杯: {computer}"
+  summary: "{timestamp} に {computer} で Security ログ満杯(1104)を確認。新規監査イベントが失われる可能性があり、ログ保持設定や直前の大量イベントを確認する。"

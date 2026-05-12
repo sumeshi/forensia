@@ -1,0 +1,24 @@
+id: windows-security-4697-service-install
+title: Service installed (Security Event 4697)
+severity: high
+confidence: 0.75
+tags:
+  - windows
+  - persistence
+  - service
+attack:
+  - T1543.003
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      subject_user,
+      service_name,
+      message
+  FROM evtx_events
+  WHERE event_id = 4697
+finding:
+  title: "サービスインストール: {service_name} @ {computer}"
+  summary: "{timestamp} に {computer} で {subject_user} がサービス '{service_name}' をインストール。実行ファイルパスを確認し、永続化やマルウェア配置の可能性を調査。"

@@ -1,0 +1,34 @@
+id: windows-powershell-4104-encoded
+title: PowerShell encoded or obfuscated script block (Event 4104)
+severity: high
+confidence: 0.8
+tags:
+  - windows
+  - powershell
+  - obfuscation
+  - execution
+attack:
+  - T1059.001
+  - T1027
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      command_line,
+      message
+  FROM evtx_events
+  WHERE event_id = 4104
+    AND (
+        LOWER(COALESCE(message, command_line, '')) LIKE '%-encodedcommand%'
+        OR LOWER(COALESCE(message, command_line, '')) LIKE '%frombase64%'
+        OR LOWER(COALESCE(message, command_line, '')) LIKE '%iex%'
+        OR LOWER(COALESCE(message, command_line, '')) LIKE '%invoke-expression%'
+        OR LOWER(COALESCE(message, command_line, '')) LIKE '%invoke-mimikatz%'
+        OR LOWER(COALESCE(message, command_line, '')) LIKE '%downloadstring%'
+        OR LOWER(COALESCE(message, command_line, '')) LIKE '%webclient%'
+    )
+finding:
+  title: "PowerShellエンコード/難読化スクリプト (4104): {computer}"
+  summary: "{timestamp} に {computer} で難読化またはエンコードされたPowerShellスクリプトブロックを検知。実行ユーザ: {target_user}。マルウェアのダウンロードや実行の可能性が高い。"

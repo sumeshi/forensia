@@ -1,0 +1,20 @@
+id: windows-system-41-unexpected-reboot
+title: Unexpected reboot (System Event 41)
+severity: low
+confidence: 0.3
+tags:
+  - windows
+  - reboot
+attack:
+  - T1529
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      message
+  FROM evtx_events
+  WHERE event_id = 41
+finding:
+  title: "予期しない再起動: {computer}"
+  summary: "{timestamp} に {computer} で予期しない再起動(41)を確認。詳細: {message}。障害か、痕跡断絶を狙った再起動かを前後イベントで確認する。"

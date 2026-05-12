@@ -1,0 +1,20 @@
+id: windows-system-6008-unexpected-shutdown
+title: Unexpected shutdown record (System Event 6008)
+severity: low
+confidence: 0.3
+tags:
+  - windows
+  - shutdown
+attack:
+  - T1529
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      message
+  FROM evtx_events
+  WHERE event_id = 6008
+finding:
+  title: "予期しないシャットダウン痕跡: {computer}"
+  summary: "{timestamp} に {computer} で予期しないシャットダウン痕跡(6008)を確認。詳細: {message}。41 や 1074 と突合し、電源断・クラッシュ・強制再起動の別を確認する。"

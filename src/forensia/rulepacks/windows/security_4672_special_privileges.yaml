@@ -1,0 +1,25 @@
+id: windows-security-4672-special-privileges
+title: Special privileges assigned at logon (Event 4672)
+severity: medium
+confidence: 0.5
+tags:
+  - windows
+  - privilege
+  - logon
+attack:
+  - T1078
+  - T1068
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      subject_user
+  FROM evtx_events
+  WHERE event_id = 4672
+    AND COALESCE(subject_user, target_user) NOT LIKE '%$'
+    AND COALESCE(subject_user, target_user) NOT IN ('SYSTEM', 'LOCAL SERVICE', 'NETWORK SERVICE')
+finding:
+  title: "特権アサイン: {subject_user} @ {computer}"
+  summary: "{timestamp} に {computer} で {subject_user} に特権(SeDebugPrivilege等)がアサインされた。4624と組み合わせて管理者ログオンの把握に使用。"

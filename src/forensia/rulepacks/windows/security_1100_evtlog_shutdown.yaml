@@ -1,0 +1,22 @@
+id: windows-security-1100-evtlog-shutdown
+title: Event Log service shutdown (Event 1100)
+severity: high
+confidence: 0.8
+tags:
+  - windows
+  - anti-forensics
+  - log-tampering
+attack:
+  - T1562.001
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      subject_user,
+      message
+  FROM evtx_events
+  WHERE event_id = 1100
+finding:
+  title: "Event Log サービス停止: {computer}"
+  summary: "{timestamp} に {computer} で Event Log サービス停止(1100)を確認。実行者: {subject_user}。以降のログ欠損やクリア痕跡と合わせて調査する。"

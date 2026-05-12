@@ -1,0 +1,25 @@
+id: windows-rdp-lsm-25-reconnect
+title: RDP session reconnect (LocalSessionManager Event 25)
+severity: medium
+confidence: 0.5
+tags:
+  - windows
+  - rdp
+  - terminalservices
+attack:
+  - T1021.001
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      src_ip,
+      channel,
+      message
+  FROM evtx_events
+  WHERE event_id = 25
+    AND LOWER(COALESCE(channel, '')) LIKE '%localsessionmanager%'
+finding:
+  title: "RDP セッション再接続: {target_user} @ {computer}"
+  summary: "{timestamp} に {computer} で LocalSessionManager の RDP セッション再接続(25)を確認。送信元IP: {src_ip}。攻撃者による既存セッション再利用の可能性がある。"

@@ -1,0 +1,25 @@
+id: windows-security-4771-pre-auth-failed
+title: Kerberos pre-authentication failures (Event 4771)
+severity: medium
+confidence: 0.6
+tags:
+  - windows
+  - kerberos
+  - brute-force
+attack:
+  - T1110
+query: |
+  SELECT
+      target_user,
+      DATE_TRUNC('hour', timestamp) AS hour_bucket,
+      COUNT(*) AS fail_count,
+      MIN(timestamp) AS first_seen,
+      MAX(timestamp) AS last_seen
+  FROM evtx_events
+  WHERE event_id = 4771
+    AND COALESCE(target_user, '') NOT IN ('', '-')
+  GROUP BY target_user, DATE_TRUNC('hour', timestamp)
+  HAVING COUNT(*) >= 5
+finding:
+  title: "Kerberos 事前認証失敗多発: {target_user}"
+  summary: "{target_user} の Kerberos 事前認証失敗(4771)が {hour_bucket} 台に {fail_count} 回発生 ({first_seen} ～ {last_seen})。パスワードスプレーや総当たりの可能性がある。"

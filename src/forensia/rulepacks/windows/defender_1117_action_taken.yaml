@@ -1,0 +1,22 @@
+id: windows-defender-1117-action-taken
+title: Windows Defender action taken (Event 1117)
+severity: medium
+confidence: 0.6
+tags:
+  - windows
+  - defender
+  - malware
+attack:
+  - T1204.002
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      message
+  FROM evtx_events
+  WHERE event_id = 1117
+finding:
+  title: "Defender 脅威対処: {computer}"
+  summary: "{timestamp} に {computer} で Windows Defender が脅威対処(1117)を実施。ユーザ: {target_user}。詳細: {message}。1116/5001 と合わせて感染前後を確認する。"

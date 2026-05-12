@@ -1,0 +1,18 @@
+name: ransomware-basic
+rulepacks:
+  - windows
+rule_ids:
+  - windows-security-1102-log-cleared
+  - windows-system-104-log-cleared
+  - windows-defender-5001-realtime-disabled
+  - windows-security-4697-service-install
+  - windows-security-5140-admin-share-access
+  - windows-security-4720-account-created
+  - windows-security-4732-local-admin-added
+  - windows-security-4625-failed-logon
+  - windows-security-4688-powershell
+  - windows-powershell-4104-encoded
+  - windows-security-4688-suspicious-tools
+  - windows-system-7040-service-starttype-change
+  - windows-corr-bruteforce-then-success
+  - windows-corr-logon-then-service

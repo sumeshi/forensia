@@ -1,0 +1,24 @@
+id: windows-security-4699-task-deleted
+title: Scheduled task deleted (Event 4699)
+severity: medium
+confidence: 0.65
+tags:
+  - windows
+  - anti-forensics
+  - scheduled-task
+attack:
+  - T1070.004
+  - T1053.005
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      subject_user,
+      message
+  FROM evtx_events
+  WHERE event_id = 4699
+finding:
+  title: "スケジュールタスク削除: {computer} ({subject_user})"
+  summary: "{timestamp} に {computer} で {subject_user} がスケジュールタスクを削除。痕跡消去の可能性。4698と対比して不審なタスクの作成→削除サイクルがないか確認。"

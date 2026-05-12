@@ -1,0 +1,22 @@
+id: windows-defender-5001-realtime-disabled
+title: Windows Defender real-time protection disabled (Event 5001)
+severity: high
+confidence: 0.9
+tags:
+  - windows
+  - defense-evasion
+  - defender
+attack:
+  - T1562.001
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      message
+  FROM evtx_events
+  WHERE event_id = 5001
+finding:
+  title: "[HIGH] Defenderリアルタイム保護無効化 (5001): {computer}"
+  summary: "{timestamp} に {computer} でWindows Defenderのリアルタイム保護が無効化された(5001)。その後の4688(プロセス実行)と相関を取り、マルウェア実行の準備として無効化されたか確認。"

@@ -1,0 +1,24 @@
+id: windows-security-4740-account-lockout
+title: User account locked out (Event 4740)
+severity: medium
+confidence: 0.6
+tags:
+  - windows
+  - account-management
+  - brute-force
+attack:
+  - T1110
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      subject_user,
+      src_ip,
+      message
+  FROM evtx_events
+  WHERE event_id = 4740
+finding:
+  title: "アカウントロックアウト: {target_user}"
+  summary: "{timestamp} にアカウント '{target_user}' がロックアウト(4740)された。記録ホスト: {computer}、送信元IP: {src_ip}。総当たりや認証失敗集中の可能性がある。"

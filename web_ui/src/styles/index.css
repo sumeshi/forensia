@@ -1,0 +1,44 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply bg-mocha-crust text-mocha-text;
+  }
+
+  body {
+    @apply min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(203,166,247,0.14),transparent_24%),radial-gradient(circle_at_top_right,rgba(137,180,250,0.12),transparent_22%),linear-gradient(180deg,#1e1e2e_0%,#11111b_100%)];
+    font-family: "IBM Plex Sans JP", "Avenir Next", sans-serif;
+  }
+
+  button {
+    @apply transition-colors;
+  }
+
+  summary::-webkit-details-marker {
+    display: none;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply rounded-xl border border-mocha-surface1 bg-mocha-surface0/90 shadow-cockpit;
+  }
+
+  .panel-title {
+    @apply text-sm font-semibold tracking-wide text-mocha-rosewater;
+  }
+
+  .chip {
+    @apply inline-flex items-center rounded-full border border-mocha-surface2 bg-mocha-surface1/80 px-2 py-0.5 text-[11px] font-medium text-mocha-text;
+  }
+
+  .chip-muted {
+    @apply chip text-mocha-overlay1;
+  }
+
+  .scroll-thin {
+    scrollbar-width: thin;
+  }
+}

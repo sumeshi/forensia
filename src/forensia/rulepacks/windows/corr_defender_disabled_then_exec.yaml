@@ -1,0 +1,57 @@
+id: windows-corr-defender-disabled-then-exec
+title: Defender disabled followed by suspicious execution within 60 minutes
+severity: critical
+confidence: 0.85
+tags:
+  - windows
+  - correlation
+  - defender
+  - execution
+attack:
+  - T1562.001
+  - T1059
+query: |
+  WITH disabled AS (
+      SELECT
+          timestamp AS disabled_time,
+          computer,
+          target_user
+      FROM evtx_events
+      WHERE event_id = 5001
+  ),
+  suspicious_exec AS (
+      SELECT
+          timestamp AS exec_time,
+          computer,
+          target_user,
+          process_name,
+          command_line
+      FROM evtx_events
+      WHERE event_id = 4688
+        AND (
+          LOWER(COALESCE(process_name, '')) LIKE '%powershell.exe'
+          OR LOWER(COALESCE(process_name, '')) LIKE '%pwsh.exe'
+          OR LOWER(COALESCE(process_name, '')) LIKE '%\cmd.exe'
+          OR LOWER(COALESCE(process_name, '')) LIKE '%\certutil.exe'
+          OR LOWER(COALESCE(process_name, '')) LIKE '%\bitsadmin.exe'
+          OR LOWER(COALESCE(process_name, '')) LIKE '%\mshta.exe'
+          OR LOWER(COALESCE(process_name, '')) LIKE '%\rundll32.exe'
+          OR LOWER(COALESCE(process_name, '')) LIKE '%\regsvr32.exe'
+          OR LOWER(COALESCE(process_name, '')) LIKE '%\schtasks.exe'
+          OR LOWER(COALESCE(process_name, '')) LIKE '%\sc.exe'
+        )
+  )
+  SELECT
+      d.computer,
+      d.target_user,
+      d.disabled_time,
+      s.exec_time,
+      s.process_name,
+      s.command_line
+  FROM disabled d
+  JOIN suspicious_exec s
+    ON d.computer = s.computer
+   AND s.exec_time BETWEEN d.disabled_time AND d.disabled_time + INTERVAL 60 MINUTE
+finding:
+  title: "Defender 無効化後の不審実行: {computer}"
+  summary: "{disabled_time} に {computer} で Defender リアルタイム保護無効化後、{exec_time} に {process_name} を実行。コマンドライン: {command_line}。マルウェア実行前の防御回避の可能性が高い。"

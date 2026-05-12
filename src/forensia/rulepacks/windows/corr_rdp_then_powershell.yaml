@@ -1,0 +1,30 @@
+id: windows-corr-rdp-then-powershell
+title: RDP then PowerShell execution
+severity: high
+confidence: 0.85
+tags:
+  - windows
+  - correlation
+  - powershell
+attack:
+  - T1021.001
+  - T1059.001
+query: |
+  SELECT
+      l.evidence_id,
+      l.timestamp AS logon_time,
+      l.computer,
+      l.target_user,
+      l.src_ip,
+      p.timestamp AS powershell_time,
+      p.command_line
+  FROM evtx_events l
+  JOIN evtx_events p
+    ON l.computer = p.computer
+   AND p.timestamp BETWEEN l.timestamp AND l.timestamp + INTERVAL 30 MINUTE
+  WHERE l.event_id = 4624
+    AND l.logon_type = '10'
+    AND lower(coalesce(p.process_name, '')) LIKE '%powershell%'
+finding:
+  title: "RDP後にPowerShell実行: {target_user}@{computer}"
+  summary: "{logon_time} のRDPログオン後、{powershell_time} に PowerShell 実行を確認。送信元IP: {src_ip}"

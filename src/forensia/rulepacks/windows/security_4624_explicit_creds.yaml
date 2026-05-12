@@ -1,0 +1,25 @@
+id: windows-security-4624-explicit-creds
+title: NewCredentials logon (LogonType=9 / RUNAS /NETWORK)
+severity: high
+confidence: 0.7
+tags:
+  - windows
+  - logon
+  - credential-abuse
+attack:
+  - T1078
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      subject_user,
+      src_ip,
+      logon_type
+  FROM evtx_events
+  WHERE event_id = 4624
+    AND logon_type = '9'
+finding:
+  title: "明示的資格情報ログオン(LogonType=9): {subject_user} → {target_user}"
+  summary: "{timestamp} に {computer} で {subject_user} が別資格情報({target_user})を使用してログオン。RUNAS /NETWORKまたはなりすましの典型的パターン。"

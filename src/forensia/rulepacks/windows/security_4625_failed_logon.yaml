@@ -1,0 +1,28 @@
+id: windows-security-4625-failed-logon
+title: Failed logon attempts (grouped by IP)
+severity: medium
+confidence: 0.6
+tags:
+  - windows
+  - logon
+  - brute-force
+attack:
+  - T1110
+query: |
+  SELECT
+      src_ip,
+      computer,
+      target_user,
+      COUNT(*) AS fail_count,
+      MIN(timestamp) AS first_seen,
+      MAX(timestamp) AS last_seen
+  FROM evtx_events
+  WHERE event_id = 4625
+    AND src_ip IS NOT NULL
+    AND src_ip NOT IN ('', '-', '::1', '127.0.0.1')
+  GROUP BY src_ip, computer, target_user
+  HAVING COUNT(*) >= 3
+  ORDER BY fail_count DESC
+finding:
+  title: "ログオン失敗多発: {src_ip} → {computer} ({target_user})"
+  summary: "{src_ip} から {computer} の {target_user} に対してログオン失敗が {fail_count} 回発生({first_seen} ～ {last_seen})。ブルートフォースまたはパスワードスプレーの可能性。"

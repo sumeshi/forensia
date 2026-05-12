@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "forensia"
+version = "0.1.0"
+description = "Incident response helper for ingesting Windows artefacts and generating reports"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "duckdb",
+    "pydantic",
+    "pyyaml",
+    "jinja2",
+    "httpx",
+    "orjson",
+    "typer",
+    "rich",
+    "python-dateutil",
+    "pyarrow",
+    "python-dotenv",
+    "fastapi",
+    "uvicorn",
+    "evtx2es>=1.9.0",
+    "mft2es>=1.7.2",
+]
+
+[project.scripts]
+forensia = "forensia.cli:app"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+forensia = [
+    "report/templates/*.j2",
+    "report_template/*.md",
+    "static/**/*",
+]
