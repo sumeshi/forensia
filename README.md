@@ -38,7 +38,24 @@ Claude のモデル性能が上がった？素晴らしい！ GPT も追従？�
 もううんざりです。あなたの代わりに週末作業してくれる人はいないでしょうか。
 いません。AIの友人以外は。
 
-## システムの概念図
+## forensia が解決すること
+
+forensia がやろうとしているのは、要するに次の 4 つです。
+
+- **大量ログを、調査可能な形に落とすこと**  
+  EVTX や MFT はそのままだと重いし読みにくい。まず正規化して DuckDB に置き、Evidence として扱える形にする。
+
+- **弱いローカル LLM を、弱いまま使わないこと**  
+  調査全体を丸投げせず、仮説生成、検証方針、結果確認、説明文生成といった小さな仕事に分解する。
+
+- **調査の途中経過を失わないこと**  
+  仮説、gap、確認済み事項、レポート下書きを残し、同じケースを何度でも続きから回せるようにする。
+
+- **報告書作成を最後の苦行にしないこと**  
+  レポートを最後に一気に書かず、調査ループの中で少しずつ育てる。
+
+
+## システム概念図
 
 forensia は、EVTX や MFT などのアーティファクトを正規化して DuckDB に格納し、Rule Engine による初期検出を行います。
 
@@ -84,15 +101,15 @@ flowchart LR
 
     A --> B --> C
     C --> D --> E
-
-    L --> H --> I
-    I --> L
-
-    L -. query as needed .-> C
-    L --> J
-    C -. persist / enrich .-> J
-
+    E --> F
+    F --> G
+    G --> E
+    E --> J
     J --> K --> M
+    E --> H --> I
+    I --> E
+    C -. evidence lookup .-> E
+    C -. persist / enrich .-> J
 ```
 
 ## 設計原則
@@ -132,24 +149,6 @@ Rule Engine による初期検出を起点に仮説を作り、その仮説を�
 不足している情報は次の調査対象に戻し、同じケースに対して何度でも再実行できるようにする。
 
 
-## 主要コンポーネントの責務
-
-| 層 | パッケージ | 責務 |
-|---|---|---|
-| 取込 | `forensia.ingest` | `*.evtx` / `$MFT` を `evtx2es` / `mft2es` Python API で JSONL 化 |
-| 正規化 | `forensia.normalize` | ECS 形式 (`winlog.*`) / `header.*` から DuckDB のカラムへマップ |
-| ルール | `forensia.rules` | YAML ルールの `query:` を DuckDB で実行、ATT&CK Technique 付き Finding を生成 |
-| LLM I/O | `forensia.ai.lmstudio` | `chat_completion()` の httpx ラッパ。タイムアウト 5min |
-| 構造化応答 | `forensia.ai.json_response` | JSON Schema バリデーション + 1-shot retry |
-| 計画 / 検証 | `forensia.ai.planner` / `.checker` | 広域 PLAN・仮説 PLAN・CHECK。SQL の allowlist 検査 |
-| ループ制御 | `forensia.ai.investigator` | PDCA + gap 仮説再注入 + section 並列更新 + 停止判定 |
-| 報告書 | `forensia.report.writer` | section の準備 → LLM → DB UPSERT。並列対応のため 3 段分割 |
-| 永続化 | `forensia.db.database` / `forensia.core.session` | DuckDB 接続 + Pydantic セッション状態モデル |
-| メモリ | `forensia.core.memory` | `overview.md` / `hosts/` / `users/` / `hypotheses/` の LLM 入力用キャッシュ。サイズ上限超過で自動圧縮 |
-| API | `forensia.api` / `forensia.web` | FastAPI による DTO 配信 + SSE |
-| UI | `web_ui/` | Svelte 5 + Vite + Tailwind CSS (Catppuccin Mocha) |
-
-
 ## 調査ループの仕組み
 
 forensia は、ログを一度スキャンして終わるツールではありません。  
@@ -160,121 +159,32 @@ Rule Engine による初期検出を起点に仮説を作り、その仮説を�
 
 ```mermaid
 flowchart LR
-    A["Rule Findings<br/>initial leads"]
-    B["Hypotheses<br/>what might have happened"]
-    C["Validation<br/>query evidence"]
-    D["Verdict<br/>confirmed / refuted / inconclusive"]
-    E["Structured Memories<br/>facts / gaps / hypothesis state"]
-    F["Report Draft<br/>claims / sections / open questions"]
-    G["Open Gaps<br/>next investigation seeds"]
+    A["Rule Findings"]
+    B["Hypotheses"]
+    C["Validation"]
+    D["Verdict"]
+    E["Structured Memories / Report Draft"]
+    F["Open Gaps"]
 
-    A --> B --> C --> D
-    D --> E
-    D --> F
-    F --> G
-    G --> B
+    A --> B --> C --> D --> E --> F --> B
 ```
 
-### 仮説の状態
+### 4 つの verdict
 
-仮説は、調査ループの中で状態を持ちます。
+README 上では、LLM が返す判定を次のように説明します。
 
-```mermaid
-stateDiagram-v2
-    [*] --> active : rule finding / report gap / new lead
-    active --> confirmed : supporting evidence found
-    active --> refuted : counter evidence found
-    active --> inconclusive : not enough evidence
-    inconclusive --> active : try another validation
-    confirmed --> [*]
-    refuted --> [*]
-```
+| Verdict | 意味 |
+|---|---|
+| `confirmed` | 仮説を支持する証拠がある |
+| `refuted` | 仮説を否定する証拠がある |
+| `inconclusive` | 判断材料が不足している |
+| `newlead` | 元の仮説とは別に追うべき不審点が見つかった |
 
-* `active`: 現在検証中の仮説
-* `confirmed`: 証拠によって支持された仮説
-* `refuted`: 証拠によって否定された仮説
-* `inconclusive`: まだ判断できない仮説
 
-confirmed / refuted になった仮説は次回以降も記憶され、同じ調査を繰り返さないために使われます。
+## 長期記憶 / Structured Memories
 
-### gap の扱い
-
-レポート生成や仮説検証の途中で、証拠不足・未確認事項・外部確認が必要な点が見つかった場合、それらは gap として保存されます。
-
-gap はすべてを自動で仮説に戻すのではなく、種類ごとに扱いを分けます。
-
-| gap type               | 意味                      | 扱い                 |
-| ---------------------- | ----------------------- | ------------------ |
-| `queryable`            | DuckDB 内の証拠で確認できる不足情報   | 次の仮説・検証対象に戻す       |
-| `external_required`    | WHOIS、EDR、AD台帳など外部情報が必要 | Open Questions に残す |
-| `human_required`       | 業務妥当性や担当者確認が必要          | 人間の確認事項にする         |
-| `report_clarification` | 報告書上の説明不足               | レポート修正対象にする        |
-
-これにより、検証不能な gap が調査ループを汚染することを防ぎます。
-
-### レポートは最後に書くものではない
-
-forensia では、レポートは最終段階で一気に生成するものではありません。
-調査ループの結果をもとに、確認済みの事実、未解決の gap、仮説の状態を少しずつ反映していきます。
-
-```mermaid
-flowchart TD
-    A["Investigation Result"]
-    B["Confirmed Facts"]
-    C["Open Gaps"]
-    D["Report Claims"]
-    E["Report Sections"]
-    F["Markdown Report"]
-
-    A --> B
-    A --> C
-    B --> D
-    C --> D
-    D --> E --> F
-```
-
-レポート中に不足している情報が見つかれば、それは次の調査ループに戻されます。
-つまり、レポートは単なる出力ではなく、調査を進めるための作業面でもあります。
-
-### 再実行で深くなる
-
-同じケースに対して `investigate` を再実行すると、過去の仮説、確認済みの事実、否定された可能性、未解決の gap が引き継がれます。
-
-そのため、forensia は一度の実行で完璧な結論を出すことを目指しません。
-一晩回し、翌朝に結果を確認し、必要なら続きを回す。そうした使い方を前提にしています。
-
----
-
-## 長期記憶
-
-forensia の記憶は、役割と寿命の異なる 3 層で構成されています。
-
-小型ローカル LLM は長い文脈を保持できず、過去の判断も忘れます。  
-そのため forensia では、調査状態の正本を DuckDB に保存しつつ、LLM に読ませるための Structured Memories を生成します。実行中の一時的な状態は Session State に保持し、次回実行時には DuckDB から復元します。
-
-```mermaid
-flowchart TD
-    D[("Persistent State<br/>DuckDB<br/>source of truth")]
-    M["Structured Memories<br/>compressed LLM context"]
-    S["Session State<br/>current run"]
-
-    D -->|summarize / rebuild| M
-    D -->|restore| S
-    M -->|context for loop| S
-    S -->|structured updates| D
-```
-
-| 層                       | 場所            | 寿命      | 役割                                                        |
-| ----------------------- | ------------- | ------- | --------------------------------------------------------- |
-| **Persistent State**    | `case.duckdb` | ケース消去まで | 調査状態の正本。証拠、Finding、仮説、gap、レポート中間状態を保持する                   |
-| **Structured Memories** | `memory/*.md` | 再生成可能   | DuckDB から作られる LLM 入力用コンテキスト。事実、gap、エンティティ、仮説、時系列を圧縮・再構成する |
-| **Session State**       | プロセスメモリ       | 1 回の実行中 | 現在の focus、active loop、pending task など、実行中だけ必要な状態を保持する     |
-
-`memory/*.md` は正本ではありません。人間が読みやすく、LLM が扱いやすい形に整えた派生表現であり、必要であれば `case.duckdb` から再生成できます。
-
-### 記憶の中身
-
-各層が保持する情報の中身を整理すると次のようになります。AI 調査員は証拠そのものをすべて抱え込むのではなく、Structured Memories に圧縮された記憶を参照しながら判断します。
+forensia の記憶は会話履歴ではありません。  
+DuckDB を source of truth とし、その内容を LLM が読める形に射影・圧縮・再構成したものが Structured Memories です。
 
 ```mermaid
 mindmap
@@ -300,74 +210,90 @@ mindmap
       Recent Decisions
 ```
 
-### 記憶設計上の特徴
+### 3 層の記憶
 
-- **DB から再開できる**  
-  調査状態の正本は DuckDB に保存されます。`memory/` は LLM 入力用の派生コンテキストであり、削除されても再生成できます。
+| 層 | 場所 | 役割 | 正本か |
+|---|---|---|---|
+| Persistent State | `case.duckdb` | 証拠、Finding、仮説、レポート状態、進捗ログ | はい |
+| Structured Memories | `memory/*.md` | LLM に渡すための圧縮済みコンテキスト | いいえ |
+| Session State | プロセスメモリ | 今回の実行中だけ使う作業記憶 | いいえ |
 
-- **必要な情報だけを渡す**  
-  LLM にすべての記憶を毎回渡しません。Overview を基本コンテキストとし、ホスト、ユーザー、仮説、gap などの詳細は必要に応じて追加します。
+### ここでのポイント
 
-- **記憶を圧縮・再構成する**  
-  Structured Memories は会話履歴ではありません。確認済みの事実、未解決の gap、重要なエンティティ、時系列、仮説状態を、次の調査に使える形へ圧縮します。
+- 正本は DuckDB です
+- `memory/*.md` は LLM 向けに圧縮した作業メモで、コピーではありません
+- `memory/` は消しても DB から再生成できます
+- Session State は今走っている 1 回の調査だけの一時メモリです
 
-- **LLM の出力を正本にしない**  
-  LLM の応答は構造化された結果として DuckDB に保存されます。`memory/*.md` から DuckDB へ直接書き戻す経路は持ちません。
+AI 調査員は証拠を全部抱え込むわけではありません。  
+見るのは、確認済み事実、重要エンティティ、時系列アンカー、open gaps、仮説状態です。人間がノートを整理してから渡すのに近い。生ログ全件を読ませて覚えておけ、と言うのは、さすがに酷です。
 
----
+- `overview.md`: 調査全体の要点
+- `hosts/`: ホスト単位の要点
+- `users/`: ユーザー単位の要点
+- `hypotheses/`: 仮説ごとの根拠・反証
+- `evidence/suspicious.md`: 注意すべき evidence の断片
+
+これらは人間が直接読めるように Markdown で置きつつ、LLM が次のループで再利用しやすい形にもしています。  
+Markdown なのは見た目の趣味ではなく、ローカル実行・可搬性・差分確認のしやすさを優先した結果です。
+
 
 ## 信頼性の担保
 
-「AI が言ったから」では誰も納得しません。これは設計原則 3「AIの出力を信じない」を構造で支える仕組みであり、トレーサビリティと安全性をコードとデータモデルで担保しています。
+forensia は「AI を賢く使う」より先に、「AI が雑でも壊れにくい」ことを優先しています。
 
-### SQL の安全性
+### AI の自由度を制限する
 
-`forensia.ai.planner.validate_select_sql()`:
+- 読み取り専用クエリだけを許可する
+- 許可テーブル以外は参照させない
+- 破壊的 SQL は拒否する
+- SQL 修正リトライにも上限を設ける
 
-- `SELECT` または `WITH` で始まる文だけ許可
-- 複数文（`;` 区切り）禁止
-- `INSERT / UPDATE / DELETE / DROP / ALTER / CREATE / ATTACH / DETACH / COPY / PRAGMA / TRUNCATE / MERGE / REPLACE` を含む文を拒否
-- `FROM` / `JOIN` で参照するテーブルが `evtx_events / mft_entries / mft_timeline / findings / ai_reviews / investigation_sessions / investigation_steps` のホワイトリストに含まれていない場合は拒否
+ローカル LLM は時々、自信満々に余計なことをします。  
+なので「悪意を持つ前提」ではなく「雑に壊す前提」で囲います。
 
-LLM が破壊的 SQL を出すこと自体は許容します（小型モデルなら頻発します）が、**実行する前に必ず弾かれます**。
-バリデーション失敗時は 1 回だけリトライし、それでも壊れていればその仮説の SQL 要求は諦めます（無限ループ防止）。
+### 証拠に戻れるようにする
 
-### Finding のトレーサビリティ
+- Finding から Evidence に戻れる
+- Hypothesis から検証結果に戻れる
+- レポート断片から Evidence / gap に戻れる
+- `suppressed` は削除ではなく状態変更として扱う
 
-- すべての Finding は `evidence_id`（イベント単位のハッシュ）で元レコードに紐付く
-- ルール YAML には `attack:` で MITRE ATT&CK Technique ID が紐付き、Finding に伝搬する
-- `allowlist.yaml` で `rule_id × target_user / src_ip / process_name` 等の組み合わせを `status='suppressed'` に落とす（誤検知のホワイトリスト）
-- 削除はしない。UI でトグルすれば再表示できる
+forensia は、もっともらしい文章を増やすためのツールではなく、あとから「それ、どの証拠？」と聞かれたときに戻れる状態を保つツールです。
 
-### LLM I/O の完全記録
+### LLM の入出力を記録する
 
-- `ai_logs/` に全リクエスト・レスポンスを保存
-- `investigation_steps` テーブルに `phase ∈ {plan-broad, plan-hypothesis, do, check, act}` で `input_json` と `output_json` を全件残す
-- `ai_reviews` は Finding/仮説単位に最新の verdict + report_text を UPSERT、過去版は `investigation_steps` 側にある
+- LLM リクエスト / レスポンスを `ai_logs/` に残す
+- 調査ステップごとの `input_json` / `output_json` を `investigation_steps` に残す
+- Finding / 仮説に対するレビュー結果を保存する
 
-### 4 値 verdict のセマンティクス
+つまり「AI がそう言った」ではなく、「AI に何を渡し、何が返り、何を採用したか」を辿れます。
 
-CHECK が返す verdict は 4 値:
+### 分からないことを分からないまま扱う
 
-| 値 | 意味 | 動作 |
-|---|---|---|
-| `confirmed` | 仮説を裏付ける証拠あり | 仮説を resolve、status=`confirmed` |
-| `refuted` | 仮説を否定する証拠あり | 仮説を resolve、status=`refuted` |
-| `inconclusive` | 証拠不十分 | 同仮説で別 SQL を提案、ループ継続 |
-| `new_finding` | 仮説とは独立した不審事象を発見 | 別仮説候補として `new_hypotheses` に追加 |
+`confirmed / refuted / inconclusive / new investigation lead` の 4 値を持たせるのは、そのためです。  
+分からないのに断定するより、`inconclusive` のまま止まってくれた方がはるかにマシです。
 
-「分からなければ判断保留」を選択肢として持つことで、小型モデルが無理に断定する圧力を下げています。
+### レポートも検証対象にする
 
----
+- 根拠不足は gap にする
+- gap は次の調査対象へ戻す
+- レポートを雰囲気で埋めない
 
-## 要件
+レポートは最終成果物であると同時に、調査ループの一部です。  
+「文章になったから終わり」ではなく、「文章にしたら根拠不足が見えたので、もう一度掘る」が発生します。
+
+
+## インストール
+
+### 要件
 
 - Python 3.14+
 - [uv](https://github.com/astral-sh/uv)
-- LM Studio（`review` / `investigate` / `run` で LLM を使う場合）。Qwen3 8B / Llama 3.1 8B クラスを想定
-- Node.js 20+（ブラウザ UI を開発・再ビルドする場合）
+- LM Studio
+- Node.js 20+（UI を開発・再ビルドする場合）
 
-## インストール
+### セットアップ
 
 ```bash
 git clone https://github.com/sumeshi/forensia
@@ -375,216 +301,84 @@ cd forensia
 uv sync
 ```
 
-## 設定
-
-`.env` を作成して LLM の接続先と動作を設定する。
+`.env` を作成して LLM 接続先を設定します。
 
 ```dotenv
 LLM_BASE_URL="http://127.0.0.1:1234"
 LLM_MODEL="qwen/qwen3-8b"
-LLM_MAX_TOKENS=4096
-
-# 推論は英語、出力は日本語（小規模モデルの品質向上）
-LLM_THINKING_LANGUAGE=en
-LLM_OUTPUT_LANGUAGE=ja
-
-# 報告書セクション並列化（1 = 順次、推奨 4〜8）
-LLM_REPORT_PARALLELISM=4
-
-# メモリファイルの自動圧縮閾値（バイト）
-LLM_MEMORY_MAX_BYTES=16384
 ```
 
-| 変数 | 説明 | デフォルト |
-|---|---|---|
-| `LLM_BASE_URL` | LM Studio の API ベース URL | — |
-| `LLM_MODEL` | 使用するモデル名 | — |
-| `LLM_MAX_TOKENS` | 1 回のレスポンスの最大トークン数 | `4096` |
-| `LLM_THINKING_LANGUAGE` | 内部推論言語 | `en` |
-| `LLM_OUTPUT_LANGUAGE` | レポートなど人間向け出力の言語 | `ja` |
-| `LLM_REPORT_PARALLELISM` | section 並列実行数 | `1` |
-| `LLM_MEMORY_MAX_BYTES` | memory/*.md の自動圧縮閾値 | `16384` |
-
----
+詳細な設定値は [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。
 
 ## 使い方
 
 ### 一括実行
 
 ```bash
-# ルールのみ（LLM なし）
+# ルール検知まで
 forensia run ./input --out ./case001 --profile windows-basic
 
-# PDCA 調査込み（4 並列で section fill）
-forensia run ./input --out ./case001 --profile windows-basic \
-  --max-iter 50 --report-parallelism 4
+# 継続調査まで
+forensia run ./input --out ./case001 --profile windows-basic --max-iter 50
 ```
 
 ### ステップ実行
 
-```bash
-forensia init case001                              # ケースディレクトリ作成
-forensia ingest case001 ./input                    # EVTX/MFT → JSONL
-forensia normalize case001                         # JSONL → DuckDB
-forensia analyze case001 --profile windows-basic   # ルール実行 → findings
+#### 調査を続ける
 
-forensia review case001                            # Finding を LLM で 1 回レビュー
+同じケースに対して investigate を再実行すると、前回までの仮説、Finding、gap、レポート状態を引き継いで続きから調査できます。
+investigate は、現在の調査状態を読み込み、仮説の検証、Structured Memories の更新、レポート下書きの更新、gap の再投入を繰り返します。
 
-# 継続調査ループ（仮説検証 + 報告書記入 + gap フィードバック統合）
-# 同じケースで何度でも再実行可能。前回の resolved 仮説と report_sections は DB から復元
-forensia investigate case001 --max-iter 50 --no-progress-limit 5 \
-  --report-parallelism 4
+```
+forensia investigate case001 --max-iter 50
+```
 
-# 仮説追求なしで report_sections だけ 1 サイクル更新
-forensia report-write case001 --report-parallelism 4
+`investigate` は次をループします。
 
-# HTML / Markdown レポート生成（LLM 不要、report_sections を読むだけ）
+1. 現状の Finding / Hypothesis / gap を読む
+2. 次に追う仮説を選ぶ
+3. 読み取り専用 SQL で検証する
+4. verdict を更新する
+5. Structured Memories とレポート下書きを更新する
+6. 新しい gap を次サイクルに戻す
+
+同じケースで再実行すると、前回の調査状態から続けられます。
+
+
+#### 追加エビデンスを入れる
+
+追加で EVTX / MFT などが届いた場合は、同じケースに取り込んだうえで再度調査ループを回します。
+内部でエビデンスのファイル名とhash値を保持し、今まで追加されていなかったものだけをスキャンします。
+
+```
+forensia add case001 ./input
+```
+
+#### レポートを生成する
+
+調査状態から Markdown / HTML レポートを生成します。
+
+```
 forensia report case001
+```
 
-# ブラウザ UI（Svelte SPA + API）
+#### UIで確認する
+serve は、ケースの調査状態やレポートの途中経過をブラウザで確認するためのUIを起動します。
+
+```
 forensia serve case001 --host 127.0.0.1 --port 8000
 ```
 
-`forensia report` は **純粋レンダラ**。LLM 呼び出しゼロ。実質的な報告書記入は `investigate` の中で行われる。
+`forensia serve` は、build 済みの `web_ui/dist/` を FastAPI から配信します。  
+DuckDB が他プロセスにロックされている場合でも、`reports/api/*.json` のスナップショットから表示できます。
 
-### ブラウザ UI のビルド
+その他、開発手順や内部構造の説明は [CONTRIBUTING.md](CONTRIBUTING.md) にまとめています。
 
-```bash
-cd web_ui
-pnpm install
-pnpm dev      # 開発時（Vite dev server）
-pnpm build    # 配布時（forensia serve から配信される web_ui/dist/）
-```
-
----
-
-## ケース構成
-
-```
-case001/
-  manifest.yaml
-  allowlist.yaml     # (任意) finding 抑制ルール
-  raw/               # 変換済み JSONL（再処理の元データ）
-  db/
-    case.duckdb      # 調査の真実（後述のテーブル群）
-  findings/          # finding-XXXX.json
-  report_template/   # 報告書テンプレ（init 時にパッケージ同梱からコピー、編集可）
-  ai_logs/           # LLM の入出力ログ（全件）
-  memory/            # LLM 入力用キャッシュ（真実は DB 側）
-    overview.md      # 調査全体の俯瞰サマリー（常時 LLM に渡す）
-    hosts/           # 機器ごとの被疑度・確認済みアクティビティ
-    users/           # ユーザーごとの怪しい挙動サマリー
-    hypotheses/      # 仮説ごとの根拠・反証
-    evidence/
-      suspicious.md  # 怪しいと判断した evidence_id のリスト
-  reports/
-    report.html      # 最終レポート（forensia report が DB からレンダー）
-    report.md        # 報告書 Markdown 版
-```
-
-### DB テーブル（`case.duckdb`）
-
-| テーブル | 役割 |
-|---|---|
-| `evtx_events` / `mft_entries` / `mft_timeline` | 正規化済みエビデンス |
-| `findings` | ルール検出 + 調査由来の Finding (`status` ∈ `accepted` / `suppressed`) |
-| `ai_reviews` | Finding / 仮説に対する LLM の最新評価（UPSERT） |
-| `hypotheses` | 仮説の永続化。`status` ∈ `active` / `confirmed` / `refuted`、`origin` ∈ `broad_plan` / `check_new` / `report_gap` |
-| `report_sections` | 8 セクションの本文・confidence・status (`draft`/`stable`/`approved`)・gaps・update_count |
-| `progress_events` | SSE 配信用の進捗永続ログ（ブラウザ起動時のリプレイ用） |
-| `investigation_sessions` / `investigation_steps` | 実行履歴。全 PDCA フェーズの input/output JSON を保存 |
-
----
-
-## 組み込みルール
-
-`src/forensia/rulepacks/windows/` に 61 本同梱。各ルールに ATT&CK Technique ID 付き。
-
-| カテゴリ | ルール |
-|---|---|
-| 認証・ログオン | 4624(Type3/9/10), 4625, 4648, 4672 |
-| Kerberos / NTLM | 4768(TGT), 4769(ST), 4771(事前認証失敗), 4776(NTLM) |
-| 認証相関 | ブルートフォース成功(4625×5→4624 10分), ログオン→ログクリア(30分), アカウント作成→Admin追加(30分) |
-| RDP | 4778, 4779, LSM 21/24/25, RCM 1149 |
-| プロセス実行 | 4688 PowerShell, 4688 LOLBas(15種), 4104 エンコード, PowerShell 400/4103/4105 |
-| 永続化 | 4697/7045(サービスインストール), 7040/7036(サービス変更), 4698/4699/TaskSched 106/141(タスク) |
-| アカウント操作 | 4720/4722/4726, 4723/4724, 4732/4728/4729/4756, 4738/4740 |
-| 横展開・共有 | 5140, ログオン後サービス/タスク(15分相関) |
-| ログ改ざん・監査 | 1100, 1102/104, 1104, 4616, 4719 |
-| Defender | 1116, 1117, 5001, 5001→4688(60分相関) |
-| 起動・シャットダウン | System 41/1074/6008 |
-
-### ルール追加
-
-`src/forensia/rulepacks/` 以下に YAML を置くと自動で読み込まれる。
-
-```yaml
-id: my-rule-id
-title: Rule title
-severity: high
-confidence: 0.8
-tags: [windows]
-attack: [T1078]
-query: |
-  SELECT evidence_id, timestamp, computer, target_user
-  FROM evtx_events
-  WHERE event_id = 4624
-finding:
-  title: "Finding title for {target_user}"
-  summary: "{timestamp} に {computer} で検出"
-```
-
-Profile YAML で使うルールパックを指定:
-
-```yaml
-# src/forensia/profiles/windows-basic.yaml
-name: windows-basic
-rulepacks: [windows]
-# rule_ids: [...]    # 指定すれば白リストとして機能（ransomware-basic 等で利用）
-```
-
----
-
-## DuckDB への直接クエリ
-
-```bash
-duckdb case001/db/case.duckdb
-```
-
-```sql
--- RDP ログオン一覧
-SELECT timestamp, computer, target_user, src_ip
-FROM evtx_events
-WHERE event_id = 4624 AND logon_type = '10'
-ORDER BY timestamp;
-
--- Finding 一覧（信頼度順）
-SELECT finding_id, title, severity, confidence, status
-FROM findings
-ORDER BY confidence DESC;
-
--- 仮説の現在地（active のみ）
-SELECT hypothesis_id, description, origin, status
-FROM hypotheses
-WHERE status = 'active';
-
--- 報告書セクションの状態
-SELECT section_key, status, update_count, confidence,
-       json_array_length(gaps) AS gap_count
-FROM report_sections
-ORDER BY section_key;
-
--- 調査セッション履歴
-SELECT session_id, started_at, finished_at, iterations, status
-FROM investigation_sessions;
-```
-
----
 
 ## 注意事項
 
-- LLM は Finding の説明生成・仮説立案・SQL 提案・報告書記入・メモリ更新を担当する。**最終判断は人間が行う。**
-- LLM が提案する SQL は SELECT / WITH のみ許可。書き込み系は構造的に拒否される。
-- すべての Finding は `evidence_id` で元イベントに紐付いており、UI / SQL から証拠を辿れる。
-- `raw/` の JSONL は再処理の元データとして削除しない。
-- 「報告書 100% Approved」は AI が探索枯渇を宣言した時にしか到達しない。`draft / stable` のままなら、まだ深掘りの余地がある。
+- forensia は最終判断を自動化しません
+- AI の出力は必ず人間が検証してください
+- オフライン前提ですが、モデル配布やツール導入には別途準備が要ります
+- 小型ローカル LLM は強くありません。だからこそ forensia は構造に寄せています
+- すべての EVTX ソースや Sysmon をまだ網羅しているわけではありません
