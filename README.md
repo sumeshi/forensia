@@ -150,86 +150,6 @@ Rule Engine による初期検出を起点に仮説を作り、その仮説を�
 | UI | `web_ui/` | Svelte 5 + Vite + Tailwind CSS (Catppuccin Mocha) |
 
 
-## 長期記憶の仕組み
-
-forensia の記憶は、役割と寿命の異なる 3 層で構成されています。
-
-小型ローカル LLM は長い文脈を保持できず、過去の判断も忘れます。  
-そのため forensia では、調査状態の正本を DuckDB に保存しつつ、LLM に読ませるための Structured Memories を生成します。実行中の一時的な状態は Session State に保持し、次回実行時には DuckDB から復元します。
-
-```mermaid
-flowchart TD
-    D[("Layer 1<br/>DuckDB<br/>source of truth")]
-    M["Layer 2<br/>Structured Memories<br/>compressed LLM context"]
-    S["Layer 3<br/>Session State<br/>current run"]
-
-    D -->|summarize / rebuild| M
-    D -->|restore| S
-    M -->|context for loop| S
-    S -->|structured updates| D
-```
-
-| 層                       | 場所            | 寿命      | 役割                                                        |
-| ----------------------- | ------------- | ------- | --------------------------------------------------------- |
-| **Persistent State**    | `case.duckdb` | ケース消去まで | 調査状態の正本。証拠、Finding、仮説、gap、レポート中間状態を保持する                   |
-| **Structured Memories** | `memory/*.md` | 再生成可能   | DuckDB から作られる LLM 入力用コンテキスト。事実、gap、エンティティ、仮説、時系列を圧縮・再構成する |
-| **Session State**       | プロセスメモリ       | 1 回の実行中 | 現在の focus、active loop、pending task など、実行中だけ必要な状態を保持する     |
-
-memory/*.md は正本ではありません。
-人間が読みやすく、LLM が扱いやすい形に整えた派生表現です。必要であれば case.duckdb から再生成できます。
-
-## 記憶モデル
-
-forensia の記憶は、単なる会話履歴ではありません。  
-DuckDB に保存された正本の調査状態から、LLM が次の判断に使いやすい形へ射影された「調査用の脳内メモリ」です。
-
-AI 調査員は、証拠そのものをすべて抱え込むのではなく、確認済みの事実、重要なエンティティ、時系列の起点、未解決の gap、仮説の状態を圧縮された記憶として参照します。現在の実行中だけ必要な focus や pending task は Working Memory として扱い、結果は構造化されて DuckDB に戻されます。
-
-```mermaid
-mindmap
-  root((forensia<br>memory))
-    Source of Truth
-      Evidence
-      Findings
-      Hypotheses
-      Gaps
-      Report State
-      AI Reviews
-    Projected Memory
-      Overview
-      Confirmed Facts
-      Entities
-      Timeline Anchors
-      Open Questions
-      Hypothesis State
-    Working Memory
-      Current Focus
-      Active Loop
-      Pending Tasks
-      Recent Decisions
-```
-
-### 記憶設計上の特徴
-
-- **DB から再開できる**  
-  調査状態の正本は DuckDB に保存される。`memory/` は LLM 入力用の派生コンテキストであり、削除されても再生成できる。
-
-- **必要な情報だけを渡す**  
-  LLM にすべての記憶を毎回渡さない。Overview を基本コンテキストとし、ホスト、ユーザー、仮説、gap などの詳細は必要に応じて追加する。
-
-- **記憶を圧縮・再構成する**  
-  Structured Memories は会話履歴ではない。確認済みの事実、未解決の gap、重要なエンティティ、時系列、仮説状態を、次の調査に使える形へ圧縮する。
-
-- **LLM の出力を正本にしない**  
-  LLM の応答は構造化された結果として DuckDB に保存される。`memory/*.md` から DuckDB へ直接書き戻す経路は持たない。
-
-- **過去の判断を再利用する**  
-  confirmed / refuted になった仮説や確認済みの事実を次回以降の調査に引き継ぎ、重複調査を避ける。
-
-- **レポートも調査ループに戻す**  
-  レポート生成中に見つかった不足情報は gap として扱い、次の調査ループに戻す。
-
-
 ## 調査ループの仕組み
 
 forensia は、ログを一度スキャンして終わるツールではありません。  
@@ -253,7 +173,7 @@ flowchart LR
     D --> F
     F --> G
     G --> B
-````
+```
 
 ### 仮説の状態
 
@@ -311,7 +231,6 @@ flowchart TD
     B --> D
     C --> D
     D --> E --> F
-    C -. next loop .-> A
 ```
 
 レポート中に不足している情報が見つかれば、それは次の調査ループに戻されます。
@@ -326,9 +245,80 @@ flowchart TD
 
 ---
 
+## 長期記憶
+
+forensia の記憶は、役割と寿命の異なる 3 層で構成されています。
+
+小型ローカル LLM は長い文脈を保持できず、過去の判断も忘れます。  
+そのため forensia では、調査状態の正本を DuckDB に保存しつつ、LLM に読ませるための Structured Memories を生成します。実行中の一時的な状態は Session State に保持し、次回実行時には DuckDB から復元します。
+
+```mermaid
+flowchart TD
+    D[("Persistent State<br/>DuckDB<br/>source of truth")]
+    M["Structured Memories<br/>compressed LLM context"]
+    S["Session State<br/>current run"]
+
+    D -->|summarize / rebuild| M
+    D -->|restore| S
+    M -->|context for loop| S
+    S -->|structured updates| D
+```
+
+| 層                       | 場所            | 寿命      | 役割                                                        |
+| ----------------------- | ------------- | ------- | --------------------------------------------------------- |
+| **Persistent State**    | `case.duckdb` | ケース消去まで | 調査状態の正本。証拠、Finding、仮説、gap、レポート中間状態を保持する                   |
+| **Structured Memories** | `memory/*.md` | 再生成可能   | DuckDB から作られる LLM 入力用コンテキスト。事実、gap、エンティティ、仮説、時系列を圧縮・再構成する |
+| **Session State**       | プロセスメモリ       | 1 回の実行中 | 現在の focus、active loop、pending task など、実行中だけ必要な状態を保持する     |
+
+`memory/*.md` は正本ではありません。人間が読みやすく、LLM が扱いやすい形に整えた派生表現であり、必要であれば `case.duckdb` から再生成できます。
+
+### 記憶の中身
+
+各層が保持する情報の中身を整理すると次のようになります。AI 調査員は証拠そのものをすべて抱え込むのではなく、Structured Memories に圧縮された記憶を参照しながら判断します。
+
+```mermaid
+mindmap
+  root((forensia<br>memory))
+    Persistent State
+      Evidence
+      Findings
+      Hypotheses
+      Gaps
+      Report State
+      AI Reviews
+    Structured Memories
+      Overview
+      Confirmed Facts
+      Entities
+      Timeline Anchors
+      Open Questions
+      Hypothesis State
+    Session State
+      Current Focus
+      Active Loop
+      Pending Tasks
+      Recent Decisions
+```
+
+### 記憶設計上の特徴
+
+- **DB から再開できる**  
+  調査状態の正本は DuckDB に保存されます。`memory/` は LLM 入力用の派生コンテキストであり、削除されても再生成できます。
+
+- **必要な情報だけを渡す**  
+  LLM にすべての記憶を毎回渡しません。Overview を基本コンテキストとし、ホスト、ユーザー、仮説、gap などの詳細は必要に応じて追加します。
+
+- **記憶を圧縮・再構成する**  
+  Structured Memories は会話履歴ではありません。確認済みの事実、未解決の gap、重要なエンティティ、時系列、仮説状態を、次の調査に使える形へ圧縮します。
+
+- **LLM の出力を正本にしない**  
+  LLM の応答は構造化された結果として DuckDB に保存されます。`memory/*.md` から DuckDB へ直接書き戻す経路は持ちません。
+
+---
+
 ## 信頼性の担保
 
-「AI が言ったから」では誰も納得しない。forensia はトレーサビリティと安全性を構造で保証する。
+「AI が言ったから」では誰も納得しません。これは設計原則 3「AIの出力を信じない」を構造で支える仕組みであり、トレーサビリティと安全性をコードとデータモデルで担保しています。
 
 ### SQL の安全性
 
@@ -339,8 +329,8 @@ flowchart TD
 - `INSERT / UPDATE / DELETE / DROP / ALTER / CREATE / ATTACH / DETACH / COPY / PRAGMA / TRUNCATE / MERGE / REPLACE` を含む文を拒否
 - `FROM` / `JOIN` で参照するテーブルが `evtx_events / mft_entries / mft_timeline / findings / ai_reviews / investigation_sessions / investigation_steps` のホワイトリストに含まれていない場合は拒否
 
-LLM が破壊的 SQL を出すこと自体は許す（小型モデルなら頻発する）が、**実行する前に必ず弾かれる**。
-バリデーション失敗時は 1 回だけリトライさせ、それでも壊れていればその仮説の SQL 要求は諦める（無限ループ防止）。
+LLM が破壊的 SQL を出すこと自体は許容します（小型モデルなら頻発します）が、**実行する前に必ず弾かれます**。
+バリデーション失敗時は 1 回だけリトライし、それでも壊れていればその仮説の SQL 要求は諦めます（無限ループ防止）。
 
 ### Finding のトレーサビリティ
 
@@ -366,7 +356,7 @@ CHECK が返す verdict は 4 値:
 | `inconclusive` | 証拠不十分 | 同仮説で別 SQL を提案、ループ継続 |
 | `new_finding` | 仮説とは独立した不審事象を発見 | 別仮説候補として `new_hypotheses` に追加 |
 
-「分からなければ判断保留」を選択肢として持つことで、小型モデルが無理に断定する圧力を下げている。
+「分からなければ判断保留」を選択肢として持つことで、小型モデルが無理に断定する圧力を下げています。
 
 ---
 
