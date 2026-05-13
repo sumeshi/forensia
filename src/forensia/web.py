@@ -7,7 +7,7 @@ from typing import Annotated
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from forensia.api.cache import load_snapshot, write_api_snapshots
@@ -45,6 +45,8 @@ from forensia.api.service import (
 )
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
+from forensia.report.html import render_html_report
+from forensia.report.writer import build_report_markdown_from_db
 from forensia.report.writer import set_report_section_status
 
 
@@ -76,6 +78,15 @@ def create_app(case: Case) -> FastAPI:
 
     def cached(name: str):
         return load_snapshot(case, name)
+
+    def cached_report_markdown() -> str | None:
+        snapshot = cached("report_sections.json")
+        if snapshot is None:
+            return None
+        ordered = [str(item.get("body") or "").strip() for item in snapshot if str(item.get("body") or "").strip()]
+        if not ordered:
+            return ""
+        return "\n\n".join(ordered).strip() + "\n"
 
     @app.get("/api/case", response_model=CaseDTO)
     def api_case() -> CaseDTO:
@@ -183,6 +194,21 @@ def create_app(case: Case) -> FastAPI:
             return [ReportSectionDTO.model_validate(item) for item in snapshot]
         with CaseDB(case) as db:
             return list_report_sections_dto(db)
+
+    @app.get("/api/report-markdown")
+    def api_report_markdown() -> Response:
+        snapshot = cached_report_markdown()
+        if snapshot is not None:
+            return Response(content=snapshot, media_type="text/markdown; charset=utf-8")
+        with CaseDB(case) as db:
+            markdown = build_report_markdown_from_db(db)
+        return Response(content=markdown, media_type="text/markdown; charset=utf-8")
+
+    @app.get("/api/report-html", response_class=HTMLResponse)
+    def api_report_html() -> HTMLResponse:
+        with CaseDB(case) as db:
+            rendered_path = render_html_report(case, db)
+        return HTMLResponse(rendered_path.read_text(encoding="utf-8"))
 
     @app.post("/api/report-sections/{section_key}/status", response_model=ReportSectionDTO)
     def api_update_report_section_status(section_key: str, status: str) -> ReportSectionDTO:

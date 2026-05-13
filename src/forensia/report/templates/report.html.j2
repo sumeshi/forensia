@@ -2,111 +2,349 @@
 <html lang="ja">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ case_name }} Report</title>
   <style>
-    body { font-family: sans-serif; margin: 2rem; background: #f4f0e8; color: #1b1b1b; }
-    h1, h2 { border-bottom: 1px solid #b5a58a; padding-bottom: 0.3rem; }
-    .card { background: #fffaf2; border: 1px solid #d8cbb5; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
-    table { width: 100%; border-collapse: collapse; }
-    th, td { border: 1px solid #d8cbb5; padding: 0.5rem; text-align: left; vertical-align: top; }
-    code { white-space: pre-wrap; }
-    .toolbar { margin: 1rem 0; }
-    .badge { display: inline-block; margin: 0.4rem 0.4rem 0 0; padding: 0.1rem 0.5rem; border: 1px solid #b5a58a; border-radius: 999px; font-size: 0.85rem; }
+    :root {
+      --bg: #f6f8fb;
+      --paper: #ffffff;
+      --line: #d8e0ea;
+      --text: #162133;
+      --muted: #5f6f86;
+      --accent: #1459c7;
+      --accent-soft: #e9f1ff;
+      --shadow: 0 18px 48px rgba(15, 31, 58, 0.10);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(20, 89, 199, 0.08), transparent 24rem),
+        linear-gradient(180deg, #f8fafc 0%, #edf2f8 100%);
+      font-family: "IBM Plex Sans JP", "Avenir Next", sans-serif;
+    }
+
+    .page {
+      width: min(1560px, calc(100% - 32px));
+      margin: 20px auto 48px;
+    }
+
+    .paper {
+      background: rgba(255, 255, 255, 0.92);
+      border: 1px solid rgba(255, 255, 255, 0.88);
+      border-radius: 28px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .header {
+      padding: 30px 34px 22px;
+      background:
+        linear-gradient(135deg, rgba(20, 89, 199, 0.95), rgba(15, 31, 58, 0.92));
+      color: #f8fbff;
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      font-size: 12px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      opacity: 0.76;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(30px, 4vw, 46px);
+      line-height: 1.04;
+      letter-spacing: -0.05em;
+    }
+
+    .header-meta {
+      margin-top: 18px;
+      display: grid;
+      gap: 8px;
+      font-size: 14px;
+      color: rgba(248, 251, 255, 0.84);
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      padding: 18px 24px;
+      background: #f8fbff;
+      border-top: 1px solid rgba(255, 255, 255, 0.16);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .metric {
+      padding: 14px 16px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: var(--paper);
+    }
+
+    .metric-label {
+      margin: 0 0 6px;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .metric-value {
+      margin: 0;
+      font-size: 24px;
+      font-weight: 700;
+      letter-spacing: -0.04em;
+    }
+
+    .content {
+      padding: 36px 48px 44px;
+    }
+
+    .content-inner {
+      width: min(100%, 1320px);
+      margin: 0 auto;
+    }
+
+    .report-body h2,
+    .report-body h3,
+    .report-body h4,
+    .report-body h5,
+    .report-body h6 {
+      margin: 1.8em 0 0.65em;
+      line-height: 1.2;
+      letter-spacing: -0.03em;
+    }
+
+    .report-body h2 {
+      font-size: 30px;
+      border-top: 1px solid var(--line);
+      padding-top: 1.2rem;
+    }
+
+    .report-body h2:first-child {
+      margin-top: 0;
+      border-top: 0;
+      padding-top: 0;
+    }
+
+    .report-body h3 {
+      font-size: 24px;
+    }
+
+    .report-body p,
+    .report-body li {
+      margin: 0 0 1rem;
+      font-size: 16px;
+      line-height: 1.9;
+      color: #24364e;
+    }
+
+    .report-body ul,
+    .report-body ol {
+      margin: 0.5rem 0 1rem 1.25rem;
+      padding: 0;
+    }
+
+    .report-body hr {
+      border: 0;
+      border-top: 1px solid var(--line);
+      margin: 1.8rem 0;
+    }
+
+    .report-body pre {
+      margin: 1rem 0 1.2rem;
+      padding: 16px 18px;
+      overflow-x: auto;
+      border-radius: 16px;
+      background: #0f172a;
+      color: #e2e8f0;
+      box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.18);
+    }
+
+    .report-body code {
+      font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+      font-size: 0.92em;
+    }
+
+    .report-body p code,
+    .report-body li code,
+    .report-body td code {
+      padding: 0.15rem 0.4rem;
+      border-radius: 999px;
+      background: #eef4ff;
+      color: #0f3f93;
+    }
+
+    .report-body table {
+      width: 100%;
+      margin: 1rem 0 1.4rem;
+      border-collapse: collapse;
+      table-layout: auto;
+    }
+
+    .report-body th,
+    .report-body td {
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      vertical-align: top;
+      text-align: left;
+      font-size: 14px;
+      line-height: 1.6;
+      word-break: break-word;
+    }
+
+    .report-body thead th {
+      background: #f8fbff;
+      color: #2c4668;
+      font-size: 12px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .empty-report {
+      margin: 0;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .footer-section {
+      margin-top: 26px;
+      padding-top: 22px;
+      border-top: 1px solid var(--line);
+    }
+
+    .footer-title {
+      margin: 0 0 14px;
+      font-size: 12px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .finding-list {
+      display: grid;
+      gap: 12px;
+    }
+
+    .finding-item {
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: #fbfdff;
+    }
+
+    .finding-name {
+      margin: 0 0 6px;
+      font-size: 16px;
+      font-weight: 700;
+      line-height: 1.4;
+    }
+
+    .finding-meta {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.65;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 0.25rem 0.6rem;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      margin-top: 10px;
+    }
+
+    @media (max-width: 760px) {
+      .page {
+        width: min(100% - 16px, 1560px);
+        margin-top: 8px;
+      }
+
+      .header,
+      .content {
+        padding-left: 20px;
+        padding-right: 20px;
+      }
+
+      .content-inner {
+        width: 100%;
+      }
+
+      .summary {
+        grid-template-columns: 1fr 1fr;
+        padding: 14px 20px;
+      }
+    }
   </style>
 </head>
 <body>
-  <h1>Executive Summary</h1>
-  <div class="card">
-    <p>Case: {{ case_name }}</p>
-    <p>Findings: {{ findings|length }}</p>
-    <p>Timeline Events: {{ timeline|length }}</p>
-  </div>
+  <main class="page">
+    <article class="paper">
+      <header class="header">
+        <p class="eyebrow">Forensia Report</p>
+        <h1>{{ case_name }}</h1>
+        <div class="header-meta">
+          <div>Output Time: {{ generated_at }}</div>
+          <div>Host Name: {{ hostnames|join(", ") if hostnames else "-" }}</div>
+          <div>Case: {{ manifest_data.case_name if manifest_data.case_name else case_name }}</div>
+        </div>
+      </header>
 
-  <h2>Report Draft</h2>
-  {% for section in report_sections %}
-  <div class="card">
-    <strong>{{ section.title }}</strong>
-    <p>Confidence: {{ section.confidence }} / Status: {{ section.status }} / Gaps: {{ section.gap_count }}</p>
-    <pre>{{ section.body }}</pre>
-  </div>
-  {% endfor %}
+      <section class="summary">
+        <article class="metric">
+          <p class="metric-label">Evidence</p>
+          <p class="metric-value">{{ evtx_count + mft_count }}</p>
+        </article>
+        <article class="metric">
+          <p class="metric-label">EVTX Events</p>
+          <p class="metric-value">{{ evtx_count }}</p>
+        </article>
+        <article class="metric">
+          <p class="metric-label">MFT Entries</p>
+          <p class="metric-value">{{ mft_count }}</p>
+        </article>
+        <article class="metric">
+          <p class="metric-label">Findings</p>
+          <p class="metric-value">{{ findings|length }}</p>
+        </article>
+      </section>
 
-  <h2>Report Claims</h2>
-  {% for claim in claims %}
-  <div class="card">
-    <strong>{{ claim.section_key }} / {{ claim.support_status }}</strong>
-    <p>{{ claim.claim_text }}</p>
-    <p>Evidence: {{ claim.evidence_ids }}</p>
-    <p>Findings: {{ claim.finding_ids }} / Hypotheses: {{ claim.hypothesis_ids }}</p>
-  </div>
-  {% endfor %}
+      <section class="content">
+        <div class="content-inner">
+          <section class="report-body">
+            {{ report_body_html }}
+          </section>
 
-  <h2>Case Metadata</h2>
-  <div class="card"><pre>{{ manifest }}</pre></div>
-
-  <h2>Key Findings</h2>
-  <div class="toolbar">
-    <label><input id="toggle-suppressed" type="checkbox"> suppressed を表示</label>
-  </div>
-  {% for finding in findings %}
-  <div class="card finding-card" data-status="{{ finding.status }}">
-    <strong>{{ finding.title }}</strong>
-    <p>{{ finding.summary }}</p>
-    <p>Severity: {{ finding.severity }} / Confidence: {{ finding.confidence }} / Status: {{ finding.status }}</p>
-    {% if finding.attack %}
-    <p>{% for technique in finding.attack %}<span class="badge">{{ technique }}</span>{% endfor %}</p>
-    {% endif %}
-    <p>AI Summary: {{ finding.ai_summary or "-" }}</p>
-  </div>
-  {% endfor %}
-
-  <h2>Incident Timeline</h2>
-  <div class="card">
-    <table>
-      <tr><th>Timestamp</th><th>Type</th><th>Description</th></tr>
-      {% for row in timeline %}
-      <tr><td>{{ row.timestamp }}</td><td>{{ row.timestamp_type }}</td><td>{{ row.description }}</td></tr>
-      {% endfor %}
-    </table>
-  </div>
-
-  <h2>Finding Details</h2>
-  {% for finding in findings %}
-  <div class="card finding-card" data-status="{{ finding.status }}">
-    {% if finding.attack %}
-    <p>{% for technique in finding.attack %}<span class="badge">{{ technique }}</span>{% endfor %}</p>
-    {% endif %}
-    <pre>{{ finding.evidence }}</pre>
-  </div>
-  {% endfor %}
-
-  <h2>Evidence Details</h2>
-  <div class="card">
-    <p>EVTX events: {{ evtx_count }}</p>
-    <p>MFT entries: {{ mft_count }}</p>
-  </div>
-
-  <h2>AI Review Logs</h2>
-  {% for review in reviews %}
-  <div class="card">
-    <p>{{ review.finding_id }}: {{ review.verdict }}</p>
-    <p>{{ review.report_text }}</p>
-  </div>
-  {% endfor %}
-  <script>
-    (() => {
-      const toggle = document.getElementById("toggle-suppressed");
-      const cards = Array.from(document.querySelectorAll(".finding-card"));
-      const render = () => {
-        const showSuppressed = Boolean(toggle?.checked);
-        for (const card of cards) {
-          const suppressed = card.dataset.status === "suppressed";
-          card.style.display = !suppressed || showSuppressed ? "" : "none";
-        }
-      };
-      toggle?.addEventListener("change", render);
-      render();
-    })();
-  </script>
+          {% if findings %}
+          <section class="footer-section">
+            <h2 class="footer-title">Key Findings</h2>
+            <div class="finding-list">
+              {% for finding in findings[:8] %}
+              <article class="finding-item">
+                <h3 class="finding-name">{{ finding.title }}</h3>
+                <p class="finding-meta">{{ finding.summary }}</p>
+                <span class="badge">{{ finding.severity }}</span>
+              </article>
+              {% endfor %}
+            </div>
+          </section>
+          {% endif %}
+        </div>
+      </section>
+    </article>
+  </main>
 </body>
 </html>

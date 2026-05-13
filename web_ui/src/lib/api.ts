@@ -22,6 +22,14 @@ async function getJson<T>(path: string): Promise<T> {
   return (await response.json()) as T;
 }
 
+async function getText(path: string): Promise<string> {
+  const response = await fetch(path);
+  if (!response.ok) {
+    throw new Error(`${response.status} ${response.statusText}`);
+  }
+  return await response.text();
+}
+
 async function postJson<T>(path: string): Promise<T> {
   const response = await fetch(path, { method: "POST" });
   if (!response.ok) {
@@ -40,6 +48,7 @@ export const api = {
   getSessions: () => getJson<SessionDTO[]>("/api/sessions"),
   getSteps: (sessionId: string) => getJson<InvestigationStepDTO[]>(`/api/sessions/${sessionId}/steps`),
   getReportSections: () => getJson<ReportSectionDTO[]>("/api/report-sections"),
+  getReportMarkdown: () => getText("/api/report-markdown"),
   updateReportSectionStatus: (sectionKey: string, status: string) =>
     postJson<ReportSectionDTO>(
       `/api/report-sections/${sectionKey}/status?status=${encodeURIComponent(status)}`,

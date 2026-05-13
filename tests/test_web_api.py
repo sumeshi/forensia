@@ -56,7 +56,17 @@ class WebApiTests(unittest.TestCase):
                         section_key, title, body, confidence, status, update_count, gaps, last_filled_session, last_filled_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    ("1_overview", "Overview", "Body", 0.8, "ai_exhausted", 2, '["gap"]', "S-1", now),
+                    (
+                        "1_overview",
+                        "Overview",
+                        "# Overview\n\nBody\n\n---\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n",
+                        0.8,
+                        "ai_exhausted",
+                        2,
+                        '["gap"]',
+                        "S-1",
+                        now,
+                    ),
                 )
                 db.execute(
                     """
@@ -109,6 +119,36 @@ class WebApiTests(unittest.TestCase):
                     """,
                     ("T-1", "mft-1", 1, "C:/Temp/a.exe", now, "fn_created", "Created", "[]"),
                 )
+                db.execute(
+                    """
+                    INSERT INTO evtx_events (
+                        evidence_id, source_file, channel, event_id, record_id, timestamp, computer,
+                        user_name, target_user, subject_user, src_ip, logon_type, process_name,
+                        command_line, service_name, message, raw_json, tags, severity
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "ev-1",
+                        "security.evtx",
+                        "Security",
+                        4624,
+                        1,
+                        now,
+                        "host1",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "{}",
+                        "[]",
+                        "info",
+                    ),
+                )
                 record_progress_event(
                     db,
                     {
@@ -119,6 +159,7 @@ class WebApiTests(unittest.TestCase):
                         "report_sections": {"items": [], "current_section": "1_overview"},
                     },
                 )
+            (case.reports_dir / "report.html").write_text("STALE", encoding="utf-8")
 
             client = TestClient(create_app(case))
 
@@ -133,9 +174,23 @@ class WebApiTests(unittest.TestCase):
             report_section = client.get("/api/report-sections").json()[0]
             self.assertEqual("ai_exhausted", report_section["status"])
             self.assertEqual(2, report_section["update_count"])
+            markdown_response = client.get("/api/report-markdown")
+            self.assertEqual(200, markdown_response.status_code)
+            self.assertEqual("text/markdown; charset=utf-8", markdown_response.headers["content-type"])
+            self.assertIn("# Overview", markdown_response.text)
+            html_response = client.get("/api/report-html")
+            self.assertEqual(200, html_response.status_code)
+            self.assertIn("text/html", html_response.headers["content-type"])
+            self.assertNotIn("STALE", html_response.text)
+            self.assertIn("Overview", html_response.text)
+            self.assertIn("Body", html_response.text)
+            self.assertIn("Host Name: host1", html_response.text)
+            self.assertIn("<hr>", html_response.text)
+            self.assertIn("<table>", html_response.text)
+            self.assertIn("<th>A</th>", html_response.text)
             self.assertEqual(1, len(client.get("/api/claims").json()))
             self.assertEqual(1, len(client.get("/api/mft-timeline").json()))
-            self.assertEqual(1, len(client.get("/api/event-volume?bucket=hour&source=all").json()))
+            self.assertEqual(2, len(client.get("/api/event-volume?bucket=hour&source=all").json()))
             self.assertEqual(1, len(client.get("/api/event-volume?bucket=hour&source=detected").json()))
             self.assertEqual(1, len(client.get("/api/ai-reviews").json()))
             stats_payload = client.get("/api/stats").json()
