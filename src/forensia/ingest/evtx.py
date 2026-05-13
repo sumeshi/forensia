@@ -15,6 +15,7 @@ from forensia.core.evidence import make_evtx_evidence_id
 def ingest_evtx_file(
     case: Case,
     evtx_path: str | Path,
+    source_sha: str | None = None,
     progress_callback: Callable[[str], None] | None = None,
 ) -> Path:
     evtx_path = Path(evtx_path)
@@ -32,7 +33,8 @@ def ingest_evtx_file(
     # Use channel from first record to name the output file; fall back to stem
     first_channel = records[0].get("winlog", {}).get("channel", evtx_path.stem) if records else evtx_path.stem
     safe_name = first_channel.lower().replace("/", "_").replace(" ", "_").replace("\\", "_")
-    output_path = case.raw_dir / f"{safe_name}.jsonl"
+    sha_prefix = (source_sha or "unknown")[:12]
+    output_path = case.raw_dir / f"evtx-{sha_prefix}-{safe_name}.jsonl"
 
     with output_path.open("w", encoding="utf-8") as handle:
         for record in records:

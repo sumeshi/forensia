@@ -1,35 +1,83 @@
 from __future__ import annotations
 
+import hashlib
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable
 
+from forensia.artifacts import get_artifact_adapters
 from forensia.core.case import Case
-from forensia.ingest.evtx import ingest_evtx_file
-from forensia.ingest.mft import ingest_mft_file
+from forensia.db.database import CaseDB
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def ingest_all(
     case: Case,
     input_dir: str | Path,
+    db: CaseDB | None = None,
+    force: bool = False,
     progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, int]:
     base = Path(input_dir)
     if not base.exists():
         raise FileNotFoundError(f"Input directory not found: {base}")
 
-    counts = {"evtx_files": 0, "mft_files": 0}
-    for path in sorted(base.rglob("*")):
-        if not path.is_file():
-            continue
-        lower_name = path.name.lower()
-        if path.suffix.lower() == ".evtx":
+    counts = {"evtx_files": 0, "mft_files": 0, "new_files": 0, "skipped_files": 0}
+    adapters = get_artifact_adapters()
+    owns_db = db is None
+    db = db or CaseDB(case)
+    try:
+        for path in sorted(base.rglob("*")):
+            if not path.is_file():
+                continue
+            adapter = next((item for item in adapters if item.can_handle(path)), None)
+            if adapter is None:
+                continue
+
+            sha256 = _sha256_file(path)
+            if not force:
+                existing = db.execute(
+                    "SELECT 1 FROM ingested_files WHERE sha256 = ?",
+                    (sha256,),
+                ).fetchone()
+                if existing is not None:
+                    counts["skipped_files"] += 1
+                    if progress_callback:
+                        progress_callback(f"Skipping already ingested {adapter.name.upper()}: {path}")
+                    continue
+
             if progress_callback:
-                progress_callback(f"Ingesting EVTX: {path}")
-            ingest_evtx_file(case, path, progress_callback=progress_callback)
-            counts["evtx_files"] += 1
-        elif lower_name == "$mft" or lower_name == "mft":
-            if progress_callback:
-                progress_callback(f"Ingesting MFT: {path}")
-            ingest_mft_file(case, path, progress_callback=progress_callback)
-            counts["mft_files"] += 1
+                progress_callback(f"Ingesting {adapter.name.upper()}: {path}")
+            adapter.ingest(case, path, source_sha=sha256, progress_callback=progress_callback)
+            counts[f"{adapter.name}_files"] += 1
+
+            db.execute(
+                """
+                INSERT INTO ingested_files (sha256, path, source_kind, size, ingested_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (sha256) DO UPDATE SET
+                    path = excluded.path,
+                    source_kind = excluded.source_kind,
+                    size = excluded.size,
+                    ingested_at = excluded.ingested_at
+                """,
+                (
+                    sha256,
+                    str(path.resolve()),
+                    adapter.name,
+                    path.stat().st_size,
+                    datetime.now(UTC).replace(tzinfo=None),
+                ),
+            )
+            counts["new_files"] += 1
+    finally:
+        if owns_db:
+            db.close()
     return counts

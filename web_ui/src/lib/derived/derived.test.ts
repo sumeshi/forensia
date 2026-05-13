@@ -11,6 +11,7 @@ describe("cockpit derived", () => {
   it("formats verdicts for humans", () => {
     expect(formatVerdict("inconclusive")).toBe("判断保留");
     expect(formatVerdict("confirmed")).toBe("確認済み");
+    expect(formatVerdict("newlead")).toBe("新規導線");
   });
 
   it("formats phase and status labels", () => {
@@ -32,10 +33,10 @@ describe("cockpit derived", () => {
 
   it("builds report progress counters", () => {
     reportSections.set([
-      { section_key: "1", title: "A", body: "abc", confidence: 0.9, status: "approved", update_count: 3, gaps: [], gap_count: 0, is_writing: false, is_highlighted: false },
+      { section_key: "1", title: "A", body: "abc", confidence: 0.9, status: "human_reviewed", update_count: 3, gaps: [], gap_count: 0, is_writing: false, is_highlighted: false },
       { section_key: "2", title: "B", body: "", confidence: 0.4, status: "draft", update_count: 1, gaps: ["x"], gap_count: 1, is_writing: true, is_highlighted: false }
     ]);
-    expect(get(reportProgress).approved).toBe(1);
+    expect(get(reportProgress).humanReviewed).toBe(1);
     expect(get(reportProgress).draft).toBe(1);
     expect(get(reportProgress).gaps).toBe(1);
     expect(get(reportProgress).writing).toBe("2");
@@ -47,7 +48,14 @@ describe("cockpit derived", () => {
       { finding_id: "F2", title: "Suppressed", summary: "y", severity: "low", status: "suppressed" }
     ]);
     hypotheses.set({
-      active: [{ hypothesis_id: "H1", description: "Investigate lateral movement", status: "active", summary: "" }],
+      active: [{
+        hypothesis_id: "H1",
+        description: "Investigate lateral movement",
+        status: "active",
+        summary: "",
+        reasoning_count: 0,
+        latest_reasoning: []
+      }],
       resolved: []
     });
     reportSections.set([{ section_key: "7", title: "Gaps", body: "", confidence: 0.2, status: "draft", update_count: 1, gaps: ["Need more logs"], gap_count: 1, is_writing: false, is_highlighted: false }]);

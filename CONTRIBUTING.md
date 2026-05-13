@@ -38,7 +38,9 @@ LLM_MEMORY_MAX_BYTES=16384
 | `LLM_MAX_TOKENS` | 1 回のレスポンス上限 |
 | `LLM_THINKING_LANGUAGE` | 内部推論言語 |
 | `LLM_OUTPUT_LANGUAGE` | 人間向け出力の言語 |
-| `LLM_MEMORY_MAX_BYTES` | Structured Memories の圧縮閾値 |
+| `LLM_MEMORY_MAX_BYTES` | `overview.md` / `open_questions.md` / 個別メモの圧縮閾値。`confirmed_facts.md` / `timeline_anchors.md` / `refuted_hypotheses.md` / `important_entities.md` は保持優先で exempt |
+
+CLI フラグ名は `--llm-base-url` を正とします。`--lmstudio` は互換のため残している旧名です。
 
 ### Web UI
 
@@ -68,8 +70,22 @@ npx pnpm build
 
 ```bash
 forensia run ./sample/DESKTOP-001 --out ./dist/DESKTOP-001 --profile windows-basic --max-iter 20
+forensia status ./dist/DESKTOP-001
 forensia serve ./dist/DESKTOP-001
 ```
+
+## CLI コマンド
+
+| コマンド | 役割 |
+|---|---|
+| `init` | 空のケースディレクトリを初期化する |
+| `add` | 既存ケースへ増分取り込みする |
+| `report` | 既存 `report_sections` から Markdown / HTML をレンダリングする |
+| `report-write` | 現在の evidence から section を LLM 再充填してから render する |
+| `run` | ingest → normalize → analyze → investigate → report の一括実行 |
+| `investigate` | 既存ケースを読み、仮説検証ループだけ回す |
+| `status` | ケースの現在状態を read-only で表示する |
+| `serve` | FastAPI + Svelte UI を配信する |
 
 ## リポジトリ構造
 
@@ -94,11 +110,18 @@ case001/
   raw/
   db/
     case.duckdb
+    trace.duckdb
   findings/
   report_template/
   ai_logs/
   memory/
     overview.md
+    confirmed_facts.md
+    timeline_anchors.md
+    open_questions.md
+    narrative.md
+    refuted_hypotheses.md
+    important_entities.md
     hosts/
     users/
     hypotheses/
@@ -115,20 +138,24 @@ case001/
 | パス | 役割 |
 |---|---|
 | `raw/` | 再処理用の元 JSONL |
-| `db/case.duckdb` | 調査の正本 |
+| `db/case.duckdb` | 証拠、Finding、仮説、レポート状態の正本 |
+| `db/trace.duckdb` | LLM 実行ログ、進捗、調査セッションの trace |
+| `allowlist.yaml` | `suppressed` 用の rule-scoped allowlist。`init` 時に空 stub を作る |
 | `memory/` | Structured Memories |
+| `ai_logs/` | LLM 呼び出しごとの `{input, output, meta}` |
 | `reports/` | 人間向けレポートと API スナップショット |
 
 ## 実装上の前提
 
 ### DuckDB が正本
 
-`case.duckdb` が source of truth です。  
+Persistent State の正本は `db/case.duckdb` と `db/trace.duckdb` の組です。  
+前者は調査データ、後者は実行 trace です。  
 `memory/*.md` は LLM 用に射影したコンテキストであり、正本ではありません。必要なら再生成できます。
 
 ### AI の出力を正本にしない
 
-- LLM I/O は `ai_logs/` に残す
+- LLM I/O は `ai_logs/<session_id>/` に残す
 - 調査ステップごとの `input_json` / `output_json` は `investigation_steps` に残す
 - Finding / Hypothesis / report state は DB に保存する
 
@@ -141,15 +168,21 @@ LLM が提案する SQL は、実行前にバリデーションされます。
 - 破壊的 SQL を拒否
 - 許可テーブル以外を拒否
 
+現状の許可テーブルは `evtx_events`、`mft_entries`、`mft_timeline`、`findings`、`hypotheses`、`report_sections`、`claims`、`ai_reviews`、`investigation_sessions`、`investigation_steps`、`hypothesis_reasoning`、`progress_events`、`ingested_files` です。
+
 ### `suppressed` は削除ではない
 
 Finding を見えなくすることと、DB から消すことは別です。  
 `suppressed` は状態変更であり、Evidence への導線は残す必要があります。
 
-### `approved` は人間承認ではない
+### report section status
 
-現状の `report_sections.status=approved` は、人間レビュー済みという意味ではありません。  
-AI 観点で「追加の導線がもう薄い」という粗い状態です。
+`report_sections.status` は次の 4 値です。
+
+- `draft`: 根拠不足または gap あり
+- `stable`: gap がなく、AI 観点では安定
+- `ai_exhausted`: AI が追加導線を出さなくなった
+- `human_reviewed`: 人間が UI から明示的に確認した
 
 ## データモデル
 
@@ -205,3 +238,23 @@ Finding は事実寄り、Hypothesis は解釈寄り、Claim は人間向け、E
 
 README は公開向けです。  
 価値、思想、使い方、ケース構成までは README に置き、内部クラス名や実装都合は `CONTRIBUTING.md` に寄せてください。
+
+## investigate flags
+
+| フラグ | 既定値 | 触る場面 |
+|---|---|---|
+| `--max-iter` | `20` | 長く回したいときだけ増やす |
+| `--max-queries-per-hypothesis` | `5` | 1 仮説をどこまで掘るか調整したいとき |
+| `--no-progress-limit` | `3` | 進展なし停止を緩めたいとき |
+| `--report-every-n-cycles` | `1` | 毎サイクル report refresh すると重い場合 |
+| `--report-parallelism` | `1` | LM Studio 側で並列処理できるときだけ増やす |
+| `--profile` | `windows-basic` | 別 rule profile を使うとき |
+| `--report-only` | `false` | 仮説検証を回さず report section だけ埋め直すとき |
+
+## rerun semantics
+
+- `forensia run` はデフォルトで investigate まで走る
+- 既存調査があるケースで Stage 4 をもう一度回すには `--reinvestigate`
+- 同じ出力先を初期化し直すには `--init`
+- `report` は pure render、`report-write` は LLM section refill を伴う
+- `review` は旧来の 1 finding ずつの reviewer。full loop ではなく、個別確認だけしたいときの保守コマンド

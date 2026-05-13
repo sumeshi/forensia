@@ -9,6 +9,7 @@ from typing import Any
 from forensia.ai.json_response import request_llm_json
 from forensia.ai.prompts import build_check_messages
 from forensia.core.case import Case
+from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery
 from forensia.db.database import CaseDB
 
@@ -24,9 +25,28 @@ class CheckResult:
     new_hypotheses: list[Hypothesis]
     memory_updates: dict[str, Any]
     report_text: str
-    new_findings: int
+    new_leads: int
     progress: bool  # True if something meaningfully changed
     raw_response: dict[str, Any]
+
+
+def _parse_new_hypotheses(items: Any) -> list[Hypothesis]:
+    hypotheses: list[Hypothesis] = []
+    if not isinstance(items, list):
+        return hypotheses
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        payload = dict(item)
+        if str(payload.get("verdict") or "") not in {"confirmed", "refuted"}:
+            payload["verdict"] = None
+        if str(payload.get("status") or "") not in {"active", "confirmed", "refuted"}:
+            payload["status"] = "active"
+        try:
+            hypotheses.append(Hypothesis.model_validate(payload))
+        except Exception:
+            continue
+    return hypotheses
 
 
 def summarize_query_result(rows: list[dict[str, Any]], sample_size: int = 10) -> dict[str, Any]:
@@ -165,7 +185,7 @@ def apply_check_result(
     result_summary: dict[str, Any],
     check_result: CheckResult,
 ) -> tuple[int, bool]:
-    new_findings = 0
+    new_leads = 0
     significant_delta = False
     missing_checks = check_result.raw_response.get("missing_checks") or []
     notes = str(check_result.raw_response.get("notes") or "")
@@ -219,7 +239,7 @@ def apply_check_result(
         if abs(delta) >= 0.05:
             significant_delta = True
 
-    if check_result.verdict == "new_finding":
+    if check_result.verdict == "newlead":
         finding_id = _insert_investigation_finding(
             case=case,
             db=db,
@@ -233,17 +253,17 @@ def apply_check_result(
         _upsert_ai_review(
             db=db,
             finding_id=finding_id,
-            verdict="new_finding",
+            verdict="newlead",
             report_text=check_result.report_text,
             missing_checks=missing_checks if isinstance(missing_checks, list) else [],
             confidence_adjustment=0.0,
             notes=notes,
             raw_response=check_result.raw_response,
         )
-        new_findings += 1
+        new_leads += 1
 
-    progress = new_findings > 0 or significant_delta or len(check_result.new_hypotheses) > 0
-    return new_findings, progress
+    progress = new_leads > 0 or significant_delta or len(check_result.new_hypotheses) > 0
+    return new_leads, progress
 
 
 def check_query_result(
@@ -255,21 +275,31 @@ def check_query_result(
     hypothesis: Hypothesis | None,
     finding_candidates: list[dict[str, Any]],
     result_summary: dict[str, Any],
+    memory: MemoryManager,
     base_url: str,
     model: str,
     status_callback: Callable[[str], None] | None = None,
+    audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
 ) -> CheckResult:
+    overview_md = memory.load_overview()
+    memory_context_md = memory.load_compact_context(
+        ["confirmed_facts.md", "timeline_anchors.md", "open_questions.md"],
+        max_bytes=max(1024, memory.max_bytes // 2),
+    )
     messages = build_check_messages(
         planned_query=planned_query,
         hypothesis=hypothesis,
         finding_candidates=finding_candidates,
         result_summary=result_summary,
+        overview_md=overview_md,
+        memory_context_md=memory_context_md,
     )
     parsed = request_llm_json(
         messages=messages,
         model=model,
         base_url=base_url,
         status_callback=status_callback,
+        audit_callback=audit_callback,
     )
 
     result = CheckResult(
@@ -279,14 +309,14 @@ def check_query_result(
         suspicious_evidence=parsed.get("suspicious_evidence") or [],
         compromised_hosts=parsed.get("compromised_hosts") or [],
         compromised_users=parsed.get("compromised_users") or [],
-        new_hypotheses=[Hypothesis.model_validate(item) for item in (parsed.get("new_hypotheses") or [])],
+        new_hypotheses=_parse_new_hypotheses(parsed.get("new_hypotheses")),
         memory_updates=parsed.get("memory_updates") or {},
         report_text=parsed.get("report_text") or "",
-        new_findings=0,
+        new_leads=0,
         progress=False,
         raw_response=parsed,
     )
-    result.new_findings, result.progress = apply_check_result(
+    result.new_leads, result.progress = apply_check_result(
         case=case,
         db=db,
         session_id=session_id,

@@ -12,9 +12,11 @@ from forensia.api.dto import (
     AIReviewDTO,
     CaseDTO,
     CaseStatsDTO,
+    ClaimDTO,
     EventVolumePointDTO,
     FindingDTO,
     HypothesisDTO,
+    HypothesisReasoningEntryDTO,
     HypothesesResponseDTO,
     InvestigationStepDTO,
     MftTimelineDTO,
@@ -90,6 +92,12 @@ def get_case_stats_dto(db: CaseDB) -> CaseStatsDTO:
             ).fetchone()[0]
         ),
         session_count=int(db.execute("SELECT COUNT(*) FROM investigation_sessions").fetchone()[0]),
+        report_human_reviewed=int(
+            db.execute("SELECT COUNT(*) FROM report_sections WHERE status = 'human_reviewed'").fetchone()[0]
+        ),
+        report_ai_exhausted=int(
+            db.execute("SELECT COUNT(*) FROM report_sections WHERE status = 'ai_exhausted'").fetchone()[0]
+        ),
     )
 
 
@@ -140,7 +148,113 @@ def get_finding_dto(db: CaseDB, finding_id: str) -> FindingDTO | None:
     return FindingDTO.model_validate(_normalize_row(rows[0]))
 
 
+def list_hypothesis_reasoning_dto(
+    db: CaseDB,
+    hypothesis_id: str,
+    limit: int = 20,
+) -> list[HypothesisReasoningEntryDTO]:
+    rows = _fetch_records(
+        db,
+        """
+        SELECT entry_id, hypothesis_id, session_id, iteration, phase, verdict, query_id, body, created_at
+        FROM hypothesis_reasoning
+        WHERE hypothesis_id = ?
+        ORDER BY created_at DESC, entry_id DESC
+        LIMIT ?
+        """,
+        (hypothesis_id, limit),
+    )
+    return [HypothesisReasoningEntryDTO.model_validate(_normalize_row(row)) for row in rows]
+
+
+def list_latest_hypothesis_reasoning_dto(
+    db: CaseDB,
+    since: str | None = None,
+    limit: int = 100,
+) -> list[HypothesisReasoningEntryDTO]:
+    params: list[Any] = []
+    where = ""
+    if since:
+        row = db.execute(
+            "SELECT created_at, entry_id FROM hypothesis_reasoning WHERE entry_id = ?",
+            (since,),
+        ).fetchone()
+        if row:
+            where = "WHERE (created_at > ?) OR (created_at = ? AND entry_id > ?)"
+            params.extend([row[0], row[0], since])
+    rows = _fetch_records(
+        db,
+        f"""
+        SELECT entry_id, hypothesis_id, session_id, iteration, phase, verdict, query_id, body, created_at
+        FROM hypothesis_reasoning
+        {where}
+        ORDER BY created_at DESC, entry_id DESC
+        LIMIT ?
+        """,
+        (*params, limit),
+    )
+    return [HypothesisReasoningEntryDTO.model_validate(_normalize_row(row)) for row in rows]
+
+
 def list_hypotheses_dto(db: CaseDB) -> HypothesesResponseDTO:
+    latest_rows = _fetch_records(
+        db,
+        """
+        WITH ranked AS (
+            SELECT
+                entry_id,
+                hypothesis_id,
+                session_id,
+                iteration,
+                phase,
+                verdict,
+                query_id,
+                body,
+                created_at,
+                ROW_NUMBER() OVER (
+                    PARTITION BY hypothesis_id
+                    ORDER BY created_at DESC, entry_id DESC
+                ) AS row_num,
+                COUNT(*) OVER (PARTITION BY hypothesis_id) AS reasoning_count,
+                MAX(iteration) OVER (PARTITION BY hypothesis_id) AS latest_iteration
+            FROM hypothesis_reasoning
+        )
+        SELECT
+            entry_id,
+            hypothesis_id,
+            session_id,
+            iteration,
+            phase,
+            verdict,
+            query_id,
+            body,
+            created_at,
+            reasoning_count,
+            latest_iteration
+        FROM ranked
+        WHERE row_num <= 3
+        ORDER BY hypothesis_id, created_at DESC, entry_id DESC
+        """
+    )
+    latest_by_hypothesis: dict[str, list[HypothesisReasoningEntryDTO]] = {}
+    reasoning_count_by_hypothesis: dict[str, int] = {}
+    latest_iteration_by_hypothesis: dict[str, int | None] = {}
+    latest_reasoning_at_by_hypothesis: dict[str, str | None] = {}
+    for row in latest_rows:
+        normalized = _normalize_row(row)
+        hypothesis_id = str(normalized.get("hypothesis_id") or "")
+        latest_by_hypothesis.setdefault(hypothesis_id, []).append(
+            HypothesisReasoningEntryDTO.model_validate(normalized)
+        )
+        reasoning_count_by_hypothesis[hypothesis_id] = int(normalized.get("reasoning_count") or 0)
+        latest_iteration_by_hypothesis[hypothesis_id] = (
+            int(normalized["latest_iteration"]) if normalized.get("latest_iteration") is not None else None
+        )
+        latest_reasoning_at_by_hypothesis.setdefault(
+            hypothesis_id,
+            str(normalized.get("created_at") or "") or None,
+        )
+
     rows = _fetch_records(
         db,
         """
@@ -153,7 +267,15 @@ def list_hypotheses_dto(db: CaseDB) -> HypothesesResponseDTO:
     active: list[HypothesisDTO] = []
     resolved: list[HypothesisDTO] = []
     for row in rows:
-        dto = HypothesisDTO.model_validate(_normalize_row(row))
+        normalized = _normalize_row(row)
+        hypothesis_id = str(normalized.get("hypothesis_id") or "")
+        normalized["latest_reasoning"] = [
+            item.model_dump(mode="json") for item in latest_by_hypothesis.get(hypothesis_id, [])
+        ]
+        normalized["reasoning_count"] = reasoning_count_by_hypothesis.get(hypothesis_id, 0)
+        normalized["latest_iteration"] = latest_iteration_by_hypothesis.get(hypothesis_id)
+        normalized["latest_reasoning_at"] = latest_reasoning_at_by_hypothesis.get(hypothesis_id)
+        dto = HypothesisDTO.model_validate(normalized)
         if dto.status == "active":
             active.append(dto)
         else:
@@ -212,6 +334,26 @@ def list_report_sections_dto(db: CaseDB) -> list[ReportSectionDTO]:
         normalized["gap_count"] = len(gaps)
         items.append(ReportSectionDTO.model_validate(normalized))
     return items
+
+
+def list_claims_dto(db: CaseDB, section_key: str | None = None) -> list[ClaimDTO]:
+    params: tuple[Any, ...] | None = None
+    where = ""
+    if section_key:
+        where = "WHERE section_key = ?"
+        params = (section_key,)
+    rows = _fetch_records(
+        db,
+        f"""
+        SELECT claim_id, section_key, claim_text, finding_ids, hypothesis_ids, evidence_ids,
+               support_status, created_at, updated_at
+        FROM claims
+        {where}
+        ORDER BY section_key, created_at, claim_id
+        """,
+        params,
+    )
+    return [ClaimDTO.model_validate(_normalize_row(row)) for row in rows]
 
 
 def list_mft_timeline_dto(

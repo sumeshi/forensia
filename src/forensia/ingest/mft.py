@@ -15,10 +15,12 @@ from forensia.core.evidence import make_mft_evidence_id
 def ingest_mft_file(
     case: Case,
     mft_path: str | Path,
+    source_sha: str | None = None,
     progress_callback: Callable[[str], None] | None = None,
 ) -> Path:
     mft_path = Path(mft_path)
-    output_path = case.raw_dir / "mft.jsonl"
+    sha_prefix = (source_sha or "unknown")[:12]
+    output_path = case.raw_dir / f"mft-{sha_prefix}.jsonl"
     ingested_at = datetime.now(UTC).isoformat()
 
     if progress_callback:

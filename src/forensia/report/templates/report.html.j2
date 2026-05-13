@@ -26,8 +26,18 @@
   {% for section in report_sections %}
   <div class="card">
     <strong>{{ section.title }}</strong>
-    <p>Confidence: {{ section.confidence }} / Gaps: {{ section.gap_count }}</p>
+    <p>Confidence: {{ section.confidence }} / Status: {{ section.status }} / Gaps: {{ section.gap_count }}</p>
     <pre>{{ section.body }}</pre>
+  </div>
+  {% endfor %}
+
+  <h2>Report Claims</h2>
+  {% for claim in claims %}
+  <div class="card">
+    <strong>{{ claim.section_key }} / {{ claim.support_status }}</strong>
+    <p>{{ claim.claim_text }}</p>
+    <p>Evidence: {{ claim.evidence_ids }}</p>
+    <p>Findings: {{ claim.finding_ids }} / Hypotheses: {{ claim.hypothesis_ids }}</p>
   </div>
   {% endfor %}
 

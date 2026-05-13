@@ -17,7 +17,9 @@ class PlannedQuery(BaseModel):
     query_id: str
     hypothesis_id: str
     purpose: str
-    sql: str
+    sql: str = ""
+    template_id: str | None = None
+    params: dict[str, Any] = Field(default_factory=dict)
 
 
 class HistoryEntry(BaseModel):

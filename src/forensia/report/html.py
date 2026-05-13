@@ -43,7 +43,7 @@ def _load_report_sections(db: CaseDB) -> tuple[list[dict[str, Any]], str]:
         _fetch_records(
             db,
             """
-            SELECT section_key, title, body, confidence, gaps, last_filled_session, last_filled_at
+            SELECT section_key, title, body, confidence, status, gaps, last_filled_session, last_filled_at
             FROM report_sections
             ORDER BY section_key
             """,
@@ -101,6 +101,16 @@ def render_html_report(case: Case, db: CaseDB, output_path: str | Path | None = 
             """,
         )
     )
+    claims = _normalize_rows(
+        _fetch_records(
+            db,
+            """
+            SELECT claim_id, section_key, claim_text, finding_ids, hypothesis_ids, evidence_ids, support_status
+            FROM claims
+            ORDER BY section_key, created_at, claim_id
+            """,
+        )
+    )
     report_sections, report_markdown = _load_report_sections(db)
     payload = {
         "case_name": case.path.name,
@@ -108,6 +118,7 @@ def render_html_report(case: Case, db: CaseDB, output_path: str | Path | None = 
         "findings": findings,
         "timeline": timeline,
         "reviews": reviews,
+        "claims": claims,
         "evtx_count": int(db.execute("SELECT COUNT(*) FROM evtx_events").fetchone()[0]),
         "mft_count": int(db.execute("SELECT COUNT(*) FROM mft_entries").fetchone()[0]),
         "report_sections": report_sections,

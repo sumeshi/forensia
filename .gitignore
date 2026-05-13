@@ -4,6 +4,7 @@ __pycache__/
 .python-version
 
 web_ui/node_modules/
+src/forensia/static
 
 .env
 .agents

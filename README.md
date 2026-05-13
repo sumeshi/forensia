@@ -198,11 +198,16 @@ mindmap
       AI Reviews
     Structured Memories
       Overview
-      Confirmed Facts
-      Entities
       Timeline Anchors
+      Confirmed Facts
       Open Questions
-      Hypothesis State
+      Narrative
+      Refuted Hypotheses
+      Important Entities
+      Host Notes
+      User Notes
+      Hypothesis Notes
+      Suspicious Evidence
     Session State
       Current Focus
       Active Loop
@@ -214,7 +219,7 @@ mindmap
 
 | 層 | 場所 | 役割 | 正本か |
 |---|---|---|---|
-| Persistent State | `case.duckdb` | 証拠、Finding、仮説、レポート状態、進捗ログ | はい |
+| Persistent State | `db/case.duckdb` + `db/trace.duckdb` | 証拠、Finding、仮説、レポート状態、進捗ログ、LLM 実行履歴 | はい |
 | Structured Memories | `memory/*.md` | LLM に渡すための圧縮済みコンテキスト | いいえ |
 | Session State | プロセスメモリ | 今回の実行中だけ使う作業記憶 | いいえ |
 
@@ -228,14 +233,23 @@ mindmap
 AI 調査員は証拠を全部抱え込むわけではありません。  
 見るのは、確認済み事実、重要エンティティ、時系列アンカー、open gaps、仮説状態です。人間がノートを整理してから渡すのに近い。生ログ全件を読ませて覚えておけ、と言うのは、さすがに酷です。
 
-- `overview.md`: 調査全体の要点
-- `hosts/`: ホスト単位の要点
-- `users/`: ユーザー単位の要点
-- `hypotheses/`: 仮説ごとの根拠・反証
+- `overview.md`: 調査全体の索引
+- `confirmed_facts.md`: 確定した事実
+- `timeline_anchors.md`: 主要な時刻アンカー
+- `open_questions.md`: 未解決の問い
+- `narrative.md`: 次サイクルでも保持したい短い説明筋
+- `refuted_hypotheses.md`: 否定済み仮説の控え
+- `important_entities.md`: 追跡対象の IP / user / host / process / service
+- `hosts/*.md`: ホスト単位のメモ
+- `users/*.md`: ユーザー単位のメモ
+- `hypotheses/*.md`: 仮説ごとの状態と reasoning trail
 - `evidence/suspicious.md`: 注意すべき evidence の断片
 
 これらは人間が直接読めるように Markdown で置きつつ、LLM が次のループで再利用しやすい形にもしています。  
 Markdown なのは見た目の趣味ではなく、ローカル実行・可搬性・差分確認のしやすさを優先した結果です。
+
+`LLM_MEMORY_MAX_BYTES` は主に `overview.md`、`open_questions.md`、個別メモの圧縮に効きます。  
+`confirmed_facts.md`、`timeline_anchors.md`、`refuted_hypotheses.md`、`important_entities.md` は保持優先で、ここでは黙って削りません。
 
 
 ## 信頼性の担保
@@ -263,7 +277,7 @@ forensia は、もっともらしい文章を増やすためのツールでは�
 
 ### LLM の入出力を記録する
 
-- LLM リクエスト / レスポンスを `ai_logs/` に残す
+- investigate ループの LLM リクエスト / レスポンスを `ai_logs/<session_id>/` に残す
 - 調査ステップごとの `input_json` / `output_json` を `investigation_steps` に残す
 - Finding / 仮説に対するレビュー結果を保存する
 
@@ -271,7 +285,7 @@ forensia は、もっともらしい文章を増やすためのツールでは�
 
 ### 分からないことを分からないまま扱う
 
-`confirmed / refuted / inconclusive / new investigation lead` の 4 値を持たせるのは、そのためです。  
+`confirmed / refuted / inconclusive / newlead`（元の仮説とは別に追うべき不審点）の 4 値を持たせるのは、そのためです。  
 分からないのに断定するより、`inconclusive` のまま止まってくれた方がはるかにマシです。
 
 ### レポートも検証対象にする
@@ -310,17 +324,27 @@ LLM_MODEL="qwen/qwen3-8b"
 
 詳細な設定値は [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。
 
+CLI では `--llm-base-url` を使います。`--lmstudio` は互換のため残している旧名です。
+
 ## 使い方
 
 ### 一括実行
 
 ```bash
-# ルール検知まで
+# 初回 20 サイクルで実行する
 forensia run ./input --out ./case001 --profile windows-basic
 
-# 継続調査まで
+# より長く回したいときだけ明示する
 forensia run ./input --out ./case001 --profile windows-basic --max-iter 50
 ```
+
+`forensia run` はデフォルトで ingest → normalize → analyze → investigate まで走ります。  
+ルール検知だけで止めたいなら、LLM 未設定のまま実行するか、段階実行を使ってください。
+
+再実行時によく使うのは次の 2 つです。
+
+- `--reinvestigate`: 既存セッションがあっても Stage 4 をもう 1 回回す
+- `--init`: raw/db/findings/reports を消して同じ出力先を作り直す
 
 ### ステップ実行
 
@@ -332,6 +356,9 @@ investigate は、現在の調査状態を読み込み、仮説の検証、Struc
 ```
 forensia investigate case001 --max-iter 50
 ```
+
+`investigate` の主な調整項目は `--max-queries-per-hypothesis`、`--no-progress-limit`、`--report-every-n-cycles`、`--report-parallelism`、`--report-only` です。  
+何を触るべきかは [CONTRIBUTING.md](CONTRIBUTING.md) に寄せています。
 
 `investigate` は次をループします。
 
@@ -356,10 +383,16 @@ forensia add case001 ./input
 
 #### レポートを生成する
 
-調査状態から Markdown / HTML レポートを生成します。
+`report` は既存の `report_sections` から Markdown / HTML をレンダリングするだけです。
 
 ```
 forensia report case001
+```
+
+section が空、または現時点の evidence から LLM で section を再充填したいなら `report-write` を使います。
+
+```bash
+forensia report-write case001 --llm-base-url http://127.0.0.1:1234 --model qwen/qwen3-8b
 ```
 
 #### UIで確認する
@@ -371,6 +404,14 @@ forensia serve case001 --host 127.0.0.1 --port 8000
 
 `forensia serve` は、build 済みの `web_ui/dist/` を FastAPI から配信します。  
 DuckDB が他プロセスにロックされている場合でも、`reports/api/*.json` のスナップショットから表示できます。
+
+#### 状態だけ確認する
+
+ケースの進行状況だけ見たいなら、UI を開かずに `status` を使えます。
+
+```bash
+forensia status case001
+```
 
 その他、開発手順や内部構造の説明は [CONTRIBUTING.md](CONTRIBUTING.md) にまとめています。
 

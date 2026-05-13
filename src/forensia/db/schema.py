@@ -1,4 +1,4 @@
-SCHEMA_SQL = """
+CORE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS evtx_events (
     evidence_id VARCHAR,
     source_file VARCHAR,
@@ -71,36 +71,6 @@ CREATE TABLE IF NOT EXISTS findings (
     created_at TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS ai_reviews (
-    review_id VARCHAR,
-    finding_id VARCHAR,
-    verdict VARCHAR,
-    report_text VARCHAR,
-    missing_checks JSON,
-    confidence_adjustment DOUBLE,
-    notes VARCHAR,
-    raw_response JSON,
-    created_at TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS investigation_sessions (
-    session_id VARCHAR PRIMARY KEY,
-    started_at TIMESTAMP,
-    finished_at TIMESTAMP,
-    iterations INTEGER,
-    status VARCHAR
-);
-
-CREATE TABLE IF NOT EXISTS investigation_steps (
-    step_id VARCHAR PRIMARY KEY,
-    session_id VARCHAR,
-    iteration INTEGER,
-    phase VARCHAR,
-    input_json JSON,
-    output_json JSON,
-    created_at TIMESTAMP
-);
-
 CREATE TABLE IF NOT EXISTS hypotheses (
     hypothesis_id VARCHAR PRIMARY KEY,
     description VARCHAR,
@@ -126,7 +96,76 @@ CREATE TABLE IF NOT EXISTS report_sections (
     last_filled_at TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS progress_events (
+CREATE TABLE IF NOT EXISTS claims (
+    claim_id VARCHAR PRIMARY KEY,
+    section_key VARCHAR,
+    claim_text VARCHAR,
+    finding_ids JSON,
+    hypothesis_ids JSON,
+    evidence_ids JSON,
+    support_status VARCHAR,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS claims_by_section ON claims(section_key, updated_at);
+
+CREATE TABLE IF NOT EXISTS ingested_files (
+    sha256 VARCHAR PRIMARY KEY,
+    path VARCHAR,
+    source_kind VARCHAR,
+    size BIGINT,
+    ingested_at TIMESTAMP
+);
+"""
+
+TRACE_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS trace.ai_reviews (
+    review_id VARCHAR,
+    finding_id VARCHAR,
+    verdict VARCHAR,
+    report_text VARCHAR,
+    missing_checks JSON,
+    confidence_adjustment DOUBLE,
+    notes VARCHAR,
+    raw_response JSON,
+    created_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS trace.investigation_sessions (
+    session_id VARCHAR PRIMARY KEY,
+    started_at TIMESTAMP,
+    finished_at TIMESTAMP,
+    iterations INTEGER,
+    status VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS trace.investigation_steps (
+    step_id VARCHAR PRIMARY KEY,
+    session_id VARCHAR,
+    iteration INTEGER,
+    phase VARCHAR,
+    input_json JSON,
+    output_json JSON,
+    created_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS trace.hypothesis_reasoning (
+    entry_id VARCHAR PRIMARY KEY,
+    hypothesis_id VARCHAR,
+    session_id VARCHAR,
+    iteration INTEGER,
+    phase VARCHAR,
+    verdict VARCHAR,
+    query_id VARCHAR,
+    body VARCHAR,
+    created_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS hypothesis_reasoning_by_hypothesis
+    ON trace.hypothesis_reasoning(hypothesis_id, created_at);
+
+CREATE TABLE IF NOT EXISTS trace.progress_events (
     event_index BIGINT PRIMARY KEY,
     stage VARCHAR,
     status VARCHAR,
@@ -137,3 +176,11 @@ CREATE TABLE IF NOT EXISTS progress_events (
     created_at TIMESTAMP
 );
 """
+
+TRACE_TABLES = {
+    "ai_reviews",
+    "investigation_sessions",
+    "investigation_steps",
+    "hypothesis_reasoning",
+    "progress_events",
+}

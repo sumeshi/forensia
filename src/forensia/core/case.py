@@ -7,6 +7,21 @@ import shutil
 
 import yaml
 
+ALLOWLIST_STUB = """# Rule-scoped suppression rules.
+# Each entry matches one rule_id and one or more row fields from finding.evidence[0].
+#
+# rules:
+#   - rule_id: win-logon-4624-rdp
+#     when:
+#       target_user:
+#         - svc_backup
+#       src_ip:
+#         - 10.0.0.10
+#       process_name:
+#         - C:\\Windows\\System32\\svchost.exe
+rules: []
+"""
+
 
 @dataclass(slots=True)
 class Case:
@@ -52,6 +67,10 @@ class Case:
     def database_path(self) -> Path:
         return self.db_dir / "case.duckdb"
 
+    @property
+    def trace_database_path(self) -> Path:
+        return self.db_dir / "trace.duckdb"
+
     def clear_runtime_outputs(
         self,
         preserve_memory: bool = True,
@@ -63,8 +82,10 @@ class Case:
                 shutil.rmtree(directory)
             directory.mkdir(parents=True, exist_ok=True)
 
-        if drop_database and self.database_path.exists():
-            self.database_path.unlink()
+        if drop_database:
+            for database_path in (self.database_path, self.trace_database_path):
+                if database_path.exists():
+                    database_path.unlink()
 
         if not preserve_ai_logs:
             if self.ai_logs_dir.exists():
@@ -120,6 +141,8 @@ class Case:
                 yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True),
                 encoding="utf-8",
             )
+        if not case.allowlist_path.exists():
+            case.allowlist_path.write_text(ALLOWLIST_STUB, encoding="utf-8")
         return case
 
     @classmethod

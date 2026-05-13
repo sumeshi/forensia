@@ -92,7 +92,13 @@ def build_broad_plan_messages(
     findings = findings_snapshot[:max_findings]
     system = (
         "You are a DFIR investigator running the broad planning phase. "
-        "Treat overview.md as your primary memory. Request additional Markdown files only when necessary. "
+        "Treat overview.md as your primary memory index. Request additional Markdown files only when necessary. "
+        "Useful memory files include confirmed_facts.md, timeline_anchors.md, open_questions.md, "
+        "narrative.md, refuted_hypotheses.md, important_entities.md, hosts/*.md, users/*.md, "
+        "and hypotheses/*.md. "
+        "Stable facts belong in confirmed_facts.md, key timestamps belong in timeline_anchors.md, "
+        "unresolved questions belong in open_questions.md, analyst storyline belongs in narrative.md, "
+        "and durable named actors belong in important_entities.md. "
         "Do not make claims without evidence. "
         f"{_INVESTIGATION_FRAMEWORK}"
         "Output JSON only. "
@@ -124,18 +130,22 @@ def build_hypothesis_plan_messages(
     hypothesis: Hypothesis,
     finding_candidates: list[dict[str, Any]],
     hypothesis_history: list[dict[str, Any]],
+    query_templates: list[dict[str, Any]],
 ) -> list[dict[str, str]]:
     executed_query_ids = [item.get("query_id") for item in hypothesis_history if item.get("query_id")]
     system = (
         "You are a DFIR investigator running the hypothesis-specific planning phase. "
-        "You must propose exactly one read-only SQL query that tests the current hypothesis, "
+        "You must propose exactly one read-only query that tests the current hypothesis, "
         "or declare that no more useful SQL remains. "
         f"{_INVESTIGATION_FRAMEWORK}"
         "Output JSON only. "
         f"{_lang_instruction()} "
         f"Already-executed query IDs for this hypothesis: {executed_query_ids}. "
         "Do not duplicate the same query purpose. "
-        "Use only these JSON keys: read_more, hypothesis, query, needs_more, stop_reason."
+        "Prefer using query templates. In query, either set template_id + params, "
+        "or as a fallback set raw sql when no template fits. "
+        "Use only these JSON keys: read_more, hypothesis, query, needs_more, stop_reason. "
+        "Inside query use only: query_id, hypothesis_id, purpose, template_id, params, sql."
     )
     user = (
         "Current hypothesis-planning state:\n"
@@ -145,6 +155,7 @@ def build_hypothesis_plan_messages(
         f"hypothesis: {hypothesis.model_dump()}\n"
         f"related_findings: {finding_candidates}\n"
         f"hypothesis_history: {hypothesis_history}\n"
+        f"query_templates: {query_templates}\n"
     )
     return [
         {"role": "system", "content": system},
@@ -184,21 +195,34 @@ def build_check_messages(
     hypothesis: Hypothesis | None,
     finding_candidates: list[dict[str, Any]],
     result_summary: dict[str, Any],
+    overview_md: str,
+    memory_context_md: str,
 ) -> list[dict[str, str]]:
     system = (
         "You are a DFIR review analyst. "
-        "Use only the SQL result summary provided. Do not assert facts not present in the evidence. "
+        "Use the SQL result summary together with the provided structured memory context. "
+        "Do not assert facts not present in the evidence or memory. "
         "Determine whether the result confirms, refutes, is inconclusive for the hypothesis, or represents a new finding. "
         "Always reference evidence_id values. "
+        "When a fact becomes durable, write it into memory_updates.confirmed_facts. "
+        "When a timestamp is central to the attack timeline, write it into memory_updates.timeline_anchors. "
+        "When a question remains unresolved, write it into memory_updates.open_questions with kind set to "
+        "internal_db_check, external_lookup, or human_decision. "
+        "When a concise analyst storyline should survive compaction, write it into memory_updates.narrative. "
+        "When a hypothesis is disproved, write a record into memory_updates.refuted_hypotheses. "
+        "When a host, user, process, service, or IP becomes important enough to track, write it into "
+        "memory_updates.important_entities. "
         f"{_FP_REDUCTION_GUIDANCE}"
         "Output JSON only. "
         f"{_lang_instruction()} "
         "Use only these JSON keys: query_id, verdict, finding_updates, suspicious_evidence, "
         "compromised_hosts, compromised_users, new_hypotheses, memory_updates, report_text, missing_checks, notes. "
-        "verdict must be one of: confirmed, refuted, inconclusive, new_finding."
+        "verdict must be one of: confirmed, refuted, inconclusive, newlead."
     )
     user = (
         "Evaluate the following query result.\n"
+        f"overview_md:\n{overview_md}\n\n"
+        f"structured_memory_context:\n{memory_context_md}\n\n"
         f"planned_query: {planned_query.model_dump()}\n"
         f"hypothesis: {hypothesis.model_dump() if hypothesis else None}\n"
         f"finding_candidates: {finding_candidates}\n"
@@ -215,6 +239,7 @@ def build_report_section_messages(
     evidence_results: list[dict[str, Any]],
     context_sections: dict[str, str],
     template_body: str,
+    report_brief: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     system = (
         "You are a DFIR report writer. "
@@ -226,6 +251,7 @@ def build_report_section_messages(
     )
     user = (
         f"section_meta: {section_meta}\n\n"
+        f"report_brief: {report_brief or {}}\n\n"
         f"previous_sections: {context_sections}\n\n"
         f"evidence_results: {evidence_results}\n\n"
         "Complete this section template by replacing placeholders and comments with evidence-based content:\n\n"

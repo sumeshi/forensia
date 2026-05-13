@@ -5,8 +5,11 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
+import yaml
 
 from forensia.ai.investigator import (
+    _append_hypothesis_reasoning,
+    _classify_gap_kind,
     _gap_hypothesis_id,
     _inject_gap_hypotheses,
     _load_persisted_hypotheses,
@@ -15,12 +18,40 @@ from forensia.ai.investigator import (
 )
 from forensia.ai.planner import BroadPlanResult, HypothesisPlanResult
 from forensia.core.case import Case
+from forensia.core.memory import MemoryManager
 from forensia.core.session import SessionState
 from forensia.db.database import CaseDB
 from forensia.report.writer import fill_section
 
 
 class PersistenceTests(unittest.TestCase):
+    def test_append_hypothesis_reasoning_is_idempotent_per_query_phase(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                first = _append_hypothesis_reasoning(
+                    db=db,
+                    hypothesis_id="H-1",
+                    session_id="S-1",
+                    iteration=1,
+                    phase="plan",
+                    query_id="q-1",
+                    body="look for 4625 burst",
+                )
+                second = _append_hypothesis_reasoning(
+                    db=db,
+                    hypothesis_id="H-1",
+                    session_id="S-1",
+                    iteration=1,
+                    phase="plan",
+                    query_id="q-1",
+                    body="look for 4625 burst",
+                )
+                count = db.execute("SELECT COUNT(*) FROM hypothesis_reasoning WHERE hypothesis_id = 'H-1'").fetchone()[0]
+
+            self.assertEqual(first, second)
+            self.assertEqual(1, count)
+
     def test_load_persisted_hypotheses_restores_resolved_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -67,6 +98,7 @@ class PersistenceTests(unittest.TestCase):
                         db=db,
                         template_path=template_path,
                         context_sections={},
+                        report_brief={"top_findings": []},
                         base_url="http://localhost:1234",
                         model="test-model",
                         session_id="session-test",
@@ -122,7 +154,7 @@ class PersistenceTests(unittest.TestCase):
             self.assertTrue(all(status_name == "draft" for _, _, status_name, _, _ in rows))
             self.assertTrue(all(int(update_count) == 1 for _, _, _, update_count, _ in rows))
 
-    def test_fill_section_promotes_stable_and_report_completion_marks_approved(self) -> None:
+    def test_fill_section_promotes_stable_and_report_completion_marks_ai_exhausted(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             template_path = Path("src/forensia/report_template/1_overview.md")
@@ -136,11 +168,12 @@ class PersistenceTests(unittest.TestCase):
                         db=db,
                         template_path=template_path,
                         context_sections={},
+                        report_brief={"top_findings": []},
                         base_url="http://localhost:1234",
                         model="test-model",
                         session_id="session-test",
                     )
-                db.execute("UPDATE report_sections SET status = 'approved' WHERE section_key = '1_overview'")
+                db.execute("UPDATE report_sections SET status = 'ai_exhausted' WHERE section_key = '1_overview'")
                 with patch(
                     "forensia.report.writer.chat_completion",
                     return_value="# 調査概要\n\n本文のみ",
@@ -150,6 +183,7 @@ class PersistenceTests(unittest.TestCase):
                         db=db,
                         template_path=template_path,
                         context_sections={},
+                        report_brief={"top_findings": []},
                         base_url="http://localhost:1234",
                         model="test-model",
                         session_id="session-test-2",
@@ -158,9 +192,97 @@ class PersistenceTests(unittest.TestCase):
                     "SELECT status, update_count, confidence FROM report_sections WHERE section_key = '1_overview'"
                 ).fetchone()
 
-            self.assertEqual("approved", row[0])
+            self.assertEqual("ai_exhausted", row[0])
             self.assertEqual(2, int(row[1]))
             self.assertGreaterEqual(float(row[2]), 0.9)
+
+    def test_finalize_section_creates_claim_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            template_path = Path("src/forensia/report_template/1_overview.md")
+            with CaseDB(case) as db:
+                with patch(
+                    "forensia.report.writer.chat_completion",
+                    return_value="# 調査概要\n\n侵害の兆候が見られた。\n\n追加確認が必要。",
+                ):
+                    fill_section(
+                        case=case,
+                        db=db,
+                        template_path=template_path,
+                        context_sections={},
+                        report_brief={"top_findings": []},
+                        base_url="http://localhost:1234",
+                        model="test-model",
+                        session_id="session-test",
+                    )
+                claim_count = db.execute("SELECT COUNT(*) FROM claims WHERE section_key = '1_overview'").fetchone()[0]
+
+            self.assertGreaterEqual(int(claim_count), 1)
+
+    def test_report_fill_writes_supported_claim_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            template_path = Path("src/forensia/report_template/1_overview.md")
+            now = datetime.now(UTC).replace(tzinfo=None)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO findings (
+                        finding_id, rule_id, title, summary, severity, confidence, status,
+                        tags, attack, evidence, ai_summary, missing_checks, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    ("F-1", "rule", "Title", "Summary", "high", 0.9, "accepted", "[]", "[]", '[{"evidence_id":"ev-1","timestamp":"2026-05-13T10:00:00"}]', "", "[]", now),
+                )
+                db.execute(
+                    """
+                    INSERT INTO evtx_events (
+                        evidence_id, source_file, channel, event_id, record_id, timestamp, computer,
+                        user_name, target_user, subject_user, src_ip, logon_type, process_name,
+                        command_line, service_name, message, raw_json, tags, severity
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    ("ev-1", "a.evtx", "Security", 4624, 1, now, "host1", "", "", "", "", "", "", "", "", "", "{}", "[]", "info"),
+                )
+                with patch(
+                    "forensia.report.writer.chat_completion",
+                    return_value="# 調査概要\n\n侵害の兆候が見られた。",
+                ):
+                    fill_section(
+                        case=case,
+                        db=db,
+                        template_path=template_path,
+                        context_sections={},
+                        report_brief={"top_findings": [{"finding_id": "F-1"}]},
+                        base_url="http://localhost:1234",
+                        model="test-model",
+                        session_id="session-test",
+                    )
+                claim_status = db.execute("SELECT support_status FROM claims WHERE section_key = '1_overview'").fetchone()[0]
+
+            self.assertEqual("supported", claim_status)
+
+    def test_report_only_cycle_writes_shared_report_brief(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                with patch(
+                    "forensia.report.writer.chat_completion",
+                    return_value="# Section\n\n本文",
+                ), patch(
+                    "forensia.ai.investigator.render_written_report",
+                    return_value=(case.reports_dir / "report.md", case.reports_dir / "report.html"),
+                ):
+                    investigate(
+                        case=case,
+                        db=db,
+                        base_url="http://localhost:1234",
+                        model="test-model",
+                        max_iter=1,
+                        report_only=True,
+                    )
+
+            self.assertTrue((case.reports_dir / "report_brief.json").exists())
 
     def test_report_cycle_progress_can_be_true_from_gap_reduction_alone(self) -> None:
         self.assertTrue(
@@ -192,6 +314,27 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual(1, len(state.active_hypotheses))
             self.assertEqual(_gap_hypothesis_id("foo bar"), state.active_hypotheses[0].id)
             self.assertEqual([(_gap_hypothesis_id("foo bar"), "report_gap", "active", "foo bar")], rows)
+
+    def test_external_or_human_gaps_do_not_become_hypotheses(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            with CaseDB(case) as db:
+                state = SessionState(session_id="session-test")
+                added = _inject_gap_hypotheses(
+                    db,
+                    state,
+                    ["この src_ip の所有組織を確認", "利用者へのヒアリングが必要"],
+                    session_id="session-test",
+                    memory=memory,
+                )
+                row_count = db.execute("SELECT COUNT(*) FROM hypotheses").fetchone()[0]
+
+            self.assertEqual("external_lookup", _classify_gap_kind("この src_ip の所有組織を確認"))
+            self.assertEqual("human_decision", _classify_gap_kind("利用者へのヒアリングが必要"))
+            self.assertEqual(0, added)
+            self.assertEqual(0, row_count)
+            self.assertIn("所有組織", memory.open_questions_path.read_text(encoding="utf-8"))
 
     def test_investigate_reinjects_gap_hypothesis_on_second_cycle(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -248,6 +391,40 @@ class PersistenceTests(unittest.TestCase):
             active_gap = next((item for item in hypotheses if item["id"] == gap_id), None)
             self.assertIsNotNone(active_gap)
             self.assertEqual("active", active_gap["status"])
+
+    def test_case_init_creates_allowlist_stub_and_preserves_existing_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            initial = case.allowlist_path.read_text(encoding="utf-8")
+            parsed = yaml.safe_load(initial)
+            self.assertIn("rules", parsed)
+            case.allowlist_path.write_text("rules:\n  - rule_id: custom\n", encoding="utf-8")
+            Case.init(tmpdir)
+            preserved = case.allowlist_path.read_text(encoding="utf-8")
+            self.assertEqual("rules:\n  - rule_id: custom\n", preserved)
+
+    def test_investigate_writes_ai_logs_per_llm_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                with patch(
+                    "forensia.report.writer.chat_completion",
+                    return_value="# Section\n\n本文",
+                ), patch(
+                    "forensia.ai.investigator.render_written_report",
+                    return_value=(case.reports_dir / "report.md", case.reports_dir / "report.html"),
+                ):
+                    result = investigate(
+                        case=case,
+                        db=db,
+                        base_url="http://localhost:1234",
+                        model="test-model",
+                        max_iter=1,
+                        report_only=True,
+                    )
+            session_dir = case.ai_logs_dir / result["session_id"]
+            self.assertTrue(session_dir.exists())
+            self.assertGreaterEqual(len(list(session_dir.glob("*.json"))), 1)
 
 
 if __name__ == "__main__":

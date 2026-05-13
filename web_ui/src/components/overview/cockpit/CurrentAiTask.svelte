@@ -9,5 +9,5 @@
     <span class="chip text-mocha-lavender">{stageLabel}</span>
     <span class="text-xs text-mocha-subtext0">iter {iteration}</span>
   </div>
-  <p class="text-sm text-mocha-subtext1">{summary}</p>
+  <p class="line-clamp-3 min-h-[3.75rem] text-sm text-mocha-subtext1">{summary}</p>
 </section>

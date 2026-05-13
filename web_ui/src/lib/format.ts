@@ -2,8 +2,45 @@ export function formatVerdict(value: string | null | undefined): string {
   if (value === "confirmed") return "確認済み";
   if (value === "refuted") return "棄却";
   if (value === "inconclusive") return "判断保留";
-  if (value === "new_finding") return "新規所見";
+  if (value === "newlead") return "新規導線";
   return "未判定";
+}
+
+export function formatReasoningPhase(value: string | null | undefined): string {
+  if (value === "plan") return "plan";
+  if (value === "do") return "do";
+  if (value === "check") return "check";
+  if (value === "act") return "act";
+  if (value === "memo") return "memo";
+  return value ?? "-";
+}
+
+export function reasoningToneClass(value: string | null | undefined): string {
+  if (value === "confirmed") return "bg-mocha-green";
+  if (value === "refuted") return "bg-mocha-red";
+  if (value === "inconclusive") return "bg-mocha-yellow";
+  return "bg-mocha-overlay1";
+}
+
+export function formatRelativeTime(value: string | null | undefined): string {
+  if (!value) return "-";
+  const target = new Date(value);
+  if (Number.isNaN(target.getTime())) return "-";
+  const diffMs = Date.now() - target.getTime();
+  const diffSec = Math.max(0, Math.floor(diffMs / 1000));
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHour = Math.floor(diffMin / 60);
+  if (diffHour < 24) return `${diffHour}h ago`;
+  const diffDay = Math.floor(diffHour / 24);
+  return `${diffDay}d ago`;
+}
+
+export function truncateText(value: string | null | undefined, maxChars: number): string {
+  const text = (value ?? "").trim();
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars).trimEnd()}…`;
 }
 
 

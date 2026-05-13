@@ -10,14 +10,12 @@ import uvicorn
 from forensia.api.cache import clear_api_snapshots, write_api_snapshots
 from forensia.api.progress import clear_progress_events, record_progress_event
 from forensia.ai.investigator import investigate as investigate_loop
-from forensia.ai.reviewer import review_finding
 from forensia.config import get_llm_settings, resolve_llm_config
 from forensia.core.case import Case
 from forensia.core.case_tasks import CaseTasks
 from forensia.db.database import CaseDB
 from forensia.ingest import ingest_all
-from forensia.normalize.evtx import normalize_evtx
-from forensia.normalize.mft import normalize_mft
+from forensia.normalize import normalize_all
 from forensia.report.html import render_html_report
 from forensia.report.writer import render_written_report
 from forensia.rules.engine import clear_rule_findings, generate_findings, run_rule, save_findings
@@ -93,6 +91,13 @@ def _resolve_template_dir(case: Case, template_dir: str | None) -> Path:
     return (Path(__file__).parent / "report_template").resolve()
 
 
+def _resolve_llm_or_die(base_url: str | None, model: str | None) -> tuple[str, str]:
+    resolved_base_url, resolved_model = resolve_llm_config(base_url, model)
+    if not resolved_base_url or not resolved_model:
+        raise typer.BadParameter("LLM_BASE_URL と LLM_MODEL を .env または CLI で指定してください")
+    return resolved_base_url, resolved_model
+
+
 def _open_case_or_die(case_dir: str) -> Case:
     try:
         return Case.open(case_dir)
@@ -136,95 +141,29 @@ def init(case_dir: str) -> None:
     print(f"Initialized case at {case.path}")
 
 
+
 @app.command()
-def ingest(
-    case_dir: str,
-    input_dir: str,
-    force: bool = typer.Option(False, "--force", help="Re-ingest even if already done"),
-) -> None:
+def add(case_dir: str, input_dir: str) -> None:
+    """既存ケースに新しいエビデンスを増分取り込みする。"""
     case = _open_case_or_die(case_dir)
     tasks = CaseTasks.for_case(case)
-    if not force and tasks.is_done("ingest") and any(case.raw_dir.glob("*.jsonl")):
-        print(f"[dim]ingest already done — skipping. Use --force to re-run.[/dim]")
-        return
-    _status(f"Scanning input directory: {input_dir}")
+    _status(f"Adding evidence from: {input_dir}")
     counts = ingest_all(case, input_dir, progress_callback=_status)
-    tasks.mark_done("ingest", f"evtx_files={counts['evtx_files']}, mft_files={counts['mft_files']}")
-    print(f"Ingested EVTX files: {counts['evtx_files']}, MFT files: {counts['mft_files']}")
-
-
-@app.command()
-def normalize(
-    case_dir: str,
-    force: bool = typer.Option(False, "--force", help="Re-normalize even if already done"),
-) -> None:
-    case = _open_case_or_die(case_dir)
-    tasks = CaseTasks.for_case(case)
-    with CaseDB(case) as db:
-        already = int(db.execute("SELECT COUNT(*) FROM evtx_events").fetchone()[0])
-        if not force and tasks.is_done("normalize") and already > 0:
-            print(f"[dim]normalize already done ({already} rows) — skipping. Use --force to re-run.[/dim]")
-            return
-        _status(f"Normalizing raw data for case: {case.path}")
-        evtx_count = normalize_evtx(case, db)
-        mft_entries, mft_timeline = normalize_mft(case, db)
-        write_api_snapshots(case, db)
-    tasks.mark_done("normalize", f"evtx_rows={evtx_count}, mft_entries={mft_entries}")
+    tasks.mark_done(
+        "ingest",
+        (
+            f"new_files={counts['new_files']}, skipped_files={counts['skipped_files']}, "
+            f"evtx_files={counts['evtx_files']}, mft_files={counts['mft_files']}"
+        ),
+    )
     print(
-        f"Normalized EVTX rows: {evtx_count}, MFT entries: {mft_entries}, MFT timeline rows: {mft_timeline}"
+        "Add complete: "
+        f"added={counts['new_files']}, skipped={counts['skipped_files']}, "
+        f"evtx={counts['evtx_files']}, mft={counts['mft_files']}"
     )
 
 
-@app.command()
-def analyze(
-    case_dir: str,
-    profile: str = typer.Option("windows-basic", "--profile"),
-    force: bool = typer.Option(False, "--force", help="Re-run rules even if already done"),
-) -> None:
-    case = _open_case_or_die(case_dir)
-    tasks = CaseTasks.for_case(case)
-    if not force and tasks.is_done("analyze"):
-        with CaseDB(case) as db:
-            n = int(db.execute("SELECT COUNT(*) FROM findings").fetchone()[0])
-        print(f"[dim]analyze already done ({n} findings) — skipping. Use --force to re-run.[/dim]")
-        return
-    profile_path = Path(__file__).parent / "profiles" / f"{profile}.yaml"
-    rules_dir = Path(__file__).parent / "rulepacks"
-    rules = load_rules_from_dir(rules_dir, profile_path)
-    _status(f"Running rules from profile: {profile} ({len(rules)} rules)")
-    with CaseDB(case) as db:
-        total = 0
-        for rule in rules:
-            _status(f"Executing rule: {rule.id}")
-            clear_rule_findings(case, db, rule.id)
-            rows = run_rule(db, rule)
-            findings = generate_findings(rule, rows)
-            save_findings(case, db, findings)
-            total += len(findings)
-        _prune_orphan_reviews(db)
-        write_api_snapshots(case, db)
-    tasks.mark_done("analyze", f"profile={profile}, findings={total}")
-    print(f"Generated findings: {total}")
 
-
-@app.command()
-def review(
-    case_dir: str,
-    lmstudio: str | None = typer.Option(None, "--lmstudio"),
-    model: str | None = typer.Option(None, "--model"),
-) -> None:
-    lmstudio, model = resolve_llm_config(lmstudio, model)
-    if not lmstudio or not model:
-        raise typer.BadParameter("LLM_BASE_URL と LLM_MODEL を .env または CLI で指定してください")
-    case = _open_case_or_die(case_dir)
-    _status(f"Reviewing findings with model={model} base_url={lmstudio}")
-    with CaseDB(case) as db:
-        findings = _fetch_records(db, "SELECT * FROM findings ORDER BY created_at")
-        for finding in findings:
-            _status(f"Reviewing finding: {finding['finding_id']}")
-            review_finding(case, db, finding, base_url=lmstudio, model=model, status_callback=_status)
-        write_api_snapshots(case, db)
-    print(f"Reviewed findings: {len(findings)}")
 
 
 @app.command()
@@ -242,7 +181,7 @@ def report(case_dir: str, output: str | None = typer.Option(None, "--output")) -
 def report_write(
     case_dir: str,
     template_dir: str | None = typer.Option(None, "--template-dir"),
-    lmstudio: str | None = typer.Option(None, "--lmstudio"),
+    llm_base_url: str | None = typer.Option(None, "--llm-base-url", "--lmstudio"),
     model: str | None = typer.Option(None, "--model"),
     report_parallelism: int = typer.Option(
         0,
@@ -250,9 +189,7 @@ def report_write(
         help="Concurrent LLM workers for section fill. 0 = use LLM_REPORT_PARALLELISM env (default 1)",
     ),
 ) -> None:
-    lmstudio, model = resolve_llm_config(lmstudio, model)
-    if not lmstudio or not model:
-        raise typer.BadParameter("LLM_BASE_URL と LLM_MODEL を .env または CLI で指定してください")
+    llm_base_url, model = _resolve_llm_or_die(llm_base_url, model)
     case = _open_case_or_die(case_dir)
     tasks = CaseTasks.for_case(case)
     template_root = _resolve_template_dir(case, template_dir)
@@ -266,7 +203,7 @@ def report_write(
         investigate_loop(
             case=case,
             db=db,
-            base_url=lmstudio,
+            base_url=llm_base_url,
             model=model,
             max_iter=1,
             no_progress_limit=1,
@@ -288,7 +225,7 @@ def run(
     input_dir: str,
     out: str = typer.Option(..., "--out"),
     profile: str = typer.Option("windows-basic", "--profile"),
-    lmstudio: str | None = typer.Option(None, "--lmstudio"),
+    llm_base_url: str | None = typer.Option(None, "--llm-base-url", "--lmstudio"),
     model: str | None = typer.Option(None, "--model"),
     max_iter: int = typer.Option(20, "--max-iter"),
     max_queries_per_hypothesis: int = typer.Option(5, "--max-queries-per-hypothesis"),
@@ -306,7 +243,7 @@ def run(
         help="Force LLM investigation even when previous investigation artifacts exist",
     ),
 ) -> None:
-    lmstudio, model = resolve_llm_config(lmstudio, model)
+    llm_base_url, model = resolve_llm_config(llm_base_url, model)
     case = Case.init(out)
     tasks = CaseTasks.for_case(case)
 
@@ -330,7 +267,7 @@ def run(
                 "summary": "Case initialized",
                 "recent_logs": [],
                 "llm_model": model,
-                "llm_base_url": lmstudio,
+                "llm_base_url": llm_base_url,
                 "hypotheses": [],
                 "report_sections": {
                     "items": [],
@@ -348,21 +285,22 @@ def run(
 
         push_progress("Case ready", stage="init", summary=f"Case: {case.path}")
 
-        if not init and tasks.is_done("ingest") and any(case.raw_dir.glob("*.jsonl")):
-            _status("Stage 1/4: ingest — already done, skipping")
-            push_progress("[ingest] skipped (already done)", stage="ingest", status="running")
-        else:
-            _status(f"Stage 1/4: ingest from {input_dir}")
-            push_progress(f"[ingest] scanning {input_dir}", stage="ingest", status="running")
-            counts = ingest_all(case, input_dir, progress_callback=stage_status)
-            note = f"evtx_files={counts['evtx_files']}, mft_files={counts['mft_files']}"
-            tasks.mark_done("ingest", note)
-            _status(f"Ingest complete: {note}")
-            push_progress(f"[ingest] {note}", stage="ingest", status="running", summary=note)
+        _status(f"Stage 1/4: ingest from {input_dir}")
+        push_progress(f"[ingest] scanning {input_dir}", stage="ingest", status="running")
+        counts = ingest_all(case, input_dir, db=db, progress_callback=stage_status)
+        note = (
+            f"new_files={counts['new_files']}, skipped_files={counts['skipped_files']}, "
+            f"evtx_files={counts['evtx_files']}, mft_files={counts['mft_files']}"
+        )
+        tasks.mark_done("ingest", note)
+        _status(f"Ingest complete: {note}")
+        push_progress(f"[ingest] {note}", stage="ingest", status="running", summary=note)
 
         # ── Stage 2: Normalize ───────────────────────────────────────────────
         existing_rows = int(db.execute("SELECT COUNT(*) FROM evtx_events").fetchone()[0])
-        if not init and tasks.is_done("normalize") and existing_rows > 0:
+        normalized_this_run = True
+        if not init and counts["new_files"] == 0 and tasks.is_done("normalize") and existing_rows > 0:
+            normalized_this_run = False
             _status(f"Stage 2/4: normalize — already done ({existing_rows} rows), skipping")
             push_progress(
                 f"[normalize] skipped ({existing_rows} rows already in DB)",
@@ -372,15 +310,17 @@ def run(
         else:
             _status("Stage 2/4: normalize into DuckDB")
             push_progress("[normalize] starting", stage="normalize", status="running")
-            evtx_count = normalize_evtx(case, db)
-            mft_entries, mft_timeline = normalize_mft(case, db)
+            normalized = normalize_all(case, db)
+            evtx_count = normalized["evtx_rows"]
+            mft_entries = normalized["mft_entries"]
+            mft_timeline = normalized["mft_timeline_rows"]
             note = f"evtx_rows={evtx_count}, mft_entries={mft_entries}"
             tasks.mark_done("normalize", note)
             _status(f"Normalize complete: {note}, mft_timeline_rows={mft_timeline}")
             push_progress(f"[normalize] {note}", stage="normalize", status="running", summary=note)
 
         # ── Stage 3: Analyze ─────────────────────────────────────────────────
-        if not init and tasks.is_done("analyze"):
+        if not init and not normalized_this_run and tasks.is_done("analyze"):
             existing_findings = int(db.execute("SELECT COUNT(*) FROM findings").fetchone()[0])
             _status(f"Stage 3/4: analyze — already done ({existing_findings} findings), skipping")
             push_progress(
@@ -416,14 +356,14 @@ def run(
             )
 
         # ── Stage 4: Investigate ─────────────────────────────────────────────
-        if lmstudio and model:
+        if llm_base_url and model:
             if reinvestigate or not _has_investigation_artifacts(db):
                 _status(f"Stage 4/4: investigate with model={model}")
                 push_progress(f"[investigate] starting — model={model}", stage="investigate", status="running")
                 result = investigate_loop(
                     case=case,
                     db=db,
-                    base_url=lmstudio,
+                    base_url=llm_base_url,
                     model=model,
                     max_iter=max_iter,
                     max_queries_per_hypothesis=max_queries_per_hypothesis,
@@ -485,7 +425,7 @@ def run(
 @app.command()
 def investigate(
     case_dir: str,
-    lmstudio: str | None = typer.Option(None, "--lmstudio"),
+    llm_base_url: str | None = typer.Option(None, "--llm-base-url", "--lmstudio"),
     model: str | None = typer.Option(None, "--model"),
     max_iter: int = typer.Option(20, "--max-iter"),
     max_queries_per_hypothesis: int = typer.Option(5, "--max-queries-per-hypothesis"),
@@ -499,9 +439,7 @@ def investigate(
     profile: str = typer.Option("windows-basic", "--profile"),
     report_only: bool = typer.Option(False, "--report-only"),
 ) -> None:
-    lmstudio, model = resolve_llm_config(lmstudio, model)
-    if not lmstudio or not model:
-        raise typer.BadParameter("LLM_BASE_URL と LLM_MODEL を .env または CLI で指定してください")
+    llm_base_url, model = _resolve_llm_or_die(llm_base_url, model)
     case = _open_case_or_die(case_dir)
     tasks = CaseTasks.for_case(case)
     _status(f"Starting investigate for case={case.path.name} model={model}")
@@ -518,7 +456,7 @@ def investigate(
                 "summary": f"Starting investigate for case={case.path.name}",
                 "recent_logs": [f"[investigate] starting — model={model}"],
                 "llm_model": model,
-                "llm_base_url": lmstudio,
+                "llm_base_url": llm_base_url,
                 "hypotheses": [],
                 "report_sections": {
                     "items": [],
@@ -533,7 +471,7 @@ def investigate(
         result = investigate_loop(
             case=case,
             db=db,
-            base_url=lmstudio,
+            base_url=llm_base_url,
             model=model,
             max_iter=max_iter,
             max_queries_per_hypothesis=max_queries_per_hypothesis,
@@ -571,6 +509,53 @@ def investigate(
         f"Investigation session {result['session_id']} finished with status={result['status']} at iteration={result['iteration']}"
     )
     print(result["summary"])
+
+
+@app.command()
+def status(case_dir: str) -> None:
+    case = _open_case_or_die(case_dir)
+    with CaseDB(case) as db:
+        counts = _count_records(db)
+        latest_session = db.execute(
+            """
+            SELECT session_id, status, started_at
+            FROM investigation_sessions
+            ORDER BY started_at DESC, session_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        section_statuses = _fetch_records(
+            db,
+            """
+            SELECT status, COUNT(*) AS count
+            FROM report_sections
+            GROUP BY status
+            ORDER BY status
+            """
+        )
+        total_gaps = int(
+            db.execute(
+                """
+                SELECT COALESCE(SUM(CASE
+                    WHEN json_array_length(CAST(gaps AS JSON)) IS NULL THEN 0
+                    ELSE json_array_length(CAST(gaps AS JSON))
+                END), 0)
+                FROM report_sections
+                """
+            ).fetchone()[0]
+            or 0
+        )
+    print(f"Case: {case.path}")
+    print(f"Counts: {counts}")
+    if latest_session:
+        print(
+            "Latest session: "
+            f"id={latest_session[0]} status={latest_session[1]} started_at={latest_session[2]}"
+        )
+    else:
+        print("Latest session: none")
+    print(f"Report section statuses: {section_statuses or 'none'}")
+    print(f"Total gaps: {total_gaps}")
 
 
 @app.command()

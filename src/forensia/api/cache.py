@@ -10,13 +10,17 @@ from forensia.api.service import (
     get_case_stats_dto,
     list_event_volume_dto,
     list_ai_reviews_dto,
+    list_claims_dto,
     list_findings_dto,
+    list_latest_hypothesis_reasoning_dto,
+    list_hypothesis_reasoning_dto,
     list_hypotheses_dto,
     list_mft_timeline_dto,
     list_report_sections_dto,
     list_sessions_dto,
     list_steps_dto,
 )
+from forensia.report.writer import write_report_brief
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 
@@ -47,6 +51,15 @@ def write_api_snapshots(case: Case, db: CaseDB) -> None:
     _write_json(snapshot_dir / "hypotheses.json", hypotheses.model_dump(mode="json"))
     sessions = list_sessions_dto(db)
     _write_json(snapshot_dir / "sessions.json", [item.model_dump(mode="json") for item in sessions])
+    hypotheses_reasoning = {
+        item.hypothesis_id: [entry.model_dump(mode="json") for entry in list_hypothesis_reasoning_dto(db, item.hypothesis_id, limit=20)]
+        for item in [*hypotheses.active, *hypotheses.resolved]
+    }
+    _write_json(snapshot_dir / "hypothesis_reasoning.json", hypotheses_reasoning)
+    _write_json(
+        snapshot_dir / "hypotheses_reasoning_latest.json",
+        [item.model_dump(mode="json") for item in list_latest_hypothesis_reasoning_dto(db, limit=200)],
+    )
     steps_by_session = {
         session.session_id: [item.model_dump(mode="json") for item in list_steps_dto(db, session.session_id)]
         for session in sessions
@@ -55,6 +68,10 @@ def write_api_snapshots(case: Case, db: CaseDB) -> None:
     _write_json(
         snapshot_dir / "report_sections.json",
         [item.model_dump(mode="json") for item in list_report_sections_dto(db)],
+    )
+    _write_json(
+        snapshot_dir / "claims.json",
+        [item.model_dump(mode="json") for item in list_claims_dto(db)],
     )
     _write_json(
         snapshot_dir / "mft_timeline.json",
@@ -74,6 +91,7 @@ def write_api_snapshots(case: Case, db: CaseDB) -> None:
         snapshot_dir / "progress_events.json",
         list_progress_events(db, after_index=0, limit=1000),
     )
+    _write_json(snapshot_dir / "report_brief.json", write_report_brief(case, db))
 
 
 def load_snapshot(case: Case, name: str) -> Any | None:

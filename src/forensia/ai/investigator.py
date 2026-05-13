@@ -13,9 +13,11 @@ from uuid import uuid4
 
 from rich import print
 
+from forensia.ai.audit import LLMCallLogger
 from forensia.ai.checker import check_query_result, summarize_query_result
 from forensia.ai.lmstudio import chat_completion
 from forensia.ai.planner import BroadPlanResult, broad_plan_investigation, plan_hypothesis_query
+from forensia.config import get_llm_settings
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import HistoryEntry, Hypothesis, SessionState
@@ -26,9 +28,10 @@ from forensia.report.writer import (
     fill_section,
     finalize_section,
     load_report_sections_map,
-    mark_report_sections_approved,
+    mark_report_sections_ai_exhausted,
     prepare_section_request,
     render_written_report,
+    write_report_brief,
 )
 from forensia.rules.engine import generate_findings, run_rule, save_findings
 from forensia.rules.loader import load_rules_from_dir
@@ -74,6 +77,52 @@ def _save_step(
     )
 
 
+def _reasoning_entry_id(
+    hypothesis_id: str,
+    iteration: int,
+    phase: str,
+    query_id: str | None,
+) -> str:
+    body = f"{hypothesis_id}-{iteration}-{phase}-{query_id or '-'}"
+    return hashlib.sha1(body.encode("utf-8")).hexdigest()[:16]
+
+
+def _append_hypothesis_reasoning(
+    db: CaseDB,
+    hypothesis_id: str,
+    session_id: str,
+    iteration: int,
+    phase: str,
+    body: str,
+    verdict: str | None = None,
+    query_id: str | None = None,
+) -> str | None:
+    text = str(body).strip()
+    if not hypothesis_id or not text:
+        return None
+    entry_id = _reasoning_entry_id(hypothesis_id, iteration, phase, query_id)
+    db.execute(
+        """
+        INSERT INTO hypothesis_reasoning (
+            entry_id, hypothesis_id, session_id, iteration, phase, verdict, query_id, body, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (entry_id) DO NOTHING
+        """,
+        (
+            entry_id,
+            hypothesis_id,
+            session_id,
+            iteration,
+            phase,
+            verdict,
+            query_id,
+            text,
+            datetime.now(UTC).replace(tzinfo=None),
+        ),
+    )
+    return entry_id
+
+
 def _seed_findings(case: Case, db: CaseDB, profile: str) -> int:
     existing = db.execute("SELECT COUNT(*) FROM findings").fetchone()[0]
     if existing:
@@ -93,6 +142,11 @@ def _seed_findings(case: Case, db: CaseDB, profile: str) -> int:
 def _initialize_overview(memory: MemoryManager, case: Case) -> None:
     if memory.has_overview():
         return
+    output_language = str(get_llm_settings()["output_language"]).lower()
+    open_question_seed = {
+        "ja": "初回調査待ち",
+        "en": "Awaiting initial investigation",
+    }.get(output_language, "Awaiting initial investigation")
     memory.update_overview(
         (
             f"# Investigation Overview\n\n"
@@ -100,9 +154,52 @@ def _initialize_overview(memory: MemoryManager, case: Case) -> None:
             "## Confirmed Hosts\n- none\n\n"
             "## Confirmed Timeline\n- none\n\n"
             "## Active Hypotheses\n- none\n\n"
-            "## Open Questions\n- 初回調査待ち\n"
+            f"## Open Questions\n- {open_question_seed}\n"
         )
     )
+
+
+def _recent_reasoning_rows(db: CaseDB, hypothesis_id: str, limit: int = 10) -> list[dict[str, Any]]:
+    return _fetch_records(
+        db,
+        """
+        SELECT phase, verdict, query_id, body, created_at
+        FROM hypothesis_reasoning
+        WHERE hypothesis_id = ?
+        ORDER BY created_at DESC, entry_id DESC
+        LIMIT ?
+        """,
+        (hypothesis_id, limit),
+    )
+
+
+def _render_hypothesis_memory(db: CaseDB | None, hypothesis: Hypothesis) -> str:
+    lines = [
+        f"# Hypothesis {hypothesis.id}",
+        "",
+        "## Status",
+        f"- {hypothesis.status}",
+        "",
+        "## Verdict",
+        f"- {hypothesis.verdict or 'pending'}",
+        "",
+        "## Description",
+        hypothesis.description,
+        "",
+        "## Summary",
+        hypothesis.summary or "-",
+    ]
+    if db is not None:
+        reasoning_rows = _recent_reasoning_rows(db, hypothesis.id)
+        if reasoning_rows:
+            lines.extend(["", "## Reasoning"])
+            for row in reasoning_rows:
+                phase = str(row.get("phase") or "")
+                verdict = str(row.get("verdict") or "-")
+                query_id = str(row.get("query_id") or "-")
+                body = " ".join(str(row.get("body") or "").split())[:240]
+                lines.append(f"- [{phase}] verdict={verdict} query={query_id} :: {body}")
+    return "\n".join(lines) + "\n"
 
 
 def _finding_snapshot(db: CaseDB, limit: int = 20) -> list[dict[str, Any]]:
@@ -316,11 +413,58 @@ def _apply_memory_updates(
     active_hypotheses: list[Hypothesis],
     resolved_hypotheses: list[Hypothesis],
     check_output: dict[str, Any],
+    db: CaseDB | None = None,
 ) -> None:
     updates = check_output.get("memory_updates") or {}
     overview_append = str(updates.get("overview_append") or "").strip()
     if overview_append:
         memory.append_overview(overview_append)
+
+    for item in updates.get("confirmed_facts") or []:
+        if not isinstance(item, dict):
+            continue
+        memory.append_confirmed_fact(
+            str(item.get("text") or ""),
+            [str(evidence_id) for evidence_id in (item.get("evidence_ids") or [])],
+        )
+
+    for item in updates.get("timeline_anchors") or []:
+        if not isinstance(item, dict):
+            continue
+        memory.append_timeline_anchor(
+            str(item.get("timestamp") or ""),
+            str(item.get("description") or ""),
+            [str(evidence_id) for evidence_id in (item.get("evidence_ids") or [])],
+        )
+
+    for item in updates.get("open_questions") or []:
+        if not isinstance(item, dict):
+            continue
+        memory.append_open_question(
+            str(item.get("question") or ""),
+            str(item.get("kind") or ""),
+        )
+
+    for item in updates.get("narrative") or []:
+        memory.append_narrative(str(item))
+
+    for item in updates.get("refuted_hypotheses") or []:
+        if not isinstance(item, dict):
+            continue
+        memory.append_refuted_hypothesis(
+            str(item.get("hypothesis_id") or ""),
+            str(item.get("description") or ""),
+            str(item.get("reason") or ""),
+        )
+
+    for item in updates.get("important_entities") or []:
+        if not isinstance(item, dict):
+            continue
+        memory.append_important_entity(
+            str(item.get("entity_type") or ""),
+            str(item.get("name") or ""),
+            str(item.get("notes") or ""),
+        )
 
     for hostname, content in (updates.get("hosts") or {}).items():
         memory.upsert_host(str(hostname), str(content))
@@ -337,13 +481,7 @@ def _apply_memory_updates(
 
     for hypothesis in [*active_hypotheses, *resolved_hypotheses]:
         slug = hypothesis.description[:40]
-        content = (
-            f"# Hypothesis {hypothesis.id}\n\n"
-            f"## Status\n- {hypothesis.status}\n\n"
-            f"## Verdict\n- {hypothesis.verdict or 'pending'}\n\n"
-            f"## Description\n{hypothesis.description}\n\n"
-            f"## Summary\n{hypothesis.summary or '-'}\n"
-        )
+        content = _render_hypothesis_memory(db, hypothesis)
         memory.upsert_hypothesis(hypothesis.id, slug, content)
 
 
@@ -419,13 +557,34 @@ def _gap_hypothesis_id(description: str) -> str:
     return f"gap-{digest}"
 
 
-def _inject_gap_hypotheses(db: CaseDB, state: SessionState, gaps: list[str], session_id: str) -> int:
+def _classify_gap_kind(description: str) -> str:
+    lowered = description.lower()
+    if any(token in lowered for token in ("whois", "osint", "外部", "所有組織", "threat intel", "reputation")):
+        return "external_lookup"
+    if any(token in lowered for token in ("ヒアリング", "担当者", "利用者", "承認", "human", "業務", "user confirmation")):
+        return "human_decision"
+    return "internal_db_check"
+
+
+def _inject_gap_hypotheses(
+    db: CaseDB,
+    state: SessionState,
+    gaps: list[str],
+    session_id: str,
+    memory: MemoryManager | None = None,
+) -> int:
     known_by_description = {_normalize_text(item.description) for item in _all_hypotheses(state)}
     resolved_by_description = {_normalize_text(item.description) for item in state.resolved_hypotheses}
     added = 0
     for gap in gaps:
         normalized_gap = _normalize_text(gap)
         if not normalized_gap or normalized_gap in known_by_description or normalized_gap in resolved_by_description:
+            continue
+        gap_kind = _classify_gap_kind(gap)
+        if gap_kind != "internal_db_check":
+            if memory is not None:
+                memory.append_open_question(gap, gap_kind)
+            known_by_description.add(normalized_gap)
             continue
         hypothesis = Hypothesis(
             id=_gap_hypothesis_id(gap),
@@ -449,6 +608,7 @@ def _refresh_report_sections(
     base_url: str,
     model: str,
     template_root: Path,
+    llm_logger: LLMCallLogger,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     focus_sections: list[str] | None = None,
     max_workers: int = 1,
@@ -471,6 +631,7 @@ def _refresh_report_sections(
             base_url=base_url,
             model=model,
             template_paths=template_paths,
+            llm_logger=llm_logger,
             progress_callback=progress_callback,
             focus_sections=focus_sections,
         )
@@ -482,6 +643,7 @@ def _refresh_report_sections(
         base_url=base_url,
         model=model,
         template_paths=template_paths,
+        llm_logger=llm_logger,
         progress_callback=progress_callback,
         focus_sections=focus_sections,
         max_workers=max_workers,
@@ -497,11 +659,13 @@ def _refresh_report_sections_sequential(
     base_url: str,
     model: str,
     template_paths: list[Path],
+    llm_logger: LLMCallLogger,
     progress_callback: Callable[[dict[str, Any]], None] | None,
     focus_sections: list[str] | None,
 ) -> dict[str, Any]:
     filled_sections: dict[str, str] = {}
     updated = 0
+    report_brief = write_report_brief(case, db)
     for template_path in template_paths:
         section_key = template_path.stem
         if progress_callback:
@@ -525,9 +689,19 @@ def _refresh_report_sections_sequential(
             db=db,
             template_path=template_path,
             context_sections=context_sections,
+            report_brief=report_brief,
             base_url=base_url,
             model=model,
             session_id=session_id,
+            audit_callback=lambda messages, body, section=section_key: llm_logger.write(
+                iteration=iteration,
+                phase="report-section",
+                input_messages=messages,
+                output=body,
+                model=model,
+                base_url=base_url,
+                suffix=section,
+            ),
         )
         status = _build_report_status(db, focus_sections=focus_sections)
         updated += 1
@@ -573,6 +747,7 @@ def _refresh_report_sections_parallel(
     base_url: str,
     model: str,
     template_paths: list[Path],
+    llm_logger: LLMCallLogger,
     progress_callback: Callable[[dict[str, Any]], None] | None,
     focus_sections: list[str] | None,
     max_workers: int,
@@ -580,9 +755,10 @@ def _refresh_report_sections_parallel(
     # Sections are independent within a cycle when parallel: each one sees
     # the previous-cycle bodies as context (loaded once, serially, here).
     prior_filled = load_report_sections_map(db)
+    report_brief = write_report_brief(case, db)
     requests: list[dict[str, Any]] = []
     for template_path in template_paths:
-        request = prepare_section_request(db, template_path, prior_filled)
+        request = prepare_section_request(db, template_path, prior_filled, report_brief=report_brief)
         request["template_path"] = str(template_path)
         requests.append(request)
 
@@ -609,6 +785,15 @@ def _refresh_report_sections_parallel(
             model=model,
             base_url=base_url,
         ).strip()
+        llm_logger.write(
+            iteration=iteration,
+            phase="report-section",
+            input_messages=request["messages"],
+            output=body,
+            model=model,
+            base_url=base_url,
+            suffix=str(request["section_key"]),
+        )
         return request, body
 
     filled_sections: dict[str, str] = {}
@@ -635,6 +820,7 @@ def _refresh_report_sections_parallel(
                 section_key=section_key,
                 title=request["title"],
                 body=body,
+                evidence_results=request.get("evidence_results") or [],
                 session_id=session_id,
             )
             filled_sections[section_key] = body
@@ -703,6 +889,7 @@ def investigate(
 
     _seed_findings(case, db, profile)
     _initialize_overview(memory, case)
+    llm_logger = LLMCallLogger(case, session_id)
     active_hypotheses, resolved_hypotheses = _load_persisted_hypotheses(db)
     state = SessionState(
         session_id=session_id,
@@ -776,6 +963,14 @@ def investigate(
                     base_url=base_url,
                     model=model,
                     status_callback=llm_status,
+                    audit_callback=lambda messages, output, parsed: llm_logger.write(
+                        iteration=plan_cycle,
+                        phase="plan-broad",
+                        input_messages=messages,
+                        output=parsed,
+                        model=model,
+                        base_url=base_url,
+                    ),
                 )
                 state.active_hypotheses = _merge_active_hypotheses(
                     db=db,
@@ -842,6 +1037,15 @@ def investigate(
                             base_url=base_url,
                             model=model,
                             status_callback=llm_status,
+                            audit_callback=lambda messages, output, parsed, hyp_id=hypothesis.id, query_idx=query_index: llm_logger.write(
+                                iteration=plan_cycle,
+                                phase="plan-hypothesis",
+                                input_messages=messages,
+                                output=parsed,
+                                model=model,
+                                base_url=base_url,
+                                suffix=f"{hyp_id}-{query_idx:02d}",
+                            ),
                         )
                         _save_step(
                             db=db,
@@ -861,6 +1065,15 @@ def investigate(
                             continue
 
                         planned_query = hypothesis_plan.query
+                        reasoning_entry_id = _append_hypothesis_reasoning(
+                            db=db,
+                            hypothesis_id=hypothesis.id,
+                            session_id=session_id,
+                            iteration=plan_cycle,
+                            phase="plan",
+                            body=planned_query.purpose,
+                            query_id=planned_query.query_id,
+                        )
                         if progress_callback:
                             progress_callback(
                                 {
@@ -869,6 +1082,8 @@ def investigate(
                                     "iteration": plan_cycle,
                                     "current_query": planned_query.query_id,
                                     "summary": f"[do] {planned_query.query_id}: {planned_query.purpose}",
+                                    "hypothesis_id": hypothesis.id,
+                                    "reasoning_entry_id": reasoning_entry_id,
                                     "focus_hypothesis_id": state.focus_hypothesis_id,
                                     "hypotheses": [item.model_dump() for item in _all_hypotheses(state)],
                                     "report_sections": _build_report_status(db, focus_sections=focus_sections),
@@ -884,7 +1099,7 @@ def investigate(
                             phase="do",
                             input_json={"planned_query": planned_query.model_dump(), "query_index": query_index},
                             output_json=result_summary,
-                            suffix=planned_query.query_id,
+                            suffix=f"{planned_query.query_id}-{query_index:02d}",
                         )
                         check_result = check_query_result(
                             case=case,
@@ -895,9 +1110,19 @@ def investigate(
                             hypothesis=hypothesis,
                             finding_candidates=candidates,
                             result_summary=result_summary,
+                            memory=memory,
                             base_url=base_url,
                             model=model,
                             status_callback=llm_status,
+                            audit_callback=lambda messages, output, parsed, query_id=planned_query.query_id, query_idx=query_index: llm_logger.write(
+                                iteration=plan_cycle,
+                                phase="check",
+                                input_messages=messages,
+                                output=parsed,
+                                model=model,
+                                base_url=base_url,
+                                suffix=f"{query_id}-{query_idx:02d}",
+                            ),
                         )
                         _save_step(
                             db=db,
@@ -910,7 +1135,17 @@ def investigate(
                                 "result_summary": result_summary,
                             },
                             output_json=check_result.raw_response,
-                            suffix=planned_query.query_id,
+                            suffix=f"{planned_query.query_id}-{query_index:02d}",
+                        )
+                        reasoning_entry_id = _append_hypothesis_reasoning(
+                            db=db,
+                            hypothesis_id=hypothesis.id,
+                            session_id=session_id,
+                            iteration=plan_cycle,
+                            phase="check",
+                            body=check_result.report_text,
+                            verdict=check_result.verdict,
+                            query_id=planned_query.query_id,
                         )
                         if progress_callback:
                             progress_callback(
@@ -923,6 +1158,8 @@ def investigate(
                                         f"[check] {hypothesis.id}: verdict={check_result.verdict} "
                                         f"query={planned_query.query_id}"
                                     ),
+                                    "hypothesis_id": hypothesis.id,
+                                    "reasoning_entry_id": reasoning_entry_id,
                                     "focus_hypothesis_id": state.focus_hypothesis_id,
                                     "hypotheses": [item.model_dump() for item in _all_hypotheses(state)],
                                     "report_sections": _build_report_status(db, focus_sections=focus_sections),
@@ -958,7 +1195,7 @@ def investigate(
                                 session_id=session_id,
                             )
                             cycle_progress = True
-                        elif check_result.verdict == "new_finding" or check_result.progress:
+                        elif check_result.verdict == "newlead" or check_result.progress:
                             cycle_progress = True
                             _upsert_hypothesis(
                                 db=db,
@@ -977,6 +1214,7 @@ def investigate(
                             active_hypotheses=state.active_hypotheses,
                             resolved_hypotheses=state.resolved_hypotheses,
                             check_output=check_result.raw_response,
+                            db=db,
                         )
                         _save_step(
                             db=db,
@@ -989,7 +1227,7 @@ def investigate(
                                 "active_hypotheses": [item.model_dump() for item in state.active_hypotheses],
                                 "resolved_hypotheses": [item.model_dump() for item in state.resolved_hypotheses],
                             },
-                            suffix=planned_query.query_id,
+                            suffix=f"{planned_query.query_id}-{query_index:02d}",
                         )
                         if progress_callback:
                             progress_callback(
@@ -1027,6 +1265,7 @@ def investigate(
                     base_url=base_url,
                     model=model,
                     template_root=template_root,
+                    llm_logger=llm_logger,
                     progress_callback=progress_callback,
                     focus_sections=focus_sections,
                     max_workers=report_parallelism,
@@ -1037,6 +1276,7 @@ def investigate(
                     state=state,
                     gaps=report_result["gaps"],
                     session_id=session_id,
+                    memory=memory,
                 )
                 if gap_new_hypotheses:
                     cycle_progress = True
@@ -1054,7 +1294,7 @@ def investigate(
             if broad_plan_stop or (
                 not state.active_hypotheses and unresolved_gap_count == 0 and broad_plan_hypotheses == 0
             ):
-                mark_report_sections_approved(db)
+                mark_report_sections_ai_exhausted(db)
                 status = "completed"
                 break
             if cycle_progress or broad_plan_hypotheses:

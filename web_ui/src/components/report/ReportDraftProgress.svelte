@@ -5,7 +5,8 @@
   export let sections: ReportSectionDTO[] = [];
   export let progress = {
     percent: 0,
-    approved: 0,
+    humanReviewed: 0,
+    aiExhausted: 0,
     stable: 0,
     draft: 0,
     total: 0,
@@ -18,10 +19,10 @@
   <div class="mb-4 flex items-center justify-between gap-3">
     <div>
       <h2 class="panel-title">Report Draft Progress</h2>
-      <p class="mt-1 text-xs text-mocha-subtext0">承認 {progress.percent}% / {progress.approved} of {progress.total} sections</p>
+      <p class="mt-1 text-xs text-mocha-subtext0">Human reviewed {progress.percent}% / {progress.humanReviewed} of {progress.total} sections</p>
     </div>
     <div class="text-right text-xs text-mocha-subtext0">
-      <div>Draft {progress.draft} / Stable {progress.stable} / Approved {progress.approved}</div>
+      <div>Draft {progress.draft} / Stable {progress.stable} / AI Exhausted {progress.aiExhausted} / Human Reviewed {progress.humanReviewed}</div>
       <div>Open gaps {progress.gaps}</div>
       <div>{progress.writing ? `Writing ${progress.writing}` : "No section writing now"}</div>
     </div>

@@ -10,14 +10,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from forensia.api.cache import load_snapshot
+from forensia.api.cache import load_snapshot, write_api_snapshots
 from forensia.api.dto import (
     AIReviewDTO,
     CaseDTO,
     CaseStatsDTO,
+    ClaimDTO,
     EventVolumePointDTO,
     FindingDTO,
     HypothesesResponseDTO,
+    HypothesisReasoningEntryDTO,
     InvestigationStepDTO,
     MftTimelineDTO,
     ProgressEventDTO,
@@ -31,7 +33,10 @@ from forensia.api.service import (
     get_finding_dto,
     list_event_volume_dto,
     list_ai_reviews_dto,
+    list_claims_dto,
     list_findings_dto,
+    list_latest_hypothesis_reasoning_dto,
+    list_hypothesis_reasoning_dto,
     list_hypotheses_dto,
     list_mft_timeline_dto,
     list_report_sections_dto,
@@ -40,6 +45,7 @@ from forensia.api.service import (
 )
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
+from forensia.report.writer import set_report_section_status
 
 
 def _repo_root() -> Path:
@@ -126,6 +132,34 @@ def create_app(case: Case) -> FastAPI:
         with CaseDB(case) as db:
             return list_hypotheses_dto(db)
 
+    @app.get("/api/hypotheses/{hypothesis_id}/reasoning", response_model=list[HypothesisReasoningEntryDTO])
+    def api_hypothesis_reasoning(
+        hypothesis_id: str,
+        limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    ) -> list[HypothesisReasoningEntryDTO]:
+        snapshot = cached("hypothesis_reasoning.json")
+        if snapshot is not None:
+            rows = snapshot.get(hypothesis_id, []) if isinstance(snapshot, dict) else []
+            return [HypothesisReasoningEntryDTO.model_validate(item) for item in rows[:limit]]
+        with CaseDB(case) as db:
+            return list_hypothesis_reasoning_dto(db, hypothesis_id, limit=limit)
+
+    @app.get("/api/hypotheses-reasoning", response_model=list[HypothesisReasoningEntryDTO])
+    def api_hypotheses_reasoning(
+        since: str | None = None,
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    ) -> list[HypothesisReasoningEntryDTO]:
+        snapshot = cached("hypotheses_reasoning_latest.json")
+        if snapshot is not None:
+            rows = [HypothesisReasoningEntryDTO.model_validate(item) for item in snapshot]
+            if since:
+                for index, item in enumerate(rows):
+                    if item.entry_id == since:
+                        return rows[:index]
+            return rows[:limit]
+        with CaseDB(case) as db:
+            return list_latest_hypothesis_reasoning_dto(db, since=since, limit=limit)
+
     @app.get("/api/sessions", response_model=list[SessionDTO])
     def api_sessions() -> list[SessionDTO]:
         snapshot = cached("sessions.json")
@@ -149,6 +183,27 @@ def create_app(case: Case) -> FastAPI:
             return [ReportSectionDTO.model_validate(item) for item in snapshot]
         with CaseDB(case) as db:
             return list_report_sections_dto(db)
+
+    @app.post("/api/report-sections/{section_key}/status", response_model=ReportSectionDTO)
+    def api_update_report_section_status(section_key: str, status: str) -> ReportSectionDTO:
+        with CaseDB(case) as db:
+            try:
+                set_report_section_status(db, section_key, status)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            rows = [item for item in list_report_sections_dto(db) if item.section_key == section_key]
+            if not rows:
+                raise HTTPException(status_code=404, detail=f"report section not found: {section_key}")
+            write_api_snapshots(case, db)
+            return rows[0]
+
+    @app.get("/api/claims", response_model=list[ClaimDTO])
+    def api_claims(section_key: str | None = None) -> list[ClaimDTO]:
+        snapshot = cached("claims.json")
+        if snapshot is not None and section_key is None:
+            return [ClaimDTO.model_validate(item) for item in snapshot]
+        with CaseDB(case) as db:
+            return list_claims_dto(db, section_key=section_key)
 
     @app.get("/api/mft-timeline", response_model=list[MftTimelineDTO])
     def api_mft_timeline(

@@ -56,7 +56,16 @@ class WebApiTests(unittest.TestCase):
                         section_key, title, body, confidence, status, update_count, gaps, last_filled_session, last_filled_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    ("1_overview", "Overview", "Body", 0.8, "draft", 2, '["gap"]', "S-1", now),
+                    ("1_overview", "Overview", "Body", 0.8, "ai_exhausted", 2, '["gap"]', "S-1", now),
+                )
+                db.execute(
+                    """
+                    INSERT INTO claims (
+                        claim_id, section_key, claim_text, finding_ids, hypothesis_ids, evidence_ids,
+                        support_status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    ("C-1", "1_overview", "Service install observed", '["F-1"]', '["H-1"]', '["ev-1"]', "supported", now, now),
                 )
                 db.execute(
                     """
@@ -82,6 +91,14 @@ class WebApiTests(unittest.TestCase):
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     ("R-1", "F-1", "confirmed", "Confirmed", "[]", 0.0, "", "{}", now),
+                )
+                db.execute(
+                    """
+                    INSERT INTO hypothesis_reasoning (
+                        entry_id, hypothesis_id, session_id, iteration, phase, verdict, query_id, body, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    ("HR-1", "H-1", "S-1", 1, "check", "inconclusive", "q-1", "Need more evidence", now),
                 )
                 db.execute(
                     """
@@ -114,8 +131,9 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(1, len(client.get("/api/sessions/S-1/steps").json()))
             self.assertEqual(1, len(client.get("/api/report-sections").json()))
             report_section = client.get("/api/report-sections").json()[0]
-            self.assertEqual("draft", report_section["status"])
+            self.assertEqual("ai_exhausted", report_section["status"])
             self.assertEqual(2, report_section["update_count"])
+            self.assertEqual(1, len(client.get("/api/claims").json()))
             self.assertEqual(1, len(client.get("/api/mft-timeline").json()))
             self.assertEqual(1, len(client.get("/api/event-volume?bucket=hour&source=all").json()))
             self.assertEqual(1, len(client.get("/api/event-volume?bucket=hour&source=detected").json()))
@@ -123,6 +141,16 @@ class WebApiTests(unittest.TestCase):
             stats_payload = client.get("/api/stats").json()
             self.assertEqual(1, stats_payload["total_iterations"])
             self.assertEqual(1, stats_payload["session_count"])
+            self.assertEqual(0, stats_payload["report_human_reviewed"])
+            self.assertEqual(1, stats_payload["report_ai_exhausted"])
+            hypotheses_payload = client.get("/api/hypotheses").json()
+            self.assertEqual(1, len(hypotheses_payload["active"][0]["latest_reasoning"]))
+            self.assertEqual("Need more evidence", hypotheses_payload["active"][0]["latest_reasoning"][0]["body"])
+            self.assertEqual(1, hypotheses_payload["active"][0]["reasoning_count"])
+            self.assertEqual(1, len(client.get("/api/hypotheses/H-1/reasoning?limit=20").json()))
+            self.assertEqual(1, len(client.get("/api/hypotheses-reasoning").json()))
+            updated_section = client.post("/api/report-sections/1_overview/status?status=human_reviewed").json()
+            self.assertEqual("human_reviewed", updated_section["status"])
 
             with client.stream("GET", "/api/stream?once=true") as response:
                 body = b"".join(response.iter_bytes())
@@ -130,6 +158,24 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(200, response.status_code)
             self.assertIn(b"event: progress", body)
             self.assertIn(b"1_overview", body)
+
+    def test_progress_events_are_capped_and_trace_db_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                for index in range(1105):
+                    record_progress_event(
+                        db,
+                        {
+                            "stage": "investigate/check",
+                            "status": "running",
+                            "iteration": index,
+                            "summary": f"event-{index}",
+                        },
+                    )
+                count = db.execute("SELECT COUNT(*) FROM progress_events").fetchone()[0]
+            self.assertTrue(case.trace_database_path.exists())
+            self.assertEqual(1000, count)
 
 
 if __name__ == "__main__":

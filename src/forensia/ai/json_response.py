@@ -95,6 +95,7 @@ def request_llm_json(
     base_url: str,
     model: str,
     status_callback: Callable[[str], None] | None = None,
+    audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     last_error: Exception | None = None
     for completion_attempt in range(1, MAX_JSON_COMPLETION_ATTEMPTS + 1):
@@ -110,12 +111,15 @@ def request_llm_json(
             status_callback=status_callback,
         )
         try:
-            return parse_llm_json(
+            parsed = parse_llm_json(
                 output,
                 base_url=base_url,
                 model=model,
                 status_callback=status_callback,
             )
+            if audit_callback:
+                audit_callback(messages, output, parsed)
+            return parsed
         except Exception as error:
             last_error = error
             continue

@@ -27,6 +27,8 @@ class CaseStatsDTO(DTOModel):
     sessions: int
     total_iterations: int
     session_count: int
+    report_human_reviewed: int = 0
+    report_ai_exhausted: int = 0
 
 
 class FindingDTO(DTOModel):
@@ -56,11 +58,27 @@ class HypothesisDTO(DTOModel):
     resolved_session: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    reasoning_count: int = 0
+    latest_iteration: int | None = None
+    latest_reasoning_at: str | None = None
+    latest_reasoning: list["HypothesisReasoningEntryDTO"] = []
 
 
 class HypothesesResponseDTO(DTOModel):
     active: list[HypothesisDTO]
     resolved: list[HypothesisDTO]
+
+
+class HypothesisReasoningEntryDTO(DTOModel):
+    entry_id: str
+    hypothesis_id: str
+    session_id: str | None = None
+    iteration: int
+    phase: str
+    verdict: str | None = None
+    query_id: str | None = None
+    body: str
+    created_at: str | None = None
 
 
 class SessionDTO(DTOModel):
@@ -95,6 +113,18 @@ class ReportSectionDTO(DTOModel):
     last_filled_at: str | None = None
     is_writing: bool = False
     is_highlighted: bool = False
+
+
+class ClaimDTO(DTOModel):
+    claim_id: str
+    section_key: str
+    claim_text: str
+    finding_ids: list[str]
+    hypothesis_ids: list[str]
+    evidence_ids: list[str]
+    support_status: str
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 class MftTimelineDTO(DTOModel):
@@ -136,3 +166,6 @@ class EventVolumePointDTO(DTOModel):
     bucket: str
     series: str
     count: int
+
+
+HypothesisDTO.model_rebuild()

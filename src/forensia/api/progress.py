@@ -6,6 +6,8 @@ from typing import Any
 
 from forensia.db.database import CaseDB
 
+MAX_PROGRESS_EVENTS = 1000
+
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
@@ -34,6 +36,16 @@ def record_progress_event(db: CaseDB, payload: dict[str, Any]) -> int:
             _json(payload),
             created_at,
         ),
+    )
+    db.execute(
+        """
+        DELETE FROM progress_events
+        WHERE event_index <= (
+            SELECT COALESCE(MAX(event_index), 0) - ?
+            FROM progress_events
+        )
+        """,
+        (MAX_PROGRESS_EVENTS,),
     )
     return event_index
 

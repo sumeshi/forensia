@@ -16,6 +16,8 @@ export type CaseStatsDTO = {
   sessions: number;
   total_iterations: number;
   session_count: number;
+  report_human_reviewed: number;
+  report_ai_exhausted: number;
 };
 
 export type FindingDTO = {
@@ -38,6 +40,22 @@ export type HypothesisDTO = {
   verdict?: string | null;
   summary?: string | null;
   origin?: string | null;
+  reasoning_count: number;
+  latest_iteration?: number | null;
+  latest_reasoning_at?: string | null;
+  latest_reasoning: HypothesisReasoningEntryDTO[];
+};
+
+export type HypothesisReasoningEntryDTO = {
+  entry_id: string;
+  hypothesis_id: string;
+  session_id?: string | null;
+  iteration: number;
+  phase: string;
+  verdict?: string | null;
+  query_id?: string | null;
+  body: string;
+  created_at?: string | null;
 };
 
 export type HypothesesResponseDTO = {
@@ -77,6 +95,18 @@ export type ReportSectionDTO = {
   last_filled_at?: string | null;
   is_writing: boolean;
   is_highlighted: boolean;
+};
+
+export type ClaimDTO = {
+  claim_id: string;
+  section_key: string;
+  claim_text: string;
+  finding_ids: string[];
+  hypothesis_ids: string[];
+  evidence_ids: string[];
+  support_status: string;
+  created_at?: string | null;
+  updated_at?: string | null;
 };
 
 export type MftTimelineDTO = {

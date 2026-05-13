@@ -89,9 +89,14 @@
       tone: "text-mocha-blue"
     },
     {
-      label: "Approved",
-      value: `${$reportProgress.approved}/${$reportProgress.total}`,
+      label: "Reviewed",
+      value: `${$reportProgress.humanReviewed}/${$reportProgress.total}`,
       tone: "text-mocha-green"
+    },
+    {
+      label: "AI Exhausted",
+      value: `${$reportProgress.aiExhausted}`,
+      tone: "text-mocha-teal"
     }
   ];
 </script>
@@ -102,7 +107,7 @@
 
 <ActivityBanner />
 
-<main class="mx-auto flex max-w-[1600px] flex-col gap-3 p-3">
+<main class="mx-auto flex max-w-[1920px] flex-col gap-3 p-3 2xl:px-5">
   <Header
     caseName={$caseInfo?.case_name ?? "loading"}
     connection={$connection}

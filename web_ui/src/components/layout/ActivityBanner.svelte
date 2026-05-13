@@ -1,21 +1,45 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { progress, connection } from "../../lib/stores";
   import { formatActionVerb } from "../../lib/format";
+
+  let flashKey = "";
+  let isCheckFlash = false;
+  let flashTimer: number | undefined;
 
   $: stage = $progress?.stage ?? null;
   $: verb = formatActionVerb(stage);
   $: detail = ($progress?.summary ?? "").trim();
   $: iteration = $progress?.iteration ?? 0;
   $: currentQuery = $progress?.current_query ?? null;
+  $: payload = ($progress?.payload ?? {}) as Record<string, unknown>;
+  $: flashHypothesisId = typeof payload.hypothesis_id === "string" ? payload.hypothesis_id : "";
   $: isLive =
     $connection === "connected" &&
     !!stage &&
     stage !== "completed" &&
     stage !== "investigate/report-cycle-done";
+  $: nextFlashKey = stage === "investigate/check" ? `${flashHypothesisId}:${detail}` : "";
+  $: if (nextFlashKey && nextFlashKey !== flashKey) {
+    flashKey = nextFlashKey;
+    isCheckFlash = true;
+    window.clearTimeout(flashTimer);
+    flashTimer = window.setTimeout(() => {
+      isCheckFlash = false;
+    }, 3000);
+  }
+
+  onDestroy(() => {
+    window.clearTimeout(flashTimer);
+  });
 </script>
 
 <aside
-  class="sticky top-0 z-30 flex items-center gap-3 border-b border-mocha-surface0 bg-mocha-mantle/90 px-4 py-2 backdrop-blur"
+  class={`sticky top-0 z-30 flex items-center gap-3 border-b px-4 py-2 backdrop-blur ${
+    isCheckFlash
+      ? "border-mocha-yellow/40 bg-mocha-yellow/10"
+      : "border-mocha-surface0 bg-mocha-mantle/90"
+  }`}
   aria-live="polite"
   role="status"
 >

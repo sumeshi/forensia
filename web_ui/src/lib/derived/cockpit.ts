@@ -21,7 +21,7 @@ export const currentHypothesis = derived([hypotheses], ([$hypotheses]) => {
   return {
     title: active.description,
     status: "調査中",
-    summary: active.summary || "追加の証拠を探索中です。"
+    summary: active.latest_reasoning?.[0]?.body || active.summary || "追加の証拠を探索中です。"
   };
 });
 
@@ -51,7 +51,11 @@ export const activeHypothesesView = derived([hypotheses], ([$hypotheses]) =>
     id: item.hypothesis_id,
     description: item.description,
     status: item.status,
-    summary: item.summary || "要約なし"
+    summary: item.summary || "要約なし",
+    latestReasoning: item.latest_reasoning ?? [],
+    reasoningCount: item.reasoning_count ?? 0,
+    latestIteration: item.latest_iteration ?? null,
+    latestReasoningAt: item.latest_reasoning_at ?? null
   }))
 );
 
