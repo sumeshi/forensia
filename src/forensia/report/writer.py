@@ -14,16 +14,10 @@ from forensia.ai.lmstudio import chat_completion
 from forensia.ai.prompts import build_report_section_messages
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
+from forensia.db.query import fetch_records
 from forensia.report.html import render_html_report
 
 GAP_PATTERN = re.compile(r"【調査不足:\s*([^】]+)】")
-
-
-def _fetch_records(db: CaseDB, query: str) -> list[dict[str, Any]]:
-    result = db.execute(query)
-    columns = [item[0] for item in result.description]
-    return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
-
 
 def _normalize_value(value: Any) -> Any:
     if isinstance(value, list):
@@ -57,7 +51,7 @@ def _section_confidence(body: str) -> float:
 def _summarize_query_results(db: CaseDB, queries: list[str], max_rows: int = 20) -> list[dict[str, Any]]:
     summaries: list[dict[str, Any]] = []
     for query in queries:
-        rows = _fetch_records(db, query)
+        rows = fetch_records(db, query)
         evidence_ids: list[str] = []
         finding_ids: list[str] = []
         hypothesis_ids: list[str] = []
@@ -125,7 +119,7 @@ def _collect_claim_provenance(evidence_results: list[dict[str, Any]]) -> dict[st
 
 
 def _build_report_brief(db: CaseDB) -> dict[str, Any]:
-    findings = _fetch_records(
+    findings = fetch_records(
         db,
         """
         SELECT finding_id, title, severity, confidence, summary
@@ -135,7 +129,7 @@ def _build_report_brief(db: CaseDB) -> dict[str, Any]:
         LIMIT 8
         """,
     )
-    active_hypotheses = _fetch_records(
+    active_hypotheses = fetch_records(
         db,
         """
         SELECT hypothesis_id, description, status, verdict, summary
@@ -145,16 +139,16 @@ def _build_report_brief(db: CaseDB) -> dict[str, Any]:
         LIMIT 8
         """,
     )
-    prior_sections = _fetch_records(
+    prior_sections = fetch_records(
         db,
         """
-        SELECT section_key, title, body, confidence, status
+        SELECT section_key, title, LEFT(body, 400) AS body_excerpt, confidence, status
         FROM report_sections
         WHERE COALESCE(body, '') != ''
         ORDER BY section_key
         """,
     )
-    existing_claims = _fetch_records(
+    existing_claims = fetch_records(
         db,
         """
         SELECT section_key, claim_text, support_status
@@ -172,7 +166,7 @@ def _build_report_brief(db: CaseDB) -> dict[str, Any]:
                 "title": item["title"],
                 "confidence": item["confidence"],
                 "status": item["status"],
-                "excerpt": str(item.get("body") or "").strip()[:400],
+                "excerpt": str(item.get("body_excerpt") or "").strip(),
             }
             for item in prior_sections
         ],
@@ -195,16 +189,42 @@ def _claim_support_status(
 ) -> str:
     if not evidence_ids and not finding_ids and not hypothesis_ids:
         return "unsupported"
-    for finding_id in finding_ids:
-        if not db.execute("SELECT 1 FROM findings WHERE finding_id = ? LIMIT 1", (finding_id,)).fetchone():
+    if finding_ids:
+        placeholders = ", ".join("?" for _ in finding_ids)
+        found_finding_ids = {
+            str(row[0])
+            for row in db.execute(
+                f"SELECT finding_id FROM findings WHERE finding_id IN ({placeholders})",
+                tuple(finding_ids),
+            ).fetchall()
+        }
+        if any(finding_id not in found_finding_ids for finding_id in finding_ids):
             return "orphaned_reference"
-    for hypothesis_id in hypothesis_ids:
-        if not db.execute("SELECT 1 FROM hypotheses WHERE hypothesis_id = ? LIMIT 1", (hypothesis_id,)).fetchone():
+    if hypothesis_ids:
+        placeholders = ", ".join("?" for _ in hypothesis_ids)
+        found_hypothesis_ids = {
+            str(row[0])
+            for row in db.execute(
+                f"SELECT hypothesis_id FROM hypotheses WHERE hypothesis_id IN ({placeholders})",
+                tuple(hypothesis_ids),
+            ).fetchall()
+        }
+        if any(hypothesis_id not in found_hypothesis_ids for hypothesis_id in hypothesis_ids):
             return "orphaned_reference"
-    for evidence_id in evidence_ids:
-        evtx_row = db.execute("SELECT 1 FROM evtx_events WHERE evidence_id = ? LIMIT 1", (evidence_id,)).fetchone()
-        mft_row = db.execute("SELECT 1 FROM mft_entries WHERE evidence_id = ? LIMIT 1", (evidence_id,)).fetchone()
-        if not evtx_row and not mft_row:
+    if evidence_ids:
+        placeholders = ", ".join("?" for _ in evidence_ids)
+        found_evidence_ids = {
+            str(row[0])
+            for row in db.execute(
+                f"""
+                SELECT evidence_id FROM evtx_events WHERE evidence_id IN ({placeholders})
+                UNION
+                SELECT evidence_id FROM mft_entries WHERE evidence_id IN ({placeholders})
+                """,
+                tuple(evidence_ids + evidence_ids),
+            ).fetchall()
+        }
+        if any(evidence_id not in found_evidence_ids for evidence_id in evidence_ids):
             return "orphaned_reference"
     return "supported"
 
@@ -252,7 +272,7 @@ def _upsert_claims(
     )
     if not claims:
         return
-    text_groups = _fetch_records(
+    text_groups = fetch_records(
         db,
         """
         SELECT claim_id, claim_text, section_key, finding_ids, hypothesis_ids, evidence_ids, support_status
@@ -365,7 +385,7 @@ def set_report_section_status(db: CaseDB, section_key: str, status: str) -> None
 
 
 def fetch_report_sections(db: CaseDB) -> list[dict[str, Any]]:
-    return _fetch_records(
+    return fetch_records(
         db,
         """
         SELECT section_key, title, body, confidence, status, update_count, gaps, last_filled_session, last_filled_at

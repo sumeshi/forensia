@@ -133,7 +133,7 @@
   <div class="flex flex-wrap items-start justify-between gap-3">
     <div>
       <h2 class="panel-title">Event Volume</h2>
-      <p class="mt-1 text-xs text-mocha-subtext0">横軸が時間、縦軸が件数の積み上げグラフ。</p>
+      <p class="mt-1 text-xs text-mocha-subtext0">Stacked bar chart of the number of artifacts by time</p>
     </div>
     <div class="flex flex-wrap items-center gap-2">
       <div class="flex rounded-full border border-mocha-surface1 bg-mocha-surface0 p-1">

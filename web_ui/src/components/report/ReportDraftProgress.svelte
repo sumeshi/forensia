@@ -51,12 +51,12 @@
 </script>
 
 <section class="panel p-4">
-  <div class="mb-4 flex items-center justify-between gap-3">
+  <div class="mb-4 flex items-start justify-between gap-3">
     <div>
       <h2 class="panel-title">Report Draft Progress</h2>
       <p class="mt-1 text-xs text-mocha-subtext0">Human reviewed {progress.percent}% / {progress.humanReviewed} of {progress.total} sections</p>
     </div>
-    <div class="flex flex-col items-end gap-2 text-right text-xs text-mocha-subtext0">
+    <div class="flex flex-col items-end gap-2 self-start text-right text-xs text-mocha-subtext0">
       <div class="flex flex-wrap justify-end gap-2">
         <button
           class="rounded-md border border-mocha-blue/40 px-3 py-1.5 text-mocha-blue disabled:opacity-50"
@@ -74,9 +74,13 @@
           {exportBusy ? "Preparing..." : "Download report.md"}
         </button>
       </div>
-      <div>Draft {progress.draft} / Stable {progress.stable} / AI Exhausted {progress.aiExhausted} / Human Reviewed {progress.humanReviewed}</div>
-      <div>Open gaps {progress.gaps}</div>
-      <div>{progress.writing ? `Writing ${progress.writing}` : "No section writing now"}</div>
+      <div>
+        {progress.total} sections
+        / {progress.gaps} gaps
+        {#if progress.writing}
+          / Writing {progress.writing}
+        {/if}
+      </div>
     </div>
   </div>
   <div class="space-y-2">

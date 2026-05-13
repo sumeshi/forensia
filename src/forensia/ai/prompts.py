@@ -4,6 +4,7 @@ from typing import Any
 
 from forensia.config import get_llm_settings
 from forensia.core.session import Hypothesis, PlannedQuery
+from forensia.ai.sql_schema import build_investigation_framework
 
 
 def _lang_instruction() -> str:
@@ -46,39 +47,6 @@ def build_review_messages(
     ]
 
 
-_INVESTIGATION_FRAMEWORK = """
-Investigation framework — apply every iteration:
-  Who:  which user/account is involved (target_user, subject_user)
-  When: exact time; is it outside business hours? is it repeated in rapid succession?
-  From: source IP (src_ip) — internal IP, external IP, or known RDP gateway?
-  To:   destination host (computer)
-  What: event_id, process_name, command_line, service_name
-  How:  logon method (interpret logon_type carefully)
-
-LogonType reference:
-  2  = Interactive (console). Physical access or RunAs.
-  3  = Network auth. net use / PsExec / WinRM / remote MMC. Credentials do NOT remain on target.
-  5  = Service logon. Service account credentials remain in LSA.
-  9  = NewCredentials (RUNAS /NETWORK). Local identity unchanged; only outbound connections use the new credential.
-  10 = RemoteInteractive (RDP). Credentials remain in LSA on the TARGET — dangerous if host is compromised.
-  11 = CachedInteractive. DC not contacted; domain credentials cached locally.
-
-Priority SQL guidance — investigate in this order when no prior history exists:
-  1. Check event_id IN (1102, 104) first — log clearing indicates tampering and affects overall reliability.
-  2. event_id=4624 with logon_type IN ('3','10') — enumerate lateral movement sources (src_ip) and targets (computer).
-  3. event_id=4625 grouped by src_ip — identify brute-force attempts.
-  4. event_id IN (4688, 4104) — detect PowerShell and LOLBas execution.
-  5. event_id IN (4697, 7045, 4698) — find persistence (services, tasks).
-  6. event_id IN (4720, 4732, 4728) — find suspicious account operations.
-
-Available tables: evtx_events, mft_entries, mft_timeline, findings, ai_reviews.
-evtx_events columns: evidence_id, source_file, channel, event_id, record_id, timestamp, computer,
-  user_name, target_user, subject_user, src_ip, logon_type, process_name, command_line,
-  service_name, message, raw_json, tags, severity.
-Only propose SELECT or WITH-prefixed read-only SQL compatible with DuckDB.
-"""
-
-
 def build_broad_plan_messages(
     overview_md: str,
     extra_context_md: str,
@@ -100,7 +68,6 @@ def build_broad_plan_messages(
         "unresolved questions belong in open_questions.md, analyst storyline belongs in narrative.md, "
         "and durable named actors belong in important_entities.md. "
         "Do not make claims without evidence. "
-        f"{_INVESTIGATION_FRAMEWORK}"
         "Output JSON only. "
         f"{_lang_instruction()} "
         "Broad planning means you propose NEW hypotheses only. "
@@ -137,7 +104,7 @@ def build_hypothesis_plan_messages(
         "You are a DFIR investigator running the hypothesis-specific planning phase. "
         "You must propose exactly one read-only query that tests the current hypothesis, "
         "or declare that no more useful SQL remains. "
-        f"{_INVESTIGATION_FRAMEWORK}"
+        f"{build_investigation_framework()}"
         "Output JSON only. "
         f"{_lang_instruction()} "
         f"Already-executed query IDs for this hypothesis: {executed_query_ids}. "

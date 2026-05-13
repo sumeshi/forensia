@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 from unittest.mock import patch
 
 from forensia.ai.checker import _parse_new_hypotheses
 from forensia.ai.planner import plan_hypothesis_query, validate_select_sql
-from forensia.ai.prompts import build_check_messages
+from forensia.ai.prompts import build_broad_plan_messages, build_check_messages, build_hypothesis_plan_messages
+from forensia.ai.sql_schema import ALLOWED_TABLES
+from forensia.core.case import Case
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
+from forensia.db.database import CaseDB
 
 
 class _MemoryStub:
@@ -18,6 +22,34 @@ class _MemoryStub:
 
 
 class PlannerRetryTests(unittest.TestCase):
+    def test_broad_plan_messages_do_not_embed_sql_framework(self) -> None:
+        messages = build_broad_plan_messages(
+            overview_md="# overview",
+            extra_context_md="",
+            iteration=1,
+            findings_snapshot=[],
+            active_hypotheses=[],
+            resolved_hypotheses=[],
+            history=[],
+        )
+        system = messages[0]["content"]
+        self.assertNotIn("Available tables:", system)
+        self.assertNotIn("event_id IN (1102, 104)", system)
+
+    def test_hypothesis_plan_messages_list_all_allowed_tables(self) -> None:
+        messages = build_hypothesis_plan_messages(
+            overview_md="# overview",
+            extra_context_md="",
+            iteration=1,
+            hypothesis=Hypothesis(id="H1", description="desc"),
+            finding_candidates=[],
+            hypothesis_history=[],
+            query_templates=[],
+        )
+        system = messages[0]["content"]
+        for table_name in sorted(ALLOWED_TABLES):
+            self.assertIn(table_name, system)
+
     def test_build_check_messages_includes_structured_memory(self) -> None:
         messages = build_check_messages(
             planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
@@ -169,6 +201,14 @@ class PlannerRetryTests(unittest.TestCase):
             )
 
         self.assertIsNone(result.query)
+
+    def test_route_trace_write_skips_regex_for_select(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db, patch("forensia.db.database.re.search") as mock_search:
+                routed = db._route_trace_write("SELECT * FROM progress_events")
+        self.assertEqual("SELECT * FROM progress_events", routed)
+        mock_search.assert_not_called()
 
 
 if __name__ == "__main__":

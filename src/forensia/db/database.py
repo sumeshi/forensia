@@ -35,6 +35,8 @@ class CaseDB:
     def _route_trace_write(self, query: str) -> str:
         stripped = query.lstrip()
         lowered = stripped.lower()
+        if not lowered.startswith(("insert", "update", "delete")):
+            return query
         for prefix in ("insert into ", "update ", "delete from "):
             if not lowered.startswith(prefix):
                 continue

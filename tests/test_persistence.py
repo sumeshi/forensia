@@ -21,7 +21,7 @@ from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import SessionState
 from forensia.db.database import CaseDB
-from forensia.report.writer import fill_section
+from forensia.report.writer import _build_report_brief, fill_section
 
 
 class PersistenceTests(unittest.TestCase):
@@ -261,6 +261,24 @@ class PersistenceTests(unittest.TestCase):
                 claim_status = db.execute("SELECT support_status FROM claims WHERE section_key = '1_overview'").fetchone()[0]
 
             self.assertEqual("supported", claim_status)
+
+    def test_build_report_brief_trims_excerpt_in_sql(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            now = datetime.now(UTC).replace(tzinfo=None)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO report_sections (
+                        section_key, title, body, confidence, status, update_count, gaps, last_filled_session, last_filled_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    ("1_overview", "Overview", "x" * 800, 0.9, "draft", 1, "[]", "S-1", now),
+                )
+                brief = _build_report_brief(db)
+
+            self.assertEqual(1, len(brief["prior_sections"]))
+            self.assertLessEqual(len(brief["prior_sections"][0]["excerpt"]), 400)
 
     def test_report_only_cycle_writes_shared_report_brief(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -7,24 +7,10 @@ from typing import Any
 
 from forensia.ai.json_response import request_llm_json
 from forensia.ai.prompts import build_broad_plan_messages, build_hypothesis_plan_messages
+from forensia.ai.sql_schema import ALLOWED_TABLES
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 
-ALLOWED_TABLES = {
-    "evtx_events",
-    "mft_entries",
-    "mft_timeline",
-    "findings",
-    "hypotheses",
-    "report_sections",
-    "claims",
-    "ai_reviews",
-    "investigation_sessions",
-    "investigation_steps",
-    "hypothesis_reasoning",
-    "progress_events",
-    "ingested_files",
-}
 ALLOWED_IDENTIFIER_REFERENCES = ALLOWED_TABLES | {
     "evidence_id",
     "source_file",

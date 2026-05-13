@@ -22,6 +22,7 @@ from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import HistoryEntry, Hypothesis, SessionState
 from forensia.db.database import CaseDB
+from forensia.db.query import fetch_records
 from forensia.report.writer import (
     collect_gaps,
     fetch_report_sections,
@@ -35,13 +36,6 @@ from forensia.report.writer import (
 )
 from forensia.rules.engine import generate_findings, run_rule, save_findings
 from forensia.rules.loader import load_rules_from_dir
-
-
-def _fetch_records(db: CaseDB, query: str, params: tuple[Any, ...] | None = None) -> list[dict[str, Any]]:
-    result = db.execute(query, params)
-    columns = [item[0] for item in result.description]
-    return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
-
 
 def _to_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
@@ -160,7 +154,7 @@ def _initialize_overview(memory: MemoryManager, case: Case) -> None:
 
 
 def _recent_reasoning_rows(db: CaseDB, hypothesis_id: str, limit: int = 10) -> list[dict[str, Any]]:
-    return _fetch_records(
+    return fetch_records(
         db,
         """
         SELECT phase, verdict, query_id, body, created_at
@@ -203,7 +197,7 @@ def _render_hypothesis_memory(db: CaseDB | None, hypothesis: Hypothesis) -> str:
 
 
 def _finding_snapshot(db: CaseDB, limit: int = 20) -> list[dict[str, Any]]:
-    return _fetch_records(
+    return fetch_records(
         db,
         """
         SELECT finding_id, title, summary, severity, confidence, status, missing_checks
@@ -244,7 +238,7 @@ def _row_to_hypothesis(row: dict[str, Any]) -> Hypothesis:
 
 
 def _load_persisted_hypotheses(db: CaseDB) -> tuple[list[Hypothesis], list[Hypothesis]]:
-    rows = _fetch_records(
+    rows = fetch_records(
         db,
         """
         SELECT hypothesis_id, description, status, verdict, summary
@@ -1090,7 +1084,7 @@ def investigate(
                                 }
                             )
 
-                        rows = _fetch_records(db, planned_query.sql)
+                        rows = fetch_records(db, planned_query.sql)
                         result_summary = summarize_query_result(rows)
                         _save_step(
                             db=db,

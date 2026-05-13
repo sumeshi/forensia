@@ -14,6 +14,7 @@ from forensia.config import get_llm_settings, resolve_llm_config
 from forensia.core.case import Case
 from forensia.core.case_tasks import CaseTasks
 from forensia.db.database import CaseDB
+from forensia.db.query import fetch_records
 from forensia.ingest import ingest_all
 from forensia.normalize import normalize_all
 from forensia.report.html import render_html_report
@@ -23,12 +24,6 @@ from forensia.rules.loader import load_rules_from_dir
 from forensia.web import create_app
 
 app = typer.Typer(help="forensia incident response tool")
-
-
-def _fetch_records(db: CaseDB, query: str) -> list[dict]:
-    result = db.execute(query)
-    columns = [item[0] for item in result.description]
-    return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
 
 
 def _status(message: str) -> None:
@@ -524,7 +519,7 @@ def status(case_dir: str) -> None:
             LIMIT 1
             """
         ).fetchone()
-        section_statuses = _fetch_records(
+        section_statuses = fetch_records(
             db,
             """
             SELECT status, COUNT(*) AS count
