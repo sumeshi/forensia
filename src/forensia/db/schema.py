@@ -117,6 +117,11 @@ CREATE TABLE IF NOT EXISTS ingested_files (
     size BIGINT,
     ingested_at TIMESTAMP
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS findings_by_id ON findings(finding_id);
+CREATE INDEX IF NOT EXISTS findings_by_status_confidence ON findings(status, confidence);
+CREATE INDEX IF NOT EXISTS evtx_events_by_evidence_id ON evtx_events(evidence_id);
+CREATE INDEX IF NOT EXISTS mft_entries_by_evidence_id ON mft_entries(evidence_id);
 """
 
 TRACE_SCHEMA_SQL = """

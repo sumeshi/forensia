@@ -159,7 +159,8 @@ class WebApiTests(unittest.TestCase):
                         "report_sections": {"items": [], "current_section": "1_overview"},
                     },
                 )
-            (case.reports_dir / "report.html").write_text("STALE", encoding="utf-8")
+            report_path = case.reports_dir / "report.html"
+            report_path.write_text("STALE", encoding="utf-8")
 
             client = TestClient(create_app(case))
 
@@ -181,7 +182,9 @@ class WebApiTests(unittest.TestCase):
             html_response = client.get("/api/report-html")
             self.assertEqual(200, html_response.status_code)
             self.assertIn("text/html", html_response.headers["content-type"])
-            self.assertNotIn("STALE", html_response.text)
+            self.assertIn("STALE", html_response.text)
+            report_path.unlink()
+            html_response = client.get("/api/report-html")
             self.assertIn("Overview", html_response.text)
             self.assertIn("Body", html_response.text)
             self.assertIn("Host Name: host1", html_response.text)

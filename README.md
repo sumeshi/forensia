@@ -339,12 +339,12 @@ forensia run ./input --out ./case001 --profile windows-basic --max-iter 50
 ```
 
 `forensia run` はデフォルトで ingest → normalize → analyze → investigate まで走ります。  
-ルール検知だけで止めたいなら、LLM 未設定のまま実行するか、段階実行を使ってください。
+LLM を設定せずに実行すると、Stage 3（ルール検知）まで走って止まります。
 
 再実行時によく使うのは次の 2 つです。
 
 - `--reinvestigate`: 既存セッションがあっても Stage 4 をもう 1 回回す
-- `--init`: raw/db/findings/reports を消して同じ出力先を作り直す
+- `--init`: テーブルデータと raw/findings/reports を消して同じ出力先を作り直す（memory/ と ai_logs/ は保持）
 
 ### ステップ実行
 

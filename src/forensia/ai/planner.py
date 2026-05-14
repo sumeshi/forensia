@@ -368,11 +368,18 @@ def _request_with_optional_context(
     messages_builder: Callable[[str], list[dict[str, str]]],
     base_url: str,
     model: str,
+    initial_context: str | None = None,
     status_callback: Callable[[str], None] | None = None,
     audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
+    default_context = initial_context
+    if default_context is None:
+        default_context = memory.load_compact_context(
+            ["confirmed_facts.md", "open_questions.md"],
+            max_bytes=max(1024, memory.max_bytes // 3),
+        )
     parsed = request_llm_json(
-        messages=messages_builder(""),
+        messages=messages_builder(default_context),
         model=model,
         base_url=base_url,
         status_callback=status_callback,
@@ -399,10 +406,12 @@ def broad_plan_investigation(
     base_url: str,
     model: str,
     max_findings: int = 10,
+    overview_md: str | None = None,
+    default_context_md: str | None = None,
     status_callback: Callable[[str], None] | None = None,
     audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
 ) -> BroadPlanResult:
-    overview_md = memory.load_overview()
+    overview_md = overview_md if overview_md is not None else memory.load_overview()
 
     def messages_builder(extra_context: str) -> list[dict[str, str]]:
         return build_broad_plan_messages(
@@ -421,6 +430,7 @@ def broad_plan_investigation(
         messages_builder=messages_builder,
         base_url=base_url,
         model=model,
+        initial_context=default_context_md,
         status_callback=status_callback,
         audit_callback=audit_callback,
     )
@@ -440,10 +450,12 @@ def plan_hypothesis_query(
     memory: MemoryManager,
     base_url: str,
     model: str,
+    overview_md: str | None = None,
+    default_context_md: str | None = None,
     status_callback: Callable[[str], None] | None = None,
     audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
 ) -> HypothesisPlanResult:
-    overview_md = memory.load_overview()
+    overview_md = overview_md if overview_md is not None else memory.load_overview()
     extra_context_holder = {"value": ""}
     hypothesis_history = [
         item.model_dump()
@@ -468,6 +480,7 @@ def plan_hypothesis_query(
         messages_builder=messages_builder,
         base_url=base_url,
         model=model,
+        initial_context=default_context_md,
         status_callback=status_callback,
         audit_callback=audit_callback,
     )

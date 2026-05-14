@@ -13,7 +13,7 @@ from forensia.api.service import (
     list_claims_dto,
     list_findings_dto,
     list_latest_hypothesis_reasoning_dto,
-    list_hypothesis_reasoning_dto,
+    list_hypothesis_reasoning_map_dto,
     list_hypotheses_dto,
     list_mft_timeline_dto,
     list_report_sections_dto,
@@ -42,7 +42,15 @@ def clear_api_snapshots(case: Case) -> None:
             path.unlink()
 
 
-def write_api_snapshots(case: Case, db: CaseDB) -> None:
+def write_progress_snapshot(case: Case, db: CaseDB) -> None:
+    snapshot_dir = _snapshot_dir(case)
+    _write_json(
+        snapshot_dir / "progress_events.json",
+        list_progress_events(db, after_index=0, limit=1000),
+    )
+
+
+def write_full_api_snapshots(case: Case, db: CaseDB) -> None:
     snapshot_dir = _snapshot_dir(case)
     _write_json(snapshot_dir / "case.json", get_case_dto(case).model_dump(mode="json"))
     _write_json(snapshot_dir / "stats.json", get_case_stats_dto(db).model_dump(mode="json"))
@@ -52,8 +60,8 @@ def write_api_snapshots(case: Case, db: CaseDB) -> None:
     sessions = list_sessions_dto(db)
     _write_json(snapshot_dir / "sessions.json", [item.model_dump(mode="json") for item in sessions])
     hypotheses_reasoning = {
-        item.hypothesis_id: [entry.model_dump(mode="json") for entry in list_hypothesis_reasoning_dto(db, item.hypothesis_id, limit=20)]
-        for item in [*hypotheses.active, *hypotheses.resolved]
+        hypothesis_id: [entry.model_dump(mode="json") for entry in entries]
+        for hypothesis_id, entries in list_hypothesis_reasoning_map_dto(db, limit_per_hypothesis=20).items()
     }
     _write_json(snapshot_dir / "hypothesis_reasoning.json", hypotheses_reasoning)
     _write_json(
@@ -87,11 +95,12 @@ def write_api_snapshots(case: Case, db: CaseDB) -> None:
         snapshot_dir / "ai_reviews.json",
         [item.model_dump(mode="json") for item in list_ai_reviews_dto(db)],
     )
-    _write_json(
-        snapshot_dir / "progress_events.json",
-        list_progress_events(db, after_index=0, limit=1000),
-    )
     _write_json(snapshot_dir / "report_brief.json", write_report_brief(case, db))
+
+
+def write_api_snapshots(case: Case, db: CaseDB) -> None:
+    write_full_api_snapshots(case, db)
+    write_progress_snapshot(case, db)
 
 
 def load_snapshot(case: Case, name: str) -> Any | None:

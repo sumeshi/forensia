@@ -25,12 +25,7 @@ from forensia.api.dto import (
 )
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
-
-
-def _fetch_records(db: CaseDB, query: str, params: tuple[Any, ...] | None = None) -> list[dict[str, Any]]:
-    result = db.execute(query, params)
-    columns = [item[0] for item in result.description]
-    return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
+from forensia.db.query import fetch_records
 
 
 def _normalize_value(value: Any) -> Any:
@@ -63,41 +58,65 @@ def get_case_dto(case: Case) -> CaseDTO:
 
 
 def get_case_stats_dto(db: CaseDB) -> CaseStatsDTO:
-    open_gaps = db.execute(
+    event_rows = db.execute(
         """
-        SELECT COALESCE(SUM(CASE
-            WHEN json_array_length(CAST(gaps AS JSON)) IS NULL THEN 0
-            ELSE json_array_length(CAST(gaps AS JSON))
-        END), 0)
+        SELECT
+            (SELECT COUNT(*) FROM evtx_events) AS evtx_rows,
+            (SELECT COUNT(*) FROM mft_entries) AS mft_entries,
+            (SELECT COUNT(DISTINCT channel) FROM evtx_events) AS channel_count
+        """
+    ).fetchone()
+    finding_rows = db.execute(
+        """
+        SELECT
+            COUNT(*) FILTER (WHERE COALESCE(status, 'accepted') != 'suppressed') AS findings_accepted,
+            COUNT(*) FILTER (WHERE status = 'suppressed') AS findings_suppressed
+        FROM findings
+        """
+    ).fetchone()
+    hypothesis_rows = db.execute(
+        """
+        SELECT
+            COUNT(*) FILTER (WHERE status = 'active') AS active_hypotheses,
+            COUNT(*) FILTER (WHERE status IN ('confirmed', 'refuted')) AS resolved_hypotheses
+        FROM hypotheses
+        """
+    ).fetchone()
+    report_rows = db.execute(
+        """
+        SELECT
+            COALESCE(SUM(CASE
+                WHEN json_array_length(CAST(gaps AS JSON)) IS NULL THEN 0
+                ELSE json_array_length(CAST(gaps AS JSON))
+            END), 0) AS open_gaps,
+            COUNT(*) FILTER (WHERE status = 'human_reviewed') AS report_human_reviewed,
+            COUNT(*) FILTER (WHERE status = 'ai_exhausted') AS report_ai_exhausted
         FROM report_sections
         """
-    ).fetchone()[0]
+    ).fetchone()
+    session_rows = db.execute(
+        """
+        SELECT
+            COUNT(*) AS sessions,
+            COALESCE(SUM(iterations) FILTER (WHERE COALESCE(status, '') != 'failed'), 0) AS total_iterations,
+            COUNT(*) AS session_count
+        FROM investigation_sessions
+        """
+    ).fetchone()
     return CaseStatsDTO(
-        evtx_rows=int(db.execute("SELECT COUNT(*) FROM evtx_events").fetchone()[0]),
-        mft_entries=int(db.execute("SELECT COUNT(*) FROM mft_entries").fetchone()[0]),
-        channel_count=int(db.execute("SELECT COUNT(DISTINCT channel) FROM evtx_events").fetchone()[0]),
-        findings_accepted=int(
-            db.execute("SELECT COUNT(*) FROM findings WHERE COALESCE(status, 'accepted') != 'suppressed'").fetchone()[0]
-        ),
-        findings_suppressed=int(db.execute("SELECT COUNT(*) FROM findings WHERE status = 'suppressed'").fetchone()[0]),
-        active_hypotheses=int(db.execute("SELECT COUNT(*) FROM hypotheses WHERE status = 'active'").fetchone()[0]),
-        resolved_hypotheses=int(
-            db.execute("SELECT COUNT(*) FROM hypotheses WHERE status IN ('confirmed', 'refuted')").fetchone()[0]
-        ),
-        open_gaps=int(open_gaps or 0),
-        sessions=int(db.execute("SELECT COUNT(*) FROM investigation_sessions").fetchone()[0]),
-        total_iterations=int(
-            db.execute(
-                "SELECT COALESCE(SUM(iterations), 0) FROM investigation_sessions WHERE COALESCE(status, '') != 'failed'"
-            ).fetchone()[0]
-        ),
-        session_count=int(db.execute("SELECT COUNT(*) FROM investigation_sessions").fetchone()[0]),
-        report_human_reviewed=int(
-            db.execute("SELECT COUNT(*) FROM report_sections WHERE status = 'human_reviewed'").fetchone()[0]
-        ),
-        report_ai_exhausted=int(
-            db.execute("SELECT COUNT(*) FROM report_sections WHERE status = 'ai_exhausted'").fetchone()[0]
-        ),
+        evtx_rows=int(event_rows[0] or 0),
+        mft_entries=int(event_rows[1] or 0),
+        channel_count=int(event_rows[2] or 0),
+        findings_accepted=int(finding_rows[0] or 0),
+        findings_suppressed=int(finding_rows[1] or 0),
+        active_hypotheses=int(hypothesis_rows[0] or 0),
+        resolved_hypotheses=int(hypothesis_rows[1] or 0),
+        open_gaps=int(report_rows[0] or 0),
+        sessions=int(session_rows[0] or 0),
+        total_iterations=int(session_rows[1] or 0),
+        session_count=int(session_rows[2] or 0),
+        report_human_reviewed=int(report_rows[1] or 0),
+        report_ai_exhausted=int(report_rows[2] or 0),
     )
 
 
@@ -117,7 +136,7 @@ def list_findings_dto(
         clauses.append("severity = ?")
         params.append(severity)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    rows = _fetch_records(
+    rows = fetch_records(
         db,
         f"""
         SELECT finding_id, rule_id, title, summary, severity, confidence, status,
@@ -133,7 +152,7 @@ def list_findings_dto(
 
 
 def get_finding_dto(db: CaseDB, finding_id: str) -> FindingDTO | None:
-    rows = _fetch_records(
+    rows = fetch_records(
         db,
         """
         SELECT finding_id, rule_id, title, summary, severity, confidence, status,
@@ -153,7 +172,7 @@ def list_hypothesis_reasoning_dto(
     hypothesis_id: str,
     limit: int = 20,
 ) -> list[HypothesisReasoningEntryDTO]:
-    rows = _fetch_records(
+    rows = fetch_records(
         db,
         """
         SELECT entry_id, hypothesis_id, session_id, iteration, phase, verdict, query_id, body, created_at
@@ -165,6 +184,37 @@ def list_hypothesis_reasoning_dto(
         (hypothesis_id, limit),
     )
     return [HypothesisReasoningEntryDTO.model_validate(_normalize_row(row)) for row in rows]
+
+
+def list_hypothesis_reasoning_map_dto(
+    db: CaseDB,
+    limit_per_hypothesis: int = 20,
+) -> dict[str, list[HypothesisReasoningEntryDTO]]:
+    rows = fetch_records(
+        db,
+        """
+        WITH ranked AS (
+            SELECT
+                entry_id, hypothesis_id, session_id, iteration, phase, verdict, query_id, body, created_at,
+                ROW_NUMBER() OVER (
+                    PARTITION BY hypothesis_id
+                    ORDER BY created_at DESC, entry_id DESC
+                ) AS row_num
+            FROM hypothesis_reasoning
+        )
+        SELECT entry_id, hypothesis_id, session_id, iteration, phase, verdict, query_id, body, created_at
+        FROM ranked
+        WHERE row_num <= ?
+        ORDER BY hypothesis_id, created_at DESC, entry_id DESC
+        """,
+        (limit_per_hypothesis,),
+    )
+    items: dict[str, list[HypothesisReasoningEntryDTO]] = {}
+    for row in rows:
+        normalized = _normalize_row(row)
+        hypothesis_id = str(normalized.get("hypothesis_id") or "")
+        items.setdefault(hypothesis_id, []).append(HypothesisReasoningEntryDTO.model_validate(normalized))
+    return items
 
 
 def list_latest_hypothesis_reasoning_dto(
@@ -182,7 +232,7 @@ def list_latest_hypothesis_reasoning_dto(
         if row:
             where = "WHERE (created_at > ?) OR (created_at = ? AND entry_id > ?)"
             params.extend([row[0], row[0], since])
-    rows = _fetch_records(
+    rows = fetch_records(
         db,
         f"""
         SELECT entry_id, hypothesis_id, session_id, iteration, phase, verdict, query_id, body, created_at
@@ -197,7 +247,7 @@ def list_latest_hypothesis_reasoning_dto(
 
 
 def list_hypotheses_dto(db: CaseDB) -> HypothesesResponseDTO:
-    latest_rows = _fetch_records(
+    latest_rows = fetch_records(
         db,
         """
         WITH ranked AS (
@@ -255,7 +305,7 @@ def list_hypotheses_dto(db: CaseDB) -> HypothesesResponseDTO:
             str(normalized.get("created_at") or "") or None,
         )
 
-    rows = _fetch_records(
+    rows = fetch_records(
         db,
         """
         SELECT hypothesis_id, description, status, verdict, summary, origin,
@@ -284,7 +334,7 @@ def list_hypotheses_dto(db: CaseDB) -> HypothesesResponseDTO:
 
 
 def list_sessions_dto(db: CaseDB) -> list[SessionDTO]:
-    rows = _fetch_records(
+    rows = fetch_records(
         db,
         """
         SELECT session_id, started_at, finished_at, iterations, status
@@ -296,7 +346,7 @@ def list_sessions_dto(db: CaseDB) -> list[SessionDTO]:
 
 
 def list_steps_dto(db: CaseDB, session_id: str) -> list[InvestigationStepDTO]:
-    rows = _fetch_records(
+    rows = fetch_records(
         db,
         """
         SELECT step_id, session_id, iteration, phase, input_json, output_json, created_at
@@ -310,7 +360,7 @@ def list_steps_dto(db: CaseDB, session_id: str) -> list[InvestigationStepDTO]:
 
 
 def list_report_sections_dto(db: CaseDB) -> list[ReportSectionDTO]:
-    rows = _fetch_records(
+    rows = fetch_records(
         db,
         """
         SELECT section_key, title, body, confidence, status, update_count, gaps, last_filled_session, last_filled_at
@@ -342,7 +392,7 @@ def list_claims_dto(db: CaseDB, section_key: str | None = None) -> list[ClaimDTO
     if section_key:
         where = "WHERE section_key = ?"
         params = (section_key,)
-    rows = _fetch_records(
+    rows = fetch_records(
         db,
         f"""
         SELECT claim_id, section_key, claim_text, finding_ids, hypothesis_ids, evidence_ids,
@@ -371,7 +421,7 @@ def list_mft_timeline_dto(
         clauses.append("timestamp <= ?")
         params.append(to_timestamp)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    rows = _fetch_records(
+    rows = fetch_records(
         db,
         f"""
         SELECT t.timeline_id, t.evidence_id, t.record_number, t.file_path, t.timestamp, t.timestamp_type,
@@ -403,7 +453,7 @@ def list_ai_reviews_dto(
         clauses.append("finding_id = ?")
         params.append(f"hypothesis:{hypothesis_id}")
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    rows = _fetch_records(
+    rows = fetch_records(
         db,
         f"""
         SELECT review_id, finding_id, verdict, report_text, missing_checks,
@@ -421,7 +471,7 @@ def list_ai_reviews_dto(
 def list_event_volume_dto(db: CaseDB, bucket: str = "hour", source: str = "all") -> list[EventVolumePointDTO]:
     bucket_expr = "day" if bucket == "day" else "hour"
     if source == "detected":
-        rows = _fetch_records(
+        rows = fetch_records(
             db,
             """
             SELECT evidence, created_at
@@ -457,7 +507,7 @@ def list_event_volume_dto(db: CaseDB, bucket: str = "hour", source: str = "all")
     rows: list[dict[str, Any]] = []
     if source in {"evtx", "all"}:
         rows.extend(
-            _fetch_records(
+            fetch_records(
                 db,
                 f"""
                 SELECT date_trunc('{bucket_expr}', timestamp) AS bucket, channel AS series, COUNT(*) AS count
@@ -470,7 +520,7 @@ def list_event_volume_dto(db: CaseDB, bucket: str = "hour", source: str = "all")
         )
     if source in {"mft", "all"}:
         rows.extend(
-            _fetch_records(
+            fetch_records(
                 db,
                 f"""
                 SELECT date_trunc('{bucket_expr}', timestamp) AS bucket,

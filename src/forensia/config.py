@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from functools import lru_cache
 
 from dotenv import load_dotenv
 
@@ -16,6 +17,7 @@ def resolve_llm_config(
     return resolved_endpoint, resolved_model
 
 
+@lru_cache(maxsize=1)
 def get_llm_settings() -> dict:
     return {
         "max_tokens": int(os.getenv("LLM_MAX_TOKENS", "4096")),
@@ -24,3 +26,7 @@ def get_llm_settings() -> dict:
         "memory_max_bytes": int(os.getenv("LLM_MEMORY_MAX_BYTES", "16384")),
         "report_parallelism": max(1, int(os.getenv("LLM_REPORT_PARALLELISM", "1"))),
     }
+
+
+def clear_llm_settings_cache() -> None:
+    get_llm_settings.cache_clear()

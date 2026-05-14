@@ -7,6 +7,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from forensia.ai.investigator import _apply_memory_updates
+from forensia.cli import _progress_pusher
+from forensia.config import clear_llm_settings_cache, get_llm_settings
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis
@@ -15,6 +17,9 @@ from forensia.ingest import ingest_all
 
 
 class MemoryAndIngestTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        clear_llm_settings_cache()
+
     def test_legacy_newlead_verdicts_are_migrated_on_open(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -40,6 +45,7 @@ class MemoryAndIngestTests(unittest.TestCase):
             with CaseDB(case) as db:
                 db.execute("UPDATE hypotheses SET verdict = ?", (legacy_verdict,))
                 db.execute("UPDATE ai_reviews SET verdict = ?", (legacy_verdict,))
+                db.execute("DELETE FROM schema_migrations WHERE migration_key = 'legacy_schema_backfill'")
 
             with CaseDB(case) as db:
                 hypothesis_verdict = db.execute(
@@ -54,6 +60,7 @@ class MemoryAndIngestTests(unittest.TestCase):
 
     def test_structured_memory_updates_and_compaction_rules(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "256"}):
+            clear_llm_settings_cache()
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
 
@@ -100,6 +107,85 @@ class MemoryAndIngestTests(unittest.TestCase):
             self.assertEqual(entities_before, memory.important_entities_path.read_text(encoding="utf-8"))
             self.assertNotIn("question-0", open_questions_text)
             self.assertIn("question-19", open_questions_text)
+
+    def test_get_llm_settings_cache_can_be_cleared(self) -> None:
+        with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "ja"}):
+            clear_llm_settings_cache()
+            first = get_llm_settings()
+        with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "en"}):
+            second_before_clear = get_llm_settings()
+            clear_llm_settings_cache()
+            second_after_clear = get_llm_settings()
+
+        self.assertEqual("ja", first["output_language"])
+        self.assertEqual("ja", second_before_clear["output_language"])
+        self.assertEqual("en", second_after_clear["output_language"])
+
+    def test_schema_backfill_migration_runs_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                applied_count = db.execute(
+                    "SELECT COUNT(*) FROM schema_migrations WHERE migration_key = 'legacy_schema_backfill'"
+                ).fetchone()[0]
+            with CaseDB(case) as db:
+                applied_count_reopen = db.execute(
+                    "SELECT COUNT(*) FROM schema_migrations WHERE migration_key = 'legacy_schema_backfill'"
+                ).fetchone()[0]
+
+            self.assertEqual(1, applied_count)
+            self.assertEqual(1, applied_count_reopen)
+
+    def test_schema_creates_indexes_for_lookup_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                names = {
+                    row[0]
+                    for row in db.execute(
+                        """
+                        SELECT index_name
+                        FROM duckdb_indexes()
+                        WHERE index_name IN (
+                            'findings_by_id',
+                            'findings_by_status_confidence',
+                            'evtx_events_by_evidence_id',
+                            'mft_entries_by_evidence_id'
+                        )
+                        """
+                    ).fetchall()
+                }
+
+            self.assertEqual(
+                {
+                    "findings_by_id",
+                    "findings_by_status_confidence",
+                    "evtx_events_by_evidence_id",
+                    "mft_entries_by_evidence_id",
+                },
+                names,
+            )
+
+    def test_progress_pusher_writes_progress_snapshot_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db, patch("forensia.cli.write_progress_snapshot") as mock_progress, patch(
+                "forensia.cli.write_api_snapshots"
+            ) as mock_full:
+                push = _progress_pusher(
+                    db,
+                    {
+                        "stage": "investigate",
+                        "status": "running",
+                        "iteration": 0,
+                        "summary": "start",
+                        "recent_logs": [],
+                    },
+                )
+                push("tick", stage="investigate")
+
+            mock_progress.assert_called_once()
+            mock_full.assert_not_called()
 
     def test_hypothesis_memory_contains_reasoning_section(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -13,6 +13,8 @@ from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery
 from forensia.db.database import CaseDB
 
+VALID_VERDICTS = {"confirmed", "refuted", "inconclusive", "newlead"}
+
 
 @dataclass(slots=True)
 class CheckResult:
@@ -65,6 +67,11 @@ def summarize_query_result(rows: list[dict[str, Any]], sample_size: int = 10) ->
 
 def _clamp_confidence(value: float) -> float:
     return max(0.0, min(1.0, value))
+
+
+def _normalize_verdict(value: Any) -> str:
+    verdict = str(value or "").strip().lower()
+    return verdict if verdict in VALID_VERDICTS else "inconclusive"
 
 
 def _upsert_ai_review(
@@ -278,11 +285,13 @@ def check_query_result(
     memory: MemoryManager,
     base_url: str,
     model: str,
+    overview_md: str | None = None,
+    memory_context_md: str | None = None,
     status_callback: Callable[[str], None] | None = None,
     audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
 ) -> CheckResult:
-    overview_md = memory.load_overview()
-    memory_context_md = memory.load_compact_context(
+    overview_md = overview_md if overview_md is not None else memory.load_overview()
+    memory_context_md = memory_context_md if memory_context_md is not None else memory.load_compact_context(
         ["confirmed_facts.md", "timeline_anchors.md", "open_questions.md"],
         max_bytes=max(1024, memory.max_bytes // 2),
     )
@@ -304,7 +313,7 @@ def check_query_result(
 
     result = CheckResult(
         query_id=parsed.get("query_id", planned_query.query_id),
-        verdict=parsed.get("verdict", "inconclusive"),
+        verdict=_normalize_verdict(parsed.get("verdict")),
         finding_updates=parsed.get("finding_updates") or [],
         suspicious_evidence=parsed.get("suspicious_evidence") or [],
         compromised_hosts=parsed.get("compromised_hosts") or [],

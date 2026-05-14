@@ -200,7 +200,7 @@ def _finding_snapshot(db: CaseDB, limit: int = 20) -> list[dict[str, Any]]:
     return fetch_records(
         db,
         """
-        SELECT finding_id, title, summary, severity, confidence, status, missing_checks
+        SELECT finding_id, title, summary, severity, confidence, status
         FROM findings
         ORDER BY confidence DESC, created_at DESC
         LIMIT ?
@@ -536,6 +536,26 @@ def _build_report_status(db: CaseDB, current_section: str | None = None, focus_s
         "items": items,
         "total_gaps": total_gaps,
         "total_body_chars": total_body_chars,
+    }
+
+
+def _overlay_report_status(
+    base_status: dict[str, Any],
+    current_section: str | None = None,
+    focus_sections: list[str] | None = None,
+) -> dict[str, Any]:
+    focus = set(focus_sections or [])
+    items = []
+    for row in base_status.get("items", []):
+        item = dict(row)
+        item["is_writing"] = str(item.get("section_key") or "") == str(current_section or "")
+        item["is_highlighted"] = str(item.get("section_key") or "") in focus
+        items.append(item)
+    return {
+        **base_status,
+        "current_section": current_section,
+        "focus_sections": list(focus_sections or []),
+        "items": items,
     }
 
 
@@ -892,6 +912,44 @@ def investigate(
         active_hypotheses=active_hypotheses,
         resolved_hypotheses=resolved_hypotheses,
     )
+    report_status_cache = _build_report_status(db)
+
+    def get_report_status(
+        *,
+        current_section: str | None = None,
+        focus_sections: list[str] | None = None,
+        refresh: bool = False,
+    ) -> dict[str, Any]:
+        nonlocal report_status_cache
+        if refresh:
+            report_status_cache = _build_report_status(db)
+        return _overlay_report_status(
+            report_status_cache,
+            current_section=current_section,
+            focus_sections=focus_sections,
+        )
+
+    memory_overview_cache = memory.load_overview()
+    memory_plan_context_cache = memory.load_compact_context(
+        ["confirmed_facts.md", "open_questions.md"],
+        max_bytes=max(1024, memory.max_bytes // 3),
+    )
+    memory_check_context_cache = memory.load_compact_context(
+        ["confirmed_facts.md", "timeline_anchors.md", "open_questions.md"],
+        max_bytes=max(1024, memory.max_bytes // 2),
+    )
+
+    def refresh_memory_caches() -> None:
+        nonlocal memory_overview_cache, memory_plan_context_cache, memory_check_context_cache
+        memory_overview_cache = memory.load_overview()
+        memory_plan_context_cache = memory.load_compact_context(
+            ["confirmed_facts.md", "open_questions.md"],
+            max_bytes=max(1024, memory.max_bytes // 3),
+        )
+        memory_check_context_cache = memory.load_compact_context(
+            ["confirmed_facts.md", "timeline_anchors.md", "open_questions.md"],
+            max_bytes=max(1024, memory.max_bytes // 2),
+        )
     db.execute(
         """
         INSERT INTO investigation_sessions (
@@ -914,7 +972,7 @@ def investigate(
                     "summary": message,
                     "focus_hypothesis_id": state.focus_hypothesis_id,
                     "hypotheses": [item.model_dump() for item in _all_hypotheses(state)],
-                    "report_sections": _build_report_status(db),
+                    "report_sections": get_report_status(),
                 }
             )
 
@@ -936,7 +994,7 @@ def investigate(
                         "summary": f"Hypothesis cycle {plan_cycle}/{max_iter}",
                         "focus_hypothesis_id": state.focus_hypothesis_id,
                         "hypotheses": [item.model_dump() for item in _all_hypotheses(state)],
-                        "report_sections": _build_report_status(db),
+                        "report_sections": get_report_status(),
                     }
                 )
             if interrupted:
@@ -947,7 +1005,7 @@ def investigate(
             broad_plan_stop = False
             cycle_progress = False
             focus_sections: list[str] = []
-            report_before = _build_report_status(db)
+            report_before = get_report_status()
 
             if not report_only:
                 plan_input = state.model_dump()
@@ -956,6 +1014,8 @@ def investigate(
                     memory=memory,
                     base_url=base_url,
                     model=model,
+                    overview_md=memory_overview_cache,
+                    default_context_md=memory_plan_context_cache,
                     status_callback=llm_status,
                     audit_callback=lambda messages, output, parsed: llm_logger.write(
                         iteration=plan_cycle,
@@ -996,7 +1056,7 @@ def investigate(
                             ),
                             "focus_hypothesis_id": state.focus_hypothesis_id,
                             "hypotheses": [item.model_dump() for item in _all_hypotheses(state)],
-                            "report_sections": _build_report_status(db),
+                            "report_sections": get_report_status(),
                         }
                     )
 
@@ -1016,7 +1076,7 @@ def investigate(
                                 "summary": f"[hypothesis] {hypothesis.id}: {hypothesis.description}",
                                 "focus_hypothesis_id": state.focus_hypothesis_id,
                                 "hypotheses": [item.model_dump() for item in _all_hypotheses(state)],
-                                "report_sections": _build_report_status(db, focus_sections=focus_sections),
+                                "report_sections": get_report_status(focus_sections=focus_sections),
                             }
                         )
 
@@ -1030,6 +1090,8 @@ def investigate(
                             memory=memory,
                             base_url=base_url,
                             model=model,
+                            overview_md=memory_overview_cache,
+                            default_context_md=memory_plan_context_cache,
                             status_callback=llm_status,
                             audit_callback=lambda messages, output, parsed, hyp_id=hypothesis.id, query_idx=query_index: llm_logger.write(
                                 iteration=plan_cycle,
@@ -1080,7 +1142,7 @@ def investigate(
                                     "reasoning_entry_id": reasoning_entry_id,
                                     "focus_hypothesis_id": state.focus_hypothesis_id,
                                     "hypotheses": [item.model_dump() for item in _all_hypotheses(state)],
-                                    "report_sections": _build_report_status(db, focus_sections=focus_sections),
+                                    "report_sections": get_report_status(focus_sections=focus_sections),
                                 }
                             )
 
@@ -1107,6 +1169,8 @@ def investigate(
                             memory=memory,
                             base_url=base_url,
                             model=model,
+                            overview_md=memory_overview_cache,
+                            memory_context_md=memory_check_context_cache,
                             status_callback=llm_status,
                             audit_callback=lambda messages, output, parsed, query_id=planned_query.query_id, query_idx=query_index: llm_logger.write(
                                 iteration=plan_cycle,
@@ -1156,7 +1220,7 @@ def investigate(
                                     "reasoning_entry_id": reasoning_entry_id,
                                     "focus_hypothesis_id": state.focus_hypothesis_id,
                                     "hypotheses": [item.model_dump() for item in _all_hypotheses(state)],
-                                    "report_sections": _build_report_status(db, focus_sections=focus_sections),
+                                    "report_sections": get_report_status(focus_sections=focus_sections),
                                 }
                             )
 
@@ -1210,6 +1274,7 @@ def investigate(
                             check_output=check_result.raw_response,
                             db=db,
                         )
+                        refresh_memory_caches()
                         _save_step(
                             db=db,
                             session_id=session_id,
@@ -1235,7 +1300,7 @@ def investigate(
                                     ),
                                     "focus_hypothesis_id": state.focus_hypothesis_id,
                                     "hypotheses": [item.model_dump() for item in _all_hypotheses(state)],
-                                    "report_sections": _build_report_status(db, focus_sections=focus_sections),
+                                    "report_sections": get_report_status(focus_sections=focus_sections),
                                 }
                             )
 
@@ -1265,6 +1330,7 @@ def investigate(
                     max_workers=report_parallelism,
                 )
                 report_after = report_result["report_status"]
+                report_status_cache = report_after
                 gap_new_hypotheses = _inject_gap_hypotheses(
                     db=db,
                     state=state,
@@ -1321,5 +1387,5 @@ def investigate(
         "focus_hypothesis_id": state.focus_hypothesis_id,
         "summary": summary,
         "hypotheses": [item.model_dump() for item in _all_hypotheses(state)],
-        "report_sections": _build_report_status(db),
+        "report_sections": get_report_status(refresh=True),
     }

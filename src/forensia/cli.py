@@ -7,7 +7,7 @@ import typer
 from rich import print
 import uvicorn
 
-from forensia.api.cache import clear_api_snapshots, write_api_snapshots
+from forensia.api.cache import clear_api_snapshots, write_api_snapshots, write_progress_snapshot
 from forensia.api.progress import clear_progress_events, record_progress_event
 from forensia.ai.investigator import investigate as investigate_loop
 from forensia.config import get_llm_settings, resolve_llm_config
@@ -116,7 +116,7 @@ def _progress_pusher(db: CaseDB, initial_state: dict) -> Callable[..., None]:
         state.update(updates)
         payload = {**state, "counts": _count_records(db)}
         record_progress_event(db, payload)
-        write_api_snapshots(db.case, db)
+        write_progress_snapshot(db.case, db)
 
     return push
 

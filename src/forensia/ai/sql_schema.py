@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from functools import lru_cache
+
 ALLOWED_TABLES = {
     "evtx_events",
     "mft_entries",
@@ -62,6 +64,7 @@ TABLE_COLUMN_REFERENCE: dict[str, tuple[str, ...]] = {
 }
 
 
+@lru_cache(maxsize=1)
 def build_investigation_framework() -> str:
     table_lines = [
         f"{table_name} columns: {', '.join(TABLE_COLUMN_REFERENCE[table_name])}."

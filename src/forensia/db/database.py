@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 import re
 from typing import Any
@@ -24,6 +24,30 @@ class CaseDB:
         self.conn.execute(TRACE_SCHEMA_SQL)
         for table_name in sorted(TRACE_TABLES):
             self.conn.execute(f"CREATE OR REPLACE TEMP VIEW {table_name} AS SELECT * FROM trace.{table_name}")
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                migration_key VARCHAR PRIMARY KEY,
+                applied_at TIMESTAMP
+            )
+            """
+        )
+        self._apply_migration_once("legacy_schema_backfill", self._apply_legacy_schema_backfill)
+
+    def _apply_migration_once(self, migration_key: str, callback: Callable[[], None]) -> None:
+        existing = self.conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE migration_key = ? LIMIT 1",
+            (migration_key,),
+        ).fetchone()
+        if existing is not None:
+            return
+        callback()
+        self.conn.execute(
+            "INSERT INTO schema_migrations (migration_key, applied_at) VALUES (?, now())",
+            (migration_key,),
+        )
+
+    def _apply_legacy_schema_backfill(self) -> None:
         self.conn.execute("ALTER TABLE findings ADD COLUMN IF NOT EXISTS attack JSON")
         self.conn.execute("ALTER TABLE report_sections ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'draft'")
         self.conn.execute("ALTER TABLE report_sections ADD COLUMN IF NOT EXISTS update_count INTEGER DEFAULT 0")

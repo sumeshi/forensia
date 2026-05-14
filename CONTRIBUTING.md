@@ -39,6 +39,7 @@ LLM_MEMORY_MAX_BYTES=16384
 | `LLM_THINKING_LANGUAGE` | 内部推論言語 |
 | `LLM_OUTPUT_LANGUAGE` | 人間向け出力の言語 |
 | `LLM_MEMORY_MAX_BYTES` | `overview.md` / `open_questions.md` / 個別メモの圧縮閾値。`confirmed_facts.md` / `timeline_anchors.md` / `refuted_hypotheses.md` / `important_entities.md` は保持優先で exempt |
+| `LLM_REPORT_PARALLELISM` | report section 書き込みの並列数（既定 1）。`--report-parallelism` フラグでも上書き可 |
 
 CLI フラグ名は `--llm-base-url` を正とします。`--lmstudio` は互換のため残している旧名です。
 
@@ -223,6 +224,9 @@ Finding は事実寄り、Hypothesis は解釈寄り、Claim は人間向け、E
 | `findings` | Finding 本体 |
 | `ai_reviews` | LLM によるレビュー結果 |
 | `hypotheses` | 仮説状態 |
+| `claims` | report section が主張する根拠と Finding の対応 |
+| `hypothesis_reasoning` | 仮説ごとの検証ステップ履歴（UI reasoning trail 用） |
+| `ingested_files` | 取り込み済みファイルの記録（増分 ingest の重複防止） |
 | `report_sections` | レポート section の本文・状態・gap |
 | `investigation_sessions` | investigate 実行履歴 |
 | `investigation_steps` | 各ステップの入出力 |
@@ -257,4 +261,3 @@ README は公開向けです。
 - 既存調査があるケースで Stage 4 をもう一度回すには `--reinvestigate`
 - 同じ出力先を初期化し直すには `--init`
 - `report` は pure render、`report-write` は LLM section refill を伴う
-- `review` は旧来の 1 finding ずつの reviewer。full loop ではなく、個別確認だけしたいときの保守コマンド

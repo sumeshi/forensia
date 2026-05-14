@@ -23,6 +23,46 @@ def _lang_instruction() -> str:
     )
 
 
+def _output_language() -> str:
+    return str(get_llm_settings()["output_language"]).lower()
+
+
+def _mandatory_missing_checks_guidance() -> str:
+    if _output_language().startswith("ja"):
+        return """
+Mandatory missing_checks:
+  - If a logon is confirmed → add: 'src_ip からの他ホストへのログオンの有無', '4688/4104 の有無 (ログオン後15分以内)'
+  - If process execution is confirmed → add: '親プロセス名の確認', '実行ユーザの通常業務との整合性'
+  - If service/task creation is confirmed → add: 'サービスパスの実行ファイルの場所', '7036(サービス開始)の有無'
+  - If Defender disable is confirmed → add: '直後の4688/4104 の有無', '1116(マルウェア検知)との相関'
+"""
+    return """
+Mandatory missing_checks:
+  - If a logon is confirmed → add: 'Other host logons from the same src_ip', 'Presence of 4688/4104 within 15 minutes after logon'
+  - If process execution is confirmed → add: 'Confirm parent process name', 'Check whether the executing user aligns with normal duties'
+  - If service/task creation is confirmed → add: 'Path of the executable behind the service', 'Presence of 7036 (service start)'
+  - If Defender disable is confirmed → add: 'Presence of 4688/4104 immediately afterward', 'Correlation with 1116 (malware detection)'
+"""
+
+
+def _slim_findings(items: list[dict[str, Any]], max_findings: int) -> list[dict[str, Any]]:
+    fields = ("finding_id", "title", "severity", "confidence", "status", "summary")
+    slimmed: list[dict[str, Any]] = []
+    for item in items[:max_findings]:
+        slimmed.append({field: item.get(field) for field in fields})
+    return slimmed
+
+
+def _truncate_context_sections(context_sections: dict[str, str], max_chars: int = 600) -> dict[str, str]:
+    trimmed: dict[str, str] = {}
+    for section_key, body in context_sections.items():
+        text = str(body or "").strip()
+        if not text:
+            continue
+        trimmed[str(section_key)] = text[:max_chars]
+    return trimmed
+
+
 def build_review_messages(
     finding: dict[str, Any],
     evidence: list[dict[str, Any]],
@@ -57,7 +97,7 @@ def build_broad_plan_messages(
     history: list[dict[str, Any]],
     max_findings: int = 10,
 ) -> list[dict[str, str]]:
-    findings = findings_snapshot[:max_findings]
+    findings = _slim_findings(findings_snapshot, max_findings)
     system = (
         "You are a DFIR investigator running the broad planning phase. "
         "Treat overview.md as your primary memory index. Request additional Markdown files only when necessary. "
@@ -130,7 +170,7 @@ def build_hypothesis_plan_messages(
     ]
 
 
-_FP_REDUCTION_GUIDANCE = """
+_FP_REDUCTION_GUIDANCE_PREFIX = """
 False-positive reduction — apply before raising confidence:
   The following are generally NORMAL and should not be flagged as suspicious on their own:
     - LogonType=3 from the same domain to a file server or DC during business hours.
@@ -148,12 +188,6 @@ False-positive reduction — apply before raising confidence:
     - Activity is within business hours, from known internal IPs.
     - The account is a known service or IT-admin account.
     - The action can be explained by routine IT operations.
-
-Mandatory missing_checks:
-  - If a logon is confirmed → add: 'src_ip からの他ホストへのログオンの有無', '4688/4104 の有無 (ログオン後15分以内)'
-  - If process execution is confirmed → add: '親プロセス名の確認', '実行ユーザの通常業務との整合性'
-  - If service/task creation is confirmed → add: 'サービスパスの実行ファイルの場所', '7036(サービス開始)の有無'
-  - If Defender disable is confirmed → add: '直後の4688/4104 の有無', '1116(マルウェア検知)との相関'
 """
 
 
@@ -179,7 +213,7 @@ def build_check_messages(
         "When a hypothesis is disproved, write a record into memory_updates.refuted_hypotheses. "
         "When a host, user, process, service, or IP becomes important enough to track, write it into "
         "memory_updates.important_entities. "
-        f"{_FP_REDUCTION_GUIDANCE}"
+        f"{_FP_REDUCTION_GUIDANCE_PREFIX}{_mandatory_missing_checks_guidance()}"
         "Output JSON only. "
         f"{_lang_instruction()} "
         "Use only these JSON keys: query_id, verdict, finding_updates, suspicious_evidence, "
@@ -208,6 +242,7 @@ def build_report_section_messages(
     template_body: str,
     report_brief: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
+    trimmed_context_sections = _truncate_context_sections(context_sections)
     system = (
         "You are a DFIR report writer. "
         "Fill the provided Markdown section template using only the supplied evidence and prior completed sections. "
@@ -219,7 +254,7 @@ def build_report_section_messages(
     user = (
         f"section_meta: {section_meta}\n\n"
         f"report_brief: {report_brief or {}}\n\n"
-        f"previous_sections: {context_sections}\n\n"
+        f"previous_sections: {trimmed_context_sections}\n\n"
         f"evidence_results: {evidence_results}\n\n"
         "Complete this section template by replacing placeholders and comments with evidence-based content:\n\n"
         f"{template_body}"

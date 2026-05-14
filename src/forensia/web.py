@@ -206,6 +206,9 @@ def create_app(case: Case) -> FastAPI:
 
     @app.get("/api/report-html", response_class=HTMLResponse)
     def api_report_html() -> HTMLResponse:
+        report_path = case.reports_dir / "report.html"
+        if report_path.exists():
+            return HTMLResponse(report_path.read_text(encoding="utf-8"))
         with CaseDB(case) as db:
             rendered_path = render_html_report(case, db)
         return HTMLResponse(rendered_path.read_text(encoding="utf-8"))
