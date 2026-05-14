@@ -1,7 +1,7 @@
 id: windows-security-4769-st-request
 title: Kerberos service ticket request burst (Event 4769)
 severity: low
-confidence: 0.3
+confidence: 0.5
 tags:
   - windows
   - kerberos
@@ -36,5 +36,5 @@ query: |
   WHERE request_count >= 10
      OR LOWER(COALESCE(sample_message, '')) LIKE '%krbtgt%'
 finding:
-  title: "Kerberos サービスチケット要求の急増: {target_user} ({src_ip})"
-  summary: "{target_user} に対するサービスチケット要求(4769)が {hour_bucket} 台に {request_count} 件発生 ({first_seen} ～ {last_seen})。サンプル: {sample_message}。大量要求や不自然な SPN 利用の確認が必要。"
+  title: "Kerberos service ticket request burst: {target_user} ({src_ip})"
+  summary: "{request_count} Kerberos service ticket requests (4769) for {target_user} were observed in the {hour_bucket} window from {first_seen} to {last_seen}. Sample: {sample_message}. High ST request volume across multiple SPNs is a hallmark of Kerberoasting; verify whether the requested services are sensitive (for example SQL, HTTP, or MSSQLSvc)."

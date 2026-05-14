@@ -24,5 +24,5 @@ query: |
   HAVING COUNT(*) >= 3
   ORDER BY fail_count DESC
 finding:
-  title: "ログオン失敗多発: {src_ip} → {computer} ({target_user})"
-  summary: "{src_ip} から {computer} の {target_user} に対してログオン失敗が {fail_count} 回発生({first_seen} ～ {last_seen})。ブルートフォースまたはパスワードスプレーの可能性。"
+  title: "Repeated failed logons: {src_ip} -> {computer} ({target_user})"
+  summary: "{fail_count} failed logons from {src_ip} against {target_user} on {computer} were observed from {first_seen} to {last_seen}. This may indicate brute-force activity or password spraying."

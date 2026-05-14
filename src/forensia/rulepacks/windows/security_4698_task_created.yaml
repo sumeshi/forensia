@@ -19,5 +19,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 4698
 finding:
-  title: "スケジュールタスク作成: {computer} ({subject_user})"
-  summary: "{timestamp} に {computer} で {subject_user} がスケジュールタスクを作成。実行コマンドと作成ユーザを確認。永続化の典型的手法。"
+  title: "Scheduled task created: {computer} ({subject_user})"
+  summary: "{subject_user} created a scheduled task on {computer} at {timestamp}. Review the execution command and creator account; this is a common persistence technique."

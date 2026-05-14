@@ -20,5 +20,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 4740
 finding:
-  title: "アカウントロックアウト: {target_user}"
-  summary: "{timestamp} にアカウント '{target_user}' がロックアウト(4740)された。記録ホスト: {computer}、送信元IP: {src_ip}。総当たりや認証失敗集中の可能性がある。"
+  title: "Account lockout: {target_user}"
+  summary: "Account '{target_user}' was locked out at {timestamp} (4740). Recording host: {computer}, source IP: {src_ip}. This may indicate brute-force activity or a concentrated burst of authentication failures."

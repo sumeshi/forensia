@@ -21,5 +21,5 @@ query: |
     AND COALESCE(subject_user, target_user) NOT LIKE '%$'
     AND COALESCE(subject_user, target_user) NOT IN ('SYSTEM', 'LOCAL SERVICE', 'NETWORK SERVICE')
 finding:
-  title: "特権アサイン: {subject_user} @ {computer}"
-  summary: "{timestamp} に {computer} で {subject_user} に特権(SeDebugPrivilege等)がアサインされた。4624と組み合わせて管理者ログオンの把握に使用。"
+  title: "Special privileges assigned: {subject_user} @ {computer}"
+  summary: "Special privileges such as SeDebugPrivilege were assigned to {subject_user} on {computer} at {timestamp}. Correlate with 4624 to identify administrative logons."

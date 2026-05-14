@@ -53,5 +53,5 @@ query: |
     ON d.computer = s.computer
    AND s.exec_time BETWEEN d.disabled_time AND d.disabled_time + INTERVAL 60 MINUTE
 finding:
-  title: "Defender 無効化後の不審実行: {computer}"
-  summary: "{disabled_time} に {computer} で Defender リアルタイム保護無効化後、{exec_time} に {process_name} を実行。コマンドライン: {command_line}。マルウェア実行前の防御回避の可能性が高い。"
+  title: "Suspicious execution after Defender disablement: {computer}"
+  summary: "After Defender real-time protection was disabled on {computer} at {disabled_time}, {process_name} executed at {exec_time}. Command line: {command_line}. This strongly suggests defense evasion immediately preceding malware execution."

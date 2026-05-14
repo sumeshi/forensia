@@ -21,5 +21,5 @@ query: |
   WHERE event_id = 21
     AND LOWER(COALESCE(channel, '')) LIKE '%localsessionmanager%'
 finding:
-  title: "RDP セッションログオン成功: {target_user} @ {computer}"
-  summary: "{timestamp} に {computer} で LocalSessionManager の RDP セッションログオン成功(21)を確認。送信元IP: {src_ip}。Security 4624(LogonType=10) と併せて利用者確認を行う。"
+  title: "RDP session logon success: {target_user} @ {computer}"
+  summary: "A successful RDP session logon (LocalSessionManager 21) was observed on {computer} at {timestamp}. Source IP: {src_ip}. Correlate with Security 4624 (LogonType=10) to validate the user and session."

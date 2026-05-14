@@ -243,11 +243,16 @@ def build_report_section_messages(
     report_brief: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     trimmed_context_sections = _truncate_context_sections(context_sections)
+    insufficient_evidence_placeholder = (
+        "【調査不足: 理由】"
+        if _output_language().startswith("ja")
+        else "[INSUFFICIENT EVIDENCE: reason]"
+    )
     system = (
         "You are a DFIR report writer. "
         "Fill the provided Markdown section template using only the supplied evidence and prior completed sections. "
         "Do not invent facts. If something cannot be supported, write "
-        "【調査不足: 理由】 in that place. "
+        f"{insufficient_evidence_placeholder} in that place. "
         "Do not output markdown fences or explanations outside the completed section body. "
         f"{_lang_instruction()}"
     )

@@ -19,5 +19,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 4728
 finding:
-  title: "グローバルグループへの追加: {target_user} @ {computer}"
-  summary: "{timestamp} に {computer} で {subject_user} がアカウント '{target_user}' をグローバルセキュリティグループ(Domain Admins等)に追加。ドメイン権限昇格の可能性。"
+  title: "Added to a global security group: {target_user} @ {computer}"
+  summary: "{subject_user} added account '{target_user}' to a global security group such as Domain Admins on {computer} at {timestamp}. This may indicate domain-level privilege escalation."

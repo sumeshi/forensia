@@ -17,5 +17,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 4722
 finding:
-  title: "アカウント有効化: {target_user} @ {computer}"
-  summary: "{timestamp} に {computer} で {subject_user} がアカウント '{target_user}' を有効化(4722)。無効化済みアカウントの再利用やバックドア化の可能性がある。"
+  title: "Account enabled: {target_user} @ {computer}"
+  summary: "{subject_user} enabled account '{target_user}' on {computer} at {timestamp} (4722). This may indicate reuse of a previously disabled account or reactivation of a backdoor account."

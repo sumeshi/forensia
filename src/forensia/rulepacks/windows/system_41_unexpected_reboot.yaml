@@ -16,5 +16,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 41
 finding:
-  title: "予期しない再起動: {computer}"
-  summary: "{timestamp} に {computer} で予期しない再起動(41)を確認。詳細: {message}。障害か、痕跡断絶を狙った再起動かを前後イベントで確認する。"
+  title: "Unexpected reboot: {computer}"
+  summary: "An unexpected reboot (41) was observed on {computer} at {timestamp}. Details: {message}. A forced reboot may indicate a BSOD, driver crash, or anti-forensics; check kernel crash dumps and correlate with event 6008."

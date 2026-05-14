@@ -30,5 +30,5 @@ query: |
         OR LOWER(COALESCE(message, command_line, '')) LIKE '%webclient%'
     )
 finding:
-  title: "PowerShellエンコード/難読化スクリプト (4104): {computer}"
-  summary: "{timestamp} に {computer} で難読化またはエンコードされたPowerShellスクリプトブロックを検知。実行ユーザ: {target_user}。マルウェアのダウンロードや実行の可能性が高い。"
+  title: "Encoded or obfuscated PowerShell script block (4104): {computer}"
+  summary: "An encoded or obfuscated PowerShell script block was detected on {computer} at {timestamp}. Executing user: {target_user}. This strongly suggests malware download or execution."

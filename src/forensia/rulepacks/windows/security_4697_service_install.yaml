@@ -20,5 +20,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 4697
 finding:
-  title: "サービスインストール: {service_name} @ {computer}"
-  summary: "{timestamp} に {computer} で {subject_user} がサービス '{service_name}' をインストール。実行ファイルパスを確認し、永続化やマルウェア配置の可能性を調査。"
+  title: "Service installation: {service_name} @ {computer}"
+  summary: "{subject_user} installed service '{service_name}' on {computer} at {timestamp}. Review the executable path and investigate whether this represents persistence or malware deployment."

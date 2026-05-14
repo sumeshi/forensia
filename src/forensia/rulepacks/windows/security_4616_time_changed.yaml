@@ -20,5 +20,5 @@ query: |
   WHERE event_id = 4616
     AND COALESCE(subject_user, target_user, '') NOT IN ('SYSTEM', 'LOCAL SERVICE', 'NETWORK SERVICE')
 finding:
-  title: "システム時刻変更: {computer} ({subject_user})"
-  summary: "{timestamp} に {computer} で {subject_user} がシステム時刻を変更(4616)。詳細: {message}。ログ時系列攪乱やアンチフォレンジックの可能性が高い。"
+  title: "System time changed: {computer} ({subject_user})"
+  summary: "{subject_user} changed the system time on {computer} at {timestamp} (4616). Details: {message}. This strongly suggests timeline tampering or anti-forensics."

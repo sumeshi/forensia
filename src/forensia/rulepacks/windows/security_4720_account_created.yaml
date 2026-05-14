@@ -18,5 +18,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 4720
 finding:
-  title: "アカウント作成: {target_user} (作成者: {subject_user}) @ {computer}"
-  summary: "{timestamp} に {computer} で {subject_user} が新規アカウント '{target_user}' を作成。攻撃者によるバックドアアカウント作成の可能性。4732と組み合わせてAdministrators追加を確認。"
+  title: "Account created: {target_user} (creator: {subject_user}) @ {computer}"
+  summary: "{subject_user} created the new account '{target_user}' on {computer} at {timestamp}. This may indicate attacker-created backdoor access; check for subsequent Administrators group additions such as 4732."

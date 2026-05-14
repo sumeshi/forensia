@@ -18,5 +18,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 1117
 finding:
-  title: "Defender 脅威対処: {computer}"
-  summary: "{timestamp} に {computer} で Windows Defender が脅威対処(1117)を実施。ユーザ: {target_user}。詳細: {message}。1116/5001 と合わせて感染前後を確認する。"
+  title: "Defender threat action taken: {computer}"
+  summary: "Windows Defender took threat response action on {computer} at {timestamp} (1117). User: {target_user}. Details: {message}. Correlate with 1116 and 5001 to understand activity before and after the infection."

@@ -20,5 +20,5 @@ query: |
   WHERE event_id = 4105
     AND LOWER(COALESCE(channel, '')) LIKE '%powershell%'
 finding:
-  title: "PowerShell スクリプト実行開始: {computer}"
-  summary: "{timestamp} に {computer} で PowerShell スクリプトブロック実行開始(4105)を確認。ユーザ: {target_user}。メッセージ: {message}。直後の 4104 と合わせて内容確認が必要。"
+  title: "PowerShell script execution start: {computer}"
+  summary: "PowerShell script block execution start (4105) was observed on {computer} at {timestamp}. User: {target_user}. Message: {message}. This is context telemetry; the actual script content should be confirmed with 4104, especially for encoded or obfuscated blocks."

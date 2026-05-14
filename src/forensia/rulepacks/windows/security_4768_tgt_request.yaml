@@ -26,5 +26,5 @@ query: |
   GROUP BY target_user, src_ip
   HAVING COUNT(*) >= 3
 finding:
-  title: "深夜帯の Kerberos TGT 要求: {target_user} ({src_ip})"
-  summary: "{target_user} に対する Kerberos TGT 要求(4768)が {src_ip} から業務時間外に {request_count} 回発生 ({first_seen} ～ {last_seen})。不審な認証試行や横展開の事前活動の可能性がある。"
+  title: "After-hours Kerberos TGT requests: {target_user} ({src_ip})"
+  summary: "{request_count} Kerberos TGT requests (4768) for {target_user} were observed from {src_ip} outside business hours between {first_seen} and {last_seen}. This may indicate suspicious authentication attempts or preparatory activity for lateral movement."

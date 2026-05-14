@@ -18,5 +18,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 1104
 finding:
-  title: "Security ログ満杯: {computer}"
-  summary: "{timestamp} に {computer} で Security ログ満杯(1104)を確認。新規監査イベントが失われる可能性があり、ログ保持設定や直前の大量イベントを確認する。"
+  title: "Security log full: {computer}"
+  summary: "Security log full event (1104) was observed on {computer} at {timestamp}. New audit events may be lost; review retention settings and any heavy event volume immediately beforehand."

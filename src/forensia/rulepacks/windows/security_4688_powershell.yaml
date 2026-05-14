@@ -23,5 +23,5 @@ query: |
         OR LOWER(process_name) LIKE '%pwsh.exe'
     )
 finding:
-  title: "PowerShell実行: {target_user} @ {computer}"
-  summary: "{timestamp} に {computer} で {target_user} が PowerShell を実行。コマンドライン: {command_line}。エンコードコマンドや-exec bypass等の不審なフラグがないか確認要。"
+  title: "PowerShell execution: {target_user} @ {computer}"
+  summary: "{target_user} executed PowerShell on {computer} at {timestamp}. Command line: {command_line}. Check for suspicious flags such as encoded commands or execution policy bypass."

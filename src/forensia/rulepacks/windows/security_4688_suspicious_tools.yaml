@@ -37,5 +37,5 @@ query: |
         OR LOWER(process_name) LIKE '%\schtasks.exe'
     )
 finding:
-  title: "LOLBas系ツール実行: {process_name} @ {computer}"
-  summary: "{timestamp} に {computer} で {target_user} が {process_name} を実行。コマンドライン: {command_line}。攻撃者がLiving-off-the-Landで使用する可能性のあるツール。"
+  title: "LOLBAS-style tool execution: {process_name} @ {computer}"
+  summary: "{target_user} executed {process_name} on {computer} at {timestamp}. Command line: {command_line}. This tool may be used for living-off-the-land activity by attackers."

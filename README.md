@@ -1,5 +1,7 @@
 # forensia
 
+![forensia-logo](https://gist.githubusercontent.com/sumeshi/c2f430d352ae763273faadf9616a29e5/raw/12528f2bdb072a7cb763d5513077756c301ea811/forensia.svg)
+
 あなたの代わりに週末作業してくれるAIフォレンジック調査員。
 
 ## 概要

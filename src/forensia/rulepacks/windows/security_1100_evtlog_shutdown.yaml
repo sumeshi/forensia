@@ -18,5 +18,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 1100
 finding:
-  title: "Event Log サービス停止: {computer}"
-  summary: "{timestamp} に {computer} で Event Log サービス停止(1100)を確認。実行者: {subject_user}。以降のログ欠損やクリア痕跡と合わせて調査する。"
+  title: "Event Log service stopped: {computer}"
+  summary: "Event Log service stop (1100) was observed on {computer} at {timestamp}. Actor: {subject_user}. Investigate subsequent log gaps or clearing artifacts."

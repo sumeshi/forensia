@@ -49,5 +49,5 @@ query: |
    AND f.target_user = s.target_user
    AND s.success_time BETWEEN f.last_fail AND f.last_fail + INTERVAL 10 MINUTE
 finding:
-  title: "ブルートフォース成功: {src_ip} → {computer} ({target_user})"
-  summary: "{src_ip} から {computer} の {target_user} に対して失敗 {fail_count} 回の後、{success_time} にログオン成功。ブルートフォース攻撃が成功した可能性が高い。"
+  title: "Brute-force followed by successful logon: {src_ip} -> {computer} ({target_user})"
+  summary: "After {fail_count} failed logons from {src_ip} against {target_user} on {computer}, a successful logon occurred at {success_time}. This is a strong indicator that a brute-force or password spraying attempt succeeded."

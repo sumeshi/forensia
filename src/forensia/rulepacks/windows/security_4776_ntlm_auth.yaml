@@ -21,5 +21,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 4776
 finding:
-  title: "NTLM 認証試行: {target_user} @ {computer}"
-  summary: "{timestamp} に {computer} で {target_user} の NTLM 認証試行(4776)を確認。PackageName: {package_name} / Workstation: {workstation}。認証元や古い認証方式の利用状況を確認。"
+  title: "NTLM authentication attempt: {target_user} @ {computer}"
+  summary: "An NTLM authentication attempt (4776) for {target_user} was observed on {computer} at {timestamp}. PackageName: {package_name} / Workstation: {workstation}. Review the authentication source and the use of legacy authentication."

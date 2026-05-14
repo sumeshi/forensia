@@ -136,6 +136,20 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertIn("x" * 600, payload)
         self.assertNotIn("x" * 800, payload)
 
+    def test_report_section_messages_placeholder_follows_output_language(self) -> None:
+        with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "en"}):
+            clear_llm_settings_cache()
+            messages = build_report_section_messages(
+                section_meta={"section": "1_overview"},
+                evidence_results=[],
+                context_sections={},
+                template_body="# Section",
+                report_brief={},
+            )
+        system = messages[0]["content"]
+        self.assertIn("[INSUFFICIENT EVIDENCE: reason]", system)
+        self.assertNotIn("【調査不足: 理由】", system)
+
     def test_validate_select_sql_allows_investigation_state_tables(self) -> None:
         for sql in (
             "SELECT * FROM hypotheses",

@@ -18,5 +18,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 4738
 finding:
-  title: "アカウント属性変更: {target_user} @ {computer}"
-  summary: "{timestamp} に {computer} で {subject_user} がアカウント '{target_user}' を変更(4738)。詳細: {message}。説明欄や制御フラグ変更などの痕跡を確認する。"
+  title: "Account attributes changed: {target_user} @ {computer}"
+  summary: "{subject_user} changed account '{target_user}' on {computer} at {timestamp} (4738). Details: {message}. Verify which attribute changed; SID history changes or edits to descriptive fields can indicate account hijacking."

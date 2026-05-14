@@ -18,5 +18,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 4726
 finding:
-  title: "アカウント削除: {target_user} (削除者: {subject_user}) @ {computer}"
-  summary: "{timestamp} に {computer} で {subject_user} がアカウント '{target_user}' を削除。痕跡消去の可能性。4720と対比して作成→削除のサイクルがないか確認。"
+  title: "Account deleted: {target_user} (deleted by {subject_user}) @ {computer}"
+  summary: "{subject_user} deleted account '{target_user}' on {computer} at {timestamp}. This may indicate anti-forensics; compare against 4720 to identify create-then-delete cycles."

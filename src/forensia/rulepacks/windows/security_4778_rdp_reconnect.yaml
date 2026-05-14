@@ -18,5 +18,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 4778
 finding:
-  title: "RDPセッション再接続: {target_user} @ {computer}"
-  summary: "{timestamp} に {target_user} が {computer} のRDPセッションに再接続(4778)。送信元IP: {src_ip}。攻撃者が既存セッションを再利用している可能性。"
+  title: "RDP session reconnect: {target_user} @ {computer}"
+  summary: "{target_user} reconnected to an RDP session on {computer} at {timestamp} (4778). Source IP: {src_ip}. This may indicate reuse of an existing session by an attacker."

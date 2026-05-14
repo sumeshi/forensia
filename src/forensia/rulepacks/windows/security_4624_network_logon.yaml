@@ -22,5 +22,5 @@ query: |
     AND logon_type = '3'
     AND target_user NOT LIKE '%$'
 finding:
-  title: "ネットワークログオン: {target_user} → {computer}"
-  summary: "{timestamp} に {computer} で {target_user} がネットワーク認証(LogonType=3)に成功。送信元IP: {src_ip}。PsExec/WinRM/net useなど横展開の起点となる可能性あり。"
+  title: "Network logon: {target_user} -> {computer}"
+  summary: "{target_user} successfully authenticated with a network logon (LogonType=3) on {computer} at {timestamp}. Source IP: {src_ip}. This may be the starting point for lateral movement such as PsExec, WinRM, or net use."

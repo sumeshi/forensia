@@ -25,5 +25,5 @@ query: |
         OR LOWER(COALESCE(message, '')) LIKE '%ipc$%'
     )
 finding:
-  title: "管理共有アクセス: {src_ip} → {computer}"
-  summary: "{timestamp} に {src_ip} から {computer} の管理共有(ADMIN$/C$/IPC$)にアクセス。ユーザ: {subject_user}。PsExecやSMB横展開の典型的な痕跡。"
+  title: "Administrative share access: {src_ip} -> {computer}"
+  summary: "Administrative share access (ADMIN$, C$, or IPC$) from {src_ip} to {computer} was observed at {timestamp}. User: {subject_user}. This is a classic artifact of PsExec or SMB-based lateral movement."

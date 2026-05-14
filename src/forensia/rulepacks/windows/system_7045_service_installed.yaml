@@ -19,5 +19,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 7045
 finding:
-  title: "System サービスインストール: {service_name} @ {computer}"
-  summary: "{timestamp} に {computer} でサービス '{service_name}' がインストール(7045)された。実行者: {subject_user}。Security 4697 が無いケースでも永続化や PsExec 痕跡として要確認。"
+  title: "Service installed (System 7045): {service_name} @ {computer}"
+  summary: "Service '{service_name}' was installed on {computer} at {timestamp} (7045). Actor: {subject_user}. Even without Security 4697, this should be reviewed as possible persistence or PsExec-related activity."

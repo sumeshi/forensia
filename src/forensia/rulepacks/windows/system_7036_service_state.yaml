@@ -35,5 +35,5 @@ query: |
       OR LOWER(COALESCE(message, '')) LIKE '%stopped%'
     )
 finding:
-  title: "重要サービス状態遷移: {service_name} @ {computer}"
-  summary: "{timestamp} に {computer} でサービス '{service_name}' の状態遷移(7036)を確認。詳細: {message}。EDR/AV/Backup 系サービス停止や再起動の文脈を確認する。"
+  title: "Important service state transition: {service_name} @ {computer}"
+  summary: "A service state transition (7036) for '{service_name}' was observed on {computer} at {timestamp}. Details: {message}. Check whether EDR, AV, or backup services were stopped or restarted."

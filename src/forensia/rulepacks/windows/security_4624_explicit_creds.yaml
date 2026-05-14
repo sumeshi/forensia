@@ -21,5 +21,5 @@ query: |
   WHERE event_id = 4624
     AND logon_type = '9'
 finding:
-  title: "明示的資格情報ログオン(LogonType=9): {subject_user} → {target_user}"
-  summary: "{timestamp} に {computer} で {subject_user} が別資格情報({target_user})を使用してログオン。RUNAS /NETWORKまたはなりすましの典型的パターン。"
+  title: "Explicit credentials logon (LogonType=9): {subject_user} -> {target_user}"
+  summary: "{subject_user} used alternate credentials ({target_user}) to log on at {timestamp} on {computer}. This is a typical pattern for RUNAS /NETWORK or impersonation."

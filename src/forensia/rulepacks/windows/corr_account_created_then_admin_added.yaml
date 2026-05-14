@@ -44,5 +44,5 @@ query: |
    AND c.target_user = a.target_user
    AND a.added_time BETWEEN c.created_time AND c.created_time + INTERVAL 30 MINUTE
 finding:
-  title: "新規アカウント即時管理者化: {target_user} @ {computer}"
-  summary: "{created_time} に {creator} が作成したアカウント '{target_user}' が、{added_time} に {adder} により Administrators へ追加された。バックドアアカウント作成の可能性が極めて高い。"
+  title: "New account immediately added to Administrators: {target_user} @ {computer}"
+  summary: "The account '{target_user}' was created by {creator} at {created_time} and then added to Administrators by {adder} at {added_time}. This strongly suggests backdoor account creation. Confirm whether the creator and adder are the same operator and review other lateral movement activity around the same time."

@@ -20,5 +20,5 @@ query: |
   WHERE event_id = 141
     AND LOWER(COALESCE(channel, '')) LIKE '%taskscheduler%'
 finding:
-  title: "タスク削除: {computer} ({subject_user})"
-  summary: "{timestamp} に {computer} で TaskScheduler Operational のタスク削除(141)を確認。実行者: {subject_user}。作成後短時間で削除されていないか確認する。"
+  title: "Task deleted: {computer} ({subject_user})"
+  summary: "A TaskScheduler Operational task deletion event (141) was observed on {computer} at {timestamp}. Actor: {subject_user}. Check whether the task was deleted shortly after creation."

@@ -17,5 +17,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 4779
 finding:
-  title: "RDPセッション切断(ログオフなし): {target_user} @ {computer}"
-  summary: "{timestamp} に {target_user} が {computer} のRDPセッションを切断(4779)。送信元IP: {src_ip}。再接続(4778)が続く場合は横展開の証拠になりうる。"
+  title: "RDP session disconnect without logoff: {target_user} @ {computer}"
+  summary: "{target_user} disconnected an RDP session on {computer} at {timestamp} (4779). Source IP: {src_ip}. If this is immediately followed by 4778 or event 25 from a different IP, it may indicate a session hijack attempt."

@@ -26,5 +26,5 @@ query: |
     AND l.logon_type = '10'
     AND lower(coalesce(p.process_name, '')) LIKE '%powershell%'
 finding:
-  title: "RDP後にPowerShell実行: {target_user}@{computer}"
-  summary: "{logon_time} のRDPログオン後、{powershell_time} に PowerShell 実行を確認。送信元IP: {src_ip}"
+  title: "PowerShell execution after RDP logon: {target_user}@{computer}"
+  summary: "PowerShell execution was observed at {powershell_time} after an RDP logon at {logon_time}. Source IP: {src_ip}. PowerShell shortly after RDP is a classic lateral movement pattern; review script content (4104) and subsequent network connections."

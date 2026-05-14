@@ -20,5 +20,5 @@ query: |
   WHERE event_id = 400
     AND LOWER(COALESCE(channel, '')) LIKE '%powershell%'
 finding:
-  title: "PowerShell エンジン起動: {computer}"
-  summary: "{timestamp} に {computer} で PowerShell エンジン起動(400)を確認。対象チャネル: {channel}。ユーザ: {target_user}。継続する 4103/4104/4105 と合わせて実行内容を追跡する。"
+  title: "PowerShell engine start: {computer}"
+  summary: "A PowerShell engine start event (400) was observed on {computer} at {timestamp}. Channel: {channel}. User: {target_user}. This is supporting telemetry only; correlate with 4104 script block logging to identify what was actually executed."

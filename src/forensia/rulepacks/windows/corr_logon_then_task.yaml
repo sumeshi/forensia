@@ -45,5 +45,5 @@ query: |
     ON l.computer = t.computer
    AND t.task_time BETWEEN l.logon_time AND l.logon_time + INTERVAL 15 MINUTE
 finding:
-  title: "ネットワークログオン後のスケジュールタスク作成: {src_ip} → {computer}"
-  summary: "{src_ip} から {computer} へのネットワークログオン({logon_time}) の後、{task_time} にスケジュールタスクが作成された。リモート持続化の典型的パターン。"
+  title: "Scheduled task creation after network logon: {src_ip} -> {computer}"
+  summary: "After a network logon from {src_ip} to {computer} at {logon_time}, a scheduled task was created at {task_time}. This is a typical pattern for remote persistence."

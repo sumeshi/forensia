@@ -19,5 +19,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 104
 finding:
-  title: "イベントログクリア (System 104): {computer}"
-  summary: "{timestamp} に {computer} で {channel} ログがクリア(System 104)。実行者: {subject_user}。Securityログ以外のApplicationやSystemログも消去された可能性。"
+  title: "Event log cleared (System 104): {computer}"
+  summary: "The {channel} log was cleared on {computer} at {timestamp} (System 104). Actor: {subject_user}. This may indicate that logs beyond Security, such as Application or System, were also intentionally removed."

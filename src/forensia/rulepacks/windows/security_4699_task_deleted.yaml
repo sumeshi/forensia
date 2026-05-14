@@ -20,5 +20,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 4699
 finding:
-  title: "スケジュールタスク削除: {computer} ({subject_user})"
-  summary: "{timestamp} に {computer} で {subject_user} がスケジュールタスクを削除。痕跡消去の可能性。4698と対比して不審なタスクの作成→削除サイクルがないか確認。"
+  title: "Scheduled task deleted: {computer} ({subject_user})"
+  summary: "{subject_user} deleted a scheduled task on {computer} at {timestamp}. This may indicate anti-forensics; compare with 4698 to identify suspicious create-then-delete task cycles."

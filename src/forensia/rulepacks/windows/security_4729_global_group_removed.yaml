@@ -19,5 +19,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 4729
 finding:
-  title: "グローバルグループからの削除: {target_user} @ {computer}"
-  summary: "{timestamp} に {computer} で {subject_user} がアカウント '{target_user}' をグローバルセキュリティグループから削除(4729)。権限剥奪や痕跡操作の可能性がある。"
+  title: "Removed from a global security group: {target_user} @ {computer}"
+  summary: "{subject_user} removed account '{target_user}' from a global security group on {computer} at {timestamp} (4729). This may reflect privilege revocation, but it can also be anti-forensics intended to hide privilege abuse after compromise."

@@ -20,5 +20,5 @@ query: |
   WHERE event_id = 106
     AND LOWER(COALESCE(channel, '')) LIKE '%taskscheduler%'
 finding:
-  title: "タスク登録: {computer} ({subject_user})"
-  summary: "{timestamp} に {computer} で TaskScheduler Operational のタスク登録(106)を確認。実行者: {subject_user}。メッセージ: {message}。4698 と相互補完して確認する。"
+  title: "Task registered: {computer} ({subject_user})"
+  summary: "A TaskScheduler Operational task registration event (106) was observed on {computer} at {timestamp}. Actor: {subject_user}. Message: {message}. Review together with 4698 for complementary task creation evidence."

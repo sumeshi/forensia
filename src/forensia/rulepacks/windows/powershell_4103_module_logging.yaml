@@ -20,5 +20,5 @@ query: |
   WHERE event_id = 4103
     AND LOWER(COALESCE(channel, '')) LIKE '%powershell%'
 finding:
-  title: "PowerShell モジュールログ: {computer}"
-  summary: "{timestamp} に {computer} で PowerShell モジュールログ(4103)を確認。ユーザ: {target_user}。メッセージ: {message}。攻撃スクリプトの関数呼び出し追跡に有用。"
+  title: "PowerShell module logging event: {computer}"
+  summary: "A PowerShell module logging event (4103) was observed on {computer} at {timestamp}. User: {target_user}. Message: {message}. Module names alone are not enough; look for non-default or obfuscated module names and correlate with 4104."

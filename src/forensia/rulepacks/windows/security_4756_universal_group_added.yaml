@@ -19,5 +19,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 4756
 finding:
-  title: "ユニバーサルグループ追加: {target_user} @ {computer}"
-  summary: "{timestamp} に {computer} で {subject_user} がアカウント '{target_user}' をユニバーサルセキュリティグループに追加(4756)。ドメイン横断権限追加の可能性がある。"
+  title: "Added to a universal security group: {target_user} @ {computer}"
+  summary: "{subject_user} added account '{target_user}' to a universal security group on {computer} at {timestamp} (4756). This may indicate cross-domain privilege expansion."

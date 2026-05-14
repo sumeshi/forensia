@@ -18,5 +18,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 5001
 finding:
-  title: "[HIGH] Defenderリアルタイム保護無効化 (5001): {computer}"
-  summary: "{timestamp} に {computer} でWindows Defenderのリアルタイム保護が無効化された(5001)。その後の4688(プロセス実行)と相関を取り、マルウェア実行の準備として無効化されたか確認。"
+  title: "[HIGH] Defender real-time protection disabled (5001): {computer}"
+  summary: "Windows Defender real-time protection was disabled on {computer} at {timestamp} (5001). Correlate with subsequent 4688 process execution to determine whether protection was turned off in preparation for malware execution."

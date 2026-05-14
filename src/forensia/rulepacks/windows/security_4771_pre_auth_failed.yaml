@@ -21,5 +21,5 @@ query: |
   GROUP BY target_user, DATE_TRUNC('hour', timestamp)
   HAVING COUNT(*) >= 5
 finding:
-  title: "Kerberos 事前認証失敗多発: {target_user}"
-  summary: "{target_user} の Kerberos 事前認証失敗(4771)が {hour_bucket} 台に {fail_count} 回発生 ({first_seen} ～ {last_seen})。パスワードスプレーや総当たりの可能性がある。"
+  title: "Repeated Kerberos pre-authentication failures: {target_user}"
+  summary: "{fail_count} Kerberos pre-authentication failures (4771) for {target_user} were observed in the {hour_bucket} window between {first_seen} and {last_seen}. This may indicate password spraying or brute-force activity."

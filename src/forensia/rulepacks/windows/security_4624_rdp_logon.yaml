@@ -21,4 +21,4 @@ query: |
     AND logon_type = '10'
 finding:
   title: "RDP logon for {target_user}"
-  summary: "{timestamp} に {computer} で {target_user} のRDPログオンが発生しました。送信元IP: {src_ip}"
+  summary: "An RDP logon for {target_user} was observed on {computer} at {timestamp}. Source IP: {src_ip}. Correlate with LSM 21 and RCM 1149, and if the source IP is external, check for 4688 or 4104 execution within 15 minutes after logon."

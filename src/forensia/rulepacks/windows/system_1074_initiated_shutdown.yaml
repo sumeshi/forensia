@@ -18,5 +18,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 1074
 finding:
-  title: "ユーザ/プロセス起因のシャットダウン: {computer}"
-  summary: "{timestamp} に {computer} で {subject_user} または {process_name} に起因するシャットダウン/再起動(1074)を確認。詳細: {message}。攻撃後の再起動やサービス妨害の可能性を確認する。"
+  title: "Shutdown or restart initiated by user or process: {computer}"
+  summary: "A shutdown or restart attributed to {subject_user} or {process_name} was observed on {computer} at {timestamp} (1074). Details: {message}. Determine whether this reflects post-attack reboot activity or service disruption."

@@ -19,5 +19,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 4719
 finding:
-  title: "監査ポリシー変更: {computer} ({subject_user})"
-  summary: "{timestamp} に {computer} で {subject_user} が監査ポリシーを変更(4719)。特定のカテゴリのログ記録を無効化しようとしている可能性。変更内容を詳細に確認。"
+  title: "Audit policy changed: {computer} ({subject_user})"
+  summary: "{subject_user} changed audit policy on {computer} at {timestamp} (4719). This may indicate an attempt to disable logging for specific categories; review the exact policy changes."

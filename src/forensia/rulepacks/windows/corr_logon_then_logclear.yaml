@@ -47,5 +47,5 @@ query: |
     ON l.computer = c.computer
    AND c.clear_time BETWEEN l.logon_time AND l.logon_time + INTERVAL 30 MINUTE
 finding:
-  title: "ログオン後のログクリア: {target_user} @ {computer}"
-  summary: "{logon_time} に {src_ip} から {computer} へログオン種別 {logon_type} の認証成功後、{clear_time} にログクリア({clear_event_id})を確認。実行者: {subject_user}、チャネル: {channel}。侵害後の痕跡消去の可能性が高い。"
+  title: "Log clearing after logon: {target_user} @ {computer}"
+  summary: "After a successful logon of type {logon_type} from {src_ip} to {computer} at {logon_time}, log clearing event {clear_event_id} was observed at {clear_time}. Actor: {subject_user}, channel: {channel}. This strongly suggests post-compromise anti-forensics."

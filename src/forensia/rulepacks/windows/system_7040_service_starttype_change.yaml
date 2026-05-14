@@ -19,5 +19,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 7040
 finding:
-  title: "サービス開始種別変更: {service_name} @ {computer}"
-  summary: "{timestamp} に {computer} でサービス '{service_name}' の開始種別が変更された。AVやバックアップサービスが無効化(Disabled)されていないか確認。"
+  title: "Service start type changed: {service_name} @ {computer}"
+  summary: "The start type of service '{service_name}' was changed on {computer} at {timestamp}. Check whether AV or backup services were set to Disabled."

@@ -16,5 +16,5 @@ query: |
   FROM evtx_events
   WHERE event_id = 6008
 finding:
-  title: "予期しないシャットダウン痕跡: {computer}"
-  summary: "{timestamp} に {computer} で予期しないシャットダウン痕跡(6008)を確認。詳細: {message}。41 や 1074 と突合し、電源断・クラッシュ・強制再起動の別を確認する。"
+  title: "Unexpected shutdown artifact: {computer}"
+  summary: "An unexpected shutdown artifact (6008) was observed on {computer} at {timestamp}. Details: {message}. Correlate with events 41 and 1074, and consider whether this was power loss, a crash, or an attacker-triggered reboot intended to clear in-memory evidence."

@@ -21,5 +21,5 @@ query: |
   WHERE event_id = 24
     AND LOWER(COALESCE(channel, '')) LIKE '%localsessionmanager%'
 finding:
-  title: "RDP セッション切断: {target_user} @ {computer}"
-  summary: "{timestamp} に {computer} で LocalSessionManager の RDP セッション切断(24)を確認。送信元IP: {src_ip}。再接続や長時間放置の痕跡と合わせて確認する。"
+  title: "RDP session disconnect: {target_user} @ {computer}"
+  summary: "An RDP session disconnect (LocalSessionManager 24) was observed on {computer} at {timestamp}. Source IP: {src_ip}. Disconnect by itself is low-signal; it becomes suspicious if followed immediately by reconnect events (25 or 4778) from a different IP."

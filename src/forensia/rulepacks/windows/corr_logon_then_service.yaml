@@ -45,5 +45,5 @@ query: |
     ON l.computer = s.computer
    AND s.svc_time BETWEEN l.logon_time AND l.logon_time + INTERVAL 15 MINUTE
 finding:
-  title: "ネットワークログオン後のサービスインストール: {src_ip} → {computer}"
-  summary: "{src_ip} から {computer} へのネットワークログオン({logon_time}) の後、{svc_time} にサービス '{service_name}' がインストールされた。PsExecやリモートサービス経由の持続化の典型的パターン。"
+  title: "Service installation after network logon: {src_ip} -> {computer}"
+  summary: "After a network logon from {src_ip} to {computer} at {logon_time}, service '{service_name}' was installed at {svc_time}. This is a typical pattern for PsExec-style lateral movement or persistence via remote services."
