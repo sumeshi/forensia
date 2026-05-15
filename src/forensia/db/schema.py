@@ -148,12 +148,16 @@ CREATE TABLE IF NOT EXISTS trace.investigation_sessions (
 CREATE TABLE IF NOT EXISTS trace.investigation_steps (
     step_id VARCHAR PRIMARY KEY,
     session_id VARCHAR,
+    hypothesis_id VARCHAR,
     iteration INTEGER,
     phase VARCHAR,
     input_json JSON,
     output_json JSON,
     created_at TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS investigation_steps_by_session_hypothesis
+    ON trace.investigation_steps(session_id, hypothesis_id);
 
 CREATE TABLE IF NOT EXISTS trace.hypothesis_reasoning (
     entry_id VARCHAR PRIMARY KEY,
@@ -180,6 +184,9 @@ CREATE TABLE IF NOT EXISTS trace.progress_events (
     payload JSON,
     created_at TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS ai_reviews_by_finding
+    ON trace.ai_reviews(finding_id);
 """
 
 TRACE_TABLES = {

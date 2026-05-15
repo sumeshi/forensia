@@ -52,6 +52,7 @@ class PlannerRetryTests(unittest.TestCase):
         system = messages[0]["content"]
         self.assertNotIn("Available tables:", system)
         self.assertNotIn("event_id IN (1102, 104)", system)
+        self.assertIn("memory/details/fact-NNN.md", system)
 
     def test_hypothesis_plan_messages_list_all_allowed_tables(self) -> None:
         messages = build_hypothesis_plan_messages(
@@ -66,6 +67,7 @@ class PlannerRetryTests(unittest.TestCase):
         system = messages[0]["content"]
         for table_name in sorted(ALLOWED_TABLES):
             self.assertIn(table_name, system)
+        self.assertIn("memory/details/fact-NNN.md", system)
 
     def test_broad_plan_messages_trim_findings_payload(self) -> None:
         messages = build_broad_plan_messages(

@@ -4,6 +4,7 @@ from math import ceil
 from pathlib import Path
 from re import sub
 
+from forensia.ai.lmstudio import chat_completion
 from forensia.core.case import Case
 from forensia.config import get_llm_settings
 
@@ -21,12 +22,14 @@ class MemoryManager:
         self.users_dir = self.base_dir / "users"
         self.hypotheses_dir = self.base_dir / "hypotheses"
         self.evidence_dir = self.base_dir / "evidence"
+        self.details_dir = self.base_dir / "details"
         for directory in (
             self.base_dir,
             self.hosts_dir,
             self.users_dir,
             self.hypotheses_dir,
             self.evidence_dir,
+            self.details_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
 
@@ -132,9 +135,20 @@ class MemoryManager:
         self.compact_if_oversized(path)
 
     def append_confirmed_fact(self, text: str, evidence_ids: list[str]) -> None:
-        line = self._format_memory_line(text, evidence_ids)
-        if line:
-            self._append_markdown_line(self.confirmed_facts_path, "# Confirmed Facts", line)
+        body = str(text).strip()
+        if not body:
+            return
+        normalized_ids = [str(item).strip() for item in evidence_ids if str(item).strip()]
+        if self._confirmed_fact_exists(body, normalized_ids):
+            return
+        detail_id = self._next_fact_detail_id()
+        preview = body[:120]
+        line = self._format_memory_line(f"[{detail_id}] {preview}", normalized_ids)
+        if not line:
+            return
+        if self._append_markdown_line(self.confirmed_facts_path, "# Confirmed Facts", line):
+            self._write_fact_detail(detail_id, body, normalized_ids)
+            self.compact_if_oversized(self.confirmed_facts_path)
 
     def append_timeline_anchor(self, timestamp: str, description: str, evidence_ids: list[str]) -> None:
         timestamp_text = str(timestamp).strip()
@@ -142,8 +156,8 @@ class MemoryManager:
         if not timestamp_text or not description_text:
             return
         line = self._format_memory_line(f"{timestamp_text}: {description_text}", evidence_ids)
-        if line:
-            self._append_markdown_line(self.timeline_anchors_path, "# Timeline Anchors", line)
+        if line and self._append_markdown_line(self.timeline_anchors_path, "# Timeline Anchors", line):
+            self._rotate_timeline_anchors()
 
     def append_open_question(self, question: str, kind: str) -> None:
         question_text = str(question).strip()
@@ -164,7 +178,6 @@ class MemoryManager:
         if not body:
             return
         self._append_markdown_line(self.narrative_path, "# Narrative", f"- {body}")
-        self.compact_if_oversized(self.narrative_path)
 
     def append_refuted_hypothesis(self, hypothesis_id: str, description: str, reason: str) -> None:
         hyp_id = str(hypothesis_id).strip()
@@ -230,11 +243,90 @@ class MemoryManager:
             body += f" [evidence: {', '.join(normalized_ids)}]"
         return f"- {body}"
 
-    def _append_markdown_line(self, path: Path, heading: str, line: str) -> None:
+    def _append_markdown_line(self, path: Path, heading: str, line: str) -> bool:
         existing = path.read_text(encoding="utf-8").rstrip() if path.exists() else heading
         if not existing:
             existing = heading
+        existing_lines = set(existing.splitlines())
+        if line in existing_lines:
+            return False
         path.write_text(existing + "\n\n" + line + "\n", encoding="utf-8")
+        return True
+
+    def _next_fact_detail_id(self) -> str:
+        if not self.confirmed_facts_path.exists():
+            return "fact-001"
+        count = sum(
+            1
+            for line in self.confirmed_facts_path.read_text(encoding="utf-8").splitlines()
+            if line.startswith("- [fact-")
+        )
+        return f"fact-{count + 1:03d}"
+
+    def _write_fact_detail(self, detail_id: str, text: str, evidence_ids: list[str]) -> None:
+        lines = [f"# {detail_id}", "", text.strip()]
+        if evidence_ids:
+            lines.extend(["", "## Evidence", *[f"- {item}" for item in evidence_ids]])
+        (self.details_dir / f"{detail_id}.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+    def _confirmed_fact_exists(self, text: str, evidence_ids: list[str]) -> bool:
+        for path in sorted(self.details_dir.glob("fact-*.md")):
+            detail = path.read_text(encoding="utf-8").splitlines()
+            if len(detail) < 3:
+                continue
+            existing_text = detail[2].strip()
+            if existing_text != text:
+                continue
+            existing_ids = [line[2:].strip() for line in detail if line.startswith("- ")]
+            if existing_ids == evidence_ids:
+                return True
+        return False
+
+    def _rotate_timeline_anchors(self, max_lines: int = 100, keep_lines: int = 80) -> None:
+        if not self.timeline_anchors_path.exists():
+            return
+        lines = self.timeline_anchors_path.read_text(encoding="utf-8").splitlines()
+        anchor_lines = [line for line in lines if line.startswith("- ")]
+        if len(anchor_lines) <= max_lines:
+            return
+        archived = anchor_lines[:-keep_lines]
+        retained = anchor_lines[-keep_lines:]
+        archive_path = self.details_dir / "timeline_archive.md"
+        archive_existing = archive_path.read_text(encoding="utf-8").rstrip() if archive_path.exists() else "# Timeline Archive"
+        archive_lines = set(archive_existing.splitlines())
+        appendable = [line for line in archived if line not in archive_lines]
+        if appendable:
+            archive_path.write_text(archive_existing + "\n\n" + "\n".join(appendable) + "\n", encoding="utf-8")
+        rebuilt = "# Timeline Anchors"
+        if retained:
+            rebuilt += "\n\n" + "\n".join(retained)
+        self.timeline_anchors_path.write_text(rebuilt.rstrip() + "\n", encoding="utf-8")
+
+    def compact_narrative_if_needed(self, base_url: str, model: str) -> bool:
+        if not self.narrative_path.exists() or self.narrative_path.stat().st_size <= self.max_bytes:
+            return False
+        current = self.narrative_path.read_text(encoding="utf-8").strip()
+        if not current:
+            return False
+        body = chat_completion(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "以下の調査ナラティブを 600 語以内に圧縮してください。"
+                        "結論・タイムライン・未解決スレッドを保持すること。"
+                        "出力はナラティブ本文のみ。"
+                    ),
+                },
+                {"role": "user", "content": current},
+            ],
+            model=model,
+            base_url=base_url,
+        ).strip()
+        if not body:
+            return False
+        self.narrative_path.write_text(body + "\n", encoding="utf-8")
+        return True
 
     def _compact_generic(self, path: Path) -> bool:
         text = path.read_text(encoding="utf-8")
@@ -287,8 +379,8 @@ class MemoryManager:
         if not path.exists() or path.stat().st_size <= self.max_bytes:
             return False
         if path in {
-            self.confirmed_facts_path,
             self.timeline_anchors_path,
+            self.narrative_path,
             self.refuted_hypotheses_path,
             self.important_entities_path,
         }:

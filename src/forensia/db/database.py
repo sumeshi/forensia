@@ -33,6 +33,7 @@ class CaseDB:
             """
         )
         self._apply_migration_once("legacy_schema_backfill", self._apply_legacy_schema_backfill)
+        self._apply_migration_once("investigation_steps_hypothesis_id", self._apply_investigation_steps_hypothesis_id)
 
     def _apply_migration_once(self, migration_key: str, callback: Callable[[], None]) -> None:
         existing = self.conn.execute(
@@ -55,6 +56,9 @@ class CaseDB:
         legacy_verdict = "new" + "_finding"
         self.conn.execute("UPDATE trace.ai_reviews SET verdict = 'newlead' WHERE verdict = ?", (legacy_verdict,))
         self.conn.execute("UPDATE hypotheses SET verdict = 'newlead' WHERE verdict = ?", (legacy_verdict,))
+
+    def _apply_investigation_steps_hypothesis_id(self) -> None:
+        self.conn.execute("ALTER TABLE trace.investigation_steps ADD COLUMN IF NOT EXISTS hypothesis_id VARCHAR")
 
     def _route_trace_write(self, query: str) -> str:
         stripped = query.lstrip()

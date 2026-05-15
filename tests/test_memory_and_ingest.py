@@ -82,7 +82,11 @@ class MemoryAndIngestTests(unittest.TestCase):
                 db=None,
             )
 
-            self.assertIn("fact one", memory.confirmed_facts_path.read_text(encoding="utf-8"))
+            confirmed_text = memory.confirmed_facts_path.read_text(encoding="utf-8")
+            self.assertIn("[fact-001]", confirmed_text)
+            self.assertNotIn("- fact one [evidence: ev-1]", confirmed_text)
+            self.assertTrue((memory.details_dir / "fact-001.md").exists())
+            self.assertIn("fact one", (memory.details_dir / "fact-001.md").read_text(encoding="utf-8"))
             self.assertIn("anchor", memory.timeline_anchors_path.read_text(encoding="utf-8"))
             self.assertIn("need more logs", memory.open_questions_path.read_text(encoding="utf-8"))
             self.assertIn("initial storyline", memory.narrative_path.read_text(encoding="utf-8"))
@@ -107,6 +111,52 @@ class MemoryAndIngestTests(unittest.TestCase):
             self.assertEqual(entities_before, memory.important_entities_path.read_text(encoding="utf-8"))
             self.assertNotIn("question-0", open_questions_text)
             self.assertIn("question-19", open_questions_text)
+
+    def test_confirmed_fact_duplicates_are_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+
+            memory.append_confirmed_fact("same fact", ["ev-1"])
+            memory.append_confirmed_fact("same fact", ["ev-1"])
+
+            lines = [line for line in memory.confirmed_facts_path.read_text(encoding="utf-8").splitlines() if line.startswith("- ")]
+            self.assertEqual(1, len(lines))
+            self.assertTrue((memory.details_dir / "fact-001.md").exists())
+            self.assertFalse((memory.details_dir / "fact-002.md").exists())
+
+    def test_timeline_anchors_archive_old_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+
+            for index in range(101):
+                memory.append_timeline_anchor(
+                    f"2026-05-12T10:{index:02d}:00",
+                    f"anchor-{index}",
+                    [f"ev-{index:03d}"],
+                )
+
+            timeline_text = memory.timeline_anchors_path.read_text(encoding="utf-8")
+            timeline_lines = [line for line in timeline_text.splitlines() if line.startswith("- ")]
+            archive_text = (memory.details_dir / "timeline_archive.md").read_text(encoding="utf-8")
+
+            self.assertEqual(80, len(timeline_lines))
+            self.assertIn("anchor-0", archive_text)
+            self.assertNotIn("anchor-0", timeline_text)
+
+    def test_narrative_is_compacted_via_llm_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "64"}):
+            clear_llm_settings_cache()
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            memory.narrative_path.write_text("# Narrative\n\n" + ("x" * 512), encoding="utf-8")
+
+            with patch("forensia.core.memory.chat_completion", return_value="compressed narrative"):
+                changed = memory.compact_narrative_if_needed("http://localhost:1234", "test-model")
+
+            self.assertTrue(changed)
+            self.assertEqual("compressed narrative\n", memory.narrative_path.read_text(encoding="utf-8"))
 
     def test_get_llm_settings_cache_can_be_cleared(self) -> None:
         with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "ja"}):
@@ -150,7 +200,9 @@ class MemoryAndIngestTests(unittest.TestCase):
                             'findings_by_id',
                             'findings_by_status_confidence',
                             'evtx_events_by_evidence_id',
-                            'mft_entries_by_evidence_id'
+                            'mft_entries_by_evidence_id',
+                            'investigation_steps_by_session_hypothesis',
+                            'ai_reviews_by_finding'
                         )
                         """
                     ).fetchall()
@@ -162,6 +214,8 @@ class MemoryAndIngestTests(unittest.TestCase):
                     "findings_by_status_confidence",
                     "evtx_events_by_evidence_id",
                     "mft_entries_by_evidence_id",
+                    "investigation_steps_by_session_hypothesis",
+                    "ai_reviews_by_finding",
                 },
                 names,
             )

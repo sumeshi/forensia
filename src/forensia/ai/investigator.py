@@ -46,6 +46,7 @@ def _save_step(
     session_id: str,
     iteration: int,
     phase: str,
+    hypothesis_id: str | None,
     input_json: Any,
     output_json: Any,
     suffix: str | None = None,
@@ -56,12 +57,13 @@ def _save_step(
     db.execute(
         """
         INSERT INTO investigation_steps (
-            step_id, session_id, iteration, phase, input_json, output_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            step_id, session_id, hypothesis_id, iteration, phase, input_json, output_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             step_id,
             session_id,
+            hypothesis_id,
             iteration,
             phase,
             _to_json(input_json),
@@ -145,6 +147,8 @@ def _initialize_overview(memory: MemoryManager, case: Case) -> None:
         (
             f"# Investigation Overview\n\n"
             f"Case: {case.path.name}\n\n"
+            "## Memory Details\n"
+            "- Detailed fact records can be stored under memory/details/fact-NNN.md and loaded on demand.\n\n"
             "## Confirmed Hosts\n- none\n\n"
             "## Confirmed Timeline\n- none\n\n"
             "## Active Hypotheses\n- none\n\n"
@@ -1041,6 +1045,7 @@ def investigate(
                     session_id=session_id,
                     iteration=plan_cycle,
                     phase="plan-broad",
+                    hypothesis_id=None,
                     input_json=plan_input,
                     output_json=broad_plan.raw_response,
                 )
@@ -1108,6 +1113,7 @@ def investigate(
                             session_id=session_id,
                             iteration=plan_cycle,
                             phase="plan-hypothesis",
+                            hypothesis_id=hypothesis.id,
                             input_json={"hypothesis": hypothesis.model_dump(), "query_index": query_index},
                             output_json=hypothesis_plan.raw_response,
                             suffix=f"{hypothesis.id}-{query_index:02d}",
@@ -1153,6 +1159,7 @@ def investigate(
                             session_id=session_id,
                             iteration=plan_cycle,
                             phase="do",
+                            hypothesis_id=hypothesis.id,
                             input_json={"planned_query": planned_query.model_dump(), "query_index": query_index},
                             output_json=result_summary,
                             suffix=f"{planned_query.query_id}-{query_index:02d}",
@@ -1187,6 +1194,7 @@ def investigate(
                             session_id=session_id,
                             iteration=plan_cycle,
                             phase="check",
+                            hypothesis_id=hypothesis.id,
                             input_json={
                                 "planned_query": planned_query.model_dump(),
                                 "hypothesis": hypothesis.model_dump(),
@@ -1234,6 +1242,7 @@ def investigate(
                                 evidence_ids=result_summary.get("evidence_ids", []),
                             )
                         )
+                        state.history = state.history[-50:]
                         if check_result.new_hypotheses:
                             state.active_hypotheses = _merge_active_hypotheses(
                                 db=db,
@@ -1274,12 +1283,14 @@ def investigate(
                             check_output=check_result.raw_response,
                             db=db,
                         )
+                        memory.compact_narrative_if_needed(base_url=base_url, model=model)
                         refresh_memory_caches()
                         _save_step(
                             db=db,
                             session_id=session_id,
                             iteration=plan_cycle,
                             phase="act",
+                            hypothesis_id=hypothesis.id,
                             input_json={"hypothesis_id": hypothesis.id, "query_id": planned_query.query_id},
                             output_json={
                                 "verdict": check_result.verdict,

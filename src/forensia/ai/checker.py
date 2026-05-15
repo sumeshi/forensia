@@ -53,10 +53,16 @@ def _parse_new_hypotheses(items: Any) -> list[Hypothesis]:
 
 def summarize_query_result(rows: list[dict[str, Any]], sample_size: int = 10) -> dict[str, Any]:
     evidence_ids: list[str] = []
+    seen: set[str] = set()
     for row in rows:
         value = row.get("evidence_id")
-        if value and value not in evidence_ids:
-            evidence_ids.append(str(value))
+        if not value:
+            continue
+        normalized = str(value)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        evidence_ids.append(normalized)
 
     return {
         "row_count": len(rows),

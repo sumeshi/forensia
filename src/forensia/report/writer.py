@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 import hashlib
 import json
 import re
@@ -14,25 +15,14 @@ from forensia.ai.lmstudio import chat_completion
 from forensia.ai.prompts import build_report_section_messages
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
-from forensia.db.query import fetch_records
+from forensia.db.query import fetch_records, normalize_value
 from forensia.report.html import render_html_report
 
 GAP_PATTERN = re.compile(r"【調査不足:\s*([^】]+)】")
 
-def _normalize_value(value: Any) -> Any:
-    if isinstance(value, list):
-        return [_normalize_value(item) for item in value]
-    if isinstance(value, dict):
-        return {str(key): _normalize_value(item) for key, item in value.items()}
-    if hasattr(value, "isoformat"):
-        try:
-            return value.isoformat()
-        except Exception:
-            return str(value)
-    return value
 
-
-def _parse_template(template_path: str | Path) -> tuple[dict[str, Any], str]:
+@lru_cache(maxsize=None)
+def _parse_template(template_path: str) -> tuple[dict[str, Any], str]:
     text = Path(template_path).read_text(encoding="utf-8")
     if not text.startswith("---\n"):
         return {}, text
@@ -72,7 +62,7 @@ def _summarize_query_results(db: CaseDB, queries: list[str], max_rows: int = 20)
                 "evidence_ids": evidence_ids,
                 "finding_ids": finding_ids,
                 "hypothesis_ids": hypothesis_ids,
-                "sample_rows": [_normalize_value(row) for row in rows[:max_rows]],
+                "sample_rows": [normalize_value(row) for row in rows[:max_rows]],
             }
         )
     return summaries
@@ -158,8 +148,8 @@ def _build_report_brief(db: CaseDB) -> dict[str, Any]:
         """,
     )
     return {
-        "top_findings": [_normalize_value(item) for item in findings],
-        "active_hypotheses": [_normalize_value(item) for item in active_hypotheses],
+        "top_findings": [normalize_value(item) for item in findings],
+        "active_hypotheses": [normalize_value(item) for item in active_hypotheses],
         "prior_sections": [
             {
                 "section_key": item["section_key"],
@@ -170,7 +160,7 @@ def _build_report_brief(db: CaseDB) -> dict[str, Any]:
             }
             for item in prior_sections
         ],
-        "existing_claims": [_normalize_value(item) for item in existing_claims],
+        "existing_claims": [normalize_value(item) for item in existing_claims],
     }
 
 
@@ -290,9 +280,9 @@ def _upsert_claims(
         provenance_keys = {
             json.dumps(
                 {
-                    "finding_ids": _normalize_value(row.get("finding_ids")) or [],
-                    "hypothesis_ids": _normalize_value(row.get("hypothesis_ids")) or [],
-                    "evidence_ids": _normalize_value(row.get("evidence_ids")) or [],
+                    "finding_ids": normalize_value(row.get("finding_ids")) or [],
+                    "hypothesis_ids": normalize_value(row.get("hypothesis_ids")) or [],
+                    "evidence_ids": normalize_value(row.get("evidence_ids")) or [],
                 },
                 ensure_ascii=False,
                 sort_keys=True,
@@ -421,7 +411,7 @@ def prepare_section_request(
     Pure I/O against DuckDB; safe to call from the main thread before
     dispatching parallel LLM workers.
     """
-    section_meta, template_body = _parse_template(template_path)
+    section_meta, template_body = _parse_template(str(template_path))
     evidence_results = _summarize_query_results(db, list(section_meta.get("evidence_queries") or []))
     messages = build_report_section_messages(
         section_meta=section_meta,

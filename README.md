@@ -173,7 +173,7 @@ flowchart LR
 
 ### 4 つの verdict
 
-README 上では、LLM が返す判定を次のように説明します。
+各検証結果に対して、LLM は次の 4 値のいずれかを返します。
 
 | Verdict | 意味 |
 |---|---|
@@ -250,8 +250,20 @@ AI 調査員は証拠を全部抱え込むわけではありません。
 これらは人間が直接読めるように Markdown で置きつつ、LLM が次のループで再利用しやすい形にもしています。  
 Markdown なのは見た目の趣味ではなく、ローカル実行・可搬性・差分確認のしやすさを優先した結果です。
 
-`LLM_MEMORY_MAX_BYTES` は主に `overview.md`、`open_questions.md`、個別メモの圧縮に効きます。  
-`confirmed_facts.md`、`timeline_anchors.md`、`refuted_hypotheses.md`、`important_entities.md` は保持優先で、ここでは黙って削りません。
+### LLM へのコンテキスト渡し方
+
+各 LLM 呼び出しでは次の順に context を組み立てます。
+
+1. `overview.md` を常時ロードする
+2. 主要メモファイルの末尾を `LLM_MEMORY_MAX_BYTES` 内に収まるよう切り出したコンパクトスナップショットを渡す
+3. LLM が特定ファイルを読みたいときは `read_more` フィールドにファイル名を返す。プランナーはそのファイルを読み込み、同じプロンプトに追記して再度 LLM を呼ぶ
+
+`read_more` で要求できるファイルは `confirmed_facts.md`、`timeline_anchors.md`、`open_questions.md`、`narrative.md`、`hosts/*.md`、`users/*.md`、`hypotheses/*.md` など。一度のサイクルで必要なファイルだけを on-demand でロードするため、常に全ファイルを詰め込まずに済む。
+
+### 圧縮の挙動
+
+`LLM_MEMORY_MAX_BYTES` は `overview.md`、`open_questions.md`、個別メモファイルの圧縮閾値として使います。  
+`confirmed_facts.md`、`timeline_anchors.md`、`refuted_hypotheses.md`、`important_entities.md` は保持優先で圧縮対象外です。これらは調査を通じて増え続けますが、削って調査結果を失うよりマシと判断しています。
 
 
 ## 信頼性の担保
@@ -260,13 +272,13 @@ forensia は「AI を賢く使う」より先に、「AI が雑でも壊れに�
 
 ### AI の自由度を制限する
 
-- 読み取り専用クエリだけを許可する
-- 許可テーブル以外は参照させない
-- 破壊的 SQL は拒否する
+- `SELECT` / `WITH` のみ許可。複数文・破壊的 SQL は拒否する
+- 参照できるテーブルを 13 テーブルに固定する（`sql_schema.py` が SSOT）
 - SQL 修正リトライにも上限を設ける
-
-ローカル LLM は時々、自信満々に余計なことをします。  
-なので「悪意を持つ前提」ではなく「雑に壊す前提」で囲います。
+- LLM が返す verdict は `confirmed` / `refuted` / `inconclusive` / `newlead` の 4 値に限定し、それ以外は再試行する
+- LLM に渡す Finding 一覧は最大 10 件・6 フィールド（finding_id / title / severity / confidence / status / summary）に絞る
+- レポート書き込み時にコンテキストセクションを 1 セクション 600 文字で切り捨て、プロンプトを小さく保つ
+- チェックフェーズのプロンプトには偽陽性低減ガイダンスを固定で埋め込む（ログオンタイプ・業務時間内・既知サービスアカウントの除外基準）
 
 ### 証拠に戻れるようにする
 
@@ -362,14 +374,14 @@ forensia investigate case001 --max-iter 50
 `investigate` の主な調整項目は `--max-queries-per-hypothesis`、`--no-progress-limit`、`--report-every-n-cycles`、`--report-parallelism`、`--report-only` です。  
 何を触るべきかは [CONTRIBUTING.md](CONTRIBUTING.md) に寄せています。
 
-`investigate` は次をループします。
+`investigate` は 1 サイクルごとに次のフェーズを回します。
 
-1. 現状の Finding / Hypothesis / gap を読む
-2. 次に追う仮説を選ぶ
-3. 読み取り専用 SQL で検証する
-4. verdict を更新する
-5. Structured Memories とレポート下書きを更新する
-6. 新しい gap を次サイクルに戻す
+1. **Broad plan**: LLM が overview.md・直近 Finding（最大 10 件・6 フィールドに絞り込み）・仮説一覧を読み、新規仮説を提案する
+2. **Hypothesis plan**: 各仮説に対して LLM が検証用クエリを 1 本提案する（クエリテンプレートライブラリから選ぶか、フォールバックで raw SQL を返す）
+3. **SQL 実行**: クエリをバリデーション後に DuckDB に対して実行し、結果を要約する
+4. **Check**: LLM が結果サマリーと memory context を受け取り、verdict（`confirmed` / `refuted` / `inconclusive` / `newlead`）と memory_updates・report_text を返す
+5. **Memory 更新**: LLM の memory_updates を受けて各 `memory/*.md` を更新する
+6. **Report section 更新**: N サイクルごとに LLM がレポートセクションを再充填する
 
 同じケースで再実行すると、前回の調査状態から続けられます。
 

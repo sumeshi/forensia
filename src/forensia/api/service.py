@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -25,30 +23,11 @@ from forensia.api.dto import (
 )
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
-from forensia.db.query import fetch_records
-
-
-def _normalize_value(value: Any) -> Any:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, list):
-        return [_normalize_value(item) for item in value]
-    if isinstance(value, dict):
-        return {str(key): _normalize_value(item) for key, item in value.items()}
-    if isinstance(value, str):
-        stripped = value.strip()
-        if stripped and stripped[0] in "[{":
-            try:
-                return _normalize_value(json.loads(stripped))
-            except json.JSONDecodeError:
-                return value
-    return value
+from forensia.db.query import fetch_records, normalize_value
 
 
 def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:
-    return {key: _normalize_value(value) for key, value in row.items()}
+    return {key: normalize_value(value) for key, value in row.items()}
 
 
 def get_case_dto(case: Case) -> CaseDTO:
@@ -482,7 +461,7 @@ def list_event_volume_dto(db: CaseDB, bucket: str = "hour", source: str = "all")
         )
         bucket_counts: dict[str, int] = {}
         for row in rows:
-            evidence_items = _normalize_value(row.get("evidence")) or []
+            evidence_items = normalize_value(row.get("evidence")) or []
             if not isinstance(evidence_items, list):
                 evidence_items = []
             timestamps: list[str] = []
@@ -492,7 +471,7 @@ def list_event_volume_dto(db: CaseDB, bucket: str = "hour", source: str = "all")
                     if isinstance(timestamp, str) and timestamp:
                         timestamps.append(timestamp)
             if not timestamps:
-                created_at = _normalize_value(row.get("created_at"))
+                created_at = normalize_value(row.get("created_at"))
                 if isinstance(created_at, str) and created_at:
                     timestamps.append(created_at)
             for timestamp in timestamps:

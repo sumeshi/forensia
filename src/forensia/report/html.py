@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +11,7 @@ import yaml
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
+from forensia.db.query import normalize_value
 
 
 def _fetch_records(db: CaseDB, query: str, params: tuple[Any, ...] | None = None) -> list[dict[str, Any]]:
@@ -19,26 +19,8 @@ def _fetch_records(db: CaseDB, query: str, params: tuple[Any, ...] | None = None
     columns = [item[0] for item in result.description]
     return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
 
-
-def _normalize_value(value: Any) -> Any:
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, list):
-        return [_normalize_value(item) for item in value]
-    if isinstance(value, dict):
-        return {str(key): _normalize_value(item) for key, item in value.items()}
-    if isinstance(value, str):
-        stripped = value.strip()
-        if stripped and stripped[0] in "[{":
-            try:
-                return _normalize_value(json.loads(stripped))
-            except json.JSONDecodeError:
-                return value
-    return value
-
-
 def _normalize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [{key: _normalize_value(value) for key, value in row.items()} for row in rows]
+    return [{key: normalize_value(value) for key, value in row.items()} for row in rows]
 
 
 def _load_report_sections(db: CaseDB) -> tuple[list[dict[str, Any]], str]:
