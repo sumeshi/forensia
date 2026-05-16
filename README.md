@@ -206,8 +206,6 @@ mindmap
       Narrative
       Refuted Hypotheses
       Important Entities
-      Host Notes
-      User Notes
       Hypothesis Notes
       Suspicious Evidence
     Session State
@@ -236,14 +234,14 @@ AI 調査員は証拠を全部抱え込むわけではありません。
 見るのは、確認済み事実、重要エンティティ、時系列アンカー、open gaps、仮説状態です。人間がノートを整理してから渡すのに近い。生ログ全件を読ませて覚えておけ、と言うのは、さすがに酷です。
 
 - `overview.md`: 調査全体の索引
-- `confirmed_facts.md`: 確定した事実
-- `timeline_anchors.md`: 主要な時刻アンカー
-- `open_questions.md`: 未解決の問い
+- `confirmed_facts.md`: 確定した事実（1行インデックス、120字上限; 詳細は `memory/details/fact-NNN.md` に分離）
+- `timeline_anchors.md`: 主要な時刻アンカー（100行超で古い行を `details/timeline_archive.md` にアーカイブ）
+- `open_questions.md`: 未解決の問い（`internal_db_check` / `external_lookup` / `human_decision` の3種別）
 - `narrative.md`: 次サイクルでも保持したい短い説明筋
 - `refuted_hypotheses.md`: 否定済み仮説の控え
 - `important_entities.md`: 追跡対象の IP / user / host / process / service
-- `hypotheses/*.md`: 仮説ごとの状態と reasoning trail
-- `evidence/suspicious.md`: 注意すべき evidence の断片
+- `hypotheses/*.md`: 仮説ごとの状態と reasoning trail（ループごとにコードが自動レンダリング）
+- `evidence/suspicious.md`: check フェーズで LLM が直接指定した不審証拠
 
 これらは人間が直接読めるように Markdown で置きつつ、LLM が次のループで再利用しやすい形にもしています。  
 Markdown なのは見た目の趣味ではなく、ローカル実行・可搬性・差分確認のしやすさを優先した結果です。
@@ -258,11 +256,37 @@ Markdown なのは見た目の趣味ではなく、ローカル実行・可搬�
 
 `read_more` で要求できるファイルは `confirmed_facts.md`、`timeline_anchors.md`、`open_questions.md`、`narrative.md`、`hypotheses/*.md` など。一度のサイクルで必要なファイルだけを on-demand でロードするため、常に全ファイルを詰め込まずに済む。
 
+### check フェーズの memory_updates
+
+check フェーズの LLM レスポンスは `memory_updates` キーを通じてメモリファイルを更新します。
+
+| キー | 書き込み先 | アイテムの必須フィールド |
+|---|---|---|
+| `confirmed_facts` | `confirmed_facts.md` + `details/fact-NNN.md` | `text`, `evidence_ids` |
+| `timeline_anchors` | `timeline_anchors.md` | `timestamp`, `description`, `evidence_ids` |
+| `open_questions` | `open_questions.md` | `question`, `kind` |
+| `narrative` | `narrative.md` | 文字列リスト |
+| `refuted_hypotheses` | `refuted_hypotheses.md` | `hypothesis_id`, `description`, `reason` |
+| `important_entities` | `important_entities.md` | `entity_type`, `name`, `notes` |
+
+`suspicious_evidence` は `memory_updates` の外、チェックレスポンスのトップレベルに置きます（`evidence/suspicious.md` に追記）。  
+`hypotheses/*.md` は LLM が直接書くのではなく、ループごとにコードが自動レンダリングします。
+
 ### 圧縮の挙動
 
-`LLM_MEMORY_MAX_BYTES` は `overview.md`、`open_questions.md`、個別メモファイルの圧縮閾値として使います。  
-`confirmed_facts.md` は圧縮対象外です。インデックスは蓄積されますが、詳細本文は `memory/details/fact-NNN.md` に分離されており、概要のみのインデックスサイズは抑制されます。  
-`timeline_anchors.md`、`refuted_hypotheses.md`、`important_entities.md` も保持優先です。`timeline_anchors.md` は古い行を `memory/details/timeline_archive.md` に逃がします。
+`LLM_MEMORY_MAX_BYTES` はメモリファイルの圧縮閾値として使います。
+
+圧縮対象外（内容を保持優先）:
+
+- `confirmed_facts.md` — インデックス行は蓄積のみ。詳細本文は `memory/details/fact-NNN.md` に分離されているためインデックスサイズは抑制されます
+- `timeline_anchors.md` — 圧縮ではなくアーカイブ。100行超で古い行を `details/timeline_archive.md` に逃がし最新80行を残します
+- `narrative.md` — ファイル truncation は行いません。ただし `LLM_MEMORY_MAX_BYTES` を超えると次のループで LLM が 600 語に圧縮します
+- `refuted_hypotheses.md`、`important_entities.md` — 保持のみ
+
+圧縮あり:
+
+- `open_questions.md` — 古い問いを上位 20% ずつ削除する専用ロジックで圧縮します
+- `overview.md`、`hypotheses/*.md`、その他 — `max_bytes / 2` で末尾ベースの汎用圧縮
 
 `memory/` を削除した場合、次回の investigate 実行で `overview.md` は初期化されます。  
 `confirmed_facts.md` などの詳細メモは自動再生成されませんが、DuckDB の findings / hypotheses / evidence をもとに再調査はできます。
