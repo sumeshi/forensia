@@ -41,3 +41,8 @@ forensia = [
     "report_template/*.md",
     "static/**/*",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]

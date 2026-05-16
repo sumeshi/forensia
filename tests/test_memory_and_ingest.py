@@ -7,7 +7,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from forensia.ai.investigator import _apply_memory_updates
-from forensia.cli import _progress_pusher
+from forensia import cli as cli_module
+from forensia.cli import _progress_pusher, _reset_case_tables
 from forensia.config import clear_llm_settings_cache, get_llm_settings
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
@@ -70,7 +71,6 @@ class MemoryAndIngestTests(unittest.TestCase):
                 resolved_hypotheses=[],
                 check_output={
                     "memory_updates": {
-                        "overview_append": "overview note",
                         "confirmed_facts": [{"text": "fact one", "evidence_ids": ["ev-1"]}],
                         "timeline_anchors": [{"timestamp": "2026-05-12T10:00:00", "description": "anchor", "evidence_ids": ["ev-2"]}],
                         "open_questions": [{"question": "need more logs", "kind": "internal_db_check"}],
@@ -125,6 +125,49 @@ class MemoryAndIngestTests(unittest.TestCase):
             self.assertTrue((memory.details_dir / "fact-001.md").exists())
             self.assertFalse((memory.details_dir / "fact-002.md").exists())
 
+    def test_confirmed_fact_duplicates_with_dash_prefixed_body_are_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+
+            memory.append_confirmed_fact("- suspicious dash-prefixed fact", ["ev-1"])
+            memory.append_confirmed_fact("- suspicious dash-prefixed fact", ["ev-1"])
+
+            lines = [line for line in memory.confirmed_facts_path.read_text(encoding="utf-8").splitlines() if line.startswith("- ")]
+            self.assertEqual(1, len(lines))
+            self.assertFalse((memory.details_dir / "fact-002.md").exists())
+
+    def test_confirmed_fact_duplicate_check_uses_hash_cache_before_detail_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            memory.append_confirmed_fact("fact one", ["ev-1"])
+
+            with patch.object(Path, "glob", side_effect=AssertionError("glob should not be called")):
+                memory.append_confirmed_fact("fact one", ["ev-1"])
+
+    def test_next_fact_detail_id_uses_details_dir_not_compacted_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            memory.confirmed_facts_path.write_text("# Confirmed Facts\n\n- [fact-001] compacted\n", encoding="utf-8")
+            (memory.details_dir / "fact-042.md").write_text("# fact-042\n\nbody\n", encoding="utf-8")
+
+            self.assertEqual("fact-043", memory._next_fact_detail_id())
+
+    def test_confirmed_facts_are_not_compacted_when_oversized(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "128"}):
+            clear_llm_settings_cache()
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            original = "# Confirmed Facts\n\n" + ("x" * 512) + "\n"
+            memory.confirmed_facts_path.write_text(original, encoding="utf-8")
+
+            changed = memory.compact_if_oversized(memory.confirmed_facts_path)
+
+            self.assertFalse(changed)
+            self.assertEqual(original, memory.confirmed_facts_path.read_text(encoding="utf-8"))
+
     def test_timeline_anchors_archive_old_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -152,11 +195,45 @@ class MemoryAndIngestTests(unittest.TestCase):
             memory = MemoryManager(case)
             memory.narrative_path.write_text("# Narrative\n\n" + ("x" * 512), encoding="utf-8")
 
-            with patch("forensia.core.memory.chat_completion", return_value="compressed narrative"):
+            with patch("forensia.core.memory.chat_completion", return_value="compressed narrative") as mock_chat:
                 changed = memory.compact_narrative_if_needed("http://localhost:1234", "test-model")
 
             self.assertTrue(changed)
             self.assertEqual("compressed narrative\n", memory.narrative_path.read_text(encoding="utf-8"))
+            messages = mock_chat.call_args.kwargs["messages"]
+            self.assertIn("Compress the following investigation narrative", messages[0]["content"])
+            self.assertIn("Write the compressed narrative in ja.", messages[0]["content"])
+
+    def test_narrative_compaction_prompt_stays_english_for_english_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"LLM_MEMORY_MAX_BYTES": "64", "LLM_OUTPUT_LANGUAGE": "en"},
+        ):
+            clear_llm_settings_cache()
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            memory.narrative_path.write_text("# Narrative\n\n" + ("x" * 512), encoding="utf-8")
+
+            with patch("forensia.core.memory.chat_completion", return_value="compressed narrative") as mock_chat:
+                memory.compact_narrative_if_needed("http://localhost:1234", "test-model")
+
+            messages = mock_chat.call_args.kwargs["messages"]
+            self.assertIn("Write the compressed narrative in en.", messages[0]["content"])
+            self.assertNotRegex(messages[0]["content"], r"[ぁ-んァ-ン一-龥]")
+
+    def test_narrative_compaction_failure_keeps_existing_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "64"}):
+            clear_llm_settings_cache()
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            original = "# Narrative\n\n" + ("x" * 512)
+            memory.narrative_path.write_text(original, encoding="utf-8")
+
+            with patch("forensia.core.memory.chat_completion", side_effect=RuntimeError("timeout")):
+                changed = memory.compact_narrative_if_needed("http://localhost:1234", "test-model")
+
+            self.assertFalse(changed)
+            self.assertEqual(original, memory.narrative_path.read_text(encoding="utf-8"))
 
     def test_get_llm_settings_cache_can_be_cleared(self) -> None:
         with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "ja"}):
@@ -240,6 +317,65 @@ class MemoryAndIngestTests(unittest.TestCase):
 
             mock_progress.assert_called_once()
             mock_full.assert_not_called()
+
+    def test_reset_case_tables_clears_ingested_files_claims_and_hypothesis_reasoning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO ingested_files (sha256, path, source_kind, size, ingested_at)
+                    VALUES ('sha-1', '/tmp/a.evtx', 'evtx', 10, now())
+                    """
+                )
+                db.execute(
+                    """
+                    INSERT INTO claims (
+                        claim_id, section_key, claim_text, finding_ids, hypothesis_ids, evidence_ids,
+                        support_status, created_at, updated_at
+                    ) VALUES ('C-1', '1_overview', 'claim', '[]', '[]', '[]', 'supported', now(), now())
+                    """
+                )
+                db.execute(
+                    """
+                    INSERT INTO hypothesis_reasoning (
+                        entry_id, hypothesis_id, session_id, iteration, phase, verdict, query_id, body, created_at
+                    ) VALUES ('HR-1', 'H-1', 'S-1', 1, 'check', 'confirmed', 'Q-1', 'body', now())
+                    """
+                )
+
+                _reset_case_tables(db)
+
+                self.assertEqual(0, db.execute("SELECT COUNT(*) FROM ingested_files").fetchone()[0])
+                self.assertEqual(0, db.execute("SELECT COUNT(*) FROM claims").fetchone()[0])
+                self.assertEqual(0, db.execute("SELECT COUNT(*) FROM hypothesis_reasoning").fetchone()[0])
+
+    def test_run_renders_report_once_via_render_written_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_dir = Path(tmpdir) / "input"
+            input_dir.mkdir(parents=True, exist_ok=True)
+            (input_dir / "a.evtx").write_text("alpha", encoding="utf-8")
+            output_dir = Path(tmpdir) / "case"
+
+            with patch("forensia.cli.ingest_all", return_value={"new_files": 1, "skipped_files": 0, "evtx_files": 1, "mft_files": 0}), patch(
+                "forensia.cli.normalize_all",
+                return_value={"evtx_rows": 1, "mft_entries": 0, "mft_timeline_rows": 0},
+            ), patch("forensia.cli.resolve_llm_config", return_value=(None, None)), patch("forensia.cli.load_rules_from_dir", return_value=[]), patch(
+                "forensia.cli.render_written_report",
+                return_value=(output_dir / "reports" / "report.md", output_dir / "reports" / "report.html"),
+            ) as mock_render_written, patch("forensia.cli.render_html_report") as mock_render_html, patch(
+                "forensia.cli.write_api_snapshots"
+            ):
+                cli_module.run(
+                    input_dir=str(input_dir),
+                    out=str(output_dir),
+                    profile="windows-basic",
+                    llm_base_url=None,
+                    model=None,
+                )
+
+            mock_render_written.assert_called_once()
+            mock_render_html.assert_not_called()
 
     def test_hypothesis_memory_contains_reasoning_section(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

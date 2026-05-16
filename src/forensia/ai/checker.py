@@ -8,6 +8,7 @@ from typing import Any
 
 from forensia.ai.json_response import request_llm_json
 from forensia.ai.prompts import build_check_messages
+from forensia.config import get_llm_settings
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery
@@ -22,8 +23,6 @@ class CheckResult:
     verdict: str
     finding_updates: list[dict[str, Any]]
     suspicious_evidence: list[dict[str, Any]]
-    compromised_hosts: list[dict[str, Any]]
-    compromised_users: list[dict[str, Any]]
     new_hypotheses: list[Hypothesis]
     memory_updates: dict[str, Any]
     report_text: str
@@ -157,7 +156,9 @@ def _insert_investigation_finding(
     report_text: str,
 ) -> str:
     finding_id = f"{session_id}-{planned_query.query_id}-finding"
-    title = f"Investigation: {planned_query.purpose}"
+    language = str(get_llm_settings()["output_language"]).lower()
+    prefix = "調査:" if language.startswith("ja") else "Investigation:"
+    title = f"{prefix} {planned_query.purpose}"
     summary = report_text
     evidence = result_summary.get("sample_rows", [])
     missing_checks = []
@@ -322,8 +323,6 @@ def check_query_result(
         verdict=_normalize_verdict(parsed.get("verdict")),
         finding_updates=parsed.get("finding_updates") or [],
         suspicious_evidence=parsed.get("suspicious_evidence") or [],
-        compromised_hosts=parsed.get("compromised_hosts") or [],
-        compromised_users=parsed.get("compromised_users") or [],
         new_hypotheses=_parse_new_hypotheses(parsed.get("new_hypotheses")),
         memory_updates=parsed.get("memory_updates") or {},
         report_text=parsed.get("report_text") or "",

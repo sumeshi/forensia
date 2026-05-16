@@ -18,7 +18,10 @@ from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records, normalize_value
 from forensia.report.html import render_html_report
 
-GAP_PATTERN = re.compile(r"【調査不足:\s*([^】]+)】")
+GAP_PATTERN = re.compile(
+    r"【調査不足:\s*([^】]+)】|\[INSUFFICIENT EVIDENCE:\s*([^\]]+)\]",
+    re.IGNORECASE,
+)
 
 
 @lru_cache(maxsize=None)
@@ -45,16 +48,28 @@ def _summarize_query_results(db: CaseDB, queries: list[str], max_rows: int = 20)
         evidence_ids: list[str] = []
         finding_ids: list[str] = []
         hypothesis_ids: list[str] = []
+        seen_evidence_ids: set[str] = set()
+        seen_finding_ids: set[str] = set()
+        seen_hypothesis_ids: set[str] = set()
         for row in rows:
             evidence_id = row.get("evidence_id")
-            if evidence_id and str(evidence_id) not in evidence_ids:
-                evidence_ids.append(str(evidence_id))
+            if evidence_id:
+                value = str(evidence_id)
+                if value not in seen_evidence_ids:
+                    seen_evidence_ids.add(value)
+                    evidence_ids.append(value)
             finding_id = row.get("finding_id")
-            if finding_id and str(finding_id) not in finding_ids:
-                finding_ids.append(str(finding_id))
+            if finding_id:
+                value = str(finding_id)
+                if value not in seen_finding_ids:
+                    seen_finding_ids.add(value)
+                    finding_ids.append(value)
             hypothesis_id = row.get("hypothesis_id")
-            if hypothesis_id and str(hypothesis_id) not in hypothesis_ids:
-                hypothesis_ids.append(str(hypothesis_id))
+            if hypothesis_id:
+                value = str(hypothesis_id)
+                if value not in seen_hypothesis_ids:
+                    seen_hypothesis_ids.add(value)
+                    hypothesis_ids.append(value)
         summaries.append(
             {
                 "query": query,
@@ -88,18 +103,24 @@ def _collect_claim_provenance(evidence_results: list[dict[str, Any]]) -> dict[st
     evidence_ids: list[str] = []
     finding_ids: list[str] = []
     hypothesis_ids: list[str] = []
+    seen_evidence_ids: set[str] = set()
+    seen_finding_ids: set[str] = set()
+    seen_hypothesis_ids: set[str] = set()
     for result in evidence_results:
         for evidence_id in result.get("evidence_ids") or []:
             value = str(evidence_id)
-            if value and value not in evidence_ids:
+            if value and value not in seen_evidence_ids:
+                seen_evidence_ids.add(value)
                 evidence_ids.append(value)
         for finding_id in result.get("finding_ids") or []:
             value = str(finding_id)
-            if value and value not in finding_ids:
+            if value and value not in seen_finding_ids:
+                seen_finding_ids.add(value)
                 finding_ids.append(value)
         for hypothesis_id in result.get("hypothesis_ids") or []:
             value = str(hypothesis_id)
-            if value and value not in hypothesis_ids:
+            if value and value not in seen_hypothesis_ids:
+                seen_hypothesis_ids.add(value)
                 hypothesis_ids.append(value)
     return {
         "evidence_ids": evidence_ids,
@@ -483,10 +504,12 @@ def fill_section(
 
 def collect_gaps(filled_sections: dict[str, str]) -> list[str]:
     gaps: list[str] = []
+    seen: set[str] = set()
     for content in filled_sections.values():
         for match in GAP_PATTERN.finditer(content):
-            gap = match.group(1).strip()
-            if gap and gap not in gaps:
+            gap = (match.group(1) or match.group(2) or "").strip()
+            if gap and gap not in seen:
+                seen.add(gap)
                 gaps.append(gap)
     return gaps
 

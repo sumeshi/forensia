@@ -8,6 +8,7 @@ import yaml
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
+from forensia.normalize.evtx import normalize_evtx
 from forensia.rules.engine import save_findings
 from forensia.rules.loader import load_rules_from_dir
 from forensia.rules.models import Finding
@@ -34,6 +35,15 @@ class RuleProfileTests(unittest.TestCase):
         self.assertEqual(14, len(rules))
         self.assertIn("windows-defender-5001-realtime-disabled", rule_ids)
         self.assertNotIn("windows-security-4624-rdp-logon", rule_ids)
+
+    def test_profile_with_nonexistent_rulepack_loads_zero_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_path = Path(tmpdir) / "profile.yaml"
+            profile_path.write_text("rulepacks:\n  - nonexistent\n", encoding="utf-8")
+
+            rules = load_rules_from_dir("src/forensia/rulepacks", profile_path)
+
+        self.assertEqual(0, len(rules))
 
     def test_windows_rule_findings_are_english_for_translated_batch(self) -> None:
         target_files = [
@@ -140,6 +150,30 @@ class AllowlistTests(unittest.TestCase):
 
             self.assertIsNotNone(row)
             self.assertEqual("suppressed", row[0])
+
+
+class NormalizeEvtxTests(unittest.TestCase):
+    def test_normalize_evtx_maps_winlog_user_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            (case.raw_dir / "security.jsonl").write_text(
+                (
+                    '{"evidence_id":"ev-1","source_file":"security.evtx","@timestamp":"2026-05-16T01:02:03Z",'
+                    '"winlog":{"channel":"Security","event_id":"4624","record_id":"1","computer_name":"host1",'
+                    '"user":{"name":"alice"},'
+                    '"event_data":{"TargetUserName":"alice","SubjectUserName":"SYSTEM","IpAddress":"10.0.0.1","LogonType":"3"}}}\n'
+                ),
+                encoding="utf-8",
+            )
+
+            with CaseDB(case) as db:
+                inserted = normalize_evtx(case, db)
+                user_names = db.execute(
+                    "SELECT DISTINCT user_name FROM evtx_events WHERE user_name IS NOT NULL ORDER BY user_name"
+                ).fetchall()
+
+            self.assertEqual(1, inserted)
+            self.assertEqual([("alice",)], user_names)
 
 
 if __name__ == "__main__":

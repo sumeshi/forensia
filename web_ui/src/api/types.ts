@@ -15,7 +15,6 @@ export type CaseStatsDTO = {
   open_gaps: number;
   sessions: number;
   total_iterations: number;
-  session_count: number;
   report_human_reviewed: number;
   report_ai_exhausted: number;
 };

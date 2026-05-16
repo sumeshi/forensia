@@ -55,12 +55,14 @@ TABLE_COLUMN_REFERENCE: dict[str, tuple[str, ...]] = {
         "confidence_adjustment", "notes", "raw_response", "created_at",
     ),
     "investigation_sessions": ("session_id", "started_at", "finished_at", "iterations", "status"),
-    "investigation_steps": ("step_id", "session_id", "iteration", "phase", "input_json", "output_json", "created_at"),
+    "investigation_steps": (
+        "step_id", "session_id", "hypothesis_id", "iteration", "phase", "input_json", "output_json", "created_at",
+    ),
     "hypothesis_reasoning": (
         "entry_id", "hypothesis_id", "session_id", "iteration", "phase", "verdict", "query_id", "body", "created_at",
     ),
     "progress_events": ("event_index", "stage", "status", "iteration", "current_query", "summary", "payload", "created_at"),
-    "ingested_files": ("path", "source_kind", "size", "ingested_at"),
+    "ingested_files": ("sha256", "path", "source_kind", "size", "ingested_at"),
 }
 
 

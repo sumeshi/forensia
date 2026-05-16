@@ -77,8 +77,7 @@ def get_case_stats_dto(db: CaseDB) -> CaseStatsDTO:
         """
         SELECT
             COUNT(*) AS sessions,
-            COALESCE(SUM(iterations) FILTER (WHERE COALESCE(status, '') != 'failed'), 0) AS total_iterations,
-            COUNT(*) AS session_count
+            COALESCE(SUM(iterations) FILTER (WHERE COALESCE(status, '') != 'failed'), 0) AS total_iterations
         FROM investigation_sessions
         """
     ).fetchone()
@@ -93,7 +92,6 @@ def get_case_stats_dto(db: CaseDB) -> CaseStatsDTO:
         open_gaps=int(report_rows[0] or 0),
         sessions=int(session_rows[0] or 0),
         total_iterations=int(session_rows[1] or 0),
-        session_count=int(session_rows[2] or 0),
         report_human_reviewed=int(report_rows[1] or 0),
         report_ai_exhausted=int(report_rows[2] or 0),
     )
@@ -328,7 +326,7 @@ def list_steps_dto(db: CaseDB, session_id: str) -> list[InvestigationStepDTO]:
     rows = fetch_records(
         db,
         """
-        SELECT step_id, session_id, iteration, phase, input_json, output_json, created_at
+        SELECT step_id, session_id, hypothesis_id, iteration, phase, input_json, output_json, created_at
         FROM investigation_steps
         WHERE session_id = ?
         ORDER BY created_at, step_id
@@ -431,7 +429,7 @@ def list_ai_reviews_dto(
     if hypothesis_id:
         clauses.append("finding_id = ?")
         params.append(f"hypothesis:{hypothesis_id}")
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    where = f"WHERE {' OR '.join(clauses)}" if clauses else ""
     rows = fetch_records(
         db,
         f"""

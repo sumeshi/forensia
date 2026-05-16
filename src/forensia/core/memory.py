@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import logging
 from math import ceil
 from pathlib import Path
 from re import sub
@@ -7,6 +9,9 @@ from re import sub
 from forensia.ai.lmstudio import chat_completion
 from forensia.core.case import Case
 from forensia.config import get_llm_settings
+
+
+logger = logging.getLogger(__name__)
 
 
 def _slugify(value: str) -> str:
@@ -32,6 +37,8 @@ class MemoryManager:
             self.details_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
+        self._fact_hashes: set[str] = set()
+        self._load_existing_fact_hashes()
 
     @property
     def overview_path(self) -> Path:
@@ -139,7 +146,8 @@ class MemoryManager:
         if not body:
             return
         normalized_ids = [str(item).strip() for item in evidence_ids if str(item).strip()]
-        if self._confirmed_fact_exists(body, normalized_ids):
+        fact_hash = self._fact_hash(body, normalized_ids)
+        if fact_hash in self._fact_hashes:
             return
         detail_id = self._next_fact_detail_id()
         preview = body[:120]
@@ -148,6 +156,7 @@ class MemoryManager:
             return
         if self._append_markdown_line(self.confirmed_facts_path, "# Confirmed Facts", line):
             self._write_fact_detail(detail_id, body, normalized_ids)
+            self._fact_hashes.add(fact_hash)
             self.compact_if_oversized(self.confirmed_facts_path)
 
     def append_timeline_anchor(self, timestamp: str, description: str, evidence_ids: list[str]) -> None:
@@ -254,14 +263,13 @@ class MemoryManager:
         return True
 
     def _next_fact_detail_id(self) -> str:
-        if not self.confirmed_facts_path.exists():
-            return "fact-001"
-        count = sum(
-            1
-            for line in self.confirmed_facts_path.read_text(encoding="utf-8").splitlines()
-            if line.startswith("- [fact-")
-        )
-        return f"fact-{count + 1:03d}"
+        max_n = 0
+        for path in self.details_dir.glob("fact-*.md"):
+            try:
+                max_n = max(max_n, int(path.stem[5:]))
+            except ValueError:
+                continue
+        return f"fact-{max_n + 1:03d}"
 
     def _write_fact_detail(self, detail_id: str, text: str, evidence_ids: list[str]) -> None:
         lines = [f"# {detail_id}", "", text.strip()]
@@ -269,18 +277,34 @@ class MemoryManager:
             lines.extend(["", "## Evidence", *[f"- {item}" for item in evidence_ids]])
         (self.details_dir / f"{detail_id}.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
-    def _confirmed_fact_exists(self, text: str, evidence_ids: list[str]) -> bool:
+    def _fact_hash(self, text: str, evidence_ids: list[str]) -> str:
+        payload = "\n".join([text.strip(), *evidence_ids])
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _parse_fact_detail(self, detail: list[str]) -> tuple[str, list[str]] | None:
+        if len(detail) < 3:
+            return None
+        existing_text = detail[2].strip()
+        if not existing_text:
+            return None
+        evidence_ids: list[str] = []
+        in_evidence = False
+        for line in detail[3:]:
+            stripped = line.strip()
+            if stripped == "## Evidence":
+                in_evidence = True
+                continue
+            if in_evidence and stripped.startswith("- "):
+                evidence_ids.append(stripped[2:].strip())
+        return existing_text, evidence_ids
+
+    def _load_existing_fact_hashes(self) -> None:
         for path in sorted(self.details_dir.glob("fact-*.md")):
-            detail = path.read_text(encoding="utf-8").splitlines()
-            if len(detail) < 3:
+            parsed = self._parse_fact_detail(path.read_text(encoding="utf-8").splitlines())
+            if parsed is None:
                 continue
-            existing_text = detail[2].strip()
-            if existing_text != text:
-                continue
-            existing_ids = [line[2:].strip() for line in detail if line.startswith("- ")]
-            if existing_ids == evidence_ids:
-                return True
-        return False
+            text, evidence_ids = parsed
+            self._fact_hashes.add(self._fact_hash(text, evidence_ids))
 
     def _rotate_timeline_anchors(self, max_lines: int = 100, keep_lines: int = 80) -> None:
         if not self.timeline_anchors_path.exists():
@@ -308,21 +332,28 @@ class MemoryManager:
         current = self.narrative_path.read_text(encoding="utf-8").strip()
         if not current:
             return False
-        body = chat_completion(
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "以下の調査ナラティブを 600 語以内に圧縮してください。"
-                        "結論・タイムライン・未解決スレッドを保持すること。"
-                        "出力はナラティブ本文のみ。"
-                    ),
-                },
-                {"role": "user", "content": current},
-            ],
-            model=model,
-            base_url=base_url,
-        ).strip()
+        output_language = str(get_llm_settings()["output_language"]).lower()
+        language_instruction = f"Write the compressed narrative in {output_language}."
+        try:
+            body = chat_completion(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Compress the following investigation narrative to 600 words or fewer. "
+                            "Preserve conclusions, timeline, and unresolved threads. "
+                            "Output only the narrative body. "
+                            f"{language_instruction}"
+                        ),
+                    },
+                    {"role": "user", "content": current},
+                ],
+                model=model,
+                base_url=base_url,
+            ).strip()
+        except Exception:
+            logger.exception("narrative compaction failed")
+            return False
         if not body:
             return False
         self.narrative_path.write_text(body + "\n", encoding="utf-8")
@@ -379,6 +410,7 @@ class MemoryManager:
         if not path.exists() or path.stat().st_size <= self.max_bytes:
             return False
         if path in {
+            self.confirmed_facts_path,
             self.timeline_anchors_path,
             self.narrative_path,
             self.refuted_hypotheses_path,

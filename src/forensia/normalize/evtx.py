@@ -40,7 +40,7 @@ def normalize_evtx(case: Case, db: CaseDB) -> int:
                 try_cast(json_extract_string(json, '$.winlog.record_id') AS BIGINT) AS record_id,
                 try_cast(json_extract_string(json, '$.\"@timestamp\"') AS TIMESTAMP) AS timestamp,
                 json_extract_string(json, '$.winlog.computer_name') AS computer,
-                NULL AS user_name,
+                json_extract_string(json, '$.winlog.user.name') AS user_name,
                 json_extract_string(json, '$.winlog.event_data.TargetUserName') AS target_user,
                 json_extract_string(json, '$.winlog.event_data.SubjectUserName') AS subject_user,
                 json_extract_string(json, '$.winlog.event_data.IpAddress') AS src_ip,
@@ -58,6 +58,7 @@ def normalize_evtx(case: Case, db: CaseDB) -> int:
                 ) AS message,
                 json AS raw_json,
                 json_extract(json, '$.tags') AS tags,
+                -- Severity is assigned later by rule-based findings, not by raw event rows.
                 NULL AS severity
             FROM read_ndjson_objects(?)
             """,

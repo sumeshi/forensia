@@ -7,24 +7,55 @@ from pathlib import Path
 from unittest.mock import patch
 import yaml
 
+from forensia.ai.checker import _insert_investigation_finding
 from forensia.ai.investigator import (
     _append_hypothesis_reasoning,
-    _classify_gap_kind,
-    _gap_hypothesis_id,
-    _inject_gap_hypotheses,
-    _load_persisted_hypotheses,
-    _report_cycle_progress,
+    _final_summary,
     investigate,
 )
 from forensia.ai.planner import BroadPlanResult, HypothesisPlanResult
+from forensia.ai.report_gap import (
+    _classify_gap_kind,
+    _gap_hypothesis_id,
+    _inject_gap_hypotheses,
+    _report_cycle_progress,
+)
+from forensia.ai.hypothesis_manager import _load_persisted_hypotheses
+from forensia.config import clear_llm_settings_cache
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
-from forensia.core.session import SessionState
+from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.db.database import CaseDB
-from forensia.report.writer import _build_report_brief, fill_section
+from forensia.report.writer import _build_report_brief, _extract_claim_texts, _section_confidence, collect_gaps, fill_section
 
 
 class PersistenceTests(unittest.TestCase):
+    def test_collect_gaps_supports_english_and_japanese_placeholders(self) -> None:
+        self.assertEqual(
+            ["no logon data"],
+            collect_gaps({"sec": "[INSUFFICIENT EVIDENCE: no logon data]"}),
+        )
+        self.assertEqual(
+            ["ログオン記録なし"],
+            collect_gaps({"sec": "【調査不足: ログオン記録なし】"}),
+        )
+
+    def test_collect_gaps_preserves_order_while_deduplicating(self) -> None:
+        self.assertEqual(
+            ["gap one", "gap two"],
+            collect_gaps(
+                {
+                    "a": "[INSUFFICIENT EVIDENCE: gap one]\n[INSUFFICIENT EVIDENCE: gap two]",
+                    "b": "[INSUFFICIENT EVIDENCE: gap one]",
+                }
+            ),
+        )
+
+    def test_section_confidence_and_claim_extraction_respect_english_gap_placeholder(self) -> None:
+        self.assertEqual(1.0, _section_confidence("no gaps here"))
+        self.assertLess(_section_confidence("[INSUFFICIENT EVIDENCE: x]"), 1.0)
+        self.assertEqual([], _extract_claim_texts("[INSUFFICIENT EVIDENCE: missing evidence]"))
+
     def test_append_hypothesis_reasoning_is_idempotent_per_query_phase(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -354,6 +385,50 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual(0, row_count)
             self.assertIn("所有組織", memory.open_questions_path.read_text(encoding="utf-8"))
 
+    def test_gap_classification_supports_english_external_and_human_keywords(self) -> None:
+        for phrase in (
+            "Need ip reputation check for this address",
+            "Perform geo lookup for the source IP",
+            "This requires external internet confirmation",
+        ):
+            self.assertEqual("external_lookup", _classify_gap_kind(phrase))
+        for phrase in (
+            "Need manager approval before concluding",
+            "Confirm with the business owner",
+            "Check whether this action was authorized by policy",
+        ):
+            self.assertEqual("human_decision", _classify_gap_kind(phrase))
+
+    def test_final_summary_fallback_follows_output_language(self) -> None:
+        with patch.dict("os.environ", {"LLM_OUTPUT_LANGUAGE": "en"}):
+            clear_llm_settings_cache()
+            self.assertEqual(
+                "No additional progress was made during this investigation.",
+                _final_summary(SessionState(session_id="S-1")),
+            )
+            clear_llm_settings_cache()
+
+    def test_investigation_finding_title_prefix_follows_output_language(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            planned_query = PlannedQuery(query_id="Q-1", hypothesis_id="H-1", purpose="host triage", sql="SELECT 1")
+            with patch.dict("os.environ", {"LLM_OUTPUT_LANGUAGE": "ja"}):
+                clear_llm_settings_cache()
+                with CaseDB(case) as db:
+                    finding_id = _insert_investigation_finding(
+                        case=case,
+                        db=db,
+                        session_id="S-1",
+                        iteration=1,
+                        planned_query=planned_query,
+                        hypothesis=None,
+                        result_summary={"sample_rows": []},
+                        report_text="body",
+                    )
+                    title = db.execute("SELECT title FROM findings WHERE finding_id = ?", (finding_id,)).fetchone()[0]
+            self.assertEqual("調査: host triage", title)
+            clear_llm_settings_cache()
+
     def test_investigate_reinjects_gap_hypothesis_on_second_cycle(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -409,6 +484,57 @@ class PersistenceTests(unittest.TestCase):
             active_gap = next((item for item in hypotheses if item["id"] == gap_id), None)
             self.assertIsNotNone(active_gap)
             self.assertEqual("active", active_gap["status"])
+
+    def test_broad_plan_only_new_hypotheses_do_not_reset_no_progress_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            generated = {"count": 0}
+
+            def fake_broad_plan(*args, **kwargs):
+                generated["count"] += 1
+                index = generated["count"]
+                return BroadPlanResult(
+                    read_more=[],
+                    hypotheses=[Hypothesis(id=f"H-{index}", description=f"hypothesis {index}", status="active", summary="")],
+                    stop=False,
+                    stop_reason=None,
+                    raw_response={},
+                )
+
+            with CaseDB(case) as db:
+                with patch("forensia.ai.investigator._seed_findings", return_value=0), patch(
+                    "forensia.ai.investigator.broad_plan_investigation",
+                    side_effect=fake_broad_plan,
+                ), patch(
+                    "forensia.ai.investigator.plan_hypothesis_query",
+                    return_value=HypothesisPlanResult(
+                        read_more=[],
+                        hypothesis=None,
+                        query=None,
+                        needs_more=False,
+                        stop_reason=None,
+                        raw_response={},
+                    ),
+                ), patch(
+                    "forensia.ai.investigator.render_written_report",
+                    return_value=(case.reports_dir / "report.md", case.reports_dir / "report.html"),
+                ):
+                    result = investigate(
+                        case=case,
+                        db=db,
+                        base_url="http://localhost:1234",
+                        model="test-model",
+                        max_iter=5,
+                        no_progress_limit=2,
+                        report_every_n_cycles=999,
+                    )
+                    iterations = db.execute(
+                        "SELECT iterations FROM investigation_sessions WHERE session_id = ?",
+                        (result["session_id"],),
+                    ).fetchone()[0]
+
+            self.assertEqual("completed", result["status"])
+            self.assertEqual(2, int(iterations))
 
     def test_case_init_creates_allowlist_stub_and_preserves_existing_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -310,8 +310,8 @@ def create_app(case: Case) -> FastAPI:
 
     if spa_dir is None:
         message = (
-            "web_ui/dist が見つかりません。"
-            " `cd web_ui && npx pnpm install && npx pnpm build` を実行してください。"
+            "web_ui/dist not found."
+            " Run `cd web_ui && npx pnpm install && npx pnpm build` first."
         )
 
         @app.get("/", response_class=HTMLResponse)

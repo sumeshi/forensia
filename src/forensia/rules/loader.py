@@ -32,8 +32,8 @@ def load_rules_from_dir(directory: str | Path, profile_path: str | Path | None =
                 if rel_parent == allowed or rel_parent.startswith(f"{allowed}/"):
                     matched = True
                     break
-                if not matched:
-                    continue
+            if not matched:
+                continue
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
         if data:
             rule = Rule.model_validate(data)

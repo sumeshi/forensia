@@ -31,15 +31,28 @@ def _status(message: str) -> None:
 
 
 def _count_records(db: CaseDB) -> dict[str, int]:
-    return {
-        "evtx_rows": int(db.execute("SELECT COUNT(*) FROM evtx_events").fetchone()[0]),
-        "mft_entries": int(db.execute("SELECT COUNT(*) FROM mft_entries").fetchone()[0]),
-        "findings": int(db.execute("SELECT COUNT(*) FROM findings").fetchone()[0]),
-        "sessions": int(db.execute("SELECT COUNT(*) FROM investigation_sessions").fetchone()[0]),
-        "hypotheses": int(db.execute("SELECT COUNT(*) FROM hypotheses").fetchone()[0]),
-        "report_sections": int(db.execute("SELECT COUNT(*) FROM report_sections").fetchone()[0]),
-        "progress_events": int(db.execute("SELECT COUNT(*) FROM progress_events").fetchone()[0]),
-    }
+    row = db.execute(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM evtx_events) AS evtx_rows,
+            (SELECT COUNT(*) FROM mft_entries) AS mft_entries,
+            (SELECT COUNT(*) FROM findings) AS findings,
+            (SELECT COUNT(*) FROM investigation_sessions) AS sessions,
+            (SELECT COUNT(*) FROM hypotheses) AS hypotheses,
+            (SELECT COUNT(*) FROM report_sections) AS report_sections,
+            (SELECT COUNT(*) FROM progress_events) AS progress_events
+        """
+    ).fetchone()
+    keys = [
+        "evtx_rows",
+        "mft_entries",
+        "findings",
+        "sessions",
+        "hypotheses",
+        "report_sections",
+        "progress_events",
+    ]
+    return {key: int(row[index] or 0) for index, key in enumerate(keys)}
 
 
 def _has_investigation_artifacts(db: CaseDB) -> bool:
@@ -56,12 +69,15 @@ def _reset_case_tables(db: CaseDB) -> None:
         "mft_entries",
         "mft_timeline",
         "findings",
+        "claims",
         "ai_reviews",
         "investigation_sessions",
         "investigation_steps",
+        "hypothesis_reasoning",
         "hypotheses",
         "report_sections",
         "progress_events",
+        "ingested_files",
     ):
         db.execute(f"DELETE FROM {table}")
 
@@ -89,7 +105,7 @@ def _resolve_template_dir(case: Case, template_dir: str | None) -> Path:
 def _resolve_llm_or_die(base_url: str | None, model: str | None) -> tuple[str, str]:
     resolved_base_url, resolved_model = resolve_llm_config(base_url, model)
     if not resolved_base_url or not resolved_model:
-        raise typer.BadParameter("LLM_BASE_URL と LLM_MODEL を .env または CLI で指定してください")
+        raise typer.BadParameter("Set LLM_BASE_URL and LLM_MODEL via .env file or CLI flags.")
     return resolved_base_url, resolved_model
 
 
@@ -139,7 +155,7 @@ def init(case_dir: str) -> None:
 
 @app.command()
 def add(case_dir: str, input_dir: str) -> None:
-    """既存ケースに新しいエビデンスを増分取り込みする。"""
+    """Incrementally ingest new evidence into an existing case."""
     case = _open_case_or_die(case_dir)
     tasks = CaseTasks.for_case(case)
     _status(f"Adding evidence from: {input_dir}")
@@ -291,12 +307,12 @@ def run(
         _status(f"Ingest complete: {note}")
         push_progress(f"[ingest] {note}", stage="ingest", status="running", summary=note)
 
-        # ── Stage 2: Normalize ───────────────────────────────────────────────
+        # Stage 2: Normalize
         existing_rows = int(db.execute("SELECT COUNT(*) FROM evtx_events").fetchone()[0])
         normalized_this_run = True
         if not init and counts["new_files"] == 0 and tasks.is_done("normalize") and existing_rows > 0:
             normalized_this_run = False
-            _status(f"Stage 2/4: normalize — already done ({existing_rows} rows), skipping")
+            _status(f"Stage 2/4: normalize - already done ({existing_rows} rows), skipping")
             push_progress(
                 f"[normalize] skipped ({existing_rows} rows already in DB)",
                 stage="normalize",
@@ -314,10 +330,10 @@ def run(
             _status(f"Normalize complete: {note}, mft_timeline_rows={mft_timeline}")
             push_progress(f"[normalize] {note}", stage="normalize", status="running", summary=note)
 
-        # ── Stage 3: Analyze ─────────────────────────────────────────────────
+        # Stage 3: Analyze
         if not init and not normalized_this_run and tasks.is_done("analyze"):
             existing_findings = int(db.execute("SELECT COUNT(*) FROM findings").fetchone()[0])
-            _status(f"Stage 3/4: analyze — already done ({existing_findings} findings), skipping")
+            _status(f"Stage 3/4: analyze - already done ({existing_findings} findings), skipping")
             push_progress(
                 f"[analyze] skipped ({existing_findings} findings already exist)",
                 stage="analyze",
@@ -344,17 +360,17 @@ def run(
             tasks.mark_done("analyze", f"profile={profile}, findings={total_findings}")
             _status(f"Analyze complete: findings={total_findings}")
             push_progress(
-                f"[analyze] done — findings={total_findings}",
+                f"[analyze] done - findings={total_findings}",
                 stage="analyze",
                 status="running",
                 summary=f"findings={total_findings}",
             )
 
-        # ── Stage 4: Investigate ─────────────────────────────────────────────
+        # Stage 4: Investigate
         if llm_base_url and model:
             if reinvestigate or not _has_investigation_artifacts(db):
                 _status(f"Stage 4/4: investigate with model={model}")
-                push_progress(f"[investigate] starting — model={model}", stage="investigate", status="running")
+                push_progress(f"[investigate] starting - model={model}", stage="investigate", status="running")
                 result = investigate_loop(
                     case=case,
                     db=db,
@@ -383,7 +399,7 @@ def run(
                 )
                 _status(f"Investigation complete: session={result['session_id']} status={result['status']}")
                 push_progress(
-                    f"[investigate] done — session={result['session_id']} status={result['status']}",
+                    f"[investigate] done - session={result['session_id']} status={result['status']}",
                     stage="investigate",
                     status=result["status"],
                     iteration=result["iteration"],
@@ -392,19 +408,18 @@ def run(
                     report_sections=result.get("report_sections", {}),
                 )
             else:
-                _status("Stage 4/4: investigate — previous session exists, skipping. Use --reinvestigate to add a new session.")
+                _status("Stage 4/4: investigate - previous session exists, skipping. Use --reinvestigate to add a new session.")
                 push_progress(
-                    "[investigate] skipped — previous session exists (use --reinvestigate)",
+                    "[investigate] skipped - previous session exists (use --reinvestigate)",
                     stage="investigate",
                     status="running",
                 )
         else:
-            _status("Stage 4/4: LLM not configured — skipping investigate (set LLM_BASE_URL and LLM_MODEL in .env)")
-            push_progress("[investigate] skipped — LLM not configured", stage="investigate", status="running")
+            _status("Stage 4/4: LLM not configured - skipping investigate (set LLM_BASE_URL and LLM_MODEL in .env)")
+            push_progress("[investigate] skipped - LLM not configured", stage="investigate", status="running")
 
-        # ── Report ───────────────────────────────────────────────────────────
-        report_path = render_html_report(case, db)
-        render_written_report(case, db)
+        # Report
+        report_md, report_path = render_written_report(case, db)
         write_api_snapshots(case, db)
         tasks.mark_done("report", str(report_path))
         push_progress(
@@ -449,7 +464,7 @@ def investigate(
                 "iteration": 0,
                 "current_query": None,
                 "summary": f"Starting investigate for case={case.path.name}",
-                "recent_logs": [f"[investigate] starting — model={model}"],
+                "recent_logs": [f"[investigate] starting - model={model}"],
                 "llm_model": model,
                 "llm_base_url": llm_base_url,
                 "hypotheses": [],
@@ -491,7 +506,7 @@ def investigate(
             f"session={result['session_id']}, status={result['status']}, iterations={result['iteration']}",
         )
         push_progress(
-            f"[investigate] done — session={result['session_id']} status={result['status']}",
+            f"[investigate] done - session={result['session_id']} status={result['status']}",
             stage="completed",
             status=result["status"],
             iteration=result["iteration"],

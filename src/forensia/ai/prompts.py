@@ -63,30 +63,6 @@ def _truncate_context_sections(context_sections: dict[str, str], max_chars: int 
     return trimmed
 
 
-def build_review_messages(
-    finding: dict[str, Any],
-    evidence: list[dict[str, Any]],
-    max_ai_evidence_items: int = 5,
-) -> list[dict[str, str]]:
-    evidence_slice = evidence[:max_ai_evidence_items]
-    system = (
-        "You are a digital forensics assistant. "
-        "Do not assert facts not present in the evidence. Treat speculation as speculation. "
-        "Output JSON only. "
-        f"{_lang_instruction()} "
-        "Use only these JSON keys: verdict, report_text, missing_checks, confidence_adjustment, notes."
-    )
-    user = (
-        "Review the following finding candidate.\n"
-        f"Finding:\n{finding}\n\n"
-        f"Related Evidence:\n{evidence_slice}\n"
-    )
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ]
-
-
 def build_broad_plan_messages(
     overview_md: str,
     extra_context_md: str,
@@ -96,13 +72,15 @@ def build_broad_plan_messages(
     resolved_hypotheses: list[Hypothesis],
     history: list[dict[str, Any]],
     max_findings: int = 10,
+    max_resolved: int = 20,
 ) -> list[dict[str, str]]:
     findings = _slim_findings(findings_snapshot, max_findings)
+    recent_resolved = resolved_hypotheses[-max_resolved:]
     system = (
         "You are a DFIR investigator running the broad planning phase. "
         "Treat overview.md as your primary memory index. Request additional Markdown files only when necessary. "
         "Useful memory files include confirmed_facts.md, timeline_anchors.md, open_questions.md, "
-        "narrative.md, refuted_hypotheses.md, important_entities.md, hosts/*.md, users/*.md, "
+        "narrative.md, refuted_hypotheses.md, important_entities.md, "
         "and hypotheses/*.md. "
         "Confirmed fact details are stored in memory/details/fact-NNN.md and can be requested via read_more "
         "when you need full context on a specific fact. "
@@ -123,7 +101,7 @@ def build_broad_plan_messages(
         f"extra_context_md:\n{extra_context_md}\n\n"
         f"unresolved_findings: {findings}\n"
         f"active_hypotheses: {[item.model_dump() for item in active_hypotheses]}\n"
-        f"resolved_hypotheses: {[item.model_dump() for item in resolved_hypotheses]}\n"
+        f"resolved_hypotheses: {[item.model_dump() for item in recent_resolved]}\n"
         f"recent_history: {history[-10:]}\n"
     )
     return [
@@ -221,7 +199,10 @@ def build_check_messages(
         "Output JSON only. "
         f"{_lang_instruction()} "
         "Use only these JSON keys: query_id, verdict, finding_updates, suspicious_evidence, "
-        "compromised_hosts, compromised_users, new_hypotheses, memory_updates, report_text, missing_checks, notes. "
+        "new_hypotheses, memory_updates, report_text, missing_checks, notes. "
+        "In finding_updates items, use keys: finding_id, new_status (accepted or suppressed), "
+        "confidence_delta (signed float, e.g. 0.15 to raise, -0.2 to lower). "
+        "In suspicious_evidence items, use keys: evidence_id, reason, confidence (0.0-1.0). "
         "verdict must be one of: confirmed, refuted, inconclusive, newlead."
     )
     user = (

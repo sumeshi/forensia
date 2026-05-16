@@ -85,7 +85,7 @@
     },
     {
       label: "Iteration",
-      value: `${Intl.NumberFormat("ja-JP").format($caseStats?.total_iterations ?? 0)} iter / ${Intl.NumberFormat("ja-JP").format($caseStats?.session_count ?? 0)} sessions`,
+      value: `${Intl.NumberFormat("ja-JP").format($caseStats?.total_iterations ?? 0)} iter / ${Intl.NumberFormat("ja-JP").format($caseStats?.sessions ?? 0)} sessions`,
       tone: "text-mocha-blue"
     },
     {

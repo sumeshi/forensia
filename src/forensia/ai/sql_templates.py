@@ -1,0 +1,283 @@
+from __future__ import annotations
+
+import re
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+
+from forensia.ai.sql_schema import ALLOWED_TABLES
+
+ALLOWED_IDENTIFIER_REFERENCES = ALLOWED_TABLES | {
+    "evidence_id",
+    "source_file",
+    "channel",
+    "event_id",
+    "record_id",
+    "timestamp",
+    "computer",
+    "user_name",
+    "target_user",
+    "subject_user",
+    "src_ip",
+    "logon_type",
+    "process_name",
+    "command_line",
+    "service_name",
+    "message",
+    "raw_json",
+    "tags",
+    "severity",
+    "record_number",
+    "file_path",
+    "file_name",
+    "extension",
+    "is_directory",
+    "is_deleted",
+    "size",
+    "si_created",
+    "si_modified",
+    "si_accessed",
+    "si_mft_modified",
+    "fn_created",
+    "fn_modified",
+    "fn_accessed",
+    "fn_mft_modified",
+    "timeline_id",
+    "timestamp_type",
+    "description",
+    "finding_id",
+    "rule_id",
+    "title",
+    "summary",
+    "confidence",
+    "status",
+    "attack",
+    "evidence",
+    "ai_summary",
+    "missing_checks",
+    "created_at",
+    "review_id",
+    "verdict",
+    "report_text",
+    "confidence_adjustment",
+    "notes",
+    "session_id",
+    "started_at",
+    "finished_at",
+    "iterations",
+    "step_id",
+    "iteration",
+    "phase",
+    "input_json",
+    "output_json",
+    "hypothesis_id",
+    "origin",
+    "created_session",
+    "resolved_session",
+    "section_key",
+    "body",
+    "update_count",
+    "gaps",
+    "last_filled_session",
+    "last_filled_at",
+    "claim_id",
+    "claim_text",
+    "finding_ids",
+    "hypothesis_ids",
+    "evidence_ids",
+    "support_status",
+    "entry_id",
+    "query_id",
+    "path",
+    "source_kind",
+    "size",
+    "ingested_at",
+    "event_index",
+    "current_query",
+    "payload",
+}
+FORBIDDEN_SQL = re.compile(
+    r"\b(insert|update|delete|drop|alter|create|attach|detach|copy|pragma|truncate|merge|replace)\b",
+    re.IGNORECASE,
+)
+TABLE_NAME_PATTERN = re.compile(r"\b(?:from|join)\s+([a-zA-Z_][a-zA-Z0-9_]*)", re.IGNORECASE)
+CTE_NAME_PATTERN = re.compile(r"(?:with|,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s+as\s*\(", re.IGNORECASE)
+
+
+@dataclass(frozen=True, slots=True)
+class QueryTemplateSpec:
+    template_id: str
+    description: str
+    required_params: tuple[str, ...]
+    sql_builder: Callable[[dict[str, Any]], str]
+
+
+def _sql_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _sql_text(value: Any, default: str = "") -> str:
+    text = str(value or default)
+    return text.replace("'", "''")
+
+
+def _template_failed_logon_by_ip_window(params: dict[str, Any]) -> str:
+    event_id = _sql_int(params.get("event_id"), 4625)
+    hours = max(1, _sql_int(params.get("hours"), 24))
+    threshold = max(1, _sql_int(params.get("threshold"), 5))
+    return f"""
+SELECT src_ip, COUNT(*) AS failed_count
+FROM evtx_events
+WHERE event_id = {event_id}
+  AND timestamp >= (SELECT MAX(timestamp) FROM evtx_events) - INTERVAL '{hours} hours'
+  AND coalesce(src_ip, '') != ''
+GROUP BY src_ip
+HAVING COUNT(*) >= {threshold}
+ORDER BY failed_count DESC
+LIMIT 50
+""".strip()
+
+
+def _template_logon_by_user_window(params: dict[str, Any]) -> str:
+    event_id = _sql_int(params.get("event_id"), 4624)
+    hours = max(1, _sql_int(params.get("hours"), 24))
+    user = _sql_text(params.get("user"))
+    if not user:
+        raise ValueError("q_logon_by_user_window requires user")
+    return f"""
+SELECT timestamp, computer, src_ip, logon_type, target_user
+FROM evtx_events
+WHERE event_id = {event_id}
+  AND timestamp >= (SELECT MAX(timestamp) FROM evtx_events) - INTERVAL '{hours} hours'
+  AND lower(coalesce(target_user, '')) = lower('{user}')
+ORDER BY timestamp DESC
+LIMIT 100
+""".strip()
+
+
+def _template_powershell_after_logon(params: dict[str, Any]) -> str:
+    user = _sql_text(params.get("user"))
+    hours = max(1, _sql_int(params.get("hours"), 24))
+    if not user:
+        raise ValueError("q_powershell_after_logon requires user")
+    return f"""
+WITH logons AS (
+    SELECT timestamp, computer, target_user
+    FROM evtx_events
+    WHERE event_id = 4624
+      AND timestamp >= (SELECT MAX(timestamp) FROM evtx_events) - INTERVAL '{hours} hours'
+      AND lower(coalesce(target_user, '')) = lower('{user}')
+),
+ps AS (
+    SELECT timestamp, computer, process_name, command_line, evidence_id
+    FROM evtx_events
+    WHERE event_id IN (4688, 4104)
+)
+SELECT ps.timestamp, ps.computer, ps.process_name, ps.command_line, ps.evidence_id
+FROM ps
+JOIN logons
+  ON ps.computer = logons.computer
+ AND ps.timestamp BETWEEN logons.timestamp AND logons.timestamp + INTERVAL '15 minutes'
+ORDER BY ps.timestamp DESC
+LIMIT 100
+""".strip()
+
+
+def _template_service_or_task_after_host_logon(params: dict[str, Any]) -> str:
+    computer = _sql_text(params.get("computer"))
+    hours = max(1, _sql_int(params.get("hours"), 24))
+    if not computer:
+        raise ValueError("q_service_or_task_after_host_logon requires computer")
+    return f"""
+SELECT timestamp, event_id, service_name, process_name, command_line, evidence_id
+FROM evtx_events
+WHERE event_id IN (4697, 7045, 4698)
+  AND timestamp >= (SELECT MAX(timestamp) FROM evtx_events) - INTERVAL '{hours} hours'
+  AND lower(coalesce(computer, '')) = lower('{computer}')
+ORDER BY timestamp DESC
+LIMIT 100
+""".strip()
+
+
+QUERY_TEMPLATES: dict[str, QueryTemplateSpec] = {
+    "q_failed_logon_by_ip_window": QueryTemplateSpec(
+        template_id="q_failed_logon_by_ip_window",
+        description="Failed logons grouped by src_ip within a recent time window.",
+        required_params=("hours", "threshold"),
+        sql_builder=_template_failed_logon_by_ip_window,
+    ),
+    "q_logon_by_user_window": QueryTemplateSpec(
+        template_id="q_logon_by_user_window",
+        description="Recent successful logons for one user.",
+        required_params=("user", "hours"),
+        sql_builder=_template_logon_by_user_window,
+    ),
+    "q_powershell_after_logon": QueryTemplateSpec(
+        template_id="q_powershell_after_logon",
+        description="Process or PowerShell execution within 15 minutes after a user's logon.",
+        required_params=("user", "hours"),
+        sql_builder=_template_powershell_after_logon,
+    ),
+    "q_service_or_task_after_host_logon": QueryTemplateSpec(
+        template_id="q_service_or_task_after_host_logon",
+        description="Service install or scheduled task creation on one host.",
+        required_params=("computer", "hours"),
+        sql_builder=_template_service_or_task_after_host_logon,
+    ),
+}
+
+
+def coerce_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, str) and value:
+        return [value]
+    return []
+
+
+def validate_select_sql(sql: str) -> str:
+    normalized = sql.strip().rstrip(";").strip()
+    lowered = normalized.lower()
+    if not normalized:
+        raise ValueError("SQL is empty")
+    if ";" in normalized:
+        raise ValueError("Multiple SQL statements are not allowed")
+    if not (lowered.startswith("select") or lowered.startswith("with")):
+        raise ValueError("Only SELECT queries are allowed")
+    if FORBIDDEN_SQL.search(normalized):
+        raise ValueError("Forbidden SQL keyword detected")
+
+    cte_names = {match.group(1) for match in CTE_NAME_PATTERN.finditer(normalized)}
+    table_names = {match.group(1) for match in TABLE_NAME_PATTERN.finditer(normalized)}
+    unknown_tables = sorted(
+        name for name in table_names if name not in ALLOWED_IDENTIFIER_REFERENCES and name not in cte_names
+    )
+    if unknown_tables:
+        raise ValueError(f"Unknown table(s) referenced: {', '.join(unknown_tables)}")
+    return normalized
+
+
+def query_template_catalog() -> list[dict[str, Any]]:
+    return [
+        {
+            "template_id": spec.template_id,
+            "description": spec.description,
+            "required_params": list(spec.required_params),
+        }
+        for spec in QUERY_TEMPLATES.values()
+    ]
+
+
+def render_query_template(template_id: str, params: dict[str, Any]) -> str:
+    spec = QUERY_TEMPLATES.get(template_id)
+    if spec is None:
+        raise ValueError(f"Unknown query template: {template_id}")
+    missing = [key for key in spec.required_params if params.get(key) in (None, "")]
+    if missing:
+        raise ValueError(f"Missing template params for {template_id}: {', '.join(missing)}")
+    return validate_select_sql(spec.sql_builder(params))

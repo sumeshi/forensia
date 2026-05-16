@@ -7,14 +7,21 @@ from unittest.mock import patch
 
 from forensia.ai.checker import check_query_result
 from forensia.ai.checker import _parse_new_hypotheses
-from forensia.ai.planner import _request_with_optional_context, plan_hypothesis_query, validate_select_sql
+from forensia.ai.planner import (
+    _parse_hypotheses,
+    _request_with_optional_context,
+    plan_hypothesis_query,
+    validate_select_sql,
+)
 from forensia.ai.prompts import (
     build_broad_plan_messages,
     build_check_messages,
     build_hypothesis_plan_messages,
     build_report_section_messages,
 )
+from forensia.ai.sql_schema import build_investigation_framework
 from forensia.ai.sql_schema import ALLOWED_TABLES
+from forensia.ai.sql_templates import _template_failed_logon_by_ip_window, coerce_list
 from forensia.config import clear_llm_settings_cache
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
@@ -98,6 +105,26 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertNotIn("evidence", payload)
         self.assertNotIn("attack", payload)
 
+    def test_broad_plan_messages_cap_resolved_hypotheses(self) -> None:
+        resolved = [
+            Hypothesis(id=f"H{i}", description=f"resolved {i}", status="confirmed", summary=f"summary {i}")
+            for i in range(25)
+        ]
+        messages = build_broad_plan_messages(
+            overview_md="# overview",
+            extra_context_md="",
+            iteration=1,
+            findings_snapshot=[],
+            active_hypotheses=[],
+            resolved_hypotheses=resolved,
+            history=[],
+        )
+        payload = messages[1]["content"]
+        self.assertNotIn("resolved 0", payload)
+        self.assertNotIn("resolved 4", payload)
+        self.assertIn("resolved 5", payload)
+        self.assertIn("resolved 24", payload)
+
     def test_build_check_messages_includes_structured_memory(self) -> None:
         messages = build_check_messages(
             planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
@@ -125,6 +152,32 @@ class PlannerRetryTests(unittest.TestCase):
         system = messages[0]["content"]
         self.assertIn("Other host logons from the same src_ip", system)
         self.assertNotIn("src_ip からの他ホストへのログオンの有無", system)
+
+    def test_build_check_messages_do_not_request_dead_compromised_fields(self) -> None:
+        messages = build_check_messages(
+            planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
+            hypothesis=Hypothesis(id="H1", description="desc"),
+            finding_candidates=[],
+            result_summary={"row_count": 1},
+            overview_md="# overview",
+            memory_context_md="# confirmed_facts.md\n- fact",
+        )
+        system = messages[0]["content"]
+        self.assertNotIn("compromised_hosts", system)
+        self.assertNotIn("compromised_users", system)
+
+    def test_build_check_messages_define_finding_update_and_suspicious_evidence_schema(self) -> None:
+        messages = build_check_messages(
+            planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
+            hypothesis=Hypothesis(id="H1", description="desc"),
+            finding_candidates=[],
+            result_summary={"row_count": 1},
+            overview_md="# overview",
+            memory_context_md="# confirmed_facts.md\n- fact",
+        )
+        system = messages[0]["content"]
+        self.assertIn("finding_id, new_status (accepted or suppressed), confidence_delta", system)
+        self.assertIn("evidence_id, reason, confidence (0.0-1.0)", system)
 
     def test_report_section_messages_truncate_previous_sections(self) -> None:
         messages = build_report_section_messages(
@@ -250,6 +303,60 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertEqual(2, mock_request.call_count)
         self.assertIsNotNone(result.query)
         self.assertEqual("SELECT * FROM findings", result.query.sql)
+
+    def test_plan_hypothesis_query_logs_debug_when_query_parse_fails(self) -> None:
+        state = SessionState(session_id="session-1", iteration=1)
+        hypothesis = Hypothesis(id="H1", description="test hypothesis")
+        response = {
+            "read_more": [],
+            "hypothesis": {"id": "H1", "description": "test hypothesis"},
+            "query": {
+                "query_id": "Q-bad",
+                "hypothesis_id": "H1",
+                "purpose": "broken",
+                "template_id": "missing-template",
+                "params": {},
+                "sql": "",
+            },
+            "needs_more": True,
+        }
+
+        with patch("forensia.ai.planner.request_llm_json", return_value=response), self.assertLogs(
+            "forensia.ai.planner", level="DEBUG"
+        ) as logs:
+            result = plan_hypothesis_query(
+                state=state,
+                hypothesis=hypothesis,
+                finding_candidates=[],
+                memory=_MemoryStub(),
+                base_url="http://localhost:1234",
+                model="test-model",
+            )
+
+        self.assertIsNone(result.query)
+        self.assertTrue(any("hypothesis/query parse failed" in line for line in logs.output))
+
+    def test_parse_hypotheses_logs_debug_on_validation_failure(self) -> None:
+        with self.assertLogs("forensia.ai.planner", level="DEBUG") as logs:
+            hypotheses = _parse_hypotheses([{"id": "H-1"}])
+
+        self.assertEqual([], hypotheses)
+        self.assertTrue(any("hypothesis parse failed" in line for line in logs.output))
+
+    def test_query_template_uses_dataset_max_timestamp_not_now(self) -> None:
+        sql = _template_failed_logon_by_ip_window({"hours": 24, "threshold": 5})
+        self.assertIn("SELECT MAX(timestamp) FROM evtx_events", sql)
+        self.assertNotIn("now()", sql.lower())
+
+    def test_coerce_list_wraps_single_dict_and_string(self) -> None:
+        self.assertEqual([{"id": "H-1"}], coerce_list({"id": "H-1"}))
+        self.assertEqual(["confirmed_facts.md"], coerce_list("confirmed_facts.md"))
+        self.assertEqual([], coerce_list(""))
+
+    def test_investigation_framework_lists_missing_columns(self) -> None:
+        framework = build_investigation_framework()
+        self.assertIn("investigation_steps columns: step_id, session_id, hypothesis_id, iteration, phase", framework)
+        self.assertIn("ingested_files columns: sha256, path, source_kind, size, ingested_at.", framework)
 
     def test_returns_none_when_retry_is_still_invalid(self) -> None:
         state = SessionState(session_id="session-2", iteration=1)

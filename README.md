@@ -229,7 +229,7 @@ mindmap
 
 - 正本は DuckDB です
 - `memory/*.md` は LLM 向けに圧縮した作業メモで、コピーではありません
-- `memory/` は消しても DB から再生成できます
+- `memory/` を削除した場合、次回の investigate 実行で `overview.md` は初期化されます
 - Session State は今走っている 1 回の調査だけの一時メモリです
 
 AI 調査員は証拠を全部抱え込むわけではありません。  
@@ -242,8 +242,6 @@ AI 調査員は証拠を全部抱え込むわけではありません。
 - `narrative.md`: 次サイクルでも保持したい短い説明筋
 - `refuted_hypotheses.md`: 否定済み仮説の控え
 - `important_entities.md`: 追跡対象の IP / user / host / process / service
-- `hosts/*.md`: ホスト単位のメモ
-- `users/*.md`: ユーザー単位のメモ
 - `hypotheses/*.md`: 仮説ごとの状態と reasoning trail
 - `evidence/suspicious.md`: 注意すべき evidence の断片
 
@@ -258,12 +256,16 @@ Markdown なのは見た目の趣味ではなく、ローカル実行・可搬�
 2. 主要メモファイルの末尾を `LLM_MEMORY_MAX_BYTES` 内に収まるよう切り出したコンパクトスナップショットを渡す
 3. LLM が特定ファイルを読みたいときは `read_more` フィールドにファイル名を返す。プランナーはそのファイルを読み込み、同じプロンプトに追記して再度 LLM を呼ぶ
 
-`read_more` で要求できるファイルは `confirmed_facts.md`、`timeline_anchors.md`、`open_questions.md`、`narrative.md`、`hosts/*.md`、`users/*.md`、`hypotheses/*.md` など。一度のサイクルで必要なファイルだけを on-demand でロードするため、常に全ファイルを詰め込まずに済む。
+`read_more` で要求できるファイルは `confirmed_facts.md`、`timeline_anchors.md`、`open_questions.md`、`narrative.md`、`hypotheses/*.md` など。一度のサイクルで必要なファイルだけを on-demand でロードするため、常に全ファイルを詰め込まずに済む。
 
 ### 圧縮の挙動
 
 `LLM_MEMORY_MAX_BYTES` は `overview.md`、`open_questions.md`、個別メモファイルの圧縮閾値として使います。  
-`confirmed_facts.md`、`timeline_anchors.md`、`refuted_hypotheses.md`、`important_entities.md` は保持優先で圧縮対象外です。これらは調査を通じて増え続けますが、削って調査結果を失うよりマシと判断しています。
+`confirmed_facts.md` は圧縮対象外です。インデックスは蓄積されますが、詳細本文は `memory/details/fact-NNN.md` に分離されており、概要のみのインデックスサイズは抑制されます。  
+`timeline_anchors.md`、`refuted_hypotheses.md`、`important_entities.md` も保持優先です。`timeline_anchors.md` は古い行を `memory/details/timeline_archive.md` に逃がします。
+
+`memory/` を削除した場合、次回の investigate 実行で `overview.md` は初期化されます。  
+`confirmed_facts.md` などの詳細メモは自動再生成されませんが、DuckDB の findings / hypotheses / evidence をもとに再調査はできます。
 
 
 ## 信頼性の担保

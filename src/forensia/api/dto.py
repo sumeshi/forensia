@@ -26,7 +26,6 @@ class CaseStatsDTO(DTOModel):
     open_gaps: int
     sessions: int
     total_iterations: int
-    session_count: int
     report_human_reviewed: int = 0
     report_ai_exhausted: int = 0
 
@@ -92,6 +91,7 @@ class SessionDTO(DTOModel):
 class InvestigationStepDTO(DTOModel):
     step_id: str
     session_id: str
+    hypothesis_id: str | None = None
     iteration: int
     phase: str
     input_json: Any = None

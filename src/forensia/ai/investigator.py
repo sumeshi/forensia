@@ -3,9 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import signal
-import threading
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -15,8 +13,23 @@ from rich import print
 
 from forensia.ai.audit import LLMCallLogger
 from forensia.ai.checker import check_query_result, summarize_query_result
-from forensia.ai.lmstudio import chat_completion
+from forensia.ai.hypothesis_manager import (
+    _all_hypotheses,
+    _load_persisted_hypotheses,
+    _merge_active_hypotheses,
+    _render_hypothesis_memory,
+    _resolve_hypothesis,
+    _upsert_hypothesis,
+)
 from forensia.ai.planner import BroadPlanResult, broad_plan_investigation, plan_hypothesis_query
+from forensia.ai.report_gap import (
+    _build_report_status,
+    _guess_related_sections,
+    _inject_gap_hypotheses,
+    _overlay_report_status,
+    _report_cycle_progress,
+)
+from forensia.ai.section_refresher import _refresh_report_sections
 from forensia.config import get_llm_settings
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
@@ -24,15 +37,8 @@ from forensia.core.session import HistoryEntry, Hypothesis, SessionState
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
 from forensia.report.writer import (
-    collect_gaps,
-    fetch_report_sections,
-    fill_section,
-    finalize_section,
-    load_report_sections_map,
     mark_report_sections_ai_exhausted,
-    prepare_section_request,
     render_written_report,
-    write_report_brief,
 )
 from forensia.rules.engine import generate_findings, run_rule, save_findings
 from forensia.rules.loader import load_rules_from_dir
@@ -157,49 +163,6 @@ def _initialize_overview(memory: MemoryManager, case: Case) -> None:
     )
 
 
-def _recent_reasoning_rows(db: CaseDB, hypothesis_id: str, limit: int = 10) -> list[dict[str, Any]]:
-    return fetch_records(
-        db,
-        """
-        SELECT phase, verdict, query_id, body, created_at
-        FROM hypothesis_reasoning
-        WHERE hypothesis_id = ?
-        ORDER BY created_at DESC, entry_id DESC
-        LIMIT ?
-        """,
-        (hypothesis_id, limit),
-    )
-
-
-def _render_hypothesis_memory(db: CaseDB | None, hypothesis: Hypothesis) -> str:
-    lines = [
-        f"# Hypothesis {hypothesis.id}",
-        "",
-        "## Status",
-        f"- {hypothesis.status}",
-        "",
-        "## Verdict",
-        f"- {hypothesis.verdict or 'pending'}",
-        "",
-        "## Description",
-        hypothesis.description,
-        "",
-        "## Summary",
-        hypothesis.summary or "-",
-    ]
-    if db is not None:
-        reasoning_rows = _recent_reasoning_rows(db, hypothesis.id)
-        if reasoning_rows:
-            lines.extend(["", "## Reasoning"])
-            for row in reasoning_rows:
-                phase = str(row.get("phase") or "")
-                verdict = str(row.get("verdict") or "-")
-                query_id = str(row.get("query_id") or "-")
-                body = " ".join(str(row.get("body") or "").split())[:240]
-                lines.append(f"- [{phase}] verdict={verdict} query={query_id} :: {body}")
-    return "\n".join(lines) + "\n"
-
-
 def _finding_snapshot(db: CaseDB, limit: int = 20) -> list[dict[str, Any]]:
     return fetch_records(
         db,
@@ -230,152 +193,6 @@ def _matching_findings(snapshot: list[dict[str, Any]], hypothesis: Hypothesis | 
     return matched[:5] if matched else snapshot[:5]
 
 
-def _row_to_hypothesis(row: dict[str, Any]) -> Hypothesis:
-    verdict = row.get("verdict")
-    return Hypothesis(
-        id=str(row.get("hypothesis_id") or ""),
-        description=str(row.get("description") or ""),
-        status=str(row.get("status") or "active"),
-        verdict=str(verdict) if verdict else None,
-        summary=str(row.get("summary") or ""),
-    )
-
-
-def _load_persisted_hypotheses(db: CaseDB) -> tuple[list[Hypothesis], list[Hypothesis]]:
-    rows = fetch_records(
-        db,
-        """
-        SELECT hypothesis_id, description, status, verdict, summary
-        FROM hypotheses
-        ORDER BY created_at, hypothesis_id
-        """,
-    )
-    active: list[Hypothesis] = []
-    resolved: list[Hypothesis] = []
-    for row in rows:
-        hypothesis = _row_to_hypothesis(row)
-        if hypothesis.status == "active":
-            active.append(hypothesis)
-        else:
-            resolved.append(hypothesis)
-    return active, resolved
-
-
-def _upsert_hypothesis(
-    db: CaseDB,
-    hypothesis: Hypothesis,
-    origin: str,
-    session_id: str,
-    resolved_session: str | None = None,
-) -> None:
-    now = datetime.now(UTC).replace(tzinfo=None)
-    existing = db.execute(
-        """
-        SELECT origin, created_session, created_at, resolved_session
-        FROM hypotheses
-        WHERE hypothesis_id = ?
-        """,
-        (hypothesis.id,),
-    ).fetchone()
-    created_origin = origin
-    created_session = session_id
-    created_at = now
-    prior_resolved_session = resolved_session
-    if existing is not None:
-        created_origin = str(existing[0] or origin)
-        created_session = str(existing[1] or session_id)
-        created_at = existing[2] or now
-        if prior_resolved_session is None:
-            prior_resolved_session = existing[3]
-
-    db.execute(
-        """
-        INSERT INTO hypotheses (
-            hypothesis_id, description, status, verdict, summary, origin,
-            created_session, resolved_session, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (hypothesis_id) DO UPDATE SET
-            description = excluded.description,
-            status = excluded.status,
-            verdict = excluded.verdict,
-            summary = excluded.summary,
-            origin = excluded.origin,
-            created_session = excluded.created_session,
-            resolved_session = excluded.resolved_session,
-            created_at = excluded.created_at,
-            updated_at = excluded.updated_at
-        """,
-        (
-            hypothesis.id,
-            hypothesis.description,
-            hypothesis.status,
-            hypothesis.verdict,
-            hypothesis.summary,
-            created_origin,
-            created_session,
-            prior_resolved_session,
-            created_at,
-            now,
-        ),
-    )
-
-
-def _merge_active_hypotheses(
-    db: CaseDB,
-    current: list[Hypothesis],
-    updates: list[Hypothesis],
-    resolved: list[Hypothesis],
-    session_id: str,
-    origin: str,
-) -> list[Hypothesis]:
-    resolved_ids = {item.id for item in resolved}
-    by_id = {item.id: item for item in current if item.id not in resolved_ids}
-    for item in updates:
-        if item.id in resolved_ids or item.status in {"confirmed", "refuted"}:
-            continue
-        hypothesis = Hypothesis(
-            id=item.id,
-            description=item.description,
-            status="active",
-            verdict=None,
-            summary=item.summary,
-        )
-        by_id[item.id] = hypothesis
-        _upsert_hypothesis(db, hypothesis, origin=origin, session_id=session_id)
-    return list(by_id.values())
-
-
-def _resolve_hypothesis(
-    db: CaseDB,
-    state: SessionState,
-    hypothesis_id: str,
-    verdict: str,
-    summary: str,
-    session_id: str,
-) -> None:
-    remaining: list[Hypothesis] = []
-    for item in state.active_hypotheses:
-        if item.id == hypothesis_id:
-            resolved = Hypothesis(
-                id=item.id,
-                description=item.description,
-                status="confirmed" if verdict == "confirmed" else "refuted",
-                verdict=verdict,
-                summary=summary,
-            )
-            state.resolved_hypotheses.append(resolved)
-            _upsert_hypothesis(
-                db=db,
-                hypothesis=resolved,
-                origin="check_new",
-                session_id=session_id,
-                resolved_session=session_id,
-            )
-        else:
-            remaining.append(item)
-    state.active_hypotheses = remaining
-
-
 def _history_entry(
     iteration: int,
     query_id: str,
@@ -403,7 +220,11 @@ def _final_summary(state: SessionState) -> str:
         return "\n".join(lines)
     if state.history:
         return "\n".join(entry.summary for entry in state.history[-5:] if entry.summary)
-    return "調査中に追加の進展はありませんでした。"
+    output_language = str(get_llm_settings()["output_language"]).lower()
+    return {
+        "ja": "調査中に追加の進展はありませんでした。",
+        "en": "No additional progress was made during this investigation.",
+    }.get(output_language, "No additional progress was made during this investigation.")
 
 
 def _apply_memory_updates(
@@ -414,10 +235,6 @@ def _apply_memory_updates(
     db: CaseDB | None = None,
 ) -> None:
     updates = check_output.get("memory_updates") or {}
-    overview_append = str(updates.get("overview_append") or "").strip()
-    if overview_append:
-        memory.append_overview(overview_append)
-
     for item in updates.get("confirmed_facts") or []:
         if not isinstance(item, dict):
             continue
@@ -464,420 +281,12 @@ def _apply_memory_updates(
             str(item.get("notes") or ""),
         )
 
-    for hostname, content in (updates.get("hosts") or {}).items():
-        memory.upsert_host(str(hostname), str(content))
-
-    for username, content in (updates.get("users") or {}).items():
-        memory.upsert_user(str(username), str(content))
-
-    for key, content in (updates.get("hypotheses") or {}).items():
-        key_text = str(key)
-        slug = key_text.split("-", 1)[-1] if "-" in key_text else key_text
-        memory.upsert_hypothesis(key_text, slug, str(content))
-
     memory.append_suspicious(check_output.get("suspicious_evidence") or [])
 
     for hypothesis in [*active_hypotheses, *resolved_hypotheses]:
         slug = hypothesis.description[:40]
         content = _render_hypothesis_memory(db, hypothesis)
         memory.upsert_hypothesis(hypothesis.id, slug, content)
-
-
-def _all_hypotheses(state: SessionState) -> list[Hypothesis]:
-    return [*state.active_hypotheses, *state.resolved_hypotheses]
-
-
-def _normalize_text(value: str) -> str:
-    return " ".join(value.lower().split())
-
-
-def _guess_related_sections(text: str) -> list[str]:
-    lowered = text.lower()
-    section_map = {
-        "1_overview": ["overview", "first evidence", "summary", "fec", "initial"],
-        "2_timeline": ["timeline", "time", "log clear", "reboot", "shutdown", "when"],
-        "3_hosts": ["host", "computer", "server", "workstation"],
-        "4_accounts": ["account", "user", "credential", "password", "logon", "rdp", "admin"],
-        "5_persistence": ["service", "task", "powershell", "defender", "persistence", "execution"],
-        "6_ioc": ["ioc", "ip", "process", "file", "path", "indicator"],
-        "7_gaps": ["gap", "unknown", "不足", "unresolved"],
-        "8_recommendations": ["mitigation", "recommendation", "対策"],
-    }
-    matches = [section for section, keywords in section_map.items() if any(keyword in lowered for keyword in keywords)]
-    return matches or ["7_gaps"]
-
-
-def _build_report_status(db: CaseDB, current_section: str | None = None, focus_sections: list[str] | None = None) -> dict[str, Any]:
-    sections = fetch_report_sections(db)
-    items = []
-    for row in sections:
-        gaps = row.get("gaps") or []
-        if isinstance(gaps, str):
-            try:
-                gaps = json.loads(gaps)
-            except json.JSONDecodeError:
-                gaps = []
-        items.append(
-            {
-                "section_key": row.get("section_key"),
-                "title": row.get("title"),
-                "confidence": float(row.get("confidence") or 0.0),
-                "status": str(row.get("status") or "draft"),
-                "update_count": int(row.get("update_count") or 0),
-                "gap_count": len(gaps) if isinstance(gaps, list) else 0,
-                "gaps": gaps if isinstance(gaps, list) else [],
-                "gap_hypothesis_ids": [_gap_hypothesis_id(str(gap)) for gap in gaps] if isinstance(gaps, list) else [],
-                "body": str(row.get("body") or ""),
-                "is_writing": str(row.get("section_key") or "") == str(current_section or ""),
-                "is_highlighted": str(row.get("section_key") or "") in set(focus_sections or []),
-            }
-        )
-    total_gaps = sum(int(item["gap_count"]) for item in items)
-    total_body_chars = sum(len(str(item["body"])) for item in items)
-    return {
-        "current_section": current_section,
-        "focus_sections": focus_sections or [],
-        "items": items,
-        "total_gaps": total_gaps,
-        "total_body_chars": total_body_chars,
-    }
-
-
-def _overlay_report_status(
-    base_status: dict[str, Any],
-    current_section: str | None = None,
-    focus_sections: list[str] | None = None,
-) -> dict[str, Any]:
-    focus = set(focus_sections or [])
-    items = []
-    for row in base_status.get("items", []):
-        item = dict(row)
-        item["is_writing"] = str(item.get("section_key") or "") == str(current_section or "")
-        item["is_highlighted"] = str(item.get("section_key") or "") in focus
-        items.append(item)
-    return {
-        **base_status,
-        "current_section": current_section,
-        "focus_sections": list(focus_sections or []),
-        "items": items,
-    }
-
-
-def _report_cycle_progress(previous: dict[str, int], current: dict[str, int]) -> bool:
-    return (
-        current.get("total_gaps", 0) < previous.get("total_gaps", 0)
-        or current.get("total_body_chars", 0) > previous.get("total_body_chars", 0)
-    )
-
-
-def _gap_hypothesis_id(description: str) -> str:
-    digest = hashlib.sha1(description.encode("utf-8")).hexdigest()[:10]
-    return f"gap-{digest}"
-
-
-def _classify_gap_kind(description: str) -> str:
-    lowered = description.lower()
-    if any(token in lowered for token in ("whois", "osint", "外部", "所有組織", "threat intel", "reputation")):
-        return "external_lookup"
-    if any(token in lowered for token in ("ヒアリング", "担当者", "利用者", "承認", "human", "業務", "user confirmation")):
-        return "human_decision"
-    return "internal_db_check"
-
-
-def _inject_gap_hypotheses(
-    db: CaseDB,
-    state: SessionState,
-    gaps: list[str],
-    session_id: str,
-    memory: MemoryManager | None = None,
-) -> int:
-    known_by_description = {_normalize_text(item.description) for item in _all_hypotheses(state)}
-    resolved_by_description = {_normalize_text(item.description) for item in state.resolved_hypotheses}
-    added = 0
-    for gap in gaps:
-        normalized_gap = _normalize_text(gap)
-        if not normalized_gap or normalized_gap in known_by_description or normalized_gap in resolved_by_description:
-            continue
-        gap_kind = _classify_gap_kind(gap)
-        if gap_kind != "internal_db_check":
-            if memory is not None:
-                memory.append_open_question(gap, gap_kind)
-            known_by_description.add(normalized_gap)
-            continue
-        hypothesis = Hypothesis(
-            id=_gap_hypothesis_id(gap),
-            description=gap,
-            status="active",
-            verdict=None,
-            summary="",
-        )
-        state.active_hypotheses.append(hypothesis)
-        _upsert_hypothesis(db, hypothesis, origin="report_gap", session_id=session_id)
-        known_by_description.add(normalized_gap)
-        added += 1
-    return added
-
-
-def _refresh_report_sections(
-    case: Case,
-    db: CaseDB,
-    session_id: str,
-    iteration: int,
-    base_url: str,
-    model: str,
-    template_root: Path,
-    llm_logger: LLMCallLogger,
-    progress_callback: Callable[[dict[str, Any]], None] | None = None,
-    focus_sections: list[str] | None = None,
-    max_workers: int = 1,
-) -> dict[str, Any]:
-    """Re-fill report sections for this cycle.
-
-    When ``max_workers > 1``, dispatches LLM calls in a ThreadPoolExecutor.
-    Workers only perform the HTTP call against LM Studio; DuckDB reads
-    (evidence query summarisation) happen serially upfront and writes happen
-    on the main thread after each future completes, so the single DuckDB
-    connection is never touched concurrently.
-    """
-    template_paths = sorted(template_root.glob("[0-9]*_*.md"))
-    if max_workers <= 1:
-        return _refresh_report_sections_sequential(
-            case=case,
-            db=db,
-            session_id=session_id,
-            iteration=iteration,
-            base_url=base_url,
-            model=model,
-            template_paths=template_paths,
-            llm_logger=llm_logger,
-            progress_callback=progress_callback,
-            focus_sections=focus_sections,
-        )
-    return _refresh_report_sections_parallel(
-        case=case,
-        db=db,
-        session_id=session_id,
-        iteration=iteration,
-        base_url=base_url,
-        model=model,
-        template_paths=template_paths,
-        llm_logger=llm_logger,
-        progress_callback=progress_callback,
-        focus_sections=focus_sections,
-        max_workers=max_workers,
-    )
-
-
-def _refresh_report_sections_sequential(
-    *,
-    case: Case,
-    db: CaseDB,
-    session_id: str,
-    iteration: int,
-    base_url: str,
-    model: str,
-    template_paths: list[Path],
-    llm_logger: LLMCallLogger,
-    progress_callback: Callable[[dict[str, Any]], None] | None,
-    focus_sections: list[str] | None,
-) -> dict[str, Any]:
-    filled_sections: dict[str, str] = {}
-    updated = 0
-    report_brief = write_report_brief(case, db)
-    for template_path in template_paths:
-        section_key = template_path.stem
-        if progress_callback:
-            progress_callback(
-                {
-                    "stage": "investigate/report-section",
-                    "status": "running",
-                    "iteration": iteration,
-                    "summary": f"[report] {section_key} writing...",
-                    "current_report_section": section_key,
-                    "report_sections": _build_report_status(
-                        db,
-                        current_section=section_key,
-                        focus_sections=focus_sections,
-                    ),
-                }
-            )
-        context_sections = dict(filled_sections)
-        filled_sections[section_key] = fill_section(
-            case=case,
-            db=db,
-            template_path=template_path,
-            context_sections=context_sections,
-            report_brief=report_brief,
-            base_url=base_url,
-            model=model,
-            session_id=session_id,
-            audit_callback=lambda messages, body, section=section_key: llm_logger.write(
-                iteration=iteration,
-                phase="report-section",
-                input_messages=messages,
-                output=body,
-                model=model,
-                base_url=base_url,
-                suffix=section,
-            ),
-        )
-        status = _build_report_status(db, focus_sections=focus_sections)
-        updated += 1
-        current_row = next((item for item in status["items"] if item["section_key"] == section_key), None)
-        gap_count = int(current_row["gap_count"]) if current_row else 0
-        confidence = float(current_row["confidence"]) if current_row else 0.0
-        if progress_callback:
-            progress_callback(
-                {
-                    "stage": "investigate/report-section-done",
-                    "status": "running",
-                    "iteration": iteration,
-                    "summary": f"[report] {section_key} done (gaps={gap_count}, confidence={confidence:.2f})",
-                    "report_sections": status,
-                }
-            )
-    all_gaps = collect_gaps(filled_sections)
-    report_status = _build_report_status(db, focus_sections=focus_sections)
-    if progress_callback:
-        progress_callback(
-            {
-                "stage": "investigate/report-cycle-done",
-                "status": "running",
-                "iteration": iteration,
-                "summary": f"[report] cycle done (sections={updated}, gaps={len(all_gaps)})",
-                "report_sections": report_status,
-            }
-        )
-    return {
-        "filled_sections": filled_sections,
-        "gaps": all_gaps,
-        "report_status": report_status,
-        "updated_sections": updated,
-    }
-
-
-def _refresh_report_sections_parallel(
-    *,
-    case: Case,
-    db: CaseDB,
-    session_id: str,
-    iteration: int,
-    base_url: str,
-    model: str,
-    template_paths: list[Path],
-    llm_logger: LLMCallLogger,
-    progress_callback: Callable[[dict[str, Any]], None] | None,
-    focus_sections: list[str] | None,
-    max_workers: int,
-) -> dict[str, Any]:
-    # Sections are independent within a cycle when parallel: each one sees
-    # the previous-cycle bodies as context (loaded once, serially, here).
-    prior_filled = load_report_sections_map(db)
-    report_brief = write_report_brief(case, db)
-    requests: list[dict[str, Any]] = []
-    for template_path in template_paths:
-        request = prepare_section_request(db, template_path, prior_filled, report_brief=report_brief)
-        request["template_path"] = str(template_path)
-        requests.append(request)
-
-    progress_lock = threading.Lock()
-
-    def emit(payload: dict[str, Any]) -> None:
-        if not progress_callback:
-            return
-        with progress_lock:
-            progress_callback(payload)
-
-    def worker(request: dict[str, Any]) -> tuple[dict[str, Any], str]:
-        emit(
-            {
-                "stage": "investigate/report-section",
-                "status": "running",
-                "iteration": iteration,
-                "summary": f"[report] {request['section_key']} writing... (parallel)",
-                "current_report_section": request["section_key"],
-            }
-        )
-        body = chat_completion(
-            messages=request["messages"],
-            model=model,
-            base_url=base_url,
-        ).strip()
-        llm_logger.write(
-            iteration=iteration,
-            phase="report-section",
-            input_messages=request["messages"],
-            output=body,
-            model=model,
-            base_url=base_url,
-            suffix=str(request["section_key"]),
-        )
-        return request, body
-
-    filled_sections: dict[str, str] = {}
-    updated = 0
-    workers = max(1, min(max_workers, len(requests)))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(worker, request) for request in requests]
-        for future in as_completed(futures):
-            try:
-                request, body = future.result()
-            except Exception as exc:  # pragma: no cover - propagated as inline message
-                emit(
-                    {
-                        "stage": "investigate/report-section-done",
-                        "status": "running",
-                        "iteration": iteration,
-                        "summary": f"[report] section failed: {exc}",
-                    }
-                )
-                continue
-            section_key = request["section_key"]
-            finalize_section(
-                db=db,
-                section_key=section_key,
-                title=request["title"],
-                body=body,
-                evidence_results=request.get("evidence_results") or [],
-                session_id=session_id,
-            )
-            filled_sections[section_key] = body
-            updated += 1
-            status = _build_report_status(db, focus_sections=focus_sections)
-            current_row = next((item for item in status["items"] if item["section_key"] == section_key), None)
-            gap_count = int(current_row["gap_count"]) if current_row else 0
-            confidence = float(current_row["confidence"]) if current_row else 0.0
-            emit(
-                {
-                    "stage": "investigate/report-section-done",
-                    "status": "running",
-                    "iteration": iteration,
-                    "summary": f"[report] {section_key} done (gaps={gap_count}, confidence={confidence:.2f})",
-                    "report_sections": status,
-                }
-            )
-
-    all_gaps = collect_gaps(filled_sections)
-    report_status = _build_report_status(db, focus_sections=focus_sections)
-    if progress_callback:
-        progress_callback(
-            {
-                "stage": "investigate/report-cycle-done",
-                "status": "running",
-                "iteration": iteration,
-                "summary": (
-                    f"[report] cycle done (sections={updated}, gaps={len(all_gaps)}, "
-                    f"parallel={workers})"
-                ),
-                "report_sections": report_status,
-            }
-        )
-    return {
-        "filled_sections": filled_sections,
-        "gaps": all_gaps,
-        "report_status": report_status,
-        "updated_sections": updated,
-    }
 
 
 def investigate(
@@ -1368,7 +777,7 @@ def investigate(
                 mark_report_sections_ai_exhausted(db)
                 status = "completed"
                 break
-            if cycle_progress or broad_plan_hypotheses:
+            if cycle_progress:
                 no_progress_count = 0
             else:
                 no_progress_count += 1
