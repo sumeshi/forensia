@@ -7,7 +7,7 @@
 ## 概要
 
 `forensia` (= forensic-ai) は、一般的な個人所有のデスクトップPCで、
-ローカルLLMで調査できることを目的したミニマルなフォレンジック調査支援ツールです。
+ローカルLLMで調査できることを目的としたミニマルなフォレンジック調査支援ツールです。
 
 `qwen3.5-9b` や `gemma4-e2b` といった小規模モデルでも精度の高い調査ができるように、
 ルールベース検知やハードコードされたプロンプトを利用して、細かい単位の推論ループを行うアーキテクチャで設計しています。
@@ -291,6 +291,54 @@ check フェーズの LLM レスポンスは `memory_updates` キーを通じて
 `memory/` を削除した場合、次回の investigate 実行で `overview.md` は初期化されます。  
 `confirmed_facts.md` などの詳細メモは自動再生成されませんが、DuckDB の findings / hypotheses / evidence をもとに再調査はできます。
 
+### 記憶のロード・圧縮フロー
+
+#### ロードフロー
+
+LLM 呼び出しごとに次の順序でコンテキストを組み立てます。`compact_context` は **末尾** ベース (`encoded[-budget:]`) でバジェット内に収めるため、新しいコンテンツが優先されます。
+
+```mermaid
+flowchart TD
+    subgraph TRIGGER["LLM 呼び出し (Broad Plan / Hypothesis Plan / Check)"]
+    end
+
+    subgraph LOAD["記憶ロード"]
+        OV["overview.md\nフルロード (常時)"]
+        CC["compact_context\nconfirmed_facts.md + open_questions.md\n末尾 budget bytes に切り詰め"]
+    end
+
+    subgraph SLICE["プロンプトへのスライス"]
+        F10["findings[:10] — 先頭10件"]
+        H20["resolved_hypotheses[-20:] — 末尾20件"]
+        HIS["history[-10:] — 末尾10件"]
+    end
+
+    RM["read_more で追加ロード\nLLM がリクエストしたファイルのみ"]
+
+    TRIGGER --> OV & CC
+    OV & CC --> SLICE
+    SLICE --> LLM["LLM"]
+    LLM -->|"read_more が返った場合"| RM --> SLICE
+```
+
+#### 圧縮フロー
+
+ファイル更新後に `compact_if_oversized` が呼ばれ、ファイル種別ごとに異なる戦略を適用します。
+
+```mermaid
+flowchart TD
+    UPD["メモリファイル更新後"] --> SZ{"size > max_bytes?"}
+    SZ -- No --> OK["変更なし"]
+    SZ -- Yes --> KIND{"ファイル種別"}
+
+    KIND -- "narrative.md" --> LLM_C["LLM 圧縮\n600語以下に要約\n結論・時系列・未解決スレッドを保持"]
+    KIND -- "timeline_anchors.md" --> ARCH["アーカイブ回転\n100行超で古い行を\ntimeline_archive.md へ退避\n最新80行を保持"]
+    KIND -- "open_questions.md" --> ROT["20% 削除ループ\n古い問いから順に20%ずつ削除"]
+    KIND -- "overview.md\nhypotheses/*.md\nhosts/*.md / users/*.md" --> LLM_C2["LLM 圧縮\n重要な事実・判定・未解決点を保持して要約\n(investigator loop で呼び出し)"]
+    KIND -- "confirmed_facts.md\nrefuted_hypotheses.md\nimportant_entities.md" --> NOOP["圧縮なし\n蓄積のみ"]
+```
+
+`narrative.md` と同じ pattern で、`compact_oversized_with_llm(base_url, model)` が investigator loop 内で呼ばれ、`overview.md` / `hypotheses/*.md` / `hosts/*.md` / `users/*.md` を LLM で圧縮します。重要な事実・verdict・未解決点を保持したまま、古い reasoning trail を要約します。
 
 ## 信頼性の担保
 
@@ -355,6 +403,9 @@ cd forensia
 uv sync
 ```
 
+このリポジトリでは、CLI は基本的に `uv run forensia ...` で実行します。
+仮想環境を自分で activate している場合だけ `forensia ...` を直接使えます。
+
 `.env` を作成して LLM 接続先を設定します。
 
 ```dotenv
@@ -372,14 +423,14 @@ CLI では `--llm-base-url` を使います。`--lmstudio` は互換のため残
 
 ```bash
 # 初回 20 サイクルで実行する
-forensia run ./input --out ./case001 --profile windows-basic
+uv run forensia run ./input --out ./case001 --profile windows-basic
 
 # より長く回したいときだけ明示する
-forensia run ./input --out ./case001 --profile windows-basic --max-iter 50
+uv run forensia run ./input --out ./case001 --profile windows-basic --max-iter 50
 ```
 
-`forensia run` はデフォルトで ingest → normalize → analyze → investigate まで走ります。  
-LLM を設定せずに実行すると、Stage 3（ルール検知）まで走って止まります。
+`forensia run` はデフォルトで ingest → normalize → analyze → investigate → report まで走ります。  
+LLM を設定せずに実行すると investigate はスキップされますが、Stage 3（ルール検知）までの結果を使って report は出力します。
 
 再実行時によく使うのは次の 2 つです。
 
@@ -394,7 +445,7 @@ LLM を設定せずに実行すると、Stage 3（ルール検知）まで走っ
 investigate は、現在の調査状態を読み込み、仮説の検証、Structured Memories の更新、レポート下書きの更新、gap の再投入を繰り返します。
 
 ```
-forensia investigate case001 --max-iter 50
+uv run forensia investigate case001 --max-iter 50
 ```
 
 `investigate` の主な調整項目は `--max-queries-per-hypothesis`、`--no-progress-limit`、`--report-every-n-cycles`、`--report-parallelism`、`--report-only` です。  
@@ -418,7 +469,7 @@ forensia investigate case001 --max-iter 50
 内部でエビデンスのファイル名とhash値を保持し、今まで追加されていなかったものだけをスキャンします。
 
 ```
-forensia add case001 ./input
+uv run forensia add case001 ./input
 ```
 
 #### レポートを生成する
@@ -426,20 +477,20 @@ forensia add case001 ./input
 `report` は既存の `report_sections` から Markdown / HTML をレンダリングするだけです。
 
 ```
-forensia report case001
+uv run forensia report case001
 ```
 
 section が空、または現時点の evidence から LLM で section を再充填したいなら `report-write` を使います。
 
 ```bash
-forensia report-write case001 --llm-base-url http://127.0.0.1:1234 --model qwen/qwen3-8b
+uv run forensia report-write case001 --llm-base-url http://127.0.0.1:1234 --model qwen/qwen3-8b
 ```
 
 #### UIで確認する
 serve は、ケースの調査状態やレポートの途中経過をブラウザで確認するためのUIを起動します。
 
 ```
-forensia serve case001 --host 127.0.0.1 --port 8000
+uv run forensia serve case001 --host 127.0.0.1 --port 8000
 ```
 
 `forensia serve` は、build 済みの `web_ui/dist/` を FastAPI から配信します。  
@@ -450,7 +501,7 @@ DuckDB が他プロセスにロックされている場合でも、`reports/api/
 ケースの進行状況だけ見たいなら、UI を開かずに `status` を使えます。
 
 ```bash
-forensia status case001
+uv run forensia status case001
 ```
 
 その他、開発手順や内部構造の説明は [CONTRIBUTING.md](CONTRIBUTING.md) にまとめています。
