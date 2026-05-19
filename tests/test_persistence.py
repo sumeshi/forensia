@@ -21,7 +21,7 @@ from forensia.ai.report_gap import (
     _report_cycle_progress,
 )
 from forensia.ai.hypothesis_manager import _load_persisted_hypotheses
-from forensia.config import clear_llm_settings_cache
+from forensia.config import clear_llm_settings_cache, resolve_llm_config
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
@@ -30,6 +30,10 @@ from forensia.report.writer import _build_report_brief, _extract_claim_texts, _s
 
 
 class PersistenceTests(unittest.TestCase):
+    @staticmethod
+    def _llm_base_url() -> str:
+        return resolve_llm_config()[0] or "http://test-llm.invalid"
+
     def test_collect_gaps_supports_english_and_japanese_placeholders(self) -> None:
         self.assertEqual(
             ["no logon data"],
@@ -130,7 +134,7 @@ class PersistenceTests(unittest.TestCase):
                         template_path=template_path,
                         context_sections={},
                         report_brief={"top_findings": []},
-                        base_url="http://localhost:1234",
+                        base_url=self._llm_base_url(),
                         model="test-model",
                         session_id="session-test",
                     )
@@ -162,7 +166,7 @@ class PersistenceTests(unittest.TestCase):
                     result = investigate(
                         case=case,
                         db=db,
-                        base_url="http://localhost:1234",
+                        base_url=self._llm_base_url(),
                         model="test-model",
                         max_iter=1,
                         report_only=True,
@@ -200,7 +204,7 @@ class PersistenceTests(unittest.TestCase):
                         template_path=template_path,
                         context_sections={},
                         report_brief={"top_findings": []},
-                        base_url="http://localhost:1234",
+                        base_url=self._llm_base_url(),
                         model="test-model",
                         session_id="session-test",
                     )
@@ -215,7 +219,7 @@ class PersistenceTests(unittest.TestCase):
                         template_path=template_path,
                         context_sections={},
                         report_brief={"top_findings": []},
-                        base_url="http://localhost:1234",
+                        base_url=self._llm_base_url(),
                         model="test-model",
                         session_id="session-test-2",
                     )
@@ -242,7 +246,7 @@ class PersistenceTests(unittest.TestCase):
                         template_path=template_path,
                         context_sections={},
                         report_brief={"top_findings": []},
-                        base_url="http://localhost:1234",
+                        base_url=self._llm_base_url(),
                         model="test-model",
                         session_id="session-test",
                     )
@@ -285,7 +289,7 @@ class PersistenceTests(unittest.TestCase):
                         template_path=template_path,
                         context_sections={},
                         report_brief={"top_findings": [{"finding_id": "F-1"}]},
-                        base_url="http://localhost:1234",
+                        base_url=self._llm_base_url(),
                         model="test-model",
                         session_id="session-test",
                     )
@@ -325,7 +329,7 @@ class PersistenceTests(unittest.TestCase):
                     investigate(
                         case=case,
                         db=db,
-                        base_url="http://localhost:1234",
+                        base_url=self._llm_base_url(),
                         model="test-model",
                         max_iter=1,
                         report_only=True,
@@ -471,7 +475,7 @@ class PersistenceTests(unittest.TestCase):
                     result = investigate(
                         case=case,
                         db=db,
-                        base_url="http://localhost:1234",
+                        base_url=self._llm_base_url(),
                         model="test-model",
                         max_iter=2,
                         no_progress_limit=5,
@@ -522,7 +526,7 @@ class PersistenceTests(unittest.TestCase):
                     result = investigate(
                         case=case,
                         db=db,
-                        base_url="http://localhost:1234",
+                        base_url=self._llm_base_url(),
                         model="test-model",
                         max_iter=5,
                         no_progress_limit=2,
@@ -561,7 +565,7 @@ class PersistenceTests(unittest.TestCase):
                     result = investigate(
                         case=case,
                         db=db,
-                        base_url="http://localhost:1234",
+                        base_url=self._llm_base_url(),
                         model="test-model",
                         max_iter=1,
                         report_only=True,

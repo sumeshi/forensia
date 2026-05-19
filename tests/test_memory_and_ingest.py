@@ -9,7 +9,7 @@ from unittest.mock import patch
 from forensia.ai.investigator import _apply_memory_updates
 from forensia import cli as cli_module
 from forensia.cli import _progress_pusher, _reset_case_tables
-from forensia.config import clear_llm_settings_cache, get_llm_settings
+from forensia.config import clear_llm_settings_cache, get_llm_settings, resolve_llm_config
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis
@@ -20,6 +20,10 @@ from forensia.ingest import ingest_all
 class MemoryAndIngestTests(unittest.TestCase):
     def tearDown(self) -> None:
         clear_llm_settings_cache()
+
+    @staticmethod
+    def _llm_base_url() -> str:
+        return resolve_llm_config()[0] or "http://test-llm.invalid"
 
     def test_legacy_newlead_verdicts_are_migrated_on_open(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -101,10 +105,9 @@ class MemoryAndIngestTests(unittest.TestCase):
             for index in range(20):
                 memory.append_open_question(f"question-{index}", "internal_db_check")
 
-            overview_text = memory.overview_path.read_text(encoding="utf-8")
             open_questions_text = memory.open_questions_path.read_text(encoding="utf-8")
 
-            self.assertIn("# Compacted Memory", overview_text)
+            self.assertTrue(memory.overview_path.stat().st_size > memory.max_bytes)
             self.assertEqual(confirmed_before, memory.confirmed_facts_path.read_text(encoding="utf-8"))
             self.assertEqual(timeline_before, memory.timeline_anchors_path.read_text(encoding="utf-8"))
             self.assertEqual(refuted_before, memory.refuted_hypotheses_path.read_text(encoding="utf-8"))
@@ -196,7 +199,7 @@ class MemoryAndIngestTests(unittest.TestCase):
             memory.narrative_path.write_text("# Narrative\n\n" + ("x" * 512), encoding="utf-8")
 
             with patch("forensia.core.memory.chat_completion", return_value="compressed narrative") as mock_chat:
-                changed = memory.compact_narrative_if_needed("http://localhost:1234", "test-model")
+                changed = memory.compact_narrative_if_needed(self._llm_base_url(), "test-model")
 
             self.assertTrue(changed)
             self.assertEqual("compressed narrative\n", memory.narrative_path.read_text(encoding="utf-8"))
@@ -215,7 +218,7 @@ class MemoryAndIngestTests(unittest.TestCase):
             memory.narrative_path.write_text("# Narrative\n\n" + ("x" * 512), encoding="utf-8")
 
             with patch("forensia.core.memory.chat_completion", return_value="compressed narrative") as mock_chat:
-                memory.compact_narrative_if_needed("http://localhost:1234", "test-model")
+                memory.compact_narrative_if_needed(self._llm_base_url(), "test-model")
 
             messages = mock_chat.call_args.kwargs["messages"]
             self.assertIn("Write the compressed narrative in en.", messages[0]["content"])
@@ -230,10 +233,44 @@ class MemoryAndIngestTests(unittest.TestCase):
             memory.narrative_path.write_text(original, encoding="utf-8")
 
             with patch("forensia.core.memory.chat_completion", side_effect=RuntimeError("timeout")):
-                changed = memory.compact_narrative_if_needed("http://localhost:1234", "test-model")
+                changed = memory.compact_narrative_if_needed(self._llm_base_url(), "test-model")
 
             self.assertFalse(changed)
             self.assertEqual(original, memory.narrative_path.read_text(encoding="utf-8"))
+
+    def test_oversized_memory_files_are_compacted_via_llm(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "96"}):
+            clear_llm_settings_cache()
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            memory.update_overview("# Overview\n\n" + ("x" * 512))
+            memory.upsert_hypothesis("H-1", "oversized", "# Hypothesis H-1\n\n" + ("y" * 512))
+
+            responses = iter(["- overview summary only", "# Hypothesis H-1\n\n- trimmed hypothesis"])
+
+            with patch("forensia.core.memory.chat_completion", side_effect=lambda **_: next(responses)):
+                changed = memory.compact_oversized_with_llm(self._llm_base_url(), "test-model")
+
+            self.assertEqual(
+                [str(memory.overview_path), str(memory.hypotheses_dir / "h-1-oversized.md")],
+                changed,
+            )
+            self.assertTrue(memory.overview_path.read_text(encoding="utf-8").startswith("# Overview\n"))
+            self.assertTrue((memory.hypotheses_dir / "h-1-oversized.md").read_text(encoding="utf-8").startswith("# Hypothesis H-1\n"))
+
+    def test_oversized_memory_llm_compaction_failure_keeps_existing_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "64"}):
+            clear_llm_settings_cache()
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            original = "# Overview\n\n" + ("x" * 512)
+            memory.update_overview(original)
+
+            with patch("forensia.core.memory.chat_completion", side_effect=RuntimeError("timeout")):
+                changed = memory.compact_oversized_with_llm(self._llm_base_url(), "test-model")
+
+            self.assertEqual([], changed)
+            self.assertEqual(original, memory.overview_path.read_text(encoding="utf-8"))
 
     def test_get_llm_settings_cache_can_be_cleared(self) -> None:
         with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "ja"}):

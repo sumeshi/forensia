@@ -40,6 +40,8 @@ LLM_MEMORY_MAX_BYTES=16384
 | `LLM_OUTPUT_LANGUAGE` | 人間向け出力の言語 |
 | `LLM_MEMORY_MAX_BYTES` | `overview.md` / `open_questions.md` / 個別メモの圧縮閾値。`confirmed_facts.md` / `timeline_anchors.md` / `refuted_hypotheses.md` / `important_entities.md` は保持優先で exempt |
 | `LLM_REPORT_PARALLELISM` | report section 書き込みの並列数（既定 1）。`--report-parallelism` フラグでも上書き可 |
+| `FORENSIA_API_BASE_URL` | Web UI 開発時の API 接続先。`vite` proxy と `pnpm gen:api` が参照する |
+| `FORENSIA_UI_ORIGINS` | FastAPI の CORS 許可元。`,` 区切りで複数指定可 |
 
 CLI フラグ名は `--llm-base-url` を正とします。`--lmstudio` は互換のため残している旧名です。
 

@@ -693,6 +693,7 @@ def investigate(
                             db=db,
                         )
                         memory.compact_narrative_if_needed(base_url=base_url, model=model)
+                        memory.compact_oversized_with_llm(base_url=base_url, model=model)
                         refresh_memory_caches()
                         _save_step(
                             db=db,

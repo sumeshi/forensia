@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Annotated
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
@@ -49,6 +51,8 @@ from forensia.report.html import render_html_report
 from forensia.report.writer import build_report_markdown_from_db
 from forensia.report.writer import set_report_section_status
 
+load_dotenv()
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
@@ -65,11 +69,20 @@ def _resolve_spa_dir() -> Path | None:
     return None
 
 
+def _resolve_ui_origins() -> list[str]:
+    raw = os.getenv("FORENSIA_UI_ORIGINS", "")
+    if raw.strip():
+        origins = [item.strip() for item in raw.split(",") if item.strip()]
+        if origins:
+            return origins
+    return ["http://127.0.0.1:5173", "http://localhost:5173"]
+
+
 def create_app(case: Case) -> FastAPI:
     app = FastAPI(title=f"forensia {case.path.name}")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
+        allow_origins=_resolve_ui_origins(),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

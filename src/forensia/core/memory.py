@@ -359,6 +359,66 @@ class MemoryManager:
         self.narrative_path.write_text(body + "\n", encoding="utf-8")
         return True
 
+    def compact_oversized_with_llm(self, base_url: str, model: str) -> list[str]:
+        changed_paths: list[str] = []
+        for path in self._llm_compaction_targets():
+            if not path.exists() or path.stat().st_size <= self.max_bytes:
+                continue
+            current = path.read_text(encoding="utf-8").strip()
+            if not current:
+                continue
+            output_language = str(get_llm_settings()["output_language"]).lower()
+            language_instruction = f"Write the compressed markdown in {output_language}."
+            try:
+                body = chat_completion(
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "Compress the following investigation memory markdown so it fits into a smaller context window. "
+                                "Preserve the top-level markdown heading, confirmed facts, verdicts, key timeline facts, and unresolved questions. "
+                                "Prefer compact bullet points over prose. "
+                                "Keep markdown structure valid and output only the rewritten markdown document. "
+                                f"{language_instruction}"
+                            ),
+                        },
+                        {"role": "user", "content": current},
+                    ],
+                    model=model,
+                    base_url=base_url,
+                ).strip()
+            except Exception:
+                logger.exception("memory compaction failed: %s", path)
+                continue
+            if not body:
+                continue
+            compacted = self._ensure_markdown_heading(body, current)
+            encoded = compacted.encode("utf-8")
+            if len(encoded) > self.max_bytes:
+                compacted = encoded[: self.max_bytes].decode("utf-8", errors="ignore").rstrip() + "\n"
+                compacted = self._ensure_markdown_heading(compacted, current)
+            path.write_text(compacted, encoding="utf-8")
+            changed_paths.append(str(path))
+        return changed_paths
+
+    def _llm_compaction_targets(self) -> list[Path]:
+        return [
+            self.overview_path,
+            *sorted(self.hypotheses_dir.glob("*.md")),
+            *sorted(self.hosts_dir.glob("*.md")),
+            *sorted(self.users_dir.glob("*.md")),
+        ]
+
+    def _ensure_markdown_heading(self, body: str, original: str) -> str:
+        compacted = body.strip()
+        if not compacted.startswith("# "):
+            original_heading = next((line.strip() for line in original.splitlines() if line.strip().startswith("# ")), "")
+            if original_heading:
+                compacted = f"{original_heading}\n\n{compacted}".strip()
+            else:
+                compacted = f"# Compacted Memory\n\n{compacted}".strip()
+        return compacted.rstrip() + "\n"
+
     def _compact_generic(self, path: Path) -> bool:
         text = path.read_text(encoding="utf-8")
         lines = text.splitlines()
@@ -419,4 +479,4 @@ class MemoryManager:
             return False
         if path == self.open_questions_path:
             return self._compact_open_questions(path)
-        return self._compact_generic(path)
+        return False

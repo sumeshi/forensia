@@ -22,7 +22,7 @@ from forensia.ai.prompts import (
 from forensia.ai.sql_schema import build_investigation_framework
 from forensia.ai.sql_schema import ALLOWED_TABLES
 from forensia.ai.sql_templates import _template_failed_logon_by_ip_window, coerce_list
-from forensia.config import clear_llm_settings_cache
+from forensia.config import clear_llm_settings_cache, resolve_llm_config
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
@@ -40,6 +40,10 @@ class _MemoryStub:
 
     def load_compact_context(self, files: list[str], max_bytes: int | None = None) -> str:
         return "# confirmed_facts.md\n\n- fact\n\n# open_questions.md\n\n- question"
+
+
+def _llm_base_url() -> str:
+    return resolve_llm_config()[0] or "http://test-llm.invalid"
 
 
 class PlannerRetryTests(unittest.TestCase):
@@ -254,7 +258,7 @@ class PlannerRetryTests(unittest.TestCase):
                 hypothesis=hypothesis,
                 finding_candidates=[],
                 memory=_MemoryStub(),
-                base_url="http://localhost:1234",
+                base_url=_llm_base_url(),
                 model="test-model",
             )
 
@@ -296,7 +300,7 @@ class PlannerRetryTests(unittest.TestCase):
                 hypothesis=hypothesis,
                 finding_candidates=[],
                 memory=_MemoryStub(),
-                base_url="http://localhost:1234",
+                base_url=_llm_base_url(),
                 model="test-model",
             )
 
@@ -329,7 +333,7 @@ class PlannerRetryTests(unittest.TestCase):
                 hypothesis=hypothesis,
                 finding_candidates=[],
                 memory=_MemoryStub(),
-                base_url="http://localhost:1234",
+                base_url=_llm_base_url(),
                 model="test-model",
             )
 
@@ -392,7 +396,7 @@ class PlannerRetryTests(unittest.TestCase):
                 hypothesis=hypothesis,
                 finding_candidates=[],
                 memory=_MemoryStub(),
-                base_url="http://localhost:1234",
+                base_url=_llm_base_url(),
                 model="test-model",
             )
 
@@ -417,7 +421,7 @@ class PlannerRetryTests(unittest.TestCase):
             _request_with_optional_context(
                 memory=_MemoryStub(),
                 messages_builder=builder,
-                base_url="http://localhost:1234",
+                base_url=_llm_base_url(),
                 model="test-model",
             )
 
@@ -443,7 +447,7 @@ class PlannerRetryTests(unittest.TestCase):
                     finding_candidates=[],
                     result_summary={"row_count": 1, "sample_rows": [], "evidence_ids": []},
                     memory=memory,
-                    base_url="http://localhost:1234",
+                    base_url=_llm_base_url(),
                     model="test-model",
                 )
 
