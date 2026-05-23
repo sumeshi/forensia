@@ -155,10 +155,10 @@ def _initialize_overview(memory: MemoryManager, case: Case) -> None:
             f"Case: {case.path.name}\n\n"
             "## Memory Details\n"
             "- Detailed fact records can be stored under memory/details/fact-NNN.md and loaded on demand.\n\n"
-            "## Confirmed Hosts\n- none\n\n"
-            "## Confirmed Timeline\n- none\n\n"
-            "## Active Hypotheses\n- none\n\n"
-            f"## Open Questions\n- {open_question_seed}\n"
+            "## Case Scope\n- none\n\n"
+            "## Key Findings\n- none\n\n"
+            "## Investigation Policy\n- preserve evidence fidelity\n\n"
+            f"## Active Tasks\n- {open_question_seed}\n"
         )
     )
 
@@ -167,13 +167,64 @@ def _finding_snapshot(db: CaseDB, limit: int = 20) -> list[dict[str, Any]]:
     return fetch_records(
         db,
         """
-        SELECT finding_id, title, summary, severity, confidence, status
+        SELECT finding_id, title, summary, severity, confidence, status, evidence
         FROM findings
         ORDER BY confidence DESC, created_at DESC
         LIMIT ?
         """,
         (limit,),
     )
+
+
+def _render_entity_memory(entity_type: str, name: str, notes: str) -> str:
+    normalized_type = str(entity_type).strip().lower() or "entity"
+    normalized_name = str(name).strip()
+    lines = [f"# {normalized_type}: {normalized_name}", "", f"- type: {normalized_type}", f"- name: {normalized_name}"]
+    note_text = str(notes).strip()
+    if note_text:
+        lines.append(f"- notes: {note_text}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _keypoint_card_id(index: int) -> str:
+    return f"KP-{index:04d}"
+
+
+def _sync_keypoint_cards(memory: MemoryManager, findings_snapshot: list[dict[str, Any]]) -> None:
+    for index, finding in enumerate(findings_snapshot, start=1):
+        evidence_ids: list[str] = []
+        evidence = finding.get("evidence")
+        if isinstance(evidence, str):
+            try:
+                evidence = json.loads(evidence)
+            except json.JSONDecodeError:
+                evidence = []
+        if isinstance(evidence, list):
+            for row in evidence:
+                if not isinstance(row, dict):
+                    continue
+                evidence_id = str(row.get("evidence_id") or "").strip()
+                if evidence_id:
+                    evidence_ids.append(evidence_id)
+        lines = [
+            f"# {_keypoint_card_id(index)}",
+            "",
+            f"- finding_id: {finding.get('finding_id')}",
+            f"- title: {finding.get('title')}",
+            f"- severity: {finding.get('severity')}",
+            f"- confidence: {finding.get('confidence')}",
+            "",
+            "## Summary",
+            str(finding.get("summary") or "").strip() or "-",
+            "",
+            "## Evidence IDs",
+        ]
+        lines.extend([f"- {evidence_id}" for evidence_id in evidence_ids] or ["- none"])
+        memory.upsert_keypoint(_keypoint_card_id(index), "\n".join(lines).rstrip() + "\n")
+    active_ids = {_keypoint_card_id(index) for index in range(1, len(findings_snapshot) + 1)}
+    for path in memory.keypoints_dir.glob("KP-*.md"):
+        if path.stem not in active_ids:
+            path.unlink(missing_ok=True)
 
 
 def _matching_findings(snapshot: list[dict[str, Any]], hypothesis: Hypothesis | None) -> list[dict[str, Any]]:
@@ -235,7 +286,7 @@ def _apply_memory_updates(
     db: CaseDB | None = None,
 ) -> None:
     updates = check_output.get("memory_updates") or {}
-    for item in updates.get("confirmed_facts") or []:
+    for item in updates.get("facts") or []:
         if not isinstance(item, dict):
             continue
         memory.append_confirmed_fact(
@@ -243,7 +294,7 @@ def _apply_memory_updates(
             [str(evidence_id) for evidence_id in (item.get("evidence_ids") or [])],
         )
 
-    for item in updates.get("timeline_anchors") or []:
+    for item in updates.get("timeline") or []:
         if not isinstance(item, dict):
             continue
         memory.append_timeline_anchor(
@@ -252,16 +303,16 @@ def _apply_memory_updates(
             [str(evidence_id) for evidence_id in (item.get("evidence_ids") or [])],
         )
 
-    for item in updates.get("open_questions") or []:
+    for item in updates.get("tasks") or []:
         if not isinstance(item, dict):
             continue
-        memory.append_open_question(
-            str(item.get("question") or ""),
+        memory.append_task(
+            str(item.get("text") or item.get("question") or ""),
             str(item.get("kind") or ""),
         )
 
-    for item in updates.get("narrative") or []:
-        memory.append_narrative(str(item))
+    for item in updates.get("overview") or []:
+        memory.append_overview(str(item))
 
     for item in updates.get("refuted_hypotheses") or []:
         if not isinstance(item, dict):
@@ -272,20 +323,36 @@ def _apply_memory_updates(
             str(item.get("reason") or ""),
         )
 
-    for item in updates.get("important_entities") or []:
+    for item in updates.get("resolved_gaps") or []:
         if not isinstance(item, dict):
             continue
-        memory.append_important_entity(
-            str(item.get("entity_type") or ""),
-            str(item.get("name") or ""),
-            str(item.get("notes") or ""),
+        memory.append_resolved_gap(
+            str(item.get("text") or ""),
+            [str(evidence_id) for evidence_id in (item.get("evidence_ids") or [])],
+        )
+
+    for item in updates.get("entities") or []:
+        if not isinstance(item, dict):
+            continue
+        entity_type = str(item.get("entity_type") or "")
+        entity_name = str(item.get("name") or "")
+        notes = str(item.get("notes") or "")
+        content = str(item.get("content") or "").strip() or _render_entity_memory(entity_type, entity_name, notes)
+        memory.upsert_entity(
+            entity_type,
+            entity_name,
+            content,
         )
 
     memory.append_suspicious(check_output.get("suspicious_evidence") or [])
 
-    for hypothesis in [*active_hypotheses, *resolved_hypotheses]:
+    for hypothesis in active_hypotheses:
         slug = hypothesis.description[:40]
         content = _render_hypothesis_memory(db, hypothesis)
+        memory.upsert_hypothesis(hypothesis.id, slug, content)
+    for hypothesis in resolved_hypotheses:
+        slug = hypothesis.description[:40]
+        content = _render_hypothesis_memory(None, hypothesis)
         memory.upsert_hypothesis(hypothesis.id, slug, content)
 
 
@@ -325,6 +392,7 @@ def investigate(
         active_hypotheses=active_hypotheses,
         resolved_hypotheses=resolved_hypotheses,
     )
+    _sync_keypoint_cards(memory, state.findings_snapshot)
     report_status_cache = _build_report_status(db)
 
     def get_report_status(
@@ -342,25 +410,27 @@ def investigate(
             focus_sections=focus_sections,
         )
 
-    memory_overview_cache = memory.load_overview()
+    memory.compact_overview_if_needed(base_url=base_url, model=model)
+    memory_overview_cache = memory.load_compact_context(["overview.md"], max_bytes=memory.max_bytes)
     memory_plan_context_cache = memory.load_compact_context(
-        ["confirmed_facts.md", "open_questions.md"],
+        ["facts.md", "tasks.md"],
         max_bytes=max(1024, memory.max_bytes // 3),
     )
     memory_check_context_cache = memory.load_compact_context(
-        ["confirmed_facts.md", "timeline_anchors.md", "open_questions.md"],
+        ["facts.md", "timeline.md", "tasks.md"],
         max_bytes=max(1024, memory.max_bytes // 2),
     )
 
     def refresh_memory_caches() -> None:
         nonlocal memory_overview_cache, memory_plan_context_cache, memory_check_context_cache
-        memory_overview_cache = memory.load_overview()
+        memory.compact_overview_if_needed(base_url=base_url, model=model)
+        memory_overview_cache = memory.load_compact_context(["overview.md"], max_bytes=memory.max_bytes)
         memory_plan_context_cache = memory.load_compact_context(
-            ["confirmed_facts.md", "open_questions.md"],
+            ["facts.md", "tasks.md"],
             max_bytes=max(1024, memory.max_bytes // 3),
         )
         memory_check_context_cache = memory.load_compact_context(
-            ["confirmed_facts.md", "timeline_anchors.md", "open_questions.md"],
+            ["facts.md", "timeline.md", "tasks.md"],
             max_bytes=max(1024, memory.max_bytes // 2),
         )
     db.execute(
@@ -398,6 +468,7 @@ def investigate(
         for plan_cycle in range(1, max_iter + 1):
             state.iteration = plan_cycle
             state.findings_snapshot = _finding_snapshot(db)
+            _sync_keypoint_cards(memory, state.findings_snapshot)
             if progress_callback:
                 progress_callback(
                     {
@@ -692,7 +763,7 @@ def investigate(
                             check_output=check_result.raw_response,
                             db=db,
                         )
-                        memory.compact_narrative_if_needed(base_url=base_url, model=model)
+                        memory.compact_overview_if_needed(base_url=base_url, model=model)
                         memory.compact_oversized_with_llm(base_url=base_url, model=model)
                         refresh_memory_caches()
                         _save_step(

@@ -299,7 +299,7 @@ def check_query_result(
 ) -> CheckResult:
     overview_md = overview_md if overview_md is not None else memory.load_overview()
     memory_context_md = memory_context_md if memory_context_md is not None else memory.load_compact_context(
-        ["confirmed_facts.md", "timeline_anchors.md", "open_questions.md"],
+        ["facts.md", "timeline.md", "tasks.md"],
         max_bytes=max(1024, memory.max_bytes // 2),
     )
     messages = build_check_messages(

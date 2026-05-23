@@ -193,6 +193,11 @@ Structured Memories は、より詳細には下記のようなファイル群で
   - `archive/`: 必要に応じて読む, 要約圧縮しない, Archives。過去の判断や解決済み項目の控え。
     - `refuted.md`: 否定済み仮説の控え。
     - `resolved_gaps.md`: 解決済み gap の控え。
+    - `timeline_archive.md`: 古いタイムラインの退避先。
+  - `evidence/`: 必要に応じて読む, 要約圧縮しない, Evidence Notes。`evidence/suspicious.md` として check フェーズで LLM が指定した不審証拠を蓄積。
+    - `suspicious.md`
+  - `details/`: 必要に応じて読む, 要約圧縮しない, Detail Records。fact index の詳細本文。
+    - `fact-NNN.md`: `facts.md` インデックス行の詳細本文。
 
 なお、LLM のリクエスト / レスポンス本文は `ai_logs/` に保存されます。
 これは調査状態の正本ではなく、「AI に何を渡し、何が返ったか」を後から人間が監査するための可観測性ログです。

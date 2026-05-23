@@ -23,21 +23,30 @@ class MemoryManager:
     def __init__(self, case: Case):
         self.case = case
         self.base_dir = case.memory_dir
-        self.hosts_dir = self.base_dir / "hosts"
-        self.users_dir = self.base_dir / "users"
+        self.archive_dir = self.base_dir / "archive"
+        self.entities_dir = self.base_dir / "entities"
+        self.entities_user_dir = self.entities_dir / "user"
+        self.entities_host_dir = self.entities_dir / "host"
+        self.entities_ip_dir = self.entities_dir / "ip"
         self.hypotheses_dir = self.base_dir / "hypotheses"
+        self.keypoints_dir = self.base_dir / "keypoints"
         self.evidence_dir = self.base_dir / "evidence"
         self.details_dir = self.base_dir / "details"
         for directory in (
             self.base_dir,
-            self.hosts_dir,
-            self.users_dir,
+            self.archive_dir,
+            self.entities_dir,
+            self.entities_user_dir,
+            self.entities_host_dir,
+            self.entities_ip_dir,
             self.hypotheses_dir,
+            self.keypoints_dir,
             self.evidence_dir,
             self.details_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
         self._fact_hashes: set[str] = set()
+        self._next_fact_id = 1
         self._load_existing_fact_hashes()
 
     @property
@@ -45,28 +54,24 @@ class MemoryManager:
         return self.base_dir / "overview.md"
 
     @property
-    def confirmed_facts_path(self) -> Path:
-        return self.base_dir / "confirmed_facts.md"
+    def facts_path(self) -> Path:
+        return self.base_dir / "facts.md"
 
     @property
-    def timeline_anchors_path(self) -> Path:
-        return self.base_dir / "timeline_anchors.md"
+    def timeline_path(self) -> Path:
+        return self.base_dir / "timeline.md"
 
     @property
-    def open_questions_path(self) -> Path:
-        return self.base_dir / "open_questions.md"
-
-    @property
-    def narrative_path(self) -> Path:
-        return self.base_dir / "narrative.md"
+    def tasks_memory_path(self) -> Path:
+        return self.base_dir / "tasks.md"
 
     @property
     def refuted_hypotheses_path(self) -> Path:
-        return self.base_dir / "refuted_hypotheses.md"
+        return self.archive_dir / "refuted.md"
 
     @property
-    def important_entities_path(self) -> Path:
-        return self.base_dir / "important_entities.md"
+    def resolved_gaps_path(self) -> Path:
+        return self.archive_dir / "resolved_gaps.md"
 
     @property
     def suspicious_path(self) -> Path:
@@ -83,10 +88,10 @@ class MemoryManager:
         if not self.overview_path.exists():
             return (
                 "# Investigation Overview\n\n"
-                "## Confirmed Hosts\n- none\n\n"
-                "## Confirmed Timeline\n- none\n\n"
-                "## Active Hypotheses\n- none\n\n"
-                "## Open Questions\n- none\n"
+                "## Case Scope\n- none\n\n"
+                "## Key Findings\n- none\n\n"
+                "## Investigation Policy\n- preserve evidence fidelity\n\n"
+                "## Active Tasks\n- none\n"
             )
         return self.overview_path.read_text(encoding="utf-8")
 
@@ -116,7 +121,6 @@ class MemoryManager:
 
     def update_overview(self, content: str) -> None:
         self.overview_path.write_text(content, encoding="utf-8")
-        self.compact_if_oversized(self.overview_path)
 
     def append_overview(self, content: str) -> bool:
         content = content.strip()
@@ -126,38 +130,42 @@ class MemoryManager:
         self.update_overview(existing + "\n\n" + content + "\n")
         return True
 
-    def upsert_host(self, hostname: str, content: str) -> None:
-        path = self.hosts_dir / f"{_slugify(hostname)}.md"
+    def upsert_entity(self, entity_type: str, name: str, content: str) -> None:
+        path = self._entity_path(entity_type, name)
+        if path is None:
+            return
         path.write_text(content, encoding="utf-8")
-        self.compact_if_oversized(path)
+
+    def upsert_host(self, hostname: str, content: str) -> None:
+        self.upsert_entity("host", hostname, content)
 
     def upsert_user(self, username: str, content: str) -> None:
-        path = self.users_dir / f"{_slugify(username)}.md"
-        path.write_text(content, encoding="utf-8")
-        self.compact_if_oversized(path)
+        self.upsert_entity("user", username, content)
 
     def upsert_hypothesis(self, hyp_id: str, slug: str, content: str) -> None:
         path = self.hypotheses_dir / f"{_slugify(hyp_id)}-{_slugify(slug)}.md"
         path.write_text(content, encoding="utf-8")
-        self.compact_if_oversized(path)
+
+    def upsert_keypoint(self, kp_id: str, content: str) -> None:
+        path = self.keypoints_dir / f"{_slugify(kp_id).upper()}.md"
+        path.write_text(content, encoding="utf-8")
 
     def append_confirmed_fact(self, text: str, evidence_ids: list[str]) -> None:
         body = str(text).strip()
         if not body:
             return
-        normalized_ids = [str(item).strip() for item in evidence_ids if str(item).strip()]
+        normalized_ids = sorted({str(item).strip() for item in evidence_ids if str(item).strip()})
         fact_hash = self._fact_hash(body, normalized_ids)
         if fact_hash in self._fact_hashes:
             return
-        detail_id = self._next_fact_detail_id()
+        detail_id = self._alloc_fact_detail_id()
         preview = body[:120]
         line = self._format_memory_line(f"[{detail_id}] {preview}", normalized_ids)
         if not line:
             return
-        if self._append_markdown_line(self.confirmed_facts_path, "# Confirmed Facts", line):
+        if self._append_markdown_line(self.facts_path, "# Facts", line):
             self._write_fact_detail(detail_id, body, normalized_ids)
             self._fact_hashes.add(fact_hash)
-            self.compact_if_oversized(self.confirmed_facts_path)
 
     def append_timeline_anchor(self, timestamp: str, description: str, evidence_ids: list[str]) -> None:
         timestamp_text = str(timestamp).strip()
@@ -165,28 +173,22 @@ class MemoryManager:
         if not timestamp_text or not description_text:
             return
         line = self._format_memory_line(f"{timestamp_text}: {description_text}", evidence_ids)
-        if line and self._append_markdown_line(self.timeline_anchors_path, "# Timeline Anchors", line):
-            self._rotate_timeline_anchors()
+        if line and self._append_markdown_line(self.timeline_path, "# Timeline", line):
+            self._rotate_timeline()
 
-    def append_open_question(self, question: str, kind: str) -> None:
-        question_text = str(question).strip()
+    def append_task(self, text: str, kind: str) -> None:
+        task_text = str(text).strip()
         normalized_kind = str(kind).strip()
         if normalized_kind not in {"internal_db_check", "external_lookup", "human_decision"}:
             normalized_kind = "human_decision"
-        if not question_text:
+        if not task_text:
             return
         self._append_markdown_line(
-            self.open_questions_path,
-            "# Open Questions",
-            f"- [{normalized_kind}] {question_text}",
+            self.tasks_memory_path,
+            "# Tasks",
+            f"- [{normalized_kind}] {task_text}",
         )
-        self.compact_if_oversized(self.open_questions_path)
-
-    def append_narrative(self, text: str) -> None:
-        body = str(text).strip()
-        if not body:
-            return
-        self._append_markdown_line(self.narrative_path, "# Narrative", f"- {body}")
+        self.compact_if_oversized(self.tasks_memory_path)
 
     def append_refuted_hypothesis(self, hypothesis_id: str, description: str, reason: str) -> None:
         hyp_id = str(hypothesis_id).strip()
@@ -199,16 +201,13 @@ class MemoryManager:
             line += f" | reason: {reason_text}"
         self._append_markdown_line(self.refuted_hypotheses_path, "# Refuted Hypotheses", line)
 
-    def append_important_entity(self, entity_type: str, name: str, notes: str) -> None:
-        kind = str(entity_type).strip() or "entity"
-        entity_name = str(name).strip()
-        note_text = str(notes).strip()
-        if not entity_name:
+    def append_resolved_gap(self, text: str, evidence_ids: list[str]) -> None:
+        body = str(text).strip()
+        if not body:
             return
-        line = f"- [{kind}] {entity_name}"
-        if note_text:
-            line += f" | {note_text}"
-        self._append_markdown_line(self.important_entities_path, "# Important Entities", line)
+        line = self._format_memory_line(body, evidence_ids)
+        if line:
+            self._append_markdown_line(self.resolved_gaps_path, "# Resolved Gaps", line)
 
     def append_suspicious(self, rows: list[dict]) -> bool:
         if not rows:
@@ -240,7 +239,7 @@ class MemoryManager:
             return False
         content = existing.rstrip() + "\n" + "\n".join(appended) + "\n"
         self.suspicious_path.write_text(content, encoding="utf-8")
-        self.compact_if_oversized(self.suspicious_path)
+        self._compact_suspicious(self.suspicious_path)
         return True
 
     def _format_memory_line(self, text: str, evidence_ids: list[str]) -> str:
@@ -262,14 +261,10 @@ class MemoryManager:
         path.write_text(existing + "\n\n" + line + "\n", encoding="utf-8")
         return True
 
-    def _next_fact_detail_id(self) -> str:
-        max_n = 0
-        for path in self.details_dir.glob("fact-*.md"):
-            try:
-                max_n = max(max_n, int(path.stem[5:]))
-            except ValueError:
-                continue
-        return f"fact-{max_n + 1:03d}"
+    def _alloc_fact_detail_id(self) -> str:
+        detail_id = f"fact-{self._next_fact_id:03d}"
+        self._next_fact_id += 1
+        return detail_id
 
     def _write_fact_detail(self, detail_id: str, text: str, evidence_ids: list[str]) -> None:
         lines = [f"# {detail_id}", "", text.strip()]
@@ -278,18 +273,23 @@ class MemoryManager:
         (self.details_dir / f"{detail_id}.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
     def _fact_hash(self, text: str, evidence_ids: list[str]) -> str:
-        payload = "\n".join([text.strip(), *evidence_ids])
+        payload = "\n".join([text.strip(), *sorted(evidence_ids)])
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _parse_fact_detail(self, detail: list[str]) -> tuple[str, list[str]] | None:
         if len(detail) < 3:
             return None
-        existing_text = detail[2].strip()
+        text_lines: list[str] = []
+        for line in detail[2:]:
+            if line.strip() == "## Evidence":
+                break
+            text_lines.append(line)
+        existing_text = "\n".join(text_lines).strip()
         if not existing_text:
             return None
         evidence_ids: list[str] = []
         in_evidence = False
-        for line in detail[3:]:
+        for line in detail[2:]:
             stripped = line.strip()
             if stripped == "## Evidence":
                 in_evidence = True
@@ -299,50 +299,83 @@ class MemoryManager:
         return existing_text, evidence_ids
 
     def _load_existing_fact_hashes(self) -> None:
+        max_n = 0
         for path in sorted(self.details_dir.glob("fact-*.md")):
+            try:
+                max_n = max(max_n, int(path.stem[5:]))
+            except ValueError:
+                continue
             parsed = self._parse_fact_detail(path.read_text(encoding="utf-8").splitlines())
             if parsed is None:
                 continue
             text, evidence_ids = parsed
             self._fact_hashes.add(self._fact_hash(text, evidence_ids))
+        self._next_fact_id = max_n + 1
 
-    def _rotate_timeline_anchors(self, max_lines: int = 100, keep_lines: int = 80) -> None:
-        if not self.timeline_anchors_path.exists():
+    def _entity_path(self, entity_type: str, name: str) -> Path | None:
+        normalized_type = str(entity_type).strip().lower()
+        normalized_name = str(name).strip()
+        if not normalized_name:
+            return None
+        aliases = {
+            "user": "user",
+            "username": "user",
+            "account": "user",
+            "host": "host",
+            "hostname": "host",
+            "computer": "host",
+            "ip": "ip",
+            "src_ip": "ip",
+            "dst_ip": "ip",
+            "ip_address": "ip",
+        }
+        normalized_type = aliases.get(normalized_type, normalized_type)
+        base = {
+            "user": self.entities_user_dir,
+            "host": self.entities_host_dir,
+            "ip": self.entities_ip_dir,
+        }.get(normalized_type)
+        if base is None:
+            return None
+        return base / f"{_slugify(normalized_name)}.md"
+
+    def _rotate_timeline(self, max_lines: int = 100, keep_lines: int = 80) -> None:
+        if not self.timeline_path.exists():
             return
-        lines = self.timeline_anchors_path.read_text(encoding="utf-8").splitlines()
+        lines = self.timeline_path.read_text(encoding="utf-8").splitlines()
         anchor_lines = [line for line in lines if line.startswith("- ")]
         if len(anchor_lines) <= max_lines:
             return
         archived = anchor_lines[:-keep_lines]
         retained = anchor_lines[-keep_lines:]
-        archive_path = self.details_dir / "timeline_archive.md"
+        archive_path = self.archive_dir / "timeline_archive.md"
         archive_existing = archive_path.read_text(encoding="utf-8").rstrip() if archive_path.exists() else "# Timeline Archive"
         archive_lines = set(archive_existing.splitlines())
         appendable = [line for line in archived if line not in archive_lines]
         if appendable:
             archive_path.write_text(archive_existing + "\n\n" + "\n".join(appendable) + "\n", encoding="utf-8")
-        rebuilt = "# Timeline Anchors"
+        rebuilt = "# Timeline"
         if retained:
             rebuilt += "\n\n" + "\n".join(retained)
-        self.timeline_anchors_path.write_text(rebuilt.rstrip() + "\n", encoding="utf-8")
+        self.timeline_path.write_text(rebuilt.rstrip() + "\n", encoding="utf-8")
 
-    def compact_narrative_if_needed(self, base_url: str, model: str) -> bool:
-        if not self.narrative_path.exists() or self.narrative_path.stat().st_size <= self.max_bytes:
+    def compact_overview_if_needed(self, base_url: str, model: str) -> bool:
+        if not self.overview_path.exists() or self.overview_path.stat().st_size <= self.max_bytes:
             return False
-        current = self.narrative_path.read_text(encoding="utf-8").strip()
+        current = self.overview_path.read_text(encoding="utf-8").strip()
         if not current:
             return False
         output_language = str(get_llm_settings()["output_language"]).lower()
-        language_instruction = f"Write the compressed narrative in {output_language}."
+        language_instruction = f"Write the compressed overview in {output_language}."
         try:
             body = chat_completion(
                 messages=[
                     {
                         "role": "system",
                         "content": (
-                            "Compress the following investigation narrative to 600 words or fewer. "
+                            "Compress the following investigation overview to 600 words or fewer. "
                             "Preserve conclusions, timeline, and unresolved threads. "
-                            "Output only the narrative body. "
+                            "Output only the overview body. "
                             f"{language_instruction}"
                         ),
                     },
@@ -352,11 +385,11 @@ class MemoryManager:
                 base_url=base_url,
             ).strip()
         except Exception:
-            logger.exception("narrative compaction failed")
+            logger.exception("overview compaction failed")
             return False
         if not body:
             return False
-        self.narrative_path.write_text(body + "\n", encoding="utf-8")
+        self.overview_path.write_text(body + "\n", encoding="utf-8")
         return True
 
     def compact_oversized_with_llm(self, base_url: str, model: str) -> list[str]:
@@ -403,10 +436,10 @@ class MemoryManager:
 
     def _llm_compaction_targets(self) -> list[Path]:
         return [
-            self.overview_path,
             *sorted(self.hypotheses_dir.glob("*.md")),
-            *sorted(self.hosts_dir.glob("*.md")),
-            *sorted(self.users_dir.glob("*.md")),
+            *sorted(self.entities_host_dir.glob("*.md")),
+            *sorted(self.entities_user_dir.glob("*.md")),
+            *sorted(self.entities_ip_dir.glob("*.md")),
         ]
 
     def _ensure_markdown_heading(self, body: str, original: str) -> str:
@@ -419,36 +452,12 @@ class MemoryManager:
                 compacted = f"# Compacted Memory\n\n{compacted}".strip()
         return compacted.rstrip() + "\n"
 
-    def _compact_generic(self, path: Path) -> bool:
-        text = path.read_text(encoding="utf-8")
-        lines = text.splitlines()
-        max_chars = max(self.max_bytes // 2, 1024)
-        body = "\n".join(lines)
-        trimmed = body[:max_chars].rstrip()
-        if len(body) > max_chars:
-            cut = trimmed.rfind("\n")
-            if cut > 0:
-                trimmed = trimmed[:cut].rstrip()
-        summary = (
-            "# Compacted Memory\n\n"
-            f"- original_bytes: {len(text.encode('utf-8'))}\n"
-            f"- retained_lines: {len(trimmed.splitlines())}\n"
-            "- note: oversized memory file was compacted automatically.\n\n"
-            "## Retained Excerpt\n"
-        )
-        compacted = summary + trimmed + "\n"
-        encoded = compacted.encode("utf-8")
-        if len(encoded) > self.max_bytes:
-            compacted = compacted.encode("utf-8")[: self.max_bytes].decode("utf-8", errors="ignore").rstrip() + "\n"
-        path.write_text(compacted, encoding="utf-8")
-        return True
-
-    def _compact_open_questions(self, path: Path) -> bool:
+    def _compact_tasks(self, path: Path) -> bool:
         if not path.exists() or path.stat().st_size <= self.max_bytes:
             return False
         lines = path.read_text(encoding="utf-8").splitlines()
-        question_lines = [line for line in lines if line.startswith("- [")]
-        if not question_lines:
+        task_lines = [line for line in lines if line.startswith("- [")]
+        if not task_lines:
             return False
         prefix_lines: list[str] = []
         for line in lines:
@@ -456,7 +465,7 @@ class MemoryManager:
                 break
             prefix_lines.append(line)
 
-        keep_lines = question_lines
+        keep_lines = task_lines
         while keep_lines:
             remove_count = max(1, ceil(len(keep_lines) * 0.2))
             keep_lines = keep_lines[remove_count:]
@@ -466,17 +475,45 @@ class MemoryManager:
                 return True
         return True
 
+    def _compact_suspicious(self, path: Path) -> bool:
+        if not path.exists() or path.stat().st_size <= self.max_bytes:
+            return False
+        lines = path.read_text(encoding="utf-8").splitlines()
+        data_lines = [
+            line
+            for line in lines
+            if line.startswith("|") and not line.startswith("| evidence_id ") and not line.startswith("|---")
+        ]
+        if not data_lines:
+            return False
+        prefix_lines: list[str] = []
+        for line in lines:
+            prefix_lines.append(line)
+            if line.startswith("|---"):
+                break
+
+        keep_lines = data_lines
+        while keep_lines:
+            remove_count = max(1, ceil(len(keep_lines) * 0.2))
+            keep_lines = keep_lines[remove_count:]
+            rebuilt = "\n".join(prefix_lines + keep_lines).strip() + "\n"
+            path.write_text(rebuilt, encoding="utf-8")
+            if path.stat().st_size <= self.max_bytes or len(keep_lines) <= 1:
+                return True
+        return True
+
     def compact_if_oversized(self, path: Path) -> bool:
         if not path.exists() or path.stat().st_size <= self.max_bytes:
             return False
         if path in {
-            self.confirmed_facts_path,
-            self.timeline_anchors_path,
-            self.narrative_path,
+            self.facts_path,
+            self.timeline_path,
             self.refuted_hypotheses_path,
-            self.important_entities_path,
+            self.resolved_gaps_path,
         }:
             return False
-        if path == self.open_questions_path:
-            return self._compact_open_questions(path)
+        if path == self.tasks_memory_path:
+            return self._compact_tasks(path)
+        if path == self.suspicious_path:
+            return self._compact_suspicious(path)
         return False

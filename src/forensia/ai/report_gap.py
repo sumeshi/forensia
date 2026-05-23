@@ -163,7 +163,7 @@ def _inject_gap_hypotheses(
         gap_kind = _classify_gap_kind(gap)
         if gap_kind != "internal_db_check":
             if memory is not None:
-                memory.append_open_question(gap, gap_kind)
+                memory.append_task(gap, gap_kind)
             known_by_description.add(normalized_gap)
             continue
         hypothesis = Hypothesis(

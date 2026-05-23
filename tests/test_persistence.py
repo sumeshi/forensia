@@ -387,7 +387,7 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual("human_decision", _classify_gap_kind("利用者へのヒアリングが必要"))
             self.assertEqual(0, added)
             self.assertEqual(0, row_count)
-            self.assertIn("所有組織", memory.open_questions_path.read_text(encoding="utf-8"))
+            self.assertIn("所有組織", memory.tasks_memory_path.read_text(encoding="utf-8"))
 
     def test_gap_classification_supports_english_external_and_human_keywords(self) -> None:
         for phrase in (

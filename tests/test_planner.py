@@ -39,7 +39,7 @@ class _MemoryStub:
         return ""
 
     def load_compact_context(self, files: list[str], max_bytes: int | None = None) -> str:
-        return "# confirmed_facts.md\n\n- fact\n\n# open_questions.md\n\n- question"
+        return "# facts.md\n\n- fact\n\n# tasks.md\n\n- question"
 
 
 def _llm_base_url() -> str:
@@ -136,11 +136,11 @@ class PlannerRetryTests(unittest.TestCase):
             finding_candidates=[],
             result_summary={"row_count": 1},
             overview_md="# overview",
-            memory_context_md="# confirmed_facts.md\n- fact",
+            memory_context_md="# facts.md\n- fact",
         )
         payload = messages[1]["content"]
         self.assertIn("# overview", payload)
-        self.assertIn("confirmed_facts.md", payload)
+        self.assertIn("facts.md", payload)
 
     def test_build_check_messages_missing_checks_follow_output_language(self) -> None:
         with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "en"}):
@@ -151,7 +151,7 @@ class PlannerRetryTests(unittest.TestCase):
                 finding_candidates=[],
                 result_summary={"row_count": 1},
                 overview_md="# overview",
-                memory_context_md="# confirmed_facts.md\n- fact",
+                memory_context_md="# facts.md\n- fact",
             )
         system = messages[0]["content"]
         self.assertIn("Other host logons from the same src_ip", system)
@@ -164,7 +164,7 @@ class PlannerRetryTests(unittest.TestCase):
             finding_candidates=[],
             result_summary={"row_count": 1},
             overview_md="# overview",
-            memory_context_md="# confirmed_facts.md\n- fact",
+            memory_context_md="# facts.md\n- fact",
         )
         system = messages[0]["content"]
         self.assertNotIn("compromised_hosts", system)
@@ -177,7 +177,7 @@ class PlannerRetryTests(unittest.TestCase):
             finding_candidates=[],
             result_summary={"row_count": 1},
             overview_md="# overview",
-            memory_context_md="# confirmed_facts.md\n- fact",
+            memory_context_md="# facts.md\n- fact",
         )
         system = messages[0]["content"]
         self.assertIn("finding_id, new_status (accepted or suppressed), confidence_delta", system)
@@ -354,7 +354,7 @@ class PlannerRetryTests(unittest.TestCase):
 
     def test_coerce_list_wraps_single_dict_and_string(self) -> None:
         self.assertEqual([{"id": "H-1"}], coerce_list({"id": "H-1"}))
-        self.assertEqual(["confirmed_facts.md"], coerce_list("confirmed_facts.md"))
+        self.assertEqual(["facts.md"], coerce_list("facts.md"))
         self.assertEqual([], coerce_list(""))
 
     def test_investigation_framework_lists_missing_columns(self) -> None:
@@ -426,8 +426,23 @@ class PlannerRetryTests(unittest.TestCase):
             )
 
         self.assertEqual(1, len(seen))
-        self.assertIn("confirmed_facts.md", seen[0])
-        self.assertIn("open_questions.md", seen[0])
+        self.assertIn("facts.md", seen[0])
+        self.assertIn("tasks.md", seen[0])
+
+    def test_request_with_optional_context_uses_compact_context_for_read_more(self) -> None:
+        memory = _MemoryStub()
+        with patch.object(memory, "load_compact_context", return_value="# compact extra") as mock_compact, patch(
+            "forensia.ai.planner.request_llm_json",
+            side_effect=[{"read_more": ["archive/refuted.md"]}, {"read_more": []}],
+        ):
+            _request_with_optional_context(
+                memory=memory,
+                messages_builder=lambda extra: [{"role": "user", "content": extra}],
+                base_url=_llm_base_url(),
+                model="test-model",
+            )
+
+        mock_compact.assert_any_call(["archive/refuted.md"], max_bytes=memory.max_bytes)
 
     def test_invalid_verdict_falls_back_to_inconclusive(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

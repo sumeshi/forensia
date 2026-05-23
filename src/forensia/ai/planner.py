@@ -113,7 +113,7 @@ def _request_with_optional_context(
     default_context = initial_context
     if default_context is None:
         default_context = memory.load_compact_context(
-            ["confirmed_facts.md", "open_questions.md"],
+            ["facts.md", "tasks.md"],
             max_bytes=max(1024, memory.max_bytes // 3),
         )
     parsed = request_llm_json(
@@ -126,7 +126,7 @@ def _request_with_optional_context(
     read_more = [str(item) for item in coerce_list(parsed.get("read_more"))]
     if not read_more:
         return parsed
-    extra_context = memory.load_context(read_more)
+    extra_context = memory.load_compact_context(read_more, max_bytes=memory.max_bytes)
     reparsed = request_llm_json(
         messages=messages_builder(extra_context),
         model=model,
