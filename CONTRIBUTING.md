@@ -36,7 +36,7 @@ LLM_MEMORY_MAX_BYTES=16384
 
 | Variable | Meaning |
 |---|---|
-| `LLM_BASE_URL` | LM Studio compatible API base URL |
+| `LLM_BASE_URL` | LLM API base URL |
 | `LLM_MODEL` | Model name used for investigation and report writing |
 | `LLM_MAX_TOKENS` | Max tokens per response |
 | `LLM_THINKING_LANGUAGE` | Language used for internal reasoning prompts |
@@ -46,7 +46,7 @@ LLM_MEMORY_MAX_BYTES=16384
 | `FORENSIA_API_BASE_URL` | API base URL used by the UI dev workflow |
 | `FORENSIA_UI_ORIGINS` | Comma-separated CORS allowlist for FastAPI |
 
-The canonical CLI flag is `--llm-base-url`. `--lmstudio` remains as a compatibility alias.
+The CLI flag for the base URL is `--llm-base-url`.
 
 ### Web UI
 
@@ -563,7 +563,6 @@ README should cover:
 ## Rerun semantics
 
 - `forensia run` includes investigation by default.
-- To run the investigation stage again on an existing case, use `--reinvestigate`.
 - To reinitialize an output directory, use `--init`.
 - `report` is render-only.
 - `report-write` performs section refill before rendering.

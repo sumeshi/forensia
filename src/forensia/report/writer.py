@@ -327,13 +327,15 @@ def _upsert_report_section(
     confidence: float,
     gaps: list[str],
     session_id: str | None = None,
-) -> None:
+) -> bool:
     now = datetime.now(UTC).replace(tzinfo=None)
     existing = db.execute(
-        "SELECT status, update_count FROM report_sections WHERE section_key = ?",
+        "SELECT status, update_count, body FROM report_sections WHERE section_key = ?",
         (section_key,),
     ).fetchone()
     existing_status = str(existing[0] or "draft") if existing else "draft"
+    if existing_status == "human_reviewed" and str(existing[2] or "").strip():
+        return False
     update_count = int(existing[1] or 0) + 1 if existing else 1
     if gaps or confidence < 0.9:
         next_status = "draft"
@@ -370,6 +372,7 @@ def _upsert_report_section(
             now,
         ),
     )
+    return True
 
 
 def mark_report_sections_ai_exhausted(db: CaseDB) -> None:
@@ -461,19 +464,30 @@ def finalize_section(
     session_id: str | None = None,
 ) -> dict[str, Any]:
     """UPSERT the section into DuckDB. Returns gap list and confidence."""
-    gaps = collect_gaps({section_key: body})
-    confidence = _section_confidence(body)
-    _upsert_report_section(
+    candidate_gaps = collect_gaps({section_key: body})
+    candidate_confidence = _section_confidence(body)
+    updated = _upsert_report_section(
         db=db,
         section_key=section_key,
         title=title,
         body=body,
-        confidence=confidence,
-        gaps=gaps,
+        confidence=candidate_confidence,
+        gaps=candidate_gaps,
         session_id=session_id,
     )
+    if not updated:
+        row = db.execute(
+            "SELECT body, confidence, gaps FROM report_sections WHERE section_key = ?",
+            (section_key,),
+        ).fetchone()
+        persisted_body = str(row[0] or "")
+        persisted_confidence = float(row[1] or 0.0)
+        persisted_gaps = normalize_value(row[2]) or []
+        if not isinstance(persisted_gaps, list):
+            persisted_gaps = []
+        return {"gaps": persisted_gaps, "confidence": persisted_confidence}
     _upsert_claims(db, section_key, body, evidence_results or [])
-    return {"gaps": gaps, "confidence": confidence}
+    return {"gaps": candidate_gaps, "confidence": candidate_confidence}
 
 
 def fill_section(

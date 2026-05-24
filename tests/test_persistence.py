@@ -234,6 +234,40 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual(2, int(row[1]))
             self.assertGreaterEqual(float(row[2]), 0.9)
 
+    def test_human_reviewed_section_is_not_overwritten_by_fill_section(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            template_path = Path("src/forensia/report_template/1_overview.md")
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO report_sections (
+                        section_key, title, body, confidence, status, update_count, gaps, last_filled_session, last_filled_at
+                    ) VALUES ('1_overview', 'Overview', '# Locked\n\nHuman text', 1.0, 'human_reviewed', 1, '[]', 'session-1', now())
+                    """
+                )
+                with patch(
+                    "forensia.report.writer.chat_completion",
+                    return_value="# Investigation Overview\n\nAI rewrite",
+                ):
+                    fill_section(
+                        case=case,
+                        db=db,
+                        template_path=template_path,
+                        context_sections={},
+                        report_brief={"top_findings": []},
+                        base_url=self._llm_base_url(),
+                        model="test-model",
+                        session_id="session-test",
+                    )
+                row = db.execute(
+                    "SELECT body, status, update_count FROM report_sections WHERE section_key = '1_overview'"
+                ).fetchone()
+
+            self.assertEqual("# Locked\n\nHuman text", row[0])
+            self.assertEqual("human_reviewed", row[1])
+            self.assertEqual(1, int(row[2]))
+
     def test_finalize_section_creates_claim_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -572,6 +606,137 @@ class PersistenceTests(unittest.TestCase):
             result = runner.invoke(cli_module.app, ["templates-export", tmpdir])
             self.assertEqual(0, result.exit_code, result.output)
             self.assertTrue((Path(tmpdir) / "1_overview.md").exists())
+
+    def test_investigate_command_accepts_template_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            template_dir = Path(tmpdir) / "custom-templates"
+            export_packaged_report_templates(template_dir)
+            runner = CliRunner()
+            captured: dict[str, object] = {}
+
+            def fake_investigate_loop(*args, **kwargs):
+                captured["template_root"] = kwargs.get("template_root")
+                return {
+                    "session_id": "session-test",
+                    "status": "completed",
+                    "iteration": 1,
+                    "summary": "done",
+                    "hypotheses": [],
+                    "report_sections": {"items": []},
+                }
+
+            with patch("forensia.cli.investigate_loop", side_effect=fake_investigate_loop):
+                result = runner.invoke(
+                    cli_module.app,
+                    [
+                        "investigate",
+                        str(case.path),
+                        "--llm-base-url",
+                        "http://127.0.0.1:1234",
+                        "--model",
+                        "test-model",
+                        "--template-dir",
+                        str(template_dir),
+                    ],
+                )
+
+            self.assertEqual(0, result.exit_code, result.output)
+            self.assertEqual(template_dir.resolve(), captured["template_root"])
+
+    def test_investigate_command_rejects_empty_template_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            empty_dir = Path(tmpdir) / "empty-templates"
+            empty_dir.mkdir()
+            runner = CliRunner()
+            result = runner.invoke(
+                cli_module.app,
+                [
+                    "investigate",
+                    str(case.path),
+                    "--llm-base-url",
+                    "http://127.0.0.1:1234",
+                    "--model",
+                    "test-model",
+                    "--template-dir",
+                    str(empty_dir),
+                ],
+            )
+
+            self.assertNotEqual(0, result.exit_code)
+            self.assertIn("[0-9]*_*.md", result.output)
+
+    def test_run_command_accepts_template_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_dir = Path(tmpdir) / "input"
+            input_dir.mkdir()
+            output_dir = Path(tmpdir) / "case"
+            template_dir = Path(tmpdir) / "custom-templates"
+            export_packaged_report_templates(template_dir)
+            runner = CliRunner()
+            captured: dict[str, object] = {}
+
+            def fake_investigate_loop(*args, **kwargs):
+                captured["template_root"] = kwargs.get("template_root")
+                return {
+                    "session_id": "session-test",
+                    "status": "completed",
+                    "iteration": 1,
+                    "summary": "done",
+                    "hypotheses": [],
+                    "report_sections": {"items": []},
+                }
+
+            with patch("forensia.cli.ingest_all", return_value={"new_files": 0, "skipped_files": 0, "evtx_files": 0, "mft_files": 0}), patch(
+                "forensia.cli.normalize_all",
+                return_value={"evtx_rows": 0, "mft_entries": 0, "mft_timeline_rows": 0},
+            ), patch("forensia.cli.load_rules_from_dir", return_value=[]), patch(
+                "forensia.cli.investigate_loop",
+                side_effect=fake_investigate_loop,
+            ), patch(
+                "forensia.cli.render_written_report",
+                return_value=(output_dir / "reports" / "report.md", output_dir / "reports" / "report.html"),
+            ):
+                result = runner.invoke(
+                    cli_module.app,
+                    [
+                        "run",
+                        str(input_dir),
+                        "--out",
+                        str(output_dir),
+                        "--llm-base-url",
+                        "http://127.0.0.1:1234",
+                        "--model",
+                        "test-model",
+                        "--template-dir",
+                        str(template_dir),
+                    ],
+                )
+
+            self.assertEqual(0, result.exit_code, result.output)
+            self.assertEqual(template_dir.resolve(), captured["template_root"])
+
+    def test_run_command_rejects_unknown_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_dir = Path(tmpdir) / "input"
+            input_dir.mkdir()
+            output_dir = Path(tmpdir) / "case"
+            runner = CliRunner()
+            result = runner.invoke(
+                cli_module.app,
+                [
+                    "run",
+                    str(input_dir),
+                    "--out",
+                    str(output_dir),
+                    "--profile",
+                    "does-not-exist",
+                ],
+            )
+
+            self.assertNotEqual(0, result.exit_code)
+            self.assertIn("Available profiles", result.output)
 
     def test_investigate_writes_ai_logs_per_llm_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

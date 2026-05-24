@@ -25,6 +25,7 @@ from forensia.rules.loader import load_rules_from_dir
 from forensia.web import create_app
 
 app = typer.Typer(help="forensia incident response tool")
+PROFILE_ROOT = Path(__file__).parent / "profiles"
 
 
 def _status(message: str) -> None:
@@ -54,14 +55,6 @@ def _count_records(db: CaseDB) -> dict[str, int]:
         "progress_events",
     ]
     return {key: int(row[index] or 0) for index, key in enumerate(keys)}
-
-
-def _has_investigation_artifacts(db: CaseDB) -> bool:
-    return bool(
-        int(db.execute("SELECT COUNT(*) FROM investigation_sessions").fetchone()[0])
-        or int(db.execute("SELECT COUNT(*) FROM ai_reviews").fetchone()[0])
-        or int(db.execute("SELECT COUNT(*) FROM investigation_steps").fetchone()[0])
-    )
 
 
 def _reset_case_tables(db: CaseDB) -> None:
@@ -97,11 +90,31 @@ def _prune_orphan_reviews(db: CaseDB) -> None:
 
 def _resolve_template_dir(case: Case, template_dir: str | None) -> Path:
     if template_dir:
-        return Path(template_dir).resolve()
+        path = Path(template_dir).resolve()
+        if not path.exists():
+            raise typer.BadParameter(f"template_dir not found: {path}")
+        if not has_report_templates(path):
+            raise typer.BadParameter(
+                f"template_dir must contain at least one template matching [0-9]*_*.md: {path}"
+            )
+        return path
     case.ensure_report_templates()
     if case.report_template_dir.exists() and has_report_templates(case.report_template_dir):
         return case.report_template_dir
     raise typer.BadParameter("no report templates are available")
+
+
+def _available_profiles() -> list[str]:
+    return sorted(path.stem for path in PROFILE_ROOT.glob("*.yaml"))
+
+
+def _resolve_profile_path(profile: str) -> Path:
+    profile_name = str(profile).strip()
+    path = PROFILE_ROOT / f"{profile_name}.yaml"
+    if path.exists():
+        return path
+    available = ", ".join(_available_profiles()) or "none"
+    raise typer.BadParameter(f"unknown profile: {profile_name}. Available profiles: {available}")
 
 
 def _resolve_llm_or_die(base_url: str | None, model: str | None) -> tuple[str, str]:
@@ -207,7 +220,7 @@ def report(case_dir: str, output: str | None = typer.Option(None, "--output")) -
 def report_write(
     case_dir: str,
     template_dir: str | None = typer.Option(None, "--template-dir"),
-    llm_base_url: str | None = typer.Option(None, "--llm-base-url", "--lmstudio"),
+    llm_base_url: str | None = typer.Option(None, "--llm-base-url"),
     model: str | None = typer.Option(None, "--model"),
     report_parallelism: int = typer.Option(
         0,
@@ -219,9 +232,6 @@ def report_write(
     case = _open_case_or_die(case_dir)
     tasks = CaseTasks.for_case(case)
     template_root = _resolve_template_dir(case, template_dir)
-    if not template_root.exists():
-        raise typer.BadParameter(f"template_dir not found: {template_root}")
-
     parallelism = report_parallelism or get_llm_settings()["report_parallelism"]
     _status(f"Writing report from templates: {template_root} (parallelism={parallelism})")
     with CaseDB(case) as db:
@@ -251,8 +261,9 @@ def run(
     input_dir: str,
     out: str = typer.Option(..., "--out"),
     profile: str = typer.Option("windows-basic", "--profile"),
-    llm_base_url: str | None = typer.Option(None, "--llm-base-url", "--lmstudio"),
+    llm_base_url: str | None = typer.Option(None, "--llm-base-url"),
     model: str | None = typer.Option(None, "--model"),
+    template_dir: str | None = typer.Option(None, "--template-dir"),
     max_iter: int = typer.Option(20, "--max-iter"),
     max_queries_per_hypothesis: int = typer.Option(5, "--max-queries-per-hypothesis"),
     no_progress_limit: int = typer.Option(3, "--no-progress-limit"),
@@ -263,15 +274,12 @@ def run(
         help="Concurrent LLM workers for section fill. 0 = use LLM_REPORT_PARALLELISM env (default 1)",
     ),
     init: bool = typer.Option(False, "--init", help="Clear raw/db/findings/reports before rerun"),
-    reinvestigate: bool = typer.Option(
-        False,
-        "--reinvestigate",
-        help="Force LLM investigation even when previous investigation artifacts exist",
-    ),
 ) -> None:
     llm_base_url, model = resolve_llm_config(llm_base_url, model)
     case = Case.init(out)
     tasks = CaseTasks.for_case(case)
+    template_root = _resolve_template_dir(case, template_dir) if (llm_base_url and model) else None
+    profile_path = _resolve_profile_path(profile)
 
     if init:
         with CaseDB(case) as existing_db:
@@ -279,6 +287,7 @@ def run(
         case.clear_runtime_outputs(preserve_memory=True, preserve_ai_logs=True, drop_database=False)
         case = Case.init(out)
         tasks = CaseTasks.for_case(case)
+        template_root = _resolve_template_dir(case, template_dir) if (llm_base_url and model) else None
 
     with CaseDB(case) as db:
         clear_progress_events(db)
@@ -355,7 +364,6 @@ def run(
                 status="running",
             )
         else:
-            profile_path = Path(__file__).parent / "profiles" / f"{profile}.yaml"
             rules_dir = Path(__file__).parent / "rulepacks"
             rules = load_rules_from_dir(rules_dir, profile_path)
             _status(f"Stage 3/4: analyze with profile={profile} ({len(rules)} rules)")
@@ -383,52 +391,45 @@ def run(
 
         # Stage 4: Investigate
         if llm_base_url and model:
-            if reinvestigate or not _has_investigation_artifacts(db):
-                _status(f"Stage 4/4: investigate with model={model}")
-                push_progress(f"[investigate] starting - model={model}", stage="investigate", status="running")
-                result = investigate_loop(
-                    case=case,
-                    db=db,
-                    base_url=llm_base_url,
-                    model=model,
-                    max_iter=max_iter,
-                    max_queries_per_hypothesis=max_queries_per_hypothesis,
-                    no_progress_limit=no_progress_limit,
-                    profile=profile,
-                    report_every_n_cycles=report_every_n_cycles,
-                    report_parallelism=report_parallelism or get_llm_settings()["report_parallelism"],
-                    progress_callback=lambda payload: push_progress(
-                        payload.get("summary"),
-                        stage=payload.get("stage", "investigate"),
-                        status=payload.get("status", "running"),
-                        iteration=payload.get("iteration", 0),
-                        current_query=payload.get("current_query"),
-                        summary=payload.get("summary"),
-                        hypotheses=payload.get("hypotheses", []),
-                        report_sections=payload.get("report_sections", {}),
-                    ),
-                )
-                tasks.mark_done(
-                    "investigate",
-                    f"session={result['session_id']}, status={result['status']}, iterations={result['iteration']}",
-                )
-                _status(f"Investigation complete: session={result['session_id']} status={result['status']}")
-                push_progress(
-                    f"[investigate] done - session={result['session_id']} status={result['status']}",
-                    stage="investigate",
-                    status=result["status"],
-                    iteration=result["iteration"],
-                    summary=result["summary"],
-                    hypotheses=result.get("hypotheses", []),
-                    report_sections=result.get("report_sections", {}),
-                )
-            else:
-                _status("Stage 4/4: investigate - previous session exists, skipping. Use --reinvestigate to add a new session.")
-                push_progress(
-                    "[investigate] skipped - previous session exists (use --reinvestigate)",
-                    stage="investigate",
-                    status="running",
-                )
+            _status(f"Stage 4/4: investigate with model={model}")
+            push_progress(f"[investigate] starting - model={model}", stage="investigate", status="running")
+            result = investigate_loop(
+                case=case,
+                db=db,
+                base_url=llm_base_url,
+                model=model,
+                template_root=template_root,
+                max_iter=max_iter,
+                max_queries_per_hypothesis=max_queries_per_hypothesis,
+                no_progress_limit=no_progress_limit,
+                profile=profile,
+                report_every_n_cycles=report_every_n_cycles,
+                report_parallelism=report_parallelism or get_llm_settings()["report_parallelism"],
+                progress_callback=lambda payload: push_progress(
+                    payload.get("summary"),
+                    stage=payload.get("stage", "investigate"),
+                    status=payload.get("status", "running"),
+                    iteration=payload.get("iteration", 0),
+                    current_query=payload.get("current_query"),
+                    summary=payload.get("summary"),
+                    hypotheses=payload.get("hypotheses", []),
+                    report_sections=payload.get("report_sections", {}),
+                ),
+            )
+            tasks.mark_done(
+                "investigate",
+                f"session={result['session_id']}, status={result['status']}, iterations={result['iteration']}",
+            )
+            _status(f"Investigation complete: session={result['session_id']} status={result['status']}")
+            push_progress(
+                f"[investigate] done - session={result['session_id']} status={result['status']}",
+                stage="investigate",
+                status=result["status"],
+                iteration=result["iteration"],
+                summary=result["summary"],
+                hypotheses=result.get("hypotheses", []),
+                report_sections=result.get("report_sections", {}),
+            )
         else:
             _status("Stage 4/4: LLM not configured - skipping investigate (set LLM_BASE_URL and LLM_MODEL in .env)")
             push_progress("[investigate] skipped - LLM not configured", stage="investigate", status="running")
@@ -450,8 +451,9 @@ def run(
 @app.command()
 def investigate(
     case_dir: str,
-    llm_base_url: str | None = typer.Option(None, "--llm-base-url", "--lmstudio"),
+    llm_base_url: str | None = typer.Option(None, "--llm-base-url"),
     model: str | None = typer.Option(None, "--model"),
+    template_dir: str | None = typer.Option(None, "--template-dir"),
     max_iter: int = typer.Option(20, "--max-iter"),
     max_queries_per_hypothesis: int = typer.Option(5, "--max-queries-per-hypothesis"),
     no_progress_limit: int = typer.Option(3, "--no-progress-limit"),
@@ -467,6 +469,8 @@ def investigate(
     llm_base_url, model = _resolve_llm_or_die(llm_base_url, model)
     case = _open_case_or_die(case_dir)
     tasks = CaseTasks.for_case(case)
+    template_root = _resolve_template_dir(case, template_dir)
+    _resolve_profile_path(profile)
     _status(f"Starting investigate for case={case.path.name} model={model}")
     with CaseDB(case) as db:
         clear_progress_events(db)
@@ -498,6 +502,7 @@ def investigate(
             db=db,
             base_url=llm_base_url,
             model=model,
+            template_root=template_root,
             max_iter=max_iter,
             max_queries_per_hypothesis=max_queries_per_hypothesis,
             no_progress_limit=no_progress_limit,

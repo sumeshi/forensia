@@ -239,11 +239,10 @@ forensia run ./input --out ./case001 --profile windows-basic
 forensia run ./input --out ./case001 --profile windows-basic --max-iter 50
 ```
 
-既存ケースをもう一度継続して調査したい場合は、`--reinvestigate` を使います。
-(途中でCtrl-Cを押した場合など)
+テンプレートを差し替えて調査・レポート生成したい場合は、`--template-dir` を使います。
 
 ```bash
-forensia run ./input --out ./case001 --profile windows-basic --reinvestigate
+forensia run ./input --out ./case001 --template-dir ./my-templates
 ```
 
 出力先を初期化してやり直す場合は、`--init` を指定します。
@@ -260,6 +259,7 @@ forensia run ./input --out ./case001 --profile windows-basic --init
 
 ```bash
 forensia investigate case001 --max-iter 50
+forensia investigate case001 --template-dir ./my-templates
 ```
 
 ### 追加エビデンスを入れる
@@ -280,10 +280,17 @@ forensia report case001
 ```
 
 LLM を使ってレポートセクションを再生成したい場合は、`report-write` を使います。
-`report-write` は LLM が必須です。`LLM_BASE_URL` と `LLM_MODEL` を `.env` または CLI オプションで設定してください。
+`report-write` は LLM が必須です。`LLM_BASE_URL` と `LLM_MODEL` を `.env` または `--llm-base-url` / `--model` で設定してください。
 
 ```bash
 forensia report-write case001
+forensia report-write case001 --template-dir ./my-templates
+```
+
+テンプレートを編集したい場合は、同梱テンプレートを任意の場所へ書き出せます。
+
+```bash
+forensia templates-export ./my-templates
 ```
 
 ### UI で確認する
