@@ -17,20 +17,18 @@ def ingest_prefetch_file(
     prefetch_path: str | Path,
     source_sha: str | None = None,
     progress_callback: Callable[[str], None] | None = None,
-) -> Path:
+) -> Path | None:
     prefetch_path = Path(prefetch_path)
     sha_prefix = (source_sha or "unknown")[:12]
     output_path = case.raw_dir / f"prefetch-{sha_prefix}.jsonl"
     ingested_at = datetime.now(UTC).isoformat()
 
-    if progress_callback:
-        progress_callback(f"Parsing Prefetch records from {prefetch_path}")
     parser = Prefetch2es(prefetch_path)
     records = list(chain.from_iterable(
         parser.gen_records(multiprocess=False, chunk_size=500)
     ))
-    if progress_callback:
-        progress_callback(f"Parsed {len(records)} Prefetch records from {prefetch_path}")
+    if not records:
+        return None
 
     with output_path.open("w", encoding="utf-8") as handle:
         for record in records:
@@ -43,7 +41,5 @@ def ingest_prefetch_file(
                 "evidence_id": make_prefetch_evidence_id(executable_name, prefetch_hash),
             }
             handle.write(json.dumps(enriched, ensure_ascii=False) + "\n")
-    if progress_callback:
-        progress_callback(f"Wrote JSONL: {output_path}")
 
     return output_path

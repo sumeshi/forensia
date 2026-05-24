@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable
+
+from tqdm import tqdm
 
 from forensia.artifacts import get_artifact_adapters
 from forensia.core.case import Case
@@ -37,16 +40,26 @@ def ingest_all(
         "skipped_files": 0,
     }
     adapters = get_artifact_adapters()
+    candidates: list[tuple[Path, object]] = []
+    for path in sorted(base.rglob("*")):
+        if not path.is_file():
+            continue
+        adapter = next((item for item in adapters if item.can_handle(path)), None)
+        if adapter is None:
+            continue
+        candidates.append((path, adapter))
+
     owns_db = db is None
     db = db or CaseDB(case)
     try:
-        for path in sorted(base.rglob("*")):
-            if not path.is_file():
-                continue
-            adapter = next((item for item in adapters if item.can_handle(path)), None)
-            if adapter is None:
-                continue
-
+        iterator = tqdm(
+            candidates,
+            total=len(candidates),
+            desc="Ingest",
+            unit="file",
+            disable=not sys.stderr.isatty(),
+        )
+        for path, adapter in iterator:
             sha256 = _sha256_file(path)
             if not force:
                 existing = db.execute(
@@ -59,9 +72,12 @@ def ingest_all(
                         progress_callback(f"Skipping already ingested {adapter.name.upper()}: {path}")
                     continue
 
-            if progress_callback:
-                progress_callback(f"Ingesting {adapter.name.upper()}: {path}")
-            adapter.ingest(case, path, source_sha=sha256, progress_callback=progress_callback)
+            result = adapter.ingest(case, path, source_sha=sha256, progress_callback=progress_callback)
+            if result.raw_path is None:
+                counts["skipped_files"] += 1
+                if progress_callback:
+                    progress_callback(f"Skipping unreadable {adapter.name.upper()}: {path}")
+                continue
             counts[f"{adapter.name}_files"] += 1
 
             db.execute(

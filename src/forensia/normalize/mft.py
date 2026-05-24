@@ -1,55 +1,13 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any
-
-from dateutil import parser as dt_parser
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 
 
-# mft2es standard format: attributes.StandardInformation.data / attributes.FileName.data
-# Timestamp field names in mft2es output (MACB: created/modified/mft_modified/accessed)
-SI_FIELDS = {
-    "SI_CREATED": "created",
-    "SI_MODIFIED": "modified",
-    "SI_ACCESSED": "accessed",
-    "SI_MFT_MODIFIED": "mft_modified",
-}
-FN_FIELDS = {
-    "FN_CREATED": "created",
-    "FN_MODIFIED": "modified",
-    "FN_ACCESSED": "accessed",
-    "FN_MFT_MODIFIED": "mft_modified",
-}
-
-
-def _parse_ts(value: Any) -> Any:
-    if not value:
-        return None
-    try:
-        return dt_parser.parse(str(value)).replace(tzinfo=None)
-    except (TypeError, ValueError):
-        return None
-
-
-def _safe_int(value: Any) -> int | None:
-    if value in (None, ""):
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _safe_bool(value: Any) -> bool | None:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return value
-    return str(value).lower() in {"1", "true", "yes"}
+def _duckdb_path_literal(path: Path) -> str:
+    return path.as_posix().replace("'", "''")
 
 
 def normalize_mft(case: Case, db: CaseDB) -> tuple[int, int]:
@@ -60,95 +18,174 @@ def normalize_mft(case: Case, db: CaseDB) -> tuple[int, int]:
     total_entries = 0
     total_timeline = 0
     for path in paths:
-        source_file = None
-        evidence_ids: set[str] = set()
-        entry_rows = []
-        timeline_rows = []
+        path_sql = _duckdb_path_literal(path)
+        db.execute(
+            f"""
+            CREATE OR REPLACE TEMP TABLE mft_stage AS
+            WITH raw AS (
+                SELECT json
+                FROM read_ndjson_objects('{path_sql}')
+            )
+            SELECT
+                json_extract_string(json, '$.evidence_id') AS evidence_id,
+                json_extract_string(json, '$.source_file') AS source_file,
+                try_cast(nullif(json_extract_string(json, '$.header.record_number'), '') AS BIGINT) AS record_number,
+                json_extract_string(json, '$.attributes.FileName.data.path') AS file_path,
+                regexp_extract(json_extract_string(json, '$.attributes.FileName.data.path'), '[^/\\\\]+$') AS file_name,
+                nullif(
+                    regexp_extract(
+                        regexp_extract(json_extract_string(json, '$.attributes.FileName.data.path'), '[^/\\\\]+$'),
+                        '\\.([^./]+)$',
+                        1
+                    ),
+                    ''
+                ) AS extension,
+                CASE
+                    WHEN json_extract(json, '$.header.is_directory') IS NULL THEN NULL
+                    ELSE lower(coalesce(json_extract_string(json, '$.header.is_directory'), '')) IN ('1', 'true', 'yes')
+                END AS is_directory,
+                CASE
+                    WHEN json_extract(json, '$.header.is_deleted') IS NULL THEN NULL
+                    ELSE lower(coalesce(json_extract_string(json, '$.header.is_deleted'), '')) IN ('1', 'true', 'yes')
+                END AS is_deleted,
+                try_cast(
+                    nullif(
+                        CASE
+                            WHEN json_extract(json, '$.header.allocated_size') IS NULL THEN json_extract_string(json, '$.header.size')
+                            WHEN json_type(json_extract(json, '$.header.allocated_size')) IN ('BIGINT', 'UBIGINT', 'DOUBLE')
+                                AND try_cast(json_extract_string(json, '$.header.allocated_size') AS DOUBLE) = 0
+                                THEN json_extract_string(json, '$.header.size')
+                            ELSE json_extract_string(json, '$.header.allocated_size')
+                        END,
+                        ''
+                    ) AS BIGINT
+                ) AS size,
+                try_cast(nullif(json_extract_string(json, '$.attributes.StandardInformation.data.created'), '') AS TIMESTAMP) AS si_created,
+                try_cast(nullif(json_extract_string(json, '$.attributes.StandardInformation.data.modified'), '') AS TIMESTAMP) AS si_modified,
+                try_cast(nullif(json_extract_string(json, '$.attributes.StandardInformation.data.accessed'), '') AS TIMESTAMP) AS si_accessed,
+                try_cast(nullif(json_extract_string(json, '$.attributes.StandardInformation.data.mft_modified'), '') AS TIMESTAMP) AS si_mft_modified,
+                try_cast(nullif(json_extract_string(json, '$.attributes.FileName.data.created'), '') AS TIMESTAMP) AS fn_created,
+                try_cast(nullif(json_extract_string(json, '$.attributes.FileName.data.modified'), '') AS TIMESTAMP) AS fn_modified,
+                try_cast(nullif(json_extract_string(json, '$.attributes.FileName.data.accessed'), '') AS TIMESTAMP) AS fn_accessed,
+                try_cast(nullif(json_extract_string(json, '$.attributes.FileName.data.mft_modified'), '') AS TIMESTAMP) AS fn_mft_modified,
+                json AS raw_json
+            FROM raw
+            """
+        )
+        db.execute(
+            """
+            CREATE OR REPLACE TEMP TABLE mft_stage_timeline AS
+            SELECT
+                coalesce(evidence_id, 'None') || '-' || lower(timestamp_type) AS timeline_id,
+                evidence_id,
+                record_number,
+                file_path,
+                timestamp,
+                timestamp_type,
+                timestamp_type || ' for ' || coalesce(file_path, file_name, 'unknown') AS description,
+                CAST('[]' AS JSON) AS tags
+            FROM (
+                SELECT evidence_id, record_number, file_path, file_name, si_created AS timestamp, 'SI_CREATED' AS timestamp_type
+                FROM mft_stage
+                UNION ALL
+                SELECT evidence_id, record_number, file_path, file_name, si_modified AS timestamp, 'SI_MODIFIED' AS timestamp_type
+                FROM mft_stage
+                UNION ALL
+                SELECT evidence_id, record_number, file_path, file_name, si_accessed AS timestamp, 'SI_ACCESSED' AS timestamp_type
+                FROM mft_stage
+                UNION ALL
+                SELECT evidence_id, record_number, file_path, file_name, si_mft_modified AS timestamp, 'SI_MFT_MODIFIED' AS timestamp_type
+                FROM mft_stage
+                UNION ALL
+                SELECT evidence_id, record_number, file_path, file_name, fn_created AS timestamp, 'FN_CREATED' AS timestamp_type
+                FROM mft_stage
+                UNION ALL
+                SELECT evidence_id, record_number, file_path, file_name, fn_modified AS timestamp, 'FN_MODIFIED' AS timestamp_type
+                FROM mft_stage
+                UNION ALL
+                SELECT evidence_id, record_number, file_path, file_name, fn_accessed AS timestamp, 'FN_ACCESSED' AS timestamp_type
+                FROM mft_stage
+                UNION ALL
+                SELECT evidence_id, record_number, file_path, file_name, fn_mft_modified AS timestamp, 'FN_MFT_MODIFIED' AS timestamp_type
+                FROM mft_stage
+            ) AS expanded
+            WHERE timestamp IS NOT NULL
+            """
+        )
 
-        with path.open(encoding="utf-8") as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                record = json.loads(line)
-                source_file = source_file or record.get("source_file")
+        db.execute(
+            """
+            DELETE FROM mft_entries
+            WHERE source_file = (
+                SELECT source_file
+                FROM mft_stage
+                WHERE source_file IS NOT NULL
+                LIMIT 1
+            )
+            """
+        )
+        db.execute(
+            """
+            DELETE FROM mft_timeline
+            WHERE evidence_id IN (
+                SELECT DISTINCT evidence_id
+                FROM mft_stage
+                WHERE evidence_id IS NOT NULL AND evidence_id <> ''
+            )
+            """
+        )
 
-                header = record.get("header") or {}
-                attrs = record.get("attributes") or {}
-                si = (attrs.get("StandardInformation") or {}).get("data") or {}
-                fn = (attrs.get("FileName") or {}).get("data") or {}
-
-                record_number = _safe_int(header.get("record_number"))
-                file_path = fn.get("path")
-                file_name = Path(file_path).name if file_path else None
-
-                entry_rows.append((
-                    record.get("evidence_id"),
-                    record.get("source_file"),
-                    record_number,
-                    file_path,
-                    file_name,
-                    Path(file_name).suffix.lstrip(".") if file_name else None,
-                    _safe_bool(header.get("is_directory")),
-                    _safe_bool(header.get("is_deleted")),
-                    _safe_int(header.get("allocated_size") or header.get("size")),
-                    _parse_ts(si.get("created")),
-                    _parse_ts(si.get("modified")),
-                    _parse_ts(si.get("accessed")),
-                    _parse_ts(si.get("mft_modified")),
-                    _parse_ts(fn.get("created")),
-                    _parse_ts(fn.get("modified")),
-                    _parse_ts(fn.get("accessed")),
-                    _parse_ts(fn.get("mft_modified")),
-                    json.dumps(record, ensure_ascii=False),
-                    json.dumps([], ensure_ascii=False),
-                    None,
-                ))
-
-                evidence_id = record.get("evidence_id")
-                if evidence_id:
-                    evidence_ids.add(str(evidence_id))
-                for ts_type, field in {**SI_FIELDS, **FN_FIELDS}.items():
-                    src = si if ts_type.startswith("SI_") else fn
-                    ts = _parse_ts(src.get(field))
-                    if ts is None:
-                        continue
-                    timeline_rows.append((
-                        f"{evidence_id}-{ts_type.lower()}",
-                        evidence_id,
-                        record_number,
-                        file_path,
-                        ts,
-                        ts_type,
-                        f"{ts_type} for {file_path or file_name or 'unknown'}",
-                        json.dumps([], ensure_ascii=False),
-                    ))
-
-        if source_file:
-            db.execute("DELETE FROM mft_entries WHERE source_file = ?", (source_file,))
-        if evidence_ids:
-            placeholders = ", ".join("?" for _ in evidence_ids)
-            db.execute(f"DELETE FROM mft_timeline WHERE evidence_id IN ({placeholders})", tuple(sorted(evidence_ids)))
-
-        db.insert_many(
+        db.execute(
             """
             INSERT INTO mft_entries (
                 evidence_id, source_file, record_number, file_path, file_name, extension,
                 is_directory, is_deleted, size, si_created, si_modified, si_accessed,
                 si_mft_modified, fn_created, fn_modified, fn_accessed, fn_mft_modified,
                 raw_json, tags, severity
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            entry_rows,
+            )
+            SELECT
+                evidence_id,
+                source_file,
+                record_number,
+                file_path,
+                file_name,
+                extension,
+                is_directory,
+                is_deleted,
+                size,
+                si_created,
+                si_modified,
+                si_accessed,
+                si_mft_modified,
+                fn_created,
+                fn_modified,
+                fn_accessed,
+                fn_mft_modified,
+                raw_json,
+                CAST('[]' AS JSON),
+                NULL
+            FROM mft_stage
+            """
         )
-        db.insert_many(
+        db.execute(
             """
             INSERT INTO mft_timeline (
                 timeline_id, evidence_id, record_number, file_path, timestamp,
                 timestamp_type, description, tags
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            timeline_rows,
+            )
+            SELECT
+                timeline_id,
+                evidence_id,
+                record_number,
+                file_path,
+                timestamp,
+                timestamp_type,
+                description,
+                tags
+            FROM mft_stage_timeline
+            """
         )
-        total_entries += len(entry_rows)
-        total_timeline += len(timeline_rows)
+
+        total_entries += db.execute("SELECT COUNT(*) FROM mft_stage").fetchone()[0]
+        total_timeline += db.execute("SELECT COUNT(*) FROM mft_stage_timeline").fetchone()[0]
     return total_entries, total_timeline

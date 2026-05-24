@@ -190,7 +190,7 @@ def _refresh_report_sections_parallel(
     report_brief = write_report_brief(case, db)
     requests: list[dict[str, Any]] = []
     for template_path in template_paths:
-        request = prepare_section_request(db, template_path, prior_filled, report_brief=report_brief)
+        request = prepare_section_request(case, db, template_path, prior_filled, report_brief=report_brief)
         request["template_path"] = str(template_path)
         requests.append(request)
 

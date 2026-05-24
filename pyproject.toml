@@ -24,7 +24,7 @@ dependencies = [
     "uvicorn",
     "evtx2es>=1.9.0",
     "mft2es>=1.7.2",
-    "prefetch2es>=2.2.2",
+    "prefetch2es>=2.3.0",
 ]
 
 [project.scripts]

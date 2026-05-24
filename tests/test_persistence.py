@@ -28,7 +28,14 @@ from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.db.database import CaseDB
-from forensia.report.writer import _build_report_brief, _extract_claim_texts, _section_confidence, collect_gaps, fill_section
+from forensia.report.writer import (
+    _build_report_brief,
+    _extract_claim_texts,
+    _section_confidence,
+    collect_gaps,
+    fill_section,
+    prepare_section_request,
+)
 from forensia.report_templates import export_packaged_report_templates
 
 
@@ -153,6 +160,38 @@ class PersistenceTests(unittest.TestCase):
             self.assertLess(float(row[3]), 1.0)
             self.assertEqual("draft", row[4])
             self.assertEqual(1, int(row[5]))
+
+    def test_prepare_section_request_supports_keypoints_without_sql_in_template(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            template_path = case.path / "report_template_custom" / "1_overview.md"
+            template_path.parent.mkdir(parents=True, exist_ok=True)
+            template_path.write_text(
+                "---\nsection: 1_overview\ntitle: Overview\nkeypoints:\n  - top_keypoints\n  - overview_hosts\n---\n# Overview\n",
+                encoding="utf-8",
+            )
+            case.memory_dir.joinpath("keypoints").mkdir(parents=True, exist_ok=True)
+            case.memory_dir.joinpath("keypoints", "KP-0001.md").write_text(
+                "# KP-0001\n\n- finding_id: F-1\n- title: Suspicious logon\n",
+                encoding="utf-8",
+            )
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO evtx_events (
+                        evidence_id, source_file, channel, event_id, record_id, timestamp, computer,
+                        user_name, target_user, subject_user, src_ip, logon_type, process_name,
+                        command_line, service_name, message, raw_json, tags, severity
+                    ) VALUES (?, ?, ?, ?, ?, now(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    ("ev-1", "a.evtx", "Security", 4624, 1, "host1", "", "", "", "", "", "", "", "", "", "{}", "[]", "info"),
+                )
+                request = prepare_section_request(case, db, template_path, {}, report_brief={})
+
+            self.assertEqual("1_overview", request["section_key"])
+            self.assertEqual(2, len(request["evidence_results"]))
+            self.assertEqual("top_keypoints", request["evidence_results"][0]["keypoint"])
+            self.assertEqual("overview_hosts", request["evidence_results"][1]["keypoint"])
 
     def test_investigate_report_only_refreshes_all_sections_and_emits_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -476,7 +515,7 @@ class PersistenceTests(unittest.TestCase):
             template_root = case.path / "report_template_custom"
             template_root.mkdir(parents=True, exist_ok=True)
             (template_root / "1_overview.md").write_text(
-                "---\nsection: 1_overview\ntitle: Overview\nevidence_queries: []\n---\n# Overview\n",
+                "---\nsection: 1_overview\ntitle: Overview\nkeypoints: []\n---\n# Overview\n",
                 encoding="utf-8",
             )
             with CaseDB(case) as db:

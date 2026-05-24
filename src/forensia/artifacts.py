@@ -12,7 +12,7 @@ from forensia.db.database import CaseDB
 @dataclass(frozen=True, slots=True)
 class IngestResult:
     source_kind: str
-    raw_path: Path
+    raw_path: Path | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,8 +68,7 @@ class MftArtifactAdapter:
     name = "mft"
 
     def can_handle(self, path: Path) -> bool:
-        lower_name = path.name.lower()
-        return lower_name == "$mft" or lower_name == "mft"
+        return "mft" in path.name.lower()
 
     def ingest(
         self,

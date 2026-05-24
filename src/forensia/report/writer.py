@@ -4,10 +4,10 @@ from functools import lru_cache
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from collections.abc import Callable
 
 import yaml
 
@@ -22,6 +22,7 @@ GAP_PATTERN = re.compile(
     r"【調査不足:\s*([^】]+)】|\[INSUFFICIENT EVIDENCE:\s*([^\]]+)\]",
     re.IGNORECASE,
 )
+EvidenceResolver = Callable[[CaseDB], list[dict[str, Any]]]
 
 
 @lru_cache(maxsize=None)
@@ -41,46 +42,765 @@ def _section_confidence(body: str) -> float:
     return max(0.0, min(1.0, 1.0 - (gap_count / paragraph_count)))
 
 
-def _summarize_query_results(db: CaseDB, queries: list[str], max_rows: int = 20) -> list[dict[str, Any]]:
-    summaries: list[dict[str, Any]] = []
-    for query in queries:
-        rows = fetch_records(db, query)
-        evidence_ids: list[str] = []
-        finding_ids: list[str] = []
-        hypothesis_ids: list[str] = []
-        seen_evidence_ids: set[str] = set()
-        seen_finding_ids: set[str] = set()
-        seen_hypothesis_ids: set[str] = set()
-        for row in rows:
-            evidence_id = row.get("evidence_id")
-            if evidence_id:
-                value = str(evidence_id)
-                if value not in seen_evidence_ids:
-                    seen_evidence_ids.add(value)
-                    evidence_ids.append(value)
-            finding_id = row.get("finding_id")
-            if finding_id:
-                value = str(finding_id)
-                if value not in seen_finding_ids:
-                    seen_finding_ids.add(value)
-                    finding_ids.append(value)
-            hypothesis_id = row.get("hypothesis_id")
-            if hypothesis_id:
-                value = str(hypothesis_id)
-                if value not in seen_hypothesis_ids:
-                    seen_hypothesis_ids.add(value)
-                    hypothesis_ids.append(value)
-        summaries.append(
-            {
-                "query": query,
-                "row_count": len(rows),
-                "evidence_ids": evidence_ids,
-                "finding_ids": finding_ids,
-                "hypothesis_ids": hypothesis_ids,
-                "sample_rows": [normalize_value(row) for row in rows[:max_rows]],
-            }
+
+def _summarize_rows(
+    *,
+    source_type: str,
+    source_id: str,
+    description: str,
+    rows: list[dict[str, Any]],
+    max_rows: int = 20,
+) -> dict[str, Any]:
+    evidence_ids: list[str] = []
+    finding_ids: list[str] = []
+    hypothesis_ids: list[str] = []
+    seen_evidence_ids: set[str] = set()
+    seen_finding_ids: set[str] = set()
+    seen_hypothesis_ids: set[str] = set()
+    for row in rows:
+        evidence_id = row.get("evidence_id")
+        if evidence_id:
+            value = str(evidence_id)
+            if value not in seen_evidence_ids:
+                seen_evidence_ids.add(value)
+                evidence_ids.append(value)
+        finding_id = row.get("finding_id")
+        if finding_id:
+            value = str(finding_id)
+            if value not in seen_finding_ids:
+                seen_finding_ids.add(value)
+                finding_ids.append(value)
+        hypothesis_id = row.get("hypothesis_id")
+        if hypothesis_id:
+            value = str(hypothesis_id)
+            if value not in seen_hypothesis_ids:
+                seen_hypothesis_ids.add(value)
+                hypothesis_ids.append(value)
+    return {
+        source_type: source_id,
+        "description": description,
+        "row_count": len(rows),
+        "evidence_ids": evidence_ids,
+        "finding_ids": finding_ids,
+        "hypothesis_ids": hypothesis_ids,
+        "sample_rows": [normalize_value(row) for row in rows[:max_rows]],
+    }
+
+
+def _report_keypoint_rows(db: CaseDB, query: str) -> list[dict[str, Any]]:
+    return fetch_records(db, query)
+
+
+REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
+    "top_keypoints": (
+        "Top finding-backed keypoints ranked by confidence.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT finding_id, title, severity, confidence, summary
+            FROM findings
+            WHERE COALESCE(status, 'accepted') != 'suppressed'
+            ORDER BY confidence DESC, created_at DESC
+            LIMIT 12
+            """,
+        ),
+    ),
+    "overview_event_range": (
+        "Earliest and latest observed event timestamps.",
+        lambda db: _report_keypoint_rows(
+            db,
+            "SELECT MIN(timestamp) AS first_event, MAX(timestamp) AS last_event FROM evtx_events",
+        ),
+    ),
+    "overview_hosts": (
+        "Observed hosts ranked by event volume.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT computer, COUNT(*) AS event_count
+            FROM evtx_events
+            WHERE computer IS NOT NULL
+            GROUP BY computer
+            ORDER BY event_count DESC
+            LIMIT 20
+            """,
+        ),
+    ),
+    "overview_top_findings": (
+        "Highest-severity accepted findings for the overview.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT finding_id, title, severity, confidence
+            FROM findings
+            WHERE severity IN ('critical','high')
+            ORDER BY confidence DESC
+            LIMIT 10
+            """,
+        ),
+    ),
+    "timeline_high_signal_events": (
+        "Chronological high-signal event records with evidence IDs.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT timestamp, computer, event_id, target_user, src_ip, process_name, command_line, evidence_id
+            FROM evtx_events
+            WHERE severity IN ('critical','high')
+            ORDER BY timestamp
+            LIMIT 50
+            """,
+        ),
+    ),
+    "timeline_mft_activity": (
+        "Recent MFT timeline entries relevant to chronology.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT timestamp, timestamp_type, file_path, description, evidence_id
+            FROM mft_timeline
+            ORDER BY timestamp
+            LIMIT 30
+            """,
+        ),
+    ),
+    "timeline_top_findings": (
+        "Top findings that may anchor attack phases.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT finding_id, title, severity, confidence, status
+            FROM findings
+            ORDER BY confidence DESC
+            LIMIT 20
+            """,
+        ),
+    ),
+    "timeline_log_clearing": (
+        "Observed log clearing or integrity-impacting events.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT timestamp, computer, target_user, src_ip, evidence_id
+            FROM evtx_events
+            WHERE event_id IN (1102, 104)
+            ORDER BY timestamp
+            """,
+        ),
+    ),
+    "host_compromise_candidates": (
+        "Hosts with logon, execution, persistence, or log-clear activity.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT computer, COUNT(*) AS events, MIN(timestamp) AS first_seen, MAX(timestamp) AS last_seen
+            FROM evtx_events
+            WHERE event_id IN (4624,4625,4648,4688,4697,4698,5140,1102)
+            GROUP BY computer
+            ORDER BY events DESC
+            LIMIT 20
+            """,
+        ),
+    ),
+    "host_suspicious_logons": (
+        "Suspicious remote or explicit logons by host.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT computer, src_ip, target_user, logon_type, timestamp, evidence_id
+            FROM evtx_events
+            WHERE event_id = 4624 AND logon_type IN ('3','10','9')
+            ORDER BY timestamp
+            LIMIT 40
+            """,
+        ),
+    ),
+    "host_execution_activity": (
+        "Observed process execution activity per host.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT computer, process_name, command_line, target_user, timestamp, evidence_id
+            FROM evtx_events
+            WHERE event_id IN (4688,4104)
+            ORDER BY timestamp
+            LIMIT 30
+            """,
+        ),
+    ),
+    "host_persistence_activity": (
+        "Observed service and task persistence activity per host.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT computer, service_name, target_user, timestamp, evidence_id
+            FROM evtx_events
+            WHERE event_id IN (4697,7045,4698)
+            ORDER BY timestamp
+            """,
+        ),
+    ),
+    "account_logon_patterns": (
+        "Observed account logon patterns for suspicious remote access.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT target_user, src_ip, computer, logon_type, COUNT(*) AS count, MIN(timestamp) AS first, MAX(timestamp) AS last
+            FROM evtx_events
+            WHERE event_id = 4624 AND logon_type IN ('3','9','10') AND target_user NOT LIKE '%$'
+            GROUP BY target_user, src_ip, computer, logon_type
+            ORDER BY count DESC
+            LIMIT 30
+            """,
+        ),
+    ),
+    "account_bruteforce_clusters": (
+        "4625 failure clusters that may indicate brute force or password spray.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT src_ip, target_user, computer, COUNT(*) AS fail_count
+            FROM evtx_events
+            WHERE event_id = 4625
+            GROUP BY src_ip, target_user, computer
+            HAVING COUNT(*) >= 5
+            ORDER BY fail_count DESC
+            LIMIT 20
+            """,
+        ),
+    ),
+    "account_management_changes": (
+        "Observed account creation, deletion, reset, or group membership changes.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT timestamp, computer, target_user, subject_user, evidence_id
+            FROM evtx_events
+            WHERE event_id IN (4720,4726,4732,4728,4724)
+            ORDER BY timestamp
+            """,
+        ),
+    ),
+    "account_explicit_credentials": (
+        "Explicit credential usage events.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT timestamp, computer, target_user, subject_user, evidence_id
+            FROM evtx_events
+            WHERE event_id = 4648
+            ORDER BY timestamp
+            LIMIT 20
+            """,
+        ),
+    ),
+    "persistence_service_installs": (
+        "Service installation or creation events.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT timestamp, computer, service_name, subject_user, message, evidence_id
+            FROM evtx_events
+            WHERE event_id IN (4697,7045)
+            ORDER BY timestamp
+            """,
+        ),
+    ),
+    "persistence_scheduled_tasks": (
+        "Scheduled task creation or deletion activity.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT timestamp, computer, subject_user, message, evidence_id
+            FROM evtx_events
+            WHERE event_id IN (4698,4699)
+            ORDER BY timestamp
+            """,
+        ),
+    ),
+    "persistence_lolbas_execution": (
+        "PowerShell and LOLBas execution events.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT timestamp, computer, target_user, process_name, command_line, evidence_id
+            FROM evtx_events
+            WHERE event_id = 4688 AND (
+                LOWER(process_name) LIKE '%powershell%' OR
+                LOWER(process_name) LIKE '%pwsh%' OR
+                LOWER(process_name) LIKE '%certutil%' OR
+                LOWER(process_name) LIKE '%mshta%' OR
+                LOWER(process_name) LIKE '%rundll32%' OR
+                LOWER(process_name) LIKE '%wscript%' OR
+                LOWER(process_name) LIKE '%cscript%'
+            )
+            ORDER BY timestamp
+            LIMIT 30
+            """,
+        ),
+    ),
+    "persistence_defender_activity": (
+        "Observed defensive-control disablement or malware events.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT timestamp, computer, evidence_id, message
+            FROM evtx_events
+            WHERE event_id IN (5001,7040,1116)
+            ORDER BY timestamp
+            """,
+        ),
+    ),
+    "ioc_source_ips": (
+        "Distinct observed source IPs ranked by frequency.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT DISTINCT src_ip, COUNT(*) AS count
+            FROM evtx_events
+            WHERE src_ip IS NOT NULL AND src_ip NOT IN ('','127.0.0.1','::1','-')
+            GROUP BY src_ip
+            ORDER BY count DESC
+            LIMIT 30
+            """,
+        ),
+    ),
+    "ioc_processes": (
+        "Distinct suspicious processes or command lines.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT DISTINCT process_name, command_line, computer, evidence_id
+            FROM evtx_events
+            WHERE event_id IN (4688,4104) AND process_name IS NOT NULL
+            ORDER BY evidence_id
+            LIMIT 30
+            """,
+        ),
+    ),
+    "ioc_services": (
+        "Distinct suspicious services observed.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT DISTINCT service_name, computer, evidence_id
+            FROM evtx_events
+            WHERE event_id IN (4697,7045) AND service_name IS NOT NULL
+            """,
+        ),
+    ),
+    "ioc_suspicious_files": (
+        "Suspicious file paths from MFT entries.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT file_path, si_created, si_modified, is_deleted, evidence_id
+            FROM mft_entries
+            WHERE (
+                LOWER(file_path) LIKE '%temp%' OR
+                LOWER(file_path) LIKE '%appdata%' OR
+                LOWER(file_path) LIKE '%public%'
+            ) AND si_created IS NOT NULL
+            ORDER BY si_created DESC
+            LIMIT 30
+            """,
+        ),
+    ),
+    "ioc_suspicious_accounts": (
+        "Suspicious account administration activity.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT target_user, subject_user, computer, timestamp, evidence_id
+            FROM evtx_events
+            WHERE event_id IN (4720,4726,4732,4728,4724)
+            ORDER BY timestamp
+            LIMIT 30
+            """,
+        ),
+    ),
+    "gaps_event_coverage": (
+        "Overall event coverage and time span.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT COUNT(*) AS total_events, MIN(timestamp) AS first, MAX(timestamp) AS last
+            FROM evtx_events
+            """,
+        ),
+    ),
+    "gaps_channel_coverage": (
+        "Observed event distribution by channel.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT channel, COUNT(*) AS count
+            FROM evtx_events
+            GROUP BY channel
+            ORDER BY count DESC
+            """,
+        ),
+    ),
+    "gaps_log_integrity_events": (
+        "Observed log clearing or audit-policy-impacting events.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT event_id, COUNT(*) AS count
+            FROM evtx_events
+            WHERE event_id IN (1102,104,4719)
+            GROUP BY event_id
+            """,
+        ),
+    ),
+    "recommendations_findings": (
+        "Top findings that should drive recommendations.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT finding_id, title, severity, confidence, status, ai_summary
+            FROM findings
+            ORDER BY confidence DESC
+            LIMIT 20
+            """,
+        ),
+    ),
+    "recommendations_recent_reviews": (
+        "Recent AI review verdicts and report notes.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT verdict, report_text
+            FROM ai_reviews
+            ORDER BY created_at DESC
+            LIMIT 10
+            """,
+        ),
+    ),
+    "benchmark_overview_session_activity": (
+        "Recent logon and shutdown events for benchmark scoping.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT timestamp, computer, target_user, event_id, evidence_id
+            FROM evtx_events
+            WHERE event_id IN (4624,4634,4647,4608,4609,6005,6006,6008)
+            ORDER BY timestamp
+            LIMIT 30
+            """,
+        ),
+    ),
+    "benchmark_timeline_core_events": (
+        "Benchmark timeline events across startup, shutdown, and logon activity.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT timestamp, computer, event_id, target_user, src_ip, process_name, command_line, evidence_id
+            FROM evtx_events
+            WHERE event_id IN (4608,4609,4624,4634,4647,6005,6006,6008)
+            ORDER BY timestamp
+            LIMIT 80
+            """,
+        ),
+    ),
+    "benchmark_timeline_prefetch": (
+        "Benchmark Prefetch execution history for chronology.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT executable_name, exec_count, last_exec_time, source_file
+            FROM prefetch_executions
+            ORDER BY last_exec_time
+            LIMIT 50
+            """,
+        ),
+    ),
+    "benchmark_host_prefetch": (
+        "Benchmark Prefetch execution records by host context.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT executable_name, exec_count, last_exec_time, source_file
+            FROM prefetch_executions
+            ORDER BY last_exec_time
+            LIMIT 40
+            """,
+        ),
+    ),
+    "benchmark_host_user_paths": (
+        "Benchmark MFT entries under user profile paths.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT file_path, si_created, si_modified, fn_modified, is_deleted, evidence_id
+            FROM mft_entries
+            WHERE LOWER(file_path) LIKE '%\\users\\%'
+            ORDER BY COALESCE(si_modified, fn_modified, si_created) DESC
+            LIMIT 40
+            """,
+        ),
+    ),
+    "benchmark_account_logons": (
+        "Benchmark account logon patterns on the suspect PC.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT target_user, computer, logon_type, COUNT(*) AS count, MIN(timestamp) AS first, MAX(timestamp) AS last
+            FROM evtx_events
+            WHERE event_id = 4624 AND target_user NOT LIKE '%$'
+            GROUP BY target_user, computer, logon_type
+            ORDER BY count DESC
+            LIMIT 30
+            """,
+        ),
+    ),
+    "benchmark_account_events": (
+        "Benchmark account events with evidence IDs.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT timestamp, computer, target_user, logon_type, evidence_id
+            FROM evtx_events
+            WHERE event_id IN (4624,4634,4647)
+            ORDER BY timestamp
+            LIMIT 80
+            """,
+        ),
+    ),
+    "benchmark_account_identities": (
+        "Observed account identities from event records.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT DISTINCT target_user, subject_user, computer, evidence_id
+            FROM evtx_events
+            WHERE target_user IS NOT NULL OR subject_user IS NOT NULL
+            LIMIT 40
+            """,
+        ),
+    ),
+    "benchmark_execution_prefetch": (
+        "Benchmark Prefetch execution records.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT executable_name, exec_count, last_exec_time, source_file
+            FROM prefetch_executions
+            ORDER BY last_exec_time
+            LIMIT 80
+            """,
+        ),
+    ),
+    "benchmark_execution_events": (
+        "Benchmark process execution events from Evtx.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT timestamp, computer, process_name, command_line, target_user, evidence_id
+            FROM evtx_events
+            WHERE event_id = 4688
+            ORDER BY timestamp
+            LIMIT 50
+            """,
+        ),
+    ),
+    "benchmark_execution_file_activity": (
+        "Benchmark file-activity rows related to browsers, mail, cloud, and cleanup tools.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT timestamp, timestamp_type, file_path, description, evidence_id
+            FROM mft_timeline
+            WHERE
+                LOWER(file_path) LIKE '%eraser%' OR
+                LOWER(file_path) LIKE '%ccleaner%' OR
+                LOWER(file_path) LIKE '%google%' OR
+                LOWER(file_path) LIKE '%outlook%' OR
+                LOWER(file_path) LIKE '%chrome%' OR
+                LOWER(file_path) LIKE '%iexplore%'
+            ORDER BY timestamp
+            LIMIT 80
+            """,
+        ),
+    ),
+    "benchmark_ioc_prefetch": (
+        "Benchmark executable paths from Prefetch.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT executable_name, exec_count, last_exec_time, source_file
+            FROM prefetch_executions
+            ORDER BY last_exec_time
+            LIMIT 60
+            """,
+        ),
+    ),
+    "benchmark_ioc_processes": (
+        "Benchmark executed processes from Evtx.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT DISTINCT process_name, command_line, computer, evidence_id
+            FROM evtx_events
+            WHERE event_id = 4688 AND process_name IS NOT NULL
+            ORDER BY timestamp
+            LIMIT 40
+            """,
+        ),
+    ),
+    "benchmark_ioc_files": (
+        "Benchmark notable file paths from MFT.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT file_path, si_created, si_modified, fn_modified, is_deleted, evidence_id
+            FROM mft_entries
+            WHERE
+                LOWER(file_path) LIKE '%desktop%' OR
+                LOWER(file_path) LIKE '%google\\drive%' OR
+                LOWER(file_path) LIKE '%office%' OR
+                LOWER(file_path) LIKE '%outlook%'
+            ORDER BY COALESCE(si_modified, fn_modified, si_created) DESC
+            LIMIT 80
+            """,
+        ),
+    ),
+    "benchmark_recommendation_events": (
+        "Benchmark events relevant to response recommendations.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT timestamp, computer, target_user, event_id, evidence_id
+            FROM evtx_events
+            WHERE event_id IN (4624,4647,6006,6008,1102,104)
+            ORDER BY timestamp
+            LIMIT 50
+            """,
+        ),
+    ),
+    "benchmark_recommendation_prefetch": (
+        "Benchmark executed applications relevant to response recommendations.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT executable_name, exec_count, last_exec_time, source_file
+            FROM prefetch_executions
+            ORDER BY last_exec_time
+            LIMIT 50
+            """,
+        ),
+    ),
+    "benchmark_recommendation_files": (
+        "Benchmark desktop and cloud-related file paths for response recommendations.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT file_path, si_created, si_modified, fn_modified, is_deleted, evidence_id
+            FROM mft_entries
+            WHERE LOWER(file_path) LIKE '%desktop%' OR LOWER(file_path) LIKE '%google\\drive%'
+            ORDER BY COALESCE(si_modified, fn_modified, si_created) DESC
+            LIMIT 50
+            """,
+        ),
+    ),
+}
+
+REPORT_KEYPOINT_ALIASES = {
+    "overview_window": "overview_event_range",
+    "overview_findings": "overview_top_findings",
+    "timeline_events": "timeline_high_signal_events",
+    "timeline_mft": "timeline_mft_activity",
+    "timeline_findings": "timeline_top_findings",
+    "timeline_log_clear": "timeline_log_clearing",
+    "hosts_summary": "host_compromise_candidates",
+    "hosts_logons": "host_suspicious_logons",
+    "hosts_processes": "host_execution_activity",
+    "hosts_services": "host_persistence_activity",
+    "accounts_logon_summary": "account_logon_patterns",
+    "accounts_failed_logons": "account_bruteforce_clusters",
+    "accounts_changes": "account_management_changes",
+    "accounts_explicit_credentials": "account_explicit_credentials",
+    "persistence_services": "persistence_service_installs",
+    "persistence_tasks": "persistence_scheduled_tasks",
+    "persistence_lolbas": "persistence_lolbas_execution",
+    "persistence_defender": "persistence_defender_activity",
+    "ioc_ips": "ioc_source_ips",
+    "ioc_mft_paths": "ioc_suspicious_files",
+    "gaps_volume": "gaps_event_coverage",
+    "gaps_channels": "gaps_channel_coverage",
+    "gaps_log_clear": "gaps_log_integrity_events",
+    "recommendations_reviews": "recommendations_recent_reviews",
+    "benchmark_window": "overview_event_range",
+    "benchmark_hosts": "overview_hosts",
+    "benchmark_logon_window": "benchmark_overview_session_activity",
+    "benchmark_timeline_events": "benchmark_timeline_core_events",
+    "benchmark_timeline_files": "timeline_mft_activity",
+    "benchmark_prefetch_recent": "benchmark_timeline_prefetch",
+    "benchmark_host_spans": "overview_hosts",
+    "benchmark_host_logons": "benchmark_overview_session_activity",
+    "benchmark_accounts_summary": "benchmark_account_logons",
+    "benchmark_accounts_events": "benchmark_account_events",
+    "benchmark_accounts_observed": "benchmark_account_identities",
+    "benchmark_exec_processes": "benchmark_execution_events",
+    "benchmark_exec_related_mft": "benchmark_execution_file_activity",
+    "benchmark_artifact_processes": "benchmark_ioc_processes",
+    "benchmark_artifact_paths": "benchmark_ioc_files",
+    "benchmark_reco_system_events": "benchmark_recommendation_events",
+    "benchmark_reco_desktop_paths": "benchmark_recommendation_files",
+}
+
+
+def _resolve_evidence_results(
+    case: Case,
+    db: CaseDB,
+    *,
+    keypoints: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for keypoint in (keypoints or []):
+        normalized = str(keypoint or "").strip()
+        if not normalized:
+            continue
+        if normalized in {"top_keypoints", "memory_keypoint_cards"}:
+            cards = _load_keypoint_cards(case)
+            results.append(
+                {
+                    "keypoint": normalized,
+                    "description": "Current memory keypoint cards derived from findings.",
+                    "row_count": len(cards),
+                    "evidence_ids": [],
+                    "finding_ids": [],
+                    "hypothesis_ids": [],
+                    "sample_rows": cards,
+                }
+            )
+            continue
+        resolved_name = REPORT_KEYPOINT_ALIASES.get(normalized, normalized)
+        resolver_entry = REPORT_KEYPOINTS.get(resolved_name)
+        if resolver_entry is None:
+            raise ValueError(f"unknown report template keypoint: {normalized}")
+        description, resolver = resolver_entry
+        rows = resolver(db)
+        results.append(
+            _summarize_rows(
+                source_type="keypoint",
+                source_id=normalized,
+                description=description,
+                rows=rows,
+            )
         )
-    return summaries
+    return results
+
+
+def _load_keypoint_cards(case: Case, max_cards: int = 8, max_chars: int = 1200) -> list[dict[str, str]]:
+    cards: list[dict[str, str]] = []
+    for path in sorted(case.memory_dir.glob("keypoints/KP-*.md"))[:max_cards]:
+        text = path.read_text(encoding="utf-8").strip()
+        if len(text) > max_chars:
+            text = text[:max_chars].rstrip() + "\n..."
+        cards.append({"card_id": path.stem, "content": text})
+    return cards
+
 
 
 def _extract_claim_texts(body: str) -> list[str]:
@@ -425,6 +1145,7 @@ def build_report_markdown_from_db(db: CaseDB) -> str:
 
 
 def prepare_section_request(
+    case: Case,
     db: CaseDB,
     template_path: str | Path,
     context_sections: dict[str, str],
@@ -436,7 +1157,11 @@ def prepare_section_request(
     dispatching parallel LLM workers.
     """
     section_meta, template_body = _parse_template(str(template_path))
-    evidence_results = _summarize_query_results(db, list(section_meta.get("evidence_queries") or []))
+    evidence_results = _resolve_evidence_results(
+        case,
+        db,
+        keypoints=list(section_meta.get("keypoints") or []),
+    )
     messages = build_report_section_messages(
         section_meta=section_meta,
         evidence_results=evidence_results,
@@ -501,7 +1226,7 @@ def fill_section(
     session_id: str | None = None,
     audit_callback: Callable[[list[dict[str, str]], str], None] | None = None,
 ) -> str:
-    request = prepare_section_request(db, template_path, context_sections, report_brief=report_brief)
+    request = prepare_section_request(case, db, template_path, context_sections, report_brief=report_brief)
     body = chat_completion(messages=request["messages"], model=model, base_url=base_url).strip()
     if audit_callback:
         audit_callback(request["messages"], body)

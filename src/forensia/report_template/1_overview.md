@@ -10,10 +10,11 @@ prompt: |
     4. The confirmed First Evidence of Compromise (FEC), including timestamp and host
   If a required statement cannot be supported, explicitly write "[INSUFFICIENT EVIDENCE: reason]".
   Do not speculate. Write only evidence-based statements.
-evidence_queries:
-  - "SELECT MIN(timestamp) AS first_event, MAX(timestamp) AS last_event FROM evtx_events"
-  - "SELECT computer, COUNT(*) AS event_count FROM evtx_events WHERE computer IS NOT NULL GROUP BY computer ORDER BY event_count DESC LIMIT 20"
-  - "SELECT finding_id, title, severity, confidence FROM findings WHERE severity IN ('critical','high') ORDER BY confidence DESC LIMIT 10"
+keypoints:
+  - top_keypoints
+  - overview_window
+  - overview_hosts
+  - overview_findings
 ---
 
 # Investigation Overview

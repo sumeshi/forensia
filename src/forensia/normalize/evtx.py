@@ -6,9 +6,7 @@ from forensia.db.database import CaseDB
 
 def normalize_evtx(case: Case, db: CaseDB) -> int:
     inserted = 0
-    for path in sorted(case.raw_dir.glob("*.jsonl")):
-        if path.name == "mft.jsonl" or path.name.startswith("mft-"):
-            continue
+    for path in sorted({*case.raw_dir.glob("evtx.jsonl"), *case.raw_dir.glob("evtx-*.jsonl")}):
 
         source_file = db.execute(
             """

@@ -10,11 +10,12 @@ prompt: |
     4. The LogonType values used by the attacker and their meaning, such as 3 = network logon and 10 = RDP
     5. Abuse of privileged accounts, including 4672 privileged logon indicators when applicable
   LogonType=3 is common and should be described as suspicious only when combined with additional indicators such as administrative share access, off-hours activity, or unusual external IPs.
-evidence_queries:
-  - "SELECT target_user, src_ip, computer, logon_type, COUNT(*) AS count, MIN(timestamp) AS first, MAX(timestamp) AS last FROM evtx_events WHERE event_id = 4624 AND logon_type IN ('3','9','10') AND target_user NOT LIKE '%$' GROUP BY target_user, src_ip, computer, logon_type ORDER BY count DESC LIMIT 30"
-  - "SELECT src_ip, target_user, computer, COUNT(*) AS fail_count FROM evtx_events WHERE event_id = 4625 GROUP BY src_ip, target_user, computer HAVING COUNT(*) >= 5 ORDER BY fail_count DESC LIMIT 20"
-  - "SELECT timestamp, computer, target_user, subject_user, evidence_id FROM evtx_events WHERE event_id IN (4720,4726,4732,4728,4724) ORDER BY timestamp"
-  - "SELECT timestamp, computer, target_user, subject_user, evidence_id FROM evtx_events WHERE event_id = 4648 ORDER BY timestamp LIMIT 20"
+keypoints:
+  - top_keypoints
+  - accounts_logon_summary
+  - accounts_failed_logons
+  - accounts_changes
+  - accounts_explicit_credentials
 ---
 
 # Compromised Accounts and Authentication

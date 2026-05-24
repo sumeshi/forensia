@@ -10,11 +10,12 @@ prompt: |
     4. Defender disablement (5001) or AV-related service control events (7040) when observed
     5. evidence_id values for every listed item
   If an item is not supported by evidence, explicitly say "Not observed."
-evidence_queries:
-  - "SELECT timestamp, computer, service_name, subject_user, message, evidence_id FROM evtx_events WHERE event_id IN (4697,7045) ORDER BY timestamp"
-  - "SELECT timestamp, computer, subject_user, message, evidence_id FROM evtx_events WHERE event_id IN (4698,4699) ORDER BY timestamp"
-  - "SELECT timestamp, computer, target_user, process_name, command_line, evidence_id FROM evtx_events WHERE event_id = 4688 AND (LOWER(process_name) LIKE '%powershell%' OR LOWER(process_name) LIKE '%pwsh%' OR LOWER(process_name) LIKE '%certutil%' OR LOWER(process_name) LIKE '%mshta%' OR LOWER(process_name) LIKE '%rundll32%' OR LOWER(process_name) LIKE '%wscript%' OR LOWER(process_name) LIKE '%cscript%') ORDER BY timestamp LIMIT 30"
-  - "SELECT timestamp, computer, evidence_id, message FROM evtx_events WHERE event_id IN (5001,7040,1116) ORDER BY timestamp"
+keypoints:
+  - top_keypoints
+  - persistence_services
+  - persistence_tasks
+  - persistence_lolbas
+  - persistence_defender
 ---
 
 # Persistence and Execution

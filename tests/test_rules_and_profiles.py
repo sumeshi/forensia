@@ -156,7 +156,7 @@ class NormalizeEvtxTests(unittest.TestCase):
     def test_normalize_evtx_maps_winlog_user_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
-            (case.raw_dir / "security.jsonl").write_text(
+            (case.raw_dir / "evtx-abc123.jsonl").write_text(
                 (
                     '{"evidence_id":"ev-1","source_file":"security.evtx","@timestamp":"2026-05-16T01:02:03Z",'
                     '"winlog":{"channel":"Security","event_id":"4624","record_id":"1","computer_name":"host1",'

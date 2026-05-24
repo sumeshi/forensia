@@ -10,9 +10,10 @@ prompt: |
     2. Short-term actions for the next 1 to 2 weeks
     3. Medium- to long-term security improvement actions
   Each recommendation must include the supporting evidence or observed event that justifies it.
-evidence_queries:
-  - "SELECT finding_id, title, severity, confidence, status, ai_summary FROM findings ORDER BY confidence DESC LIMIT 20"
-  - "SELECT verdict, report_text FROM ai_reviews ORDER BY created_at DESC LIMIT 10"
+keypoints:
+  - top_keypoints
+  - recommendations_findings
+  - recommendations_reviews
 ---
 
 # Recommended Actions

@@ -10,11 +10,12 @@ prompt: |
     4. The source IP associated with the attacker or previous pivot host
   If a host has no evidence of compromise, explicitly say "No evidence of compromise observed."
   Do not speculate. Write only evidence-based statements.
-evidence_queries:
-  - "SELECT computer, COUNT(*) AS events, MIN(timestamp) AS first_seen, MAX(timestamp) AS last_seen FROM evtx_events WHERE event_id IN (4624,4625,4648,4688,4697,4698,5140,1102) GROUP BY computer ORDER BY events DESC LIMIT 20"
-  - "SELECT computer, src_ip, target_user, logon_type, timestamp, evidence_id FROM evtx_events WHERE event_id = 4624 AND logon_type IN ('3','10','9') ORDER BY timestamp LIMIT 40"
-  - "SELECT computer, process_name, command_line, target_user, timestamp, evidence_id FROM evtx_events WHERE event_id IN (4688,4104) ORDER BY timestamp LIMIT 30"
-  - "SELECT computer, service_name, target_user, timestamp, evidence_id FROM evtx_events WHERE event_id IN (4697,7045,4698) ORDER BY timestamp"
+keypoints:
+  - top_keypoints
+  - hosts_summary
+  - hosts_logons
+  - hosts_processes
+  - hosts_services
 ---
 
 # Compromised Host Details

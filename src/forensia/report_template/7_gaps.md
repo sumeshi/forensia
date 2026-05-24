@@ -10,10 +10,11 @@ prompt: |
     4. The impact of that gap on the investigation conclusion as high / medium / low
   Also propose additional hypotheses that should be investigated next, based on the current evidence.
   These hypotheses feed the next PDCA cycle.
-evidence_queries:
-  - "SELECT COUNT(*) AS total_events, MIN(timestamp) AS first, MAX(timestamp) AS last FROM evtx_events"
-  - "SELECT channel, COUNT(*) AS count FROM evtx_events GROUP BY channel ORDER BY count DESC"
-  - "SELECT event_id, COUNT(*) AS count FROM evtx_events WHERE event_id IN (1102,104,4719) GROUP BY event_id"
+keypoints:
+  - top_keypoints
+  - gaps_volume
+  - gaps_channels
+  - gaps_log_clear
 ---
 
 # Investigation Limitations and Gaps

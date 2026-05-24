@@ -190,7 +190,7 @@ requires-dist = [
     { name = "jinja2" },
     { name = "mft2es", specifier = ">=1.7.2" },
     { name = "orjson" },
-    { name = "prefetch2es", specifier = ">=2.2.2" },
+    { name = "prefetch2es", specifier = ">=2.3.0" },
     { name = "pyarrow" },
     { name = "pydantic" },
     { name = "python-dateutil" },
@@ -399,7 +399,7 @@ wheels = [
 
 [[package]]
 name = "prefetch2es"
-version = "2.2.2"
+version = "2.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "elasticsearch" },
@@ -408,9 +408,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9e/2d/66810408118d4bf9c1e69bb613d1482c179d69128c09591404166e2f8e4a/prefetch2es-2.2.2.tar.gz", hash = "sha256:b2573c24dd7f5dbf1b5086f30dd4d097ff47487f09d231aa74b088bcae6da7dd", size = 57855, upload-time = "2025-06-23T03:20:49.228Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/05/c5/7eef5a6a45c3bcd1f8c1659b0392f3900439ac4fbf813557899e22bb815f/prefetch2es-2.3.0.tar.gz", hash = "sha256:2df2aa6e95ca82ff78faac727185646266d235afa0a0073695b720655664d621", size = 55438, upload-time = "2026-05-24T16:23:44.031Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b7/a7/79a3427e2cb6f8aa0678af688f7a30bec3f5be9a29ebdaba66018c097b31/prefetch2es-2.2.2-py3-none-any.whl", hash = "sha256:90f79b60991e1cc185820d62f304215eef49ed17681cdb4021e12cb9ce68f70e", size = 29282, upload-time = "2025-06-23T03:20:48.378Z" },
+    { url = "https://files.pythonhosted.org/packages/58/cd/d3ab5b7c23a1f578b572e3d11860a1131bdc4756bda2b389075429cdd4c2/prefetch2es-2.3.0-py3-none-any.whl", hash = "sha256:ab6a53a2cfc5269ead2e650b97c831630d83be440606c0c5ebf9c59f799301b9", size = 15080, upload-time = "2026-05-24T16:23:42.849Z" },
 ]
 
 [[package]]

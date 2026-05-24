@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,7 +11,7 @@ from typer.testing import CliRunner
 
 from forensia.ai.checker import CheckResult
 from forensia.ai.investigator import _apply_memory_updates, _sync_keypoint_cards
-from forensia.artifacts import PrefetchArtifactAdapter
+from forensia.artifacts import MftArtifactAdapter, PrefetchArtifactAdapter
 from forensia import cli as cli_module
 from forensia.cli import _progress_pusher, _reset_case_tables
 from forensia.config import clear_llm_settings_cache, get_llm_settings, resolve_llm_config
@@ -19,6 +20,8 @@ from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery
 from forensia.db.database import CaseDB
 from forensia.ingest import ingest_all
+from forensia.normalize.evtx import normalize_evtx
+from forensia.normalize.mft import normalize_mft
 from forensia.normalize import normalize_all
 
 
@@ -1017,6 +1020,14 @@ class MemoryAndIngestTests(unittest.TestCase):
         self.assertTrue(adapter.can_handle(prefetch_dir / "APP.EXE-12345678.pf"))
         self.assertFalse(adapter.can_handle(prefetch_dir))
 
+    def test_mft_adapter_accepts_names_containing_mft(self) -> None:
+        adapter = MftArtifactAdapter()
+
+        self.assertTrue(adapter.can_handle(Path("/tmp/$MFT")))
+        self.assertTrue(adapter.can_handle(Path("/tmp/MFT")))
+        self.assertTrue(adapter.can_handle(Path("/tmp/MFT_C")))
+        self.assertTrue(adapter.can_handle(Path("/tmp/exported_mft.bin")))
+
     def test_normalize_all_includes_prefetch_execution_counts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -1029,6 +1040,77 @@ class MemoryAndIngestTests(unittest.TestCase):
             self.assertEqual(3, counts["prefetch_executions"])
             self.assertEqual(0, counts["evtx_rows"])
             self.assertEqual(0, counts["mft_entries"])
+
+    def test_normalize_evtx_ignores_prefetch_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            (case.raw_dir / "prefetch-test.jsonl").write_text(
+                json.dumps(
+                    {
+                        "source_type": "prefetch",
+                        "source_file": "sample/Prefetch/APP.EXE-12345678.pf",
+                        "name": "APP.EXE",
+                        "evidence_id": "prefetch-app-1234",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with CaseDB(case) as db:
+                inserted = normalize_evtx(case, db)
+                row_count = db.execute("SELECT COUNT(*) FROM evtx_events").fetchone()[0]
+
+            self.assertEqual(0, inserted)
+            self.assertEqual(0, row_count)
+
+    def test_normalize_mft_uses_sql_projection_for_entries_and_timeline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            record = {
+                "header": {
+                    "flags": "EntryFlags(ALLOCATED)",
+                    "record_number": 42,
+                    "is_directory": False,
+                    "is_deleted": False,
+                },
+                "attributes": {
+                    "StandardInformation": {
+                        "data": {
+                            "created": "2015-03-25T11:08:36.956950Z",
+                            "modified": "2015-03-25T11:08:36.956950Z",
+                            "mft_modified": "2015-03-25T11:08:36.956950Z",
+                            "accessed": "2015-03-25T11:08:36.956950Z",
+                        }
+                    },
+                    "FileName": {
+                        "data": {
+                            "created": "2015-03-25T11:08:36.956950Z",
+                            "modified": "2015-03-25T11:08:36.956950Z",
+                            "mft_modified": "2015-03-25T11:08:36.956950Z",
+                            "accessed": "2015-03-25T11:08:36.956950Z",
+                            "name": "example.txt",
+                            "path": "C:\\Users\\informant\\Desktop\\example.txt",
+                        }
+                    },
+                },
+                "source_type": "mft",
+                "source_file": "sample/cfreds/MFT_C",
+                "evidence_id": "mft-000000000042-00",
+            }
+            (case.raw_dir / "mft-test.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with CaseDB(case) as db:
+                entries, timeline = normalize_mft(case, db)
+                entry = db.execute(
+                    "SELECT record_number, file_name, extension, is_directory, is_deleted FROM mft_entries"
+                ).fetchone()
+                timeline_count = db.execute("SELECT COUNT(*) FROM mft_timeline").fetchone()[0]
+
+            self.assertEqual(1, entries)
+            self.assertEqual(8, timeline)
+            self.assertEqual((42, "example.txt", "txt", False, False), entry)
+            self.assertEqual(8, timeline_count)
 
     def test_cli_add_and_run_surface_prefetch_counts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

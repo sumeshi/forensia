@@ -9,11 +9,12 @@ prompt: |
     3. Any confirmed log gap or period of missing visibility
   Only describe steps that have confirmed evidence_id values. Do not speculate.
   If a required statement cannot be supported, explicitly write "[INSUFFICIENT EVIDENCE: reason]".
-evidence_queries:
-  - "SELECT timestamp, computer, event_id, target_user, src_ip, process_name, command_line, evidence_id FROM evtx_events WHERE severity IN ('critical','high') ORDER BY timestamp LIMIT 50"
-  - "SELECT timestamp, timestamp_type, file_path, description FROM mft_timeline ORDER BY timestamp LIMIT 30"
-  - "SELECT title, severity, confidence, status FROM findings ORDER BY confidence DESC LIMIT 20"
-  - "SELECT timestamp, computer, target_user, src_ip FROM evtx_events WHERE event_id IN (1102, 104) ORDER BY timestamp"
+keypoints:
+  - top_keypoints
+  - timeline_events
+  - timeline_mft
+  - timeline_findings
+  - timeline_log_clear
 ---
 
 # Attack Timeline
