@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from forensia.ai.json_response import request_llm_json
+from forensia.ai.hypothesis_manager import _recent_reasoning_rows
 from forensia.ai.prompts import build_broad_plan_messages, build_hypothesis_plan_messages
 from forensia.ai.sql_templates import (
     coerce_list,
@@ -15,6 +16,7 @@ from forensia.ai.sql_templates import (
 )
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
+from forensia.db.database import CaseDB
 
 
 logger = logging.getLogger(__name__)
@@ -189,6 +191,7 @@ def plan_hypothesis_query(
     memory: MemoryManager,
     base_url: str,
     model: str,
+    db: CaseDB | None = None,
     overview_md: str | None = None,
     default_context_md: str | None = None,
     status_callback: Callable[[str], None] | None = None,
@@ -201,6 +204,19 @@ def plan_hypothesis_query(
         for item in state.history
         if item.hypothesis_id == hypothesis.id
     ]
+    seen_query_ids = {
+        str(item.get("query_id"))
+        for item in hypothesis_history
+        if item.get("query_id")
+    }
+    if db is not None:
+        for row in _recent_reasoning_rows(db, hypothesis.id, limit=10):
+            query_id = str(row.get("query_id") or "").strip()
+            if query_id and query_id in seen_query_ids:
+                continue
+            hypothesis_history.append(row)
+            if query_id:
+                seen_query_ids.add(query_id)
 
     def messages_builder(extra_context: str) -> list[dict[str, str]]:
         extra_context_holder["value"] = extra_context

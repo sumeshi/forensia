@@ -439,7 +439,15 @@ class MemoryManager:
         return changed_paths
 
     def _llm_compaction_targets(self) -> list[Path]:
-        return []
+        targets: list[Path] = []
+        for directory in (
+            self.hypotheses_dir,
+            self.entities_user_dir,
+            self.entities_host_dir,
+            self.entities_ip_dir,
+        ):
+            targets.extend(sorted(directory.glob("*.md")))
+        return targets
 
     def _ensure_markdown_heading(self, body: str, original: str) -> str:
         compacted = body.strip()

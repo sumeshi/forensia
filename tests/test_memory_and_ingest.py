@@ -6,13 +6,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from forensia.ai.checker import CheckResult
 from forensia.ai.investigator import _apply_memory_updates, _sync_keypoint_cards
 from forensia import cli as cli_module
 from forensia.cli import _progress_pusher, _reset_case_tables
 from forensia.config import clear_llm_settings_cache, get_llm_settings, resolve_llm_config
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
-from forensia.core.session import Hypothesis
+from forensia.core.session import Hypothesis, PlannedQuery
 from forensia.db.database import CaseDB
 from forensia.ingest import ingest_all
 
@@ -266,16 +267,28 @@ class MemoryAndIngestTests(unittest.TestCase):
             self.assertIn("anchor-0", archive_text)
             self.assertNotIn("anchor-0", timeline_text)
 
-    def test_only_overview_tasks_and_suspicious_need_proactive_compaction(self) -> None:
+    def test_llm_compaction_targets_include_hypotheses_and_entities_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
 
-            self.assertEqual([], memory._llm_compaction_targets())
-            self.assertNotIn(memory.suspicious_path, memory._llm_compaction_targets())
             memory.upsert_hypothesis("H-1", "desc", "# Hypothesis H-1\n")
-            memory.upsert_entity("src_ip", "10.0.0.5", "# Entity\n")
-            self.assertEqual([], memory._llm_compaction_targets())
+            memory.upsert_entity("user", "alice", "# Entity alice\n")
+            memory.upsert_entity("host", "srv-1", "# Entity srv-1\n")
+            memory.upsert_entity("ip", "10.0.0.5", "# Entity 10.0.0.5\n")
+
+            targets = memory._llm_compaction_targets()
+
+            self.assertEqual(
+                [
+                    memory.hypotheses_dir / "H-1.md",
+                    memory.entities_user_dir / "alice.md",
+                    memory.entities_host_dir / "srv-1.md",
+                    memory.entities_ip_dir / "10.0.0.5.md",
+                ],
+                targets,
+            )
+            self.assertNotIn(memory.suspicious_path, targets)
 
     def test_suspicious_table_is_compacted_without_breaking_header(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "256"}):
@@ -419,6 +432,192 @@ class MemoryAndIngestTests(unittest.TestCase):
             self.assertFalse((memory.keypoints_dir / "KP-0002.md").exists())
             self.assertFalse((memory.keypoints_dir / "KP-0003.md").exists())
 
+    def test_investigation_deletes_stale_hypothesis_cards_after_init_style_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            stale_path = memory.hypotheses_dir / "H-stale.md"
+            stale_path.write_text("# Hypothesis H-stale\n\nold\n", encoding="utf-8")
+
+            with CaseDB(case) as db, patch("forensia.ai.investigator._seed_findings", return_value=0), patch(
+                "forensia.ai.investigator.render_written_report",
+                return_value=(case.reports_dir / "report.md", case.reports_dir / "report.html"),
+            ):
+                from forensia.ai.investigator import investigate
+
+                investigate(
+                    case=case,
+                    db=db,
+                    base_url=self._llm_base_url(),
+                    model="test-model",
+                    max_iter=1,
+                    no_progress_limit=1,
+                    report_every_n_cycles=999,
+                )
+
+            self.assertFalse(stale_path.exists())
+
+    def test_investigation_keeps_active_and_resolved_hypothesis_cards(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            stale_path = memory.hypotheses_dir / "H-stale.md"
+            stale_path.write_text("# Hypothesis H-stale\n\nold\n", encoding="utf-8")
+
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO hypotheses (
+                        hypothesis_id, description, status, verdict, summary, origin,
+                        created_session, resolved_session, created_at, updated_at
+                    ) VALUES
+                        ('H-1', 'active hypothesis', 'active', NULL, 'active summary', 'broad_plan', 'S-1', NULL, now(), now()),
+                        ('H-2', 'resolved hypothesis', 'confirmed', 'confirmed', 'resolved summary', 'check_new', 'S-1', 'S-1', now(), now())
+                    """
+                )
+                memory.upsert_hypothesis("H-1", "active", "# Hypothesis H-1\n\nactive\n")
+                memory.upsert_hypothesis("H-2", "resolved", "# Hypothesis H-2\n\nresolved\n")
+
+                with patch("forensia.ai.investigator._seed_findings", return_value=0), patch(
+                    "forensia.ai.investigator.render_written_report",
+                    return_value=(case.reports_dir / "report.md", case.reports_dir / "report.html"),
+                ):
+                    from forensia.ai.investigator import investigate
+
+                    investigate(
+                        case=case,
+                        db=db,
+                        base_url=self._llm_base_url(),
+                        model="test-model",
+                        max_iter=1,
+                        no_progress_limit=1,
+                        report_every_n_cycles=999,
+                    )
+
+            self.assertTrue((memory.hypotheses_dir / "H-1.md").exists())
+            self.assertTrue((memory.hypotheses_dir / "H-2.md").exists())
+            self.assertFalse(stale_path.exists())
+
+    def test_investigation_marks_session_failed_when_llm_runtime_error_escapes_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db, patch("forensia.ai.investigator._seed_findings", return_value=0), patch(
+                "forensia.ai.investigator.broad_plan_investigation",
+                side_effect=RuntimeError("llm failed"),
+            ):
+                from forensia.ai.investigator import investigate
+
+                with self.assertRaisesRegex(RuntimeError, "llm failed"):
+                    investigate(
+                        case=case,
+                        db=db,
+                        base_url=self._llm_base_url(),
+                        model="test-model",
+                        max_iter=1,
+                        no_progress_limit=1,
+                        report_every_n_cycles=999,
+                    )
+
+                status, finished_at = db.execute(
+                    """
+                    SELECT status, finished_at
+                    FROM investigation_sessions
+                    ORDER BY started_at DESC, session_id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+
+            self.assertEqual("failed", status)
+            self.assertIsNotNone(finished_at)
+
+    def test_investigation_applies_guarded_memory_updates_not_raw_response(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            planned_query = PlannedQuery(
+                query_id="Q-1",
+                hypothesis_id="H-1",
+                purpose="purpose",
+                sql="SELECT evidence_id FROM findings",
+            )
+            guarded_result = CheckResult(
+                query_id="Q-1",
+                verdict="inconclusive",
+                finding_updates=[],
+                suspicious_evidence=[],
+                new_hypotheses=[],
+                memory_updates={"facts": [], "timeline": [], "tasks": []},
+                report_text="guarded",
+                new_leads=0,
+                progress=False,
+                raw_response={
+                    "memory_updates": {
+                        "facts": [{"text": "bad fact", "evidence_ids": ["ev-bad"]}],
+                        "timeline": [
+                            {
+                                "timestamp": "2026-05-12T10:00:00",
+                                "description": "bad timeline",
+                                "evidence_ids": ["ev-bad"],
+                            }
+                        ],
+                    },
+                    "suspicious_evidence": [{"evidence_id": "ev-bad", "reason": "bad", "confidence": 0.9}],
+                },
+            )
+
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO hypotheses (
+                        hypothesis_id, description, status, verdict, summary, origin,
+                        created_session, resolved_session, created_at, updated_at
+                    ) VALUES ('H-1', 'active hypothesis', 'active', NULL, '', 'broad_plan', 'S-1', NULL, now(), now())
+                    """
+                )
+                with patch("forensia.ai.investigator._seed_findings", return_value=0), patch(
+                    "forensia.ai.investigator.broad_plan_investigation",
+                    return_value=type("BroadPlanStub", (), {"hypotheses": [], "stop": False, "raw_response": {}})(),
+                ), patch(
+                    "forensia.ai.investigator.plan_hypothesis_query",
+                    return_value=type(
+                        "HypothesisPlanStub",
+                        (),
+                        {"hypothesis": None, "query": planned_query, "needs_more": False, "raw_response": {}},
+                    )(),
+                ), patch(
+                    "forensia.ai.investigator.fetch_records",
+                    return_value=[{"evidence_id": "ev-good"}],
+                ), patch(
+                    "forensia.ai.investigator.check_query_result",
+                    return_value=guarded_result,
+                ), patch(
+                    "forensia.ai.investigator.render_written_report",
+                    return_value=(case.reports_dir / "report.md", case.reports_dir / "report.html"),
+                ):
+                    from forensia.ai.investigator import investigate
+
+                    investigate(
+                        case=case,
+                        db=db,
+                        base_url=self._llm_base_url(),
+                        model="test-model",
+                        max_iter=1,
+                        no_progress_limit=1,
+                        max_queries_per_hypothesis=1,
+                        report_every_n_cycles=999,
+                    )
+
+            facts_text = (case.memory_dir / "facts.md").read_text(encoding="utf-8") if (case.memory_dir / "facts.md").exists() else ""
+            timeline_text = (case.memory_dir / "timeline.md").read_text(encoding="utf-8") if (case.memory_dir / "timeline.md").exists() else ""
+            suspicious_text = (
+                (case.memory_dir / "evidence" / "suspicious.md").read_text(encoding="utf-8")
+                if (case.memory_dir / "evidence" / "suspicious.md").exists()
+                else ""
+            )
+
+            self.assertNotIn("bad fact", facts_text)
+            self.assertNotIn("bad timeline", timeline_text)
+            self.assertNotIn("ev-bad", suspicious_text)
+
     def test_investigation_initializes_overview_with_new_sections(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -472,7 +671,7 @@ class MemoryAndIngestTests(unittest.TestCase):
             ]
             self.assertTrue(overview_calls)
 
-    def test_hypothesis_memory_is_not_llm_compacted_when_oversized(self) -> None:
+    def test_hypothesis_memory_is_llm_compacted_when_oversized(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "96"}):
             clear_llm_settings_cache()
             case = Case.init(tmpdir)
@@ -480,13 +679,30 @@ class MemoryAndIngestTests(unittest.TestCase):
             memory.update_overview("# Overview\n\n" + ("x" * 512))
             memory.upsert_hypothesis("H-1", "oversized", "# Hypothesis H-1\n\n" + ("y" * 512))
 
-            with patch("forensia.core.memory.chat_completion") as mock_chat:
+            with patch("forensia.core.memory.chat_completion", return_value="# Hypothesis H-1\n\n- compacted") as mock_chat:
                 changed = memory.compact_oversized_with_llm(self._llm_base_url(), "test-model")
 
-            self.assertEqual([], changed)
+            self.assertEqual([str(memory.hypotheses_dir / "H-1.md")], changed)
             self.assertEqual("# Overview\n\n" + ("x" * 512), memory.overview_path.read_text(encoding="utf-8"))
-            self.assertTrue((memory.hypotheses_dir / "H-1.md").read_text(encoding="utf-8").startswith("# Hypothesis H-1\n"))
-            mock_chat.assert_not_called()
+            self.assertEqual("# Hypothesis H-1\n\n- compacted\n", (memory.hypotheses_dir / "H-1.md").read_text(encoding="utf-8"))
+            mock_chat.assert_called_once()
+
+    def test_entity_memory_is_llm_compacted_when_oversized(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "96"}):
+            clear_llm_settings_cache()
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            memory.upsert_entity("ip", "10.0.0.5", "# ip: 10.0.0.5\n\n" + ("z" * 512))
+
+            with patch("forensia.core.memory.chat_completion", return_value="- compacted entity") as mock_chat:
+                changed = memory.compact_oversized_with_llm(self._llm_base_url(), "test-model")
+
+            self.assertEqual([str(memory.entities_ip_dir / "10.0.0.5.md")], changed)
+            self.assertEqual(
+                "# ip: 10.0.0.5\n\n- compacted entity\n",
+                (memory.entities_ip_dir / "10.0.0.5.md").read_text(encoding="utf-8"),
+            )
+            mock_chat.assert_called_once()
 
     def test_hypothesis_memory_path_depends_only_on_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

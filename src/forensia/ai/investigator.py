@@ -6,6 +6,7 @@ import signal
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from re import sub
 from typing import Any
 from uuid import uuid4
 
@@ -227,6 +228,20 @@ def _sync_keypoint_cards(memory: MemoryManager, findings_snapshot: list[dict[str
             path.unlink(missing_ok=True)
 
 
+def _sync_hypothesis_cards(
+    memory: MemoryManager,
+    active_hypotheses: list[Hypothesis],
+    resolved_hypotheses: list[Hypothesis],
+) -> None:
+    valid_ids = {
+        sub(r"[^a-zA-Z0-9._-]+", "-", str(item.id).strip()).strip("-") or "unknown"
+        for item in [*active_hypotheses, *resolved_hypotheses]
+    }
+    for path in memory.hypotheses_dir.glob("*.md"):
+        if path.stem not in valid_ids:
+            path.unlink(missing_ok=True)
+
+
 def _matching_findings(snapshot: list[dict[str, Any]], hypothesis: Hypothesis | None) -> list[dict[str, Any]]:
     if hypothesis is None:
         return snapshot[:5]
@@ -393,6 +408,7 @@ def investigate(
         resolved_hypotheses=resolved_hypotheses,
     )
     _sync_keypoint_cards(memory, state.findings_snapshot)
+    _sync_hypothesis_cards(memory, state.active_hypotheses, state.resolved_hypotheses)
     report_status_cache = _build_report_status(db)
 
     def get_report_status(
@@ -575,6 +591,7 @@ def investigate(
                             memory=memory,
                             base_url=base_url,
                             model=model,
+                            db=db,
                             overview_md=memory_overview_cache,
                             default_context_md=memory_plan_context_cache,
                             status_callback=llm_status,
@@ -760,7 +777,11 @@ def investigate(
                             memory=memory,
                             active_hypotheses=state.active_hypotheses,
                             resolved_hypotheses=state.resolved_hypotheses,
-                            check_output=check_result.raw_response,
+                            check_output={
+                                **check_result.raw_response,
+                                "memory_updates": check_result.memory_updates,
+                                "suspicious_evidence": check_result.suspicious_evidence,
+                            },
                             db=db,
                         )
                         memory.compact_overview_if_needed(base_url=base_url, model=model)
@@ -858,19 +879,22 @@ def investigate(
                 break
         else:
             status = "completed"
+    except Exception:
+        status = "failed"
+        raise
     finally:
         signal.signal(signal.SIGINT, previous_sigint)
+        finished_at = datetime.now(UTC).replace(tzinfo=None)
+        db.execute(
+            """
+            UPDATE investigation_sessions
+            SET finished_at = ?, iterations = ?, status = ?
+            WHERE session_id = ?
+            """,
+            (finished_at, state.iteration, status, session_id),
+        )
 
-    finished_at = datetime.now(UTC).replace(tzinfo=None)
     summary = _final_summary(state)
-    db.execute(
-        """
-        UPDATE investigation_sessions
-        SET finished_at = ?, iterations = ?, status = ?
-        WHERE session_id = ?
-        """,
-        (finished_at, state.iteration, status, session_id),
-    )
     return {
         "session_id": session_id,
         "status": status,

@@ -25,7 +25,7 @@ from forensia.ai.sql_templates import _template_failed_logon_by_ip_window, coerc
 from forensia.config import clear_llm_settings_cache, resolve_llm_config
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
-from forensia.core.session import Hypothesis, PlannedQuery, SessionState
+from forensia.core.session import HistoryEntry, Hypothesis, PlannedQuery, SessionState
 from forensia.db.database import CaseDB
 
 
@@ -339,6 +339,81 @@ class PlannerRetryTests(unittest.TestCase):
 
         self.assertIsNone(result.query)
         self.assertTrue(any("hypothesis/query parse failed" in line for line in logs.output))
+
+    def test_plan_hypothesis_query_includes_recent_db_history_on_resume(self) -> None:
+        state = SessionState(session_id="session-db", iteration=2)
+        hypothesis = Hypothesis(id="H1", description="test hypothesis")
+        response = {"read_more": [], "query": None, "needs_more": False}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO hypothesis_reasoning (
+                        entry_id, hypothesis_id, session_id, iteration, phase, verdict, query_id, body, created_at
+                    ) VALUES ('HR-1', 'H1', 'S-1', 1, 'check', 'inconclusive', 'Q-old', 'already tested', now())
+                    """
+                )
+                with patch("forensia.ai.planner.request_llm_json", return_value=response) as mock_request:
+                    plan_hypothesis_query(
+                        state=state,
+                        hypothesis=hypothesis,
+                        finding_candidates=[],
+                        memory=_MemoryStub(),
+                        base_url=_llm_base_url(),
+                        model="test-model",
+                        db=db,
+                    )
+
+        payload = mock_request.call_args.kwargs["messages"][1]["content"]
+        self.assertIn("Already-executed query IDs for this hypothesis: ['Q-old']", mock_request.call_args.kwargs["messages"][0]["content"])
+        self.assertIn("'query_id': 'Q-old'", payload)
+        self.assertIn("'body': 'already tested'", payload)
+
+    def test_plan_hypothesis_query_dedupes_local_and_db_query_ids(self) -> None:
+        state = SessionState(
+            session_id="session-db",
+            iteration=2,
+            history=[
+                HistoryEntry(
+                    iteration=1,
+                    query_id="Q-local",
+                    hypothesis_id="H1",
+                    verdict="inconclusive",
+                    summary="already tested",
+                    evidence_ids=[],
+                )
+            ],
+        )
+        hypothesis = Hypothesis(id="H1", description="test hypothesis")
+        response = {"read_more": [], "query": None, "needs_more": False}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO hypothesis_reasoning (
+                        entry_id, hypothesis_id, session_id, iteration, phase, verdict, query_id, body, created_at
+                    ) VALUES ('HR-1', 'H1', 'S-1', 1, 'check', 'inconclusive', 'Q-local', 'duplicate row', now())
+                    """
+                )
+                with patch("forensia.ai.planner.request_llm_json", return_value=response) as mock_request:
+                    plan_hypothesis_query(
+                        state=state,
+                        hypothesis=hypothesis,
+                        finding_candidates=[],
+                        memory=_MemoryStub(),
+                        base_url=_llm_base_url(),
+                        model="test-model",
+                        db=db,
+                    )
+
+        system = mock_request.call_args.kwargs["messages"][0]["content"]
+        user = mock_request.call_args.kwargs["messages"][1]["content"]
+        self.assertEqual(1, system.count("Q-local"))
+        self.assertEqual(1, user.count("'query_id': 'Q-local'"))
 
     def test_parse_hypotheses_logs_debug_on_validation_failure(self) -> None:
         with self.assertLogs("forensia.ai.planner", level="DEBUG") as logs:
