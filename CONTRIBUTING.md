@@ -1,16 +1,19 @@
 # Contributing to forensia
 
-forensia は、ローカルで完結する DFIR 調査支援ツールです。  
-寄稿歓迎です。ただし、派手にすることより、壊れにくくすることを優先します。
+forensia is a local-first DFIR investigation tool. Contributions are welcome, but the project prioritizes architectural stability over feature breadth.
 
-優先順位は次のとおりです。
+This document is implementation-facing. It focuses on invariants, state boundaries, and responsibilities that should remain stable even when the code changes.
 
-- 生ログをクラウドへ出さない
-- 小型ローカル LLM の弱さを構造で補う
-- Evidence に戻れる
-- 同じケースを続きから回せる
+## Priorities
 
-## セットアップ
+The current implementation is built around these constraints:
+
+- Raw evidence must not leave the local environment.
+- Small local LLMs are assumed to be weak and must be constrained by structure.
+- Every durable conclusion must remain traceable back to evidence.
+- A case must be resumable without reconstructing state from chat history.
+
+## Setup
 
 ### Python
 
@@ -20,7 +23,7 @@ cd forensia
 uv sync
 ```
 
-`.env` の例:
+Example `.env`:
 
 ```dotenv
 LLM_BASE_URL="http://127.0.0.1:1234"
@@ -31,19 +34,19 @@ LLM_OUTPUT_LANGUAGE=ja
 LLM_MEMORY_MAX_BYTES=16384
 ```
 
-| 変数 | 説明 |
+| Variable | Meaning |
 |---|---|
-| `LLM_BASE_URL` | LM Studio の API ベース URL |
-| `LLM_MODEL` | 使用モデル名 |
-| `LLM_MAX_TOKENS` | 1 回のレスポンス上限 |
-| `LLM_THINKING_LANGUAGE` | 内部推論言語 |
-| `LLM_OUTPUT_LANGUAGE` | 人間向け出力の言語 |
-| `LLM_MEMORY_MAX_BYTES` | `overview.md` / `open_questions.md` / 個別メモの圧縮閾値。`confirmed_facts.md` / `timeline_anchors.md` / `refuted_hypotheses.md` / `important_entities.md` は保持優先で exempt |
-| `LLM_REPORT_PARALLELISM` | report section 書き込みの並列数（既定 1）。`--report-parallelism` フラグでも上書き可 |
-| `FORENSIA_API_BASE_URL` | Web UI 開発時の API 接続先。`vite` proxy と `pnpm gen:api` が参照する |
-| `FORENSIA_UI_ORIGINS` | FastAPI の CORS 許可元。`,` 区切りで複数指定可 |
+| `LLM_BASE_URL` | LM Studio compatible API base URL |
+| `LLM_MODEL` | Model name used for investigation and report writing |
+| `LLM_MAX_TOKENS` | Max tokens per response |
+| `LLM_THINKING_LANGUAGE` | Language used for internal reasoning prompts |
+| `LLM_OUTPUT_LANGUAGE` | Language used for human-facing output |
+| `LLM_MEMORY_MAX_BYTES` | Compaction threshold for selected memory files |
+| `LLM_REPORT_PARALLELISM` | Default parallelism for report section filling |
+| `FORENSIA_API_BASE_URL` | API base URL used by the UI dev workflow |
+| `FORENSIA_UI_ORIGINS` | Comma-separated CORS allowlist for FastAPI |
 
-CLI フラグ名は `--llm-base-url` を正とします。`--lmstudio` は互換のため残している旧名です。
+The canonical CLI flag is `--llm-base-url`. `--lmstudio` remains as a compatibility alias.
 
 ### Web UI
 
@@ -52,15 +55,15 @@ cd web_ui
 npx pnpm install
 ```
 
-## よく使うコマンド
+## Common commands
 
-### バックエンド
+### Backend
 
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache PYTHONPATH=src uv run python -m unittest discover -s tests
 ```
 
-### フロントエンド
+### Frontend
 
 ```bash
 cd web_ui
@@ -69,7 +72,7 @@ npx pnpm test
 npx pnpm build
 ```
 
-### ローカル実行
+### Local execution
 
 ```bash
 forensia run ./sample/DESKTOP-001 --out ./dist/DESKTOP-001 --profile windows-basic --max-iter 20
@@ -77,34 +80,34 @@ forensia status ./dist/DESKTOP-001
 forensia serve ./dist/DESKTOP-001
 ```
 
-## CLI コマンド
+## CLI surface
 
-| コマンド | 役割 |
+| Command | Role |
 |---|---|
-| `init` | 空のケースディレクトリを初期化する |
-| `add` | 既存ケースへ増分取り込みする |
-| `report` | 既存 `report_sections` から Markdown / HTML をレンダリングする |
-| `report-write` | 現在の evidence から section を LLM 再充填してから render する |
-| `run` | ingest → normalize → analyze → investigate → report の一括実行 |
-| `investigate` | 既存ケースを読み、仮説検証ループだけ回す |
-| `status` | ケースの現在状態を read-only で表示する |
-| `serve` | FastAPI + Svelte UI を配信する |
+| `init` | Initialize an empty case directory |
+| `add` | Incrementally ingest new artifacts into an existing case |
+| `report` | Render Markdown and HTML from existing `report_sections` |
+| `report-write` | Refill report sections from current evidence, then render |
+| `run` | Execute ingest → normalize → analyze → investigate → report |
+| `investigate` | Continue the hypothesis loop on an existing case |
+| `status` | Show current case state in read-only form |
+| `serve` | Serve FastAPI and the built Svelte UI |
 
-## リポジトリ構造
+## Repository map
 
-| 層 | 主な場所 | 役割 |
+| Layer | Main location | Responsibility |
 |---|---|---|
-| Ingest | `src/forensia/ingest` | EVTX / MFT を JSONL 化 |
-| Normalize | `src/forensia/normalize` | JSONL を DuckDB 向けに整形 |
-| Rules | `src/forensia/rules` / `src/forensia/rulepacks` | YAML ルール実行と Finding 生成 |
-| Investigation | `src/forensia/ai/investigator.py` | 仮説検証ループ制御 |
-| Planner / Checker | `src/forensia/ai/planner.py` / `src/forensia/ai/checker.py` | SQL 提案と検証結果評価 |
-| Memory | `src/forensia/core/memory.py` | Structured Memories の再構成 |
-| Report | `src/forensia/report` | section 更新と HTML / Markdown レンダリング |
-| API | `src/forensia/api` / `src/forensia/web.py` | FastAPI, DTO, SSE |
-| UI | `web_ui/` | Svelte 5 + Vite + Tailwind |
+| Ingest | `src/forensia/ingest` | Convert source artifacts into raw JSONL |
+| Normalize | `src/forensia/normalize` | Load normalized evidence into DuckDB |
+| Rules | `src/forensia/rules` and `src/forensia/rulepacks` | Execute YAML rules and generate findings |
+| Investigation | `src/forensia/ai/investigator.py` | Run the hypothesis loop |
+| Planner / Checker | `src/forensia/ai/planner.py` and `src/forensia/ai/checker.py` | Propose SQL checks and evaluate results |
+| Memory | `src/forensia/core/memory.py` | Maintain structured working memory |
+| Report | `src/forensia/report` | Fill report sections and render reports |
+| API | `src/forensia/api` and `src/forensia/web.py` | FastAPI, DTOs, and SSE |
+| UI | `web_ui/` | Svelte 5 UI |
 
-## ケース構成
+## Case layout
 
 ```text
 case001/
@@ -119,147 +122,306 @@ case001/
   ai_logs/
   memory/
     overview.md
-    confirmed_facts.md
-    timeline_anchors.md
-    open_questions.md
-    narrative.md
-    refuted_hypotheses.md
-    important_entities.md
-    hosts/
-    users/
+    facts.md
+    timeline.md
+    tasks.md
+    archive/
+      refuted.md
+      resolved_gaps.md
+      timeline_archive.md
+    entities/
+      user/
+      host/
+      ip/
     hypotheses/
+    keypoints/
     evidence/
       suspicious.md
+    details/
+      fact-001.md
   reports/
     report.html
     report.md
     api/
 ```
 
-### ざっくり役割
+### Directory responsibilities
 
-| パス | 役割 |
+| Path | Responsibility |
 |---|---|
-| `raw/` | 再処理用の元 JSONL |
-| `db/case.duckdb` | 証拠、Finding、仮説、レポート状態の正本 |
-| `db/trace.duckdb` | LLM 実行ログ、進捗、調査セッションの trace |
-| `allowlist.yaml` | `suppressed` 用の rule-scoped allowlist。`init` 時に空 stub を作る |
-| `memory/` | Structured Memories |
-| `ai_logs/` | LLM 呼び出しごとの `{input, output, meta}` |
-| `reports/` | 人間向けレポートと API スナップショット |
+| `raw/` | Reprocessable raw JSONL generated during ingest |
+| `db/case.duckdb` | Durable investigation state tied to evidence and report output |
+| `db/trace.duckdb` | Durable execution trace for sessions, steps, and progress |
+| `allowlist.yaml` | Rule-scoped suppression configuration |
+| `memory/` | Regeneratable working context for LLM calls |
+| `ai_logs/` | Per-call LLM request and response logs |
+| `reports/` | Human-facing rendered output and API snapshots |
 
-## 実装上の前提
+## Architectural invariants
 
-### DuckDB が正本
+### Three state classes
 
-Persistent State の正本は `db/case.duckdb` と `db/trace.duckdb` の組です。  
-前者は調査データ、後者は実行 trace です。  
-`memory/*.md` は LLM 用に射影したコンテキストであり、正本ではありません。必要なら再生成できます。
+forensia separates state into three classes with different trust levels and lifetimes.
 
-### AI の出力を正本にしない
-
-- LLM I/O は `ai_logs/<session_id>/` に残す
-- 調査ステップごとの `input_json` / `output_json` は `investigation_steps` に残す
-- Finding / Hypothesis / report state は DB に保存する
-
-### SQL は読み取り専用
-
-LLM が提案する SQL は、実行前にバリデーションされます。
-
-- `SELECT` / `WITH` のみ許可
-- 複数文を禁止
-- 破壊的 SQL を拒否
-- 許可テーブル以外を拒否
-
-現状の許可テーブルは `evtx_events`、`mft_entries`、`mft_timeline`、`findings`、`hypotheses`、`report_sections`、`claims`、`ai_reviews`、`investigation_sessions`、`investigation_steps`、`hypothesis_reasoning`、`progress_events`、`ingested_files` です。
-
-### `suppressed` は削除ではない
-
-Finding を見えなくすることと、DB から消すことは別です。  
-`suppressed` は状態変更であり、Evidence への導線は残す必要があります。
-
-### report section status
-
-`report_sections.status` は次の 4 値です。
-
-- `draft`: 根拠不足または gap あり
-- `stable`: gap がなく、AI 観点では安定
-- `ai_exhausted`: AI が追加導線を出さなくなった
-- `human_reviewed`: 人間が UI から明示的に確認した
-
-## データモデル
-
-| 用語 | 意味 |
-|---|---|
-| Evidence | 元イベントや MFT エントリ |
-| Finding | ルールや証拠から得られた観測事実 |
-| Hypothesis | その事実の解釈や説明仮説 |
-| Claim | レポート上で述べる主張 |
-| gap | まだ埋まっていない不足情報 |
-
-Finding は事実寄り、Hypothesis は解釈寄り、Claim は人間向け、Evidence は元データです。  
-この境界を崩すと、調査と作文が混ざって破綻します。
-
-## 組み込みルールのカバレッジ
-
-中心は次のあたりです。
-
-- 認証 / ログオン
-- Kerberos / NTLM
-- RDP
-- PowerShell / LOLBas
-- サービス / タスクによる永続化
-- アカウント操作
-- ログ改ざん / 監査変更
-- Defender 関連
-- 再起動 / シャットダウン
-
-ルールは `src/forensia/rulepacks/windows/` にあり、DuckDB に対する SQL と Finding テンプレート、ATT&CK Technique を持てます。
-
-## 主な DuckDB テーブル
-
-| テーブル | 役割 |
-|---|---|
-| `evtx_events` | 正規化済み EVTX |
-| `mft_entries` | 正規化済み MFT |
-| `mft_timeline` | MFT から展開した時系列 |
-| `findings` | Finding 本体 |
-| `ai_reviews` | LLM によるレビュー結果 |
-| `hypotheses` | 仮説状態 |
-| `claims` | report section が主張する根拠と Finding の対応 |
-| `hypothesis_reasoning` | 仮説ごとの検証ステップ履歴（UI reasoning trail 用） |
-| `ingested_files` | 取り込み済みファイルの記録（増分 ingest の重複防止） |
-| `report_sections` | レポート section の本文・状態・gap |
-| `investigation_sessions` | investigate 実行履歴 |
-| `investigation_steps` | 各ステップの入出力 |
-| `progress_events` | UI 配信用イベント |
-
-## UI を触るとき
-
-- `web_ui/dist/` は配信物です
-- `forensia serve` は build 済み UI を FastAPI から返します
-- DuckDB がロックされているときは `reports/api/*.json` スナップショットで表示します
-
-## README を触るとき
-
-README は公開向けです。  
-価値、思想、使い方、ケース構成までは README に置き、内部クラス名や実装都合は `CONTRIBUTING.md` に寄せてください。
-
-## investigate flags
-
-| フラグ | 既定値 | 触る場面 |
+| State class | Storage | Purpose |
 |---|---|---|
-| `--max-iter` | `20` | 長く回したいときだけ増やす |
-| `--max-queries-per-hypothesis` | `5` | 1 仮説をどこまで掘るか調整したいとき |
-| `--no-progress-limit` | `3` | 進展なし停止を緩めたいとき |
-| `--report-every-n-cycles` | `1` | 毎サイクル report refresh すると重い場合 |
-| `--report-parallelism` | `1` | LM Studio 側で並列処理できるときだけ増やす |
-| `--profile` | `windows-basic` | 別 rule profile を使うとき |
-| `--report-only` | `false` | 仮説検証を回さず report section だけ埋め直すとき |
+| Case State | `db/case.duckdb` | Normalized evidence and durable investigation objects derived from that evidence |
+| Trace State | `db/trace.duckdb` | Investigation sessions, per-step I/O, reasoning trail, and progress history |
+| Structured Memory | `memory/**/*.md` | Regeneratable working context assembled for LLM consumption |
 
-## rerun semantics
+These classes must remain separate.
 
-- `forensia run` はデフォルトで investigate まで走る
-- 既存調査があるケースで Stage 4 をもう一度回すには `--reinvestigate`
-- 同じ出力先を初期化し直すには `--init`
-- `report` は pure render、`report-write` は LLM section refill を伴う
+- Case State is the source of truth for evidence-backed investigation results.
+- Trace State is the source of truth for execution history.
+- Structured Memory is a projection, not an authority.
+
+### LLM output is never the source of truth
+
+The implementation records LLM activity, but does not treat raw model output as authoritative state.
+
+- LLM request and response bodies are stored under `ai_logs/<session_id>/`.
+- Investigation step `input_json` and `output_json` are stored in `trace.investigation_steps`.
+- Durable objects such as findings, hypotheses, claims, and report sections live in DuckDB.
+- Memory markdown is derived state and may be regenerated or compacted.
+
+If a new feature needs durable state, it should be represented in the database rather than only in markdown or logs.
+
+### Evidence traceability is required
+
+Durable conclusions must remain tied to evidence identifiers.
+
+- Evidence tables store normalized primary records.
+- Findings carry structured evidence references.
+- Memory facts and timeline anchors include evidence references.
+- Claims store linked `finding_ids`, `hypothesis_ids`, and `evidence_ids`.
+
+Any new abstraction that summarizes or ranks evidence should preserve a path back to concrete evidence rows.
+
+## Structured memory model
+
+Structured memory is not a chat transcript. It is a bounded working set optimized for repeated LLM calls.
+
+### Current memory files
+
+| Path | Role | Durability |
+|---|---|---|
+| `memory/overview.md` | High-level case summary and current investigation policy | Regeneratable, compactable |
+| `memory/tasks.md` | Active unresolved tasks and gaps | Regeneratable, compactable |
+| `memory/facts.md` | Confirmed facts currently worth carrying in context | Regeneratable, not compacted by local trimming |
+| `memory/timeline.md` | Important time anchors for active reasoning | Regeneratable, rotated into archive when long |
+| `memory/entities/{user,host,ip}/*.md` | Stable cards for important entities | Regeneratable, LLM-compactable |
+| `memory/hypotheses/*.md` | Per-hypothesis state cards | Regeneratable, LLM-compactable |
+| `memory/keypoints/*.md` | Cards synced from the current findings snapshot | Regeneratable |
+| `memory/evidence/suspicious.md` | Compact table of suspicious evidence selected during checks | Regeneratable, compactable |
+| `memory/details/fact-NNN.md` | Detailed body for indexed facts | Regeneratable from durable evidence-backed updates |
+| `memory/archive/*.md` | Archived but still readable historical memory fragments | Regeneratable |
+
+### Memory update rules
+
+Memory updates are append-only or upsert-style projections from investigation output.
+
+- Facts are appended with deduplication based on normalized text plus evidence IDs.
+- A fact written to `facts.md` is indexed and expanded into `memory/details/fact-NNN.md`.
+- Timeline anchors are appended and rotated into `archive/timeline_archive.md` when the active list grows too long.
+- Tasks are appended with a constrained kind: `internal_db_check`, `external_lookup`, or `human_decision`.
+- Refuted hypotheses and resolved gaps are archived rather than deleted.
+- Entity cards and hypothesis cards are upserted by stable identifiers.
+- Keypoint cards are synchronized from the current findings snapshot and stale cards are removed.
+
+### Memory compaction policy
+
+Compaction exists to keep context small without destroying durable state.
+
+- `overview.md` may be compacted with the LLM when it exceeds `LLM_MEMORY_MAX_BYTES`.
+- Entity cards and hypothesis cards may also be compacted with the LLM.
+- `tasks.md` and `evidence/suspicious.md` are compacted by trimming older rows.
+- `facts.md`, `timeline.md`, `archive/refuted.md`, and `archive/resolved_gaps.md` are intentionally exempt from generic local compaction.
+
+This means memory files do not share the same retention policy. Do not generalize one file's behavior to all memory files.
+
+### Memory should stay reconstructable
+
+Structured memory should remain a projection from database state plus prior evidence-backed investigation output.
+
+- Do not store exclusive business logic only in memory markdown.
+- Do not introduce state that can only be recovered from the latest prompt context.
+- Prefer stable identifiers in filenames and index entries.
+- Prefer additive history over in-place narrative rewriting, except for explicitly summarized files such as `overview.md`.
+
+## Database responsibilities
+
+### Split between `case.duckdb` and `trace.duckdb`
+
+The database layer is intentionally split.
+
+- `case.duckdb` stores evidence and durable investigation products.
+- `trace.duckdb` stores execution trace and operational history.
+
+At runtime, `trace.duckdb` is attached as the `trace` schema, and trace tables are also exposed through temporary views for reads. This allows query code to read a unified logical schema while preserving physical separation between durable case state and trace state.
+
+### What belongs in Case State
+
+The following categories belong in `case.duckdb`:
+
+- Normalized evidence tables
+- Findings produced from rules or evidence review
+- Hypothesis records and their current durable status
+- Report section bodies, support confidence, and gap state
+- Claims that link report text back to evidence and findings
+- Ingest bookkeeping such as file hashes
+
+Case State should answer: "What does the case currently contain?"
+
+### What belongs in Trace State
+
+The following categories belong in `trace.duckdb`:
+
+- Investigation session lifecycle
+- Per-step planner and checker I/O
+- Hypothesis reasoning trail entries
+- Progress events emitted for UI or status tracking
+- AI review history
+
+Trace State should answer: "How did the system reach the current state?"
+
+### Do not collapse the split
+
+Do not use trace tables as a substitute for durable case objects. Do not put evidence-backed case conclusions only in trace history.
+
+If a datum is needed after compaction, replay, or UI refresh as part of the current case state, it belongs in `case.duckdb`.
+
+## Main DuckDB tables
+
+### Core tables in `case.duckdb`
+
+| Table | Responsibility |
+|---|---|
+| `evtx_events` | Normalized EVTX records |
+| `mft_entries` | Normalized MFT entries |
+| `mft_timeline` | Timeline rows derived from MFT timestamps |
+| `findings` | Evidence-backed findings and their reviewable metadata |
+| `hypotheses` | Durable hypothesis registry and current status |
+| `report_sections` | Report body, confidence, status, gaps, and fill history |
+| `claims` | Links between report assertions and supporting findings, hypotheses, and evidence |
+| `ingested_files` | File identity and deduplication bookkeeping |
+
+### Trace tables in `trace.duckdb`
+
+| Table | Responsibility |
+|---|---|
+| `trace.ai_reviews` | AI review outputs tied to findings |
+| `trace.investigation_sessions` | Investigation run boundaries and final status |
+| `trace.investigation_steps` | Per-step planner/checker inputs and outputs |
+| `trace.hypothesis_reasoning` | Reasoning trail per hypothesis |
+| `trace.progress_events` | UI-facing progress stream history |
+
+## Core model boundaries
+
+| Term | Meaning |
+|---|---|
+| Evidence | Normalized raw records such as EVTX or MFT rows |
+| Finding | An observed condition or signal derived from evidence |
+| Hypothesis | An interpretation to validate or refute |
+| Claim | A report statement presented to the human reader |
+| Gap | Missing information that blocks confidence |
+
+These boundaries matter.
+
+- Evidence is raw or normalized source material.
+- Findings are still evidence-near.
+- Hypotheses are interpretive.
+- Claims are report-facing.
+- Gaps represent what is still unknown.
+
+Mixing these layers makes it harder to audit reasoning and harder to resume a case safely.
+
+## Finding lifecycle
+
+`suppressed` is not deletion.
+
+- A suppressed finding remains part of the durable case record.
+- Suppression changes presentation and workflow semantics, not evidence existence.
+- Evidence links must remain available even when a finding is suppressed.
+
+## Report section state
+
+`report_sections.status` currently uses four states:
+
+- `draft`: the section still has evidence gaps or weak support
+- `stable`: the section currently has no known gap from the AI workflow
+- `ai_exhausted`: the AI workflow stopped producing meaningful additional leads
+- `human_reviewed`: a human explicitly reviewed the section
+
+These are workflow states, not evidence states.
+
+## SQL safety model
+
+LLM-proposed SQL is treated as read-only evidence access.
+
+- Only `SELECT` and `WITH` statements are accepted.
+- Multiple statements are rejected.
+- Destructive SQL is rejected.
+- Queries are restricted to an allowlisted set of tables.
+
+This boundary is fundamental to the current architecture. The model can propose evidence access, but it does not mutate the database through generated SQL.
+
+## Built-in rule coverage
+
+The bundled Windows rulepacks currently focus on:
+
+- authentication and logon activity
+- Kerberos and NTLM
+- RDP
+- PowerShell and LOLBas execution
+- service- and task-based persistence
+- account operations
+- log tampering and audit changes
+- Defender-related activity
+- reboot and shutdown artifacts
+
+Rules live under `src/forensia/rulepacks/windows/` and currently combine SQL, finding templates, and ATT&CK metadata.
+
+## UI considerations
+
+- `forensia serve` serves the built UI through FastAPI.
+- `web_ui/dist/` is a build artifact used for serving.
+- When DuckDB is unavailable due to a lock, the UI falls back to `reports/api/*.json` snapshots.
+
+## README boundary
+
+Keep public-facing material in `README.md`.
+
+README should cover:
+
+- value proposition
+- user-facing workflow
+- high-level architecture
+- installation and usage
+
+`CONTRIBUTING.md` should cover:
+
+- architectural invariants
+- state ownership
+- schema responsibilities
+- investigation and memory semantics
+- contributor-facing implementation constraints
+
+## Investigation flags
+
+| Flag | Default | When it matters |
+|---|---|---|
+| `--max-iter` | `20` | Increase only when longer investigation loops are needed |
+| `--max-queries-per-hypothesis` | `5` | Tune how deeply one hypothesis can be explored |
+| `--no-progress-limit` | `3` | Relax when you want to tolerate more low-signal cycles |
+| `--report-every-n-cycles` | `1` | Increase when report refresh cost is too high |
+| `--report-parallelism` | `1` | Increase only if the local LLM backend can handle concurrency |
+| `--profile` | `windows-basic` | Switch to a different rule profile |
+| `--report-only` | `false` | Refill report sections without running the hypothesis loop |
+
+## Rerun semantics
+
+- `forensia run` includes investigation by default.
+- To run the investigation stage again on an existing case, use `--reinvestigate`.
+- To reinitialize an output directory, use `--init`.
+- `report` is render-only.
+- `report-write` performs section refill before rendering.
