@@ -6,10 +6,11 @@ import os
 from pathlib import Path
 from typing import Annotated
 
+import duckdb
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from forensia.api.cache import load_snapshot, write_api_snapshots
@@ -87,6 +88,13 @@ def create_app(case: Case) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.exception_handler(duckdb.IOException)
+    async def duckdb_lock_handler(request: Request, exc: duckdb.IOException) -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "database locked by investigation process — retry after run completes"},
+        )
     spa_dir = _resolve_spa_dir()
 
     def cached(name: str):

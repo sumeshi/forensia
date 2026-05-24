@@ -13,6 +13,7 @@ from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import ENTITY_TYPE_ALIASES, Hypothesis, PlannedQuery
 from forensia.db.database import CaseDB
+from forensia.db.query import normalize_value
 
 VALID_VERDICTS = {"confirmed", "refuted", "inconclusive", "newlead"}
 SMALL_CONFIDENCE_DELTA = 0.02
@@ -316,7 +317,7 @@ def _insert_investigation_finding(
     prefix = "調査:" if language.startswith("ja") else "Investigation:"
     title = f"{prefix} {planned_query.purpose}"
     summary = report_text
-    evidence = result_summary.get("sample_rows", [])
+    evidence = [normalize_value(row) for row in result_summary.get("sample_rows", [])]
     missing_checks = []
     now = datetime.now(UTC).replace(tzinfo=None)
     db.execute(
