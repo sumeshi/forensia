@@ -1,14 +1,14 @@
 ---
 section: 2_timeline
-title: "攻撃タイムライン"
+title: "Attack Timeline"
 prompt: |
-  以下の調査データを使って「攻撃タイムライン」セクションを記述してください。
-  必ず含めること:
-    1. 時系列の攻撃ステップ一覧（日時・ホスト・イベント・evidence_idを含む）
-    2. 各ステップに ATT&CK フェーズを割り当てる（Initial Access / Execution / Persistence / Privilege Escalation / Defense Evasion / Credential Access / Lateral Movement / Collection / Exfiltration / Impact）
-    3. ログが欠損している時間帯があれば明記する
-  evidence_id が確認できたものだけ記述してください。推測は禁止。
-  不明な箇所は「【調査不足: 〇〇の証拠なし】」と明示してください。
+  Write the "Attack Timeline" section using the investigation data below.
+  You must include:
+    1. A chronological list of attack steps including timestamp, host, event, and evidence_id
+    2. An ATT&CK phase for each step (Initial Access / Execution / Persistence / Privilege Escalation / Defense Evasion / Credential Access / Lateral Movement / Collection / Exfiltration / Impact)
+    3. Any confirmed log gap or period of missing visibility
+  Only describe steps that have confirmed evidence_id values. Do not speculate.
+  If a required statement cannot be supported, explicitly write "[INSUFFICIENT EVIDENCE: reason]".
 evidence_queries:
   - "SELECT timestamp, computer, event_id, target_user, src_ip, process_name, command_line, evidence_id FROM evtx_events WHERE severity IN ('critical','high') ORDER BY timestamp LIMIT 50"
   - "SELECT timestamp, timestamp_type, file_path, description FROM mft_timeline ORDER BY timestamp LIMIT 30"
@@ -16,31 +16,31 @@ evidence_queries:
   - "SELECT timestamp, computer, target_user, src_ip FROM evtx_events WHERE event_id IN (1102, 104) ORDER BY timestamp"
 ---
 
-# 攻撃タイムライン
+# Attack Timeline
 
-> ログ欠損期間: <!-- 確認されたログクリア日時や欠損がある場合に記入。なければ「確認されず」 -->
+> Log gap window: <!-- If confirmed log clearing or missing periods exist, describe them here. Otherwise write "Not observed." -->
 
-## タイムライン
+## Timeline
 
-| 日時 (UTC) | ホスト | フェーズ | イベント | evidence_id |
+| Timestamp (UTC) | Host | Phase | Event | evidence_id |
 |---|---|---|---|---|
-| <!-- 記入 --> | <!-- 記入 --> | <!-- 記入 --> | <!-- 記入 --> | <!-- 記入 --> |
+| <!-- fill --> | <!-- fill --> | <!-- fill --> | <!-- fill --> | <!-- fill --> |
 
 ---
 
-## フェーズ別サマリー
+## Phase Summary
 
-### Initial Access（初期侵入）
-<!-- 記入。証拠がなければ「【調査不足】」 -->
+### Initial Access
+<!-- Fill in. If unsupported, write "[INSUFFICIENT EVIDENCE: reason]" -->
 
-### Lateral Movement（横展開）
-<!-- 記入。証拠がなければ「【調査不足】」 -->
+### Lateral Movement
+<!-- Fill in. If unsupported, write "[INSUFFICIENT EVIDENCE: reason]" -->
 
-### Persistence（永続化）
-<!-- 記入。証拠がなければ「【調査不足】」 -->
+### Persistence
+<!-- Fill in. If unsupported, write "[INSUFFICIENT EVIDENCE: reason]" -->
 
-### Defense Evasion（防御回避）
-<!-- 記入。証拠がなければ「【調査不足】」 -->
+### Defense Evasion
+<!-- Fill in. If unsupported, write "[INSUFFICIENT EVIDENCE: reason]" -->
 
-### Impact（影響）
-<!-- 記入。証拠がなければ「【調査不足】」 -->
+### Impact
+<!-- Fill in. If unsupported, write "[INSUFFICIENT EVIDENCE: reason]" -->

@@ -7,6 +7,8 @@ import shutil
 
 import yaml
 
+from forensia.report_templates import export_packaged_report_templates
+
 ALLOWLIST_STUB = """# Rule-scoped suppression rules.
 # Each entry matches one rule_id and one or more row fields from finding.evidence[0].
 #
@@ -71,6 +73,10 @@ class Case:
     def trace_database_path(self) -> Path:
         return self.db_dir / "trace.duckdb"
 
+    def ensure_report_templates(self, overwrite: bool = False) -> list[Path]:
+        self.report_template_dir.mkdir(parents=True, exist_ok=True)
+        return export_packaged_report_templates(self.report_template_dir, overwrite=overwrite)
+
     def clear_runtime_outputs(
         self,
         preserve_memory: bool = True,
@@ -111,17 +117,7 @@ class Case:
             case.report_template_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
-
-        package_report_template_dir = Path(__file__).resolve().parent.parent / "report_template"
-        if package_report_template_dir.exists():
-            for source in package_report_template_dir.iterdir():
-                destination = case.report_template_dir / source.name
-                if destination.exists():
-                    continue
-                if source.is_dir():
-                    shutil.copytree(source, destination)
-                else:
-                    shutil.copy2(source, destination)
+        case.ensure_report_templates()
 
         if not case.manifest_path.exists():
             manifest = {

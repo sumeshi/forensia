@@ -6,7 +6,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 import yaml
+from typer.testing import CliRunner
 
+from forensia import cli as cli_module
 from forensia.ai.checker import _insert_investigation_finding
 from forensia.ai.investigator import (
     _append_hypothesis_reasoning,
@@ -27,6 +29,7 @@ from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.db.database import CaseDB
 from forensia.report.writer import _build_report_brief, _extract_claim_texts, _section_confidence, collect_gaps, fill_section
+from forensia.report_templates import export_packaged_report_templates
 
 
 class PersistenceTests(unittest.TestCase):
@@ -550,6 +553,25 @@ class PersistenceTests(unittest.TestCase):
             Case.init(tmpdir)
             preserved = case.allowlist_path.read_text(encoding="utf-8")
             self.assertEqual("rules:\n  - rule_id: custom\n", preserved)
+
+    def test_case_init_seeds_report_templates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            self.assertTrue((case.report_template_dir / "1_overview.md").exists())
+            self.assertTrue((case.report_template_dir / "8_recommendations.md").exists())
+
+    def test_export_packaged_report_templates_writes_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            written = export_packaged_report_templates(tmpdir)
+            self.assertGreaterEqual(len(written), 8)
+            self.assertTrue((Path(tmpdir) / "1_overview.md").exists())
+
+    def test_templates_export_command_writes_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner = CliRunner()
+            result = runner.invoke(cli_module.app, ["templates-export", tmpdir])
+            self.assertEqual(0, result.exit_code, result.output)
+            self.assertTrue((Path(tmpdir) / "1_overview.md").exists())
 
     def test_investigate_writes_ai_logs_per_llm_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

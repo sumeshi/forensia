@@ -19,6 +19,7 @@ from forensia.ingest import ingest_all
 from forensia.normalize import normalize_all
 from forensia.report.html import render_html_report
 from forensia.report.writer import render_written_report
+from forensia.report_templates import export_packaged_report_templates, has_report_templates
 from forensia.rules.engine import clear_rule_findings, generate_findings, run_rule, save_findings
 from forensia.rules.loader import load_rules_from_dir
 from forensia.web import create_app
@@ -97,9 +98,10 @@ def _prune_orphan_reviews(db: CaseDB) -> None:
 def _resolve_template_dir(case: Case, template_dir: str | None) -> Path:
     if template_dir:
         return Path(template_dir).resolve()
-    if case.report_template_dir.exists():
+    case.ensure_report_templates()
+    if case.report_template_dir.exists() and has_report_templates(case.report_template_dir):
         return case.report_template_dir
-    return (Path(__file__).parent / "report_template").resolve()
+    raise typer.BadParameter("no report templates are available")
 
 
 def _resolve_llm_or_die(base_url: str | None, model: str | None) -> tuple[str, str]:
@@ -150,6 +152,19 @@ def init(case_dir: str) -> None:
     case = Case.init(case_dir)
     clear_api_snapshots(case)
     print(f"Initialized case at {case.path}")
+
+
+@app.command("templates-export")
+def templates_export(
+    output_dir: str,
+    force: bool = typer.Option(False, "--force", help="Overwrite existing packaged template files in the target directory"),
+) -> None:
+    written = export_packaged_report_templates(output_dir, overwrite=force)
+    target = Path(output_dir).resolve()
+    if written:
+        print(f"Exported {len(written)} template files to {target}")
+    else:
+        print(f"No template files were written to {target} (files already exist)")
 
 
 

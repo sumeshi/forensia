@@ -1,41 +1,40 @@
 ---
 section: 7_gaps
-title: "調査上の限界・不足事項"
+title: "Investigation Limitations and Gaps"
 prompt: |
-  前のセクション（1〜6）で「【調査不足】」と記されたすべての箇所をリストアップし、
-  「調査上の限界・不足事項」セクションを記述してください。
-  各不足事項について以下を含めること:
-    1. 何が不明か（具体的に）
-    2. なぜ不明か（ログが存在しない / 期間外 / ログが消去された / 証拠が断片的 等）
-    3. 追加調査で解明できるか、またその方法（追加のEvtxファイル取得・メモリフォレンジック等）
-    4. この不足が調査結論に与える影響度（high / medium / low）
-  さらに、現在の証拠から見て「追加で調査すべき仮説」を提案してください。
-  これが次のPDCAサイクルの入力になります。
+  List every place marked with "[INSUFFICIENT EVIDENCE: ...]" in sections 1 through 6 and write the "Investigation Limitations and Gaps" section.
+  For each gap, include:
+    1. What remains unknown, stated concretely
+    2. Why it remains unknown, such as missing logs, out-of-scope time range, log clearing, or fragmented evidence
+    3. Whether it can be resolved with additional investigation and how
+    4. The impact of that gap on the investigation conclusion as high / medium / low
+  Also propose additional hypotheses that should be investigated next, based on the current evidence.
+  These hypotheses feed the next PDCA cycle.
 evidence_queries:
   - "SELECT COUNT(*) AS total_events, MIN(timestamp) AS first, MAX(timestamp) AS last FROM evtx_events"
   - "SELECT channel, COUNT(*) AS count FROM evtx_events GROUP BY channel ORDER BY count DESC"
   - "SELECT event_id, COUNT(*) AS count FROM evtx_events WHERE event_id IN (1102,104,4719) GROUP BY event_id"
 ---
 
-# 調査上の限界・不足事項
+# Investigation Limitations and Gaps
 
-## ログの欠損・信頼性
+## Log Loss and Reliability
 
-<!-- ログクリア(1102/104)や欠損期間があれば記述。「確認されず」も可 -->
+<!-- Describe confirmed log clearing (1102 / 104) or missing periods here. If not observed, that may be stated explicitly. -->
 
-## 未解明事項
+## Unresolved Questions
 
-| # | 不明な点 | 理由 | 影響度 | 追加調査の方法 |
+| # | Unknown | Reason | Impact | Additional Investigation Method |
 |---|---|---|---|---|
-| 1 | <!-- 記入 --> | <!-- 記入 --> | high/medium/low | <!-- 記入 --> |
-| 2 | <!-- 記入 --> | <!-- 記入 --> | high/medium/low | <!-- 記入 --> |
+| 1 | <!-- fill --> | <!-- fill --> | high / medium / low | <!-- fill --> |
+| 2 | <!-- fill --> | <!-- fill --> | high / medium / low | <!-- fill --> |
 
 ---
 
-## 次のPDCAサイクルで調査すべき仮説
+## Hypotheses for the Next PDCA Cycle
 
-> ここに記述された仮説は、`forensia investigate` の次回実行時に調査起点として使用されます。
+> Hypotheses written here may be used as starting points in the next `forensia investigate` run.
 
-1. <!-- 仮説1: 具体的に「〇〇ホストで〇〇が行われた可能性。確認SQL: SELECT ...」 -->
-2. <!-- 仮説2 -->
-3. <!-- 仮説3 -->
+1. <!-- Hypothesis 1: write it concretely, optionally including a confirming SQL direction -->
+2. <!-- Hypothesis 2 -->
+3. <!-- Hypothesis 3 -->

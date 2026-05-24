@@ -1,46 +1,46 @@
 ---
 section: 8_recommendations
-title: "推奨対策"
+title: "Recommended Actions"
 prompt: |
-  確認された証拠に基づいて「推奨対策」セクションを記述してください。
-  攻撃者の手法（TTPs）から直接導出できる対策のみ記述してください。
-  証拠がない攻撃手法への対策を推測で追加することは禁止です。
-  必ず含めること:
-    1. 緊急対応（今すぐ行うべき措置）
-    2. 短期対策（1〜2週間以内）
-    3. 中長期対策（セキュリティ強化）
-  各推奨事項には「根拠となった証拠・イベント」を添えてください。
+  Write the "Recommended Actions" section based only on confirmed evidence.
+  Recommend only actions that can be derived directly from the attacker TTPs or observed evidence.
+  Do not add speculative recommendations for attack methods that were not observed.
+  You must include:
+    1. Immediate response actions
+    2. Short-term actions for the next 1 to 2 weeks
+    3. Medium- to long-term security improvement actions
+  Each recommendation must include the supporting evidence or observed event that justifies it.
 evidence_queries:
   - "SELECT finding_id, title, severity, confidence, status, ai_summary FROM findings ORDER BY confidence DESC LIMIT 20"
   - "SELECT verdict, report_text FROM ai_reviews ORDER BY created_at DESC LIMIT 10"
 ---
 
-# 推奨対策
+# Recommended Actions
 
-## 緊急対応（即時）
+## Immediate Response
 
-<!-- 証拠に基づく緊急措置のみ記述 -->
+<!-- Describe only urgent actions that are directly supported by evidence -->
 
-| 優先度 | 対応内容 | 根拠 |
+| Priority | Action | Justification |
 |---|---|---|
-| 高 | <!-- 記入 --> | <!-- 記入 --> |
+| High | <!-- fill --> | <!-- fill --> |
 
 ---
 
-## 短期対策（1〜2週間）
+## Short-Term Actions (1 to 2 weeks)
 
-<!-- 攻撃手法への直接対策 -->
+<!-- Direct mitigation steps for observed attacker behavior -->
 
-| 対策 | 理由（確認された攻撃手法） |
+| Action | Reason (Observed TTP or Evidence) |
 |---|---|
-| <!-- 記入 --> | <!-- 記入 --> |
+| <!-- fill --> | <!-- fill --> |
 
 ---
 
-## 中長期対策
+## Medium- to Long-Term Actions
 
-<!-- セキュリティアーキテクチャ・ログ強化等 -->
+<!-- Longer-term hardening, logging, or architectural improvements -->
 
-| 対策 | 理由 |
+| Action | Reason |
 |---|---|
-| <!-- 記入 --> | <!-- 記入 --> |
+| <!-- fill --> | <!-- fill --> |

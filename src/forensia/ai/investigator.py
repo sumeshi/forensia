@@ -375,9 +375,9 @@ def investigate(
     interrupted = False
     no_progress_count = 0
     memory = MemoryManager(case)
-    template_root = template_root or (
-        case.report_template_dir if case.report_template_dir.exists() else (Path(__file__).parent.parent / "report_template")
-    )
+    if template_root is None:
+        case.ensure_report_templates()
+        template_root = case.report_template_dir
 
     _seed_findings(case, db, profile)
     _initialize_overview(memory, case)

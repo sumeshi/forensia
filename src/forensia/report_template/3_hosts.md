@@ -1,15 +1,15 @@
 ---
 section: 3_hosts
-title: "侵害ホスト詳細"
+title: "Compromised Host Details"
 prompt: |
-  以下の調査データを使って「侵害ホスト詳細」セクションを記述してください。
-  ホストごとにサブセクションを作成し、以下を含めること:
-    1. 侵害の確度（confirmed / suspected / clean）とその根拠（evidence_id）
-    2. そのホストで確認されたイベントの概要（ログオン・プロセス実行・永続化等）
-    3. 攻撃者がそのホストで行った操作の推定（証拠に基づくもののみ）
-    4. 送信元IP（攻撃者IPまたは前段ホスト）
-  証拠のないホストは「侵害の証拠なし」と明記してください。
-  推測は禁止。証拠に基づいた記述のみ。
+  Write the "Compromised Host Details" section using the investigation data below.
+  Create a subsection for each host and include:
+    1. Compromise confidence as confirmed / suspected / clean, with supporting evidence_id values
+    2. A summary of notable observed activity on that host such as logons, process execution, or persistence
+    3. The attacker actions inferred for that host, but only when supported by evidence
+    4. The source IP associated with the attacker or previous pivot host
+  If a host has no evidence of compromise, explicitly say "No evidence of compromise observed."
+  Do not speculate. Write only evidence-based statements.
 evidence_queries:
   - "SELECT computer, COUNT(*) AS events, MIN(timestamp) AS first_seen, MAX(timestamp) AS last_seen FROM evtx_events WHERE event_id IN (4624,4625,4648,4688,4697,4698,5140,1102) GROUP BY computer ORDER BY events DESC LIMIT 20"
   - "SELECT computer, src_ip, target_user, logon_type, timestamp, evidence_id FROM evtx_events WHERE event_id = 4624 AND logon_type IN ('3','10','9') ORDER BY timestamp LIMIT 40"
@@ -17,32 +17,32 @@ evidence_queries:
   - "SELECT computer, service_name, target_user, timestamp, evidence_id FROM evtx_events WHERE event_id IN (4697,7045,4698) ORDER BY timestamp"
 ---
 
-# 侵害ホスト詳細
+# Compromised Host Details
 
-<!-- ホストごとにサブセクションを追加。侵害が確認されたホストを先に記述 -->
+<!-- Add one subsection per host. Describe confirmed compromised hosts first. -->
 
 ---
 
-## ホスト: <!-- ホスト名 -->
+## Host: <!-- host name -->
 
-**侵害確度**: <!-- confirmed / suspected / clean -->
-**最初の侵害確認**: <!-- 日時 -->
-**送信元IP（攻撃起点）**: <!-- 記入 -->
+**Compromise Confidence**: <!-- confirmed / suspected / clean -->
+**First Confirmed Evidence**: <!-- timestamp -->
+**Source IP / Pivot Origin**: <!-- fill -->
 
-### 確認されたアクティビティ
+### Observed Activity
 
-| 日時 | イベント | 詳細 | evidence_id |
+| Timestamp | Event | Details | evidence_id |
 |---|---|---|---|
-| <!-- 記入 --> | <!-- 記入 --> | <!-- 記入 --> | <!-- 記入 --> |
+| <!-- fill --> | <!-- fill --> | <!-- fill --> | <!-- fill --> |
 
-### 攻撃者の推定行動
+### Inferred Attacker Actions
 
-<!-- 証拠に基づいてそのホストで攻撃者が何をしたかを記述 -->
+<!-- Describe what the attacker did on this host, based only on evidence -->
 
 ---
 
-## ホスト: <!-- ホスト名（2台目） -->
+## Host: <!-- host name (second host if applicable) -->
 
-**侵害確度**: <!-- confirmed / suspected / clean -->
+**Compromise Confidence**: <!-- confirmed / suspected / clean -->
 
-<!-- 同様に記入 -->
+<!-- Repeat the same structure as needed -->

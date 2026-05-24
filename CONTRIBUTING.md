@@ -354,6 +354,77 @@ Mixing these layers makes it harder to audit reasoning and harder to resume a ca
 
 These are workflow states, not evidence states.
 
+## Report templates
+
+Report templates are contributor-defined section contracts, not durable report state.
+
+### Template ownership boundary
+
+- Template files live under `src/forensia/report_template/`.
+- Each initialized case also gets a case-local `report_template/` directory copied from the packaged defaults.
+- CLI report generation prefers the case-local template directory when present.
+- Contributors may also point `report-write` at an explicit `--template-dir`.
+
+This means template files are inputs to report generation, while the generated section bodies live in `report_sections` in DuckDB.
+
+### Template contract
+
+Each template is a Markdown document with optional YAML frontmatter.
+
+Current stable frontmatter fields are:
+
+- `section`: stable section key used as the report section identity
+- `title`: human-facing section title
+- `prompt`: section-specific writing instructions for the LLM
+- `evidence_queries`: read-only SQL queries whose results are summarized and supplied to the LLM
+
+The template body is the structural scaffold the LLM completes. It is not stored as the durable section body after generation.
+
+### Section identity and ordering
+
+- Templates are discovered by filename pattern `[0-9]*_*.md`.
+- Template refresh order is the lexical filename order.
+- The durable `section_key` is taken from frontmatter `section` when present, otherwise the file stem is used.
+- Report rendering orders sections by `section_key`.
+
+Contributors should therefore treat section keys as stable identifiers. Renaming a file is less important than changing a section key.
+
+### What belongs in templates
+
+Templates should define:
+
+- report structure
+- section-local writing requirements
+- evidence access requirements through `evidence_queries`
+- explicit placeholders for unsupported statements
+
+Templates should be authored in English.
+
+- Frontmatter such as `title` and `prompt` should be written in English.
+- The scaffold Markdown headings, table headers, comments, and placeholders should also be written in English.
+- Output language for generated reports remains a runtime concern controlled by LLM settings; template authoring language is a contributor-facing convention.
+
+Templates should not define:
+
+- durable workflow state
+- mutable report status
+- provenance storage rules
+- current section body as authoritative state
+
+Those concerns belong in DuckDB, especially `report_sections` and `claims`.
+
+### Template interaction with DB state
+
+The template system writes durable report state back into the database.
+
+- Completed section bodies are UPSERTed into `report_sections`.
+- Confidence is derived from gap markers found in the generated body.
+- Claims are extracted from the generated body and written into `claims`.
+- Claim provenance is computed from the evidence query summaries, not from free-text citations alone.
+- Gaps are parsed from explicit insufficient-evidence markers and fed back into later investigation cycles.
+
+This is why section templates are not merely presentation assets. They define the contract between evidence-backed reporting and the investigation loop.
+
 ## SQL safety model
 
 LLM-proposed SQL is treated as read-only evidence access.
@@ -380,6 +451,77 @@ The bundled Windows rulepacks currently focus on:
 - reboot and shutdown artifacts
 
 Rules live under `src/forensia/rulepacks/windows/` and currently combine SQL, finding templates, and ATT&CK metadata.
+
+## Profiles and rulepacks
+
+Profiles define rule selection policy. Rulepacks define the actual detection logic.
+
+### Rulepack contract
+
+Rulepack files currently live under `src/forensia/rulepacks/windows/` and are YAML rule definitions.
+
+Each rule has a stable contributor-facing shape:
+
+- `id`: stable rule identifier
+- `title`: human-facing rule title
+- `severity`: default severity for generated findings
+- `confidence`: default confidence for generated findings
+- `query`: read-only SQL executed against normalized evidence
+- `finding.title`: title template rendered from query row fields
+- `finding.summary`: summary template rendered from query row fields
+- `tags`: classification tags
+- `attack`: ATT&CK mappings
+
+Each result row from a rule query becomes one finding, with the originating row stored as structured evidence on that finding.
+
+### Profile contract
+
+Profiles currently live under `src/forensia/profiles/` and select subsets of the available rules.
+
+Current stable profile fields are:
+
+- `name`: profile name
+- `rulepacks`: directories or paths under the rulepack root to include
+- `rule_ids`: optional allowlist of specific rule IDs within the selected rulepacks
+
+Conceptually:
+
+- rulepacks choose the broad detection domain
+- `rule_ids` narrows within that domain
+
+Profiles are selection metadata. They should not duplicate rule logic.
+
+### What should remain stable
+
+- Rule IDs should be treated as persistent external identifiers.
+- A profile should continue to mean "which rules are active", not "how those rules execute".
+- Rule queries should remain read-only and evidence-oriented.
+- Finding templates should remain row-driven so each finding preserves evidence traceability.
+- Packaged rule metadata and finding text templates should be authored in English.
+
+If contributors need new behavior that changes execution semantics rather than selection semantics, it likely belongs in the rule engine, not in the profile format.
+
+### Allowlist and suppression model
+
+`allowlist.yaml` is conceptually adjacent to profiles and rules, but it does not select rules.
+
+- Profiles decide which rules run.
+- Rules decide which candidate findings are generated.
+- The allowlist decides which generated findings should be marked `suppressed` based on rule-scoped field matches.
+
+The current allowlist model matches:
+
+- one `rule_id`
+- one or more field predicates under `when`
+- values taken from the first structured evidence row on the generated finding
+
+This is a post-generation presentation and triage control. It is not a pre-filter on evidence ingestion or rule execution.
+
+### File layout conventions
+
+- Keep packaged defaults in `src/forensia/report_template/`, `src/forensia/profiles/`, and `src/forensia/rulepacks/`.
+- Treat case-local `report_template/` as an overrideable input copied at case initialization.
+- Do not rely on case-local copies for profiles or rulepacks today; those are resolved from the package tree.
 
 ## UI considerations
 

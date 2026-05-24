@@ -1,15 +1,15 @@
 ---
 section: 5_persistence
-title: "永続化・実行"
+title: "Persistence and Execution"
 prompt: |
-  以下の調査データを使って「永続化・実行」セクションを記述してください。
-  必ず含めること:
-    1. 確認されたサービスインストール（4697/7045）の詳細（サービス名・実行ファイルパス・作成ユーザ）
-    2. スケジュールタスクの作成・削除（4698/4699）の詳細
-    3. PowerShellおよびLOLBas系ツールの実行（4688/4104）の詳細
-    4. Defenderの無効化（5001）やAV関連サービスの停止（7040）が確認された場合
-    5. 各項目に evidence_id を必ず含める
-  証拠がない項目は「確認されず」と明記してください。
+  Write the "Persistence and Execution" section using the investigation data below.
+  You must include:
+    1. Confirmed service installation details for 4697 and 7045, including service name, executable path, and creating user
+    2. Confirmed scheduled task creation or deletion details for 4698 and 4699
+    3. Confirmed PowerShell and LOLBas execution details from 4688 and 4104
+    4. Defender disablement (5001) or AV-related service control events (7040) when observed
+    5. evidence_id values for every listed item
+  If an item is not supported by evidence, explicitly say "Not observed."
 evidence_queries:
   - "SELECT timestamp, computer, service_name, subject_user, message, evidence_id FROM evtx_events WHERE event_id IN (4697,7045) ORDER BY timestamp"
   - "SELECT timestamp, computer, subject_user, message, evidence_id FROM evtx_events WHERE event_id IN (4698,4699) ORDER BY timestamp"
@@ -17,36 +17,36 @@ evidence_queries:
   - "SELECT timestamp, computer, evidence_id, message FROM evtx_events WHERE event_id IN (5001,7040,1116) ORDER BY timestamp"
 ---
 
-# 永続化・実行
+# Persistence and Execution
 
-## サービスインストール (4697 / 7045)
+## Service Installation (4697 / 7045)
 
-| 日時 | ホスト | サービス名 | 実行パス | 作成ユーザ | evidence_id |
+| Timestamp | Host | Service Name | Execution Path | Creating User | evidence_id |
 |---|---|---|---|---|---|
-| <!-- 記入 --> | <!-- 記入 --> | <!-- 記入 --> | <!-- 記入 --> | <!-- 記入 --> | <!-- 記入 --> |
+| <!-- fill --> | <!-- fill --> | <!-- fill --> | <!-- fill --> | <!-- fill --> | <!-- fill --> |
 
-> 確認されない場合:「確認されず」
+> If unsupported, write: "Not observed."
 
 ---
 
-## スケジュールタスク (4698 / 4699)
+## Scheduled Tasks (4698 / 4699)
 
-| 日時 | ホスト | 操作 | 作成ユーザ | evidence_id |
+| Timestamp | Host | Action | Creating User | evidence_id |
 |---|---|---|---|---|
-| <!-- 記入 --> | <!-- 記入 --> | 作成/削除 | <!-- 記入 --> | <!-- 記入 --> |
+| <!-- fill --> | <!-- fill --> | Created / Deleted | <!-- fill --> | <!-- fill --> |
 
-> 確認されない場合:「確認されず」
+> If unsupported, write: "Not observed."
 
 ---
 
-## PowerShell / LOLBas 実行 (4688 / 4104)
+## PowerShell / LOLBas Execution (4688 / 4104)
 
-| 日時 | ホスト | プロセス | コマンドライン | ユーザ | evidence_id |
+| Timestamp | Host | Process | Command Line | User | evidence_id |
 |---|---|---|---|---|---|
-| <!-- 記入 --> | <!-- 記入 --> | <!-- 記入 --> | <!-- 記入 --> | <!-- 記入 --> | <!-- 記入 --> |
+| <!-- fill --> | <!-- fill --> | <!-- fill --> | <!-- fill --> | <!-- fill --> | <!-- fill --> |
 
 ---
 
-## 防御機能の無効化
+## Defensive Control Disablement
 
-<!-- 5001(Defenderリアルタイム保護無効)・7040(サービス停止)・1116(マルウェア検知)の確認内容。なければ「確認されず」 -->
+<!-- Describe confirmed 5001, 7040, and 1116 activity here. If not observed, write "Not observed." -->

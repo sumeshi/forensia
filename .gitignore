@@ -2,6 +2,8 @@ __pycache__/
 *.py[cod]
 *.egg-info
 .python-version
+.venv
+.pytest_cache
 
 web_ui/node_modules/
 src/forensia/static

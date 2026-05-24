@@ -1,16 +1,16 @@
 ---
 section: 6_ioc
-title: "侵害指標 (IOC)"
+title: "Indicators of Compromise (IOC)"
 prompt: |
-  以下の調査データを使って「侵害指標 (IOC)」セクションを記述してください。
-  必ず含めること:
-    1. 攻撃者が使用したIPアドレス（evidence_idで確認されたもののみ）
-    2. 不審なプロセス名・実行ファイルパス
-    3. 不審なサービス名・スケジュールタスク名
-    4. 不審なアカウント名（攻撃者が作成したもの等）
-    5. 不審なファイルパス（MFTタイムラインから確認されたもの）
-  各IOCに必ず evidence_id または確認された日時・ホストを付記してください。
-  推測でIOCを追加することは禁止です。
+  Write the "Indicators of Compromise (IOC)" section using the investigation data below.
+  You must include:
+    1. IP addresses used by the attacker, but only when supported by evidence_id or directly observed context
+    2. Suspicious process names and executable paths
+    3. Suspicious service names and scheduled task names
+    4. Suspicious account names, such as attacker-created accounts
+    5. Suspicious file paths confirmed from the MFT timeline or MFT entries
+  Every IOC must include either evidence_id or an observed timestamp and host.
+  Do not add speculative IOCs.
 evidence_queries:
   - "SELECT DISTINCT src_ip, COUNT(*) AS count FROM evtx_events WHERE src_ip IS NOT NULL AND src_ip NOT IN ('','127.0.0.1','::1','-') GROUP BY src_ip ORDER BY count DESC LIMIT 30"
   - "SELECT DISTINCT process_name, command_line, computer, evidence_id FROM evtx_events WHERE event_id IN (4688,4104) AND process_name IS NOT NULL ORDER BY timestamp LIMIT 30"
@@ -18,42 +18,42 @@ evidence_queries:
   - "SELECT file_path, si_created, si_modified, is_deleted, evidence_id FROM mft_entries WHERE (LOWER(file_path) LIKE '%temp%' OR LOWER(file_path) LIKE '%appdata%' OR LOWER(file_path) LIKE '%public%') AND si_created IS NOT NULL ORDER BY si_created DESC LIMIT 30"
 ---
 
-# 侵害指標 (IOC)
+# Indicators of Compromise (IOC)
 
-## IPアドレス
+## IP Addresses
 
-| IPアドレス | 用途 | 確認日時 | 確認ホスト | evidence_id |
+| IP Address | Purpose | Observed Time | Observed Host | evidence_id |
 |---|---|---|---|---|
-| <!-- 記入 --> | <!-- 記入 --> | <!-- 記入 --> | <!-- 記入 --> | <!-- 記入 --> |
+| <!-- fill --> | <!-- fill --> | <!-- fill --> | <!-- fill --> | <!-- fill --> |
 
 ---
 
-## プロセス / 実行ファイル
+## Processes / Executables
 
-| プロセス名 / パス | コマンドライン（要約） | 確認ホスト | evidence_id |
+| Process Name / Path | Command Line Summary | Observed Host | evidence_id |
 |---|---|---|---|
-| <!-- 記入 --> | <!-- 記入 --> | <!-- 記入 --> | <!-- 記入 --> |
+| <!-- fill --> | <!-- fill --> | <!-- fill --> | <!-- fill --> |
 
 ---
 
-## サービス / タスク名
+## Services / Task Names
 
-| 名称 | 種別 | 確認ホスト | evidence_id |
+| Name | Type | Observed Host | evidence_id |
 |---|---|---|---|
-| <!-- 記入 --> | service / task | <!-- 記入 --> | <!-- 記入 --> |
+| <!-- fill --> | service / task | <!-- fill --> | <!-- fill --> |
 
 ---
 
-## 不審なファイル (MFT)
+## Suspicious Files (MFT)
 
-| パス | 作成日時 | 削除済み | evidence_id |
+| Path | Created Time | Deleted | evidence_id |
 |---|---|---|---|
-| <!-- 記入 --> | <!-- 記入 --> | yes / no | <!-- 記入 --> |
+| <!-- fill --> | <!-- fill --> | yes / no | <!-- fill --> |
 
 ---
 
-## 不審アカウント
+## Suspicious Accounts
 
-| アカウント名 | 操作 | 作成者 | 日時 | evidence_id |
+| Account Name | Action | Actor | Timestamp | evidence_id |
 |---|---|---|---|---|
-| <!-- 記入 --> | 作成/削除/グループ追加 | <!-- 記入 --> | <!-- 記入 --> | <!-- 記入 --> |
+| <!-- fill --> | created / deleted / group-added | <!-- fill --> | <!-- fill --> | <!-- fill --> |
