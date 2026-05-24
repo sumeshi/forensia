@@ -183,6 +183,20 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertIn("finding_id, new_status (accepted or suppressed), confidence_delta", system)
         self.assertIn("evidence_id, reason, confidence (0.0-1.0)", system)
 
+    def test_build_check_messages_require_observed_evidence_for_durable_memory(self) -> None:
+        messages = build_check_messages(
+            planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
+            hypothesis=Hypothesis(id="H1", description="desc"),
+            finding_candidates=[],
+            result_summary={"row_count": 1},
+            overview_md="# overview",
+            memory_context_md="# facts.md\n- fact",
+        )
+        system = messages[0]["content"]
+        self.assertIn("always include observed evidence_ids", system)
+        self.assertIn("Do not emit speculative or unconfirmed items into memory_updates.facts", system)
+        self.assertIn("If you cannot cite observed evidence_ids", system)
+
     def test_report_section_messages_truncate_previous_sections(self) -> None:
         messages = build_report_section_messages(
             section_meta={"section": "1_overview"},
@@ -686,6 +700,111 @@ class PlannerRetryTests(unittest.TestCase):
                 "facts": [{"text": "fact", "evidence_ids": ["ev-1"]}],
                 "resolved_gaps": [{"text": "gap", "evidence_ids": ["ev-2"]}],
                 "overview": ["story"],
+            },
+            captured["result"].memory_updates,
+        )
+
+    def test_checker_drops_durable_memory_updates_when_evidence_becomes_empty(self) -> None:
+        captured = {}
+
+        def _capture(*args, **kwargs):
+            captured["result"] = kwargs["check_result"]
+            return (0, False)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            with CaseDB(case) as db, patch(
+                "forensia.ai.checker.request_llm_json",
+                return_value={
+                    "query_id": "Q1",
+                    "verdict": "inconclusive",
+                    "memory_updates": {
+                        "facts": [{"text": "fact", "evidence_ids": ["ev-x"]}],
+                        "timeline": [
+                            {
+                                "timestamp": "2026-05-24T01:02:03Z",
+                                "description": "event",
+                                "evidence_ids": ["ev-y"],
+                            }
+                        ],
+                        "resolved_gaps": [{"text": "gap", "evidence_ids": []}],
+                        "tasks": [{"text": "still investigate", "kind": "internal_db_check"}],
+                        "overview": ["keep storyline"],
+                    },
+                    "report_text": "text",
+                },
+            ), patch("forensia.ai.checker.apply_check_result", side_effect=_capture):
+                check_query_result(
+                    case=case,
+                    db=db,
+                    session_id="S-1",
+                    iteration=1,
+                    planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
+                    hypothesis=Hypothesis(id="H1", description="desc"),
+                    finding_candidates=[],
+                    result_summary={"row_count": 1, "sample_rows": [], "evidence_ids": ["ev-1"]},
+                    memory=memory,
+                    base_url=_llm_base_url(),
+                    model="test-model",
+                )
+
+        self.assertEqual(
+            {
+                "facts": [],
+                "timeline": [],
+                "resolved_gaps": [],
+                "tasks": [{"text": "still investigate", "kind": "internal_db_check"}],
+                "overview": ["keep storyline"],
+            },
+            captured["result"].memory_updates,
+        )
+
+    def test_checker_normalizes_entity_type_and_drops_invalid_entity_updates(self) -> None:
+        captured = {}
+
+        def _capture(*args, **kwargs):
+            captured["result"] = kwargs["check_result"]
+            return (0, False)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            with CaseDB(case) as db, patch(
+                "forensia.ai.checker.request_llm_json",
+                return_value={
+                    "query_id": "Q1",
+                    "verdict": "inconclusive",
+                    "memory_updates": {
+                        "entities": [
+                            {"entity_type": "src_ip", "name": "10.0.0.5", "notes": "keep as ip"},
+                            {"entity_type": "username", "name": "alice", "notes": "keep as user"},
+                            {"entity_type": "device_group", "name": "ops", "notes": "drop"},
+                        ]
+                    },
+                    "report_text": "text",
+                },
+            ), patch("forensia.ai.checker.apply_check_result", side_effect=_capture):
+                check_query_result(
+                    case=case,
+                    db=db,
+                    session_id="S-1",
+                    iteration=1,
+                    planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
+                    hypothesis=Hypothesis(id="H1", description="desc"),
+                    finding_candidates=[],
+                    result_summary={"row_count": 1, "sample_rows": [], "evidence_ids": ["ev-1"]},
+                    memory=memory,
+                    base_url=_llm_base_url(),
+                    model="test-model",
+                )
+
+        self.assertEqual(
+            {
+                "entities": [
+                    {"entity_type": "ip", "name": "10.0.0.5", "notes": "keep as ip"},
+                    {"entity_type": "user", "name": "alice", "notes": "keep as user"},
+                ]
             },
             captured["result"].memory_updates,
         )

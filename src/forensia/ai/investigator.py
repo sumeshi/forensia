@@ -44,6 +44,7 @@ from forensia.report.writer import (
 from forensia.rules.engine import generate_findings, run_rule, save_findings
 from forensia.rules.loader import load_rules_from_dir
 
+
 def _to_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
 
@@ -259,24 +260,6 @@ def _matching_findings(snapshot: list[dict[str, Any]], hypothesis: Hypothesis | 
     return matched[:5] if matched else snapshot[:5]
 
 
-def _history_entry(
-    iteration: int,
-    query_id: str,
-    hypothesis_id: str | None,
-    verdict: str,
-    report_text: str,
-    evidence_ids: list[str],
-) -> HistoryEntry:
-    return HistoryEntry(
-        iteration=iteration,
-        query_id=query_id,
-        hypothesis_id=hypothesis_id,
-        verdict=verdict,
-        summary=report_text,
-        evidence_ids=evidence_ids,
-    )
-
-
 def _final_summary(state: SessionState) -> str:
     if state.resolved_hypotheses:
         lines = []
@@ -462,22 +445,34 @@ def investigate(
 
     def llm_status(message: str) -> None:
         print(f"[yellow]{message}[/yellow]")
-        if progress_callback:
-            progress_callback(
-                {
-                    "stage": "investigate/llm",
-                    "status": "running",
-                    "iteration": state.iteration,
-                    "summary": message,
-                    "focus_hypothesis_id": state.focus_hypothesis_id,
-                    "hypotheses": [item.model_dump() for item in _all_hypotheses(state)],
-                    "report_sections": get_report_status(),
-                }
-            )
+
+        _emit("investigate/llm", message, iteration=state.iteration)
 
     def _handle_sigint(signum, frame) -> None:
         nonlocal interrupted
         interrupted = True
+
+    def _emit(
+        stage: str,
+        summary: str,
+        *,
+        report_kw: dict[str, Any] | None = None,
+        iteration: int | None = None,
+        **extras: Any,
+    ) -> None:
+        if not progress_callback:
+            return
+        payload = {
+            "stage": stage,
+            "status": "running",
+            "iteration": state.iteration if iteration is None else iteration,
+            "summary": summary,
+            "focus_hypothesis_id": state.focus_hypothesis_id,
+            "hypotheses": [item.model_dump() for item in _all_hypotheses(state)],
+            "report_sections": get_report_status(**(report_kw or {})),
+        }
+        payload.update(extras)
+        progress_callback(payload)
 
     signal.signal(signal.SIGINT, _handle_sigint)
     try:
@@ -485,18 +480,7 @@ def investigate(
             state.iteration = plan_cycle
             state.findings_snapshot = _finding_snapshot(db)
             _sync_keypoint_cards(memory, state.findings_snapshot)
-            if progress_callback:
-                progress_callback(
-                    {
-                        "stage": "investigate",
-                        "status": "running",
-                        "iteration": plan_cycle,
-                        "summary": f"Hypothesis cycle {plan_cycle}/{max_iter}",
-                        "focus_hypothesis_id": state.focus_hypothesis_id,
-                        "hypotheses": [item.model_dump() for item in _all_hypotheses(state)],
-                        "report_sections": get_report_status(),
-                    }
-                )
+            _emit("investigate", f"Hypothesis cycle {plan_cycle}/{max_iter}", iteration=plan_cycle)
             if interrupted:
                 status = "stopped"
                 break
@@ -545,21 +529,11 @@ def investigate(
                     input_json=plan_input,
                     output_json=broad_plan.raw_response,
                 )
-                if progress_callback:
-                    progress_callback(
-                        {
-                            "stage": "investigate/plan",
-                            "status": "running",
-                            "iteration": plan_cycle,
-                            "summary": (
-                                f"[plan] new_hypotheses={len(broad_plan.hypotheses)} "
-                                f"active={len(state.active_hypotheses)}"
-                            ),
-                            "focus_hypothesis_id": state.focus_hypothesis_id,
-                            "hypotheses": [item.model_dump() for item in _all_hypotheses(state)],
-                            "report_sections": get_report_status(),
-                        }
-                    )
+                _emit(
+                    "investigate/plan",
+                    f"[plan] new_hypotheses={len(broad_plan.hypotheses)} active={len(state.active_hypotheses)}",
+                    iteration=plan_cycle,
+                )
 
                 for hypothesis in list(state.active_hypotheses):
                     if interrupted:
@@ -568,18 +542,12 @@ def investigate(
                     state.focus_hypothesis_id = hypothesis.id
                     state.focus_depth = 0
                     focus_sections = _guess_related_sections(hypothesis.description)
-                    if progress_callback:
-                        progress_callback(
-                            {
-                                "stage": "investigate/hypothesis",
-                                "status": "running",
-                                "iteration": plan_cycle,
-                                "summary": f"[hypothesis] {hypothesis.id}: {hypothesis.description}",
-                                "focus_hypothesis_id": state.focus_hypothesis_id,
-                                "hypotheses": [item.model_dump() for item in _all_hypotheses(state)],
-                                "report_sections": get_report_status(focus_sections=focus_sections),
-                            }
-                        )
+                    _emit(
+                        "investigate/hypothesis",
+                        f"[hypothesis] {hypothesis.id}: {hypothesis.description}",
+                        iteration=plan_cycle,
+                        report_kw={"focus_sections": focus_sections},
+                    )
 
                     candidates = _matching_findings(state.findings_snapshot, hypothesis)
                     for query_index in range(1, max_queries_per_hypothesis + 1):
@@ -633,21 +601,15 @@ def investigate(
                             body=planned_query.purpose,
                             query_id=planned_query.query_id,
                         )
-                        if progress_callback:
-                            progress_callback(
-                                {
-                                    "stage": "investigate/do",
-                                    "status": "running",
-                                    "iteration": plan_cycle,
-                                    "current_query": planned_query.query_id,
-                                    "summary": f"[do] {planned_query.query_id}: {planned_query.purpose}",
-                                    "hypothesis_id": hypothesis.id,
-                                    "reasoning_entry_id": reasoning_entry_id,
-                                    "focus_hypothesis_id": state.focus_hypothesis_id,
-                                    "hypotheses": [item.model_dump() for item in _all_hypotheses(state)],
-                                    "report_sections": get_report_status(focus_sections=focus_sections),
-                                }
-                            )
+                        _emit(
+                            "investigate/do",
+                            f"[do] {planned_query.query_id}: {planned_query.purpose}",
+                            iteration=plan_cycle,
+                            report_kw={"focus_sections": focus_sections},
+                            current_query=planned_query.query_id,
+                            hypothesis_id=hypothesis.id,
+                            reasoning_entry_id=reasoning_entry_id,
+                        )
 
                         rows = fetch_records(db, planned_query.sql)
                         result_summary = summarize_query_result(rows)
@@ -710,32 +672,23 @@ def investigate(
                             verdict=check_result.verdict,
                             query_id=planned_query.query_id,
                         )
-                        if progress_callback:
-                            progress_callback(
-                                {
-                                    "stage": "investigate/check",
-                                    "status": "running",
-                                    "iteration": plan_cycle,
-                                    "current_query": planned_query.query_id,
-                                    "summary": (
-                                        f"[check] {hypothesis.id}: verdict={check_result.verdict} "
-                                        f"query={planned_query.query_id}"
-                                    ),
-                                    "hypothesis_id": hypothesis.id,
-                                    "reasoning_entry_id": reasoning_entry_id,
-                                    "focus_hypothesis_id": state.focus_hypothesis_id,
-                                    "hypotheses": [item.model_dump() for item in _all_hypotheses(state)],
-                                    "report_sections": get_report_status(focus_sections=focus_sections),
-                                }
-                            )
+                        _emit(
+                            "investigate/check",
+                            f"[check] {hypothesis.id}: verdict={check_result.verdict} query={planned_query.query_id}",
+                            iteration=plan_cycle,
+                            report_kw={"focus_sections": focus_sections},
+                            current_query=planned_query.query_id,
+                            hypothesis_id=hypothesis.id,
+                            reasoning_entry_id=reasoning_entry_id,
+                        )
 
                         state.history.append(
-                            _history_entry(
+                            HistoryEntry(
                                 iteration=plan_cycle,
                                 query_id=planned_query.query_id,
                                 hypothesis_id=hypothesis.id,
                                 verdict=check_result.verdict,
-                                report_text=check_result.report_text,
+                                summary=check_result.report_text,
                                 evidence_ids=result_summary.get("evidence_ids", []),
                             )
                         )
@@ -801,21 +754,12 @@ def investigate(
                             },
                             suffix=f"{planned_query.query_id}-{query_index:02d}",
                         )
-                        if progress_callback:
-                            progress_callback(
-                                {
-                                    "stage": "investigate/act",
-                                    "status": "running",
-                                    "iteration": plan_cycle,
-                                    "summary": (
-                                        f"[act] {hypothesis.id}: verdict={check_result.verdict} "
-                                        f"resolved={len(state.resolved_hypotheses)}"
-                                    ),
-                                    "focus_hypothesis_id": state.focus_hypothesis_id,
-                                    "hypotheses": [item.model_dump() for item in _all_hypotheses(state)],
-                                    "report_sections": get_report_status(focus_sections=focus_sections),
-                                }
-                            )
+                        _emit(
+                            "investigate/act",
+                            f"[act] {hypothesis.id}: verdict={check_result.verdict} resolved={len(state.resolved_hypotheses)}",
+                            iteration=plan_cycle,
+                            report_kw={"focus_sections": focus_sections},
+                        )
 
                         if check_result.verdict in {"confirmed", "refuted"} or query_index >= max_queries_per_hypothesis:
                             break

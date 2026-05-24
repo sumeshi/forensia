@@ -6,9 +6,10 @@ from math import ceil
 from pathlib import Path
 from re import sub
 
-from forensia.ai.lmstudio import chat_completion
+from forensia.ai.lmstudio import chat_completion as _llm_call
 from forensia.core.case import Case
 from forensia.config import get_llm_settings
+from forensia.core.session import ENTITY_TYPE_ALIASES
 
 
 logger = logging.getLogger(__name__)
@@ -135,12 +136,6 @@ class MemoryManager:
         if path is None:
             return
         path.write_text(content, encoding="utf-8")
-
-    def upsert_host(self, hostname: str, content: str) -> None:
-        self.upsert_entity("host", hostname, content)
-
-    def upsert_user(self, username: str, content: str) -> None:
-        self.upsert_entity("user", username, content)
 
     def upsert_hypothesis(self, hyp_id: str, slug: str, content: str) -> None:
         stable_id = sub(r"[^a-zA-Z0-9._-]+", "-", str(hyp_id).strip()).strip("-") or "unknown"
@@ -321,19 +316,7 @@ class MemoryManager:
         normalized_name = str(name).strip()
         if not normalized_name:
             return None
-        aliases = {
-            "user": "user",
-            "username": "user",
-            "account": "user",
-            "host": "host",
-            "hostname": "host",
-            "computer": "host",
-            "ip": "ip",
-            "src_ip": "ip",
-            "dst_ip": "ip",
-            "ip_address": "ip",
-        }
-        normalized_type = aliases.get(normalized_type, normalized_type)
+        normalized_type = ENTITY_TYPE_ALIASES.get(normalized_type, normalized_type)
         base = {
             "user": self.entities_user_dir,
             "host": self.entities_host_dir,
@@ -371,26 +354,18 @@ class MemoryManager:
             return False
         output_language = str(get_llm_settings()["output_language"]).lower()
         language_instruction = f"Write the compressed overview in {output_language}."
-        try:
-            body = chat_completion(
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "Compress the following investigation overview to 600 words or fewer. "
-                            "Preserve conclusions, timeline, and unresolved threads. "
-                            "Output only the overview body. "
-                            f"{language_instruction}"
-                        ),
-                    },
-                    {"role": "user", "content": current},
-                ],
-                model=model,
-                base_url=base_url,
-            ).strip()
-        except Exception:
-            logger.exception("overview compaction failed")
-            return False
+        body = self._call_llm_compact(
+            text=current,
+            system_prompt=(
+                "Compress the following investigation overview to 600 words or fewer. "
+                "Preserve conclusions, timeline, and unresolved threads. "
+                "Output only the overview body. "
+                f"{language_instruction}"
+            ),
+            base_url=base_url,
+            model=model,
+            error_message="overview compaction failed",
+        )
         if not body:
             return False
         self.overview_path.write_text(body + "\n", encoding="utf-8")
@@ -406,27 +381,19 @@ class MemoryManager:
                 continue
             output_language = str(get_llm_settings()["output_language"]).lower()
             language_instruction = f"Write the compressed markdown in {output_language}."
-            try:
-                body = chat_completion(
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": (
-                                "Compress the following investigation memory markdown so it fits into a smaller context window. "
-                                "Preserve the top-level markdown heading, confirmed facts, verdicts, key timeline facts, and unresolved questions. "
-                                "Prefer compact bullet points over prose. "
-                                "Keep markdown structure valid and output only the rewritten markdown document. "
-                                f"{language_instruction}"
-                            ),
-                        },
-                        {"role": "user", "content": current},
-                    ],
-                    model=model,
-                    base_url=base_url,
-                ).strip()
-            except Exception:
-                logger.exception("memory compaction failed: %s", path)
-                continue
+            body = self._call_llm_compact(
+                text=current,
+                system_prompt=(
+                    "Compress the following investigation memory markdown so it fits into a smaller context window. "
+                    "Preserve the top-level markdown heading, confirmed facts, verdicts, key timeline facts, and unresolved questions. "
+                    "Prefer compact bullet points over prose. "
+                    "Keep markdown structure valid and output only the rewritten markdown document. "
+                    f"{language_instruction}"
+                ),
+                base_url=base_url,
+                model=model,
+                error_message=f"memory compaction failed: {path}",
+            )
             if not body:
                 continue
             compacted = self._ensure_markdown_heading(body, current)
@@ -459,6 +426,45 @@ class MemoryManager:
                 compacted = f"# Compacted Memory\n\n{compacted}".strip()
         return compacted.rstrip() + "\n"
 
+    def _call_llm_compact(
+        self,
+        text: str,
+        system_prompt: str,
+        base_url: str,
+        model: str,
+        error_message: str,
+    ) -> str | None:
+        try:
+            return _llm_call(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": text},
+                ],
+                model=model,
+                base_url=base_url,
+            ).strip()
+        except Exception:
+            logger.exception(error_message)
+            return None
+
+    def _trim_rows_to_budget(
+        self,
+        path: Path,
+        prefix_lines: list[str],
+        data_lines: list[str],
+        separator_lines: list[str] | None = None,
+    ) -> bool:
+        keep_lines = data_lines
+        separator_lines = separator_lines or []
+        while keep_lines:
+            remove_count = max(1, ceil(len(keep_lines) * 0.2))
+            keep_lines = keep_lines[remove_count:]
+            rebuilt = "\n".join(prefix_lines + separator_lines + keep_lines).strip() + "\n"
+            path.write_text(rebuilt, encoding="utf-8")
+            if path.stat().st_size <= self.max_bytes or len(keep_lines) <= 1:
+                return True
+        return True
+
     def _compact_tasks(self, path: Path) -> bool:
         if not path.exists() or path.stat().st_size <= self.max_bytes:
             return False
@@ -471,16 +477,7 @@ class MemoryManager:
             if line.startswith("- ["):
                 break
             prefix_lines.append(line)
-
-        keep_lines = task_lines
-        while keep_lines:
-            remove_count = max(1, ceil(len(keep_lines) * 0.2))
-            keep_lines = keep_lines[remove_count:]
-            rebuilt = "\n".join(prefix_lines + [""] + keep_lines).strip() + "\n"
-            path.write_text(rebuilt, encoding="utf-8")
-            if path.stat().st_size <= self.max_bytes or len(keep_lines) <= 1:
-                return True
-        return True
+        return self._trim_rows_to_budget(path, prefix_lines, task_lines, separator_lines=[""])
 
     def _compact_suspicious(self, path: Path) -> bool:
         if not path.exists() or path.stat().st_size <= self.max_bytes:
@@ -498,16 +495,7 @@ class MemoryManager:
             prefix_lines.append(line)
             if line.startswith("|---"):
                 break
-
-        keep_lines = data_lines
-        while keep_lines:
-            remove_count = max(1, ceil(len(keep_lines) * 0.2))
-            keep_lines = keep_lines[remove_count:]
-            rebuilt = "\n".join(prefix_lines + keep_lines).strip() + "\n"
-            path.write_text(rebuilt, encoding="utf-8")
-            if path.stat().st_size <= self.max_bytes or len(keep_lines) <= 1:
-                return True
-        return True
+        return self._trim_rows_to_budget(path, prefix_lines, data_lines)
 
     def compact_if_oversized(self, path: Path) -> bool:
         if not path.exists() or path.stat().st_size <= self.max_bytes:

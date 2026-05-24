@@ -314,7 +314,7 @@ class MemoryAndIngestTests(unittest.TestCase):
             memory = MemoryManager(case)
             memory.overview_path.write_text("# Overview\n\n" + ("x" * 512), encoding="utf-8")
 
-            with patch("forensia.core.memory.chat_completion", return_value="compressed overview") as mock_chat:
+            with patch("forensia.core.memory._llm_call", return_value="compressed overview") as mock_chat:
                 changed = memory.compact_overview_if_needed(self._llm_base_url(), "test-model")
 
             self.assertTrue(changed)
@@ -347,7 +347,7 @@ class MemoryAndIngestTests(unittest.TestCase):
             memory = MemoryManager(case)
             memory.overview_path.write_text("# Overview\n\n" + ("x" * 512), encoding="utf-8")
 
-            with patch("forensia.core.memory.chat_completion", return_value="compressed overview") as mock_chat:
+            with patch("forensia.core.memory._llm_call", return_value="compressed overview") as mock_chat:
                 memory.compact_overview_if_needed(self._llm_base_url(), "test-model")
 
             messages = mock_chat.call_args.kwargs["messages"]
@@ -362,7 +362,7 @@ class MemoryAndIngestTests(unittest.TestCase):
             original = "# Overview\n\n" + ("x" * 512)
             memory.overview_path.write_text(original, encoding="utf-8")
 
-            with patch("forensia.core.memory.chat_completion", side_effect=RuntimeError("timeout")):
+            with patch("forensia.core.memory._llm_call", side_effect=RuntimeError("timeout")):
                 changed = memory.compact_overview_if_needed(self._llm_base_url(), "test-model")
 
             self.assertFalse(changed)
@@ -679,7 +679,7 @@ class MemoryAndIngestTests(unittest.TestCase):
             memory.update_overview("# Overview\n\n" + ("x" * 512))
             memory.upsert_hypothesis("H-1", "oversized", "# Hypothesis H-1\n\n" + ("y" * 512))
 
-            with patch("forensia.core.memory.chat_completion", return_value="# Hypothesis H-1\n\n- compacted") as mock_chat:
+            with patch("forensia.core.memory._llm_call", return_value="# Hypothesis H-1\n\n- compacted") as mock_chat:
                 changed = memory.compact_oversized_with_llm(self._llm_base_url(), "test-model")
 
             self.assertEqual([str(memory.hypotheses_dir / "H-1.md")], changed)
@@ -694,7 +694,7 @@ class MemoryAndIngestTests(unittest.TestCase):
             memory = MemoryManager(case)
             memory.upsert_entity("ip", "10.0.0.5", "# ip: 10.0.0.5\n\n" + ("z" * 512))
 
-            with patch("forensia.core.memory.chat_completion", return_value="- compacted entity") as mock_chat:
+            with patch("forensia.core.memory._llm_call", return_value="- compacted entity") as mock_chat:
                 changed = memory.compact_oversized_with_llm(self._llm_base_url(), "test-model")
 
             self.assertEqual([str(memory.entities_ip_dir / "10.0.0.5.md")], changed)
@@ -740,7 +740,7 @@ class MemoryAndIngestTests(unittest.TestCase):
             original = "# Overview\n\n" + ("x" * 512)
             memory.update_overview(original)
 
-            with patch("forensia.core.memory.chat_completion", side_effect=RuntimeError("timeout")):
+            with patch("forensia.core.memory._llm_call", side_effect=RuntimeError("timeout")):
                 changed = memory.compact_oversized_with_llm(self._llm_base_url(), "test-model")
 
             self.assertEqual([], changed)

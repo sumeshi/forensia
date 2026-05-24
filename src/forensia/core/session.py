@@ -4,6 +4,21 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+ENTITY_TYPE_ALIASES = {
+    "host": "host",
+    "hostname": "host",
+    "computer": "host",
+    "user": "user",
+    "username": "user",
+    "account": "user",
+    "ip": "ip",
+    "src_ip": "ip",
+    "dst_ip": "ip",
+    "source_ip": "ip",
+    "destination_ip": "ip",
+    "ip_address": "ip",
+}
+
 
 class Hypothesis(BaseModel):
     id: str

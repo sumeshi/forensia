@@ -63,6 +63,36 @@ def _refresh_report_sections(
     )
 
 
+def _build_refresh_result(
+    *,
+    filled_sections: dict[str, str],
+    db: CaseDB,
+    focus_sections: list[str] | None,
+    iteration: int,
+    updated: int,
+    progress_callback: Callable[[dict[str, Any]], None] | None,
+    summary: str,
+) -> dict[str, Any]:
+    all_gaps = collect_gaps(filled_sections)
+    report_status = _build_report_status(db, focus_sections=focus_sections)
+    if progress_callback:
+        progress_callback(
+            {
+                "stage": "investigate/report-cycle-done",
+                "status": "running",
+                "iteration": iteration,
+                "summary": summary.format(updated=updated, gap_count=len(all_gaps)),
+                "report_sections": report_status,
+            }
+        )
+    return {
+        "filled_sections": filled_sections,
+        "gaps": all_gaps,
+        "report_status": report_status,
+        "updated_sections": updated,
+    }
+
+
 def _refresh_report_sections_sequential(
     *,
     case: Case,
@@ -131,24 +161,15 @@ def _refresh_report_sections_sequential(
                     "report_sections": status,
                 }
             )
-    all_gaps = collect_gaps(filled_sections)
-    report_status = _build_report_status(db, focus_sections=focus_sections)
-    if progress_callback:
-        progress_callback(
-            {
-                "stage": "investigate/report-cycle-done",
-                "status": "running",
-                "iteration": iteration,
-                "summary": f"[report] cycle done (sections={updated}, gaps={len(all_gaps)})",
-                "report_sections": report_status,
-            }
-        )
-    return {
-        "filled_sections": filled_sections,
-        "gaps": all_gaps,
-        "report_status": report_status,
-        "updated_sections": updated,
-    }
+    return _build_refresh_result(
+        filled_sections=filled_sections,
+        db=db,
+        focus_sections=focus_sections,
+        iteration=iteration,
+        updated=updated,
+        progress_callback=progress_callback,
+        summary="[report] cycle done (sections={updated}, gaps={gap_count})",
+    )
 
 
 def _refresh_report_sections_parallel(
@@ -250,21 +271,12 @@ def _refresh_report_sections_parallel(
                 }
             )
 
-    all_gaps = collect_gaps(filled_sections)
-    report_status = _build_report_status(db, focus_sections=focus_sections)
-    if progress_callback:
-        progress_callback(
-            {
-                "stage": "investigate/report-cycle-done",
-                "status": "running",
-                "iteration": iteration,
-                "summary": f"[report] cycle done (sections={updated}, gaps={len(all_gaps)}, parallel={workers})",
-                "report_sections": report_status,
-            }
-        )
-    return {
-        "filled_sections": filled_sections,
-        "gaps": all_gaps,
-        "report_status": report_status,
-        "updated_sections": updated,
-    }
+    return _build_refresh_result(
+        filled_sections=filled_sections,
+        db=db,
+        focus_sections=focus_sections,
+        iteration=iteration,
+        updated=updated,
+        progress_callback=progress_callback,
+        summary=f"[report] cycle done (sections={{updated}}, gaps={{gap_count}}, parallel={workers})",
+    )

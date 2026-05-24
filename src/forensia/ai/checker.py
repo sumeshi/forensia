@@ -11,11 +11,12 @@ from forensia.ai.prompts import build_check_messages
 from forensia.config import get_llm_settings
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
-from forensia.core.session import Hypothesis, PlannedQuery
+from forensia.core.session import ENTITY_TYPE_ALIASES, Hypothesis, PlannedQuery
 from forensia.db.database import CaseDB
 
 VALID_VERDICTS = {"confirmed", "refuted", "inconclusive", "newlead"}
 SMALL_CONFIDENCE_DELTA = 0.02
+_DURABLE_MEMORY_KEYS = {"facts", "timeline", "resolved_gaps"}
 
 
 @dataclass(slots=True)
@@ -196,6 +197,13 @@ def _filter_memory_updates(updates: Any, observed_evidence_ids: set[str]) -> dic
                     )
                     if evidence_id and evidence_id in observed_evidence_ids
                 ]
+            if key in _DURABLE_MEMORY_KEYS and not payload.get("evidence_ids"):
+                continue
+            if key == "entities":
+                normalized_type = ENTITY_TYPE_ALIASES.get(str(payload.get("entity_type") or "").strip().lower())
+                if normalized_type is None:
+                    continue
+                payload["entity_type"] = normalized_type
             filtered_items.append(payload)
         filtered[key] = filtered_items
     return filtered
@@ -281,25 +289,15 @@ def _record_hypothesis_assessment(
     finding_id = f"hypothesis:{hypothesis.id}" if hypothesis else f"query:{planned_query.query_id}"
     missing_checks = raw_response.get("missing_checks") or []
     notes = str(raw_response.get("notes") or "")
-    db.execute("DELETE FROM ai_reviews WHERE finding_id = ?", (finding_id,))
-    db.execute(
-        """
-        INSERT INTO ai_reviews (
-            review_id, finding_id, verdict, report_text, missing_checks,
-            confidence_adjustment, notes, raw_response, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            f"review-{finding_id}",
-            finding_id,
-            verdict,
-            report_text,
-            json.dumps(missing_checks if isinstance(missing_checks, list) else [], ensure_ascii=False),
-            0.0,
-            notes,
-            json.dumps(raw_response, ensure_ascii=False, default=str),
-            datetime.now(UTC).replace(tzinfo=None),
-        ),
+    _upsert_ai_review(
+        db=db,
+        finding_id=finding_id,
+        verdict=verdict,
+        report_text=report_text,
+        missing_checks=missing_checks if isinstance(missing_checks, list) else [],
+        confidence_adjustment=0.0,
+        notes=notes,
+        raw_response=raw_response,
     )
 
 
