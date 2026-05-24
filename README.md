@@ -115,7 +115,7 @@ flowchart LR
 
 次のループを繰り返しながら、調査状態を整理します。
 
-1. KeyPoints と既存の調査状態から、次に確認する仮説を選ぶ
+1. KeyPoints と既存の調査状態から、追うべき仮説を追加・更新し、active hypotheses を順に検証する
 2. 仮説を検証するためのクエリや確認観点を生成する
 3. DuckDB 上の証拠データを参照して検証する
 4. 結果を `confirmed` / `refuted` / `inconclusive` / `newlead` のいずれかに判定する
@@ -176,20 +176,20 @@ Structured Memories は、より詳細には下記のようなファイル群で
 
 - `memory/`
   - `overview.md`: 常時読む, 要約圧縮する, Overview。ケース全体の短い要約、調査範囲、主要な発見、全体方針。
-  - `tasks.md`: 常時読む, 要約圧縮する, Active Tasks。現在の調査ループで扱う仮説、gap、lead、次に読むべき memory。
+  - `tasks.md`: 常時読む, 要約圧縮する, Active Tasks。現在の調査ループで残っている gap、lead、未解決タスクの要約。
   - `facts.md`: 優先的に読む, 要約圧縮しない, Active Facts。現在の調査で参照中の確認済み事実。
   - `timeline.md`: 必要なときに読む, 要約圧縮しない, Active Timeline。現在の調査で重要な時刻アンカー。
-  - `entities/`: 必要なときに読む, 要約圧縮しない, Entity Cards。active tasks に関係する重要エンティティのカード。
+  - `entities/`: 必要なときに読む, 要約圧縮しない, Entity Cards。現在の調査で重要度が上がったエンティティのカード。
     - `user/`
       - `admin.md`
     - `host/`
       - `DESKTOP-01.md`
     - `ip/`
       - `192.168.1.10.md`
-  - `keypoints/`: 必要に応じて読む, 要約圧縮しない, KeyPoint Cards。active tasks に関係する注目点のカード。
+  - `keypoints/`: 必要に応じて読む, 要約圧縮しない, KeyPoint Cards。現在の findings snapshot から同期される注目点のカード。
     - `KP-0001.md`
-  - `hypotheses/`: 必要に応じて読む, 要約圧縮しない, Hypothesis States。仮説ごとの現在状態。
-    - `HYP-0001.md`
+  - `hypotheses/`: 必要に応じて読む, 要約圧縮しない, Hypothesis States。仮説ごとの現在状態。ファイル名は安定した hypothesis id ベースで、`hypotheses/<hypothesis_id>.md` として参照できる。
+    - `H-1.md`
   - `archive/`: 必要に応じて読む, 要約圧縮しない, Archives。過去の判断や解決済み項目の控え。
     - `refuted.md`: 否定済み仮説の控え。
     - `resolved_gaps.md`: 解決済み gap の控え。
@@ -247,6 +247,7 @@ forensia run ./input --out ./case001 --profile windows-basic --reinvestigate
 ```
 
 出力先を初期化してやり直す場合は、`--init` を指定します。
+このとき `raw/` `findings/` `reports/` と再解析用の実行結果はクリアされますが、`memory/` と `ai_logs/` は保持されます。
 
 ```bash
 forensia run ./input --out ./case001 --profile windows-basic --init
@@ -255,6 +256,7 @@ forensia run ./input --out ./case001 --profile windows-basic --init
 ### 調査を続ける
 
 同じケースに対して `investigate` を再実行すると、前回までの仮説、gap、Structured Memories、レポート状態を引き継いで調査を続けます。
+`investigate` は LLM が必須です。`LLM_BASE_URL` と `LLM_MODEL` を `.env` または CLI オプションで設定してください。
 
 ```bash
 forensia investigate case001 --max-iter 50
@@ -278,6 +280,7 @@ forensia report case001
 ```
 
 LLM を使ってレポートセクションを再生成したい場合は、`report-write` を使います。
+`report-write` は LLM が必須です。`LLM_BASE_URL` と `LLM_MODEL` を `.env` または CLI オプションで設定してください。
 
 ```bash
 forensia report-write case001

@@ -266,12 +266,16 @@ class MemoryAndIngestTests(unittest.TestCase):
             self.assertIn("anchor-0", archive_text)
             self.assertNotIn("anchor-0", timeline_text)
 
-    def test_suspicious_path_is_not_llm_compaction_target(self) -> None:
+    def test_only_overview_tasks_and_suspicious_need_proactive_compaction(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
 
+            self.assertEqual([], memory._llm_compaction_targets())
             self.assertNotIn(memory.suspicious_path, memory._llm_compaction_targets())
+            memory.upsert_hypothesis("H-1", "desc", "# Hypothesis H-1\n")
+            memory.upsert_entity("src_ip", "10.0.0.5", "# Entity\n")
+            self.assertEqual([], memory._llm_compaction_targets())
 
     def test_suspicious_table_is_compacted_without_breaking_header(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "256"}):
@@ -468,7 +472,7 @@ class MemoryAndIngestTests(unittest.TestCase):
             ]
             self.assertTrue(overview_calls)
 
-    def test_oversized_memory_files_are_compacted_via_llm(self) -> None:
+    def test_hypothesis_memory_is_not_llm_compacted_when_oversized(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "96"}):
             clear_llm_settings_cache()
             case = Case.init(tmpdir)
@@ -476,17 +480,41 @@ class MemoryAndIngestTests(unittest.TestCase):
             memory.update_overview("# Overview\n\n" + ("x" * 512))
             memory.upsert_hypothesis("H-1", "oversized", "# Hypothesis H-1\n\n" + ("y" * 512))
 
-            responses = iter(["- overview summary only", "# Hypothesis H-1\n\n- trimmed hypothesis"])
-
-            with patch("forensia.core.memory.chat_completion", side_effect=lambda **_: next(responses)):
+            with patch("forensia.core.memory.chat_completion") as mock_chat:
                 changed = memory.compact_oversized_with_llm(self._llm_base_url(), "test-model")
 
-            self.assertEqual(
-                [str(memory.hypotheses_dir / "h-1-oversized.md")],
-                changed,
-            )
+            self.assertEqual([], changed)
             self.assertEqual("# Overview\n\n" + ("x" * 512), memory.overview_path.read_text(encoding="utf-8"))
-            self.assertTrue((memory.hypotheses_dir / "h-1-oversized.md").read_text(encoding="utf-8").startswith("# Hypothesis H-1\n"))
+            self.assertTrue((memory.hypotheses_dir / "H-1.md").read_text(encoding="utf-8").startswith("# Hypothesis H-1\n"))
+            mock_chat.assert_not_called()
+
+    def test_hypothesis_memory_path_depends_only_on_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+
+            memory.upsert_hypothesis("H-1", "first-description", "# Hypothesis H-1\n\nfirst\n")
+            memory.upsert_hypothesis("H-1", "second-description", "# Hypothesis H-1\n\nsecond\n")
+
+            hyp_path = memory.hypotheses_dir / "H-1.md"
+            self.assertTrue(hyp_path.exists())
+            self.assertEqual("# Hypothesis H-1\n\nsecond\n", hyp_path.read_text(encoding="utf-8"))
+            self.assertEqual([hyp_path], sorted(memory.hypotheses_dir.glob("*.md")))
+
+    def test_hypothesis_upsert_removes_legacy_slug_named_file_for_same_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            legacy_path = memory.hypotheses_dir / "h-1-old-description.md"
+            legacy_path.write_text("# Hypothesis H-1\n\nlegacy\n", encoding="utf-8")
+
+            memory.upsert_hypothesis("H-1", "new-description", "# Hypothesis H-1\n\ncurrent\n")
+
+            self.assertFalse(legacy_path.exists())
+            self.assertEqual(
+                "# Hypothesis H-1\n\ncurrent\n",
+                (memory.hypotheses_dir / "H-1.md").read_text(encoding="utf-8"),
+            )
 
     def test_oversized_memory_llm_compaction_failure_keeps_existing_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "64"}):
@@ -664,7 +692,7 @@ class MemoryAndIngestTests(unittest.TestCase):
                     db=db,
                 )
 
-            hyp_path = next(memory.hypotheses_dir.glob("h-1-*.md"))
+            hyp_path = memory.hypotheses_dir / "H-1.md"
             text = hyp_path.read_text(encoding="utf-8")
             self.assertIn("## Reasoning", text)
             self.assertIn("Reasoning body", text)
@@ -684,8 +712,8 @@ class MemoryAndIngestTests(unittest.TestCase):
                 )
 
             mock_reasoning.assert_called_once_with(db, "H-1")
-            active_text = next(memory.hypotheses_dir.glob("h-1-*.md")).read_text(encoding="utf-8")
-            resolved_text = next(memory.hypotheses_dir.glob("h-2-*.md")).read_text(encoding="utf-8")
+            active_text = (memory.hypotheses_dir / "H-1.md").read_text(encoding="utf-8")
+            resolved_text = (memory.hypotheses_dir / "H-2.md").read_text(encoding="utf-8")
             self.assertIn("## Reasoning", active_text)
             self.assertNotIn("## Reasoning", resolved_text)
 

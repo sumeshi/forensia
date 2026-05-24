@@ -143,7 +143,11 @@ class MemoryManager:
         self.upsert_entity("user", username, content)
 
     def upsert_hypothesis(self, hyp_id: str, slug: str, content: str) -> None:
-        path = self.hypotheses_dir / f"{_slugify(hyp_id)}-{_slugify(slug)}.md"
+        stable_id = sub(r"[^a-zA-Z0-9._-]+", "-", str(hyp_id).strip()).strip("-") or "unknown"
+        path = self.hypotheses_dir / f"{stable_id}.md"
+        for legacy_path in self.hypotheses_dir.glob(f"{_slugify(hyp_id)}-*.md"):
+            if legacy_path != path:
+                legacy_path.unlink(missing_ok=True)
         path.write_text(content, encoding="utf-8")
 
     def upsert_keypoint(self, kp_id: str, content: str) -> None:
@@ -435,12 +439,7 @@ class MemoryManager:
         return changed_paths
 
     def _llm_compaction_targets(self) -> list[Path]:
-        return [
-            *sorted(self.hypotheses_dir.glob("*.md")),
-            *sorted(self.entities_host_dir.glob("*.md")),
-            *sorted(self.entities_user_dir.glob("*.md")),
-            *sorted(self.entities_ip_dir.glob("*.md")),
-        ]
+        return []
 
     def _ensure_markdown_heading(self, body: str, original: str) -> str:
         compacted = body.strip()
