@@ -16,14 +16,22 @@ query: |
       target_user,
       subject_user,
       src_ip,
+      CASE
+          WHEN CONTAINS(UPPER(COALESCE(message, '')), 'ADMIN$') THEN 'ADMIN$'
+          WHEN CONTAINS(UPPER(COALESCE(message, '')), 'IPC$') THEN NULL
+          WHEN CONTAINS(UPPER(COALESCE(message, '')), 'C$') THEN 'C$'
+          ELSE NULL
+      END AS share_name,
       message
   FROM evtx_events
   WHERE event_id = 5140
     AND (
-        LOWER(COALESCE(message, '')) LIKE '%admin$%'
-        OR LOWER(COALESCE(message, '')) LIKE '%c$%'
-        OR LOWER(COALESCE(message, '')) LIKE '%ipc$%'
+        CONTAINS(UPPER(COALESCE(message, '')), 'ADMIN$')
+        OR (
+            CONTAINS(UPPER(COALESCE(message, '')), 'C$')
+            AND NOT CONTAINS(UPPER(COALESCE(message, '')), 'IPC$')
+        )
     )
 finding:
   title: "Administrative share access: {src_ip} -> {computer}"
-  summary: "Administrative share access (ADMIN$, C$, or IPC$) from {src_ip} to {computer} was observed at {timestamp}. User: {subject_user}. This is a classic artifact of PsExec or SMB-based lateral movement."
+  summary: "Administrative share access ({share_name}) from {src_ip} to {computer} was observed at {timestamp}. User: {subject_user}. This is a classic artifact of PsExec or SMB-based lateral movement."

@@ -15,6 +15,7 @@ from forensia.core.session import Hypothesis, PlannedQuery
 from forensia.db.database import CaseDB
 
 VALID_VERDICTS = {"confirmed", "refuted", "inconclusive", "newlead"}
+SMALL_CONFIDENCE_DELTA = 0.02
 
 
 @dataclass(slots=True)
@@ -77,6 +78,163 @@ def _clamp_confidence(value: float) -> float:
 def _normalize_verdict(value: Any) -> str:
     verdict = str(value or "").strip().lower()
     return verdict if verdict in VALID_VERDICTS else "inconclusive"
+
+
+def _collect_observed_evidence_ids(result_summary: dict[str, Any]) -> set[str]:
+    observed: set[str] = set()
+    for evidence_id in result_summary.get("evidence_ids") or []:
+        normalized = str(evidence_id).strip()
+        if normalized:
+            observed.add(normalized)
+    for row in result_summary.get("sample_rows") or []:
+        if not isinstance(row, dict):
+            continue
+        normalized = str(row.get("evidence_id") or "").strip()
+        if normalized:
+            observed.add(normalized)
+    return observed
+
+
+def _has_zero_evidence(result_summary: dict[str, Any], observed_evidence_ids: set[str]) -> bool:
+    row_count = int(result_summary.get("row_count") or 0)
+    sample_rows = result_summary.get("sample_rows") or []
+    return row_count == 0 and not observed_evidence_ids and not sample_rows
+
+
+def _normalize_status(value: Any, fallback: str = "accepted") -> str:
+    status = str(value or "").strip().lower()
+    return status if status in {"accepted", "suppressed"} else fallback
+
+
+def _coerce_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _normalize_finding_updates(
+    items: Any,
+    *,
+    allowed_finding_ids: set[str],
+    verdict: str,
+    zero_evidence: bool,
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    if not isinstance(items, list):
+        return normalized
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        finding_id = str(item.get("finding_id") or "").strip()
+        if not finding_id or finding_id not in allowed_finding_ids:
+            continue
+
+        delta = _coerce_float(item.get("confidence_delta"))
+        new_status = _normalize_status(item.get("new_status"))
+
+        if zero_evidence and delta > 0:
+            delta = 0.0
+
+        if verdict == "confirmed":
+            delta = max(0.0, delta)
+        elif verdict == "refuted":
+            delta = min(0.0, delta)
+            new_status = "suppressed"
+        else:
+            delta = max(-SMALL_CONFIDENCE_DELTA, min(SMALL_CONFIDENCE_DELTA, delta))
+
+        normalized.append(
+            {
+                "finding_id": finding_id,
+                "new_status": new_status,
+                "confidence_delta": delta,
+            }
+        )
+    return normalized
+
+
+def _filter_evidence_references(items: Any, observed_evidence_ids: set[str]) -> list[dict[str, Any]]:
+    filtered: list[dict[str, Any]] = []
+    if not isinstance(items, list):
+        return filtered
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        evidence_id = str(item.get("evidence_id") or "").strip()
+        if not evidence_id or evidence_id not in observed_evidence_ids:
+            continue
+        payload = dict(item)
+        payload["evidence_id"] = evidence_id
+        filtered.append(payload)
+    return filtered
+
+
+def _filter_memory_updates(updates: Any, observed_evidence_ids: set[str]) -> dict[str, Any]:
+    if not isinstance(updates, dict):
+        return {}
+
+    filtered: dict[str, Any] = {}
+    for key, value in updates.items():
+        if not isinstance(value, list):
+            filtered[key] = value
+            continue
+
+        filtered_items: list[Any] = []
+        for item in value:
+            if not isinstance(item, dict):
+                filtered_items.append(item)
+                continue
+            payload = dict(item)
+            if "evidence_ids" in payload:
+                payload["evidence_ids"] = [
+                    evidence_id
+                    for evidence_id in (
+                        str(evidence_id).strip() for evidence_id in (payload.get("evidence_ids") or [])
+                    )
+                    if evidence_id and evidence_id in observed_evidence_ids
+                ]
+            filtered_items.append(payload)
+        filtered[key] = filtered_items
+    return filtered
+
+
+def _guardrail_check_payload(
+    parsed: dict[str, Any],
+    finding_candidates: list[dict[str, Any]],
+    result_summary: dict[str, Any],
+) -> dict[str, Any]:
+    verdict = _normalize_verdict(parsed.get("verdict"))
+    observed_evidence_ids = _collect_observed_evidence_ids(result_summary)
+    zero_evidence = _has_zero_evidence(result_summary, observed_evidence_ids)
+    if zero_evidence and verdict in {"confirmed", "newlead"}:
+        verdict = "inconclusive"
+
+    allowed_finding_ids = {
+        str(item.get("finding_id") or "").strip()
+        for item in finding_candidates
+        if isinstance(item, dict) and str(item.get("finding_id") or "").strip()
+    }
+
+    return {
+        "query_id": parsed.get("query_id"),
+        "verdict": verdict,
+        "finding_updates": _normalize_finding_updates(
+            parsed.get("finding_updates"),
+            allowed_finding_ids=allowed_finding_ids,
+            verdict=verdict,
+            zero_evidence=zero_evidence,
+        ),
+        "suspicious_evidence": _filter_evidence_references(
+            parsed.get("suspicious_evidence"),
+            observed_evidence_ids,
+        ),
+        "new_hypotheses": parsed.get("new_hypotheses"),
+        "memory_updates": _filter_memory_updates(parsed.get("memory_updates"), observed_evidence_ids),
+        "report_text": parsed.get("report_text") or "",
+    }
 
 
 def _upsert_ai_review(
@@ -317,15 +475,16 @@ def check_query_result(
         status_callback=status_callback,
         audit_callback=audit_callback,
     )
+    guarded = _guardrail_check_payload(parsed, finding_candidates, result_summary)
 
     result = CheckResult(
-        query_id=parsed.get("query_id", planned_query.query_id),
-        verdict=_normalize_verdict(parsed.get("verdict")),
-        finding_updates=parsed.get("finding_updates") or [],
-        suspicious_evidence=parsed.get("suspicious_evidence") or [],
-        new_hypotheses=_parse_new_hypotheses(parsed.get("new_hypotheses")),
-        memory_updates=parsed.get("memory_updates") or {},
-        report_text=parsed.get("report_text") or "",
+        query_id=guarded.get("query_id") or planned_query.query_id,
+        verdict=str(guarded.get("verdict") or "inconclusive"),
+        finding_updates=guarded.get("finding_updates") or [],
+        suspicious_evidence=guarded.get("suspicious_evidence") or [],
+        new_hypotheses=_parse_new_hypotheses(guarded.get("new_hypotheses")),
+        memory_updates=guarded.get("memory_updates") or {},
+        report_text=str(guarded.get("report_text") or ""),
         new_leads=0,
         progress=False,
         raw_response=parsed,

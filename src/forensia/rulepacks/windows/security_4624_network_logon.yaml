@@ -9,6 +9,21 @@ tags:
 attack:
   - T1021.002
 query: |
+  WITH normalized AS (
+      SELECT
+          evidence_id,
+          timestamp,
+          computer,
+          target_user,
+          subject_user,
+          src_ip,
+          logon_type,
+          TRIM(COALESCE(src_ip, '')) AS normalized_src_ip,
+          UPPER(TRIM(COALESCE(target_user, ''))) AS normalized_target_user
+      FROM evtx_events
+      WHERE event_id = 4624
+        AND logon_type = '3'
+  )
   SELECT
       evidence_id,
       timestamp,
@@ -17,10 +32,11 @@ query: |
       subject_user,
       src_ip,
       logon_type
-  FROM evtx_events
-  WHERE event_id = 4624
-    AND logon_type = '3'
-    AND target_user NOT LIKE '%$'
+  FROM normalized
+  WHERE normalized_src_ip NOT IN ('', '-', '::1', '127.0.0.1')
+    AND normalized_src_ip NOT LIKE '::ffff:127.%'
+    AND normalized_target_user NOT IN ('ANONYMOUS LOGON', 'SYSTEM', 'LOCAL SERVICE', 'NETWORK SERVICE')
+    AND normalized_target_user NOT LIKE '%$'
 finding:
   title: "Network logon: {target_user} -> {computer}"
   summary: "{target_user} successfully authenticated with a network logon (LogonType=3) on {computer} at {timestamp}. Source IP: {src_ip}. This may be the starting point for lateral movement such as PsExec, WinRM, or net use."

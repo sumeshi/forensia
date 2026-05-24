@@ -176,5 +176,197 @@ class NormalizeEvtxTests(unittest.TestCase):
             self.assertEqual([("alice",)], user_names)
 
 
+class RuleExecutionTests(unittest.TestCase):
+    def _run_rule_query(self, db: CaseDB, filename: str) -> list[dict[str, object]]:
+        rule_path = Path("src/forensia/rulepacks/windows") / filename
+        query = yaml.safe_load(rule_path.read_text(encoding="utf-8"))["query"]
+        result = db.execute(query)
+        columns = [item[0] for item in result.description]
+        return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
+
+    def _insert_evtx_event(
+        self,
+        db: CaseDB,
+        *,
+        evidence_id: str,
+        event_id: int,
+        timestamp: str,
+        computer: str,
+        target_user: str | None = None,
+        subject_user: str | None = None,
+        src_ip: str | None = None,
+        logon_type: str | None = None,
+        message: str | None = None,
+    ) -> None:
+        db.execute(
+            """
+            INSERT INTO evtx_events (
+                evidence_id, source_file, channel, event_id, record_id, timestamp,
+                computer, target_user, subject_user, src_ip, logon_type, message
+            ) VALUES (?, 'security.evtx', 'Security', ?, 1, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (evidence_id, event_id, timestamp, computer, target_user, subject_user, src_ip, logon_type, message),
+        )
+
+    def test_4624_network_logon_filters_builtin_noise_accounts_and_loopback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                self._insert_evtx_event(
+                    db,
+                    evidence_id="ev-1",
+                    event_id=4624,
+                    timestamp="2026-05-16 01:00:00",
+                    computer="host1",
+                    target_user="alice",
+                    subject_user="SYSTEM",
+                    src_ip="10.0.0.5",
+                    logon_type="3",
+                )
+                self._insert_evtx_event(
+                    db,
+                    evidence_id="ev-2",
+                    event_id=4624,
+                    timestamp="2026-05-16 01:01:00",
+                    computer="host1",
+                    target_user="bob",
+                    subject_user="SYSTEM",
+                    src_ip="127.0.0.1",
+                    logon_type="3",
+                )
+                self._insert_evtx_event(
+                    db,
+                    evidence_id="ev-3",
+                    event_id=4624,
+                    timestamp="2026-05-16 01:02:00",
+                    computer="host1",
+                    target_user="ANONYMOUS LOGON",
+                    subject_user="SYSTEM",
+                    src_ip="10.0.0.6",
+                    logon_type="3",
+                )
+                self._insert_evtx_event(
+                    db,
+                    evidence_id="ev-4",
+                    event_id=4624,
+                    timestamp="2026-05-16 01:03:00",
+                    computer="host1",
+                    target_user="DESKTOP-01$",
+                    subject_user="SYSTEM",
+                    src_ip="10.0.0.7",
+                    logon_type="3",
+                )
+                self._insert_evtx_event(
+                    db,
+                    evidence_id="ev-5",
+                    event_id=4624,
+                    timestamp="2026-05-16 01:04:00",
+                    computer="host1",
+                    target_user="SYSTEM",
+                    subject_user="SYSTEM",
+                    src_ip="10.0.0.8",
+                    logon_type="3",
+                )
+
+                rows = self._run_rule_query(db, "security_4624_network_logon.yaml")
+
+            self.assertEqual(1, len(rows))
+            self.assertEqual("alice", rows[0]["target_user"])
+            self.assertEqual("10.0.0.5", rows[0]["src_ip"])
+
+    def test_4625_failed_logon_uses_short_time_window_and_stricter_threshold(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                for index, minute in enumerate((0, 4, 8, 11, 14), start=1):
+                    self._insert_evtx_event(
+                        db,
+                        evidence_id=f"burst-{index}",
+                        event_id=4625,
+                        timestamp=f"2026-05-16 00:{minute:02d}:00",
+                        computer="host1",
+                        target_user="alice",
+                        src_ip="10.0.0.9",
+                    )
+                for index, minute in enumerate((0, 20, 40), start=1):
+                    self._insert_evtx_event(
+                        db,
+                        evidence_id=f"spread-a-{index}",
+                        event_id=4625,
+                        timestamp=f"2026-05-16 01:{minute:02d}:00",
+                        computer="host1",
+                        target_user="bob",
+                        src_ip="10.0.0.10",
+                    )
+                for index, minute in enumerate((0, 20), start=1):
+                    self._insert_evtx_event(
+                        db,
+                        evidence_id=f"spread-b-{index}",
+                        event_id=4625,
+                        timestamp=f"2026-05-16 02:{minute:02d}:00",
+                        computer="host1",
+                        target_user="bob",
+                        src_ip="10.0.0.10",
+                    )
+
+                rows = self._run_rule_query(db, "security_4625_failed_logon.yaml")
+
+            self.assertEqual(1, len(rows))
+            self.assertEqual("10.0.0.9", rows[0]["src_ip"])
+            self.assertEqual("alice", rows[0]["target_user"])
+            self.assertEqual(5, rows[0]["fail_count"])
+
+    def test_5140_admin_share_access_parses_share_name_and_excludes_ipc_noise(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                self._insert_evtx_event(
+                    db,
+                    evidence_id="share-1",
+                    event_id=5140,
+                    timestamp="2026-05-16 03:00:00",
+                    computer="host1",
+                    subject_user="alice",
+                    src_ip="10.0.0.11",
+                    message="Share Name:\t\\\\*\\ADMIN$\r\nRelative Target Name:\ttemp",
+                )
+                self._insert_evtx_event(
+                    db,
+                    evidence_id="share-2",
+                    event_id=5140,
+                    timestamp="2026-05-16 03:01:00",
+                    computer="host1",
+                    subject_user="bob",
+                    src_ip="10.0.0.12",
+                    message="ShareName=\\\\fileserver\\C$ AccessMask=0x1",
+                )
+                self._insert_evtx_event(
+                    db,
+                    evidence_id="share-3",
+                    event_id=5140,
+                    timestamp="2026-05-16 03:02:00",
+                    computer="host1",
+                    subject_user="carol",
+                    src_ip="10.0.0.13",
+                    message="Share Name:\t\\\\*\\IPC$\r\nRelative Target Name:\t",
+                )
+                self._insert_evtx_event(
+                    db,
+                    evidence_id="share-4",
+                    event_id=5140,
+                    timestamp="2026-05-16 03:03:00",
+                    computer="host1",
+                    subject_user="dave",
+                    src_ip="10.0.0.14",
+                    message="User opened admin console without a share path",
+                )
+
+                rows = self._run_rule_query(db, "security_5140_admin_share_access.yaml")
+
+            self.assertEqual(2, len(rows))
+            self.assertEqual({"ADMIN$", "C$"}, {row["share_name"] for row in rows})
+            self.assertEqual({"share-1", "share-2"}, {row["evidence_id"] for row in rows})
+
+
 if __name__ == "__main__":
     unittest.main()

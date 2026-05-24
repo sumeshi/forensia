@@ -468,6 +468,153 @@ class PlannerRetryTests(unittest.TestCase):
 
         self.assertEqual("inconclusive", result.verdict)
 
+    def test_checker_filters_finding_updates_and_refuted_constraints(self) -> None:
+        captured = {}
+
+        def _capture(*args, **kwargs):
+            captured["result"] = kwargs["check_result"]
+            return (0, False)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            with CaseDB(case) as db, patch(
+                "forensia.ai.checker.request_llm_json",
+                return_value={
+                    "query_id": "Q1",
+                    "verdict": "refuted",
+                    "finding_updates": [
+                        {"finding_id": "F-1", "new_status": "accepted", "confidence_delta": 0.6},
+                        {"finding_id": "F-2", "new_status": "suppressed", "confidence_delta": -0.4},
+                    ],
+                    "report_text": "text",
+                },
+            ), patch("forensia.ai.checker.apply_check_result", side_effect=_capture):
+                check_query_result(
+                    case=case,
+                    db=db,
+                    session_id="S-1",
+                    iteration=1,
+                    planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
+                    hypothesis=Hypothesis(id="H1", description="desc"),
+                    finding_candidates=[{"finding_id": "F-1"}],
+                    result_summary={"row_count": 1, "sample_rows": [], "evidence_ids": []},
+                    memory=memory,
+                    base_url=_llm_base_url(),
+                    model="test-model",
+                )
+
+        self.assertEqual(
+            [{"finding_id": "F-1", "new_status": "suppressed", "confidence_delta": 0.0}],
+            captured["result"].finding_updates,
+        )
+
+    def test_checker_demotes_zero_evidence_confirmed_and_crushes_positive_delta(self) -> None:
+        captured = {}
+
+        def _capture(*args, **kwargs):
+            captured["result"] = kwargs["check_result"]
+            return (0, False)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            with CaseDB(case) as db, patch(
+                "forensia.ai.checker.request_llm_json",
+                return_value={
+                    "query_id": "Q1",
+                    "verdict": "confirmed",
+                    "finding_updates": [
+                        {"finding_id": "F-1", "new_status": "accepted", "confidence_delta": 0.3},
+                    ],
+                    "report_text": "text",
+                },
+            ), patch("forensia.ai.checker.apply_check_result", side_effect=_capture):
+                check_query_result(
+                    case=case,
+                    db=db,
+                    session_id="S-1",
+                    iteration=1,
+                    planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
+                    hypothesis=Hypothesis(id="H1", description="desc"),
+                    finding_candidates=[{"finding_id": "F-1"}],
+                    result_summary={"row_count": 0, "sample_rows": [], "evidence_ids": []},
+                    memory=memory,
+                    base_url=_llm_base_url(),
+                    model="test-model",
+                )
+
+        self.assertEqual("inconclusive", captured["result"].verdict)
+        self.assertEqual(
+            [{"finding_id": "F-1", "new_status": "accepted", "confidence_delta": 0.0}],
+            captured["result"].finding_updates,
+        )
+
+    def test_checker_limits_inconclusive_delta_and_filters_evidence_references(self) -> None:
+        captured = {}
+
+        def _capture(*args, **kwargs):
+            captured["result"] = kwargs["check_result"]
+            return (0, False)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            with CaseDB(case) as db, patch(
+                "forensia.ai.checker.request_llm_json",
+                return_value={
+                    "query_id": "Q1",
+                    "verdict": "inconclusive",
+                    "finding_updates": [
+                        {"finding_id": "F-1", "new_status": "accepted", "confidence_delta": 0.5},
+                    ],
+                    "suspicious_evidence": [
+                        {"evidence_id": "ev-1", "reason": "keep", "confidence": 0.9},
+                        {"evidence_id": "ev-x", "reason": "drop", "confidence": 0.9},
+                    ],
+                    "memory_updates": {
+                        "facts": [{"text": "fact", "evidence_ids": ["ev-1", "ev-x"]}],
+                        "resolved_gaps": [{"text": "gap", "evidence_ids": ["ev-2", "ev-y"]}],
+                        "overview": ["story"],
+                    },
+                    "report_text": "text",
+                },
+            ), patch("forensia.ai.checker.apply_check_result", side_effect=_capture):
+                check_query_result(
+                    case=case,
+                    db=db,
+                    session_id="S-1",
+                    iteration=1,
+                    planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
+                    hypothesis=Hypothesis(id="H1", description="desc"),
+                    finding_candidates=[{"finding_id": "F-1"}],
+                    result_summary={
+                        "row_count": 2,
+                        "sample_rows": [{"evidence_id": "ev-2"}],
+                        "evidence_ids": ["ev-1"],
+                    },
+                    memory=memory,
+                    base_url=_llm_base_url(),
+                    model="test-model",
+                )
+
+        self.assertEqual(
+            [{"finding_id": "F-1", "new_status": "accepted", "confidence_delta": 0.02}],
+            captured["result"].finding_updates,
+        )
+        self.assertEqual(
+            [{"evidence_id": "ev-1", "reason": "keep", "confidence": 0.9}],
+            captured["result"].suspicious_evidence,
+        )
+        self.assertEqual(
+            {
+                "facts": [{"text": "fact", "evidence_ids": ["ev-1"]}],
+                "resolved_gaps": [{"text": "gap", "evidence_ids": ["ev-2"]}],
+                "overview": ["story"],
+            },
+            captured["result"].memory_updates,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
