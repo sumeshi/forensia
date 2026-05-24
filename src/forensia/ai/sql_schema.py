@@ -6,6 +6,7 @@ ALLOWED_TABLES = {
     "evtx_events",
     "mft_entries",
     "mft_timeline",
+    "prefetch_executions",
     "findings",
     "hypotheses",
     "report_sections",
@@ -62,6 +63,11 @@ TABLE_COLUMN_REFERENCE: dict[str, tuple[str, ...]] = {
         "entry_id", "hypothesis_id", "session_id", "iteration", "phase", "verdict", "query_id", "body", "created_at",
     ),
     "progress_events": ("event_index", "stage", "status", "iteration", "current_query", "summary", "payload", "created_at"),
+    "prefetch_executions": (
+        "evidence_id", "source_file", "executable_name", "exec_count",
+        "last_exec_time", "exec_times", "prefetch_hash", "filenames", "volumes",
+        "raw_json", "tags", "severity",
+    ),
     "ingested_files": ("sha256", "path", "source_kind", "size", "ingested_at"),
 }
 
@@ -94,6 +100,12 @@ def build_investigation_framework() -> str:
         "  4. event_id IN (4688, 4104) — detect PowerShell and LOLBas execution.\n"
         "  5. event_id IN (4697, 7045, 4698) — find persistence (services, tasks).\n"
         "  6. event_id IN (4720, 4732, 4728) — find suspicious account operations.\n\n"
+        "prefetch_executions table guidance:\n"
+        "  executable_name holds the .exe filename (e.g. 'POWERSHELL.EXE').\n"
+        "  exec_count is the total run count; last_exec_time is the most recent execution timestamp.\n"
+        "  exec_times is a JSON array of up to 8 last run timestamps.\n"
+        "  filenames is a JSON array of files loaded by the process (useful for DLL side-loading detection).\n"
+        "  Cross-join with evtx_events on timestamp proximity to correlate prefetch execution with event log activity.\n\n"
         f"Available tables: {', '.join(sorted(ALLOWED_TABLES))}.\n"
         + "\n".join(table_lines)
         + "\nOnly propose SELECT or WITH-prefixed read-only SQL compatible with DuckDB.\n"

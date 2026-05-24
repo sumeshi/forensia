@@ -11,3 +11,7 @@ def make_evtx_evidence_id(channel: str, record_number: int) -> str:
 
 def make_mft_evidence_id(record_number: int, sequence_number: int) -> str:
     return f"mft-{record_number:012d}-{sequence_number:02d}"
+
+
+def make_prefetch_evidence_id(executable_name: str, prefetch_hash: str) -> str:
+    return f"prefetch-{_slugify(executable_name)}-{prefetch_hash.lower()}"

@@ -92,8 +92,35 @@ class MftArtifactAdapter:
         return NormalizeResult(source_kind=self.name, rows=entries, aux_rows=timeline_rows)
 
 
+class PrefetchArtifactAdapter:
+    name = "prefetch"
+
+    def can_handle(self, path: Path) -> bool:
+        return path.suffix.lower() == ".pf"
+
+    def ingest(
+        self,
+        case: Case,
+        path: Path,
+        source_sha: str | None = None,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> IngestResult:
+        from forensia.ingest.prefetch import ingest_prefetch_file
+
+        return IngestResult(
+            source_kind=self.name,
+            raw_path=ingest_prefetch_file(case, path, source_sha=source_sha, progress_callback=progress_callback),
+        )
+
+    def normalize(self, case: Case, db: CaseDB) -> NormalizeResult:
+        from forensia.normalize.prefetch import normalize_prefetch
+
+        return NormalizeResult(source_kind=self.name, rows=normalize_prefetch(case, db), aux_rows=0)
+
+
 def get_artifact_adapters() -> tuple[ArtifactAdapter, ...]:
     return (
         EvtxArtifactAdapter(),
         MftArtifactAdapter(),
+        PrefetchArtifactAdapter(),
     )

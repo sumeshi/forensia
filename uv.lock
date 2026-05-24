@@ -165,6 +165,7 @@ dependencies = [
     { name = "jinja2" },
     { name = "mft2es" },
     { name = "orjson" },
+    { name = "prefetch2es" },
     { name = "pyarrow" },
     { name = "pydantic" },
     { name = "python-dateutil" },
@@ -189,6 +190,7 @@ requires-dist = [
     { name = "jinja2" },
     { name = "mft2es", specifier = ">=1.7.2" },
     { name = "orjson" },
+    { name = "prefetch2es", specifier = ">=2.2.2" },
     { name = "pyarrow" },
     { name = "pydantic" },
     { name = "python-dateutil" },
@@ -268,6 +270,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/df/bf/f7da0350254c0ed7c
 wheels = [
     { url = "https://files.pythonhosted.org/packages/62/a1/3d680cbfd5f4b8f15abc1d571870c5fc3e594bb582bc3b64ea099db13e56/jinja2-3.1.6-py3-none-any.whl", hash = "sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67", size = 134899, upload-time = "2025-03-05T20:05:00.369Z" },
 ]
+
+[[package]]
+name = "libscca-python"
+version = "20240215"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/72/7a/5d34e55f44728f0cde221a7788bab9adcac31dce19cfe0b7d09cb07209b7/libscca-python-20240215.tar.gz", hash = "sha256:85eb3a47cc4ed19944b5a951cf4347685b96eefd09e4fe8028015236aa188d6c", size = 1661961, upload-time = "2024-02-15T13:41:46.711Z" }
 
 [[package]]
 name = "markdown-it-py"
@@ -387,6 +395,22 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe6ef3fa267035b518369d9511ffab804f839851d2779/pluggy-1.6.0.tar.gz", hash = "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3", size = 69412, upload-time = "2025-05-15T12:30:07.975Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
+]
+
+[[package]]
+name = "prefetch2es"
+version = "2.2.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "elasticsearch" },
+    { name = "libscca-python" },
+    { name = "orjson" },
+    { name = "tqdm" },
+    { name = "urllib3" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9e/2d/66810408118d4bf9c1e69bb613d1482c179d69128c09591404166e2f8e4a/prefetch2es-2.2.2.tar.gz", hash = "sha256:b2573c24dd7f5dbf1b5086f30dd4d097ff47487f09d231aa74b088bcae6da7dd", size = 57855, upload-time = "2025-06-23T03:20:49.228Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b7/a7/79a3427e2cb6f8aa0678af688f7a30bec3f5be9a29ebdaba66018c097b31/prefetch2es-2.2.2-py3-none-any.whl", hash = "sha256:90f79b60991e1cc185820d62f304215eef49ed17681cdb4021e12cb9ce68f70e", size = 29282, upload-time = "2025-06-23T03:20:48.378Z" },
 ]
 
 [[package]]

@@ -118,10 +118,26 @@ CREATE TABLE IF NOT EXISTS ingested_files (
     ingested_at TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS prefetch_executions (
+    evidence_id VARCHAR,
+    source_file VARCHAR,
+    executable_name VARCHAR,
+    exec_count INTEGER,
+    last_exec_time TIMESTAMP,
+    exec_times JSON,
+    prefetch_hash VARCHAR,
+    filenames JSON,
+    volumes JSON,
+    raw_json JSON,
+    tags JSON,
+    severity VARCHAR
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS findings_by_id ON findings(finding_id);
 CREATE INDEX IF NOT EXISTS findings_by_status_confidence ON findings(status, confidence);
 CREATE INDEX IF NOT EXISTS evtx_events_by_evidence_id ON evtx_events(evidence_id);
 CREATE INDEX IF NOT EXISTS mft_entries_by_evidence_id ON mft_entries(evidence_id);
+CREATE INDEX IF NOT EXISTS prefetch_executions_by_evidence_id ON prefetch_executions(evidence_id);
 """
 
 TRACE_SCHEMA_SQL = """

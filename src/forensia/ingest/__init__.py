@@ -29,7 +29,13 @@ def ingest_all(
     if not base.exists():
         raise FileNotFoundError(f"Input directory not found: {base}")
 
-    counts = {"evtx_files": 0, "mft_files": 0, "new_files": 0, "skipped_files": 0}
+    counts = {
+        "evtx_files": 0,
+        "mft_files": 0,
+        "prefetch_files": 0,
+        "new_files": 0,
+        "skipped_files": 0,
+    }
     adapters = get_artifact_adapters()
     owns_db = db is None
     db = db or CaseDB(case)

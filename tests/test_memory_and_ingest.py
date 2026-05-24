@@ -6,8 +6,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from typer.testing import CliRunner
+
 from forensia.ai.checker import CheckResult
 from forensia.ai.investigator import _apply_memory_updates, _sync_keypoint_cards
+from forensia.artifacts import PrefetchArtifactAdapter
 from forensia import cli as cli_module
 from forensia.cli import _progress_pusher, _reset_case_tables
 from forensia.config import clear_llm_settings_cache, get_llm_settings, resolve_llm_config
@@ -16,6 +19,7 @@ from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery
 from forensia.db.database import CaseDB
 from forensia.ingest import ingest_all
+from forensia.normalize import normalize_all
 
 
 class MemoryAndIngestTests(unittest.TestCase):
@@ -868,9 +872,23 @@ class MemoryAndIngestTests(unittest.TestCase):
             (input_dir / "a.evtx").write_text("alpha", encoding="utf-8")
             output_dir = Path(tmpdir) / "case"
 
-            with patch("forensia.cli.ingest_all", return_value={"new_files": 1, "skipped_files": 0, "evtx_files": 1, "mft_files": 0}), patch(
+            with patch(
+                "forensia.cli.ingest_all",
+                return_value={
+                    "new_files": 1,
+                    "skipped_files": 0,
+                    "evtx_files": 1,
+                    "mft_files": 0,
+                    "prefetch_files": 0,
+                },
+            ), patch(
                 "forensia.cli.normalize_all",
-                return_value={"evtx_rows": 1, "mft_entries": 0, "mft_timeline_rows": 0},
+                return_value={
+                    "evtx_rows": 1,
+                    "mft_entries": 0,
+                    "mft_timeline_rows": 0,
+                    "prefetch_executions": 0,
+                },
             ), patch("forensia.cli.resolve_llm_config", return_value=(None, None)), patch("forensia.cli.load_rules_from_dir", return_value=[]), patch(
                 "forensia.cli.render_written_report",
                 return_value=(output_dir / "reports" / "report.md", output_dir / "reports" / "report.html"),
@@ -971,6 +989,99 @@ class MemoryAndIngestTests(unittest.TestCase):
             self.assertEqual(1, third["new_files"])
             self.assertEqual(4, forced["new_files"])
             self.assertEqual(4, ingested_count)
+
+    def test_ingest_all_counts_prefetch_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(Path(tmpdir) / "case")
+            input_dir = Path(tmpdir) / "input"
+            input_dir.mkdir(parents=True, exist_ok=True)
+            (input_dir / "APP.EXE-12345678.pf").write_text("prefetch", encoding="utf-8")
+
+            def fake_ingest(case_obj: Case, source_path: str | Path, source_sha: str | None = None, progress_callback=None):
+                output = case_obj.raw_dir / f"prefetch-{(source_sha or 'x')[:12]}.jsonl"
+                output.write_text("{}", encoding="utf-8")
+                return output
+
+            with patch("forensia.ingest.prefetch.ingest_prefetch_file", side_effect=fake_ingest):
+                counts = ingest_all(case, input_dir)
+
+            self.assertEqual(1, counts["new_files"])
+            self.assertEqual(1, counts["prefetch_files"])
+            self.assertEqual(0, counts["evtx_files"])
+            self.assertEqual(0, counts["mft_files"])
+
+    def test_prefetch_adapter_only_claims_pf_files(self) -> None:
+        adapter = PrefetchArtifactAdapter()
+        prefetch_dir = Path("/tmp/Prefetch")
+
+        self.assertTrue(adapter.can_handle(prefetch_dir / "APP.EXE-12345678.pf"))
+        self.assertFalse(adapter.can_handle(prefetch_dir))
+
+    def test_normalize_all_includes_prefetch_execution_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db, patch("forensia.normalize.evtx.normalize_evtx", return_value=0), patch(
+                "forensia.normalize.mft.normalize_mft",
+                return_value=(0, 0),
+            ), patch("forensia.normalize.prefetch.normalize_prefetch", return_value=3):
+                counts = normalize_all(case, db)
+
+            self.assertEqual(3, counts["prefetch_executions"])
+            self.assertEqual(0, counts["evtx_rows"])
+            self.assertEqual(0, counts["mft_entries"])
+
+    def test_cli_add_and_run_surface_prefetch_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(Path(tmpdir) / "case-add")
+            input_dir = Path(tmpdir) / "input"
+            input_dir.mkdir(parents=True, exist_ok=True)
+            runner = CliRunner()
+
+            with patch(
+                "forensia.cli.ingest_all",
+                return_value={
+                    "new_files": 1,
+                    "skipped_files": 0,
+                    "evtx_files": 0,
+                    "mft_files": 0,
+                    "prefetch_files": 1,
+                },
+            ):
+                add_result = runner.invoke(cli_module.app, ["add", str(case.path), str(input_dir)])
+
+            self.assertEqual(0, add_result.exit_code, add_result.output)
+            self.assertIn("prefetch=1", add_result.output)
+
+            output_dir = Path(tmpdir) / "case-run"
+            with patch(
+                "forensia.cli.ingest_all",
+                return_value={
+                    "new_files": 1,
+                    "skipped_files": 0,
+                    "evtx_files": 0,
+                    "mft_files": 0,
+                    "prefetch_files": 1,
+                },
+            ), patch(
+                "forensia.cli.normalize_all",
+                return_value={
+                    "evtx_rows": 0,
+                    "mft_entries": 0,
+                    "mft_timeline_rows": 0,
+                    "prefetch_executions": 2,
+                },
+            ), patch("forensia.cli.resolve_llm_config", return_value=(None, None)), patch(
+                "forensia.cli.load_rules_from_dir",
+                return_value=[],
+            ), patch(
+                "forensia.cli.render_written_report",
+                return_value=(output_dir / "reports" / "report.md", output_dir / "reports" / "report.html"),
+            ), patch("forensia.cli.write_api_snapshots"):
+                run_result = runner.invoke(cli_module.app, ["run", str(input_dir), "--out", str(output_dir)])
+
+            self.assertEqual(0, run_result.exit_code, run_result.output)
+            self.assertIn("prefetch_files=1", run_result.output)
+            self.assertIn("prefetch_executions=2", run_result.output)
 
 
 if __name__ == "__main__":

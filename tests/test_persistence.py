@@ -688,9 +688,12 @@ class PersistenceTests(unittest.TestCase):
                     "report_sections": {"items": []},
                 }
 
-            with patch("forensia.cli.ingest_all", return_value={"new_files": 0, "skipped_files": 0, "evtx_files": 0, "mft_files": 0}), patch(
+            with patch(
+                "forensia.cli.ingest_all",
+                return_value={"new_files": 0, "skipped_files": 0, "evtx_files": 0, "mft_files": 0, "prefetch_files": 0},
+            ), patch(
                 "forensia.cli.normalize_all",
-                return_value={"evtx_rows": 0, "mft_entries": 0, "mft_timeline_rows": 0},
+                return_value={"evtx_rows": 0, "mft_entries": 0, "mft_timeline_rows": 0, "prefetch_executions": 0},
             ), patch("forensia.cli.load_rules_from_dir", return_value=[]), patch(
                 "forensia.cli.investigate_loop",
                 side_effect=fake_investigate_loop,

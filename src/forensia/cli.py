@@ -62,6 +62,7 @@ def _reset_case_tables(db: CaseDB) -> None:
         "evtx_events",
         "mft_entries",
         "mft_timeline",
+        "prefetch_executions",
         "findings",
         "claims",
         "ai_reviews",
@@ -85,6 +86,14 @@ def _prune_orphan_reviews(db: CaseDB) -> None:
           AND finding_id NOT LIKE 'query:%'
           AND finding_id NOT LIKE 'investigate:%'
         """
+    )
+
+
+def _normalize_counts_summary(counts: dict[str, int]) -> str:
+    return (
+        f"evtx_rows={counts['evtx_rows']}, "
+        f"mft_entries={counts['mft_entries']}, "
+        f"prefetch_executions={counts['prefetch_executions']}"
     )
 
 
@@ -192,13 +201,15 @@ def add(case_dir: str, input_dir: str) -> None:
         "ingest",
         (
             f"new_files={counts['new_files']}, skipped_files={counts['skipped_files']}, "
-            f"evtx_files={counts['evtx_files']}, mft_files={counts['mft_files']}"
+            f"evtx_files={counts['evtx_files']}, mft_files={counts['mft_files']}, "
+            f"prefetch_files={counts['prefetch_files']}"
         ),
     )
     print(
         "Add complete: "
         f"added={counts['new_files']}, skipped={counts['skipped_files']}, "
-        f"evtx={counts['evtx_files']}, mft={counts['mft_files']}"
+        f"evtx={counts['evtx_files']}, mft={counts['mft_files']}, "
+        f"prefetch={counts['prefetch_files']}"
     )
 
 
@@ -325,7 +336,8 @@ def run(
         counts = ingest_all(case, input_dir, db=db, progress_callback=stage_status)
         note = (
             f"new_files={counts['new_files']}, skipped_files={counts['skipped_files']}, "
-            f"evtx_files={counts['evtx_files']}, mft_files={counts['mft_files']}"
+            f"evtx_files={counts['evtx_files']}, mft_files={counts['mft_files']}, "
+            f"prefetch_files={counts['prefetch_files']}"
         )
         tasks.mark_done("ingest", note)
         _status(f"Ingest complete: {note}")
@@ -346,12 +358,9 @@ def run(
             _status("Stage 2/4: normalize into DuckDB")
             push_progress("[normalize] starting", stage="normalize", status="running")
             normalized = normalize_all(case, db)
-            evtx_count = normalized["evtx_rows"]
-            mft_entries = normalized["mft_entries"]
-            mft_timeline = normalized["mft_timeline_rows"]
-            note = f"evtx_rows={evtx_count}, mft_entries={mft_entries}"
+            note = _normalize_counts_summary(normalized)
             tasks.mark_done("normalize", note)
-            _status(f"Normalize complete: {note}, mft_timeline_rows={mft_timeline}")
+            _status(f"Normalize complete: {note}, mft_timeline_rows={normalized['mft_timeline_rows']}")
             push_progress(f"[normalize] {note}", stage="normalize", status="running", summary=note)
 
         # Stage 3: Analyze
