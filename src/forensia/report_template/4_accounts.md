@@ -1,27 +1,3 @@
----
-section: 4_accounts
-title: "Compromised Accounts and Authentication"
-prompt: |
-  Write the "Compromised Accounts and Authentication" section using the investigation data below.
-  You must include:
-    1. Accounts confirmed or suspected to be compromised, including supporting evidence_id values
-    2. The apparent compromise method for each account, such as Pass-the-Hash, brute force, or credential theft
-    3. Suspicious logons with timestamp, source IP, target host, and LogonType
-    4. The LogonType values used by the attacker and their meaning, such as 3 = network logon and 10 = RDP
-    5. Abuse of privileged accounts, including 4672 privileged logon indicators when applicable
-  LogonType=3 is common and should be described as suspicious only when combined with additional indicators such as administrative share access, off-hours activity, or unusual external IPs.
-  Do not use 4720, 4728, or 4732 as logon evidence.
-  Do not describe 4648 alone as confirmed Pass-the-Hash or PsExec.
-  Distinguish observed users, newly created users, suspicious users, actor candidates, and victim users.
-  Do not call an existing observed user attacker-created unless account-creation evidence exists.
-keypoints:
-  - top_keypoints
-  - accounts_logon_summary
-  - accounts_failed_logons
-  - accounts_changes
-  - accounts_explicit_credentials
----
-
 # Compromised Accounts and Authentication
 
 ## Compromised Account List
@@ -30,21 +6,15 @@ keypoints:
 |---|---|---|---|---|
 | <!-- fill --> | observed_user / newly_created_user / suspicious_user / actor_candidate / victim_user | <!-- fill --> | <!-- fill --> | <!-- fill --> |
 
----
-
 ## Suspicious Logon Details
 
 | Timestamp | Source IP | Target Host | Account | LogonType | Why It Is Suspicious |
 |---|---|---|---|---|---|
 | <!-- fill --> | <!-- fill --> | <!-- fill --> | <!-- fill --> | <!-- fill --> | <!-- fill --> |
 
----
-
 ## Brute Force / Password Spray
 
 <!-- Describe confirmed 4625 clustering here. If not observed, write "Not observed." -->
-
----
 
 ## Account Operations (Create / Delete / Group Membership Changes)
 

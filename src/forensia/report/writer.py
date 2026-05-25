@@ -9,8 +9,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from forensia.ai.lmstudio import chat_completion
 from forensia.ai.prompts import build_report_section_messages
 from forensia.core.case import Case
@@ -31,13 +29,93 @@ EvidenceResolver = Callable[[CaseDB], list[dict[str, Any]]]
 
 
 @lru_cache(maxsize=None)
-def _parse_template(template_path: str) -> tuple[dict[str, Any], str]:
+def _parse_template(template_path: str) -> str:
     text = Path(template_path).read_text(encoding="utf-8")
-    if not text.startswith("---\n"):
-        return {}, text
-    _, frontmatter, body = text.split("---\n", 2)
-    meta = yaml.safe_load(frontmatter) or {}
-    return meta, body.strip()
+    if text.startswith("---\n"):
+        parts = text.split("---\n", 2)
+        if len(parts) == 3:
+            return parts[2].strip()
+    return text.strip()
+
+
+def _split_template_body(template_body: str) -> tuple[str, list[dict[str, str]]]:
+    lines = template_body.splitlines()
+    preamble: list[str] = []
+    blocks: list[dict[str, str]] = []
+    current_heading: str | None = None
+    current_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            if current_heading is not None:
+                blocks.append(
+                    {
+                        "heading": current_heading,
+                        "template_body": "\n".join(current_lines).strip(),
+                    }
+                )
+            current_heading = stripped[3:].strip()
+            current_lines = [line]
+            continue
+        if current_heading is None:
+            preamble.append(line)
+        else:
+            current_lines.append(line)
+    if current_heading is not None:
+        blocks.append(
+            {
+                "heading": current_heading,
+                "template_body": "\n".join(current_lines).strip(),
+            }
+        )
+    preamble_text = "\n".join(preamble).strip()
+    return preamble_text, blocks
+
+
+SECTION_KEYPOINT_PREFIXES: dict[str, tuple[str, ...]] = {
+    "overview": ("overview_",),
+    "timeline": ("timeline_",),
+    "hosts": ("host_",),
+    "accounts": ("account_",),
+    "persistence": ("persistence_",),
+    "ioc": ("ioc_",),
+    "gaps": ("gaps_",),
+    "recommendations": ("recommendations_",),
+    "appendix": ("appendix_",),
+}
+
+SECTION_EXTRA_KEYPOINTS: dict[str, tuple[str, ...]] = {
+    "overview": ("top_keypoints", "session_activity_events"),
+    "timeline": ("top_keypoints", "gaps_log_integrity_events"),
+    "hosts": ("top_keypoints", "overview_hosts", "session_activity_events", "host_user_profile_paths", "timeline_prefetch_history"),
+    "accounts": ("top_keypoints",),
+    "persistence": ("top_keypoints", "host_execution_activity", "timeline_prefetch_history", "mft_prefetch_filenames", "mft_user_app_activity"),
+    "ioc": ("top_keypoints", "mft_recent_folder_lnk", "mft_prefetch_filenames"),
+    "gaps": ("top_keypoints",),
+    "recommendations": ("top_keypoints", "timeline_system_events", "timeline_prefetch_history", "ioc_user_data_files"),
+    "appendix": ("top_keypoints",),
+}
+
+
+def _section_family(section_key: str) -> str:
+    parts = str(section_key or "").split("_", 1)
+    return parts[1] if len(parts) == 2 else parts[0]
+
+
+def _default_keypoints_for_section(section_key: str) -> list[str]:
+    family = _section_family(section_key)
+    prefixes = SECTION_KEYPOINT_PREFIXES.get(family, ())
+    names: list[str] = []
+    seen: set[str] = set()
+    for keypoint in SECTION_EXTRA_KEYPOINTS.get(family, ()):
+        if keypoint not in seen:
+            seen.add(keypoint)
+            names.append(keypoint)
+    for keypoint in REPORT_KEYPOINTS:
+        if any(keypoint.startswith(prefix) for prefix in prefixes) and keypoint not in seen:
+            seen.add(keypoint)
+            names.append(keypoint)
+    return names
 
 
 def _section_confidence(body: str) -> float:
@@ -77,6 +155,11 @@ def _first_heading_text(body: str) -> str:
         if match and len(match.group(1)) == 1:
             return match.group(2).strip()
     return ""
+
+
+def _title_from_template_body(template_body: str, fallback: str) -> str:
+    title = _first_heading_text(template_body)
+    return title or fallback
 
 
 def _title_matches_body_heading(title: str, body: str) -> bool:
@@ -218,6 +301,23 @@ def _validate_body_evidence_ids(db: CaseDB, body: str) -> list[str]:
         ).fetchall()
     }
     return [evidence_id for evidence_id in evidence_ids if evidence_id not in found]
+
+
+def _verify_block_output(db: CaseDB, body: str) -> tuple[list[str], float]:
+    gaps = collect_gaps({"block": body})
+    confidence = _section_confidence(body)
+    missing_evidence_ids = _validate_body_evidence_ids(db, body)
+    if missing_evidence_ids:
+        gaps.append(
+            f"Referenced evidence_id values not found in database: {', '.join(missing_evidence_ids[:5])}"
+        )
+        confidence = min(confidence, 0.6)
+    if HTML_FILL_PATTERN.search(body):
+        note = "Template placeholder markers remain in the section body."
+        if note not in gaps:
+            gaps.append(note)
+        confidence = min(confidence, 0.3)
+    return gaps, confidence
 
 
 
@@ -929,10 +1029,12 @@ def _resolve_evidence_results(
     keypoints: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
+    seen_keypoints: set[str] = set()
     for keypoint in (keypoints or []):
         normalized = str(keypoint or "").strip()
-        if not normalized:
+        if not normalized or normalized in seen_keypoints:
             continue
+        seen_keypoints.add(normalized)
         if normalized in {"top_keypoints", "memory_keypoint_cards"}:
             cards = _load_keypoint_cards(case)
             results.append(
@@ -1376,28 +1478,75 @@ def prepare_section_request(
     Pure I/O against DuckDB; safe to call from the main thread before
     dispatching parallel LLM workers.
     """
-    section_meta, template_body = _parse_template(str(template_path))
+    template_body = _parse_template(str(template_path))
+    section_key = Path(template_path).stem
+    title = _title_from_template_body(template_body, section_key)
+    template_preamble, blocks = _split_template_body(template_body)
+    if not blocks:
+        blocks = [{"heading": "", "template_body": template_body}]
+    selected_keypoints = _default_keypoints_for_section(section_key)
     evidence_results = _resolve_evidence_results(
         case,
         db,
-        keypoints=list(section_meta.get("keypoints") or []),
+        keypoints=selected_keypoints,
     )
-    messages = build_report_section_messages(
-        section_meta=section_meta,
-        evidence_results=evidence_results,
-        context_sections=context_sections,
-        template_body=template_body,
-        report_brief=report_brief,
-    )
-    section_key = str(section_meta.get("section") or Path(template_path).stem)
-    title = str(section_meta.get("title") or section_key)
+    block_requests = [
+        {
+            "heading": block["heading"],
+            "template_body": block["template_body"],
+            "evidence_results": evidence_results,
+        }
+        for block in blocks
+    ]
     return {
         "section_key": section_key,
         "title": title,
-        "messages": messages,
         "template_path": str(template_path),
+        "template_preamble": template_preamble,
+        "block_requests": block_requests,
+        "context_sections": dict(context_sections),
+        "report_brief": report_brief or {},
         "evidence_results": evidence_results,
     }
+
+
+def _render_section_from_request(
+    *,
+    db: CaseDB,
+    request: dict[str, Any],
+    base_url: str,
+    model: str,
+    audit_callback: Callable[[list[dict[str, str]], str], None] | None = None,
+) -> tuple[str, list[dict[str, Any]], list[str]]:
+    rendered_blocks: list[str] = []
+    block_gaps: list[str] = []
+    block_outputs: dict[str, str] = {}
+    for block in request.get("block_requests") or []:
+        messages = build_report_section_messages(
+            section_meta={"section": request["section_key"], "title": request["title"]},
+            evidence_results=list(block.get("evidence_results") or []),
+            context_sections=request.get("context_sections") or {},
+            template_body=str(block.get("template_body") or ""),
+            report_brief=request.get("report_brief") or {},
+            section_heading=str(block.get("heading") or ""),
+            current_section_outputs=block_outputs,
+            verification_notes=block_gaps,
+        )
+        block_body = chat_completion(messages=messages, model=model, base_url=base_url).strip()
+        if audit_callback:
+            audit_callback(messages, block_body)
+        rendered_blocks.append(block_body)
+        heading = str(block.get("heading") or "").strip()
+        if heading:
+            block_outputs[heading] = block_body
+        block_level_gaps, _ = _verify_block_output(db, block_body)
+        for gap in block_level_gaps:
+            label = f"{heading}: {gap}" if heading else gap
+            if label not in block_gaps:
+                block_gaps.append(label)
+    parts = [str(request.get("template_preamble") or "").strip(), *[item.strip() for item in rendered_blocks if item.strip()]]
+    body = "\n\n".join(part for part in parts if part).strip()
+    return body, list(request.get("evidence_results") or []), block_gaps
 
 
 def finalize_section(
@@ -1407,12 +1556,16 @@ def finalize_section(
     body: str,
     evidence_results: list[dict[str, Any]] | None = None,
     session_id: str | None = None,
+    extra_gaps: list[str] | None = None,
 ) -> dict[str, Any]:
     """UPSERT the section into DuckDB. Returns gap list and confidence."""
     if section_key == "2_timeline":
         body = _sort_markdown_table_by_first_column(body)
     candidate_gaps = collect_gaps({section_key: body})
     candidate_confidence = _section_confidence(body)
+    for gap in extra_gaps or []:
+        if gap not in candidate_gaps:
+            candidate_gaps.append(gap)
     missing_evidence_ids = _validate_body_evidence_ids(db, body)
     if missing_evidence_ids:
         candidate_gaps.append(
@@ -1492,16 +1645,21 @@ def fill_section(
     audit_callback: Callable[[list[dict[str, str]], str], None] | None = None,
 ) -> str:
     request = prepare_section_request(case, db, template_path, context_sections, report_brief=report_brief)
-    body = chat_completion(messages=request["messages"], model=model, base_url=base_url).strip()
-    if audit_callback:
-        audit_callback(request["messages"], body)
+    body, evidence_results, block_gaps = _render_section_from_request(
+        db=db,
+        request=request,
+        base_url=base_url,
+        model=model,
+        audit_callback=audit_callback,
+    )
     finalize_section(
         db=db,
         section_key=request["section_key"],
         title=request["title"],
         body=body,
-        evidence_results=request["evidence_results"],
+        evidence_results=evidence_results,
         session_id=session_id,
+        extra_gaps=block_gaps,
     )
     return body
 

@@ -29,7 +29,6 @@ from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.db.database import CaseDB
 from forensia.report.writer import (
-    REPORT_KEYPOINT_ALIASES,
     _build_report_brief,
     _extract_claim_texts,
     _quality_gate_section,
@@ -166,13 +165,13 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual("draft", row[4])
             self.assertEqual(1, int(row[5]))
 
-    def test_prepare_section_request_supports_keypoints_without_sql_in_template(self) -> None:
+    def test_prepare_section_request_infers_section_evidence_without_template_keypoints(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             template_path = case.path / "report_template_custom" / "1_overview.md"
             template_path.parent.mkdir(parents=True, exist_ok=True)
             template_path.write_text(
-                "---\nsection: 1_overview\ntitle: Overview\nkeypoints:\n  - top_keypoints\n  - overview_hosts\n---\n# Overview\n",
+                "# Overview\n",
                 encoding="utf-8",
             )
             case.memory_dir.joinpath("keypoints").mkdir(parents=True, exist_ok=True)
@@ -194,26 +193,56 @@ class PersistenceTests(unittest.TestCase):
                 request = prepare_section_request(case, db, template_path, {}, report_brief={})
 
             self.assertEqual("1_overview", request["section_key"])
-            self.assertEqual(2, len(request["evidence_results"]))
-            self.assertEqual("top_keypoints", request["evidence_results"][0]["keypoint"])
-            self.assertEqual("overview_hosts", request["evidence_results"][1]["keypoint"])
+            result_names = {item["keypoint"] for item in request["evidence_results"]}
+            self.assertIn("top_keypoints", result_names)
+            self.assertIn("overview_hosts", result_names)
+            self.assertIn("overview_event_range", result_names)
 
-    def test_prepare_section_request_resolves_benchmark_alias_keypoints(self) -> None:
+    def test_fill_section_calls_llm_per_template_heading(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            template_path = case.path / "report_template_custom" / "1_overview.md"
+            template_path.parent.mkdir(parents=True, exist_ok=True)
+            template_path.write_text(
+                (
+                    "# Overview\n\n"
+                    "## Incident Summary\n\n"
+                    "<!-- fill -->\n\n"
+                    "## Evidence Scope\n\n"
+                    "<!-- fill -->\n"
+                ),
+                encoding="utf-8",
+            )
+            with CaseDB(case) as db:
+                with patch(
+                    "forensia.report.writer.chat_completion",
+                    side_effect=[
+                        "## Incident Summary\n\nSummary text.",
+                        "## Evidence Scope\n\nScope text.",
+                    ],
+                ) as mock_chat:
+                    body = fill_section(
+                        case=case,
+                        db=db,
+                        template_path=template_path,
+                        context_sections={},
+                        report_brief={"top_findings": []},
+                        base_url=self._llm_base_url(),
+                        model="test-model",
+                        session_id="session-test",
+                    )
+
+            self.assertEqual(2, mock_chat.call_count)
+            self.assertIn("## Incident Summary\n\nSummary text.", body)
+            self.assertIn("## Evidence Scope\n\nScope text.", body)
+
+    def test_prepare_section_request_infers_ioc_keypoints_from_section_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             template_path = case.path / "report_template_custom" / "6_ioc.md"
             template_path.parent.mkdir(parents=True, exist_ok=True)
             template_path.write_text(
                 (
-                    "---\n"
-                    "section: 6_ioc\n"
-                    "title: IOC\n"
-                    "keypoints:\n"
-                    "  - benchmark_artifact_processes\n"
-                    "  - benchmark_artifact_paths\n"
-                    "  - benchmark_ost_file\n"
-                    "  - benchmark_recent_lnk\n"
-                    "---\n"
                     "# IOC\n"
                 ),
                 encoding="utf-8",
@@ -235,18 +264,16 @@ class PersistenceTests(unittest.TestCase):
                 )
                 request = prepare_section_request(case, db, template_path, {}, report_brief={})
 
-            self.assertEqual("mft_prefetch_filenames", REPORT_KEYPOINT_ALIASES["benchmark_artifact_processes"])
-            self.assertEqual("mft_recent_folder_lnk", REPORT_KEYPOINT_ALIASES["benchmark_recent_lnk"])
             results = {item["keypoint"]: item for item in request["evidence_results"]}
-            self.assertEqual("CHROME.EXE-D999B1BA.pf", results["benchmark_artifact_processes"]["sample_rows"][0]["file_name"])
+            self.assertEqual("CHROME.EXE-D999B1BA.pf", results["mft_prefetch_filenames"]["sample_rows"][0]["file_name"])
             self.assertTrue(
                 any(
                     "googledrivesync.exe" in row["file_path"]
-                    for row in results["benchmark_artifact_paths"]["sample_rows"]
+                    for row in results["ioc_user_data_files"]["sample_rows"]
                 )
             )
-            self.assertTrue(results["benchmark_ost_file"]["sample_rows"][0]["file_path"].endswith(".ost"))
-            self.assertIn("secret_project", results["benchmark_recent_lnk"]["sample_rows"][0]["file_name"])
+            self.assertTrue(results["ioc_email_ost_files"]["sample_rows"][0]["file_path"].endswith(".ost"))
+            self.assertIn("secret_project", results["mft_recent_folder_lnk"]["sample_rows"][0]["file_name"])
 
     def test_quality_gate_flags_placeholder_entities_and_non_chronological_timeline(self) -> None:
         body = (
@@ -735,7 +762,7 @@ class PersistenceTests(unittest.TestCase):
             template_root = case.path / "report_template_custom"
             template_root.mkdir(parents=True, exist_ok=True)
             (template_root / "1_overview.md").write_text(
-                "---\nsection: 1_overview\ntitle: Overview\nkeypoints: []\n---\n# Overview\n",
+                "# Overview\n",
                 encoding="utf-8",
             )
             with CaseDB(case) as db:

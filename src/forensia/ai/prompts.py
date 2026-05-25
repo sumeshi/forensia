@@ -242,8 +242,12 @@ def build_report_section_messages(
     context_sections: dict[str, str],
     template_body: str,
     report_brief: dict[str, Any] | None = None,
+    section_heading: str = "",
+    current_section_outputs: dict[str, str] | None = None,
+    verification_notes: list[str] | None = None,
 ) -> list[dict[str, str]]:
     trimmed_context_sections = _truncate_context_sections(context_sections)
+    trimmed_current_outputs = _truncate_context_sections(current_section_outputs or {}, max_chars=1200)
     insufficient_evidence_placeholder = (
         "【調査不足: 理由】"
         if _output_language().startswith("ja")
@@ -273,10 +277,13 @@ def build_report_section_messages(
     )
     user = (
         f"section_meta: {section_meta}\n\n"
+        f"current_subsection: {section_heading or '(full section)'}\n\n"
         f"report_brief: {report_brief or {}}\n\n"
         f"previous_sections: {trimmed_context_sections}\n\n"
+        f"current_section_progress: {trimmed_current_outputs}\n\n"
+        f"verification_notes_from_prior_subsections: {verification_notes or []}\n\n"
         f"evidence_results: {evidence_results}\n\n"
-        "Complete this section template by replacing placeholders and comments with evidence-based content:\n\n"
+        "Complete only this current template block by replacing placeholders and comments with evidence-based content:\n\n"
         f"{template_body}"
     )
     return [

@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 from forensia.ai.audit import LLMCallLogger
-from forensia.ai.lmstudio import chat_completion
 from forensia.ai.report_gap import _build_report_status
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
@@ -17,6 +16,7 @@ from forensia.report.writer import (
     finalize_section,
     load_report_sections_map,
     prepare_section_request,
+    _render_section_from_request,
     write_report_brief,
 )
 
@@ -212,20 +212,22 @@ def _refresh_report_sections_parallel(
                 "current_report_section": request["section_key"],
             }
         )
-        body = chat_completion(
-            messages=request["messages"],
+        body, _, block_gaps = _render_section_from_request(
+            db=db,
+            request=request,
             model=model,
             base_url=base_url,
-        ).strip()
-        llm_logger.write(
-            iteration=iteration,
-            phase="report-section",
-            input_messages=request["messages"],
-            output=body,
-            model=model,
-            base_url=base_url,
-            suffix=str(request["section_key"]),
+            audit_callback=lambda messages, block_body: llm_logger.write(
+                iteration=iteration,
+                phase="report-section",
+                input_messages=messages,
+                output=block_body,
+                model=model,
+                base_url=base_url,
+                suffix=str(request["section_key"]),
+            ),
         )
+        request["block_gaps"] = block_gaps
         return request, body
 
     filled_sections: dict[str, str] = {}
@@ -254,6 +256,7 @@ def _refresh_report_sections_parallel(
                 body=body,
                 evidence_results=request.get("evidence_results") or [],
                 session_id=session_id,
+                extra_gaps=request.get("block_gaps") or [],
             )
             filled_sections[section_key] = body
             updated += 1
