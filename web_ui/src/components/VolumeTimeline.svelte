@@ -120,6 +120,9 @@
   }
 
   $: if (canvas) {
+    // reference points and bucket so Svelte tracks them as reactive dependencies
+    void points;
+    void bucket;
     renderChart();
   }
 

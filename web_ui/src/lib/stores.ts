@@ -84,35 +84,40 @@ export async function refreshAll(): Promise<void> {
   let sourceValue: "all" | "detected" = "all";
   volumeBucket.subscribe((value) => (bucketValue = value))();
   volumeSource.subscribe((value) => (sourceValue = value))();
-  const [caseData, statsData, findingsData, hypothesesData, sessionsData, reportData, timelineData, eventVolumeData, reviewsData] = await Promise.all([
-    api.getCase(),
-    api.getStats(),
-    api.getFindings(),
-    api.getHypotheses(),
-    api.getSessions(),
-    api.getReportSections(),
-    api.getTimeline(),
-    api.getEventVolume(bucketValue, sourceValue),
-    api.getAiReviews()
-  ]);
-  caseInfo.set(caseData);
-  caseStats.set(statsData);
-  findings.set(findingsData);
-  hypotheses.set(hypothesesData);
-  sessions.set(sessionsData);
+  const [caseResult, statsResult, findingsResult, hypothesesResult, sessionsResult, reportResult, timelineResult, eventVolumeResult, reviewsResult] =
+    await Promise.allSettled([
+      api.getCase(),
+      api.getStats(),
+      api.getFindings(),
+      api.getHypotheses(),
+      api.getSessions(),
+      api.getReportSections(),
+      api.getTimeline(),
+      api.getEventVolume(bucketValue, sourceValue),
+      api.getAiReviews()
+    ]);
+
+  if (caseResult.status === "fulfilled") caseInfo.set(caseResult.value);
+  if (statsResult.status === "fulfilled") caseStats.set(statsResult.value);
+  if (findingsResult.status === "fulfilled") findings.set(findingsResult.value);
+  if (hypothesesResult.status === "fulfilled") hypotheses.set(hypothesesResult.value);
+  if (sessionsResult.status === "fulfilled") sessions.set(sessionsResult.value);
   let currentProgress: ProgressEventDTO | null = null;
   progress.subscribe((value) => (currentProgress = value))();
-  reportSections.set(mergeReportSections(reportData, currentProgress));
-  timeline.set(timelineData);
-  eventVolume.set(eventVolumeData);
-  aiReviews.set(reviewsData);
+  if (reportResult.status === "fulfilled") reportSections.set(mergeReportSections(reportResult.value, currentProgress));
+  if (timelineResult.status === "fulfilled") timeline.set(timelineResult.value);
+  if (eventVolumeResult.status === "fulfilled") eventVolume.set(eventVolumeResult.value);
+  if (reviewsResult.status === "fulfilled") aiReviews.set(reviewsResult.value);
 
-  const latestSessionId = sessionsData[0]?.session_id ?? "";
-  if (latestSessionId && latestSessionId !== currentSessionId) {
-    currentSessionId = latestSessionId;
-    steps.set(await api.getSteps(latestSessionId));
-  } else if (latestSessionId) {
-    steps.set(await api.getSteps(latestSessionId));
+  if (sessionsResult.status === "fulfilled") {
+    const latestSessionId = sessionsResult.value[0]?.session_id ?? "";
+    if (latestSessionId) {
+      try {
+        steps.set(await api.getSteps(latestSessionId));
+      } catch {
+        // ignore step fetch failures
+      }
+    }
   }
 }
 

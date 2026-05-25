@@ -100,6 +100,11 @@ def _retry_query_once(
             audit_callback=audit_callback,
         )
         retried["read_more"] = [str(item) for item in coerce_list(parsed.get("read_more"))]
+        retried_query = retried.get("query")
+        if isinstance(retried_query, dict):
+            for field in ("query_id", "hypothesis_id", "purpose"):
+                if field not in retried_query and field in query:
+                    retried_query[field] = query[field]
         return retried
 
 

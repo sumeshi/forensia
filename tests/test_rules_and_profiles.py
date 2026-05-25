@@ -23,7 +23,7 @@ class RuleProfileTests(unittest.TestCase):
         profile_path = Path("src/forensia/profiles/windows-basic.yaml")
         rules = load_rules_from_dir(rules_dir, profile_path)
 
-        self.assertEqual(61, len(rules))
+        self.assertEqual(62, len(rules))
         self.assertTrue(all(rule.attack for rule in rules))
 
     def test_ransomware_profile_filters_rule_ids(self) -> None:
@@ -70,6 +70,7 @@ class RuleProfileTests(unittest.TestCase):
             "security_1104_security_log_full.yaml",
             "security_4616_time_changed.yaml",
             "security_4624_explicit_creds.yaml",
+            "security_4624_interactive_logon.yaml",
             "security_4624_network_logon.yaml",
             "security_4624_rdp_logon.yaml",
             "security_4625_failed_logon.yaml",
@@ -315,6 +316,60 @@ class RuleExecutionTests(unittest.TestCase):
             self.assertEqual("10.0.0.9", rows[0]["src_ip"])
             self.assertEqual("alice", rows[0]["target_user"])
             self.assertEqual(5, rows[0]["fail_count"])
+
+    def test_4624_interactive_logon_keeps_user_logons_and_excludes_noise_accounts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                self._insert_evtx_event(
+                    db,
+                    evidence_id="ev-1",
+                    event_id=4624,
+                    timestamp="2026-05-16 04:00:00",
+                    computer="host1",
+                    target_user="informant",
+                    subject_user="SYSTEM",
+                    src_ip=None,
+                    logon_type="2",
+                )
+                self._insert_evtx_event(
+                    db,
+                    evidence_id="ev-2",
+                    event_id=4624,
+                    timestamp="2026-05-16 04:01:00",
+                    computer="host1",
+                    target_user="alice",
+                    subject_user="SYSTEM",
+                    src_ip="10.0.0.15",
+                    logon_type="10",
+                )
+                self._insert_evtx_event(
+                    db,
+                    evidence_id="ev-3",
+                    event_id=4624,
+                    timestamp="2026-05-16 04:02:00",
+                    computer="host1",
+                    target_user="SYSTEM",
+                    subject_user="SYSTEM",
+                    src_ip=None,
+                    logon_type="2",
+                )
+                self._insert_evtx_event(
+                    db,
+                    evidence_id="ev-4",
+                    event_id=4624,
+                    timestamp="2026-05-16 04:03:00",
+                    computer="host1",
+                    target_user="DESKTOP-01$",
+                    subject_user="SYSTEM",
+                    src_ip=None,
+                    logon_type="2",
+                )
+
+                rows = self._run_rule_query(db, "security_4624_interactive_logon.yaml")
+
+            self.assertEqual(2, len(rows))
+            self.assertEqual({"informant", "alice"}, {row["target_user"] for row in rows})
 
     def test_5140_admin_share_access_parses_share_name_and_excludes_ipc_noise(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from forensia.ai.checker import CheckResult
+from forensia.ai.checker import CheckResult, summarize_query_result
 from forensia.ai.investigator import _apply_memory_updates, _sync_keypoint_cards
 from forensia.artifacts import MftArtifactAdapter, PrefetchArtifactAdapter
 from forensia import cli as cli_module
@@ -32,6 +32,30 @@ class MemoryAndIngestTests(unittest.TestCase):
     @staticmethod
     def _llm_base_url() -> str:
         return resolve_llm_config()[0] or "http://test-llm.invalid"
+
+    def test_summarize_query_result_includes_head_tail_and_distinct_counts(self) -> None:
+        rows = [
+            {
+                "evidence_id": f"ev-{index}",
+                "target_user": "alice" if index < 6 else "bob",
+                "computer": "host1" if index % 2 == 0 else "host2",
+                "src_ip": f"10.0.0.{(index % 3) + 1}",
+                "event_id": 4624 if index < 6 else 4634,
+                "timestamp": f"2026-05-16 00:{index:02d}:00",
+            }
+            for index in range(12)
+        ]
+
+        summary = summarize_query_result(rows)
+
+        self.assertEqual(12, summary["row_count"])
+        self.assertEqual(rows[:5], summary["head_rows"])
+        self.assertEqual(rows[-5:], summary["tail_rows"])
+        self.assertEqual(rows[:5] + rows[-5:], summary["sample_rows"])
+        self.assertEqual(2, summary["distinct_counts"]["target_user"])
+        self.assertEqual(2, summary["distinct_counts"]["computer"])
+        self.assertEqual(3, summary["distinct_counts"]["src_ip"])
+        self.assertEqual(2, summary["distinct_counts"]["event_id"])
 
     def test_legacy_newlead_verdicts_are_migrated_on_open(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -505,7 +529,8 @@ class MemoryAndIngestTests(unittest.TestCase):
             self.assertTrue((memory.hypotheses_dir / "H-2.md").exists())
             self.assertFalse(stale_path.exists())
 
-    def test_investigation_marks_session_failed_when_llm_runtime_error_escapes_loop(self) -> None:
+    def test_investigation_continues_when_broad_plan_llm_fails(self) -> None:
+        """LLM failure in broad_plan_investigation must not crash the loop — session completes."""
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db, patch("forensia.ai.investigator._seed_findings", return_value=0), patch(
@@ -514,16 +539,16 @@ class MemoryAndIngestTests(unittest.TestCase):
             ):
                 from forensia.ai.investigator import investigate
 
-                with self.assertRaisesRegex(RuntimeError, "llm failed"):
-                    investigate(
-                        case=case,
-                        db=db,
-                        base_url=self._llm_base_url(),
-                        model="test-model",
-                        max_iter=1,
-                        no_progress_limit=1,
-                        report_every_n_cycles=999,
-                    )
+                # should NOT raise — error is caught inside the loop
+                investigate(
+                    case=case,
+                    db=db,
+                    base_url=self._llm_base_url(),
+                    model="test-model",
+                    max_iter=1,
+                    no_progress_limit=1,
+                    report_every_n_cycles=999,
+                )
 
                 status, finished_at = db.execute(
                     """
@@ -534,7 +559,7 @@ class MemoryAndIngestTests(unittest.TestCase):
                     """
                 ).fetchone()
 
-            self.assertEqual("failed", status)
+            self.assertEqual("completed", status)
             self.assertIsNotNone(finished_at)
 
     def test_investigation_applies_guarded_memory_updates_not_raw_response(self) -> None:

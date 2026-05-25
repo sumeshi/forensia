@@ -66,9 +66,28 @@ def summarize_query_result(rows: list[dict[str, Any]], sample_size: int = 10) ->
         seen.add(normalized)
         evidence_ids.append(normalized)
 
+    head_size = min(max(sample_size // 2, 1), sample_size) if sample_size > 0 else 0
+    tail_size = max(sample_size - head_size, 0)
+    head_rows = rows[:head_size]
+    tail_rows = rows[-tail_size:] if tail_size else []
+    if tail_rows and head_rows:
+        last_head_index = len(head_rows) - 1
+        first_tail_index = len(rows) - len(tail_rows)
+        if first_tail_index <= last_head_index:
+            tail_rows = []
+    sample_rows = head_rows + tail_rows
+    distinct_counts = {
+        column: len({row.get(column) for row in rows if row.get(column)})
+        for column in ("target_user", "computer", "src_ip", "event_id")
+        if any(row.get(column) for row in rows)
+    }
+
     return {
         "row_count": len(rows),
-        "sample_rows": rows[:sample_size],
+        "head_rows": head_rows,
+        "tail_rows": tail_rows,
+        "sample_rows": sample_rows,
+        "distinct_counts": distinct_counts,
         "evidence_ids": evidence_ids[:sample_size],
     }
 

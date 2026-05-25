@@ -67,6 +67,9 @@ def _save_step(
         INSERT INTO investigation_steps (
             step_id, session_id, hypothesis_id, iteration, phase, input_json, output_json, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (step_id) DO UPDATE SET
+            output_json = excluded.output_json,
+            created_at = excluded.created_at
         """,
         (
             step_id,
@@ -245,10 +248,10 @@ def _sync_hypothesis_cards(
 
 def _matching_findings(snapshot: list[dict[str, Any]], hypothesis: Hypothesis | None) -> list[dict[str, Any]]:
     if hypothesis is None:
-        return snapshot[:5]
+        return snapshot[:10]
     words = {token.lower() for token in hypothesis.description.split() if len(token) >= 3}
     if not words:
-        return snapshot[:5]
+        return snapshot[:10]
     matched = []
     for finding in snapshot:
         haystack = " ".join(
@@ -257,7 +260,7 @@ def _matching_findings(snapshot: list[dict[str, Any]], hypothesis: Hypothesis | 
         ).lower()
         if any(word in haystack for word in words):
             matched.append(finding)
-    return matched[:5] if matched else snapshot[:5]
+    return matched[:10] if matched else snapshot[:10]
 
 
 def _final_summary(state: SessionState) -> str:
@@ -493,47 +496,53 @@ def investigate(
 
             if not report_only:
                 plan_input = state.model_dump()
-                broad_plan: BroadPlanResult = broad_plan_investigation(
-                    state=state,
-                    memory=memory,
-                    base_url=base_url,
-                    model=model,
-                    overview_md=memory_overview_cache,
-                    default_context_md=memory_plan_context_cache,
-                    status_callback=llm_status,
-                    audit_callback=lambda messages, output, parsed: llm_logger.write(
+                try:
+                    broad_plan: BroadPlanResult = broad_plan_investigation(
+                        state=state,
+                        memory=memory,
+                        base_url=base_url,
+                        model=model,
+                        max_findings=20,
+                        overview_md=memory_overview_cache,
+                        default_context_md=memory_plan_context_cache,
+                        status_callback=llm_status,
+                        audit_callback=lambda messages, output, parsed: llm_logger.write(
+                            iteration=plan_cycle,
+                            phase="plan-broad",
+                            input_messages=messages,
+                            output=parsed,
+                            model=model,
+                            base_url=base_url,
+                        ),
+                    )
+                    state.active_hypotheses = _merge_active_hypotheses(
+                        db=db,
+                        current=state.active_hypotheses,
+                        updates=broad_plan.hypotheses,
+                        resolved=state.resolved_hypotheses,
+                        session_id=session_id,
+                        origin="broad_plan",
+                    )
+                    broad_plan_hypotheses = len(broad_plan.hypotheses)
+                    broad_plan_stop = broad_plan.stop
+                    _save_step(
+                        db=db,
+                        session_id=session_id,
                         iteration=plan_cycle,
                         phase="plan-broad",
-                        input_messages=messages,
-                        output=parsed,
-                        model=model,
-                        base_url=base_url,
-                    ),
-                )
-                state.active_hypotheses = _merge_active_hypotheses(
-                    db=db,
-                    current=state.active_hypotheses,
-                    updates=broad_plan.hypotheses,
-                    resolved=state.resolved_hypotheses,
-                    session_id=session_id,
-                    origin="broad_plan",
-                )
-                broad_plan_hypotheses = len(broad_plan.hypotheses)
-                broad_plan_stop = broad_plan.stop
-                _save_step(
-                    db=db,
-                    session_id=session_id,
-                    iteration=plan_cycle,
-                    phase="plan-broad",
-                    hypothesis_id=None,
-                    input_json=plan_input,
-                    output_json=broad_plan.raw_response,
-                )
-                _emit(
-                    "investigate/plan",
-                    f"[plan] new_hypotheses={len(broad_plan.hypotheses)} active={len(state.active_hypotheses)}",
-                    iteration=plan_cycle,
-                )
+                        hypothesis_id=None,
+                        input_json=plan_input,
+                        output_json=broad_plan.raw_response,
+                    )
+                    _emit(
+                        "investigate/plan",
+                        f"[plan] new_hypotheses={len(broad_plan.hypotheses)} active={len(state.active_hypotheses)}",
+                        iteration=plan_cycle,
+                    )
+                except Exception as exc:
+                    err_msg = f"[plan-broad] LLM failed: {exc}"
+                    print(f"[red]{err_msg}[/red]")
+                    _emit("investigate/plan", err_msg, iteration=plan_cycle)
 
                 for hypothesis in list(state.active_hypotheses):
                     if interrupted:
@@ -552,27 +561,40 @@ def investigate(
                     candidates = _matching_findings(state.findings_snapshot, hypothesis)
                     for query_index in range(1, max_queries_per_hypothesis + 1):
                         state.focus_depth = query_index
-                        hypothesis_plan = plan_hypothesis_query(
-                            state=state,
-                            hypothesis=hypothesis,
-                            finding_candidates=candidates,
-                            memory=memory,
-                            base_url=base_url,
-                            model=model,
-                            db=db,
-                            overview_md=memory_overview_cache,
-                            default_context_md=memory_plan_context_cache,
-                            status_callback=llm_status,
-                            audit_callback=lambda messages, output, parsed, hyp_id=hypothesis.id, query_idx=query_index: llm_logger.write(
-                                iteration=plan_cycle,
-                                phase="plan-hypothesis",
-                                input_messages=messages,
-                                output=parsed,
-                                model=model,
+                        try:
+                            hypothesis_plan = plan_hypothesis_query(
+                                state=state,
+                                hypothesis=hypothesis,
+                                finding_candidates=candidates,
+                                memory=memory,
                                 base_url=base_url,
-                                suffix=f"{hyp_id}-{query_idx:02d}",
-                            ),
-                        )
+                                model=model,
+                                db=db,
+                                overview_md=memory_overview_cache,
+                                default_context_md=memory_plan_context_cache,
+                                status_callback=llm_status,
+                                audit_callback=lambda messages, output, parsed, hyp_id=hypothesis.id, query_idx=query_index: llm_logger.write(
+                                    iteration=plan_cycle,
+                                    phase="plan-hypothesis",
+                                    input_messages=messages,
+                                    output=parsed,
+                                    model=model,
+                                    base_url=base_url,
+                                    suffix=f"{hyp_id}-{query_idx:02d}",
+                                ),
+                            )
+                        except Exception as exc:
+                            err_msg = f"[plan-hypothesis] LLM failed for {hypothesis.id}: {exc}"
+                            print(f"[red]{err_msg}[/red]")
+                            _append_hypothesis_reasoning(
+                                db=db,
+                                hypothesis_id=hypothesis.id,
+                                session_id=session_id,
+                                iteration=plan_cycle,
+                                phase="plan",
+                                body=err_msg,
+                            )
+                            break
                         _save_step(
                             db=db,
                             session_id=session_id,
@@ -611,7 +633,27 @@ def investigate(
                             reasoning_entry_id=reasoning_entry_id,
                         )
 
-                        rows = fetch_records(db, planned_query.sql)
+                        try:
+                            rows = fetch_records(db, planned_query.sql)
+                        except Exception as exc:
+                            err_msg = f"SQL execution error — {planned_query.query_id}: {exc}"
+                            print(f"[red]{err_msg}[/red]")
+                            _emit(
+                                "investigate/do",
+                                f"[do] {err_msg}",
+                                iteration=plan_cycle,
+                                hypothesis_id=hypothesis.id,
+                            )
+                            _append_hypothesis_reasoning(
+                                db=db,
+                                hypothesis_id=hypothesis.id,
+                                session_id=session_id,
+                                iteration=plan_cycle,
+                                phase="do",
+                                body=err_msg,
+                                query_id=planned_query.query_id,
+                            )
+                            continue
                         result_summary = summarize_query_result(rows)
                         _save_step(
                             db=db,
@@ -623,31 +665,45 @@ def investigate(
                             output_json=result_summary,
                             suffix=f"{planned_query.query_id}-{query_index:02d}",
                         )
-                        check_result = check_query_result(
-                            case=case,
-                            db=db,
-                            session_id=session_id,
-                            iteration=plan_cycle,
-                            planned_query=planned_query,
-                            hypothesis=hypothesis,
-                            finding_candidates=candidates,
-                            result_summary=result_summary,
-                            memory=memory,
-                            base_url=base_url,
-                            model=model,
-                            overview_md=memory_overview_cache,
-                            memory_context_md=memory_check_context_cache,
-                            status_callback=llm_status,
-                            audit_callback=lambda messages, output, parsed, query_id=planned_query.query_id, query_idx=query_index: llm_logger.write(
+                        try:
+                            check_result = check_query_result(
+                                case=case,
+                                db=db,
+                                session_id=session_id,
+                                iteration=plan_cycle,
+                                planned_query=planned_query,
+                                hypothesis=hypothesis,
+                                finding_candidates=candidates,
+                                result_summary=result_summary,
+                                memory=memory,
+                                base_url=base_url,
+                                model=model,
+                                overview_md=memory_overview_cache,
+                                memory_context_md=memory_check_context_cache,
+                                status_callback=llm_status,
+                                audit_callback=lambda messages, output, parsed, query_id=planned_query.query_id, query_idx=query_index: llm_logger.write(
+                                    iteration=plan_cycle,
+                                    phase="check",
+                                    input_messages=messages,
+                                    output=parsed,
+                                    model=model,
+                                    base_url=base_url,
+                                    suffix=f"{query_id}-{query_idx:02d}",
+                                ),
+                            )
+                        except Exception as exc:
+                            err_msg = f"[check] LLM failed for {hypothesis.id}/{planned_query.query_id}: {exc}"
+                            print(f"[red]{err_msg}[/red]")
+                            _append_hypothesis_reasoning(
+                                db=db,
+                                hypothesis_id=hypothesis.id,
+                                session_id=session_id,
                                 iteration=plan_cycle,
                                 phase="check",
-                                input_messages=messages,
-                                output=parsed,
-                                model=model,
-                                base_url=base_url,
-                                suffix=f"{query_id}-{query_idx:02d}",
-                            ),
-                        )
+                                body=err_msg,
+                                query_id=planned_query.query_id,
+                            )
+                            continue
                         _save_step(
                             db=db,
                             session_id=session_id,
@@ -737,8 +793,11 @@ def investigate(
                             },
                             db=db,
                         )
-                        memory.compact_overview_if_needed(base_url=base_url, model=model)
-                        memory.compact_oversized_with_llm(base_url=base_url, model=model)
+                        try:
+                            memory.compact_overview_if_needed(base_url=base_url, model=model)
+                            memory.compact_oversized_with_llm(base_url=base_url, model=model)
+                        except Exception as exc:
+                            print(f"[yellow][memory] compaction failed: {exc}[/yellow]")
                         refresh_memory_caches()
                         _save_step(
                             db=db,
@@ -773,33 +832,40 @@ def investigate(
 
             report_result: dict[str, Any] | None = None
             if plan_cycle % max(1, report_every_n_cycles) == 0:
-                report_result = _refresh_report_sections(
-                    case=case,
-                    db=db,
-                    session_id=session_id,
-                    iteration=plan_cycle,
-                    base_url=base_url,
-                    model=model,
-                    template_root=template_root,
-                    llm_logger=llm_logger,
-                    progress_callback=progress_callback,
-                    focus_sections=focus_sections,
-                    max_workers=report_parallelism,
-                )
-                report_after = report_result["report_status"]
-                report_status_cache = report_after
-                gap_new_hypotheses = _inject_gap_hypotheses(
-                    db=db,
-                    state=state,
-                    gaps=report_result["gaps"],
-                    session_id=session_id,
-                    memory=memory,
-                )
-                if gap_new_hypotheses:
-                    cycle_progress = True
-                if _report_cycle_progress(report_before, report_after):
-                    cycle_progress = True
-                render_written_report(case, db)
+                try:
+                    report_result = _refresh_report_sections(
+                        case=case,
+                        db=db,
+                        session_id=session_id,
+                        iteration=plan_cycle,
+                        base_url=base_url,
+                        model=model,
+                        template_root=template_root,
+                        llm_logger=llm_logger,
+                        progress_callback=progress_callback,
+                        focus_sections=focus_sections,
+                        max_workers=report_parallelism,
+                    )
+                except Exception as exc:
+                    print(f"[red][report] section refresh failed: {exc}[/red]")
+                    _emit("investigate/report-cycle-done", f"[report] refresh failed: {exc}", iteration=plan_cycle)
+                if report_result is not None:
+                    report_after = report_result["report_status"]
+                    report_status_cache = report_after
+                    gap_new_hypotheses = _inject_gap_hypotheses(
+                        db=db,
+                        state=state,
+                        gaps=report_result["gaps"],
+                        session_id=session_id,
+                        memory=memory,
+                    )
+                    if gap_new_hypotheses:
+                        cycle_progress = True
+                    if _report_cycle_progress(report_before, report_after):
+                        cycle_progress = True
+                    render_written_report(case, db)
+                else:
+                    report_after = report_before
             else:
                 report_after = report_before
 
@@ -808,9 +874,7 @@ def investigate(
                 break
 
             unresolved_gap_count = int(report_after.get("total_gaps", 0))
-            if broad_plan_stop or (
-                not state.active_hypotheses and unresolved_gap_count == 0 and broad_plan_hypotheses == 0
-            ):
+            if broad_plan_stop and not state.active_hypotheses and unresolved_gap_count == 0:
                 mark_report_sections_ai_exhausted(db)
                 status = "completed"
                 break

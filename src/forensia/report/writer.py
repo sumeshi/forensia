@@ -477,8 +477,8 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             """,
         ),
     ),
-    "benchmark_overview_session_activity": (
-        "Recent logon and shutdown events for benchmark scoping.",
+    "session_activity_events": (
+        "Chronological logon, logoff, and system startup/shutdown events.",
         lambda db: _report_keypoint_rows(
             db,
             """
@@ -490,58 +490,46 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             """,
         ),
     ),
-    "benchmark_timeline_core_events": (
-        "Benchmark timeline events across startup, shutdown, and logon activity.",
+    "timeline_system_events": (
+        "Core system events covering startup, shutdown, logon, and logoff.",
         lambda db: _report_keypoint_rows(
             db,
             """
             SELECT timestamp, computer, event_id, target_user, src_ip, process_name, command_line, evidence_id
             FROM evtx_events
-            WHERE event_id IN (4608,4609,4624,4634,4647,6005,6006,6008)
+            WHERE event_id IN (1074,4608,4609,4624,4634,4647,6005,6006,6008)
             ORDER BY timestamp
+            LIMIT 200
+            """,
+        ),
+    ),
+    "timeline_prefetch_history": (
+        "Prefetch execution history ordered chronologically.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT executable_name, exec_count, last_exec_time, source_file
+            FROM prefetch_executions
+            ORDER BY last_exec_time
             LIMIT 80
             """,
         ),
     ),
-    "benchmark_timeline_prefetch": (
-        "Benchmark Prefetch execution history for chronology.",
-        lambda db: _report_keypoint_rows(
-            db,
-            """
-            SELECT executable_name, exec_count, last_exec_time, source_file
-            FROM prefetch_executions
-            ORDER BY last_exec_time
-            LIMIT 50
-            """,
-        ),
-    ),
-    "benchmark_host_prefetch": (
-        "Benchmark Prefetch execution records by host context.",
-        lambda db: _report_keypoint_rows(
-            db,
-            """
-            SELECT executable_name, exec_count, last_exec_time, source_file
-            FROM prefetch_executions
-            ORDER BY last_exec_time
-            LIMIT 40
-            """,
-        ),
-    ),
-    "benchmark_host_user_paths": (
-        "Benchmark MFT entries under user profile paths.",
+    "host_user_profile_paths": (
+        "MFT entries under user profile directories.",
         lambda db: _report_keypoint_rows(
             db,
             """
             SELECT file_path, si_created, si_modified, fn_modified, is_deleted, evidence_id
             FROM mft_entries
-            WHERE LOWER(file_path) LIKE '%\\users\\%'
+            WHERE LOWER(file_path) LIKE '%/users/%'
             ORDER BY COALESCE(si_modified, fn_modified, si_created) DESC
             LIMIT 40
             """,
         ),
     ),
-    "benchmark_account_logons": (
-        "Benchmark account logon patterns on the suspect PC.",
+    "account_all_logon_summary": (
+        "All logon event counts grouped by user, computer, and logon type.",
         lambda db: _report_keypoint_rows(
             db,
             """
@@ -554,8 +542,8 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             """,
         ),
     ),
-    "benchmark_account_events": (
-        "Benchmark account events with evidence IDs.",
+    "account_logon_events": (
+        "Raw logon, logoff, and session-disconnect events with evidence IDs.",
         lambda db: _report_keypoint_rows(
             db,
             """
@@ -563,12 +551,12 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             FROM evtx_events
             WHERE event_id IN (4624,4634,4647)
             ORDER BY timestamp
-            LIMIT 80
+            LIMIT 200
             """,
         ),
     ),
-    "benchmark_account_identities": (
-        "Observed account identities from event records.",
+    "account_observed_users": (
+        "Distinct user identities observed across all event records.",
         lambda db: _report_keypoint_rows(
             db,
             """
@@ -579,127 +567,82 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             """,
         ),
     ),
-    "benchmark_execution_prefetch": (
-        "Benchmark Prefetch execution records.",
-        lambda db: _report_keypoint_rows(
-            db,
-            """
-            SELECT executable_name, exec_count, last_exec_time, source_file
-            FROM prefetch_executions
-            ORDER BY last_exec_time
-            LIMIT 80
-            """,
-        ),
-    ),
-    "benchmark_execution_events": (
-        "Benchmark process execution events from Evtx.",
-        lambda db: _report_keypoint_rows(
-            db,
-            """
-            SELECT timestamp, computer, process_name, command_line, target_user, evidence_id
-            FROM evtx_events
-            WHERE event_id = 4688
-            ORDER BY timestamp
-            LIMIT 50
-            """,
-        ),
-    ),
-    "benchmark_execution_file_activity": (
-        "Benchmark file-activity rows related to browsers, mail, cloud, and cleanup tools.",
+    "mft_user_app_activity": (
+        "MFT timeline entries under user-controlled paths (AppData, Downloads, Desktop, Documents).",
         lambda db: _report_keypoint_rows(
             db,
             """
             SELECT timestamp, timestamp_type, file_path, description, evidence_id
             FROM mft_timeline
-            WHERE
-                LOWER(file_path) LIKE '%eraser%' OR
-                LOWER(file_path) LIKE '%ccleaner%' OR
-                LOWER(file_path) LIKE '%google%' OR
-                LOWER(file_path) LIKE '%outlook%' OR
-                LOWER(file_path) LIKE '%chrome%' OR
-                LOWER(file_path) LIKE '%iexplore%'
+            WHERE (
+                LOWER(file_path) LIKE '%/appdata/%' OR
+                LOWER(file_path) LIKE '%/downloads/%' OR
+                LOWER(file_path) LIKE '%/desktop/%' OR
+                LOWER(file_path) LIKE '%/documents/%'
+            )
             ORDER BY timestamp
             LIMIT 80
             """,
         ),
     ),
-    "benchmark_ioc_prefetch": (
-        "Benchmark executable paths from Prefetch.",
+    "mft_prefetch_filenames": (
+        "Application names inferred from .pf filenames present in MFT.",
         lambda db: _report_keypoint_rows(
             db,
             """
-            SELECT executable_name, exec_count, last_exec_time, source_file
-            FROM prefetch_executions
-            ORDER BY last_exec_time
-            LIMIT 60
+            SELECT file_name, file_path, si_modified, evidence_id
+            FROM mft_entries
+            WHERE extension = 'pf'
+            ORDER BY si_modified DESC
+            LIMIT 120
             """,
         ),
     ),
-    "benchmark_ioc_processes": (
-        "Benchmark executed processes from Evtx.",
+    "ioc_user_data_files": (
+        "Notable user-data file paths from MFT (desktop, office, mail, cloud storage).",
         lambda db: _report_keypoint_rows(
             db,
             """
-            SELECT DISTINCT process_name, command_line, computer, evidence_id
-            FROM evtx_events
-            WHERE event_id = 4688 AND process_name IS NOT NULL
-            ORDER BY timestamp
+            SELECT file_path, si_created, si_modified, fn_modified, is_deleted, evidence_id
+            FROM mft_entries
+            WHERE
+                LOWER(file_path) LIKE '%/desktop/%' OR
+                LOWER(file_path) LIKE '%/office/%' OR
+                LOWER(file_path) LIKE '%/outlook/%' OR
+                LOWER(file_path) LIKE '%googledrivesync%' OR
+                LOWER(file_path) LIKE '%/icloud%' OR
+                LOWER(file_path) LIKE '%/onedrive%'
+            ORDER BY COALESCE(si_modified, fn_modified, si_created) DESC
+            LIMIT 80
+            """,
+        ),
+    ),
+    "ioc_email_ost_files": (
+        "Email OST/PST mailbox cache file paths from MFT.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT file_path, si_created, si_modified, evidence_id
+            FROM mft_entries
+            WHERE extension IN ('ost', 'pst')
+            LIMIT 10
+            """,
+        ),
+    ),
+    "mft_recent_folder_lnk": (
+        "Recent-folder LNK files indicating recently accessed documents.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT file_name, file_path, si_created, fn_created, evidence_id
+            FROM mft_entries
+            WHERE (
+                LOWER(file_path) LIKE '%/recent/%' OR
+                LOWER(file_path) LIKE '%/office/recent/%'
+            )
+            AND extension IN ('lnk', 'url')
+            ORDER BY si_created DESC
             LIMIT 40
-            """,
-        ),
-    ),
-    "benchmark_ioc_files": (
-        "Benchmark notable file paths from MFT.",
-        lambda db: _report_keypoint_rows(
-            db,
-            """
-            SELECT file_path, si_created, si_modified, fn_modified, is_deleted, evidence_id
-            FROM mft_entries
-            WHERE
-                LOWER(file_path) LIKE '%desktop%' OR
-                LOWER(file_path) LIKE '%google\\drive%' OR
-                LOWER(file_path) LIKE '%office%' OR
-                LOWER(file_path) LIKE '%outlook%'
-            ORDER BY COALESCE(si_modified, fn_modified, si_created) DESC
-            LIMIT 80
-            """,
-        ),
-    ),
-    "benchmark_recommendation_events": (
-        "Benchmark events relevant to response recommendations.",
-        lambda db: _report_keypoint_rows(
-            db,
-            """
-            SELECT timestamp, computer, target_user, event_id, evidence_id
-            FROM evtx_events
-            WHERE event_id IN (4624,4647,6006,6008,1102,104)
-            ORDER BY timestamp
-            LIMIT 50
-            """,
-        ),
-    ),
-    "benchmark_recommendation_prefetch": (
-        "Benchmark executed applications relevant to response recommendations.",
-        lambda db: _report_keypoint_rows(
-            db,
-            """
-            SELECT executable_name, exec_count, last_exec_time, source_file
-            FROM prefetch_executions
-            ORDER BY last_exec_time
-            LIMIT 50
-            """,
-        ),
-    ),
-    "benchmark_recommendation_files": (
-        "Benchmark desktop and cloud-related file paths for response recommendations.",
-        lambda db: _report_keypoint_rows(
-            db,
-            """
-            SELECT file_path, si_created, si_modified, fn_modified, is_deleted, evidence_id
-            FROM mft_entries
-            WHERE LOWER(file_path) LIKE '%desktop%' OR LOWER(file_path) LIKE '%google\\drive%'
-            ORDER BY COALESCE(si_modified, fn_modified, si_created) DESC
-            LIMIT 50
             """,
         ),
     ),
@@ -732,21 +675,23 @@ REPORT_KEYPOINT_ALIASES = {
     "recommendations_reviews": "recommendations_recent_reviews",
     "benchmark_window": "overview_event_range",
     "benchmark_hosts": "overview_hosts",
-    "benchmark_logon_window": "benchmark_overview_session_activity",
-    "benchmark_timeline_events": "benchmark_timeline_core_events",
+    "benchmark_logon_window": "session_activity_events",
+    "benchmark_timeline_events": "timeline_system_events",
     "benchmark_timeline_files": "timeline_mft_activity",
-    "benchmark_prefetch_recent": "benchmark_timeline_prefetch",
+    "benchmark_prefetch_recent": "timeline_prefetch_history",
     "benchmark_host_spans": "overview_hosts",
-    "benchmark_host_logons": "benchmark_overview_session_activity",
-    "benchmark_accounts_summary": "benchmark_account_logons",
-    "benchmark_accounts_events": "benchmark_account_events",
-    "benchmark_accounts_observed": "benchmark_account_identities",
-    "benchmark_exec_processes": "benchmark_execution_events",
-    "benchmark_exec_related_mft": "benchmark_execution_file_activity",
-    "benchmark_artifact_processes": "benchmark_ioc_processes",
-    "benchmark_artifact_paths": "benchmark_ioc_files",
-    "benchmark_reco_system_events": "benchmark_recommendation_events",
-    "benchmark_reco_desktop_paths": "benchmark_recommendation_files",
+    "benchmark_host_logons": "session_activity_events",
+    "benchmark_accounts_summary": "account_all_logon_summary",
+    "benchmark_accounts_events": "account_logon_events",
+    "benchmark_accounts_observed": "account_observed_users",
+    "benchmark_exec_processes": "host_execution_activity",
+    "benchmark_exec_related_mft": "mft_user_app_activity",
+    "benchmark_artifact_processes": "mft_prefetch_filenames",
+    "benchmark_artifact_paths": "ioc_user_data_files",
+    "benchmark_ost_file": "ioc_email_ost_files",
+    "benchmark_recent_lnk": "mft_recent_folder_lnk",
+    "benchmark_reco_system_events": "timeline_system_events",
+    "benchmark_reco_desktop_paths": "ioc_user_data_files",
 }
 
 

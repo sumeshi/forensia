@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 ENTITY_TYPE_ALIASES = {
     "host": "host",
@@ -35,6 +35,13 @@ class PlannedQuery(BaseModel):
     sql: str = ""
     template_id: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("params", mode="before")
+    @classmethod
+    def coerce_params(cls, v: Any) -> dict[str, Any]:
+        if v is None or not isinstance(v, dict):
+            return {}
+        return v
 
 
 class HistoryEntry(BaseModel):

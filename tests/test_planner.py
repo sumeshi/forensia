@@ -14,6 +14,7 @@ from forensia.ai.planner import (
     validate_select_sql,
 )
 from forensia.ai.prompts import (
+    _truncate_context_sections,
     build_broad_plan_messages,
     build_check_messages,
     build_hypothesis_plan_messages,
@@ -109,6 +110,31 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertNotIn("evidence", payload)
         self.assertNotIn("attack", payload)
 
+    def test_broad_plan_messages_cap_findings_at_20(self) -> None:
+        messages = build_broad_plan_messages(
+            overview_md="# overview",
+            extra_context_md="",
+            iteration=1,
+            findings_snapshot=[
+                {
+                    "finding_id": f"F-{index}",
+                    "title": f"title {index}",
+                    "severity": "medium",
+                    "confidence": 0.5,
+                    "status": "accepted",
+                    "summary": "summary",
+                }
+                for index in range(25)
+            ],
+            active_hypotheses=[],
+            resolved_hypotheses=[],
+            history=[],
+            max_findings=20,
+        )
+        payload = messages[1]["content"]
+        self.assertIn("F-19", payload)
+        self.assertNotIn("F-20", payload)
+
     def test_broad_plan_messages_cap_resolved_hypotheses(self) -> None:
         resolved = [
             Hypothesis(id=f"H{i}", description=f"resolved {i}", status="confirmed", summary=f"summary {i}")
@@ -170,6 +196,14 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertNotIn("compromised_hosts", system)
         self.assertNotIn("compromised_users", system)
 
+    def test_truncate_context_sections_keeps_text_within_1500_chars(self) -> None:
+        sections = {"2_timeline": "x" * 1500, "4_accounts": "y" * 1501}
+
+        trimmed = _truncate_context_sections(sections)
+
+        self.assertEqual("x" * 1500, trimmed["2_timeline"])
+        self.assertEqual("y" * 1500, trimmed["4_accounts"])
+
     def test_build_check_messages_define_finding_update_and_suspicious_evidence_schema(self) -> None:
         messages = build_check_messages(
             planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
@@ -201,13 +235,13 @@ class PlannerRetryTests(unittest.TestCase):
         messages = build_report_section_messages(
             section_meta={"section": "1_overview"},
             evidence_results=[],
-            context_sections={"1_overview": "x" * 1200},
+            context_sections={"1_overview": "x" * 1600},
             template_body="# Section",
             report_brief={},
         )
         payload = messages[1]["content"]
-        self.assertIn("x" * 600, payload)
-        self.assertNotIn("x" * 800, payload)
+        self.assertIn("x" * 1500, payload)
+        self.assertNotIn("x" * 1600, payload)
 
     def test_report_section_messages_placeholder_follows_output_language(self) -> None:
         with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "en"}):
@@ -450,6 +484,8 @@ class PlannerRetryTests(unittest.TestCase):
         framework = build_investigation_framework()
         self.assertIn("investigation_steps columns: step_id, session_id, hypothesis_id, iteration, phase", framework)
         self.assertIn("ingested_files columns: sha256, path, source_kind, size, ingested_at.", framework)
+        self.assertIn("event_id = 4624 AND logon_type IN ('2','10')", framework)
+        self.assertIn("4728/4732", framework)
 
     def test_returns_none_when_retry_is_still_invalid(self) -> None:
         state = SessionState(session_id="session-2", iteration=1)

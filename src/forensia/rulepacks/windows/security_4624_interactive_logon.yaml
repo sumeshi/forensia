@@ -1,0 +1,39 @@
+id: windows-security-4624-interactive-logon
+title: Interactive or RDP user logon
+severity: medium
+confidence: 0.6
+tags:
+  - windows
+  - logon
+  - user-activity
+attack:
+  - T1078
+query: |
+  WITH normalized AS (
+      SELECT
+          evidence_id,
+          timestamp,
+          computer,
+          target_user,
+          subject_user,
+          src_ip,
+          logon_type,
+          UPPER(TRIM(COALESCE(target_user, ''))) AS normalized_target_user
+      FROM evtx_events
+      WHERE event_id = 4624
+        AND logon_type IN ('2', '10')
+  )
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      subject_user,
+      src_ip,
+      logon_type
+  FROM normalized
+  WHERE normalized_target_user NOT IN ('ANONYMOUS LOGON', 'SYSTEM', 'LOCAL SERVICE', 'NETWORK SERVICE')
+    AND normalized_target_user NOT LIKE '%$'
+finding:
+  title: "Interactive logon for {target_user}"
+  summary: "{target_user} logged on interactively (LogonType={logon_type}) on {computer} at {timestamp}. Use this as direct user-activity evidence when determining the last logged-on user."

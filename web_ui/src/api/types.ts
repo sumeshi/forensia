@@ -27,9 +27,12 @@ export type FindingDTO = {
   severity: string;
   confidence?: number | null;
   status?: string | null;
+  tags?: Array<unknown> | Record<string, unknown> | null;
   attack?: string[] | null;
-  ai_summary?: string | null;
   evidence?: Array<Record<string, unknown>> | null;
+  ai_summary?: string | null;
+  missing_checks?: Array<unknown> | null;
+  created_at?: string | null;
 };
 
 export type HypothesisDTO = {
@@ -73,6 +76,7 @@ export type SessionDTO = {
 export type InvestigationStepDTO = {
   step_id: string;
   session_id: string;
+  hypothesis_id?: string | null;
   iteration: number;
   phase: string;
   input_json?: unknown;

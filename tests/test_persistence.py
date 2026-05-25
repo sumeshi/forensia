@@ -29,6 +29,7 @@ from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.db.database import CaseDB
 from forensia.report.writer import (
+    REPORT_KEYPOINT_ALIASES,
     _build_report_brief,
     _extract_claim_texts,
     _section_confidence,
@@ -192,6 +193,56 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual(2, len(request["evidence_results"]))
             self.assertEqual("top_keypoints", request["evidence_results"][0]["keypoint"])
             self.assertEqual("overview_hosts", request["evidence_results"][1]["keypoint"])
+
+    def test_prepare_section_request_resolves_benchmark_alias_keypoints(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            template_path = case.path / "report_template_custom" / "6_ioc.md"
+            template_path.parent.mkdir(parents=True, exist_ok=True)
+            template_path.write_text(
+                (
+                    "---\n"
+                    "section: 6_ioc\n"
+                    "title: IOC\n"
+                    "keypoints:\n"
+                    "  - benchmark_artifact_processes\n"
+                    "  - benchmark_artifact_paths\n"
+                    "  - benchmark_ost_file\n"
+                    "  - benchmark_recent_lnk\n"
+                    "---\n"
+                    "# IOC\n"
+                ),
+                encoding="utf-8",
+            )
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO mft_entries (
+                        evidence_id, source_file, record_number, file_path, file_name, extension,
+                        is_directory, is_deleted, size, si_created, si_modified, si_accessed,
+                        si_mft_modified, fn_created, fn_modified, fn_accessed, fn_mft_modified,
+                        raw_json, tags, severity
+                    ) VALUES
+                        ('ev-pf', 'mft.csv', 1, 'Users/informant/AppData/Local/Temp/CHROME.EXE-D999B1BA.pf', 'CHROME.EXE-D999B1BA.pf', 'pf', false, false, 1, NULL, '2026-05-16 00:00:00', NULL, NULL, NULL, NULL, NULL, NULL, '{}', '[]', 'info'),
+                        ('ev-drive', 'mft.csv', 2, 'Users/informant/Downloads/googledrivesync.exe', 'googledrivesync.exe', 'exe', false, false, 1, NULL, '2026-05-16 00:01:00', NULL, NULL, NULL, NULL, NULL, NULL, '{}', '[]', 'info'),
+                        ('ev-ost', 'mft.csv', 3, 'Users/informant/AppData/Local/Microsoft/Outlook/iaman.informant@nist.gov.ost', 'iaman.informant@nist.gov.ost', 'ost', false, false, 1, '2026-05-16 00:02:00', '2026-05-16 00:02:00', NULL, NULL, NULL, NULL, NULL, NULL, '{}', '[]', 'info'),
+                        ('ev-lnk', 'mft.csv', 4, 'Users/informant/AppData/Roaming/Microsoft/Windows/Recent/[secret_project]_proposal.lnk', '[secret_project]_proposal.lnk', 'lnk', false, false, 1, '2026-05-16 00:03:00', '2026-05-16 00:03:00', NULL, NULL, '2026-05-16 00:03:00', NULL, NULL, NULL, '{}', '[]', 'info')
+                    """
+                )
+                request = prepare_section_request(case, db, template_path, {}, report_brief={})
+
+            self.assertEqual("mft_prefetch_filenames", REPORT_KEYPOINT_ALIASES["benchmark_artifact_processes"])
+            self.assertEqual("mft_recent_folder_lnk", REPORT_KEYPOINT_ALIASES["benchmark_recent_lnk"])
+            results = {item["keypoint"]: item for item in request["evidence_results"]}
+            self.assertEqual("CHROME.EXE-D999B1BA.pf", results["benchmark_artifact_processes"]["sample_rows"][0]["file_name"])
+            self.assertTrue(
+                any(
+                    "googledrivesync.exe" in row["file_path"]
+                    for row in results["benchmark_artifact_paths"]["sample_rows"]
+                )
+            )
+            self.assertTrue(results["benchmark_ost_file"]["sample_rows"][0]["file_path"].endswith(".ost"))
+            self.assertIn("secret_project", results["benchmark_recent_lnk"]["sample_rows"][0]["file_name"])
 
     def test_investigate_report_only_refreshes_all_sections_and_emits_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -615,6 +666,64 @@ class PersistenceTests(unittest.TestCase):
 
             self.assertEqual("completed", result["status"])
             self.assertEqual(2, int(iterations))
+
+    def test_broad_plan_stop_does_not_finish_while_active_hypothesis_remains(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            planned = {"count": 0}
+
+            def fake_broad_plan(*args, **kwargs):
+                planned["count"] += 1
+                if planned["count"] == 1:
+                    return BroadPlanResult(
+                        read_more=[],
+                        hypotheses=[Hypothesis(id="H-1", description="active hypothesis", status="active", summary="")],
+                        stop=True,
+                        stop_reason="done",
+                        raw_response={},
+                    )
+                return BroadPlanResult(
+                    read_more=[],
+                    hypotheses=[],
+                    stop=False,
+                    stop_reason=None,
+                    raw_response={},
+                )
+
+            def fake_plan_hypothesis_query(*args, **kwargs):
+                return HypothesisPlanResult(
+                    read_more=[],
+                    hypothesis=None,
+                    query=None,
+                    needs_more=False,
+                    stop_reason=None,
+                    raw_response={},
+                )
+
+            with CaseDB(case) as db:
+                with patch("forensia.ai.investigator._seed_findings", return_value=0), patch(
+                    "forensia.ai.investigator.broad_plan_investigation",
+                    side_effect=fake_broad_plan,
+                ), patch(
+                    "forensia.ai.investigator.plan_hypothesis_query",
+                    side_effect=fake_plan_hypothesis_query,
+                ), patch(
+                    "forensia.ai.investigator.render_written_report",
+                    return_value=(case.reports_dir / "report.md", case.reports_dir / "report.html"),
+                ):
+                    result = investigate(
+                        case=case,
+                        db=db,
+                        base_url=self._llm_base_url(),
+                        model="test-model",
+                        max_iter=2,
+                        no_progress_limit=5,
+                        max_queries_per_hypothesis=1,
+                        report_every_n_cycles=999,
+                    )
+
+            self.assertEqual("completed", result["status"])
+            self.assertEqual(2, planned["count"])
 
     def test_case_init_creates_allowlist_stub_and_preserves_existing_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -246,7 +246,6 @@ def report_write(
     parallelism = report_parallelism or get_llm_settings()["report_parallelism"]
     _status(f"Writing report from templates: {template_root} (parallelism={parallelism})")
     with CaseDB(case) as db:
-        clear_api_snapshots(case)
         investigate_loop(
             case=case,
             db=db,
@@ -302,7 +301,6 @@ def run(
 
     with CaseDB(case) as db:
         clear_progress_events(db)
-        clear_api_snapshots(case)
         push_progress = _progress_pusher(
             db,
             {
@@ -483,7 +481,6 @@ def investigate(
     _status(f"Starting investigate for case={case.path.name} model={model}")
     with CaseDB(case) as db:
         clear_progress_events(db)
-        clear_api_snapshots(case)
         push_progress = _progress_pusher(
             db,
             {

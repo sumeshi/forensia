@@ -53,7 +53,7 @@ def _slim_findings(items: list[dict[str, Any]], max_findings: int) -> list[dict[
     return slimmed
 
 
-def _truncate_context_sections(context_sections: dict[str, str], max_chars: int = 600) -> dict[str, str]:
+def _truncate_context_sections(context_sections: dict[str, str], max_chars: int = 1500) -> dict[str, str]:
     trimmed: dict[str, str] = {}
     for section_key, body in context_sections.items():
         text = str(body or "").strip()
