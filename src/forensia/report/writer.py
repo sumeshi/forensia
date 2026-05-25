@@ -22,6 +22,11 @@ GAP_PATTERN = re.compile(
     r"【調査不足:\s*([^】]+)】|\[INSUFFICIENT EVIDENCE:\s*([^\]]+)\]",
     re.IGNORECASE,
 )
+PLACEHOLDER_ENTITY_PATTERN = re.compile(r"(?<![\w/.-])(none|n/?a|null)(?![\w/.-])", re.IGNORECASE)
+EVIDENCE_ID_PATTERN = re.compile(r"\bev-[A-Za-z0-9._:-]+\b")
+HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.*)$")
+FINDING_ID_PATTERN = re.compile(r"\b[A-Za-z][A-Za-z0-9-]*-\d{4}\b")
+HTML_FILL_PATTERN = re.compile(r"<!--\s*fill(?:[^>]*)-->", re.IGNORECASE)
 EvidenceResolver = Callable[[CaseDB], list[dict[str, Any]]]
 
 
@@ -40,6 +45,179 @@ def _section_confidence(body: str) -> float:
     paragraph_count = max(len(paragraphs), 1)
     gap_count = len(GAP_PATTERN.findall(body))
     return max(0.0, min(1.0, 1.0 - (gap_count / paragraph_count)))
+
+
+def _timeline_rows_are_chronological(body: str) -> bool:
+    timestamps: list[str] = []
+    for line in body.splitlines():
+        if not line.startswith("|"):
+            continue
+        stripped = line.strip()
+        if stripped.startswith("|---") or "Timestamp" in stripped:
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if not cells:
+            continue
+        first = cells[0]
+        if not first or "<!--" in first:
+            continue
+        timestamps.append(first)
+    return timestamps == sorted(timestamps)
+
+
+def _normalized_text_key(text: str) -> str:
+    lowered = text.casefold()
+    cleaned = re.sub(r"[^a-z0-9]+", " ", lowered)
+    return " ".join(cleaned.split())
+
+
+def _first_heading_text(body: str) -> str:
+    for line in body.splitlines():
+        match = HEADING_PATTERN.match(line.strip())
+        if match and len(match.group(1)) == 1:
+            return match.group(2).strip()
+    return ""
+
+
+def _title_matches_body_heading(title: str, body: str) -> bool:
+    heading = _first_heading_text(body)
+    if not heading:
+        return True
+    normalized_title = _normalized_text_key(title)
+    normalized_heading = _normalized_text_key(heading)
+    return (
+        not normalized_title
+        or not normalized_heading
+        or normalized_title in normalized_heading
+        or normalized_heading in normalized_title
+    )
+
+
+def _duplicate_finding_titles(db: CaseDB, body: str) -> list[str]:
+    lowered_body = body.casefold()
+    duplicates: list[str] = []
+    rows = fetch_records(
+        db,
+        """
+        SELECT DISTINCT title
+        FROM findings
+        WHERE COALESCE(title, '') != ''
+        """,
+    )
+    for row in rows:
+        title = str(row.get("title") or "").strip()
+        if len(title) < 5:
+            continue
+        count = lowered_body.count(title.casefold())
+        if count > 2:
+            duplicates.append(title)
+    return duplicates
+
+
+def _correlation_finding_ids(finding_ids: list[str], db: CaseDB) -> list[str]:
+    if not finding_ids:
+        return []
+    placeholders = ", ".join("?" for _ in finding_ids)
+    rows = fetch_records(
+        db,
+        f"""
+        SELECT finding_id
+        FROM findings
+        WHERE finding_id IN ({placeholders})
+          AND rule_id LIKE '%corr-%'
+        """,
+        tuple(finding_ids),
+    )
+    return [str(row.get("finding_id") or "") for row in rows if str(row.get("finding_id") or "")]
+
+
+def _quality_gate_section(
+    section_key: str,
+    title: str,
+    body: str,
+    gaps: list[str],
+    confidence: float,
+) -> tuple[list[str], float]:
+    gated_gaps = list(gaps)
+    gated_confidence = confidence
+    if PLACEHOLDER_ENTITY_PATTERN.search(body):
+        note = "Placeholder entity values detected; additional review is required."
+        if note not in gated_gaps:
+            gated_gaps.append(note)
+        gated_confidence = min(gated_confidence, 0.5)
+    if HTML_FILL_PATTERN.search(body):
+        note = "Template placeholder markers remain in the section body."
+        if note not in gated_gaps:
+            gated_gaps.append(note)
+        gated_confidence = min(gated_confidence, 0.3)
+    if not _title_matches_body_heading(title, body):
+        note = "Section heading does not match the expected section title; review for claim/title consistency."
+        if note not in gated_gaps:
+            gated_gaps.append(note)
+        gated_confidence = min(gated_confidence, 0.65)
+    if section_key == "2_timeline" and not _timeline_rows_are_chronological(body):
+        note = "Timeline ordering requires review; events are not strictly chronological."
+        if note not in gated_gaps:
+            gated_gaps.append(note)
+        gated_confidence = min(gated_confidence, 0.6)
+    if section_key == "8_recommendations":
+        lowered = body.lower()
+        strength_markers = (
+            "confirmed",
+            "strongly suggests",
+            "may indicate",
+            "additional verification",
+            "consider containment after verification",
+        )
+        if not any(marker in lowered for marker in strength_markers):
+            note = "Recommendations should state evidence strength or verification-first wording."
+            if note not in gated_gaps:
+                gated_gaps.append(note)
+            gated_confidence = min(gated_confidence, 0.65)
+    return gated_gaps, gated_confidence
+
+
+def _sort_markdown_table_by_first_column(body: str) -> str:
+    lines = body.splitlines()
+    sorted_lines: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if not line.startswith("|") or index + 1 >= len(lines) or not lines[index + 1].startswith("|---"):
+            sorted_lines.append(line)
+            index += 1
+            continue
+        header = line
+        separator = lines[index + 1]
+        rows: list[str] = []
+        index += 2
+        while index < len(lines) and lines[index].startswith("|"):
+            rows.append(lines[index])
+            index += 1
+        def sort_key(row: str) -> str:
+            cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
+            return cells[0] if cells else ""
+        sorted_lines.extend([header, separator, *sorted(rows, key=sort_key)])
+    return "\n".join(sorted_lines)
+
+
+def _validate_body_evidence_ids(db: CaseDB, body: str) -> list[str]:
+    evidence_ids = sorted(set(EVIDENCE_ID_PATTERN.findall(body)))
+    if not evidence_ids:
+        return []
+    placeholders = ", ".join("?" for _ in evidence_ids)
+    found = {
+        str(row[0])
+        for row in db.execute(
+            f"""
+            SELECT evidence_id FROM evtx_events WHERE evidence_id IN ({placeholders})
+            UNION
+            SELECT evidence_id FROM mft_entries WHERE evidence_id IN ({placeholders})
+            """,
+            tuple(evidence_ids + evidence_ids),
+        ).fetchall()
+    }
+    return [evidence_id for evidence_id in evidence_ids if evidence_id not in found]
 
 
 
@@ -295,11 +473,25 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         ),
     ),
     "persistence_service_installs": (
-        "Service installation or creation events.",
+        "Service installation or creation events with classification (benign-known / unknown).",
         lambda db: _report_keypoint_rows(
             db,
             """
-            SELECT timestamp, computer, service_name, subject_user, message, evidence_id
+            SELECT timestamp, computer, service_name, subject_user, evidence_id,
+              CASE
+                WHEN regexp_matches(LOWER(COALESCE(service_name,'')),
+                  'gupdate|gupdatem|google.update|bonjour|mdnsresponder'
+                  '|msiserver|trustedinstaller|officeclicktorun|osppsvc'
+                  '|office.64.source.engine|office.software.protection'
+                  '|[.]net.framework.ngen|ngen.v4|mscorsvw|clr_optimization'
+                  '|intel.*pro.*1000|intel.*82[.]|intel.*ndis|intel.*network'
+                  '|microsoft.streaming|microsoft.memory.module|microsoft.trusted.audio'
+                  '|uaa.*function.driver|uaa.bus.driver'
+                  '|net[.]tcp.listener|net[.]pipe.listener|net[.]msmq.listener'
+                  '|asp[.]net.state|wuauserv|sppsvc|wmpnetworksvc')
+                THEN 'benign-known'
+                ELSE 'unknown'
+              END AS classification
             FROM evtx_events
             WHERE event_id IN (4697,7045)
             ORDER BY timestamp
@@ -474,6 +666,41 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             FROM ai_reviews
             ORDER BY created_at DESC
             LIMIT 10
+            """,
+        ),
+    ),
+    "appendix_findings_catalog": (
+        "Raw findings catalog for appendix use, ordered by severity and confidence.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT finding_id, rule_id, title, severity, confidence, status, summary, ai_summary
+            FROM findings
+            WHERE COALESCE(status, 'accepted') != 'suppressed'
+            ORDER BY
+                CASE severity
+                    WHEN 'critical' THEN 1
+                    WHEN 'high' THEN 2
+                    WHEN 'medium' THEN 3
+                    WHEN 'low' THEN 4
+                    ELSE 5
+                END,
+                confidence DESC,
+                created_at DESC
+            LIMIT 80
+            """,
+        ),
+    ),
+    "appendix_claims_needing_review": (
+        "Claims whose support status needs review.",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT section_key, claim_text, support_status
+            FROM claims
+            WHERE support_status IN ('unsupported', 'orphaned_reference', 'needs_review')
+            ORDER BY section_key, updated_at DESC
+            LIMIT 40
             """,
         ),
     ),
@@ -750,12 +977,15 @@ def _load_keypoint_cards(case: Case, max_cards: int = 8, max_chars: int = 1200) 
 
 def _extract_claim_texts(body: str) -> list[str]:
     claims: list[str] = []
+    seen: set[str] = set()
     for paragraph in re.split(r"\n\s*\n", body):
         text = paragraph.strip()
         if not text or text.startswith("#") or GAP_PATTERN.search(text):
             continue
         normalized = " ".join(line.strip("- ").strip() for line in text.splitlines() if line.strip())
-        if normalized:
+        key = _claim_text_key(normalized)
+        if normalized and normalized not in ("[]", "{}", "<!--", "-->") and key not in seen:
+            seen.add(key)
             claims.append(normalized)
     return claims
 
@@ -833,6 +1063,14 @@ def _build_report_brief(db: CaseDB) -> dict[str, Any]:
         LIMIT 20
         """,
     )
+    deduped_claims: list[dict[str, Any]] = []
+    seen_claim_keys: set[str] = set()
+    for item in existing_claims:
+        key = _claim_text_key(str(item.get("claim_text") or ""))
+        if not key or key in seen_claim_keys:
+            continue
+        seen_claim_keys.add(key)
+        deduped_claims.append(normalize_value(item))
     return {
         "top_findings": [normalize_value(item) for item in findings],
         "active_hypotheses": [normalize_value(item) for item in active_hypotheses],
@@ -846,12 +1084,18 @@ def _build_report_brief(db: CaseDB) -> dict[str, Any]:
             }
             for item in prior_sections
         ],
-        "existing_claims": [normalize_value(item) for item in existing_claims],
+        "existing_claims": deduped_claims,
     }
 
 
 def write_report_brief(case: Case, db: CaseDB) -> dict[str, Any]:
     brief = _build_report_brief(db)
+    overview_path = case.memory_dir / "overview.md"
+    if overview_path.exists():
+        overview_text = overview_path.read_text(encoding="utf-8")
+        match = re.search(r"## Investigation Objective\s+-\s+(.+)", overview_text)
+        if match:
+            brief["investigation_objective"] = match.group(1).strip()
     path = case.reports_dir / "report_brief.json"
     path.write_text(json.dumps(brief, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     return brief
@@ -910,7 +1154,7 @@ def _upsert_claims(
     section_key: str,
     body: str,
     evidence_results: list[dict[str, Any]],
-) -> None:
+) -> list[str]:
     now = datetime.now(UTC).replace(tzinfo=None)
     claims = _extract_claim_texts(body)
     provenance = _collect_claim_provenance(evidence_results)
@@ -947,7 +1191,7 @@ def _upsert_claims(
         rows,
     )
     if not claims:
-        return
+        return []
     text_groups = fetch_records(
         db,
         """
@@ -982,6 +1226,37 @@ def _upsert_claims(
                 "UPDATE claims SET support_status = 'needs_review', updated_at = ? WHERE claim_id = ?",
                 (now, str(row["claim_id"])),
             )
+    statuses = fetch_records(
+        db,
+        "SELECT DISTINCT support_status FROM claims WHERE section_key = ?",
+        (section_key,),
+    )
+    return [str(row.get("support_status") or "") for row in statuses if str(row.get("support_status") or "")]
+
+
+def _update_section_quality_only(
+    db: CaseDB,
+    section_key: str,
+    confidence: float,
+    gaps: list[str],
+) -> None:
+    row = db.execute(
+        "SELECT status FROM report_sections WHERE section_key = ?",
+        (section_key,),
+    ).fetchone()
+    existing_status = str(row[0] or "draft") if row else "draft"
+    if gaps or confidence < 0.9:
+        next_status = existing_status if existing_status in {"ai_exhausted", "human_reviewed"} else "draft"
+    else:
+        next_status = existing_status
+    db.execute(
+        """
+        UPDATE report_sections
+        SET confidence = ?, gaps = ?, status = ?
+        WHERE section_key = ?
+        """,
+        (confidence, json.dumps(gaps, ensure_ascii=False), next_status, section_key),
+    )
 
 
 def _upsert_report_section(
@@ -1134,8 +1409,29 @@ def finalize_section(
     session_id: str | None = None,
 ) -> dict[str, Any]:
     """UPSERT the section into DuckDB. Returns gap list and confidence."""
+    if section_key == "2_timeline":
+        body = _sort_markdown_table_by_first_column(body)
     candidate_gaps = collect_gaps({section_key: body})
     candidate_confidence = _section_confidence(body)
+    missing_evidence_ids = _validate_body_evidence_ids(db, body)
+    if missing_evidence_ids:
+        candidate_gaps.append(
+            f"Referenced evidence_id values not found in database: {', '.join(missing_evidence_ids[:5])}"
+        )
+        candidate_confidence = min(candidate_confidence, 0.6)
+    candidate_gaps, candidate_confidence = _quality_gate_section(
+        section_key,
+        title,
+        body,
+        candidate_gaps,
+        candidate_confidence,
+    )
+    duplicate_titles = _duplicate_finding_titles(db, body)
+    if duplicate_titles:
+        candidate_gaps.append(
+            f"Finding titles are repeated too often in this section: {', '.join(duplicate_titles[:3])}"
+        )
+        candidate_confidence = min(candidate_confidence, 0.6)
     updated = _upsert_report_section(
         db=db,
         section_key=section_key,
@@ -1156,7 +1452,31 @@ def finalize_section(
         if not isinstance(persisted_gaps, list):
             persisted_gaps = []
         return {"gaps": persisted_gaps, "confidence": persisted_confidence}
-    _upsert_claims(db, section_key, body, evidence_results or [])
+    claim_statuses = _upsert_claims(db, section_key, body, evidence_results or [])
+    referenced_finding_ids = sorted(set(FINDING_ID_PATTERN.findall(body)))
+    correlation_finding_ids = _correlation_finding_ids(referenced_finding_ids, db)
+    if correlation_finding_ids and "confirmed" in body.casefold() and not EVIDENCE_ID_PATTERN.search(body):
+        candidate_gaps.append(
+            "Correlation-rule findings are described as confirmed without direct evidence_id support; rewrite as hypothesis."
+        )
+        candidate_confidence = min(candidate_confidence, 0.55)
+        _update_section_quality_only(
+            db=db,
+            section_key=section_key,
+            confidence=candidate_confidence,
+            gaps=candidate_gaps,
+        )
+    if any(status in {"unsupported", "orphaned_reference", "needs_review"} for status in claim_statuses):
+        claim_gap = "One or more claims require support review due to unsupported, orphaned, or conflicting provenance."
+        if claim_gap not in candidate_gaps:
+            candidate_gaps.append(claim_gap)
+        candidate_confidence = min(candidate_confidence, 0.65)
+        _update_section_quality_only(
+            db=db,
+            section_key=section_key,
+            confidence=candidate_confidence,
+            gaps=candidate_gaps,
+        )
     return {"gaps": candidate_gaps, "confidence": candidate_confidence}
 
 

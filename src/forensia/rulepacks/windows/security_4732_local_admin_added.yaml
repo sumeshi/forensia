@@ -2,6 +2,11 @@ id: windows-security-4732-local-admin-added
 title: User added to local Administrators group (Event 4732)
 severity: critical
 confidence: 0.85
+required_fields:
+  - subject_user
+  - target_user
+  - computer
+  - message
 tags:
   - windows
   - privilege-escalation

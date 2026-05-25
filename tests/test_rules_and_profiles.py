@@ -10,8 +10,9 @@ from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.normalize.evtx import normalize_evtx
 from forensia.rules.engine import save_findings
+from forensia.rules.engine import generate_findings
 from forensia.rules.loader import load_rules_from_dir
-from forensia.rules.models import Finding
+from forensia.rules.models import Finding, Rule
 
 
 JP_CHAR_PATTERN = r"[ぁ-んァ-ン一-龥]"
@@ -35,6 +36,46 @@ class RuleProfileTests(unittest.TestCase):
         self.assertEqual(14, len(rules))
         self.assertIn("windows-defender-5001-realtime-disabled", rule_ids)
         self.assertNotIn("windows-security-4624-rdp-logon", rule_ids)
+
+    def test_data_leakage_profile_loads_leakage_rulepack(self) -> None:
+        rules_dir = Path("src/forensia/rulepacks")
+        profile_path = Path("src/forensia/profiles/data-leakage.yaml")
+        rules = load_rules_from_dir(rules_dir, profile_path)
+        rule_ids = {rule.id for rule in rules}
+
+        self.assertIn("leakage-mft-sensitive-filename", rule_ids)
+        self.assertIn("leakage-mft-cloud-sync-artifact", rule_ids)
+        self.assertIn("leakage-mft-archive-staging-file", rule_ids)
+        self.assertGreater(len(rules), 62)
+
+    def test_major_windows_rules_define_required_fields(self) -> None:
+        expected = {
+            "security_4624_network_logon.yaml": {"target_user", "computer", "src_ip", "logon_type"},
+            "security_4624_rdp_logon.yaml": {"target_user", "computer", "src_ip", "logon_type"},
+            "security_4624_interactive_logon.yaml": {"target_user", "computer", "logon_type"},
+            "security_4625_failed_logon.yaml": {"src_ip", "computer", "target_user", "fail_count"},
+            "security_4648_logon_explicit_creds.yaml": {"subject_user", "target_user", "computer", "process_name"},
+            "security_4688_powershell.yaml": {"target_user", "computer", "process_name", "command_line"},
+            "security_4688_suspicious_tools.yaml": {"target_user", "computer", "process_name", "command_line"},
+            "security_4697_service_install.yaml": {"subject_user", "service_name", "computer"},
+            "system_7045_service_installed.yaml": {"service_name", "computer", "subject_user"},
+            "security_4720_account_created.yaml": {"subject_user", "target_user", "computer"},
+            "security_4728_domain_admin_added.yaml": {"subject_user", "target_user", "computer", "message"},
+            "security_4732_local_admin_added.yaml": {"subject_user", "target_user", "computer", "message"},
+        }
+        rules_dir = Path("src/forensia/rulepacks/windows")
+        for filename, fields in expected.items():
+            parsed = yaml.safe_load((rules_dir / filename).read_text(encoding="utf-8"))
+            self.assertTrue(fields.issubset(set(parsed.get("required_fields") or [])), filename)
+
+    def test_windows_allowlist_metadata_is_not_loaded_as_rule(self) -> None:
+        rules_dir = Path("src/forensia/rulepacks")
+        profile_path = Path("src/forensia/profiles/windows-basic.yaml")
+        rules = load_rules_from_dir(rules_dir, profile_path)
+        rule_ids = {rule.id for rule in rules}
+
+        self.assertEqual(62, len(rules))
+        self.assertNotIn("allowlist_services", rule_ids)
 
     def test_profile_with_nonexistent_rulepack_loads_zero_rules(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -151,6 +192,32 @@ class AllowlistTests(unittest.TestCase):
 
             self.assertIsNotNone(row)
             self.assertEqual("suppressed", row[0])
+
+    def test_builtin_benign_allowlist_suppresses_known_service_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            finding = Finding(
+                finding_id="windows-system-7045-service-installed-0001",
+                rule_id="windows-system-7045-service-installed",
+                title="Service installed: Google Update",
+                summary="Known benign updater service installed",
+                severity="high",
+                confidence=0.9,
+                evidence=[{"service_name": "gupdate"}],
+            )
+
+            with CaseDB(case) as db:
+                save_findings(case, db, [finding])
+                row = db.execute(
+                    "SELECT status, severity, confidence, missing_checks FROM findings WHERE finding_id = ?",
+                    (finding.finding_id,),
+                ).fetchone()
+
+            self.assertIsNotNone(row)
+            self.assertEqual("suppressed", row[0])
+            self.assertEqual("low", row[1])
+            self.assertLessEqual(float(row[2]), 0.2)
+            self.assertIn("built-in benign allowlist", row[3])
 
 
 class NormalizeEvtxTests(unittest.TestCase):
@@ -421,6 +488,32 @@ class RuleExecutionTests(unittest.TestCase):
             self.assertEqual(2, len(rows))
             self.assertEqual({"ADMIN$", "C$"}, {row["share_name"] for row in rows})
             self.assertEqual({"share-1", "share-2"}, {row["evidence_id"] for row in rows})
+
+    def test_generate_findings_degrades_confidence_when_key_fields_are_missing(self) -> None:
+        rule = Rule.model_validate(
+            {
+                "id": "test-rule",
+                "title": "Test rule",
+                "severity": "critical",
+                "confidence": 0.9,
+                "required_fields": ["target_user", "src_ip"],
+                "query": "SELECT 1",
+                "finding": {
+                    "title": "Network logon: {target_user}",
+                    "summary": "Source IP: {src_ip}",
+                },
+                "tags": ["windows"],
+                "attack": ["T1078"],
+            }
+        )
+
+        findings = generate_findings(rule, [{"target_user": None, "src_ip": "-"}])
+
+        self.assertEqual(1, len(findings))
+        self.assertEqual("Network logon: ", findings[0].title)
+        self.assertEqual("Source IP: ", findings[0].summary)
+        self.assertLess(findings[0].confidence, 0.9)
+        self.assertTrue(findings[0].missing_checks)
 
 
 if __name__ == "__main__":

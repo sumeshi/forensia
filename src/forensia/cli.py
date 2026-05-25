@@ -396,6 +396,8 @@ def run(
                 summary=f"findings={total_findings}",
             )
 
+        write_api_snapshots(case, db)
+
         # Stage 4: Investigate
         if llm_base_url and model:
             _status(f"Stage 4/4: investigate with model={model}")

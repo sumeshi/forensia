@@ -1,0 +1,5 @@
+name: data-leakage
+rulepacks:
+  - windows
+  - leakage
+objective: Confirm whether sensitive files were accessed, staged, synchronized, or archived for potential data leakage.

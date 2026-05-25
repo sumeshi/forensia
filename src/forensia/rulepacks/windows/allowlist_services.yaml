@@ -1,0 +1,77 @@
+kind: allowlist_services
+
+# Built-in benign service names (substring match, case-insensitive).
+# Used by save_findings() to auto-suppress low-value service installation findings.
+service_names:
+  # Google
+  - gupdate
+  - gupdatem
+  - googleupdate
+  - google update service
+  # Microsoft Office
+  - office 64 source engine
+  - office software protection platform
+  - officeclicktorun
+  - osppsvc
+  # .NET / Runtime
+  - .net framework ngen
+  - ngen v4
+  - mscorsvw
+  # System / Installer
+  - msiserver
+  - trustedinstaller
+  - wuauserv
+  # Bonjour / Apple
+  - bonjour service
+  - mdnsresponder
+  # Intel drivers
+  - intel(r) pro
+  - intel(r) 82
+  - intel network adapter
+  - intel ndis
+  # Microsoft audio / streaming drivers
+  - microsoft streaming
+  - microsoft memory module driver
+  - microsoft trusted audio drivers
+  - microsoft 1.1 uaa function driver
+  - uaa bus driver for high definition
+  - uaa function driver
+  # .NET remoting / WCF
+  - net.tcp listener adapter
+  - net.pipe listener adapter
+  - net.msmq listener adapter
+  - asp.net state service
+  # Windows core
+  - clr_optimization
+  - sppsvc
+  - wmpnetworksvc
+
+process_names:
+  - googledrivesync.exe
+  - googleupdate.exe
+  - gupdate.exe
+  - gupdatem.exe
+  - msiexec.exe
+  - trustedinstaller.exe
+  - mscorsvw.exe
+  - ngen.exe
+  - bonjour.exe
+  - mdnsresponder.exe
+  - officeclicktorun.exe
+
+title_keywords:
+  - google update
+  - office update
+  - runtime optimization
+  - trustedinstaller
+  - bonjour
+  - office source engine
+  - office software protection
+  - microsoft streaming
+  - microsoft trusted audio
+  - microsoft memory module
+  - uaa function driver
+  - net.tcp listener
+  - net.pipe listener
+  - asp.net state
+  - ngen v4

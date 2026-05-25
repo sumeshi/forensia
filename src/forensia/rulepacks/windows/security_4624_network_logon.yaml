@@ -2,6 +2,11 @@ id: windows-security-4624-network-logon
 title: Network logon (LogonType=3)
 severity: medium
 confidence: 0.5
+required_fields:
+  - target_user
+  - computer
+  - src_ip
+  - logon_type
 tags:
   - windows
   - logon

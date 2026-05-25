@@ -10,6 +10,10 @@ prompt: |
     4. The LogonType values used by the attacker and their meaning, such as 3 = network logon and 10 = RDP
     5. Abuse of privileged accounts, including 4672 privileged logon indicators when applicable
   LogonType=3 is common and should be described as suspicious only when combined with additional indicators such as administrative share access, off-hours activity, or unusual external IPs.
+  Do not use 4720, 4728, or 4732 as logon evidence.
+  Do not describe 4648 alone as confirmed Pass-the-Hash or PsExec.
+  Distinguish observed users, newly created users, suspicious users, actor candidates, and victim users.
+  Do not call an existing observed user attacker-created unless account-creation evidence exists.
 keypoints:
   - top_keypoints
   - accounts_logon_summary
@@ -22,9 +26,9 @@ keypoints:
 
 ## Compromised Account List
 
-| Account | Compromise Method | First Seen | Supporting Evidence (evidence_id) |
-|---|---|---|---|
-| <!-- fill --> | <!-- fill --> | <!-- fill --> | <!-- fill --> |
+| Account | Role | Compromise Method | First Seen | Supporting Evidence (evidence_id) |
+|---|---|---|---|---|
+| <!-- fill --> | observed_user / newly_created_user / suspicious_user / actor_candidate / victim_user | <!-- fill --> | <!-- fill --> | <!-- fill --> |
 
 ---
 

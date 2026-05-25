@@ -15,6 +15,7 @@ class Rule(BaseModel):
     title: str
     severity: str = "medium"
     confidence: float = 0.5
+    required_fields: list[str] = Field(default_factory=list)
     query: str
     finding: FindingTemplate
     tags: list[str] = Field(default_factory=list)

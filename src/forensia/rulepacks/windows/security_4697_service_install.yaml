@@ -2,6 +2,10 @@ id: windows-security-4697-service-install
 title: Service installed (Security Event 4697)
 severity: high
 confidence: 0.75
+required_fields:
+  - subject_user
+  - service_name
+  - computer
 tags:
   - windows
   - persistence

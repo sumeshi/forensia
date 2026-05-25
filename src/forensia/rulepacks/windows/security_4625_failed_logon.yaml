@@ -2,6 +2,13 @@ id: windows-security-4625-failed-logon
 title: Failed logon attempts (grouped by IP)
 severity: medium
 confidence: 0.6
+required_fields:
+  - src_ip
+  - computer
+  - target_user
+  - fail_count
+  - first_seen
+  - last_seen
 tags:
   - windows
   - logon

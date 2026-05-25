@@ -8,6 +8,7 @@ prompt: |
     2. An ATT&CK phase for each step (Initial Access / Execution / Persistence / Privilege Escalation / Defense Evasion / Credential Access / Lateral Movement / Collection / Exfiltration / Impact)
     3. Any confirmed log gap or period of missing visibility
   Only describe steps that have confirmed evidence_id values. Do not speculate.
+  If you rely on correlation findings, state them as hypotheses or leads, not confirmed attack facts.
   If a required statement cannot be supported, explicitly write "[INSUFFICIENT EVIDENCE: reason]".
 keypoints:
   - top_keypoints

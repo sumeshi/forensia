@@ -2,6 +2,10 @@ id: windows-system-7045-service-installed
 title: Service installed (System Event 7045)
 severity: high
 confidence: 0.7
+required_fields:
+  - service_name
+  - computer
+  - subject_user
 tags:
   - windows
   - persistence

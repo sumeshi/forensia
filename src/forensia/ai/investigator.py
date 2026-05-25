@@ -10,6 +10,7 @@ from re import sub
 from typing import Any
 from uuid import uuid4
 
+import yaml
 from rich import print
 
 from forensia.ai.audit import LLMCallLogger
@@ -34,7 +35,7 @@ from forensia.ai.section_refresher import _refresh_report_sections
 from forensia.config import get_llm_settings
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
-from forensia.core.session import HistoryEntry, Hypothesis, SessionState
+from forensia.core.session import ENTITY_ROLES, HistoryEntry, Hypothesis, SessionState
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
 from forensia.report.writer import (
@@ -146,7 +147,15 @@ def _seed_findings(case: Case, db: CaseDB, profile: str) -> int:
     return total
 
 
-def _initialize_overview(memory: MemoryManager, case: Case) -> None:
+def _load_profile_config(profile: str) -> dict[str, Any]:
+    profile_path = Path(__file__).parent.parent / "profiles" / f"{profile}.yaml"
+    if not profile_path.exists():
+        return {}
+    return yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
+
+
+def _initialize_overview(memory: MemoryManager, case: Case, profile_config: dict[str, Any] | None = None) -> None:
+    objective = str((profile_config or {}).get("objective") or "").strip()
     if memory.has_overview():
         return
     output_language = str(get_llm_settings()["output_language"]).lower()
@@ -154,10 +163,15 @@ def _initialize_overview(memory: MemoryManager, case: Case) -> None:
         "ja": "初回調査待ち",
         "en": "Awaiting initial investigation",
     }.get(output_language, "Awaiting initial investigation")
+    objective_line = objective or {
+        "ja": "証拠に基づいて事実関係を整理する",
+        "en": "Establish the evidence-backed incident narrative.",
+    }.get(output_language, "Establish the evidence-backed incident narrative.")
     memory.update_overview(
         (
             f"# Investigation Overview\n\n"
             f"Case: {case.path.name}\n\n"
+            f"## Investigation Objective\n- {objective_line}\n\n"
             "## Memory Details\n"
             "- Detailed fact records can be stored under memory/details/fact-NNN.md and loaded on demand.\n\n"
             "## Case Scope\n- none\n\n"
@@ -166,6 +180,30 @@ def _initialize_overview(memory: MemoryManager, case: Case) -> None:
             f"## Active Tasks\n- {open_question_seed}\n"
         )
     )
+
+
+def _ensure_profile_objective(memory: MemoryManager, profile_config: dict[str, Any] | None = None) -> None:
+    objective = str((profile_config or {}).get("objective") or "").strip()
+    if not objective:
+        return
+    overview = memory.load_overview()
+    if "## Investigation Objective" not in overview:
+        memory.update_overview(
+            overview.rstrip() + f"\n\n## Investigation Objective\n- {objective}\n"
+        )
+    elif objective not in overview:
+        memory.update_overview(
+            overview.replace("## Investigation Objective\n", f"## Investigation Objective\n- {objective}\n", 1)
+            if "## Investigation Objective\n- " not in overview
+            else overview
+        )
+    if memory.tasks_memory_path.exists():
+        tasks_text = memory.tasks_memory_path.read_text(encoding="utf-8")
+    else:
+        tasks_text = ""
+    objective_task = f"Investigation objective: {objective}"
+    if objective_task not in tasks_text:
+        memory.append_task(objective_task, "human_decision")
 
 
 def _finding_snapshot(db: CaseDB, limit: int = 20) -> list[dict[str, Any]]:
@@ -181,10 +219,13 @@ def _finding_snapshot(db: CaseDB, limit: int = 20) -> list[dict[str, Any]]:
     )
 
 
-def _render_entity_memory(entity_type: str, name: str, notes: str) -> str:
+def _render_entity_memory(entity_type: str, name: str, notes: str, role: str = "") -> str:
     normalized_type = str(entity_type).strip().lower() or "entity"
     normalized_name = str(name).strip()
     lines = [f"# {normalized_type}: {normalized_name}", "", f"- type: {normalized_type}", f"- name: {normalized_name}"]
+    normalized_role = str(role).strip().lower()
+    if normalized_role in ENTITY_ROLES and normalized_role != "unknown":
+        lines.append(f"- role: {normalized_role}")
     note_text = str(notes).strip()
     if note_text:
         lines.append(f"- notes: {note_text}")
@@ -337,8 +378,9 @@ def _apply_memory_updates(
             continue
         entity_type = str(item.get("entity_type") or "")
         entity_name = str(item.get("name") or "")
+        entity_role = str(item.get("role") or "")
         notes = str(item.get("notes") or "")
-        content = str(item.get("content") or "").strip() or _render_entity_memory(entity_type, entity_name, notes)
+        content = str(item.get("content") or "").strip() or _render_entity_memory(entity_type, entity_name, notes, entity_role)
         memory.upsert_entity(
             entity_type,
             entity_name,
@@ -378,12 +420,14 @@ def investigate(
     interrupted = False
     no_progress_count = 0
     memory = MemoryManager(case)
+    profile_config = _load_profile_config(profile)
     if template_root is None:
         case.ensure_report_templates()
         template_root = case.report_template_dir
 
     _seed_findings(case, db, profile)
-    _initialize_overview(memory, case)
+    _initialize_overview(memory, case, profile_config)
+    _ensure_profile_objective(memory, profile_config)
     llm_logger = LLMCallLogger(case, session_id)
     active_hypotheses, resolved_hypotheses = _load_persisted_hypotheses(db)
     state = SessionState(

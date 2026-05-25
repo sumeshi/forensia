@@ -1,0 +1,33 @@
+id: leakage-mft-archive-staging-file
+title: Archive or staging file observed in user path
+severity: high
+confidence: 0.6
+required_fields:
+  - file_name
+  - file_path
+query: |
+  SELECT
+      evidence_id,
+      file_name,
+      file_path,
+      extension,
+      si_created,
+      si_modified
+  FROM mft_entries
+  WHERE
+      extension IN ('zip', '7z', 'rar')
+      AND (
+          LOWER(file_path) LIKE '%/desktop/%' OR
+          LOWER(file_path) LIKE '%/documents/%' OR
+          LOWER(file_path) LIKE '%/downloads/%' OR
+          LOWER(file_path) LIKE '%/temp/%'
+      )
+finding:
+  title: "Archive file observed: {file_name}"
+  summary: "An archive file ({extension}) was observed at {file_path}. This may represent data staging or bundling for transfer; correlate with nearby file access and cloud or removable-media artifacts."
+tags:
+  - leakage
+  - staging
+  - archive
+attack:
+  - T1020

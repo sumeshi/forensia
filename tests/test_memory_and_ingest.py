@@ -112,7 +112,7 @@ class MemoryAndIngestTests(unittest.TestCase):
                         "tasks": [{"text": "need more logs", "kind": "internal_db_check"}],
                         "overview": ["initial storyline"],
                         "refuted_hypotheses": [{"hypothesis_id": "H-old", "description": "old theory", "reason": "timestamps do not line up"}],
-                        "entities": [{"entity_type": "src_ip", "name": "10.0.0.5", "notes": "reused across failed logons"}],
+                        "entities": [{"entity_type": "src_ip", "name": "10.0.0.5", "role": "source_ip", "notes": "reused across failed logons"}],
                     }
                 },
                 db=None,
@@ -129,6 +129,7 @@ class MemoryAndIngestTests(unittest.TestCase):
             self.assertIn("old theory", memory.refuted_hypotheses_path.read_text(encoding="utf-8"))
             self.assertTrue((memory.entities_ip_dir / "10.0.0.5.md").exists())
             self.assertIn("10.0.0.5", (memory.entities_ip_dir / "10.0.0.5.md").read_text(encoding="utf-8"))
+            self.assertIn("role: source_ip", (memory.entities_ip_dir / "10.0.0.5.md").read_text(encoding="utf-8"))
 
             memory.update_overview("# Overview\n\n" + ("x" * 4096))
             confirmed_before = memory.facts_path.read_text(encoding="utf-8")

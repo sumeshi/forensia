@@ -35,6 +35,8 @@ def load_rules_from_dir(directory: str | Path, profile_path: str | Path | None =
             if not matched:
                 continue
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and str(data.get("kind") or "").startswith("allowlist"):
+            continue
         if data:
             rule = Rule.model_validate(data)
             if allowed_rule_ids is not None and rule.id not in allowed_rule_ids:

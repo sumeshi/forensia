@@ -1,0 +1,5 @@
+name: insider-threat
+rulepacks:
+  - windows
+  - leakage
+objective: Reconstruct potentially suspicious user activity involving sensitive files, cloud sync, and staging behavior while separating confirmed facts from unresolved gaps.

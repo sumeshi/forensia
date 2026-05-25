@@ -11,6 +11,7 @@ prompt: |
     5. Suspicious file paths confirmed from the MFT timeline or MFT entries
   Every IOC must include either evidence_id or an observed timestamp and host.
   Do not add speculative IOCs.
+  Separate source_ip, source_host, and source_account. Do not treat machine accounts such as INFORMANT-PC$ as IP addresses.
 keypoints:
   - top_keypoints
   - ioc_ips
@@ -21,11 +22,11 @@ keypoints:
 
 # Indicators of Compromise (IOC)
 
-## IP Addresses
+## Network Indicators
 
-| IP Address | Purpose | Observed Time | Observed Host | evidence_id |
+| Source IP | Source Host | Source Account | Purpose / Context | evidence_id |
 |---|---|---|---|---|
-| <!-- fill --> | <!-- fill --> | <!-- fill --> | <!-- fill --> | <!-- fill --> |
+| <!-- fill --> | <!-- fill or "Not observed" --> | <!-- fill or "Not observed" --> | <!-- fill --> | <!-- fill --> |
 
 ---
 
@@ -55,6 +56,6 @@ keypoints:
 
 ## Suspicious Accounts
 
-| Account Name | Action | Actor | Timestamp | evidence_id |
-|---|---|---|---|---|
-| <!-- fill --> | created / deleted / group-added | <!-- fill --> | <!-- fill --> | <!-- fill --> |
+| Account Name | Role | Action | Actor | Timestamp | evidence_id |
+|---|---|---|---|---|---|
+| <!-- fill --> | newly_created_user / suspicious_user / actor_candidate / victim_user | created / deleted / group-added / observed | <!-- fill --> | <!-- fill --> | <!-- fill --> |

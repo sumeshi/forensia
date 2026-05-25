@@ -96,6 +96,7 @@ ALLOWED_IDENTIFIER_REFERENCES = ALLOWED_TABLES | {
     "current_query",
     "payload",
 }
+_SQL_FENCE_RE = re.compile(r"```(?:sql)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 FORBIDDEN_SQL = re.compile(
     r"\b(insert|update|delete|drop|alter|create|attach|detach|copy|pragma|truncate|merge|replace)\b",
     re.IGNORECASE,
@@ -241,7 +242,9 @@ def coerce_list(value: Any) -> list[Any]:
 
 
 def validate_select_sql(sql: str) -> str:
-    normalized = sql.strip().rstrip(";").strip()
+    fence_match = _SQL_FENCE_RE.search(sql.strip())
+    normalized = fence_match.group(1).strip() if fence_match else sql.strip().rstrip(";").strip()
+    normalized = normalized.rstrip(";").strip()
     lowered = normalized.lower()
     if not normalized:
         raise ValueError("SQL is empty")

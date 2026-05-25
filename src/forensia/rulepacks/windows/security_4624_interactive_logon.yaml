@@ -2,6 +2,10 @@ id: windows-security-4624-interactive-logon
 title: Interactive or RDP user logon
 severity: medium
 confidence: 0.6
+required_fields:
+  - target_user
+  - computer
+  - logon_type
 tags:
   - windows
   - logon

@@ -2,6 +2,11 @@ id: windows-security-4648-logon-explicit-creds
 title: Logon with explicit credentials (Event 4648)
 severity: high
 confidence: 0.75
+required_fields:
+  - subject_user
+  - target_user
+  - computer
+  - process_name
 tags:
   - windows
   - logon
@@ -24,4 +29,4 @@ query: |
     AND target_user NOT LIKE '%$'
 finding:
   title: "Logon attempt with explicit credentials (4648): {subject_user} -> {target_user}"
-  summary: "{subject_user} explicitly used credentials for {target_user} in a logon attempt on {computer} at {timestamp}. Process: {process_name}. This is a typical artifact of lateral movement tooling such as Pass-the-Hash, PsExec, or RUNAS."
+  summary: "{subject_user} explicitly used credentials for {target_user} in a logon attempt on {computer} at {timestamp}. Process: {process_name}. This is credential-use evidence that may support a lateral movement hypothesis, but it does not by itself confirm Pass-the-Hash, PsExec, or another specific technique."

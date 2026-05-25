@@ -1,7 +1,14 @@
 id: windows-corr-logon-then-service
 title: Network logon followed by service install within 15 minutes
 severity: critical
-confidence: 0.85
+confidence: 0.65
+required_fields:
+  - src_ip
+  - computer
+  - target_user
+  - logon_time
+  - svc_time
+  - service_name
 tags:
   - windows
   - lateral-movement
@@ -46,4 +53,4 @@ query: |
    AND s.svc_time BETWEEN l.logon_time AND l.logon_time + INTERVAL 15 MINUTE
 finding:
   title: "Service installation after network logon: {src_ip} -> {computer}"
-  summary: "After a network logon from {src_ip} to {computer} at {logon_time}, service '{service_name}' was installed at {svc_time}. This is a typical pattern for PsExec-style lateral movement or persistence via remote services."
+  summary: "After a network logon from {src_ip} to {computer} at {logon_time}, service '{service_name}' was installed at {svc_time}. This correlation may indicate remote service creation or lateral movement, but source host, service path, and execution context should be verified before attributing a specific technique."

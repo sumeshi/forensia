@@ -32,9 +32,12 @@ from forensia.report.writer import (
     REPORT_KEYPOINT_ALIASES,
     _build_report_brief,
     _extract_claim_texts,
+    _quality_gate_section,
+    _sort_markdown_table_by_first_column,
     _section_confidence,
     collect_gaps,
     fill_section,
+    finalize_section,
     prepare_section_request,
 )
 from forensia.report_templates import export_packaged_report_templates
@@ -70,6 +73,7 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(1.0, _section_confidence("no gaps here"))
         self.assertLess(_section_confidence("[INSUFFICIENT EVIDENCE: x]"), 1.0)
         self.assertEqual([], _extract_claim_texts("[INSUFFICIENT EVIDENCE: missing evidence]"))
+        self.assertEqual(["same claim"], _extract_claim_texts("same claim\n\nsame claim"))
 
     def test_append_hypothesis_reasoning_is_idempotent_per_query_phase(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -244,6 +248,74 @@ class PersistenceTests(unittest.TestCase):
             self.assertTrue(results["benchmark_ost_file"]["sample_rows"][0]["file_path"].endswith(".ost"))
             self.assertIn("secret_project", results["benchmark_recent_lnk"]["sample_rows"][0]["file_name"])
 
+    def test_quality_gate_flags_placeholder_entities_and_non_chronological_timeline(self) -> None:
+        body = (
+            "| Timestamp | Host | Stage | Event | evidence_id |\n"
+            "|---|---|---|---|---|\n"
+            "| 2026-05-16 10:00:00 | host1 | Login | user=None | ev-2 |\n"
+            "| 2026-05-16 09:00:00 | host1 | Execution | process | ev-1 |\n"
+        )
+
+        gaps, confidence = _quality_gate_section("2_timeline", "Attack Timeline", body, [], 1.0)
+
+        self.assertEqual(2, len(gaps))
+        self.assertLess(confidence, 1.0)
+
+    def test_quality_gate_flags_heading_title_mismatch(self) -> None:
+        gaps, confidence = _quality_gate_section(
+            "4_accounts",
+            "Compromised Accounts and Authentication",
+            "# Indicators of Compromise\n\nBody text",
+            [],
+            1.0,
+        )
+
+        self.assertTrue(any("heading does not match" in gap.lower() for gap in gaps))
+        self.assertLessEqual(confidence, 0.65)
+
+    def test_quality_gate_forces_low_confidence_when_fill_placeholder_remains(self) -> None:
+        gaps, confidence = _quality_gate_section(
+            "1_overview",
+            "Investigation Overview",
+            "# Investigation Overview\n\n<!-- fill -->",
+            [],
+            1.0,
+        )
+
+        self.assertTrue(any("placeholder" in gap.lower() for gap in gaps))
+        self.assertLessEqual(confidence, 0.3)
+
+    def test_quality_gate_flags_recommendations_without_evidence_strength(self) -> None:
+        body = (
+            "## Immediate Response\n\n"
+            "| Priority | Action | Justification |\n"
+            "|---|---|---|\n"
+            "| High | Isolate host1 now | suspicious activity observed |\n"
+        )
+
+        gaps, confidence = _quality_gate_section("8_recommendations", "Recommended Actions", body, [], 1.0)
+
+        self.assertEqual(1, len(gaps))
+        self.assertIn("evidence strength", gaps[0].lower())
+        self.assertLess(confidence, 1.0)
+
+    def test_sort_markdown_table_by_first_column_orders_timeline_rows(self) -> None:
+        body = (
+            "| Timestamp | Host |\n"
+            "|---|---|\n"
+            "| 2026-05-16 10:00:00 | host1 |\n"
+            "| 2026-05-16 09:00:00 | host1 |\n"
+        )
+        sorted_body = _sort_markdown_table_by_first_column(body)
+        self.assertLess(sorted_body.find("09:00:00"), sorted_body.find("10:00:00"))
+
+    def test_export_packaged_templates_includes_appendix_template(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            written = export_packaged_report_templates(tmpdir, overwrite=True)
+
+            self.assertTrue(any(path.name == "9_appendix.md" for path in written))
+            self.assertTrue((Path(tmpdir) / "9_appendix.md").exists())
+
     def test_investigate_report_only_refreshes_all_sections_and_emits_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -272,12 +344,12 @@ class PersistenceTests(unittest.TestCase):
                 ).fetchall()
 
             self.assertEqual("completed", result["status"])
-            self.assertEqual(8, section_count)
-            self.assertEqual(8, len(rows))
+            self.assertEqual(9, section_count)
+            self.assertEqual(9, len(rows))
             self.assertIn("investigate/report-section", [str(event["stage"]) for event in events])
             self.assertIn("investigate/report-section-done", [str(event["stage"]) for event in events])
             self.assertIn("investigate/report-cycle-done", [str(event["stage"]) for event in events])
-            self.assertEqual(8, len(result["report_sections"]["items"]))
+            self.assertEqual(9, len(result["report_sections"]["items"]))
             self.assertTrue(all(float(confidence) < 1.0 for _, confidence, _, _, _ in rows))
             self.assertTrue(all(status_name == "draft" for _, _, status_name, _, _ in rows))
             self.assertTrue(all(int(update_count) == 1 for _, _, _, update_count, _ in rows))
@@ -322,7 +394,7 @@ class PersistenceTests(unittest.TestCase):
 
             self.assertEqual("ai_exhausted", row[0])
             self.assertEqual(2, int(row[1]))
-            self.assertGreaterEqual(float(row[2]), 0.9)
+            self.assertLessEqual(float(row[2]), 0.65)
 
     def test_human_reviewed_section_is_not_overwritten_by_fill_section(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -380,6 +452,58 @@ class PersistenceTests(unittest.TestCase):
                 claim_count = db.execute("SELECT COUNT(*) FROM claims WHERE section_key = '1_overview'").fetchone()[0]
 
             self.assertGreaterEqual(int(claim_count), 1)
+
+    def test_finalize_section_flags_duplicate_finding_mentions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            now = datetime.now(UTC).replace(tzinfo=None)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO findings (
+                        finding_id, rule_id, title, summary, severity, confidence, status,
+                        tags, attack, evidence, ai_summary, missing_checks, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    ("F-1", "rule", "Suspicious Service", "Summary", "high", 0.9, "accepted", "[]", "[]", "[]", "", "[]", now),
+                )
+                result = finalize_section(
+                    db=db,
+                    section_key="5_persistence",
+                    title="Persistence and Execution",
+                    body="# Persistence and Execution\n\nSuspicious Service\n\nSuspicious Service\n\nSuspicious Service",
+                    evidence_results=[],
+                    session_id="S-1",
+                )
+
+            self.assertTrue(any("repeated too often" in gap for gap in result["gaps"]))
+            self.assertLessEqual(result["confidence"], 0.6)
+
+    def test_finalize_section_flags_correlation_only_confirmed_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            now = datetime.now(UTC).replace(tzinfo=None)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO findings (
+                        finding_id, rule_id, title, summary, severity, confidence, status,
+                        tags, attack, evidence, ai_summary, missing_checks, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    ("windows-corr-logon-then-service-0001", "windows-corr-logon-then-service", "Correlation", "Summary", "medium", 0.65, "accepted", "[]", "[]", "[]", "", "[]", now),
+                )
+                result = finalize_section(
+                    db=db,
+                    section_key="5_persistence",
+                    title="Persistence and Execution",
+                    body="# Persistence and Execution\n\nConfirmed lateral movement based on windows-corr-logon-then-service-0001.",
+                    evidence_results=[],
+                    session_id="S-1",
+                )
+
+            self.assertTrue(any("Correlation-rule findings" in gap for gap in result["gaps"]))
+            self.assertLessEqual(result["confidence"], 0.55)
 
     def test_report_fill_writes_supported_claim_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -442,6 +566,27 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual(1, len(brief["prior_sections"]))
             self.assertLessEqual(len(brief["prior_sections"][0]["excerpt"]), 400)
 
+    def test_build_report_brief_dedupes_existing_claims(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            now = datetime.now(UTC).replace(tzinfo=None)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO claims (
+                        claim_id, section_key, claim_text, finding_ids, hypothesis_ids, evidence_ids,
+                        support_status, created_at, updated_at
+                    ) VALUES
+                        ('c-1', '1_overview', 'same claim', '[]', '[]', '[]', 'supported', ?, ?),
+                        ('c-2', '2_timeline', 'same claim', '[]', '[]', '[]', 'supported', ?, ?),
+                        ('c-3', '3_hosts', 'different claim', '[]', '[]', '[]', 'supported', ?, ?)
+                    """,
+                    (now, now, now, now, now, now),
+                )
+                brief = _build_report_brief(db)
+
+            self.assertEqual(2, len(brief["existing_claims"]))
+
     def test_report_only_cycle_writes_shared_report_brief(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -463,6 +608,30 @@ class PersistenceTests(unittest.TestCase):
                     )
 
             self.assertTrue((case.reports_dir / "report_brief.json").exists())
+
+    def test_investigate_seeds_profile_objective_into_overview_and_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db, patch("forensia.ai.investigator._seed_findings", return_value=0), patch(
+                "forensia.ai.investigator.render_written_report",
+                return_value=(case.reports_dir / "report.md", case.reports_dir / "report.html"),
+            ):
+                investigate(
+                    case=case,
+                    db=db,
+                    base_url=self._llm_base_url(),
+                    model="test-model",
+                    profile="data-leakage",
+                    max_iter=1,
+                    no_progress_limit=1,
+                    report_every_n_cycles=999,
+                )
+
+            overview = (case.memory_dir / "overview.md").read_text(encoding="utf-8")
+            tasks_text = (case.memory_dir / "tasks.md").read_text(encoding="utf-8")
+            self.assertIn("## Investigation Objective", overview)
+            self.assertIn("Confirm whether sensitive files were accessed", overview)
+            self.assertIn("Investigation objective:", tasks_text)
 
     def test_report_cycle_progress_can_be_true_from_gap_reduction_alone(self) -> None:
         self.assertTrue(

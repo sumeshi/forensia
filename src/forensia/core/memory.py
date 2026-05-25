@@ -9,7 +9,7 @@ from re import sub
 from forensia.ai.lmstudio import chat_completion as _llm_call
 from forensia.core.case import Case
 from forensia.config import get_llm_settings
-from forensia.core.session import ENTITY_TYPE_ALIASES
+from forensia.core.session import ENTITY_TYPE_ALIASES, ENTITY_ROLES
 
 
 logger = logging.getLogger(__name__)
@@ -29,6 +29,13 @@ class MemoryManager:
         self.entities_user_dir = self.entities_dir / "user"
         self.entities_host_dir = self.entities_dir / "host"
         self.entities_ip_dir = self.entities_dir / "ip"
+        self.entities_machine_account_dir = self.entities_dir / "machine_account"
+        self.entities_group_dir = self.entities_dir / "group"
+        self.entities_process_dir = self.entities_dir / "process"
+        self.entities_service_dir = self.entities_dir / "service"
+        self.entities_file_dir = self.entities_dir / "file"
+        self.entities_registry_dir = self.entities_dir / "registry"
+        self.entities_unknown_dir = self.entities_dir / "unknown"
         self.hypotheses_dir = self.base_dir / "hypotheses"
         self.keypoints_dir = self.base_dir / "keypoints"
         self.evidence_dir = self.base_dir / "evidence"
@@ -40,6 +47,13 @@ class MemoryManager:
             self.entities_user_dir,
             self.entities_host_dir,
             self.entities_ip_dir,
+            self.entities_machine_account_dir,
+            self.entities_group_dir,
+            self.entities_process_dir,
+            self.entities_service_dir,
+            self.entities_file_dir,
+            self.entities_registry_dir,
+            self.entities_unknown_dir,
             self.hypotheses_dir,
             self.keypoints_dir,
             self.evidence_dir,
@@ -321,6 +335,13 @@ class MemoryManager:
             "user": self.entities_user_dir,
             "host": self.entities_host_dir,
             "ip": self.entities_ip_dir,
+            "machine_account": self.entities_machine_account_dir,
+            "group": self.entities_group_dir,
+            "process": self.entities_process_dir,
+            "service": self.entities_service_dir,
+            "file": self.entities_file_dir,
+            "registry": self.entities_registry_dir,
+            "unknown": self.entities_unknown_dir,
         }.get(normalized_type)
         if base is None:
             return None

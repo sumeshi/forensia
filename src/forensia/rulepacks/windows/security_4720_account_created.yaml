@@ -2,6 +2,10 @@ id: windows-security-4720-account-created
 title: User account created (Event 4720)
 severity: high
 confidence: 0.75
+required_fields:
+  - subject_user
+  - target_user
+  - computer
 tags:
   - windows
   - account-management

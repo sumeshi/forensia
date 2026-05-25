@@ -8,8 +8,17 @@ from typing import Any
 from forensia.ai.lmstudio import chat_completion
 
 CODE_BLOCK_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+_TRAILING_COMMA_RE = re.compile(r",\s*([\]}])")
+_LINE_COMMENT_RE = re.compile(r"//[^\n\"]*\n")
 MAX_JSON_REPAIR_ATTEMPTS = 3
 MAX_JSON_COMPLETION_ATTEMPTS = 3
+
+
+def _cheap_repair(text: str) -> str:
+    """Fix common JSON syntax errors without an LLM call."""
+    text = _LINE_COMMENT_RE.sub("\n", text)
+    text = _TRAILING_COMMA_RE.sub(r"\1", text)
+    return text
 
 
 def _extract_candidate(text: str) -> str:
@@ -70,7 +79,7 @@ def parse_llm_json(
     current_error: Exception | None = None
     for repair_attempt in range(1, MAX_JSON_REPAIR_ATTEMPTS + 1):
         try:
-            parsed = json.loads(_extract_candidate(current_output))
+            parsed = json.loads(_cheap_repair(_extract_candidate(current_output)))
         except Exception as parse_error:
             current_error = parse_error
             if repair_attempt >= MAX_JSON_REPAIR_ATTEMPTS:

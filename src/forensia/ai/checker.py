@@ -11,13 +11,14 @@ from forensia.ai.prompts import build_check_messages
 from forensia.config import get_llm_settings
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
-from forensia.core.session import ENTITY_TYPE_ALIASES, Hypothesis, PlannedQuery
+from forensia.core.session import ENTITY_ROLES, ENTITY_TYPE_ALIASES, Hypothesis, PlannedQuery
 from forensia.db.database import CaseDB
 from forensia.db.query import normalize_value
 
 VALID_VERDICTS = {"confirmed", "refuted", "inconclusive", "newlead"}
 SMALL_CONFIDENCE_DELTA = 0.02
 _DURABLE_MEMORY_KEYS = {"facts", "timeline", "resolved_gaps"}
+_ENTITY_PLACEHOLDER_VALUES = {"", "-", "n/a", "na", "none", "null", "unknown"}
 
 
 @dataclass(slots=True)
@@ -223,7 +224,15 @@ def _filter_memory_updates(updates: Any, observed_evidence_ids: set[str]) -> dic
                 normalized_type = ENTITY_TYPE_ALIASES.get(str(payload.get("entity_type") or "").strip().lower())
                 if normalized_type is None:
                     continue
+                normalized_name = str(payload.get("name") or "").strip()
+                if not normalized_name or normalized_name.lower() in _ENTITY_PLACEHOLDER_VALUES:
+                    continue
+                normalized_role = str(payload.get("role") or "unknown").strip().lower() or "unknown"
+                if normalized_role not in ENTITY_ROLES:
+                    normalized_role = "unknown"
                 payload["entity_type"] = normalized_type
+                payload["name"] = normalized_name
+                payload["role"] = normalized_role
             filtered_items.append(payload)
         filtered[key] = filtered_items
     return filtered

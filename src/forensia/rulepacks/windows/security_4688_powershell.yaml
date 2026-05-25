@@ -2,6 +2,11 @@ id: windows-security-4688-powershell
 title: PowerShell execution via process creation (Event 4688)
 severity: medium
 confidence: 0.6
+required_fields:
+  - target_user
+  - computer
+  - process_name
+  - command_line
 tags:
   - windows
   - powershell

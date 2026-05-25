@@ -380,7 +380,14 @@ def list_claims_dto(db: CaseDB, section_key: str | None = None) -> list[ClaimDTO
         """,
         params,
     )
-    return [ClaimDTO.model_validate(_normalize_row(row)) for row in rows]
+    result = []
+    for row in rows:
+        normalized = _normalize_row(row)
+        ct = normalized.get("claim_text")
+        if not isinstance(ct, str):
+            normalized["claim_text"] = "" if not ct else str(ct)
+        result.append(ClaimDTO.model_validate(normalized))
+    return result
 
 
 def list_mft_timeline_dto(

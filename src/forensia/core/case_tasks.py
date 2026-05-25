@@ -19,20 +19,37 @@ class CaseTasks:
         self._path = case.path / "tasks.md"
         self._case_name = case.path.name
         self._done: list[str] = []
+        self._todo_lines: list[str] = []
+        self._defer_lines: list[str] = []
         self._load()
 
     def _load(self) -> None:
         if not self._path.exists():
             return
-        in_done = False
+        current_section: str | None = None
+        section_lines: dict[str, list[str]] = {"DONE": [], "TODO": [], "DEFER": []}
         for line in self._path.read_text(encoding="utf-8").splitlines():
             stripped = line.strip()
             if stripped == "## DONE":
-                in_done = True
-            elif stripped.startswith("## "):
-                in_done = False
-            elif in_done and line.startswith("- [x] "):
+                current_section = "DONE"
+                continue
+            if stripped == "## TODO":
+                current_section = "TODO"
+                continue
+            if stripped == "## DEFER":
+                current_section = "DEFER"
+                continue
+            if stripped.startswith("## "):
+                current_section = None
+                continue
+            if current_section is not None:
+                section_lines[current_section].append(line)
+
+        for line in self._trim_section_lines(section_lines["DONE"]):
+            if line.startswith("- [x] "):
                 self._done.append(line[6:].strip())
+        self._todo_lines = self._clean_optional_section(section_lines["TODO"])
+        self._defer_lines = self._clean_optional_section(section_lines["DEFER"])
 
     def _write(self) -> None:
         done_section = (
@@ -40,10 +57,13 @@ class CaseTasks:
             if self._done
             else "_none yet_"
         )
+        todo_section = "\n".join(self._todo_lines) if self._todo_lines else "_none yet_"
+        defer_section = "\n".join(self._defer_lines) if self._defer_lines else "_none yet_"
         self._path.write_text(
             f"# Case Tasks: {self._case_name}\n\n"
             f"## DONE\n\n{done_section}\n\n"
-            f"## TODO\n\n## DEFER\n",
+            f"## TODO\n\n{todo_section}\n\n"
+            f"## DEFER\n\n{defer_section}\n",
             encoding="utf-8",
         )
 
@@ -65,3 +85,20 @@ class CaseTasks:
     @classmethod
     def for_case(cls, case: Case) -> "CaseTasks":
         return cls(case)
+
+    @staticmethod
+    def _trim_section_lines(lines: list[str]) -> list[str]:
+        start = 0
+        end = len(lines)
+        while start < end and not lines[start].strip():
+            start += 1
+        while end > start and not lines[end - 1].strip():
+            end -= 1
+        return lines[start:end]
+
+    @classmethod
+    def _clean_optional_section(cls, lines: list[str]) -> list[str]:
+        trimmed = cls._trim_section_lines(lines)
+        if len(trimmed) == 1 and trimmed[0].strip() == "_none yet_":
+            return []
+        return trimmed

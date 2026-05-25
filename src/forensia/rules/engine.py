@@ -13,6 +13,9 @@ from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.rules.models import Finding, Rule
 
+_MISSING_TEXT_VALUES = {"", "-", "n/a", "na", "none", "null", "unknown"}
+_BUILTIN_ALLOWLIST_PATH = Path(__file__).resolve().parent.parent / "rulepacks" / "windows" / "allowlist_services.yaml"
+
 
 def run_rule(db: CaseDB, rule: Rule) -> list[dict[str, Any]]:
     result = db.execute(rule.query)
@@ -20,17 +23,44 @@ def run_rule(db: CaseDB, rule: Rule) -> list[dict[str, Any]]:
     return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
 
 
+def _is_missing_value(value: Any) -> bool:
+    if value is None:
+        return True
+    text = str(value).strip().lower()
+    return text in _MISSING_TEXT_VALUES
+
+
+def _template_fields(template: str) -> list[str]:
+    fields: list[str] = []
+    for _, field_name, _, _ in Formatter().parse(template):
+        if field_name and field_name not in fields:
+            fields.append(field_name)
+    return fields
+
+
 def _render_template(template: str, row: dict[str, Any]) -> str:
     output = template
     for _, field_name, _, _ in Formatter().parse(template):
         if field_name:
-            output = output.replace("{" + field_name + "}", str(row.get(field_name, "")))
+            value = row.get(field_name, "")
+            rendered = "" if _is_missing_value(value) else str(value)
+            output = output.replace("{" + field_name + "}", rendered)
     return output
+
+
+def _confidence_with_missing_fields(base_confidence: float, missing_fields: list[str]) -> float:
+    penalty = min(0.45, 0.15 * len(missing_fields))
+    return max(0.0, min(1.0, base_confidence - penalty))
 
 
 def generate_findings(rule: Rule, rows: list[dict[str, Any]]) -> list[Finding]:
     findings = []
     for index, row in enumerate(rows, start=1):
+        referenced_fields = rule.required_fields or [
+            * _template_fields(rule.finding.title),
+            * [field for field in _template_fields(rule.finding.summary) if field not in _template_fields(rule.finding.title)],
+        ]
+        missing_fields = [field for field in referenced_fields if _is_missing_value(row.get(field))]
         findings.append(
             Finding(
                 finding_id=f"{rule.id}-{index:04d}",
@@ -38,10 +68,15 @@ def generate_findings(rule: Rule, rows: list[dict[str, Any]]) -> list[Finding]:
                 title=_render_template(rule.finding.title, row),
                 summary=_render_template(rule.finding.summary, row),
                 severity=rule.severity,
-                confidence=rule.confidence,
+                confidence=_confidence_with_missing_fields(rule.confidence, missing_fields),
                 tags=rule.tags,
                 attack=rule.attack,
                 evidence=[row],
+                missing_checks=(
+                    [f"Missing key fields for this finding: {', '.join(missing_fields)}"]
+                    if missing_fields
+                    else []
+                ),
             )
         )
     return findings
@@ -55,6 +90,17 @@ def _load_allowlist(case: Case) -> list[dict[str, Any]]:
     if isinstance(rules, list):
         return [item for item in rules if isinstance(item, dict)]
     return []
+
+
+def _load_builtin_benign_allowlist() -> dict[str, list[str]]:
+    if not _BUILTIN_ALLOWLIST_PATH.exists():
+        return {"service_names": [], "process_names": [], "title_keywords": []}
+    data = yaml.safe_load(_BUILTIN_ALLOWLIST_PATH.read_text(encoding="utf-8")) or {}
+    return {
+        "service_names": [str(item).strip().lower() for item in data.get("service_names") or [] if str(item).strip()],
+        "process_names": [str(item).strip().lower() for item in data.get("process_names") or [] if str(item).strip()],
+        "title_keywords": [str(item).strip().lower() for item in data.get("title_keywords") or [] if str(item).strip()],
+    }
 
 
 def _value_matches(actual: Any, expected_values: Any) -> bool:
@@ -77,6 +123,37 @@ def _is_suppressed(finding: Finding, allowlist_rules: list[dict[str, Any]]) -> b
     return False
 
 
+def _builtin_benign_match(finding: Finding, allowlist_data: dict[str, list[str]]) -> str | None:
+    row = finding.evidence[0] if finding.evidence and isinstance(finding.evidence[0], dict) else {}
+    service_name = str(row.get("service_name") or "").strip().lower()
+    process_name = str(row.get("process_name") or "").strip().lower()
+    title = str(finding.title or "").strip().lower()
+    summary = str(finding.summary or "").strip().lower()
+    for candidate in allowlist_data.get("service_names") or []:
+        if candidate and candidate in service_name:
+            return f"service_name={candidate}"
+    for candidate in allowlist_data.get("process_names") or []:
+        if candidate and candidate in process_name:
+            return f"process_name={candidate}"
+    for candidate in allowlist_data.get("title_keywords") or []:
+        if candidate and (candidate in title or candidate in summary):
+            return f"title_keyword={candidate}"
+    return None
+
+
+def _downgrade_builtin_benign_finding(finding: Finding, allowlist_data: dict[str, list[str]]) -> None:
+    matched = _builtin_benign_match(finding, allowlist_data)
+    if not matched:
+        return
+    finding.status = "suppressed"
+    finding.confidence = min(float(finding.confidence), 0.2)
+    if finding.severity in {"critical", "high", "medium"}:
+        finding.severity = "low"
+    note = f"Matched built-in benign allowlist: {matched}"
+    if note not in finding.missing_checks:
+        finding.missing_checks.append(note)
+
+
 def clear_rule_findings(case: Case, db: CaseDB, rule_id: str) -> None:
     db.execute("DELETE FROM findings WHERE rule_id = ?", (rule_id,))
     for path in case.findings_dir.glob(f"{rule_id}-*.json"):
@@ -86,7 +163,9 @@ def clear_rule_findings(case: Case, db: CaseDB, rule_id: str) -> None:
 def save_findings(case: Case, db: CaseDB, findings: list[Finding]) -> None:
     now = datetime.now(UTC).replace(tzinfo=None)
     allowlist_rules = _load_allowlist(case)
+    builtin_allowlist = _load_builtin_benign_allowlist()
     for finding in findings:
+        _downgrade_builtin_benign_finding(finding, builtin_allowlist)
         if _is_suppressed(finding, allowlist_rules):
             finding.status = "suppressed"
         path = case.findings_dir / f"{finding.finding_id}.json"

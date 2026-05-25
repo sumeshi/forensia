@@ -1,0 +1,29 @@
+id: leakage-mft-cloud-sync-artifact
+title: Cloud sync client artifact observed
+severity: medium
+confidence: 0.6
+required_fields:
+  - file_path
+query: |
+  SELECT
+      evidence_id,
+      file_name,
+      file_path,
+      si_created,
+      si_modified
+  FROM mft_entries
+  WHERE
+      LOWER(file_path) LIKE '%googledrivesync%' OR
+      LOWER(file_path) LIKE '%/google drive/%' OR
+      LOWER(file_path) LIKE '%/onedrive/%' OR
+      LOWER(file_path) LIKE '%/icloud%' OR
+      LOWER(file_path) LIKE '%dropbox%'
+finding:
+  title: "Cloud sync artifact observed: {file_name}"
+  summary: "A cloud sync-related artifact was observed at {file_path}. This may indicate data synchronization capability or use of consumer cloud storage and should be correlated with recent file activity and user logon context."
+tags:
+  - leakage
+  - cloud-sync
+  - insider-threat
+attack:
+  - T1567.002

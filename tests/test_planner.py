@@ -813,8 +813,10 @@ class PlannerRetryTests(unittest.TestCase):
                     "verdict": "inconclusive",
                     "memory_updates": {
                         "entities": [
-                            {"entity_type": "src_ip", "name": "10.0.0.5", "notes": "keep as ip"},
-                            {"entity_type": "username", "name": "alice", "notes": "keep as user"},
+                            {"entity_type": "src_ip", "name": "10.0.0.5", "role": "source_ip", "notes": "keep as ip"},
+                            {"entity_type": "username", "name": "alice", "role": "actor_user", "notes": "keep as user"},
+                            {"entity_type": "machine_account", "name": "INFORMANT-PC$", "role": "source_account", "notes": "keep as machine account"},
+                            {"entity_type": "service_name", "name": "-", "role": "service_name", "notes": "drop placeholder"},
                             {"entity_type": "device_group", "name": "ops", "notes": "drop"},
                         ]
                     },
@@ -838,12 +840,48 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertEqual(
             {
                 "entities": [
-                    {"entity_type": "ip", "name": "10.0.0.5", "notes": "keep as ip"},
-                    {"entity_type": "user", "name": "alice", "notes": "keep as user"},
+                    {"entity_type": "ip", "name": "10.0.0.5", "role": "source_ip", "notes": "keep as ip"},
+                    {"entity_type": "user", "name": "alice", "role": "actor_user", "notes": "keep as user"},
+                    {"entity_type": "machine_account", "name": "INFORMANT-PC$", "role": "source_account", "notes": "keep as machine account"},
                 ]
             },
             captured["result"].memory_updates,
         )
+
+    def test_report_section_messages_include_recommendation_strength_guidance(self) -> None:
+        messages = build_report_section_messages(
+            section_meta={"section": "8_recommendations"},
+            evidence_results=[],
+            context_sections={},
+            template_body="# Recommended Actions",
+            report_brief={},
+        )
+        system = messages[0]["content"]
+        self.assertIn("Match wording to confidence", system)
+        self.assertIn("Recommended actions must scale with evidence strength", system)
+
+    def test_report_section_messages_include_language_confidence_matrix_and_categories(self) -> None:
+        messages = build_report_section_messages(
+            section_meta={"section": "5_persistence"},
+            evidence_results=[],
+            context_sections={},
+            template_body="# Persistence and Execution",
+            report_brief={},
+        )
+        system = messages[0]["content"]
+        self.assertIn("confidence >= 0.8", system)
+        self.assertIn("confidence < 0.5", system)
+        self.assertIn("Do not use 'confirmed' for findings or conclusions below 0.8 confidence", system)
+        self.assertIn("GOOGLEDRIVESYNC.EXE=cloud_sync", system)
+        self.assertIn("SCHTASKS.EXE=persistence_tool", system)
+
+    def test_investigation_framework_includes_machine_account_and_category_guidance(self) -> None:
+        framework = build_investigation_framework()
+
+        self.assertIn("account names ending with '$' as machine_account", framework)
+        self.assertIn("never store a machine account in source_ip", framework)
+        self.assertIn("GOOGLEDRIVESYNC.EXE => cloud_sync", framework)
+        self.assertIn("SCHTASKS.EXE => persistence_tool", framework)
 
 
 if __name__ == "__main__":
