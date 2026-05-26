@@ -238,13 +238,19 @@ def report_write(
         "--report-parallelism",
         help="Concurrent LLM workers for section fill. 0 = use LLM_REPORT_PARALLELISM env (default 1)",
     ),
+    report_max_queries_per_section: int = typer.Option(
+        0,
+        "--report-max-queries-per-section",
+        help="Max iterative agent queries per report block. 0 = use LLM_REPORT_MAX_QUERIES_PER_SECTION env (default 3)",
+    ),
 ) -> None:
     llm_base_url, model = _resolve_llm_or_die(llm_base_url, model)
     case = _open_case_or_die(case_dir)
     tasks = CaseTasks.for_case(case)
     template_root = _resolve_template_dir(case, template_dir)
     parallelism = report_parallelism or get_llm_settings()["report_parallelism"]
-    _status(f"Writing report from templates: {template_root} (parallelism={parallelism})")
+    max_queries = report_max_queries_per_section or get_llm_settings()["report_max_queries_per_section"]
+    _status(f"Writing report from templates: {template_root} (parallelism={parallelism}, max_queries={max_queries})")
     with CaseDB(case) as db:
         investigate_loop(
             case=case,
@@ -258,6 +264,7 @@ def report_write(
             report_only=True,
             template_root=template_root,
             report_parallelism=parallelism,
+            report_max_queries_per_section=max_queries,
         )
         report_md, report_html = render_written_report(case, db)
         write_api_snapshots(case, db)
@@ -282,6 +289,11 @@ def run(
         0,
         "--report-parallelism",
         help="Concurrent LLM workers for section fill. 0 = use LLM_REPORT_PARALLELISM env (default 1)",
+    ),
+    report_max_queries_per_section: int = typer.Option(
+        0,
+        "--report-max-queries-per-section",
+        help="Max iterative agent queries per report block. 0 = use LLM_REPORT_MAX_QUERIES_PER_SECTION env (default 3)",
     ),
     init: bool = typer.Option(False, "--init", help="Clear raw/db/findings/reports before rerun"),
 ) -> None:
@@ -414,6 +426,7 @@ def run(
                 profile=profile,
                 report_every_n_cycles=report_every_n_cycles,
                 report_parallelism=report_parallelism or get_llm_settings()["report_parallelism"],
+                report_max_queries_per_section=report_max_queries_per_section or get_llm_settings()["report_max_queries_per_section"],
                 progress_callback=lambda payload: push_progress(
                     payload.get("summary"),
                     stage=payload.get("stage", "investigate"),
@@ -472,6 +485,11 @@ def investigate(
         "--report-parallelism",
         help="Concurrent LLM workers for section fill. 0 = use LLM_REPORT_PARALLELISM env (default 1)",
     ),
+    report_max_queries_per_section: int = typer.Option(
+        0,
+        "--report-max-queries-per-section",
+        help="Max iterative agent queries per report block. 0 = use LLM_REPORT_MAX_QUERIES_PER_SECTION env (default 3)",
+    ),
     profile: str = typer.Option("windows-basic", "--profile"),
     report_only: bool = typer.Option(False, "--report-only"),
 ) -> None:
@@ -517,6 +535,7 @@ def investigate(
             profile=profile,
             report_every_n_cycles=report_every_n_cycles,
             report_parallelism=report_parallelism or get_llm_settings()["report_parallelism"],
+            report_max_queries_per_section=report_max_queries_per_section or get_llm_settings()["report_max_queries_per_section"],
             report_only=report_only,
             progress_callback=lambda payload: push_progress(
                 payload.get("summary"),

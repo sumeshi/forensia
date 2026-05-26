@@ -9,8 +9,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from forensia.ai.lmstudio import chat_completion
-from forensia.ai.prompts import build_report_section_messages
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records, normalize_value
@@ -1484,21 +1482,15 @@ def prepare_section_request(
     template_preamble, blocks = _split_template_body(template_body)
     if not blocks:
         blocks = [{"heading": "", "template_body": template_body}]
-    selected_keypoints = _default_keypoints_for_section(section_key)
-    evidence_results = _resolve_evidence_results(
-        case,
-        db,
-        keypoints=selected_keypoints,
-    )
     block_requests = [
         {
             "heading": block["heading"],
             "template_body": block["template_body"],
-            "evidence_results": evidence_results,
         }
         for block in blocks
     ]
     return {
+        "case": case,
         "section_key": section_key,
         "title": title,
         "template_path": str(template_path),
@@ -1506,7 +1498,6 @@ def prepare_section_request(
         "block_requests": block_requests,
         "context_sections": dict(context_sections),
         "report_brief": report_brief or {},
-        "evidence_results": evidence_results,
     }
 
 
@@ -1516,29 +1507,37 @@ def _render_section_from_request(
     request: dict[str, Any],
     base_url: str,
     model: str,
+    max_queries_per_section: int = 3,
     audit_callback: Callable[[list[dict[str, str]], str], None] | None = None,
 ) -> tuple[str, list[dict[str, Any]], list[str]]:
+    from forensia.ai.section_agent import run_section_block_agent
+
     rendered_blocks: list[str] = []
     block_gaps: list[str] = []
     block_outputs: dict[str, str] = {}
+    all_evidence_results: list[dict[str, Any]] = []
     for block in request.get("block_requests") or []:
-        messages = build_report_section_messages(
-            section_meta={"section": request["section_key"], "title": request["title"]},
-            evidence_results=list(block.get("evidence_results") or []),
-            context_sections=request.get("context_sections") or {},
+        block_result = run_section_block_agent(
+            case=request["case"],
+            db=db,
+            section_key=str(request["section_key"]),
+            title=str(request["title"]),
+            block_heading=str(block.get("heading") or ""),
             template_body=str(block.get("template_body") or ""),
-            report_brief=request.get("report_brief") or {},
-            section_heading=str(block.get("heading") or ""),
+            context_sections=request.get("context_sections") or {},
             current_section_outputs=block_outputs,
-            verification_notes=block_gaps,
+            report_brief=request.get("report_brief") or {},
+            base_url=base_url,
+            model=model,
+            max_queries_per_section=max_queries_per_section,
+            audit_callback=audit_callback,
         )
-        block_body = chat_completion(messages=messages, model=model, base_url=base_url).strip()
-        if audit_callback:
-            audit_callback(messages, block_body)
+        block_body = block_result.body
         rendered_blocks.append(block_body)
         heading = str(block.get("heading") or "").strip()
         if heading:
             block_outputs[heading] = block_body
+        all_evidence_results.extend(block_result.evidence_results)
         block_level_gaps, _ = _verify_block_output(db, block_body)
         for gap in block_level_gaps:
             label = f"{heading}: {gap}" if heading else gap
@@ -1546,7 +1545,7 @@ def _render_section_from_request(
                 block_gaps.append(label)
     parts = [str(request.get("template_preamble") or "").strip(), *[item.strip() for item in rendered_blocks if item.strip()]]
     body = "\n\n".join(part for part in parts if part).strip()
-    return body, list(request.get("evidence_results") or []), block_gaps
+    return body, all_evidence_results, block_gaps
 
 
 def finalize_section(
@@ -1641,6 +1640,7 @@ def fill_section(
     report_brief: dict[str, Any] | None,
     base_url: str,
     model: str,
+    max_queries_per_section: int = 3,
     session_id: str | None = None,
     audit_callback: Callable[[list[dict[str, str]], str], None] | None = None,
 ) -> str:
@@ -1650,6 +1650,7 @@ def fill_section(
         request=request,
         base_url=base_url,
         model=model,
+        max_queries_per_section=max_queries_per_section,
         audit_callback=audit_callback,
     )
     finalize_section(

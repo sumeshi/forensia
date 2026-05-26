@@ -25,6 +25,7 @@ def get_llm_settings() -> dict:
         "output_language": os.getenv("LLM_OUTPUT_LANGUAGE", "ja"),
         "memory_max_bytes": int(os.getenv("LLM_MEMORY_MAX_BYTES", "16384")),
         "report_parallelism": max(1, int(os.getenv("LLM_REPORT_PARALLELISM", "1"))),
+        "report_max_queries_per_section": max(1, int(os.getenv("LLM_REPORT_MAX_QUERIES_PER_SECTION", "3"))),
     }
 
 

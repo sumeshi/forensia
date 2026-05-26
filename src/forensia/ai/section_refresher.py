@@ -6,6 +6,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from rich import print
+
 from forensia.ai.audit import LLMCallLogger
 from forensia.ai.report_gap import _build_report_status
 from forensia.core.case import Case
@@ -21,6 +23,10 @@ from forensia.report.writer import (
 )
 
 
+def _log_report(message: str) -> None:
+    print(f"[bold white][REPORT][/bold white] {message}")
+
+
 def _refresh_report_sections(
     case: Case,
     db: CaseDB,
@@ -33,6 +39,7 @@ def _refresh_report_sections(
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     focus_sections: list[str] | None = None,
     max_workers: int = 1,
+    max_queries_per_section: int = 3,
 ) -> dict[str, Any]:
     template_paths = sorted(template_root.glob("[0-9]*_*.md"))
     if max_workers <= 1:
@@ -47,6 +54,7 @@ def _refresh_report_sections(
             llm_logger=llm_logger,
             progress_callback=progress_callback,
             focus_sections=focus_sections,
+            max_queries_per_section=max_queries_per_section,
         )
     return _refresh_report_sections_parallel(
         case=case,
@@ -60,6 +68,7 @@ def _refresh_report_sections(
         progress_callback=progress_callback,
         focus_sections=focus_sections,
         max_workers=max_workers,
+        max_queries_per_section=max_queries_per_section,
     )
 
 
@@ -105,12 +114,14 @@ def _refresh_report_sections_sequential(
     llm_logger: LLMCallLogger,
     progress_callback: Callable[[dict[str, Any]], None] | None,
     focus_sections: list[str] | None,
+    max_queries_per_section: int,
 ) -> dict[str, Any]:
     filled_sections: dict[str, str] = {}
     updated = 0
     report_brief = write_report_brief(case, db)
     for template_path in template_paths:
         section_key = template_path.stem
+        _log_report(f"{section_key} — writing")
         if progress_callback:
             progress_callback(
                 {
@@ -135,6 +146,7 @@ def _refresh_report_sections_sequential(
             report_brief=report_brief,
             base_url=base_url,
             model=model,
+            max_queries_per_section=max_queries_per_section,
             session_id=session_id,
             audit_callback=lambda messages, body, section=section_key: llm_logger.write(
                 iteration=iteration,
@@ -150,7 +162,11 @@ def _refresh_report_sections_sequential(
         updated += 1
         current_row = next((item for item in status["items"] if item["section_key"] == section_key), None)
         gap_count = int(current_row["gap_count"]) if current_row else 0
-        confidence = float(current_row["confidence"]) if current_row else 0.0
+        try:
+            confidence = float(current_row["confidence"]) if current_row else 0.0
+        except (TypeError, ValueError):
+            confidence = 0.0
+        _log_report(f"{section_key} — done (gaps={gap_count} conf={confidence:.2f})")
         if progress_callback:
             progress_callback(
                 {
@@ -185,6 +201,7 @@ def _refresh_report_sections_parallel(
     progress_callback: Callable[[dict[str, Any]], None] | None,
     focus_sections: list[str] | None,
     max_workers: int,
+    max_queries_per_section: int,
 ) -> dict[str, Any]:
     prior_filled = load_report_sections_map(db)
     report_brief = write_report_brief(case, db)
@@ -203,6 +220,7 @@ def _refresh_report_sections_parallel(
             progress_callback(payload)
 
     def worker(request: dict[str, Any]) -> tuple[dict[str, Any], str]:
+        _log_report(f"{request['section_key']} — writing (parallel)")
         emit(
             {
                 "stage": "investigate/report-section",
@@ -217,6 +235,7 @@ def _refresh_report_sections_parallel(
             request=request,
             model=model,
             base_url=base_url,
+            max_queries_per_section=max_queries_per_section,
             audit_callback=lambda messages, block_body: llm_logger.write(
                 iteration=iteration,
                 phase="report-section",
@@ -263,7 +282,11 @@ def _refresh_report_sections_parallel(
             status = _build_report_status(db, focus_sections=focus_sections)
             current_row = next((item for item in status["items"] if item["section_key"] == section_key), None)
             gap_count = int(current_row["gap_count"]) if current_row else 0
-            confidence = float(current_row["confidence"]) if current_row else 0.0
+            try:
+                confidence = float(current_row["confidence"]) if current_row else 0.0
+            except (TypeError, ValueError):
+                confidence = 0.0
+            _log_report(f"{section_key} — done (gaps={gap_count} conf={confidence:.2f})")
             emit(
                 {
                     "stage": "investigate/report-section-done",

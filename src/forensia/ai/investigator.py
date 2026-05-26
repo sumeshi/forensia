@@ -413,6 +413,7 @@ def investigate(
     report_only: bool = False,
     template_root: Path | None = None,
     report_parallelism: int = 1,
+    report_max_queries_per_section: int = 3,
 ) -> dict[str, Any]:
     session_id = f"session-{uuid4().hex[:12]}"
     started_at = datetime.now(UTC).replace(tzinfo=None)
@@ -490,6 +491,21 @@ def investigate(
 
     previous_sigint = signal.getsignal(signal.SIGINT)
 
+    _LOG_COLORS = {
+        "PLAN": "bold cyan",
+        "HYPOTHESIS": "bold magenta",
+        "QUERY": "bold blue",
+        "EXEC": "bold green",
+        "CHECK": "bold yellow",
+        "RESOLVE": "bold green",
+        "REPORT": "bold white",
+        "MEMORY": "dim",
+    }
+
+    def _log(tag: str, message: str) -> None:
+        color = _LOG_COLORS.get(tag, "white")
+        print(f"[{color}][{tag}][/{color}] {message}")
+
     def llm_status(message: str) -> None:
         print(f"[yellow]{message}[/yellow]")
 
@@ -527,6 +543,7 @@ def investigate(
             state.iteration = plan_cycle
             state.findings_snapshot = _finding_snapshot(db)
             _sync_keypoint_cards(memory, state.findings_snapshot)
+            _log("PLAN", f"Cycle {plan_cycle}/{max_iter} — broad planning (active={len(state.active_hypotheses)} resolved={len(state.resolved_hypotheses)})")
             _emit("investigate", f"Hypothesis cycle {plan_cycle}/{max_iter}", iteration=plan_cycle)
             if interrupted:
                 status = "stopped"
@@ -578,6 +595,7 @@ def investigate(
                         input_json=plan_input,
                         output_json=broad_plan.raw_response,
                     )
+                    _log("PLAN", f"+{len(broad_plan.hypotheses)} new hypotheses (active={len(state.active_hypotheses)}, stop={broad_plan.stop})")
                     _emit(
                         "investigate/plan",
                         f"[plan] new_hypotheses={len(broad_plan.hypotheses)} active={len(state.active_hypotheses)}",
@@ -595,6 +613,7 @@ def investigate(
                     state.focus_hypothesis_id = hypothesis.id
                     state.focus_depth = 0
                     focus_sections = _guess_related_sections(hypothesis.description)
+                    _log("HYPOTHESIS", f"{hypothesis.id} — {hypothesis.description}")
                     _emit(
                         "investigate/hypothesis",
                         f"[hypothesis] {hypothesis.id}: {hypothesis.description}",
@@ -667,6 +686,7 @@ def investigate(
                             body=planned_query.purpose,
                             query_id=planned_query.query_id,
                         )
+                        _log("QUERY", f"{hypothesis.id} {planned_query.query_id} — {planned_query.purpose}")
                         _emit(
                             "investigate/do",
                             f"[do] {planned_query.query_id}: {planned_query.purpose}",
@@ -679,6 +699,7 @@ def investigate(
 
                         try:
                             rows = fetch_records(db, planned_query.sql)
+                            _log("EXEC", f"{hypothesis.id} {planned_query.query_id} — {len(rows)} rows")
                         except Exception as exc:
                             err_msg = f"SQL execution error — {planned_query.query_id}: {exc}"
                             print(f"[red]{err_msg}[/red]")
@@ -772,6 +793,14 @@ def investigate(
                             verdict=check_result.verdict,
                             query_id=planned_query.query_id,
                         )
+                        _check_summary = (check_result.report_text or "").strip().replace("\n", " ")
+                        if len(_check_summary) > 120:
+                            _check_summary = _check_summary[:117] + "..."
+                        _log(
+                            "CHECK",
+                            f"{hypothesis.id} {planned_query.query_id} — verdict={check_result.verdict}"
+                            + (f": {_check_summary}" if _check_summary else ""),
+                        )
                         _emit(
                             "investigate/check",
                             f"[check] {hypothesis.id}: verdict={check_result.verdict} query={planned_query.query_id}",
@@ -811,6 +840,7 @@ def investigate(
                                 summary=check_result.report_text,
                                 session_id=session_id,
                             )
+                            _log("RESOLVE", f"{hypothesis.id} — {check_result.verdict} (resolved={len(state.resolved_hypotheses)})")
                             cycle_progress = True
                         elif check_result.verdict == "newlead" or check_result.progress:
                             cycle_progress = True
@@ -889,6 +919,7 @@ def investigate(
                         progress_callback=progress_callback,
                         focus_sections=focus_sections,
                         max_workers=report_parallelism,
+                        max_queries_per_section=report_max_queries_per_section,
                     )
                 except Exception as exc:
                     print(f"[red][report] section refresh failed: {exc}[/red]")

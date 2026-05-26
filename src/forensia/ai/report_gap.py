@@ -11,6 +11,15 @@ from forensia.db.database import CaseDB
 from forensia.report.writer import fetch_report_sections
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _normalize_text(value: str) -> str:
     return " ".join(value.lower().split())
 
@@ -49,7 +58,7 @@ def _build_report_status(
             {
                 "section_key": row.get("section_key"),
                 "title": row.get("title"),
-                "confidence": float(row.get("confidence") or 0.0),
+                "confidence": _safe_float(row.get("confidence")),
                 "status": str(row.get("status") or "draft"),
                 "update_count": int(row.get("update_count") or 0),
                 "gap_count": len(gaps) if isinstance(gaps, list) else 0,

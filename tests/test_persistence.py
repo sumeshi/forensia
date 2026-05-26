@@ -30,8 +30,10 @@ from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.db.database import CaseDB
 from forensia.report.writer import (
     _build_report_brief,
+    _default_keypoints_for_section,
     _extract_claim_texts,
     _quality_gate_section,
+    _resolve_evidence_results,
     _sort_markdown_table_by_first_column,
     _section_confidence,
     collect_gaps,
@@ -42,10 +44,36 @@ from forensia.report.writer import (
 from forensia.report_templates import export_packaged_report_templates
 
 
+def _agent_plan_router(*_args, **kwargs):
+    """Route section_agent.request_llm_json by which messages were sent.
+
+    Plan messages → "write" short-circuit (no SQL).
+    Check messages → "sufficient" so the loop exits cleanly.
+    Used to avoid hitting a real LLM in unit tests.
+    """
+    messages = kwargs.get("messages")
+    if messages is None and _args:
+        messages = _args[0]
+    system_content = ""
+    if messages:
+        system_content = str(messages[0].get("content", "")).lower()
+    if "section-check" in system_content:
+        return {"verdict": "sufficient", "fact_updates": []}
+    return {"action": "write", "enough_to_write": True}
+
+
 class PersistenceTests(unittest.TestCase):
     @staticmethod
     def _llm_base_url() -> str:
         return resolve_llm_config()[0] or "http://test-llm.invalid"
+
+    def setUp(self) -> None:
+        self._llm_json_patch = patch(
+            "forensia.ai.section_agent.request_llm_json",
+            side_effect=_agent_plan_router,
+        )
+        self._llm_json_patch.start()
+        self.addCleanup(self._llm_json_patch.stop)
 
     def test_collect_gaps_supports_english_and_japanese_placeholders(self) -> None:
         self.assertEqual(
@@ -139,7 +167,7 @@ class PersistenceTests(unittest.TestCase):
             template_path = Path("src/forensia/report_template/1_overview.md")
             with CaseDB(case) as db:
                 with patch(
-                    "forensia.report.writer.chat_completion",
+                    "forensia.ai.section_agent.chat_completion",
                     return_value="# 調査概要\n\n本文\n\n【調査不足: FEC を確認できなかったため】",
                 ):
                     body = fill_section(
@@ -164,6 +192,48 @@ class PersistenceTests(unittest.TestCase):
             self.assertLess(float(row[3]), 1.0)
             self.assertEqual("draft", row[4])
             self.assertEqual(1, int(row[5]))
+
+    def test_fill_section_persists_section_agent_runs_and_cache(self) -> None:
+        # Override the setUp short-circuit so the agent actually runs one
+        # plan→query→check cycle and populates section_runs + query_cache.
+        self._llm_json_patch.stop()
+        plan_then_write = iter([
+            {"action": "keypoint", "keypoint": "top_keypoints", "purpose": "gather top findings"},
+            {"verdict": "sufficient", "fact_updates": []},
+        ])
+
+        def routed(*args, **kwargs):
+            try:
+                return next(plan_then_write)
+            except StopIteration:
+                return {"action": "write", "enough_to_write": True}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            template_path = Path("src/forensia/report_template/1_overview.md")
+            with CaseDB(case) as db:
+                with patch(
+                    "forensia.ai.section_agent.request_llm_json",
+                    side_effect=routed,
+                ), patch(
+                    "forensia.ai.section_agent.chat_completion",
+                    return_value="# Investigation Overview\n\n## Incident Summary\n\nObserved activity.\n",
+                ):
+                    fill_section(
+                        case=case,
+                        db=db,
+                        template_path=template_path,
+                        context_sections={},
+                        report_brief={"top_findings": []},
+                        base_url=self._llm_base_url(),
+                        model="test-model",
+                        session_id="session-test",
+                    )
+                run_count = db.execute("SELECT COUNT(*) FROM section_runs WHERE section_key = '1_overview'").fetchone()[0]
+                cache_count = db.execute("SELECT COUNT(*) FROM query_cache").fetchone()[0]
+
+            self.assertGreaterEqual(int(run_count), 3)
+            self.assertGreaterEqual(int(cache_count), 1)
 
     def test_prepare_section_request_infers_section_evidence_without_template_keypoints(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -191,9 +261,13 @@ class PersistenceTests(unittest.TestCase):
                     ("ev-1", "a.evtx", "Security", 4624, 1, "host1", "", "", "", "", "", "", "", "", "", "{}", "[]", "info"),
                 )
                 request = prepare_section_request(case, db, template_path, {}, report_brief={})
+                # Evidence resolution moved into section_agent; verify the default
+                # keypoint selection + resolver directly.
+                default_keypoints = _default_keypoints_for_section("1_overview")
+                resolved = _resolve_evidence_results(case, db, keypoints=default_keypoints)
 
             self.assertEqual("1_overview", request["section_key"])
-            result_names = {item["keypoint"] for item in request["evidence_results"]}
+            result_names = {item["keypoint"] for item in resolved}
             self.assertIn("top_keypoints", result_names)
             self.assertIn("overview_hosts", result_names)
             self.assertIn("overview_event_range", result_names)
@@ -214,8 +288,10 @@ class PersistenceTests(unittest.TestCase):
                 encoding="utf-8",
             )
             with CaseDB(case) as db:
+                # request_llm_json is mocked by setUp to short-circuit plan to write.
+                # Verify chat_completion is invoked once per ## heading at write time.
                 with patch(
-                    "forensia.report.writer.chat_completion",
+                    "forensia.ai.section_agent.chat_completion",
                     side_effect=[
                         "## Incident Summary\n\nSummary text.",
                         "## Evidence Scope\n\nScope text.",
@@ -262,9 +338,11 @@ class PersistenceTests(unittest.TestCase):
                         ('ev-lnk', 'mft.csv', 4, 'Users/informant/AppData/Roaming/Microsoft/Windows/Recent/[secret_project]_proposal.lnk', '[secret_project]_proposal.lnk', 'lnk', false, false, 1, '2026-05-16 00:03:00', '2026-05-16 00:03:00', NULL, NULL, '2026-05-16 00:03:00', NULL, NULL, NULL, '{}', '[]', 'info')
                     """
                 )
-                request = prepare_section_request(case, db, template_path, {}, report_brief={})
+                prepare_section_request(case, db, template_path, {}, report_brief={})
+                default_keypoints = _default_keypoints_for_section("6_ioc")
+                resolved = _resolve_evidence_results(case, db, keypoints=default_keypoints)
 
-            results = {item["keypoint"]: item for item in request["evidence_results"]}
+            results = {item["keypoint"]: item for item in resolved}
             self.assertEqual("CHROME.EXE-D999B1BA.pf", results["mft_prefetch_filenames"]["sample_rows"][0]["file_name"])
             self.assertTrue(
                 any(
@@ -348,8 +426,9 @@ class PersistenceTests(unittest.TestCase):
             case = Case.init(tmpdir)
             events: list[dict[str, object]] = []
             with CaseDB(case) as db:
+                # request_llm_json mocked by setUp; only chat_completion + render need patching here.
                 with patch(
-                    "forensia.report.writer.chat_completion",
+                    "forensia.ai.section_agent.chat_completion",
                     return_value="# Section\n\n本文\n\n【調査不足: 追加確認が必要】",
                 ), patch(
                     "forensia.ai.investigator.render_written_report",
@@ -387,7 +466,7 @@ class PersistenceTests(unittest.TestCase):
             template_path = Path("src/forensia/report_template/1_overview.md")
             with CaseDB(case) as db:
                 with patch(
-                    "forensia.report.writer.chat_completion",
+                    "forensia.ai.section_agent.chat_completion",
                     return_value="# 調査概要\n\n本文のみ",
                 ):
                     fill_section(
@@ -402,7 +481,7 @@ class PersistenceTests(unittest.TestCase):
                     )
                 db.execute("UPDATE report_sections SET status = 'ai_exhausted' WHERE section_key = '1_overview'")
                 with patch(
-                    "forensia.report.writer.chat_completion",
+                    "forensia.ai.section_agent.chat_completion",
                     return_value="# 調査概要\n\n本文のみ",
                 ):
                     fill_section(
@@ -436,7 +515,7 @@ class PersistenceTests(unittest.TestCase):
                     """
                 )
                 with patch(
-                    "forensia.report.writer.chat_completion",
+                    "forensia.ai.section_agent.chat_completion",
                     return_value="# Investigation Overview\n\nAI rewrite",
                 ):
                     fill_section(
@@ -463,7 +542,7 @@ class PersistenceTests(unittest.TestCase):
             template_path = Path("src/forensia/report_template/1_overview.md")
             with CaseDB(case) as db:
                 with patch(
-                    "forensia.report.writer.chat_completion",
+                    "forensia.ai.section_agent.chat_completion",
                     return_value="# 調査概要\n\n侵害の兆候が見られた。\n\n追加確認が必要。",
                 ):
                     fill_section(
@@ -557,8 +636,28 @@ class PersistenceTests(unittest.TestCase):
                     """,
                     ("ev-1", "a.evtx", "Security", 4624, 1, now, "host1", "", "", "", "", "", "", "", "", "", "{}", "[]", "info"),
                 )
+                # Override the default setUp short-circuit: have the agent pull
+                # a keypoint that returns finding_ids so the claim becomes
+                # "supported". Note: top_keypoints is intercepted to load
+                # memory/keypoints/*.md cards (no finding_ids), so use a
+                # keypoint with a direct findings-table SQL instead.
+                self._llm_json_patch.stop()
+                plan_then_write = iter([
+                    {"action": "keypoint", "keypoint": "appendix_findings_catalog", "purpose": "pull supporting findings"},
+                    {"verdict": "sufficient", "fact_updates": []},
+                ])
+
+                def routed(*args, **kwargs):
+                    try:
+                        return next(plan_then_write)
+                    except StopIteration:
+                        return {"action": "write", "enough_to_write": True}
+
                 with patch(
-                    "forensia.report.writer.chat_completion",
+                    "forensia.ai.section_agent.request_llm_json",
+                    side_effect=routed,
+                ), patch(
+                    "forensia.ai.section_agent.chat_completion",
                     return_value="# 調査概要\n\n侵害の兆候が見られた。",
                 ):
                     fill_section(
@@ -619,7 +718,7 @@ class PersistenceTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 with patch(
-                    "forensia.report.writer.chat_completion",
+                    "forensia.ai.section_agent.chat_completion",
                     return_value="# Section\n\n本文",
                 ), patch(
                     "forensia.ai.investigator.render_written_report",
@@ -789,7 +888,7 @@ class PersistenceTests(unittest.TestCase):
                         raw_response={},
                     ),
                 ), patch(
-                    "forensia.report.writer.chat_completion",
+                    "forensia.ai.section_agent.chat_completion",
                     return_value="# Overview\n\n本文\n\n【調査不足: foo bar】",
                 ), patch(
                     "forensia.ai.investigator.render_written_report",
@@ -1090,7 +1189,7 @@ class PersistenceTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 with patch(
-                    "forensia.report.writer.chat_completion",
+                    "forensia.ai.section_agent.chat_completion",
                     return_value="# Section\n\n本文",
                 ), patch(
                     "forensia.ai.investigator.render_written_report",

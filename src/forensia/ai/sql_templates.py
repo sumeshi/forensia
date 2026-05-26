@@ -95,6 +95,18 @@ ALLOWED_IDENTIFIER_REFERENCES = ALLOWED_TABLES | {
     "event_index",
     "current_query",
     "payload",
+    "fact_id",
+    "fact_type",
+    "fact_key",
+    "fact_value",
+    "source_query",
+    "source_section",
+    "block_heading",
+    "sql_hash",
+    "sql_text",
+    "result_json",
+    "executed_at",
+    "run_id",
 }
 _SQL_FENCE_RE = re.compile(r"```(?:sql)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 FORBIDDEN_SQL = re.compile(

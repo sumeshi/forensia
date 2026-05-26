@@ -17,6 +17,10 @@ ALLOWED_TABLES = {
     "hypothesis_reasoning",
     "progress_events",
     "ingested_files",
+    "section_facts",
+    "section_evidence",
+    "query_cache",
+    "section_runs",
 }
 
 TABLE_COLUMN_REFERENCE: dict[str, tuple[str, ...]] = {
@@ -69,6 +73,17 @@ TABLE_COLUMN_REFERENCE: dict[str, tuple[str, ...]] = {
         "raw_json", "tags", "severity",
     ),
     "ingested_files": ("sha256", "path", "source_kind", "size", "ingested_at"),
+    "section_facts": (
+        "fact_id", "fact_type", "fact_key", "fact_value", "evidence_ids",
+        "source_query", "source_section", "confidence", "created_at", "updated_at",
+    ),
+    "section_evidence": (
+        "section_key", "block_heading", "evidence_id", "role", "source_query", "created_at",
+    ),
+    "query_cache": ("sql_hash", "sql_text", "result_json", "executed_at"),
+    "section_runs": (
+        "run_id", "section_key", "block_heading", "iteration", "phase", "payload", "verdict", "created_at",
+    ),
 }
 
 
@@ -122,6 +137,12 @@ def build_investigation_framework() -> str:
         "  IMPORTANT: prefetch_executions has NO computer/hostname column — source_file is the .pf file path.\n"
         "  To filter by host, JOIN with evtx_events ON abs(epoch_ms(prefetch_executions.last_exec_time) - epoch_ms(evtx_events.timestamp)) < 5000 AND evtx_events.computer = ?.\n"
         "  Or query prefetch_executions without a host filter and correlate timestamps manually.\n\n"
+        "Section-agent state tables:\n"
+        "  section_facts stores reusable evidence-backed facts extracted during prior report-generation runs.\n"
+        "  section_evidence links report sections/blocks to evidence_id values already judged relevant.\n"
+        "  query_cache stores prior read-only query results by SQL hash.\n"
+        "  section_runs stores the plan/query/check/write history for each report block.\n"
+        "  Prefer reusing section_facts before issuing new SQL when the fact already answers the block question.\n\n"
         f"Available tables: {', '.join(sorted(ALLOWED_TABLES))}.\n"
         + "\n".join(table_lines)
         + "\nOnly propose SELECT or WITH-prefixed read-only SQL compatible with DuckDB.\n"

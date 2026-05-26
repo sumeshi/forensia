@@ -110,6 +110,54 @@ CREATE TABLE IF NOT EXISTS claims (
 
 CREATE INDEX IF NOT EXISTS claims_by_section ON claims(section_key, updated_at);
 
+CREATE TABLE IF NOT EXISTS section_facts (
+    fact_id VARCHAR PRIMARY KEY,
+    fact_type VARCHAR NOT NULL,
+    fact_key VARCHAR,
+    fact_value JSON,
+    evidence_ids JSON NOT NULL,
+    source_query VARCHAR,
+    source_section VARCHAR,
+    confidence DOUBLE,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_section_facts_type ON section_facts(fact_type);
+CREATE INDEX IF NOT EXISTS idx_section_facts_section ON section_facts(source_section, fact_type);
+
+CREATE TABLE IF NOT EXISTS section_evidence (
+    section_key VARCHAR,
+    block_heading VARCHAR,
+    evidence_id VARCHAR,
+    role VARCHAR,
+    source_query VARCHAR,
+    created_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_section_evidence_section ON section_evidence(section_key, block_heading);
+CREATE INDEX IF NOT EXISTS idx_section_evidence_id ON section_evidence(evidence_id);
+
+CREATE TABLE IF NOT EXISTS query_cache (
+    sql_hash VARCHAR PRIMARY KEY,
+    sql_text VARCHAR,
+    result_json JSON,
+    executed_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS section_runs (
+    run_id VARCHAR PRIMARY KEY,
+    section_key VARCHAR,
+    block_heading VARCHAR,
+    iteration INTEGER,
+    phase VARCHAR,
+    payload JSON,
+    verdict VARCHAR,
+    created_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_section_runs_section ON section_runs(section_key, block_heading, created_at);
+
 CREATE TABLE IF NOT EXISTS ingested_files (
     sha256 VARCHAR PRIMARY KEY,
     path VARCHAR,

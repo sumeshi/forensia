@@ -290,3 +290,89 @@ def build_report_section_messages(
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
+
+
+def build_section_agent_plan_messages(
+    *,
+    section_key: str,
+    section_title: str,
+    block_heading: str,
+    template_body: str,
+    report_brief: dict[str, Any],
+    context_sections: dict[str, str],
+    current_section_outputs: dict[str, str],
+    findings_snapshot: list[dict[str, Any]],
+    keypoint_catalog: list[dict[str, str]],
+    query_template_catalog: list[dict[str, Any]],
+    prior_runs: list[dict[str, Any]],
+    reusable_facts: list[dict[str, Any]],
+    reusable_evidence: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    system = (
+        "You are a DFIR section-planning agent for report writing. "
+        "Read the current Markdown block and decide the next best evidence-gathering action. "
+        "Prefer reusing named keypoints when they clearly fit. Use read-only SQL only when keypoints are insufficient. "
+        "Stop once you have enough evidence to write the block without inventing facts. "
+        f"{build_investigation_framework()}"
+        "Output JSON only. "
+        f"{_lang_instruction()} "
+        "Use only these JSON keys: action, purpose, keypoint, template_id, params, sql, enough_to_write. "
+        "action must be one of: facts, keypoint, template, sql, write. "
+        "When action=facts, reuse the supplied reusable_section_facts/reusable_section_evidence and do not request a new query. "
+        "When action=keypoint, set keypoint to one catalog name. "
+        "When action=template, set template_id and params using one supplied query template. Prefer this over raw SQL when a template fits. "
+        "When action=sql, set sql to one DuckDB-compatible SELECT/WITH query. "
+        "When action=write, set enough_to_write=true."
+    )
+    user = (
+        f"section_key: {section_key}\n"
+        f"section_title: {section_title}\n"
+        f"block_heading: {block_heading}\n\n"
+        f"template_block:\n{template_body}\n\n"
+        f"report_brief: {report_brief}\n\n"
+        f"previous_sections: {_truncate_context_sections(context_sections)}\n\n"
+        f"current_section_progress: {_truncate_context_sections(current_section_outputs or {}, max_chars=1200)}\n\n"
+        f"findings_snapshot: {findings_snapshot[:10]}\n\n"
+        f"reusable_section_facts: {reusable_facts[:12]}\n\n"
+        f"reusable_section_evidence: {reusable_evidence[:20]}\n\n"
+        f"keypoint_catalog: {keypoint_catalog}\n\n"
+        f"query_template_catalog: {query_template_catalog}\n\n"
+        f"prior_runs: {prior_runs[-6:]}\n"
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def build_section_agent_check_messages(
+    *,
+    section_key: str,
+    section_title: str,
+    block_heading: str,
+    template_body: str,
+    collected_results: list[dict[str, Any]],
+    latest_result: dict[str, Any],
+    prior_runs: list[dict[str, Any]],
+    reusable_facts: list[dict[str, Any]],
+    reusable_evidence: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    system = (
+        "You are a DFIR section-check agent. "
+        "Judge whether the collected evidence is sufficient to write the current report block. "
+        "Do not demand more queries if the current result set already supports the requested block. "
+        "Output JSON only. "
+        f"{_lang_instruction()} "
+        "Use only these JSON keys: verdict, rationale, missing_questions, fact_updates. "
+        "verdict must be one of: sufficient, need_more, refuted. "
+        "fact_updates must be a list of objects with keys: fact_type, fact_key, fact_value, confidence."
+    )
+    user = (
+        f"section_key: {section_key}\n"
+        f"section_title: {section_title}\n"
+        f"block_heading: {block_heading}\n\n"
+        f"template_block:\n{template_body}\n\n"
+        f"reusable_section_facts: {reusable_facts[:12]}\n\n"
+        f"reusable_section_evidence: {reusable_evidence[:20]}\n\n"
+        f"latest_result: {latest_result}\n\n"
+        f"collected_results: {collected_results}\n\n"
+        f"prior_runs: {prior_runs[-6:]}\n"
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
