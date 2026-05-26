@@ -94,8 +94,8 @@ class PersistenceTests(unittest.TestCase):
             collect_gaps({"sec": "[INSUFFICIENT EVIDENCE: no logon data]"}),
         )
         self.assertEqual(
-            ["ログオン記録なし"],
-            collect_gaps({"sec": "【調査不足: ログオン記録なし】"}),
+            ["no logon records"],
+            collect_gaps({"sec": "[INSUFFICIENT EVIDENCE: no logon records]"}),
         )
 
     def test_collect_gaps_preserves_order_while_deduplicating(self) -> None:
@@ -181,7 +181,7 @@ class PersistenceTests(unittest.TestCase):
             with CaseDB(case) as db:
                 with patch(
                     "forensia.ai.section_agent.chat_completion",
-                    return_value="# 調査概要\n\n本文\n\n【調査不足: FEC を確認できなかったため】",
+                    return_value="# Investigation Overview\n\nBody\n\n[INSUFFICIENT EVIDENCE: could not confirm FEC]",
                 ):
                     body = fill_section(
                         case=case,
@@ -198,7 +198,7 @@ class PersistenceTests(unittest.TestCase):
                     ("1_overview",),
                 ).fetchone()
 
-            self.assertIn("【調査不足:", body)
+            self.assertIn("[INSUFFICIENT EVIDENCE:", body)
             self.assertIsNotNone(row)
             self.assertEqual("1_overview", row[0])
             self.assertGreater(len(row[2]), 0)
@@ -442,7 +442,7 @@ class PersistenceTests(unittest.TestCase):
                 # request_llm_json mocked by setUp; only chat_completion + render need patching here.
                 with patch(
                     "forensia.ai.section_agent.async_chat_completion",
-                    return_value="# Section\n\n本文\n\n【調査不足: 追加確認が必要】",
+                    return_value="# Section\n\nBody\n\n[INSUFFICIENT EVIDENCE: additional confirmation needed]",
                 ), patch(
                     "forensia.ai.investigator.render_written_report",
                     return_value=(case.reports_dir / "report.md", case.reports_dir / "report.html"),
@@ -480,7 +480,7 @@ class PersistenceTests(unittest.TestCase):
             with CaseDB(case) as db:
                 with patch(
                     "forensia.ai.section_agent.chat_completion",
-                    return_value="# 調査概要\n\n本文のみ",
+                    return_value="# Investigation Overview\n\nBody only",
                 ):
                     fill_section(
                         case=case,
@@ -495,7 +495,7 @@ class PersistenceTests(unittest.TestCase):
                 db.execute("UPDATE report_sections SET status = 'ai_exhausted' WHERE section_key = '1_overview'")
                 with patch(
                     "forensia.ai.section_agent.chat_completion",
-                    return_value="# 調査概要\n\n本文のみ",
+                    return_value="# Investigation Overview\n\nBody only",
                 ):
                     fill_section(
                         case=case,
@@ -556,7 +556,7 @@ class PersistenceTests(unittest.TestCase):
             with CaseDB(case) as db:
                 with patch(
                     "forensia.ai.section_agent.chat_completion",
-                    return_value="# 調査概要\n\n侵害の兆候が見られた。\n\n追加確認が必要。",
+                    return_value="# Investigation Overview\n\nSigns of compromise observed.\n\nAdditional confirmation needed.",
                 ):
                     fill_section(
                         case=case,
@@ -671,7 +671,7 @@ class PersistenceTests(unittest.TestCase):
                     side_effect=routed,
                 ), patch(
                     "forensia.ai.section_agent.chat_completion",
-                    return_value="# 調査概要\n\n侵害の兆候が見られた。",
+                    return_value="# Investigation Overview\n\nSigns of compromise observed.",
                 ):
                     fill_section(
                         case=case,
@@ -732,7 +732,7 @@ class PersistenceTests(unittest.TestCase):
             with CaseDB(case) as db:
                 with patch(
                     "forensia.ai.section_agent.async_chat_completion",
-                    return_value="# Section\n\n本文",
+                    return_value="# Section\n\nBody",
                 ), patch(
                     "forensia.ai.investigator.render_written_report",
                     return_value=(case.reports_dir / "report.md", case.reports_dir / "report.html"),
@@ -812,17 +812,17 @@ class PersistenceTests(unittest.TestCase):
                 added = _inject_gap_hypotheses(
                     db,
                     state,
-                    ["この src_ip の所有組織を確認", "利用者へのヒアリングが必要"],
+                    ["Check src_ip ownership", "User interview needed"],
                     session_id="session-test",
                     memory=memory,
                 )
                 row_count = db.execute("SELECT COUNT(*) FROM hypotheses").fetchone()[0]
 
-            self.assertEqual("external_lookup", _classify_gap_kind("この src_ip の所有組織を確認"))
-            self.assertEqual("human_decision", _classify_gap_kind("利用者へのヒアリングが必要"))
+            self.assertEqual("external_lookup", _classify_gap_kind("Check src_ip ownership"))
+            self.assertEqual("human_decision", _classify_gap_kind("User interview needed"))
             self.assertEqual(0, added)
             self.assertEqual(0, row_count)
-            self.assertIn("所有組織", memory.tasks_memory_path.read_text(encoding="utf-8"))
+            self.assertIn("ownership", memory.tasks_memory_path.read_text(encoding="utf-8").lower())
 
     def test_gap_classification_supports_english_external_and_human_keywords(self) -> None:
         for phrase in (
@@ -865,7 +865,7 @@ class PersistenceTests(unittest.TestCase):
                         report_text="body",
                     )
                     title = db.execute("SELECT title FROM findings WHERE finding_id = ?", (finding_id,)).fetchone()[0]
-            self.assertEqual("調査: host triage", title)
+            self.assertEqual("Investigation: host triage", title)
             clear_llm_settings_cache()
 
     def test_investigate_reinjects_gap_hypothesis_on_second_cycle(self) -> None:
@@ -902,7 +902,7 @@ class PersistenceTests(unittest.TestCase):
                     ),
                 ), patch(
                     "forensia.ai.section_agent.async_chat_completion",
-                    return_value="# Overview\n\n本文\n\n【調査不足: foo bar】",
+                    return_value="# Overview\n\nBody\n\n[INSUFFICIENT EVIDENCE: foo bar]",
                 ), patch(
                     "forensia.ai.investigator.render_written_report",
                     return_value=(case.reports_dir / "report.md", case.reports_dir / "report.html"),
@@ -1203,7 +1203,7 @@ class PersistenceTests(unittest.TestCase):
             with CaseDB(case) as db:
                 with patch(
                     "forensia.ai.section_agent.async_chat_completion",
-                    return_value="# Section\n\n本文",
+                    return_value="# Section\n\nBody",
                 ), patch(
                     "forensia.ai.investigator.render_written_report",
                     return_value=(case.reports_dir / "report.md", case.reports_dir / "report.html"),
