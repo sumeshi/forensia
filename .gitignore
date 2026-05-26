@@ -13,9 +13,11 @@ src/forensia/static
 .codex
 .claude
 CLAUDE.md
+AGENTS.md
 TASKS.md
 KNOWLEDGE.md
 *.tar.gz
 
 sample/
 dist/
+test_output*

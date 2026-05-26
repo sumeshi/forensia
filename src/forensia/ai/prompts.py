@@ -283,7 +283,8 @@ def build_report_section_messages(
         f"current_section_progress: {trimmed_current_outputs}\n\n"
         f"verification_notes_from_prior_subsections: {verification_notes or []}\n\n"
         f"evidence_results: {evidence_results}\n\n"
-        "Complete only this current template block by replacing placeholders and comments with evidence-based content:\n\n"
+        "Complete only this current template block by replacing placeholders and comments with evidence-based content. "
+        "If verification_notes indicate contradiction, explicitly state what evidence refutes the claim and why.\n\n"
         f"{template_body}"
     )
     return [
@@ -354,10 +355,20 @@ def build_section_agent_check_messages(
     reusable_facts: list[dict[str, Any]],
     reusable_evidence: list[dict[str, Any]],
 ) -> list[dict[str, str]]:
+    refuted_history = [run for run in prior_runs if run.get("verdict") == "refuted"]
     system = (
         "You are a DFIR section-check agent. "
         "Judge whether the collected evidence is sufficient to write the current report block. "
         "Do not demand more queries if the current result set already supports the requested block. "
+        "If evidence contradicts the template claim, set verdict=refuted and explain the contradiction in rationale. "
+        "For refuted claims, include specific evidence_ids that contradict the claim in missing_questions, "
+        "and describe what additional evidence would resolve the contradiction. "
+    )
+    if refuted_history:
+        system += (
+            "PREVIOUSLY REFUTED ATTEMPTS ARE SHOWN ABOVE - avoid the same contradiction. "
+        )
+    system += (
         "Output JSON only. "
         f"{_lang_instruction()} "
         "Use only these JSON keys: verdict, rationale, missing_questions, fact_updates. "
@@ -373,6 +384,8 @@ def build_section_agent_check_messages(
         f"reusable_section_evidence: {reusable_evidence[:20]}\n\n"
         f"latest_result: {latest_result}\n\n"
         f"collected_results: {collected_results}\n\n"
-        f"prior_runs: {prior_runs[-6:]}\n"
     )
+    if refuted_history:
+        user += f"refuted_attempts_previous_iterations: {refuted_history}\n\n"
+    user += f"prior_runs: {prior_runs[-6:]}\n"
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]

@@ -132,7 +132,8 @@ CREATE TABLE IF NOT EXISTS section_evidence (
     evidence_id VARCHAR,
     role VARCHAR,
     source_query VARCHAR,
-    created_at TIMESTAMP
+    created_at TIMESTAMP,
+    UNIQUE(section_key, block_heading, evidence_id, source_query)
 );
 
 CREATE INDEX IF NOT EXISTS idx_section_evidence_section ON section_evidence(section_key, block_heading);

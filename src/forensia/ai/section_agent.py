@@ -213,6 +213,7 @@ def _store_section_evidence(
             """
             INSERT INTO section_evidence (section_key, block_heading, evidence_id, role, source_query, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT DO NOTHING
             """,
             rows,
         )
@@ -244,16 +245,30 @@ def _store_section_facts(
         # across the whole report (e.g. Q6 computer_name discovered in 1_overview
         # must be visible to 3_hosts via the same fact_id).
         fact_id = hashlib.sha1(f"{fact_type}-{fact_key}".encode("utf-8")).hexdigest()[:20]
+        new_value = json.dumps(item.get("fact_value"), ensure_ascii=False, default=str)
+        new_confidence = _coerce_confidence(item.get("confidence"))
+        # Check for conflicts: existing value differs from new value
+        existing = db.execute(
+            "SELECT fact_value, confidence FROM section_facts WHERE fact_id = ?",
+            (fact_id,),
+        ).fetchone()
+        if existing:
+            existing_value = str(existing[0] or "")
+            existing_confidence = float(existing[1] or 0.0)
+            if existing_value != new_value:
+                # Conflict detected: higher confidence wins, conflict logged via updated source
+                if new_confidence < existing_confidence:
+                    continue  # Keep existing, skip this update
         rows.append(
             (
                 fact_id,
                 fact_type,
                 fact_key,
-                json.dumps(item.get("fact_value"), ensure_ascii=False, default=str),
+                new_value,
                 json.dumps(evidence_ids, ensure_ascii=False),
                 source_query,
                 section_key,
-                _coerce_confidence(item.get("confidence")),
+                new_confidence,
                 timestamp,
                 timestamp,
             )
@@ -527,6 +542,9 @@ def run_section_block_agent(
         collected_results.append(_facts_as_result(reusable_facts))
     if reusable_evidence:
         collected_results.append(_evidence_as_result(reusable_evidence))
+    verdict = "need_more"
+    rationale = ""
+    missing_questions: list[Any] = []
     for iteration in range(1, max_queries + 1):
         prior_runs = _load_prior_runs(db, section_key, block_heading)
         plan_messages = build_section_agent_plan_messages(
@@ -659,6 +677,8 @@ def run_section_block_agent(
             # Treat as sufficient — we already have one query result; stop iterating.
             break
         verdict = str(check.get("verdict") or "need_more").strip().lower()
+        rationale = str(check.get("rationale") or "")
+        missing_questions = check.get("missing_questions") if isinstance(check.get("missing_questions"), list) else []
         _store_section_run(
             db,
             section_key=section_key,
@@ -678,6 +698,12 @@ def run_section_block_agent(
         if verdict in {"sufficient", "refuted"}:
             break
 
+    verification_notes: list[str] = []
+    if verdict == "refuted":
+        notes = [rationale] if rationale else ["Evidence contradicts the template claim"]
+        notes.extend(str(q) for q in missing_questions if q)
+        verification_notes = notes
+
     messages = build_report_section_messages(
         section_meta={"section": section_key, "title": title},
         evidence_results=collected_results,
@@ -686,7 +712,7 @@ def run_section_block_agent(
         report_brief=report_brief or {},
         section_heading=block_heading,
         current_section_outputs=current_section_outputs,
-        verification_notes=[],
+        verification_notes=verification_notes,
     )
     body = chat_completion(messages=messages, model=model, base_url=base_url).strip()
     if audit_callback:

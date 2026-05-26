@@ -14,13 +14,12 @@ from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.report.writer import (
     collect_gaps,
-    fill_section,
     finalize_section,
     load_report_sections_map,
     prepare_section_request,
-    _render_section_from_request,
     write_report_brief,
 )
+from forensia.ai.section_agent import run_section_block_agent
 
 
 def _log_report(message: str) -> None:
@@ -138,26 +137,62 @@ def _refresh_report_sections_sequential(
                 }
             )
         context_sections = dict(filled_sections)
-        filled_sections[section_key] = fill_section(
-            case=case,
-            db=db,
-            template_path=template_path,
-            context_sections=context_sections,
-            report_brief=report_brief,
-            base_url=base_url,
-            model=model,
-            max_queries_per_section=max_queries_per_section,
-            session_id=session_id,
-            audit_callback=lambda messages, body, section=section_key: llm_logger.write(
-                iteration=iteration,
-                phase="report-section",
-                input_messages=messages,
-                output=body,
-                model=model,
+        
+        # Process each block in the section using the section agent
+        request = prepare_section_request(case, db, template_path, context_sections, report_brief=report_brief)
+        rendered_blocks: list[str] = []
+        block_gaps: list[str] = []
+        block_outputs: dict[str, str] = {}
+        all_evidence_results: list[dict[str, Any]] = []
+        
+        for block in request.get("block_requests") or []:
+            block_result = run_section_block_agent(
+                case=request["case"],
+                db=db,
+                section_key=str(request["section_key"]),
+                title=str(request["title"]),
+                block_heading=str(block.get("heading") or ""),
+                template_body=str(block.get("template_body") or ""),
+                context_sections=request.get("context_sections") or {},
+                current_section_outputs=block_outputs,
+                report_brief=request.get("report_brief") or {},
                 base_url=base_url,
-                suffix=section,
-            ),
+                model=model,
+                max_queries_per_section=max_queries_per_section,
+                audit_callback=lambda messages, body, section=section_key, heading=block.get("heading", ""): llm_logger.write(
+                    iteration=iteration,
+                    phase="report-section-block",
+                    input_messages=messages,
+                    output=body,
+                    model=model,
+                    base_url=base_url,
+                    suffix=f"{section_key}-{heading}",
+                ),
+            )
+            rendered_blocks.append(block_result.body)
+            heading = str(block.get("heading") or "").strip()
+            if heading:
+                block_outputs[heading] = block_result.body
+            all_evidence_results.extend(block_result.evidence_results)
+            # Collect block-level gaps - we'll check the body for gaps using existing logic
+            from forensia.report.writer import collect_gaps, _verify_block_output
+            block_body_gaps, _ = _verify_block_output(db, block_result.body)
+            for gap in block_body_gaps:
+                label = f"{heading}: {gap}" if heading else gap
+                if label not in block_gaps:
+                    block_gaps.append(label)
+
+        body = "\n\n".join(rendered_blocks).strip()
+        finalize_section(
+            db=db,
+            section_key=section_key,
+            title=request["title"],
+            body=body,
+            evidence_results=all_evidence_results,
+            session_id=session_id,
+            extra_gaps=block_gaps,
         )
+        filled_sections[section_key] = body
         status = _build_report_status(db, focus_sections=focus_sections)
         updated += 1
         current_row = next((item for item in status["items"] if item["section_key"] == section_key), None)
@@ -230,23 +265,53 @@ def _refresh_report_sections_parallel(
                 "current_report_section": request["section_key"],
             }
         )
-        body, _, block_gaps = _render_section_from_request(
-            db=db,
-            request=request,
-            model=model,
-            base_url=base_url,
-            max_queries_per_section=max_queries_per_section,
-            audit_callback=lambda messages, block_body: llm_logger.write(
-                iteration=iteration,
-                phase="report-section",
-                input_messages=messages,
-                output=block_body,
-                model=model,
+        
+        # Process each block in the section using the section agent
+        rendered_blocks: list[str] = []
+        block_gaps: list[str] = []
+        block_outputs: dict[str, str] = {}
+        all_evidence_results: list[dict[str, Any]] = []
+        
+        for block in request.get("block_requests") or []:
+            block_result = run_section_block_agent(
+                case=request["case"],
+                db=db,
+                section_key=str(request["section_key"]),
+                title=str(request["title"]),
+                block_heading=str(block.get("heading") or ""),
+                template_body=str(block.get("template_body") or ""),
+                context_sections=request.get("context_sections") or {},
+                current_section_outputs=block_outputs,
+                report_brief=request.get("report_brief") or {},
                 base_url=base_url,
-                suffix=str(request["section_key"]),
-            ),
-        )
+                model=model,
+                max_queries_per_section=max_queries_per_section,
+                audit_callback=lambda messages, body, section=request["section_key"], heading=block.get("heading", ""): llm_logger.write(
+                    iteration=iteration,
+                    phase="report-section-block",
+                    input_messages=messages,
+                    output=body,
+                    model=model,
+                    base_url=base_url,
+                    suffix=f"{request['section_key']}-{heading}",
+                ),
+            )
+            rendered_blocks.append(block_result.body)
+            heading = str(block.get("heading") or "").strip()
+            if heading:
+                block_outputs[heading] = block_result.body
+            all_evidence_results.extend(block_result.evidence_results)
+            # Collect block-level gaps - we'll check the body for gaps using existing logic
+            from forensia.report.writer import collect_gaps, _verify_block_output
+            block_body_gaps, _ = _verify_block_output(db, block_result.body)
+            for gap in block_body_gaps:
+                label = f"{heading}: {gap}" if heading else gap
+                if label not in block_gaps:
+                    block_gaps.append(label)
+        
+        body = "\n\n".join(rendered_blocks).strip()
         request["block_gaps"] = block_gaps
+        request["evidence_results"] = all_evidence_results
         return request, body
 
     filled_sections: dict[str, str] = {}
