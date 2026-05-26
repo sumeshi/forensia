@@ -5,7 +5,7 @@ import { formatVerdict } from "../format";
 
 export const whatWeKnow = derived([findings], ([$findings]) => {
   const accepted = $findings.filter((item) => item.status !== "suppressed").slice(0, 3);
-  if (accepted.length === 0) return ["有意な Finding はまだありません。"];
+  if (accepted.length === 0) return ["No significant findings yet."];
   return accepted.map((item) => `${item.title} (${item.severity})`);
 });
 
@@ -13,37 +13,37 @@ export const currentHypothesis = derived([hypotheses], ([$hypotheses]) => {
   const active = $hypotheses.active[0];
   if (!active) {
     return {
-      title: "アクティブな仮説はありません",
-      status: "待機",
-      summary: "新しい仮説生成または gap 注入を待っています。"
+      title: "No active hypothesis",
+      status: "Idle",
+      summary: "Waiting for new hypothesis generation or gap injection."
     };
   }
   return {
     title: active.description,
-    status: "調査中",
-    summary: active.latest_reasoning?.[0]?.body || active.summary || "追加の証拠を探索中です。"
+    status: "Investigating",
+    summary: active.latest_reasoning?.[0]?.body || active.summary || "Exploring additional evidence."
   };
 });
 
 export const whyItMatters = derived([findings, hypotheses], ([$findings, $hypotheses]) => {
   const highest = $findings.find((item) => item.status !== "suppressed");
   if (highest) {
-    return `${highest.severity.toUpperCase()} severity の所見が残っており、侵害影響の特定が必要です。`;
+    return `${highest.severity.toUpperCase()} severity findings present, impact assessment needed.`;
   }
   if ($hypotheses.active.length > 0) {
-    return "仮説は残っていますが、確定的な所見はまだ不足しています。";
+    return "Hypotheses remain, but confirmed findings are still lacking.";
   }
-  return "現時点で重大な未解決所見は見えていません。";
+  return "No significant unresolved findings at this time.";
 });
 
 export const nextAction = derived([reportSections, hypotheses], ([$reportSections, $hypotheses]) => {
   const writing = $reportSections.find((section) => section.is_writing);
-  if (writing) return `${writing.title} を記入中です。`;
+  if (writing) return `${writing.title} is being filled.`;
   const gapSection = $reportSections.find((section) => section.gap_count > 0);
-  if (gapSection) return `${gapSection.title} の gap を埋めるため追加確認が必要です。`;
+  if (gapSection) return `${gapSection.title} gaps require additional confirmation.`;
   const active = $hypotheses.active[0];
-  if (active) return `次は仮説「${active.description}」の検証です。`;
-  return "追加作業は見当たりません。";
+  if (active) return `Next: validate hypothesis "${active.description}".`;
+  return "No additional work found.";
 });
 
 export const activeHypothesesView = derived([hypotheses], ([$hypotheses]) =>
@@ -51,7 +51,7 @@ export const activeHypothesesView = derived([hypotheses], ([$hypotheses]) =>
     id: item.hypothesis_id,
     description: item.description,
     status: item.status,
-    summary: item.summary || "要約なし",
+    summary: item.summary || "No summary",
     latestReasoning: item.latest_reasoning ?? [],
     reasoningCount: item.reasoning_count ?? 0,
     latestIteration: item.latest_iteration ?? null,

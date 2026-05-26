@@ -6,7 +6,7 @@
   <h3 class="panel-title mb-3">Open Gaps</h3>
   <div class="max-h-[20rem] space-y-2 overflow-auto pr-1">
     {#if items.length === 0}
-      <p class="text-sm text-mocha-subtext1">未解消 gap はありません。</p>
+      <p class="text-sm text-mocha-subtext1">No unresolved gaps.</p>
     {:else}
       {#each items as item}
         <article class="rounded-lg border border-mocha-surface1 bg-mocha-mantle/70 px-3 py-2">

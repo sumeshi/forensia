@@ -1,6 +1,6 @@
 <script lang="ts">
-  export let title = "アクティブな仮説はありません";
-  export let status = "待機";
+  export let title = "No active hypothesis";
+  export let status = "Idle";
   export let summary = "";
 </script>
 

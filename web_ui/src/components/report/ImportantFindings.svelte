@@ -20,7 +20,7 @@
   </div>
   <div class="space-y-2">
     {#if important(findings).length === 0}
-      <p class="text-sm text-mocha-subtext1">重要 Finding はありません。</p>
+      <p class="text-sm text-mocha-subtext1">No important findings.</p>
     {:else}
       {#each important(findings) as finding}
         <button class="flex w-full items-center justify-between rounded-xl border border-mocha-surface1 bg-mocha-mantle/70 px-4 py-3 text-left hover:border-mocha-peach" on:click={() => openFinding(finding.finding_id)}>

@@ -9,14 +9,14 @@ import { findings, hypotheses, progress, reportSections } from "../stores";
 
 describe("cockpit derived", () => {
   it("formats verdicts for humans", () => {
-    expect(formatVerdict("inconclusive")).toBe("判断保留");
-    expect(formatVerdict("confirmed")).toBe("確認済み");
-    expect(formatVerdict("newlead")).toBe("新規導線");
+    expect(formatVerdict("inconclusive")).toBe("Inconclusive");
+    expect(formatVerdict("confirmed")).toBe("Confirmed");
+    expect(formatVerdict("newlead")).toBe("New Lead");
   });
 
   it("formats phase and status labels", () => {
-    expect(formatPhase("active")).toBe("調査中");
-    expect(formatStatus("suppressed")).toBe("除外");
+    expect(formatPhase("active")).toBe("Investigating");
+    expect(formatStatus("suppressed")).toBe("Suppressed");
   });
 
   it("builds current ai task from progress", () => {
@@ -27,7 +27,7 @@ describe("cockpit derived", () => {
       payload: {},
       iteration: 2
     });
-    expect(get(currentTask).stageLabel).toBe("報告書記入");
+    expect(get(currentTask).stageLabel).toBe("Reporting");
     expect(get(currentTask).iteration).toBe(2);
   });
 

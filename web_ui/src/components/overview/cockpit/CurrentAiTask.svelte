@@ -1,5 +1,5 @@
 <script lang="ts">
-  export let stageLabel = "待機";
+  export let stageLabel = "Idle";
   export let summary = "";
   export let iteration = 0;
 </script>

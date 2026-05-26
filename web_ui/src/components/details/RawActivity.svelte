@@ -26,6 +26,6 @@
       </article>
     {/each}
   {:else}
-    <p class="text-sm text-mocha-subtext1">進捗イベント待ちです。</p>
+    <p class="text-sm text-mocha-subtext1">Waiting for progress events.</p>
   {/if}
 </div>

@@ -78,7 +78,7 @@
   </div>
 
   {#if items.length === 0}
-    <p class="text-sm text-mocha-subtext1">アクティブな仮説はありません。</p>
+    <p class="text-sm text-mocha-subtext1">No active hypotheses.</p>
   {:else}
     <div class="max-h-[420px] space-y-2 overflow-y-auto pr-1">
       {#each items as item}
@@ -110,7 +110,7 @@
                     {truncateText(latest.body, 80)}
                   </p>
                 {:else}
-                  <p class="min-w-0 flex-1">まだ reasoning はありません。</p>
+                  <p class="min-w-0 flex-1">No reasoning yet.</p>
                 {/if}
               </div>
             </div>
@@ -124,11 +124,11 @@
           {#if openId === item.id}
 <div class="border-t border-mocha-surface1 px-3 py-3">
                {#if loadingId === item.id}
-                 <p class="text-xs text-mocha-subtext1">reasoning を読込中です。</p>
+                 <p class="text-xs text-mocha-subtext1">Loading reasoning...</p>
                {:else if error}
                  <p class="text-xs text-mocha-red">{error}</p>
                {:else if openEntries.length === 0}
-                 <p class="text-xs text-mocha-subtext1">reasoning はまだありません。</p>
+                 <p class="text-xs text-mocha-subtext1">No reasoning yet.</p>
                {:else}
                  <div class="space-y-2">
                    {#each [...openEntries].reverse().slice(0, showAllId === item.id ? 20 : 10) as entry}

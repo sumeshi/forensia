@@ -342,8 +342,8 @@ def _insert_investigation_finding(
 ) -> str:
     finding_id = f"{session_id}-{planned_query.query_id}-finding"
     language = str(get_llm_settings()["output_language"]).lower()
-    prefix = "調査:" if language.startswith("ja") else "Investigation:"
-    title = f"{prefix} {planned_query.purpose}"
+    prefix = "Investigation"
+    title = f"{prefix}: {planned_query.purpose}"
     summary = report_text
     evidence = [normalize_value(row) for row in result_summary.get("sample_rows", [])]
     missing_checks = []

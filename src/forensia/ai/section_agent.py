@@ -26,7 +26,7 @@ _CONFIDENCE_KEYWORD_MAP = {
 
 
 def _coerce_confidence(value: Any, default: float = 0.5) -> float:
-    """LLMが confidence を文字列("high"等)で返す場合に備えた防御的変換."""
+    """Defensive conversion for when LLM returns confidence as string ("high" etc)."""
     if value is None:
         return default
     if isinstance(value, (int, float)):

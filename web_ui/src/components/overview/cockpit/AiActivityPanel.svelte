@@ -11,11 +11,11 @@
   <div class="mt-3 grid gap-2 text-xs text-mocha-subtext0">
     <div class="rounded-lg bg-mocha-mantle/70 px-3 py-2">
       <span class="text-mocha-subtext1">Running Query</span>
-      <div class="mt-1 truncate whitespace-nowrap text-mocha-text">{runningQuery?.queryId ?? "なし"}</div>
-    </div>
-    <div class="rounded-lg bg-mocha-mantle/70 px-3 py-2">
-      <span class="text-mocha-subtext1">Focus Hypothesis</span>
-      <div class="mt-1 truncate whitespace-nowrap text-mocha-text">{runningQuery?.focusHypothesisId ?? "なし"}</div>
+<div class="mt-1 truncate whitespace-nowrap text-mocha-text">{runningQuery?.queryId ?? "None"}</div>
+       </div>
+       <div class="rounded-lg bg-mocha-mantle/70 px-3 py-2">
+         <span class="text-mocha-subtext1">Focus Hypothesis</span>
+         <div class="mt-1 truncate whitespace-nowrap text-mocha-text">{runningQuery?.focusHypothesisId ?? "None"}</div>
     </div>
   </div>
 </section>

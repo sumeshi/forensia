@@ -1,7 +1,7 @@
 <script lang="ts">
   export let title: string;
   export let body: string[] = [];
-  export let empty = "情報はまだありません。";
+  export let empty = "No information yet.";
 </script>
 
 <section class="panel p-4">

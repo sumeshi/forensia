@@ -28,20 +28,13 @@ def _output_language() -> str:
 
 
 def _mandatory_missing_checks_guidance() -> str:
-    if _output_language().startswith("ja"):
-        return """
-Mandatory missing_checks:
-  - If a logon is confirmed → add: 'src_ip からの他ホストへのログオンの有無', '4688/4104 の有無 (ログオン後15分以内)'
-  - If process execution is confirmed → add: '親プロセス名の確認', '実行ユーザの通常業務との整合性'
-  - If service/task creation is confirmed → add: 'サービスパスの実行ファイルの場所', '7036(サービス開始)の有無'
-  - If Defender disable is confirmed → add: '直後の4688/4104 の有無', '1116(マルウェア検知)との相関'
-"""
     return """
 Mandatory missing_checks:
-  - If a logon is confirmed → add: 'Other host logons from the same src_ip', 'Presence of 4688/4104 within 15 minutes after logon'
-  - If process execution is confirmed → add: 'Confirm parent process name', 'Check whether the executing user aligns with normal duties'
-  - If service/task creation is confirmed → add: 'Path of the executable behind the service', 'Presence of 7036 (service start)'
-  - If Defender disable is confirmed → add: 'Presence of 4688/4104 immediately afterward', 'Correlation with 1116 (malware detection)'
+   - If a logon is confirmed → add: 'Other host logons from the same src_ip', 'Presence of 4688/4104 within 15 minutes after logon'
+   - If process execution is confirmed → add: 'Confirm parent process name', 'Check whether the executing user aligns with normal duties'
+   - If service/task creation is confirmed → add: 'Path of the executable behind the service', 'Presence of 7036 (service start)'
+   - If Defender disable is confirmed → add: 'Presence of 4688/4104 immediately afterward', 'Correlation with 1116 (malware detection)'
+   - If account-related: add: 'Owner organization confirmation', 'User interview required'
 """
 
 

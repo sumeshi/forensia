@@ -30,8 +30,8 @@ def _guess_related_sections(text: str) -> list[str]:
         "1_overview": ["overview", "first evidence", "summary", "fec", "initial"],
         "2_timeline": ["timeline", "time", "log clear", "reboot", "shutdown", "when"],
         "3_technical": ["host", "computer", "server", "workstation", "account", "user", "credential", "password", "logon", "rdp", "admin", "service", "task", "powershell", "defender", "persistence", "execution", "ioc", "ip", "process", "file", "path", "indicator"],
-        "4_gaps": ["gap", "unknown", "不足", "unresolved"],
-        "5_recommendations": ["mitigation", "recommendation", "対策"],
+"4_gaps": ["gap", "unknown", "insufficient", "unresolved"],
+         "5_recommendations": ["mitigation", "recommendation", "countermeasure"],
     }
     matches = [section for section, keywords in section_map.items() if any(keyword in lowered for keyword in keywords)]
     return matches or ["4_gaps"]
@@ -116,8 +116,8 @@ def _classify_gap_kind(description: str) -> str:
         for token in (
             "whois",
             "osint",
-            "外部",
-            "所有組織",
+            "external",
+            "ownership",
             "threat intel",
             "reputation",
             "ip reputation",
@@ -125,23 +125,22 @@ def _classify_gap_kind(description: str) -> str:
             "dns lookup",
             "certificate",
             "public record",
-            "external",
             "internet",
+            "external",
         )
     ):
         return "external_lookup"
     if any(
         token in lowered
         for token in (
-            "ヒアリング",
-            "担当者",
-            "利用者",
-            "承認",
+            "hearing",
+            "stakeholder",
+            "user",
+            "approval",
             "human",
-            "業務",
+            "business",
             "user confirmation",
             "manager approval",
-            "business",
             "policy",
             "confirm with",
             "authorized",

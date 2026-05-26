@@ -15,7 +15,7 @@ from forensia.db.query import fetch_records, normalize_value
 from forensia.report.html import render_html_report
 
 GAP_PATTERN = re.compile(
-    r"【調査不足:\s*([^】]+)】|\[INSUFFICIENT EVIDENCE:\s*([^\]]+)\]",
+    r"\[INSUFFICIENT EVIDENCE:\s*([^\]]+)\]|【調査不足:\s*([^】]+)】",
     re.IGNORECASE,
 )
 PLACEHOLDER_ENTITY_PATTERN = re.compile(r"(?<![\w/.-])(none|n/?a|null)(?![\w/.-])", re.IGNORECASE)

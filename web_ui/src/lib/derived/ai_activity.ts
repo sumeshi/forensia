@@ -10,14 +10,14 @@ function payloadRecord(value: unknown): Record<string, unknown> {
 export const currentTask = derived(progress, ($progress) => {
   if (!$progress) {
     return {
-      stageLabel: "待機",
-      summary: "調査イベント待ちです",
+      stageLabel: "Idle",
+      summary: "Waiting for investigation events",
       iteration: 0
     };
   }
   return {
     stageLabel: formatStage($progress.stage),
-    summary: $progress.summary ?? "進捗更新",
+    summary: $progress.summary ?? "Progress update",
     iteration: $progress.iteration ?? 0
   };
 });

@@ -54,7 +54,7 @@
     ></span>
   </span>
 
-  <span class="shrink-0 text-[11px] uppercase tracking-[0.16em] text-mocha-subtext0">現在</span>
+  <span class="shrink-0 text-[11px] uppercase tracking-[0.16em] text-mocha-subtext0">Current</span>
 
   <span class="min-w-0 truncate text-sm font-medium text-mocha-text">
     {verb}{isLive ? "..." : ""}
