@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import json
 import tempfile
@@ -10,7 +11,7 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from forensia.ai.checker import CheckResult, summarize_query_result
-from forensia.ai.investigator import _apply_memory_updates, _sync_keypoint_cards
+from forensia.ai.investigator import _apply_memory_updates, _sync_keypoint_cards, investigate
 from forensia.artifacts import MftArtifactAdapter, PrefetchArtifactAdapter
 from forensia import cli as cli_module
 from forensia.cli import _progress_pusher, _reset_case_tables
@@ -419,9 +420,7 @@ class MemoryAndIngestTests(unittest.TestCase):
                     "forensia.ai.investigator.render_written_report",
                     return_value=(case.reports_dir / "report.md", case.reports_dir / "report.html"),
                 ):
-                    from forensia.ai.investigator import investigate
-
-                    investigate(
+                    asyncio.run(investigate(
                         case=case,
                         db=db,
                         base_url=self._llm_base_url(),
@@ -429,8 +428,7 @@ class MemoryAndIngestTests(unittest.TestCase):
                         max_iter=1,
                         no_progress_limit=1,
                         report_every_n_cycles=999,
-                    )
-
+                    ))
             keypoint = case.memory_dir / "keypoints" / "KP-0001.md"
             self.assertTrue(keypoint.exists())
             text = keypoint.read_text(encoding="utf-8")
@@ -477,7 +475,7 @@ class MemoryAndIngestTests(unittest.TestCase):
             ):
                 from forensia.ai.investigator import investigate
 
-                investigate(
+                asyncio.run(investigate(
                     case=case,
                     db=db,
                     base_url=self._llm_base_url(),
@@ -485,7 +483,7 @@ class MemoryAndIngestTests(unittest.TestCase):
                     max_iter=1,
                     no_progress_limit=1,
                     report_every_n_cycles=999,
-                )
+                ))
 
             self.assertFalse(stale_path.exists())
 
@@ -516,7 +514,7 @@ class MemoryAndIngestTests(unittest.TestCase):
                 ):
                     from forensia.ai.investigator import investigate
 
-                    investigate(
+                    asyncio.run(investigate(
                         case=case,
                         db=db,
                         base_url=self._llm_base_url(),
@@ -524,7 +522,7 @@ class MemoryAndIngestTests(unittest.TestCase):
                         max_iter=1,
                         no_progress_limit=1,
                         report_every_n_cycles=999,
-                    )
+                    ))
 
             self.assertTrue((memory.hypotheses_dir / "H-1.md").exists())
             self.assertTrue((memory.hypotheses_dir / "H-2.md").exists())
@@ -541,7 +539,7 @@ class MemoryAndIngestTests(unittest.TestCase):
                 from forensia.ai.investigator import investigate
 
                 # should NOT raise — error is caught inside the loop
-                investigate(
+                asyncio.run(investigate(
                     case=case,
                     db=db,
                     base_url=self._llm_base_url(),
@@ -549,7 +547,7 @@ class MemoryAndIngestTests(unittest.TestCase):
                     max_iter=1,
                     no_progress_limit=1,
                     report_every_n_cycles=999,
-                )
+                ))
 
                 status, finished_at = db.execute(
                     """
@@ -628,7 +626,7 @@ class MemoryAndIngestTests(unittest.TestCase):
                 ):
                     from forensia.ai.investigator import investigate
 
-                    investigate(
+                    asyncio.run(investigate(
                         case=case,
                         db=db,
                         base_url=self._llm_base_url(),
@@ -637,7 +635,7 @@ class MemoryAndIngestTests(unittest.TestCase):
                         no_progress_limit=1,
                         max_queries_per_hypothesis=1,
                         report_every_n_cycles=999,
-                    )
+                    ))
 
             facts_text = (case.memory_dir / "facts.md").read_text(encoding="utf-8") if (case.memory_dir / "facts.md").exists() else ""
             timeline_text = (case.memory_dir / "timeline.md").read_text(encoding="utf-8") if (case.memory_dir / "timeline.md").exists() else ""
@@ -660,7 +658,7 @@ class MemoryAndIngestTests(unittest.TestCase):
             ):
                 from forensia.ai.investigator import investigate
 
-                investigate(
+                asyncio.run(investigate(
                     case=case,
                     db=db,
                     base_url=self._llm_base_url(),
@@ -668,7 +666,7 @@ class MemoryAndIngestTests(unittest.TestCase):
                     max_iter=1,
                     no_progress_limit=1,
                     report_every_n_cycles=999,
-                )
+                ))
 
             overview = (case.memory_dir / "overview.md").read_text(encoding="utf-8")
             self.assertIn("## Case Scope", overview)
@@ -688,7 +686,7 @@ class MemoryAndIngestTests(unittest.TestCase):
             ), patch.object(MemoryManager, "load_compact_context", autospec=True, wraps=MemoryManager.load_compact_context) as mock_compact:
                 from forensia.ai.investigator import investigate
 
-                investigate(
+                asyncio.run(investigate(
                     case=case,
                     db=db,
                     base_url=self._llm_base_url(),
@@ -696,7 +694,7 @@ class MemoryAndIngestTests(unittest.TestCase):
                     max_iter=1,
                     no_progress_limit=1,
                     report_every_n_cycles=999,
-                )
+                ))
 
             overview_calls = [
                 call for call in mock_compact.call_args_list

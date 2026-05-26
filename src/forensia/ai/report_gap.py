@@ -29,15 +29,12 @@ def _guess_related_sections(text: str) -> list[str]:
     section_map = {
         "1_overview": ["overview", "first evidence", "summary", "fec", "initial"],
         "2_timeline": ["timeline", "time", "log clear", "reboot", "shutdown", "when"],
-        "3_hosts": ["host", "computer", "server", "workstation"],
-        "4_accounts": ["account", "user", "credential", "password", "logon", "rdp", "admin"],
-        "5_persistence": ["service", "task", "powershell", "defender", "persistence", "execution"],
-        "6_ioc": ["ioc", "ip", "process", "file", "path", "indicator"],
-        "7_gaps": ["gap", "unknown", "不足", "unresolved"],
-        "8_recommendations": ["mitigation", "recommendation", "対策"],
+        "3_technical": ["host", "computer", "server", "workstation", "account", "user", "credential", "password", "logon", "rdp", "admin", "service", "task", "powershell", "defender", "persistence", "execution", "ioc", "ip", "process", "file", "path", "indicator"],
+        "4_gaps": ["gap", "unknown", "不足", "unresolved"],
+        "5_recommendations": ["mitigation", "recommendation", "対策"],
     }
     matches = [section for section, keywords in section_map.items() if any(keyword in lowered for keyword in keywords)]
-    return matches or ["7_gaps"]
+    return matches or ["4_gaps"]
 
 
 def _build_report_status(

@@ -197,12 +197,12 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertNotIn("compromised_users", system)
 
     def test_truncate_context_sections_keeps_text_within_1500_chars(self) -> None:
-        sections = {"2_timeline": "x" * 1500, "4_accounts": "y" * 1501}
+        sections = {"2_timeline": "x" * 1500, "3_technical": "y" * 1501}
 
         trimmed = _truncate_context_sections(sections)
 
         self.assertEqual("x" * 1500, trimmed["2_timeline"])
-        self.assertEqual("y" * 1500, trimmed["4_accounts"])
+        self.assertEqual("y" * 1500, trimmed["3_technical"])
 
     def test_build_check_messages_define_finding_update_and_suspicious_evidence_schema(self) -> None:
         messages = build_check_messages(
@@ -850,7 +850,7 @@ class PlannerRetryTests(unittest.TestCase):
 
     def test_report_section_messages_include_recommendation_strength_guidance(self) -> None:
         messages = build_report_section_messages(
-            section_meta={"section": "8_recommendations"},
+            section_meta={"section": "5_recommendations"},
             evidence_results=[],
             context_sections={},
             template_body="# Recommended Actions",
@@ -862,7 +862,7 @@ class PlannerRetryTests(unittest.TestCase):
 
     def test_report_section_messages_include_language_confidence_matrix_and_categories(self) -> None:
         messages = build_report_section_messages(
-            section_meta={"section": "5_persistence"},
+            section_meta={"section": "3_technical"},
             evidence_results=[],
             context_sections={},
             template_body="# Persistence and Execution",

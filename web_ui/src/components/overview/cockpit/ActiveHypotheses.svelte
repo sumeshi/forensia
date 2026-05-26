@@ -83,7 +83,7 @@
     <div class="max-h-[420px] space-y-2 overflow-y-auto pr-1">
       {#each items as item}
         {@const latest = item.latestReasoning[0]}
-        <article class="min-w-0 rounded-xl border border-mocha-surface0 bg-mocha-mantle/70">
+        <article class="min-w-0 rounded-xl border border-mocha-surface1 bg-mocha-mantle/70">
           <button
             class="flex min-w-0 w-full items-start gap-3 px-3 py-3 text-left"
             type="button"
@@ -115,55 +115,55 @@
               </div>
             </div>
 
-            <div class="shrink-0 text-right text-[11px] text-mocha-overlay1">
+            <div class="shrink-0 text-right text-[11px] text-mocha-subtext0">
               <div>{item.latestIteration ?? 0} iter</div>
               <div class="mt-1">{formatRelativeTime(item.latestReasoningAt)}</div>
             </div>
           </button>
 
           {#if openId === item.id}
-            <div class="border-t border-mocha-surface0 px-3 py-3">
-              {#if loadingId === item.id}
-                <p class="text-xs text-mocha-subtext1">reasoning を読込中です。</p>
-              {:else if error}
-                <p class="text-xs text-mocha-red">{error}</p>
-              {:else if openEntries.length === 0}
-                <p class="text-xs text-mocha-subtext1">reasoning はまだありません。</p>
-              {:else}
-                <div class="space-y-2">
-                  {#each [...openEntries].reverse().slice(0, showAllId === item.id ? 20 : 10) as entry}
-                    <div class="flex gap-3">
-                      <div class="flex w-16 shrink-0 flex-col items-center">
-                        <span class={`mt-1 h-2.5 w-2.5 rounded-full ${reasoningToneClass(entry.verdict)}`}></span>
-                        <span class="h-full w-px bg-mocha-surface1"></span>
-                      </div>
-                      <div class="min-w-0 flex-1 rounded-lg bg-mocha-base/80 px-3 py-2">
-                <div class="flex min-w-0 flex-wrap items-center gap-2 text-[11px] text-mocha-overlay1">
-                          <span class="font-mono">[{formatReasoningPhase(entry.phase)}]</span>
-                          <span>{entry.iteration} iter</span>
-                          {#if entry.verdict}
-                            <span class="text-mocha-subtext0">{formatVerdict(entry.verdict)}</span>
-                          {/if}
-                          <span>{formatRelativeTime(entry.created_at)}</span>
-                        </div>
-                        <p class="mt-1 break-words text-sm text-mocha-text">{entry.body}</p>
-                      </div>
-                    </div>
-                  {/each}
-                </div>
+<div class="border-t border-mocha-surface1 px-3 py-3">
+               {#if loadingId === item.id}
+                 <p class="text-xs text-mocha-subtext1">reasoning を読込中です。</p>
+               {:else if error}
+                 <p class="text-xs text-mocha-red">{error}</p>
+               {:else if openEntries.length === 0}
+                 <p class="text-xs text-mocha-subtext1">reasoning はまだありません。</p>
+               {:else}
+                 <div class="space-y-2">
+                   {#each [...openEntries].reverse().slice(0, showAllId === item.id ? 20 : 10) as entry}
+                     <div class="flex gap-3">
+                       <div class="flex w-16 shrink-0 flex-col items-center">
+                         <span class={`mt-1 h-2.5 w-2.5 rounded-full ${reasoningToneClass(entry.verdict)}`}></span>
+                         <span class="h-full w-px bg-mocha-surface1"></span>
+                       </div>
+                       <div class="min-w-0 flex-1 rounded-lg bg-mocha-base/80 px-3 py-2">
+                     <div class="flex min-w-0 flex-wrap items-center gap-2 text-[11px] text-mocha-overlay1">
+                           <span class="font-mono">[{formatReasoningPhase(entry.phase)}]</span>
+                           <span>{entry.iteration} iter</span>
+                           {#if entry.verdict}
+                             <span class="text-mocha-subtext0">{formatVerdict(entry.verdict)}</span>
+                           {/if}
+                           <span>{formatRelativeTime(entry.created_at)}</span>
+                         </div>
+                         <p class="mt-1 break-words text-sm text-mocha-text">{entry.body}</p>
+                       </div>
+                     </div>
+                   {/each}
+                 </div>
 
-                {#if openEntries.length > 10}
-                  <button
-                    class="mt-3 text-xs font-medium text-mocha-blue hover:text-mocha-sapphire"
-                    type="button"
-                    on:click={() => (showAllId = showAllId === item.id ? "" : item.id)}
-                  >
-                    {showAllId === item.id ? "Show less" : "Show all"}
-                  </button>
-                {/if}
-              {/if}
-            </div>
-          {/if}
+                 {#if openEntries.length > 10}
+                   <button
+                     class="mt-3 text-xs font-medium text-mocha-blue hover:text-mocha-sapphire"
+                     type="button"
+                     on:click={() => (showAllId = showAllId === item.id ? "" : item.id)}
+                   >
+                     {showAllId === item.id ? "Show less" : "Show all"}
+                   </button>
+                 {/if}
+               {/if}
+             </div>
+           {/if}
         </article>
       {/each}
     </div>

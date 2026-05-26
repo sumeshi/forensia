@@ -1,22 +1,10 @@
 # Investigation Overview
 
-## Incident Summary
-
-<!-- Describe what happened in 1 to 3 evidence-based paragraphs -->
+## Executive Summary
+<!-- 1-2 paragraphs summarizing the incident and key findings -->
 
 ## Evidence Scope
+<!-- Types of evidence analyzed, time range, systems involved, key limitations -->
 
-**Investigation Time Range**: <!-- Earliest to latest available log timestamp -->
-
-**In-Scope Hosts**:
-
-| Host | Role | Compromise Status |
-|---|---|---|
-| <!-- fill --> | <!-- fill --> | <!-- fill --> |
-
-## First Evidence of Compromise (FEC)
-
-- **Timestamp**: <!-- fill -->
-- **Host**: <!-- fill -->
-- **Event**: <!-- fill -->
-- **evidence_id**: <!-- fill -->
+## Key Findings
+<!-- Most significant findings in order of importance with evidence references and confidence -->

@@ -13,11 +13,11 @@
     <tbody>
       {#each timeline as row}
         <tr class={`border-b border-mocha-surface1 ${row.is_deleted ? "text-mocha-red" : ""}`}>
-          <td class="px-3 py-2">{row.timestamp ?? "-"}</td>
-          <td class="px-3 py-2">{row.timestamp_type ?? "-"}</td>
-          <td class="px-3 py-2">{row.record_number ?? "-"}</td>
-          <td class="px-3 py-2">{row.is_deleted ? "yes" : "no"}</td>
-          <td class="px-3 py-2">{row.file_path ?? row.description ?? "-"}</td>
+          <td class="px-3 py-2 text-mocha-subtext1">{row.timestamp ?? "-"}</td>
+          <td class="px-3 py-2 text-mocha-subtext1">{row.timestamp_type ?? "-"}</td>
+          <td class="px-3 py-2 text-mocha-subtext1">{row.record_number ?? "-"}</td>
+          <td class="px-3 py-2 text-mocha-subtext1">{row.is_deleted ? "yes" : "no"}</td>
+          <td class="px-3 py-2 text-mocha-subtext1">{row.file_path ?? row.description ?? "-"}</td>
         </tr>
       {/each}
     </tbody>

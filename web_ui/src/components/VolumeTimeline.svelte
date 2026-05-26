@@ -82,7 +82,7 @@
           x: {
             stacked: true,
             grid: {
-              color: "rgba(69, 71, 90, 0.28)"
+              color: "rgba(255, 255, 255, 0.08)"
             },
             ticks: {
               color: "#a6adc8",
@@ -95,7 +95,7 @@
             stacked: true,
             beginAtZero: true,
             grid: {
-              color: "rgba(69, 71, 90, 0.24)"
+              color: "rgba(255, 255, 255, 0.06)"
             },
             ticks: {
               color: "#a6adc8"
@@ -136,25 +136,25 @@
   <div class="flex flex-wrap items-start justify-between gap-3">
     <div>
       <h2 class="panel-title">Event Volume</h2>
-      <p class="mt-1 text-xs text-mocha-subtext0">Stacked bar chart of the number of artifacts by time</p>
-    </div>
-    <div class="flex flex-wrap items-center gap-2">
-      <div class="flex rounded-full border border-mocha-surface1 bg-mocha-surface0 p-1">
-        {#each ["hour", "day"] as option}
-          <button
-            class={`rounded-full px-3 py-1 text-xs ${bucket === option ? "bg-mocha-mauve text-mocha-base" : "text-mocha-subtext0"}`}
-            on:click={() => onBucketChange(option as "hour" | "day")}
-          >
-            {option}
-          </button>
-        {/each}
-      </div>
-      <div class="flex rounded-full border border-mocha-surface1 bg-mocha-surface0 p-1">
+<p class="mt-1 text-xs text-mocha-subtext0">Stacked bar chart of the number of artifacts by time</p>
+     </div>
+     <div class="flex flex-wrap items-center gap-2">
+       <div class="flex rounded-full border border-mocha-surface1 bg-mocha-surface0 p-1">
+         {#each ["hour", "day"] as option}
+           <button
+             class={`rounded-full px-3 py-1 text-xs ${bucket === option ? "bg-mocha-mauve text-mocha-base" : "text-mocha-subtext0"}`}
+             on:click={() => onBucketChange(option as "hour" | "day")}
+           >
+             {option}
+           </button>
+         {/each}
+       </div>
+       <div class="flex rounded-full border border-mocha-surface1 bg-mocha-surface0 p-1">
         {#each ["all", "detected"] as option}
-          <button
-            class={`rounded-full px-3 py-1 text-xs ${source === option ? "bg-mocha-blue text-mocha-base" : "text-mocha-subtext0"}`}
-            on:click={() => onSourceChange(option as "all" | "detected")}
-          >
+<button
+             class={`rounded-full px-3 py-1 text-xs ${source === option ? "bg-mocha-blue text-mocha-base" : "text-mocha-subtext0"}`}
+             on:click={() => onSourceChange(option as "all" | "detected")}
+           >
             {option}
           </button>
         {/each}

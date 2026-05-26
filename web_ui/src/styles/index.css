@@ -58,7 +58,7 @@
   }
 
   .panel-title {
-    @apply text-sm font-semibold tracking-wide text-mocha-rosewater;
+    @apply text-sm font-semibold tracking-wide text-mocha-text;
   }
 
   .chip {
@@ -67,6 +67,10 @@
 
   .chip-muted {
     @apply chip text-mocha-overlay1;
+  }
+
+  .chip-accent {
+    @apply chip text-mocha-pink;
   }
 
   .scroll-thin {

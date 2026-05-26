@@ -1,6 +1,5 @@
-from __future__ import annotations
+import asyncio
 
-from collections.abc import Callable
 from pathlib import Path
 
 import typer
@@ -252,19 +251,21 @@ def report_write(
     max_queries = report_max_queries_per_section or get_llm_settings()["report_max_queries_per_section"]
     _status(f"Writing report from templates: {template_root} (parallelism={parallelism}, max_queries={max_queries})")
     with CaseDB(case) as db:
-        investigate_loop(
-            case=case,
-            db=db,
-            base_url=llm_base_url,
-            model=model,
-            max_iter=1,
-            no_progress_limit=1,
-            profile="windows-basic",
-            max_queries_per_hypothesis=0,
-            report_only=True,
-            template_root=template_root,
-            report_parallelism=parallelism,
-            report_max_queries_per_section=max_queries,
+        asyncio.run(
+            investigate_loop(
+                case=case,
+                db=db,
+                base_url=llm_base_url,
+                model=model,
+                max_iter=1,
+                no_progress_limit=1,
+                profile="windows-basic",
+                max_queries_per_hypothesis=0,
+                report_only=True,
+                template_root=template_root,
+                report_parallelism=parallelism,
+                report_max_queries_per_section=max_queries,
+            )
         )
         report_md, report_html = render_written_report(case, db)
         write_api_snapshots(case, db)
@@ -414,29 +415,31 @@ def run(
         if llm_base_url and model:
             _status(f"Stage 4/4: investigate with model={model}")
             push_progress(f"[investigate] starting - model={model}", stage="investigate", status="running")
-            result = investigate_loop(
-                case=case,
-                db=db,
-                base_url=llm_base_url,
-                model=model,
-                template_root=template_root,
-                max_iter=max_iter,
-                max_queries_per_hypothesis=max_queries_per_hypothesis,
-                no_progress_limit=no_progress_limit,
-                profile=profile,
-                report_every_n_cycles=report_every_n_cycles,
-                report_parallelism=report_parallelism or get_llm_settings()["report_parallelism"],
-                report_max_queries_per_section=report_max_queries_per_section or get_llm_settings()["report_max_queries_per_section"],
-                progress_callback=lambda payload: push_progress(
-                    payload.get("summary"),
-                    stage=payload.get("stage", "investigate"),
-                    status=payload.get("status", "running"),
-                    iteration=payload.get("iteration", 0),
-                    current_query=payload.get("current_query"),
-                    summary=payload.get("summary"),
-                    hypotheses=payload.get("hypotheses", []),
-                    report_sections=payload.get("report_sections", {}),
-                ),
+            result = asyncio.run(
+                investigate_loop(
+                    case=case,
+                    db=db,
+                    base_url=llm_base_url,
+                    model=model,
+                    template_root=template_root,
+                    max_iter=max_iter,
+                    max_queries_per_hypothesis=max_queries_per_hypothesis,
+                    no_progress_limit=no_progress_limit,
+                    profile=profile,
+                    report_every_n_cycles=report_every_n_cycles,
+                    report_parallelism=report_parallelism or get_llm_settings()["report_parallelism"],
+                    report_max_queries_per_section=report_max_queries_per_section or get_llm_settings()["report_max_queries_per_section"],
+                    progress_callback=lambda payload: push_progress(
+                        payload.get("summary"),
+                        stage=payload.get("stage", "investigate"),
+                        status=payload.get("status", "running"),
+                        iteration=payload.get("iteration", 0),
+                        current_query=payload.get("current_query"),
+                        summary=payload.get("summary"),
+                        hypotheses=payload.get("hypotheses", []),
+                        report_sections=payload.get("report_sections", {}),
+                    ),
+                )
             )
             tasks.mark_done(
                 "investigate",
@@ -523,30 +526,32 @@ def investigate(
             },
         )
         push_progress()
-        result = investigate_loop(
-            case=case,
-            db=db,
-            base_url=llm_base_url,
-            model=model,
-            template_root=template_root,
-            max_iter=max_iter,
-            max_queries_per_hypothesis=max_queries_per_hypothesis,
-            no_progress_limit=no_progress_limit,
-            profile=profile,
-            report_every_n_cycles=report_every_n_cycles,
-            report_parallelism=report_parallelism or get_llm_settings()["report_parallelism"],
-            report_max_queries_per_section=report_max_queries_per_section or get_llm_settings()["report_max_queries_per_section"],
-            report_only=report_only,
-            progress_callback=lambda payload: push_progress(
-                payload.get("summary"),
-                stage=payload.get("stage", "investigate"),
-                status=payload.get("status", "running"),
-                iteration=payload.get("iteration", 0),
-                current_query=payload.get("current_query"),
-                summary=payload.get("summary"),
-                hypotheses=payload.get("hypotheses", []),
-                report_sections=payload.get("report_sections", {}),
-            ),
+        result = asyncio.run(
+            investigate_loop(
+                case=case,
+                db=db,
+                base_url=llm_base_url,
+                model=model,
+                template_root=template_root,
+                max_iter=max_iter,
+                max_queries_per_hypothesis=max_queries_per_hypothesis,
+                no_progress_limit=no_progress_limit,
+                profile=profile,
+                report_every_n_cycles=report_every_n_cycles,
+                report_parallelism=report_parallelism or get_llm_settings()["report_parallelism"],
+                report_max_queries_per_section=report_max_queries_per_section or get_llm_settings()["report_max_queries_per_section"],
+                report_only=report_only,
+                progress_callback=lambda payload: push_progress(
+                    payload.get("summary"),
+                    stage=payload.get("stage", "investigate"),
+                    status=payload.get("status", "running"),
+                    iteration=payload.get("iteration", 0),
+                    current_query=payload.get("current_query"),
+                    summary=payload.get("summary"),
+                    hypotheses=payload.get("hypotheses", []),
+                    report_sections=payload.get("report_sections", {}),
+                ),
+            )
         )
         tasks.mark_done(
             "investigate",

@@ -33,7 +33,7 @@
   {#if open}
     <div class="mb-3 flex flex-wrap gap-2">
       {#each tabs as tab}
-        <button class={`rounded-lg px-3 py-1.5 text-xs ${$detailsTab === tab.id ? "bg-mocha-mauve/20 text-mocha-text border border-mocha-mauve" : "bg-mocha-mantle text-mocha-subtext0 border border-mocha-surface1"}`} on:click={() => detailsTab.set(tab.id)}>
+        <button class={`rounded-lg px-3 py-1.5 text-xs ${$detailsTab === tab.id ? "bg-mocha-mauve/20 text-mocha-text border border-mocha-mauve" : "bg-mocha-mantle/70 text-mocha-subtext0 border border-mocha-surface1"}`} on:click={() => detailsTab.set(tab.id)}>
           {tab.label}
         </button>
       {/each}

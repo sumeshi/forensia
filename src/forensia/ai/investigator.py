@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import signal
@@ -31,7 +32,7 @@ from forensia.ai.report_gap import (
     _overlay_report_status,
     _report_cycle_progress,
 )
-from forensia.ai.section_refresher import _refresh_report_sections
+from forensia.ai.section_refresher import async_refresh_report_sections
 from forensia.config import get_llm_settings
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
@@ -399,7 +400,7 @@ def _apply_memory_updates(
         memory.upsert_hypothesis(hypothesis.id, slug, content)
 
 
-def investigate(
+async def investigate(
     case: Case,
     db: CaseDB,
     base_url: str,
@@ -907,14 +908,15 @@ def investigate(
             report_result: dict[str, Any] | None = None
             if plan_cycle % max(1, report_every_n_cycles) == 0:
                 try:
-                    report_result = _refresh_report_sections(
+                    template_paths = sorted(template_root.glob("[0-9]*_*.md"))
+                    report_result = await async_refresh_report_sections(
                         case=case,
                         db=db,
                         session_id=session_id,
                         iteration=plan_cycle,
                         base_url=base_url,
                         model=model,
-                        template_root=template_root,
+                        template_paths=template_paths,
                         llm_logger=llm_logger,
                         progress_callback=progress_callback,
                         focus_sections=focus_sections,

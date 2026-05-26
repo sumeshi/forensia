@@ -13,11 +13,11 @@
     <tbody>
       {#each sessions as session}
         <tr class="border-b border-mocha-surface1">
-          <td class="px-3 py-2">{session.session_id}</td>
-          <td class="px-3 py-2">{session.started_at ?? "-"}</td>
-          <td class="px-3 py-2">{session.finished_at ?? "-"}</td>
-          <td class="px-3 py-2">{session.iterations ?? 0}</td>
-          <td class="px-3 py-2">{session.status ?? "-"}</td>
+          <td class="px-3 py-2 text-mocha-subtext1">{session.session_id}</td>
+          <td class="px-3 py-2 text-mocha-subtext1">{session.started_at ?? "-"}</td>
+          <td class="px-3 py-2 text-mocha-subtext1">{session.finished_at ?? "-"}</td>
+          <td class="px-3 py-2 text-mocha-subtext1">{session.iterations ?? 0}</td>
+          <td class="px-3 py-2 text-mocha-subtext1">{session.status ?? "-"}</td>
         </tr>
       {/each}
     </tbody>

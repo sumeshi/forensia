@@ -73,10 +73,7 @@ def _split_template_body(template_body: str) -> tuple[str, list[dict[str, str]]]
 SECTION_KEYPOINT_PREFIXES: dict[str, tuple[str, ...]] = {
     "overview": ("overview_",),
     "timeline": ("timeline_",),
-    "hosts": ("host_",),
-    "accounts": ("account_",),
-    "persistence": ("persistence_",),
-    "ioc": ("ioc_",),
+    "technical": ("host_", "account_", "persistence_", "ioc_", "execution_"),
     "gaps": ("gaps_",),
     "recommendations": ("recommendations_",),
     "appendix": ("appendix_",),
@@ -85,10 +82,7 @@ SECTION_KEYPOINT_PREFIXES: dict[str, tuple[str, ...]] = {
 SECTION_EXTRA_KEYPOINTS: dict[str, tuple[str, ...]] = {
     "overview": ("top_keypoints", "session_activity_events"),
     "timeline": ("top_keypoints", "gaps_log_integrity_events"),
-    "hosts": ("top_keypoints", "overview_hosts", "session_activity_events", "host_user_profile_paths", "timeline_prefetch_history"),
-    "accounts": ("top_keypoints",),
-    "persistence": ("top_keypoints", "host_execution_activity", "timeline_prefetch_history", "mft_prefetch_filenames", "mft_user_app_activity"),
-    "ioc": ("top_keypoints", "mft_recent_folder_lnk", "mft_prefetch_filenames"),
+    "technical": ("top_keypoints", "overview_hosts", "session_activity_events", "host_user_profile_paths", "timeline_prefetch_history", "host_execution_activity", "mft_prefetch_filenames", "mft_user_app_activity", "mft_recent_folder_lnk", "ioc_user_data_files"),
     "gaps": ("top_keypoints",),
     "recommendations": ("top_keypoints", "timeline_system_events", "timeline_prefetch_history", "ioc_user_data_files"),
     "appendix": ("top_keypoints",),
@@ -241,7 +235,7 @@ def _quality_gate_section(
         if note not in gated_gaps:
             gated_gaps.append(note)
         gated_confidence = min(gated_confidence, 0.6)
-    if section_key == "8_recommendations":
+    if section_key == "5_recommendations":
         lowered = body.lower()
         strength_markers = (
             "confirmed",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from datetime import UTC, datetime
@@ -62,6 +63,10 @@ def _agent_plan_router(*_args, **kwargs):
     return {"action": "write", "enough_to_write": True}
 
 
+async def _async_agent_plan_router(*args, **kwargs):
+    return _agent_plan_router(*args, **kwargs)
+
+
 class PersistenceTests(unittest.TestCase):
     @staticmethod
     def _llm_base_url() -> str:
@@ -74,6 +79,14 @@ class PersistenceTests(unittest.TestCase):
         )
         self._llm_json_patch.start()
         self.addCleanup(self._llm_json_patch.stop)
+        # The async report-refresh path uses async_request_llm_json; mock it too
+        # so async tests don't hit the real LLM.
+        self._async_llm_json_patch = patch(
+            "forensia.ai.section_agent.async_request_llm_json",
+            side_effect=_async_agent_plan_router,
+        )
+        self._async_llm_json_patch.start()
+        self.addCleanup(self._async_llm_json_patch.stop)
 
     def test_collect_gaps_supports_english_and_japanese_placeholders(self) -> None:
         self.assertEqual(
@@ -315,11 +328,11 @@ class PersistenceTests(unittest.TestCase):
     def test_prepare_section_request_infers_ioc_keypoints_from_section_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
-            template_path = case.path / "report_template_custom" / "6_ioc.md"
+            template_path = case.path / "report_template_custom" / "3_technical.md"
             template_path.parent.mkdir(parents=True, exist_ok=True)
             template_path.write_text(
                 (
-                    "# IOC\n"
+                    "# Technical\n"
                 ),
                 encoding="utf-8",
             )
@@ -339,7 +352,7 @@ class PersistenceTests(unittest.TestCase):
                     """
                 )
                 prepare_section_request(case, db, template_path, {}, report_brief={})
-                default_keypoints = _default_keypoints_for_section("6_ioc")
+                default_keypoints = _default_keypoints_for_section("3_technical")
                 resolved = _resolve_evidence_results(case, db, keypoints=default_keypoints)
 
             results = {item["keypoint"]: item for item in resolved}
@@ -368,7 +381,7 @@ class PersistenceTests(unittest.TestCase):
 
     def test_quality_gate_flags_heading_title_mismatch(self) -> None:
         gaps, confidence = _quality_gate_section(
-            "4_accounts",
+            "3_technical",
             "Compromised Accounts and Authentication",
             "# Indicators of Compromise\n\nBody text",
             [],
@@ -398,7 +411,7 @@ class PersistenceTests(unittest.TestCase):
             "| High | Isolate host1 now | suspicious activity observed |\n"
         )
 
-        gaps, confidence = _quality_gate_section("8_recommendations", "Recommended Actions", body, [], 1.0)
+        gaps, confidence = _quality_gate_section("5_recommendations", "Recommended Actions", body, [], 1.0)
 
         self.assertEqual(1, len(gaps))
         self.assertIn("evidence strength", gaps[0].lower())
@@ -418,8 +431,8 @@ class PersistenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             written = export_packaged_report_templates(tmpdir, overwrite=True)
 
-            self.assertTrue(any(path.name == "9_appendix.md" for path in written))
-            self.assertTrue((Path(tmpdir) / "9_appendix.md").exists())
+            self.assertTrue(any(path.name == "6_appendix.md" for path in written))
+            self.assertTrue((Path(tmpdir) / "6_appendix.md").exists())
 
     def test_investigate_report_only_refreshes_all_sections_and_emits_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -428,13 +441,13 @@ class PersistenceTests(unittest.TestCase):
             with CaseDB(case) as db:
                 # request_llm_json mocked by setUp; only chat_completion + render need patching here.
                 with patch(
-                    "forensia.ai.section_agent.chat_completion",
+                    "forensia.ai.section_agent.async_chat_completion",
                     return_value="# Section\n\n本文\n\n【調査不足: 追加確認が必要】",
                 ), patch(
                     "forensia.ai.investigator.render_written_report",
                     return_value=(case.reports_dir / "report.md", case.reports_dir / "report.html"),
                 ):
-                    result = investigate(
+                    result = asyncio.run(investigate(
                         case=case,
                         db=db,
                         base_url=self._llm_base_url(),
@@ -442,7 +455,7 @@ class PersistenceTests(unittest.TestCase):
                         max_iter=1,
                         report_only=True,
                         progress_callback=events.append,
-                    )
+                    ))
 
                 section_count = db.execute("SELECT COUNT(*) FROM report_sections").fetchone()[0]
                 rows = db.execute(
@@ -450,12 +463,12 @@ class PersistenceTests(unittest.TestCase):
                 ).fetchall()
 
             self.assertEqual("completed", result["status"])
-            self.assertEqual(9, section_count)
-            self.assertEqual(9, len(rows))
+            self.assertEqual(6, section_count)
+            self.assertEqual(6, len(rows))
             self.assertIn("investigate/report-section", [str(event["stage"]) for event in events])
             self.assertIn("investigate/report-section-done", [str(event["stage"]) for event in events])
             self.assertIn("investigate/report-cycle-done", [str(event["stage"]) for event in events])
-            self.assertEqual(9, len(result["report_sections"]["items"]))
+            self.assertEqual(6, len(result["report_sections"]["items"]))
             self.assertTrue(all(float(confidence) < 1.0 for _, confidence, _, _, _ in rows))
             self.assertTrue(all(status_name == "draft" for _, _, status_name, _, _ in rows))
             self.assertTrue(all(int(update_count) == 1 for _, _, _, update_count, _ in rows))
@@ -575,7 +588,7 @@ class PersistenceTests(unittest.TestCase):
                 )
                 result = finalize_section(
                     db=db,
-                    section_key="5_persistence",
+                    section_key="3_technical",
                     title="Persistence and Execution",
                     body="# Persistence and Execution\n\nSuspicious Service\n\nSuspicious Service\n\nSuspicious Service",
                     evidence_results=[],
@@ -601,7 +614,7 @@ class PersistenceTests(unittest.TestCase):
                 )
                 result = finalize_section(
                     db=db,
-                    section_key="5_persistence",
+                    section_key="3_technical",
                     title="Persistence and Execution",
                     body="# Persistence and Execution\n\nConfirmed lateral movement based on windows-corr-logon-then-service-0001.",
                     evidence_results=[],
@@ -705,7 +718,7 @@ class PersistenceTests(unittest.TestCase):
                     ) VALUES
                         ('c-1', '1_overview', 'same claim', '[]', '[]', '[]', 'supported', ?, ?),
                         ('c-2', '2_timeline', 'same claim', '[]', '[]', '[]', 'supported', ?, ?),
-                        ('c-3', '3_hosts', 'different claim', '[]', '[]', '[]', 'supported', ?, ?)
+                        ('c-3', '3_technical', 'different claim', '[]', '[]', '[]', 'supported', ?, ?)
                     """,
                     (now, now, now, now, now, now),
                 )
@@ -718,20 +731,20 @@ class PersistenceTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 with patch(
-                    "forensia.ai.section_agent.chat_completion",
+                    "forensia.ai.section_agent.async_chat_completion",
                     return_value="# Section\n\n本文",
                 ), patch(
                     "forensia.ai.investigator.render_written_report",
                     return_value=(case.reports_dir / "report.md", case.reports_dir / "report.html"),
                 ):
-                    investigate(
+                    asyncio.run(investigate(
                         case=case,
                         db=db,
                         base_url=self._llm_base_url(),
                         model="test-model",
                         max_iter=1,
                         report_only=True,
-                    )
+                    ))
 
             self.assertTrue((case.reports_dir / "report_brief.json").exists())
 
@@ -742,7 +755,7 @@ class PersistenceTests(unittest.TestCase):
                 "forensia.ai.investigator.render_written_report",
                 return_value=(case.reports_dir / "report.md", case.reports_dir / "report.html"),
             ):
-                investigate(
+                asyncio.run(investigate(
                     case=case,
                     db=db,
                     base_url=self._llm_base_url(),
@@ -751,7 +764,7 @@ class PersistenceTests(unittest.TestCase):
                     max_iter=1,
                     no_progress_limit=1,
                     report_every_n_cycles=999,
-                )
+                ))
 
             overview = (case.memory_dir / "overview.md").read_text(encoding="utf-8")
             tasks_text = (case.memory_dir / "tasks.md").read_text(encoding="utf-8")
@@ -888,13 +901,13 @@ class PersistenceTests(unittest.TestCase):
                         raw_response={},
                     ),
                 ), patch(
-                    "forensia.ai.section_agent.chat_completion",
+                    "forensia.ai.section_agent.async_chat_completion",
                     return_value="# Overview\n\n本文\n\n【調査不足: foo bar】",
                 ), patch(
                     "forensia.ai.investigator.render_written_report",
                     return_value=(case.reports_dir / "report.md", case.reports_dir / "report.html"),
                 ):
-                    result = investigate(
+                    result = asyncio.run(investigate(
                         case=case,
                         db=db,
                         base_url=self._llm_base_url(),
@@ -903,7 +916,7 @@ class PersistenceTests(unittest.TestCase):
                         no_progress_limit=5,
                         max_queries_per_hypothesis=1,
                         template_root=template_root,
-                    )
+                    ))
 
             hypotheses = result["hypotheses"]
             gap_id = _gap_hypothesis_id("foo bar")
@@ -945,7 +958,7 @@ class PersistenceTests(unittest.TestCase):
                     "forensia.ai.investigator.render_written_report",
                     return_value=(case.reports_dir / "report.md", case.reports_dir / "report.html"),
                 ):
-                    result = investigate(
+                    result = asyncio.run(investigate(
                         case=case,
                         db=db,
                         base_url=self._llm_base_url(),
@@ -953,7 +966,7 @@ class PersistenceTests(unittest.TestCase):
                         max_iter=5,
                         no_progress_limit=2,
                         report_every_n_cycles=999,
-                    )
+                    ))
                     iterations = db.execute(
                         "SELECT iterations FROM investigation_sessions WHERE session_id = ?",
                         (result["session_id"],),
@@ -1006,7 +1019,7 @@ class PersistenceTests(unittest.TestCase):
                     "forensia.ai.investigator.render_written_report",
                     return_value=(case.reports_dir / "report.md", case.reports_dir / "report.html"),
                 ):
-                    result = investigate(
+                    result = asyncio.run(investigate(
                         case=case,
                         db=db,
                         base_url=self._llm_base_url(),
@@ -1015,7 +1028,7 @@ class PersistenceTests(unittest.TestCase):
                         no_progress_limit=5,
                         max_queries_per_hypothesis=1,
                         report_every_n_cycles=999,
-                    )
+                    ))
 
             self.assertEqual("completed", result["status"])
             self.assertEqual(2, planned["count"])
@@ -1035,12 +1048,12 @@ class PersistenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             self.assertTrue((case.report_template_dir / "1_overview.md").exists())
-            self.assertTrue((case.report_template_dir / "8_recommendations.md").exists())
+            self.assertTrue((case.report_template_dir / "5_recommendations.md").exists())
 
     def test_export_packaged_report_templates_writes_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             written = export_packaged_report_templates(tmpdir)
-            self.assertGreaterEqual(len(written), 8)
+            self.assertGreaterEqual(len(written), 6)
             self.assertTrue((Path(tmpdir) / "1_overview.md").exists())
 
     def test_templates_export_command_writes_files(self) -> None:
@@ -1189,20 +1202,20 @@ class PersistenceTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 with patch(
-                    "forensia.ai.section_agent.chat_completion",
+                    "forensia.ai.section_agent.async_chat_completion",
                     return_value="# Section\n\n本文",
                 ), patch(
                     "forensia.ai.investigator.render_written_report",
                     return_value=(case.reports_dir / "report.md", case.reports_dir / "report.html"),
                 ):
-                    result = investigate(
+                    result = asyncio.run(investigate(
                         case=case,
                         db=db,
                         base_url=self._llm_base_url(),
                         model="test-model",
                         max_iter=1,
                         report_only=True,
-                    )
+                    ))
             session_dir = case.ai_logs_dir / result["session_id"]
             self.assertTrue(session_dir.exists())
             self.assertGreaterEqual(len(list(session_dir.glob("*.json"))), 1)

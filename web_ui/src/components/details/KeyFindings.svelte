@@ -32,12 +32,12 @@
         {@const evidence = firstEvidence(finding)}
         <tr id={`finding-${finding.finding_id}`} class={`${selected === finding.finding_id ? "bg-mocha-mauve/15" : "border-b border-mocha-surface1"}`}>
           <td class="px-3 py-2 text-xs text-mocha-peach">{finding.severity}</td>
-          <td class="px-3 py-2">{finding.title}</td>
-          <td class="px-3 py-2">{String(evidence.target_user ?? evidence.subject_user ?? evidence.user_name ?? "-")}</td>
-          <td class="px-3 py-2">{String(evidence.timestamp ?? finding.finding_id)}</td>
-          <td class="px-3 py-2">{finding.confidence ? finding.confidence.toFixed(2) : "-"}</td>
-          <td class="px-3 py-2">{finding.attack?.join(", ") ?? "-"}</td>
-          <td class="px-3 py-2">{finding.status ?? "accepted"}</td>
+          <td class="px-3 py-2 text-mocha-text">{finding.title}</td>
+          <td class="px-3 py-2 text-mocha-subtext1">{String(evidence.target_user ?? evidence.subject_user ?? evidence.user_name ?? "-")}</td>
+          <td class="px-3 py-2 text-mocha-subtext1">{String(evidence.timestamp ?? finding.finding_id)}</td>
+          <td class="px-3 py-2 text-mocha-subtext1">{finding.confidence ? finding.confidence.toFixed(2) : "-"}</td>
+          <td class="px-3 py-2 text-mocha-subtext1">{finding.attack?.join(", ") ?? "-"}</td>
+          <td class="px-3 py-2 text-mocha-subtext1">{finding.status ?? "accepted"}</td>
         </tr>
       {/each}
     </tbody>

@@ -59,14 +59,14 @@
     <div class="flex flex-col items-end gap-2 self-start text-right text-xs text-mocha-subtext0">
       <div class="flex flex-wrap justify-end gap-2">
         <button
-          class="rounded-md border border-mocha-blue/40 px-3 py-1.5 text-mocha-blue disabled:opacity-50"
+          class="rounded-md border border-mocha-blue/40 px-3 py-1.5 text-mocha-blue disabled:opacity-55"
           on:click={openReport}
           type="button"
         >
           Open Report
         </button>
         <button
-          class="rounded-md border border-mocha-green/40 px-3 py-1.5 text-mocha-green disabled:opacity-50"
+          class="rounded-md border border-mocha-green/40 px-3 py-1.5 text-mocha-green disabled:opacity-55"
           on:click={downloadMarkdown}
           disabled={exportBusy}
           type="button"
