@@ -54,6 +54,7 @@ class Hypothesis(BaseModel):
     status: Literal["active", "confirmed", "refuted"] = "active"
     verdict: Literal["confirmed", "refuted"] | None = None
     summary: str = ""
+    source_rule_ids: list[str] = Field(default_factory=list)
 
 
 class PlannedQuery(BaseModel):

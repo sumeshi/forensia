@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+import json
+
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
@@ -53,12 +55,22 @@ def _render_hypothesis_memory(db: CaseDB | None, hypothesis: Hypothesis) -> str:
 
 def _row_to_hypothesis(row: dict[str, Any]) -> Hypothesis:
     verdict = row.get("verdict")
+    source_rule_ids = row.get("source_rule_ids")
+    if isinstance(source_rule_ids, str):
+        try:
+            import json
+            source_rule_ids = json.loads(source_rule_ids)
+        except Exception:
+            source_rule_ids = []
+    if not isinstance(source_rule_ids, list):
+        source_rule_ids = []
     return Hypothesis(
         id=str(row.get("hypothesis_id") or ""),
         description=str(row.get("description") or ""),
         status=str(row.get("status") or "active"),
         verdict=str(verdict) if verdict else None,
         summary=str(row.get("summary") or ""),
+        source_rule_ids=[str(item) for item in source_rule_ids if item],
     )
 
 
@@ -66,7 +78,7 @@ def _load_persisted_hypotheses(db: CaseDB) -> tuple[list[Hypothesis], list[Hypot
     rows = fetch_records(
         db,
         """
-        SELECT hypothesis_id, description, status, verdict, summary
+        SELECT hypothesis_id, description, status, verdict, summary, source_rule_ids
         FROM hypotheses
         ORDER BY created_at, hypothesis_id
         """,
@@ -113,8 +125,8 @@ def _upsert_hypothesis(
         """
         INSERT INTO hypotheses (
             hypothesis_id, description, status, verdict, summary, origin,
-            created_session, resolved_session, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_session, resolved_session, created_at, updated_at, source_rule_ids
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (hypothesis_id) DO UPDATE SET
             description = excluded.description,
             status = excluded.status,
@@ -124,7 +136,8 @@ def _upsert_hypothesis(
             created_session = excluded.created_session,
             resolved_session = excluded.resolved_session,
             created_at = excluded.created_at,
-            updated_at = excluded.updated_at
+            updated_at = excluded.updated_at,
+            source_rule_ids = excluded.source_rule_ids
         """,
         (
             hypothesis.id,
@@ -137,6 +150,7 @@ def _upsert_hypothesis(
             prior_resolved_session,
             created_at,
             now,
+            json.dumps(hypothesis.source_rule_ids, ensure_ascii=False),
         ),
     )
 
@@ -160,6 +174,7 @@ def _merge_active_hypotheses(
             status="active",
             verdict=None,
             summary=item.summary,
+            source_rule_ids=item.source_rule_ids,
         )
         by_id[item.id] = hypothesis
         _upsert_hypothesis(db, hypothesis, origin=origin, session_id=session_id)
@@ -183,6 +198,7 @@ def _resolve_hypothesis(
                 status="confirmed" if verdict == "confirmed" else "refuted",
                 verdict=verdict,
                 summary=summary,
+                source_rule_ids=item.source_rule_ids,
             )
             state.resolved_hypotheses.append(resolved)
             _upsert_hypothesis(

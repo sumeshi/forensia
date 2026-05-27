@@ -46,8 +46,17 @@ def _parse_hypotheses(items: Any) -> list[Hypothesis]:
     for item in coerce_list(items):
         if not isinstance(item, dict):
             continue
+        payload = dict(item)
+        # Ensure source_rule_ids is a list
+        if "source_rule_ids" not in payload or not isinstance(payload.get("source_rule_ids"), list):
+            payload["source_rule_ids"] = []
+        # Also normalize as list
+        source_rules = payload.get("source_rule_ids") or []
+        if isinstance(source_rules, str):
+            source_rules = [source_rules]
+        payload["source_rule_ids"] = [str(r) for r in source_rules if r]
         try:
-            hypotheses.append(Hypothesis.model_validate(item))
+            hypotheses.append(Hypothesis.model_validate(payload))
         except Exception as exc:
             logger.debug("hypothesis parse failed: %s", exc)
             continue

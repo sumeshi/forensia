@@ -291,20 +291,30 @@ def _store_section_facts(
         )
 
 
-def _keypoint_catalog(section_key: str | None = None) -> list[dict[str, str]]:
+def _keypoint_catalog(section_key: str | None = None, template_body: str | None = None) -> list[dict[str, str]]:
     """Return keypoint catalog filtered for this section, plus a few cross-cutting ones.
 
     Returning all ~40 keypoints to the planner on every iteration wastes
     tokens. Each report section only needs its own family (e.g. timeline_*)
     plus a small set of universally useful keypoints.
+    
+    When section_key is None or unmatched, fall back to keyword overlap with template_body.
     """
     from forensia.report.writer import REPORT_KEYPOINTS, _default_keypoints_for_section
 
     if not section_key:
-        return [
-            {"name": keypoint, "description": description}
-            for keypoint, (description, _) in sorted(REPORT_KEYPOINTS.items())
-        ]
+        template_body = template_body or ""
+        keywords = {"logon", "user", "host", "ip", "service", "task", "powershell", "process", "execution", "event", "finding", "persistence", "defender"}
+        filtered: list[dict[str, str]] = []
+        for keypoint, (description, _) in sorted(REPORT_KEYPOINTS.items()):
+            if any(kw in keypoint.lower() or kw in description.lower() for kw in keywords if kw in template_body.lower()):
+                filtered.append({"name": keypoint, "description": description})
+            if len(filtered) >= 10:
+                break
+        if filtered:
+            return filtered
+        return [{"name": keypoint, "description": description} for keypoint, (description, _) in sorted(REPORT_KEYPOINTS.items())[:10]]
+    
     preferred = _default_keypoints_for_section(section_key)
     catalog: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -319,6 +329,45 @@ def _keypoint_catalog(section_key: str | None = None) -> list[dict[str, str]]:
 
 def _query_template_catalog() -> list[dict[str, Any]]:
     return query_template_catalog()
+
+
+def _filter_template_catalog_by_section(
+    full_catalog: list[dict[str, Any]], section_key: str, collected_results: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Filter template catalog to relevant subset based on section_key and evidence types.
+    
+    Pass empty list to get full catalog filtered; otherwise filters already-loaded catalog.
+    """
+    if not full_catalog:
+        full_catalog = query_template_catalog()
+    if not full_catalog:
+        return []
+    family = _section_family(section_key)
+    already_used_templates = {
+        str(result.get("keypoint") or result.get("description") or "").split()[0]
+        for result in collected_results
+        if str(result.get("keypoint", "")).startswith("template:")
+    }
+    keywords = {"logon", "user", "host", "ip", "service", "task", "powershell", "process", "execution"}
+    if section_key.startswith("1_") or section_key.startswith("overview"):
+        keywords = keywords | {"event", "range", "hosts", "findings"}
+    elif section_key.startswith("2_") or section_key.startswith("timeline"):
+        keywords = keywords | {"timeline", "event", "mft", "prefetch"}
+    elif section_key.startswith("3_") or section_key.startswith("technical"):
+        keywords = keywords | {"host", "account", "persistence", "ioc", "execution", "defender"}
+    elif section_key.startswith("4_") or section_key.startswith("gaps"):
+        keywords = keywords | {"gap", "missing"}
+    elif section_key.startswith("5_") or section_key.startswith("recommendations"):
+        keywords = keywords | {"recommend", "action"}
+    filtered: list[dict[str, Any]] = []
+    for template in full_catalog:
+        template_id = str(template.get("template_id", "")).lower()
+        if template_id in already_used_templates:
+            continue
+        template_desc = str(template.get("description", "")).lower()
+        if family in template_id.lower() or any(kw in template_id or kw in template_desc for kw in keywords):
+            filtered.append(template)
+    return filtered[:8] if len(filtered) > 8 else filtered
 
 
 def _findings_snapshot(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
@@ -534,8 +583,8 @@ def run_section_block_agent(
     max_queries = max(1, int(max_queries_per_section or 1))
     collected_results: list[dict[str, Any]] = []
     findings_snapshot = _findings_snapshot(db)
-    keypoint_catalog = _keypoint_catalog(section_key)
-    template_catalog = _query_template_catalog()
+    keypoint_catalog = _keypoint_catalog(section_key, template_body)
+    template_catalog = _filter_template_catalog_by_section([], section_key, collected_results)
     reusable_facts = _load_reusable_section_facts(db, section_key)
     reusable_evidence = _load_reusable_section_evidence(db, section_key, block_heading)
     audit = _audit_bridge(audit_callback)
@@ -548,6 +597,7 @@ def run_section_block_agent(
     missing_questions: list[Any] = []
     for iteration in range(1, max_queries + 1):
         prior_runs = _load_prior_runs(db, section_key, block_heading)
+        template_catalog = _filter_template_catalog_by_section(template_catalog, section_key, collected_results)
         plan_messages = build_section_agent_plan_messages(
             section_key=section_key,
             section_title=title,
@@ -619,11 +669,9 @@ def run_section_block_agent(
             else:
                 keypoint = plan_action.keypoint or ""
                 if not keypoint:
-                    default_match = next(
-                        (item["name"] for item in keypoint_catalog if item["name"].startswith(section_key.split("_", 1)[-1].split("-", 1)[0])),
-                        keypoint_catalog[0]["name"] if keypoint_catalog else "top_keypoints",
-                    )
-                    keypoint = default_match
+                    section_prefix = section_key.split("_", 1)[-1].split("-", 1)[0]
+                    matching = [item["name"] for item in keypoint_catalog if item["name"].startswith(section_prefix)]
+                    keypoint = matching[0] if matching else (keypoint_catalog[0]["name"] if keypoint_catalog else "top_keypoints")
                 source_query, result = _execute_keypoint(case, db, keypoint)
         except Exception as exc:
             # Don't crash the whole section because one query failed.
@@ -758,8 +806,8 @@ async def async_run_section_block_agent(
     max_queries = max(1, int(max_queries_per_section or 1))
     collected_results: list[dict[str, Any]] = []
     findings_snapshot = _findings_snapshot(db)
-    keypoint_catalog = _keypoint_catalog(section_key)
-    template_catalog = _query_template_catalog()
+    keypoint_catalog = _keypoint_catalog(section_key, template_body)
+    template_catalog = _filter_template_catalog_by_section([], section_key, collected_results)
     reusable_facts = _load_reusable_section_facts(db, section_key)
     reusable_evidence = _load_reusable_section_evidence(db, section_key, block_heading)
     audit = _audit_bridge(audit_callback)
@@ -772,6 +820,7 @@ async def async_run_section_block_agent(
     missing_questions: list[Any] = []
     for iteration in range(1, max_queries + 1):
         prior_runs = _load_prior_runs(db, section_key, block_heading)
+        template_catalog = _filter_template_catalog_by_section(template_catalog, section_key, collected_results)
         plan_messages = build_section_agent_plan_messages(
             section_key=section_key,
             section_title=title,

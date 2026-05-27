@@ -54,3 +54,23 @@ query: |
 finding:
   title: "Service installation after network logon: {src_ip} -> {computer}"
   summary: "After a network logon from {src_ip} to {computer} at {logon_time}, service '{service_name}' was installed at {svc_time}. This correlation may indicate remote service creation or lateral movement, but source host, service path, and execution context should be verified before attributing a specific technique."
+hypotheses:
+  - id: lateral_movement_via_service
+    segment: lateral-movement
+    description: "Service '{service_name}' installed on {computer} shortly after network logon from {src_ip} is a lateral movement technique"
+    required_entities: [src_ip, computer, target_user, service_name]
+    confirm_when:
+      co_observed_event_ids: [4624, 4697, 7045]
+      same_host: true
+      within_minutes: 15
+    refute_when:
+      zero_rows: true
+correlate_with:
+  - event_ids: [4624, 4720, 4648]
+    rationale: "Account context: logon / account creation / explicit credential usage"
+  - event_ids: [4688, 4104]
+    rationale: "Process execution on target host to verify service deployment"
+fallback_search:
+  - phase: keyword_in_raw_json
+    keywords: ["sc create", "New-Service", "sc.exe"]
+    rationale: "Service install may be logged as script execution or process creation"

@@ -1,0 +1,32 @@
+table: evtx_events
+columns:
+  - evidence_id
+  - source_file
+  - channel
+  - event_id
+  - record_id
+  - timestamp
+  - computer
+  - user_name
+  - target_user
+  - subject_user
+  - src_ip
+  - logon_type
+  - process_name
+  - command_line
+  - service_name
+  - message
+  - raw_json
+  - tags
+  - severity
+json_field_extractors:
+  SubjectUserName: "json_extract(raw_json, '$.SubjectUserName')"
+  TargetUserName: "json_extract(raw_json, '$.TargetUserName')"
+  TargetDomainName: "json_extract(raw_json, '$.TargetDomainName')"
+  IpAddress: "json_extract(raw_json, '$.IpAddress')"
+  IpPort: "json_extract(raw_json, '$.IpPort')"
+  LogonType: "json_extract(raw_json, '$.LogonType')"
+  ProcessName: "json_extract(raw_json, '$.ProcessName')"
+  CommandLine: "json_extract(raw_json, '$.CommandLine')"
+  ServiceName: "json_extract(raw_json, '$.ServiceName')"
+  ServiceFileName: "json_extract(raw_json, '$.ServiceFileName')"

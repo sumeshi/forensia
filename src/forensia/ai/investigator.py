@@ -901,6 +901,26 @@ async def investigate(
 
                         if check_result.verdict in {"confirmed", "refuted"} or query_index >= max_queries_per_hypothesis:
                             break
+                        
+                        # REFACTOR-13: Auto-refute for repeated 0-row inconclusive (simple inline check)
+                        row_count = int(result_summary.get("row_count") or 0)
+                        recent_zero_row_inconclusive = (
+                            check_result.verdict == "inconclusive"
+                            and row_count == 0
+                            and query_index >= 2  # At least 2 queries tried
+                        )
+                        if recent_zero_row_inconclusive:
+                            _log("RESOLVE", f"{hypothesis.id} — auto-refuted after repeated 0-row inconclusive")
+                            _resolve_hypothesis(
+                                db=db,
+                                state=state,
+                                hypothesis_id=hypothesis.id,
+                                verdict="refuted",
+                                summary="Auto-refuted: repeated 0-row inconclusive results indicate the hypothesis cannot be verified with available evidence.",
+                                session_id=session_id,
+                            )
+                            cycle_progress = True
+                            break
 
                     if interrupted:
                         status = "stopped"

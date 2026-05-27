@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from forensia.ai.json_response import request_llm_json
-from forensia.ai.prompts import build_check_messages
+from forensia.ai.prompts import build_check_messages, resolve_rule_context
 from forensia.config import get_llm_settings
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
@@ -489,6 +489,8 @@ def check_query_result(
         ["facts.md", "timeline.md", "tasks.md"],
         max_bytes=max(1024, memory.max_bytes // 2),
     )
+    observed_evidence_ids = list(_collect_observed_evidence_ids(result_summary))
+    rule_context = resolve_rule_context(hypothesis)
     messages = build_check_messages(
         planned_query=planned_query,
         hypothesis=hypothesis,
@@ -498,6 +500,8 @@ def check_query_result(
         memory_context_md=memory_context_md,
         query_index=query_index,
         max_queries=max_queries,
+        observed_evidence_ids=observed_evidence_ids,
+        rule_context=rule_context,
     )
     parsed = request_llm_json(
         messages=messages,

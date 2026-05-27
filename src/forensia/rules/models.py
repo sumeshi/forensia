@@ -10,6 +10,20 @@ class FindingTemplate(BaseModel):
     summary: str
 
 
+class HypothesisDeclaration(BaseModel):
+    id: str
+    segment: str
+    description: str
+    required_entities: list[str] = Field(default_factory=list)
+    confirm_when: dict[str, Any] | None = None
+    refute_when: dict[str, Any] | None = None
+
+
+class CorrelateEvent(BaseModel):
+    event_ids: list[int]
+    rationale: str
+
+
 class Rule(BaseModel):
     id: str
     title: str
@@ -20,6 +34,9 @@ class Rule(BaseModel):
     finding: FindingTemplate
     tags: list[str] = Field(default_factory=list)
     attack: list[str] = Field(default_factory=list)
+    hypotheses: list[HypothesisDeclaration] = Field(default_factory=list)
+    correlate_with: list[CorrelateEvent] = Field(default_factory=list)
+    fallback_search: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class Finding(BaseModel):

@@ -38,6 +38,8 @@ def load_rules_from_dir(directory: str | Path, profile_path: str | Path | None =
         if isinstance(data, dict) and str(data.get("kind") or "").startswith("allowlist"):
             continue
         if data:
+            # Remove optional fields that aren't in the Rule model for backward compatibility
+            # (pydantic will handle missing optional fields via default_factory)
             rule = Rule.model_validate(data)
             if allowed_rule_ids is not None and rule.id not in allowed_rule_ids:
                 continue

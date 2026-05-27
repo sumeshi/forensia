@@ -1,10 +1,53 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from forensia.config import get_llm_settings
-from forensia.core.session import Hypothesis, PlannedQuery
+from forensia.core.session import ENTITY_TYPE_ALIASES, Hypothesis, PlannedQuery
 from forensia.ai.sql_schema import build_investigation_framework
+
+
+@dataclass(frozen=True, slots=True)
+class RuleContext:
+    rule_id: str
+    correlate_event_ids: list[int]
+    confirm_when: dict[str, Any]
+    refute_when: dict[str, Any]
+
+
+def resolve_rule_context(hypothesis: Hypothesis | None) -> RuleContext | None:
+    """Resolve rule context for a hypothesis by looking up source rule declarations.
+    
+    If the hypothesis was generated from a rule finding, return the rule's
+    correlate_with, confirm_when, and refute_when declarations.
+    """
+    if hypothesis is None or not hasattr(hypothesis, 'source_rule_ids'):
+        return None
+    source_rule_ids = getattr(hypothesis, 'source_rule_ids', [])
+    if not source_rule_ids:
+        return None
+    # For now, just resolve the first rule; could be extended to merge multiple
+    rule_id = source_rule_ids[0] if source_rule_ids else None
+    if not rule_id:
+        return None
+    # Import here to avoid circular import
+    from forensia.rules.loader import load_rules_from_dir
+    from pathlib import Path
+    rules_path = Path(__file__).parent.parent / "rulepacks"
+    rules = load_rules_from_dir(rules_path)
+    for rule in rules:
+        if rule.id == rule_id:
+            correlate_ids = []
+            for corr in rule.correlate_with:
+                correlate_ids.extend(corr.event_ids)
+            return RuleContext(
+                rule_id=rule.id,
+                correlate_event_ids=correlate_ids,
+                confirm_when=rule.hypotheses[0].confirm_when if rule.hypotheses else {},
+                refute_when=rule.hypotheses[0].refute_when if rule.hypotheses else {},
+            )
+    return None
 
 
 def _lang_instruction() -> str:
@@ -56,6 +99,38 @@ def _truncate_context_sections(context_sections: dict[str, str], max_chars: int 
     return trimmed
 
 
+def _load_schema_hints() -> dict[str, dict[str, Any]]:
+    """Load schema hints from rulepacks/_schema/*.yaml for planner guidance."""
+    import yaml
+    schema_dir = Path(__file__).parent.parent / "rulepacks" / "_schema"
+    hints: dict[str, dict[str, Any]] = {}
+    if not schema_dir.exists():
+        return hints
+    for path in schema_dir.glob("*.yaml"):
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if data and isinstance(data, dict):
+                table_name = data.get("table")
+                if table_name:
+                    hints[str(table_name)] = data
+        except Exception:
+            continue
+    return hints
+
+
+def _slim_history(items: list[dict[str, Any]], max_items: int = 10) -> list[dict[str, Any]]:
+    """Project history items to only the fields needed for broad planning context."""
+    slimmed: list[dict[str, Any]] = []
+    for item in items[:max_items]:
+        slimmed.append({
+            "query_id": item.get("query_id"),
+            "hypothesis_id": item.get("hypothesis_id"),
+            "verdict": item.get("verdict"),
+            "rationale": item.get("summary"),
+        })
+    return slimmed
+
+
 def build_broad_plan_messages(
     overview_md: str,
     extra_context_md: str,
@@ -69,6 +144,7 @@ def build_broad_plan_messages(
 ) -> list[dict[str, str]]:
     findings = _slim_findings(findings_snapshot, max_findings)
     recent_resolved = resolved_hypotheses[-max_resolved:]
+    slimmed_history = _slim_history(history, 10)
     system = (
         "You are a DFIR investigator running the broad planning phase. "
         "Treat overview.md as your primary memory index. Request additional Markdown files only when necessary. "
@@ -111,7 +187,7 @@ def build_broad_plan_messages(
         f"unresolved_findings: {findings}\n"
         f"active_hypotheses: {[item.model_dump() for item in active_hypotheses]}\n"
         f"resolved_hypotheses: {[item.model_dump() for item in recent_resolved]}\n"
-        f"recent_history: {history[-10:]}\n"
+        f"recent_history: {slimmed_history}\n"
     )
     return [
         {"role": "system", "content": system},
@@ -207,6 +283,8 @@ def build_check_messages(
     memory_context_md: str,
     query_index: int = 1,
     max_queries: int = 5,
+    observed_evidence_ids: list[str] | None = None,
+    rule_context: RuleContext | None = None,
 ) -> list[dict[str, str]]:
     queries_remaining = max_queries - query_index
     if queries_remaining == 0:
@@ -228,6 +306,34 @@ def build_check_messages(
             f"This is query {query_index} of {max_queries} ({queries_remaining} checks remaining). "
             "Apply standard evidentiary rigor."
         )
+    evidence_id_guidance = ""
+    if observed_evidence_ids:
+        evidence_id_guidance = (
+            f"The following evidence_ids are valid for this query: {observed_evidence_ids[:50]}. "
+            "Only reference evidence_ids from this list in your output. "
+        )
+    zero_evidence = int(result_summary.get("row_count") or 0) == 0
+    zero_evidence_note = ""
+    if zero_evidence:
+        zero_evidence_note = (
+            "IMPORTANT: The query result contains 0 rows — 'confirmed' verdict is forbidden. "
+            "Use 'refuted' if the hypothesis is clearly disproven, or 'inconclusive' if the result is ambiguous. "
+        )
+    entity_type_list = list(ENTITY_TYPE_ALIASES.keys())
+    entity_constraint = (
+        f"When adding entities, entity_type must be one of: {entity_type_list}. "
+        "Do not emit placeholder values ('n/a', 'unknown', empty string) as entity names or types. "
+    )
+    rule_verdict_guidance = ""
+    if rule_context:
+        confirm_conditions = rule_context.confirm_when or {}
+        refute_conditions = rule_context.refute_when or {}
+        rule_verdict_guidance = (
+            f"Rule-based verdict criteria (from {rule_context.rule_id}): "
+            f"Confirm when: {confirm_conditions}. "
+            f"Refute when: {refute_conditions}. "
+            "If rule criteria are met, use them as the primary verdict basis. "
+        )
     system = (
         "You are a DFIR review analyst. "
         "Use the SQL result summary together with the provided structured memory context. "
@@ -235,6 +341,10 @@ def build_check_messages(
         "Determine whether the result confirms, refutes, is inconclusive for the hypothesis, or represents a new finding. "
         "Keep facts, hypotheses, and gaps separate. Correlated events are not the same as confirmed causation. "
         "Never treat None, N/A, -, null, or empty strings as real users, hosts, IPs, services, or paths. "
+        f"{evidence_id_guidance}"
+        f"{zero_evidence_note}"
+        f"{entity_constraint}"
+        f"{rule_verdict_guidance}"
         "Always reference evidence_id values. "
         "For durable memory updates, use only observed evidence_id values that are present in this query result "
         "or in the provided finding candidates. "
@@ -256,6 +366,15 @@ def build_check_messages(
         "If you cannot cite observed evidence_ids, do not output that durable item; keep it in missing_checks, tasks, "
         "or notes instead. "
         f"{_FP_REDUCTION_GUIDANCE_PREFIX}{_mandatory_missing_checks_guidance()}"
+        "Generic verdict criteria (use unless rule_context overrides):\n"
+        "  confirmed — the hypothesis required_entities are co-observed in the same rows (NOT direct causation).\n"
+        "    Required entities are extracted from hypothesis description: name the entities that must appear together.\n"
+        "    Example: For 'lateral movement via service', confirmed if src_ip, computer, target_user, service_name all appear.\n"
+        "  refuted — zero rows returned, or observed entities contradict the hypothesis.\n"
+        "  inconclusive — only some required entities observed; MUST list missing entity types in rationale.\n"
+        "Prohibited rationale phrases (indicate lazy analysis):\n"
+        "  Do NOT use: 'direct causation not proven', 'full attack chain not visible', 'requires further investigation',\n"
+        "  'cannot be determined', 'insufficient evidence' alone. State exactly what entity is missing.\n"
         "Verdict decision rules:\n"
         "  confirmed — direct evidence_ids prove the hypothesis is true. Confidence >= 0.7.\n"
         "  refuted   — direct evidence contradicts or zero matching rows exist after an appropriate query. Confidence < 0.3.\n"
@@ -409,6 +528,14 @@ def build_report_section_messages(
     ]
 
 
+def _filter_prior_runs_by_heading(prior_runs: list[dict[str, Any]], block_heading: str, limit: int = 6) -> list[dict[str, Any]]:
+    """Filter prior runs by block_heading match first, then fall back to recency."""
+    heading_matches = [run for run in prior_runs if str(run.get("block_heading") or "") == str(block_heading)]
+    if heading_matches:
+        return heading_matches[-limit:]
+    return prior_runs[-limit:]
+
+
 def build_section_agent_plan_messages(
     *,
     section_key: str,
@@ -454,7 +581,7 @@ def build_section_agent_plan_messages(
         f"reusable_section_evidence: {reusable_evidence[:20]}\n\n"
         f"keypoint_catalog: {keypoint_catalog}\n\n"
         f"query_template_catalog: {query_template_catalog}\n\n"
-        f"prior_runs: {prior_runs[-6:]}\n"
+        f"prior_runs: {_filter_prior_runs_by_heading(prior_runs, block_heading)}\n"
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -503,5 +630,5 @@ def build_section_agent_check_messages(
     )
     if refuted_history:
         user += f"refuted_attempts_previous_iterations: {refuted_history}\n\n"
-    user += f"prior_runs: {prior_runs[-6:]}\n"
+    user += f"prior_runs: {_filter_prior_runs_by_heading(prior_runs, block_heading)}\n"
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
