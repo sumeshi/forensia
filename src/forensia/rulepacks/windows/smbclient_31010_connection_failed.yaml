@@ -1,0 +1,26 @@
+id: windows-smbclient-31010-connection-failed
+title: SMB client connection failed
+severity: medium
+confidence: 0.65
+required_fields:
+  - computer
+  - target_server
+  - status
+tags:
+  - windows
+  - smb
+  - failed-access
+attack:
+  - T1021
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      message
+  FROM evtx_events
+  WHERE event_id = 31010
+    AND LOWER(COALESCE(channel, '')) LIKE '%smbclient%'
+finding:
+  title: "SMB client connection failed on {computer}"
+  summary: "SMB client connection failed on {computer} at {timestamp}. Details: {message}. May indicate failed lateral movement attempts or network reconnaissance."

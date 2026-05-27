@@ -1,0 +1,26 @@
+id: windows-smbclient-31001-security-context
+title: Security context initialization failed
+severity: medium
+confidence: 0.65
+required_fields:
+  - computer
+  - target_server
+tags:
+  - windows
+  - smb
+  - failed-access
+attack:
+  - T1021
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_server,
+      message
+  FROM evtx_events
+  WHERE event_id = 31001
+    AND LOWER(COALESCE(channel, '')) LIKE '%smbclient%'
+finding:
+  title: "Security context failed on {computer}"
+  summary: "Security context initialization failed on {computer} at {timestamp}. Target: {target_server}. Details: {message}. May indicate authentication issues."

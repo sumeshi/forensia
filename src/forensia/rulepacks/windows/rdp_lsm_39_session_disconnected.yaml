@@ -1,0 +1,27 @@
+id: windows-system-39-session-disconnected
+title: Session disconnected (RDP)
+severity: medium
+confidence: 0.6
+required_fields:
+  - computer
+  - session_id
+  - reason
+tags:
+  - windows
+  - rdp
+  - defense-evasion
+attack:
+  - T1021.001
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      session_id,
+      reason
+  FROM evtx_events
+  WHERE event_id = 39
+    AND LOWER(COALESCE(channel, '')) LIKE '%LocalSessionManager%'
+finding:
+  title: "RDP session disconnected on {computer}"
+  summary: "RDP session {session_id} was disconnected on {computer} at {timestamp}. Reason: {reason}. May indicate session hijacking or forced disconnection."

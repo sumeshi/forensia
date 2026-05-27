@@ -1,0 +1,28 @@
+id: windows-security-4771-kerberos-preauth-failed
+title: Kerberos pre-authentication failed
+severity: medium
+confidence: 0.7
+required_fields:
+  - target_user
+  - computer
+  - src_ip
+  - status
+tags:
+  - windows
+  - kerberos
+  - credential-access
+attack:
+  - T1110.005
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      src_ip,
+      status
+  FROM evtx_events
+  WHERE event_id = 4771
+finding:
+  title: "Kerberos pre-auth failed for {target_user}"
+  summary: "Kerberos pre-authentication failed for '{target_user}' on {computer} at {timestamp}. Status: {status}, Source IP: {src_ip}. This may indicate password guessing or kerberoasting attempts."

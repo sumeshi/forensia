@@ -1,0 +1,28 @@
+id: windows-security-5156-wfp-allowed
+title: WFP allowed connection (logged)
+severity: low
+confidence: 0.4
+required_fields:
+  - computer
+  - src_ip
+  - dst_ip
+  - dst_port
+tags:
+  - windows
+  - network
+  - connection
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      src_ip,
+      dst_ip,
+      dst_port,
+      protocol,
+      message
+  FROM evtx_events
+  WHERE event_id = 5156
+finding:
+  title: "WFP allowed connection on {computer}"
+  summary: "A connection was allowed by Windows Filtering Platform on {computer} at {timestamp}. {src_ip}:{dst_port} -> {dst_ip}. Details: {message}."

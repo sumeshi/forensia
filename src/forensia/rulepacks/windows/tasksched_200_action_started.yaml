@@ -1,0 +1,27 @@
+id: windows-taskscheduler-200-action-started
+title: Task action started
+severity: medium
+confidence: 0.65
+required_fields:
+  - computer
+  - task_name
+tags:
+  - windows
+  - scheduled-task
+  - execution
+attack:
+  - T1053
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      task_name,
+      user_name,
+      process_id
+  FROM evtx_events
+  WHERE event_id = 200
+    AND LOWER(COALESCE(channel, '')) LIKE '%taskscheduler%'
+finding:
+  title: "Task action started: {task_name} @ {computer}"
+  summary: "Task '{task_name}' action started on {computer} at {timestamp}. User: {user_name}. Process ID: {process_id}. Correlate with 4688 for process details."

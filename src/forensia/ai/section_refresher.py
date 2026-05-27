@@ -12,6 +12,8 @@ from forensia.ai.report_gap import _build_report_status
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.report.writer import (
+    _collect_flat_evidence_rows,
+    _dump_section_evidence_json,
     collect_gaps,
     finalize_section,
     load_report_sections_map,
@@ -150,6 +152,8 @@ async def async_refresh_report_sections(
                 )
             continue
         section_key = request["section_key"]
+        flat_rows = _collect_flat_evidence_rows(request.get("evidence_results") or [])
+        _dump_section_evidence_json(case, section_key, flat_rows)
         finalize_section(
             db=db,
             section_key=section_key,

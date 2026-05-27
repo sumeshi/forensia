@@ -1,0 +1,28 @@
+id: windows-directory-service-5137-5139-5141
+title: Directory service object changes (created, moved, deleted)
+severity: medium
+confidence: 0.7
+required_fields:
+  - computer
+  - object_dn
+tags:
+  - windows
+  - active-directory
+  - defense-evasion
+attack:
+  - T1078
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      subject_user,
+      object_dn,
+      event_id,
+      message
+  FROM evtx_events
+  WHERE event_id IN (5137, 5139, 5141)
+    AND LOWER(COALESCE(channel, '')) LIKE '%directory%'
+finding:
+  title: "Directory object event {event_id} on {computer}"
+  summary: "Active Directory object '{object_dn}' event {event_id} on {computer} at {timestamp}. Details: {message}."

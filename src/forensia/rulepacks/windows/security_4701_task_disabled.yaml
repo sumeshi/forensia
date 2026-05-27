@@ -1,0 +1,26 @@
+id: windows-security-4701-task-disabled
+title: Scheduled task disabled
+severity: medium
+confidence: 0.65
+required_fields:
+  - subject_user
+  - computer
+  - task_name
+tags:
+  - windows
+  - scheduled-task
+  - defense-evasion
+attack:
+  - T1053
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      task_name,
+      subject_user
+  FROM evtx_events
+  WHERE event_id = 4701
+finding:
+  title: "Task disabled: {task_name} @ {computer}"
+  summary: "{subject_user} disabled scheduled task '{task_name}' on {computer} at {timestamp}. Attackers may disable security monitoring tasks."

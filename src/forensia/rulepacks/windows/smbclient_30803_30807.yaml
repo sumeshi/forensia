@@ -1,0 +1,24 @@
+id: windows-smbclient-30803-30807-connectivity
+title: SMB client connection/disconnection events
+severity: low
+confidence: 0.4
+required_fields:
+  - computer
+tags:
+  - windows
+  - smb
+  - network
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      event_id,
+      target_server,
+      message
+  FROM evtx_events
+  WHERE event_id IN (30803, 30804, 30805, 30806, 30807)
+    AND LOWER(COALESCE(channel, '')) LIKE '%smbclient%'
+finding:
+  title: "SMB client event {event_id} on {computer}"
+  summary: "SMB client connectivity event {event_id} on {computer} at {timestamp}. Target: {target_server}. Details: {message}."

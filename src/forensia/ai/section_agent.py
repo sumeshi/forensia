@@ -46,6 +46,7 @@ def _coerce_confidence(value: Any, default: float = 0.5) -> float:
 from forensia.ai.json_response import request_llm_json, async_request_llm_json
 from forensia.ai.lmstudio import chat_completion, async_chat_completion
 from forensia.ai.prompts import (
+    build_column_selection_messages,
     build_report_section_messages,
     build_section_agent_check_messages,
     build_section_agent_plan_messages,
@@ -704,6 +705,15 @@ def run_section_block_agent(
         notes.extend(str(q) for q in missing_questions if q)
         verification_notes = notes
 
+    from forensia.report.writer import _collect_flat_evidence_rows
+    raw_rows = _collect_flat_evidence_rows(collected_results)
+    if raw_rows:
+        headers = list(raw_rows[0].keys())
+        col_msgs = build_column_selection_messages(headers, section_key, template_body)
+        col_resp = request_llm_json(messages=col_msgs, model=model, base_url=base_url)
+        selected = [c for c in (col_resp.get("columns") or []) if c in headers]
+        if selected:
+            raw_rows = [{c: row[c] for c in selected if c in row} for row in raw_rows]
     messages = build_report_section_messages(
         section_meta={"section": section_key, "title": title},
         evidence_results=collected_results,
@@ -713,6 +723,7 @@ def run_section_block_agent(
         section_heading=block_heading,
         current_section_outputs=current_section_outputs,
         verification_notes=verification_notes,
+        raw_evidence_rows=raw_rows or None,
     )
     body = chat_completion(messages=messages, model=model, base_url=base_url).strip()
     if audit_callback:
@@ -912,6 +923,15 @@ async def async_run_section_block_agent(
         notes.extend(str(q) for q in missing_questions if q)
         verification_notes = notes
 
+    from forensia.report.writer import _collect_flat_evidence_rows
+    raw_rows = _collect_flat_evidence_rows(collected_results)
+    if raw_rows:
+        headers = list(raw_rows[0].keys())
+        col_msgs = build_column_selection_messages(headers, section_key, template_body)
+        col_resp = await async_request_llm_json(messages=col_msgs, model=model, base_url=base_url)
+        selected = [c for c in (col_resp.get("columns") or []) if c in headers]
+        if selected:
+            raw_rows = [{c: row[c] for c in selected if c in row} for row in raw_rows]
     messages = build_report_section_messages(
         section_meta={"section": section_key, "title": title},
         evidence_results=collected_results,
@@ -921,6 +941,7 @@ async def async_run_section_block_agent(
         section_heading=block_heading,
         current_section_outputs=current_section_outputs,
         verification_notes=verification_notes,
+        raw_evidence_rows=raw_rows or None,
     )
     body = (await async_chat_completion(messages=messages, model=model, base_url=base_url)).strip()
     if audit_callback:

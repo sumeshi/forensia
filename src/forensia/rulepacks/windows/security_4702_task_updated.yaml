@@ -1,0 +1,26 @@
+id: windows-security-4702-task-updated
+title: Scheduled task updated
+severity: medium
+confidence: 0.65
+required_fields:
+  - subject_user
+  - computer
+  - task_name
+tags:
+  - windows
+  - scheduled-task
+  - defense-evasion
+attack:
+  - T1053
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      task_name,
+      subject_user
+  FROM evtx_events
+  WHERE event_id = 4702
+finding:
+  title: "Task updated: {task_name} @ {computer}"
+  summary: "Scheduled task '{task_name}' was updated on {computer} at {timestamp} by {subject_user}. Attackers may modify tasks to change execution parameters or targets."

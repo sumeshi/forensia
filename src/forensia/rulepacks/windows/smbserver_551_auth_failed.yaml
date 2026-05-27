@@ -1,0 +1,28 @@
+id: windows-smbserver-551-auth-failed
+title: SMB session authentication failed
+severity: medium
+confidence: 0.7
+required_fields:
+  - computer
+  - src_ip
+  - status
+tags:
+  - windows
+  - smb
+  - failed-access
+attack:
+  - T1021
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      src_ip,
+      status,
+      message
+  FROM evtx_events
+  WHERE event_id = 551
+    AND LOWER(COALESCE(channel, '')) LIKE '%smbserver%'
+finding:
+  title: "SMB auth failed on {computer}"
+  summary: "SMB session authentication failed on {computer} at {timestamp}. Source IP: {src_ip}, Status: {status}. Multiple failures may indicate brute force or credential stuffing attempts."

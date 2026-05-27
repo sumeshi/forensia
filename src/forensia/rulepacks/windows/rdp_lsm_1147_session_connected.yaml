@@ -1,0 +1,25 @@
+id: windows-terminalservices-lsm-1147
+title: Remote Desktop Services session connected
+severity: medium
+confidence: 0.7
+required_fields:
+  - computer
+  - target_user
+tags:
+  - windows
+  - rdp
+  - lateral-movement
+attack:
+  - T1021.001
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user
+  FROM evtx_events
+  WHERE event_id = 1147
+    AND channel LIKE '%LocalSessionManager%'
+finding:
+  title: "RDP session connected: {target_user} @ {computer}"
+  summary: "RDP session connected for '{target_user}' on {computer} at {timestamp}. Indicates active RDP session. Correlate with 4624 (Logon Type 10) for source IP."

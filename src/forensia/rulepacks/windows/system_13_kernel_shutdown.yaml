@@ -1,0 +1,21 @@
+id: windows-system-13-kernel-shutdown
+title: Kernel shutdown initiated
+severity: medium
+confidence: 0.7
+required_fields:
+  - computer
+tags:
+  - windows
+  - power
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      message
+  FROM evtx_events
+  WHERE event_id = 13
+    AND LOWER(COALESCE(channel, '')) LIKE '%system%'
+finding:
+  title: "Kernel shutdown on {computer}"
+  summary: "OS shutdown initiated on {computer} at {timestamp}. Details: {message}. Part of shutdown lifecycle tracking."

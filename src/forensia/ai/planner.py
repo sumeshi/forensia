@@ -201,6 +201,8 @@ def plan_hypothesis_query(
     default_context_md: str | None = None,
     status_callback: Callable[[str], None] | None = None,
     audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
+    query_index: int = 1,
+    max_queries: int = 5,
 ) -> HypothesisPlanResult:
     overview_md = overview_md if overview_md is not None else memory.load_overview()
     extra_context_holder = {"value": ""}
@@ -233,6 +235,8 @@ def plan_hypothesis_query(
             finding_candidates=finding_candidates,
             hypothesis_history=hypothesis_history,
             query_templates=query_template_catalog(),
+            query_index=query_index,
+            max_queries=max_queries,
         )
 
     parsed = _request_with_optional_context(

@@ -1,0 +1,27 @@
+id: windows-security-4770-kerberos-ticket-renewed
+title: Kerberos service ticket renewed
+severity: low
+confidence: 0.4
+required_fields:
+  - target_user
+  - computer
+  - service_name
+tags:
+  - windows
+  - kerberos
+  - lateral-movement
+attack:
+  - T1550.003
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      service_name,
+      message
+  FROM evtx_events
+  WHERE event_id = 4770
+finding:
+  title: "Kerberos ticket renewed for {service_name}"
+  summary: "{target_user} renewed a Kerberos service ticket for '{service_name}' on {computer} at {timestamp}. Indicates ongoing service access. Review for legitimate use."

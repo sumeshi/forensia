@@ -481,6 +481,8 @@ def check_query_result(
     memory_context_md: str | None = None,
     status_callback: Callable[[str], None] | None = None,
     audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
+    query_index: int = 1,
+    max_queries: int = 5,
 ) -> CheckResult:
     overview_md = overview_md if overview_md is not None else memory.load_overview()
     memory_context_md = memory_context_md if memory_context_md is not None else memory.load_compact_context(
@@ -494,6 +496,8 @@ def check_query_result(
         result_summary=result_summary,
         overview_md=overview_md,
         memory_context_md=memory_context_md,
+        query_index=query_index,
+        max_queries=max_queries,
     )
     parsed = request_llm_json(
         messages=messages,

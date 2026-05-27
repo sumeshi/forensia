@@ -1,0 +1,25 @@
+id: windows-application-1000-app-crash
+title: Application error/crash
+severity: low
+confidence: 0.4
+required_fields:
+  - computer
+  - process_name
+  - exception_code
+tags:
+  - windows
+  - application
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      process_name,
+      exception_code,
+      message
+  FROM evtx_events
+  WHERE event_id IN (1000, 1001, 1002)
+    AND LOWER(COALESCE(channel, '')) LIKE '%application%'
+finding:
+  title: "Application error on {computer}"
+  summary: "Application '{process_name}' crashed on {computer} at {timestamp}. Exception code: {exception_code}. May indicate exploitation or stability issues."

@@ -1,0 +1,22 @@
+id: windows-system-9009-dwm-end
+title: Desktop Window Manager ended (RDP disconnect)
+severity: low
+confidence: 0.4
+required_fields:
+  - computer
+tags:
+  - windows
+  - rdp
+  - system
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      message
+  FROM evtx_events
+  WHERE event_id = 9009
+    AND LOWER(COALESCE(channel, '')) LIKE '%system%'
+finding:
+  title: "DWM ended on {computer}"
+  summary: "Desktop Window Manager ended on {computer} at {timestamp}. May indicate RDP session disconnect. Details: {message}."

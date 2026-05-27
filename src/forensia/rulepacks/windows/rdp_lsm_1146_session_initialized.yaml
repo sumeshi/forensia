@@ -1,0 +1,25 @@
+id: windows-terminalservices-lsm-1146
+title: Remote Desktop Services session initialized
+severity: low
+confidence: 0.4
+required_fields:
+  - computer
+  - target_user
+tags:
+  - windows
+  - rdp
+  - logon
+attack:
+  - T1021.001
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user
+  FROM evtx_events
+  WHERE event_id = 1146
+    AND channel LIKE '%LocalSessionManager%'
+finding:
+  title: "RDP session initialized on {computer}"
+  summary: "RDP session initialized for '{target_user}' on {computer} at {timestamp}. Part of RDP logon chain - correlate with 4624 and 1149 for complete picture."

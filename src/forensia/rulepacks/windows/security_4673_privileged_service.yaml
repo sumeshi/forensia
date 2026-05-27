@@ -1,0 +1,25 @@
+id: windows-security-4673-privileged-service-called
+title: Privileged service called (Event 4673)
+severity: medium
+confidence: 0.6
+required_fields:
+  - subject_user
+  - computer
+  - message
+tags:
+  - windows
+  - privilege-escalation
+attack:
+  - T1078
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      subject_user,
+      message
+  FROM evtx_events
+  WHERE event_id = 4673
+finding:
+  title: "Privileged service called on {computer}"
+  summary: "{subject_user} called a privileged service on {computer} at {timestamp}. Details: {message}. Requires 'Audit Sensitive Privilege Use' policy enabled."

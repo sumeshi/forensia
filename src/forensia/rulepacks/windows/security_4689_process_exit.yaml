@@ -1,0 +1,27 @@
+id: windows-security-4689-process-exit
+title: Process exited (Event 4689)
+severity: low
+confidence: 0.4
+required_fields:
+  - target_user
+  - computer
+  - process_name
+tags:
+  - windows
+  - execution
+  - defense-evasion
+attack:
+  - T1059
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      process_name,
+      message
+  FROM evtx_events
+  WHERE event_id = 4689
+finding:
+  title: "Process exited: {process_name} @ {computer}"
+  summary: "Process '{process_name}' exited on {computer} at {timestamp}. User: {target_user}. Details: {message}. Use to correlate with 4688 process creation events."

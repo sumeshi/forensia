@@ -1,0 +1,26 @@
+id: windows-ntlm-4020-4021-outgoing-auth
+title: NTLM outgoing authentication
+severity: medium
+confidence: 0.6
+required_fields:
+  - computer
+  - target_server
+tags:
+  - windows
+  - ntlm
+  - lateral-movement
+attack:
+  - T1071
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_server,
+      message
+  FROM evtx_events
+  WHERE event_id IN (4020, 4021)
+    AND LOWER(COALESCE(channel, '')) LIKE '%ntlm%'
+finding:
+  title: "NTLM outgoing auth on {computer}"
+  summary: "Outgoing NTLM authentication from {computer} at {timestamp}. Target: {target_server}. May indicate lateral movement attempts using NTLM."

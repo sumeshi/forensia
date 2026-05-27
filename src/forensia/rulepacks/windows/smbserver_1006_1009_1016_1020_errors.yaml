@@ -1,0 +1,27 @@
+id: windows-smbserver-1006-1009-1016-1020
+title: SMB server errors (connection refused, access denied, etc.)
+severity: medium
+confidence: 0.6
+required_fields:
+  - computer
+  - target_server
+tags:
+  - windows
+  - smb
+  - failed-access
+attack:
+  - T1021
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      event_id,
+      target_server,
+      message
+  FROM evtx_events
+  WHERE event_id IN (1006, 1009, 1016, 1020)
+    AND LOWER(COALESCE(channel, '')) LIKE '%smbserver%'
+finding:
+  title: "SMB server event {event_id} on {computer}"
+  summary: "SMB server event {event_id} on {computer} at {timestamp}. Details: {message}."

@@ -1,0 +1,24 @@
+id: windows-security-4634-logoff
+title: User logoff
+severity: low
+confidence: 0.5
+required_fields:
+  - target_user
+  - computer
+tags:
+  - windows
+  - logon
+  - user-activity
+attack:
+  - T1078
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user
+  FROM evtx_events
+  WHERE event_id = 4634
+finding:
+  title: "Logoff for {target_user}"
+    summary: "{target_user} logged off from {computer} at {timestamp}. Correlate with 4624/4647 to confirm complete session lifecycle."

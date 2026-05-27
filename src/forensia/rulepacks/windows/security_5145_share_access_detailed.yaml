@@ -1,0 +1,25 @@
+id: windows-security-5145-share-access-detailed
+title: Detailed file share access
+severity: low
+confidence: 0.4
+required_fields:
+  - subject_user
+  - computer
+  - share_name
+  - access_mask
+tags:
+  - windows
+  - lateral-movement
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      subject_user,
+      share_name,
+      access_mask
+  FROM evtx_events
+  WHERE event_id = 5145
+finding:
+  title: "Detailed share access: {share_name} @ {computer}"
+  summary: "{subject_user} accessed share '{share_name}' on {computer} at {timestamp} with access mask: {access_mask}. Useful for detailed file access tracking."

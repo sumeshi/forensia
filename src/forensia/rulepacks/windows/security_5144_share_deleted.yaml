@@ -1,0 +1,25 @@
+id: windows-security-5144-share-deleted
+title: Network share object deleted
+severity: high
+confidence: 0.7
+required_fields:
+  - subject_user
+  - computer
+  - share_name
+tags:
+  - windows
+  - defense-evasion
+attack:
+  - T1071
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      subject_user,
+      share_name
+  FROM evtx_events
+  WHERE event_id = 5144
+finding:
+  title: "Share deleted: {share_name} @ {computer}"
+  summary: "{subject_user} deleted network share '{share_name}' on {computer} at {timestamp}. Attackers may delete shares to remove evidence or hinder response."

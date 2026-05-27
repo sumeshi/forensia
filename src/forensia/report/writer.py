@@ -1626,6 +1626,35 @@ def finalize_section(
     return {"gaps": candidate_gaps, "confidence": candidate_confidence}
 
 
+def _collect_flat_evidence_rows(
+    evidence_results: list[dict[str, Any]],
+    max_rows: int = 80,
+) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    flat: list[dict[str, Any]] = []
+    for result in evidence_results:
+        for row in result.get("sample_rows") or []:
+            if not isinstance(row, dict):
+                continue
+            key = json.dumps(row, sort_keys=True, default=str)
+            if key in seen:
+                continue
+            seen.add(key)
+            flat.append(row)
+            if len(flat) >= max_rows:
+                return flat
+    return flat
+
+
+def _dump_section_evidence_json(case: Case, section_key: str, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    evidence_dir = case.reports_dir / "evidence"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    out_path = evidence_dir / f"{section_key}.json"
+    out_path.write_text(json.dumps(rows, ensure_ascii=False, default=str, indent=2), encoding="utf-8")
+
+
 def fill_section(
     case: Case,
     db: CaseDB,
@@ -1647,6 +1676,8 @@ def fill_section(
         max_queries_per_section=max_queries_per_section,
         audit_callback=audit_callback,
     )
+    flat_rows = _collect_flat_evidence_rows(evidence_results)
+    _dump_section_evidence_json(case, request["section_key"], flat_rows)
     finalize_section(
         db=db,
         section_key=request["section_key"],

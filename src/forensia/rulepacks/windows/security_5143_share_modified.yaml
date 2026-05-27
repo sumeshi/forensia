@@ -1,0 +1,26 @@
+id: windows-security-5143-share-modified
+title: Network share object modified
+severity: medium
+confidence: 0.6
+required_fields:
+  - subject_user
+  - computer
+  - share_name
+tags:
+  - windows
+  - lateral-movement
+  - defense-evasion
+attack:
+  - T1071
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      subject_user,
+      share_name
+  FROM evtx_events
+  WHERE event_id = 5143
+finding:
+  title: "Share modified: {share_name} @ {computer}"
+  summary: "{subject_user} modified network share '{share_name}' on {computer} at {timestamp}. Changes to share permissions may indicate preparation for lateral movement."

@@ -1,0 +1,27 @@
+id: windows-security-5168-spn-check-failed
+title: SMB SPN check failed
+severity: medium
+confidence: 0.65
+required_fields:
+  - computer
+  - service_name
+  - status
+tags:
+  - windows
+  - kerberos
+  - reconnaissance
+attack:
+  - T1558
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      service_name,
+      status,
+      message
+  FROM evtx_events
+  WHERE event_id = 5168
+finding:
+  title: "SPN check failed for {service_name}"
+  summary: "SMB SPN check failed on {computer} at {timestamp}. Service: {service_name}, Status: {status}. May indicate kerberoasting or reconnaissance activity."

@@ -1,0 +1,27 @@
+id: windows-system-6005-6006-eventlog-service
+title: Event Log service start/stop
+severity: medium
+confidence: 0.7
+required_fields:
+  - computer
+  - message
+tags:
+  - windows
+  - log-tampering
+  - defense-evasion
+attack:
+  - T1070.001
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      event_id,
+      user_name,
+      message
+  FROM evtx_events
+  WHERE event_id IN (6005, 6006)
+    AND LOWER(COALESCE(channel, '')) LIKE '%system%'
+finding:
+  title: "Event Log service activity on {computer}"
+  summary: "Event Log service (6005/6006) activity on {computer} at {timestamp}. Combined with 1100/1102, this may indicate log clearing activity. Verify log completeness."

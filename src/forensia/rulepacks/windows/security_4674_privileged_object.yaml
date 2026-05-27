@@ -1,0 +1,25 @@
+id: windows-security-4674-privileged-object-operation
+title: Privileged object operation attempted (Event 4674)
+severity: medium
+confidence: 0.6
+required_fields:
+  - subject_user
+  - computer
+  - message
+tags:
+  - windows
+  - privilege-escalation
+attack:
+  - T1078
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      subject_user,
+      message
+  FROM evtx_events
+  WHERE event_id = 4674
+finding:
+  title: "Privileged object operation on {computer}"
+  summary: "{subject_user} attempted a privileged object operation on {computer} at {timestamp}. Details: {message}. May indicate credential access or defense evasion."

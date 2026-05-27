@@ -646,6 +646,8 @@ async def investigate(
                                     base_url=base_url,
                                     suffix=f"{hyp_id}-{query_idx:02d}",
                                 ),
+                                query_index=query_index,
+                                max_queries=max_queries_per_hypothesis,
                             )
                         except Exception as exc:
                             err_msg = f"[plan-hypothesis] LLM failed for {hypothesis.id}: {exc}"
@@ -756,6 +758,8 @@ async def investigate(
                                     base_url=base_url,
                                     suffix=f"{query_id}-{query_idx:02d}",
                                 ),
+                                query_index=query_index,
+                                max_queries=max_queries_per_hypothesis,
                             )
                         except Exception as exc:
                             err_msg = f"[check] LLM failed for {hypothesis.id}/{planned_query.query_id}: {exc}"

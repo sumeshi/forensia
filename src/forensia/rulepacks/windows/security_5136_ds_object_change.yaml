@@ -1,0 +1,27 @@
+id: windows-security-5136-directory-service-change
+title: Directory service object modified
+severity: medium
+confidence: 0.65
+required_fields:
+  - computer
+  - object_dn
+  - attribute
+tags:
+  - windows
+  - active-directory
+  - defense-evasion
+attack:
+  - T1078
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      object_dn,
+      attribute,
+      message
+  FROM evtx_events
+  WHERE event_id = 5136
+finding:
+  title: "Directory object changed on {computer}"
+  summary: "Active Directory object '{object_dn}' was modified on {computer} at {timestamp}. Attribute: {attribute}. Details: {message}."

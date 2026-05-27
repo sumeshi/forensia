@@ -1,0 +1,21 @@
+id: windows-system-6009-uptime
+title: System uptime logged
+severity: low
+confidence: 0.3
+required_fields:
+  - computer
+  - message
+tags:
+  - windows
+  - system-info
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      message
+  FROM evtx_events
+  WHERE event_id = 6009
+finding:
+  title: "System boot info on {computer}"
+  summary: "System boot recorded on {computer} at {timestamp}. Message: {message}. Useful for calculating system uptime and timeline reconstruction."

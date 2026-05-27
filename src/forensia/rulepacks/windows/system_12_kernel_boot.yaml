@@ -1,0 +1,20 @@
+id: windows-system-12-kernel-boot
+title: OS started (Kernel-General Event 12)
+severity: low
+confidence: 0.6
+tags:
+  - windows
+  - system
+  - boot
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      message
+  FROM evtx_events
+  WHERE event_id = 12
+    AND LOWER(COALESCE(channel, '')) LIKE '%system%'
+finding:
+  title: "OS started: {computer}"
+  summary: "Kernel-General event 12 recorded on {computer} at {timestamp} — the OS has started. Correlate with event 13 (shutdown start) and 6005/6006 (EventLog service start/stop) to reconstruct reboot sequences. Unexpected boot times may indicate unauthorized restarts."

@@ -1,0 +1,26 @@
+id: windows-terminalservices-lsm-1148
+title: Remote Desktop Services session connection failed
+severity: medium
+confidence: 0.75
+required_fields:
+  - computer
+  - target_user
+tags:
+  - windows
+  - rdp
+  - failed-access
+attack:
+  - T1021.001
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      status
+  FROM evtx_events
+  WHERE event_id = 1148
+    AND channel LIKE '%LocalSessionManager%'
+finding:
+  title: "RDP session connection failed on {computer}"
+  summary: "RDP session connection failed for '{target_user}' on {computer} at {timestamp}. Status: {status}. Multiple failures may indicate brute force attempts."

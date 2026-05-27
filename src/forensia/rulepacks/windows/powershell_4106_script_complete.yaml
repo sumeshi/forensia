@@ -1,0 +1,24 @@
+id: windows-powershell-4106-script-complete
+title: PowerShell script block completed (Event 4106)
+severity: low
+confidence: 0.3
+tags:
+  - windows
+  - powershell
+  - execution
+attack:
+  - T1059.001
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      channel,
+      message
+  FROM evtx_events
+  WHERE event_id = 4106
+    AND LOWER(COALESCE(channel, '')) LIKE '%powershell%'
+finding:
+  title: "PowerShell script execution complete: {computer}"
+  summary: "PowerShell script block execution completion (4106) observed on {computer} at {timestamp}. User: {target_user}. Pair with the corresponding 4105 (start) to determine execution duration, and with 4104 to confirm the actual script content."

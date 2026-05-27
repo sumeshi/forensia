@@ -1,0 +1,26 @@
+id: windows-terminalservices-rcm-261-connection-received
+title: RDP-Tcp connection received
+severity: medium
+confidence: 0.65
+required_fields:
+  - computer
+  - src_ip
+tags:
+  - windows
+  - rdp
+  - lateral-movement
+attack:
+  - T1021.001
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      src_ip,
+      message
+  FROM evtx_events
+  WHERE event_id = 261
+    AND LOWER(COALESCE(channel, '')) LIKE '%remoteconnectionmanager%'
+finding:
+  title: "RDP connection received on {computer}"
+  summary: "RDP-Tcp connection received on {computer} at {timestamp}. Source IP: {src_ip}. This event provides the initial connection before authentication."

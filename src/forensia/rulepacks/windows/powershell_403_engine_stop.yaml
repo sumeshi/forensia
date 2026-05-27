@@ -1,0 +1,24 @@
+id: windows-powershell-403-engine-stop
+title: PowerShell engine stop (Event 403)
+severity: low
+confidence: 0.3
+tags:
+  - windows
+  - powershell
+  - execution
+attack:
+  - T1059.001
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      channel,
+      message
+  FROM evtx_events
+  WHERE event_id = 403
+    AND LOWER(COALESCE(channel, '')) LIKE '%powershell%'
+finding:
+  title: "PowerShell engine stop: {computer}"
+  summary: "A PowerShell engine stop event (403) was observed on {computer} at {timestamp}. User: {target_user}. Pair with event 400 (engine start) to determine the execution duration of the PowerShell session."

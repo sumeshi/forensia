@@ -88,6 +88,19 @@ def build_broad_plan_messages(
         f"{_lang_instruction()} "
         "Broad planning means you propose NEW hypotheses only. "
         "Do not output SQL in this phase. "
+        "Hypothesis quality criteria — a hypothesis must satisfy ALL of the following:\n"
+        "  - Falsifiable: it can be confirmed or refuted by a specific SQL query against the available tables.\n"
+        "  - Specific: it names a concrete actor, technique, time range, or host rather than a vague claim.\n"
+        "  - Non-redundant: it is meaningfully different from every active and resolved hypothesis.\n"
+        "  - Evidence-grounded: at least one unresolved finding or known fact suggests it is worth investigating.\n"
+        "Kill chain coverage — before proposing, mentally check each phase for open questions:\n"
+        "  Initial Access | Execution | Persistence | Privilege Escalation | "
+        "Defense Evasion | Credential Access | Discovery | Lateral Movement | Exfiltration.\n"
+        "  Prioritize phases not yet covered by active or resolved hypotheses.\n"
+        "Set stop=true only when ALL of the following hold:\n"
+        "  - No unresolved findings remain that suggest a new attack phase.\n"
+        "  - All active hypotheses are already queued.\n"
+        "  - The resolved hypothesis list covers the key kill chain phases visible in the evidence.\n"
         "Use only these JSON keys: read_more, hypotheses, stop, stop_reason."
     )
     user = (
@@ -114,8 +127,23 @@ def build_hypothesis_plan_messages(
     finding_candidates: list[dict[str, Any]],
     hypothesis_history: list[dict[str, Any]],
     query_templates: list[dict[str, Any]],
+    query_index: int = 1,
+    max_queries: int = 5,
 ) -> list[dict[str, str]]:
     executed_query_ids = [item.get("query_id") for item in hypothesis_history if item.get("query_id")]
+    queries_remaining = max_queries - query_index + 1
+    if queries_remaining <= 1:
+        convergence_note = (
+            f"IMPORTANT: This is query {query_index} of {max_queries} — your LAST allowed query for this hypothesis. "
+            "You must either propose one final decisive query that can definitively confirm or refute the hypothesis, "
+            "or set needs_more=false with a stop_reason explaining why the hypothesis cannot be resolved further. "
+            "Do not propose an exploratory query that is likely to return inconclusive results."
+        )
+    else:
+        convergence_note = (
+            f"This is query {query_index} of {max_queries} ({queries_remaining} queries remaining for this hypothesis). "
+            "Prioritize queries that can directly confirm or refute the hypothesis over broad exploratory ones."
+        )
     system = (
         "You are a DFIR investigator running the hypothesis-specific planning phase. "
         "You must propose exactly one read-only query that tests the current hypothesis, "
@@ -125,6 +153,7 @@ def build_hypothesis_plan_messages(
         f"{build_investigation_framework()}"
         "Output JSON only. "
         f"{_lang_instruction()} "
+        f"{convergence_note} "
         f"Already-executed query IDs for this hypothesis: {executed_query_ids}. "
         "Do not duplicate the same query purpose. "
         "Prefer using query templates. In query, either set template_id + params, "
@@ -176,7 +205,29 @@ def build_check_messages(
     result_summary: dict[str, Any],
     overview_md: str,
     memory_context_md: str,
+    query_index: int = 1,
+    max_queries: int = 5,
 ) -> list[dict[str, str]]:
+    queries_remaining = max_queries - query_index
+    if queries_remaining == 0:
+        strictness_note = (
+            f"CONVERGENCE REQUIRED: This is query {query_index} of {max_queries} — the FINAL check for this hypothesis. "
+            "You must commit to a definitive verdict now. "
+            "If any evidence leans one way, use 'confirmed' or 'refuted'. "
+            "Reserve 'inconclusive' only when the result is genuinely ambiguous AND no further query could resolve it. "
+            "Do not output 'newlead' on the final query — new leads will not be pursued at this stage."
+        )
+    elif queries_remaining == 1:
+        strictness_note = (
+            f"This is query {query_index} of {max_queries} — one query remains after this. "
+            "Be willing to lean toward a verdict if the evidence is suggestive but not conclusive. "
+            "Use 'newlead' only if you have identified a genuinely distinct attack surface not yet investigated."
+        )
+    else:
+        strictness_note = (
+            f"This is query {query_index} of {max_queries} ({queries_remaining} checks remaining). "
+            "Apply standard evidentiary rigor."
+        )
     system = (
         "You are a DFIR review analyst. "
         "Use the SQL result summary together with the provided structured memory context. "
@@ -205,12 +256,25 @@ def build_check_messages(
         "If you cannot cite observed evidence_ids, do not output that durable item; keep it in missing_checks, tasks, "
         "or notes instead. "
         f"{_FP_REDUCTION_GUIDANCE_PREFIX}{_mandatory_missing_checks_guidance()}"
+        "Verdict decision rules:\n"
+        "  confirmed — direct evidence_ids prove the hypothesis is true. Confidence >= 0.7.\n"
+        "  refuted   — direct evidence contradicts or zero matching rows exist after an appropriate query. Confidence < 0.3.\n"
+        "  newlead   — the result reveals a genuinely new attack surface or actor not yet in any hypothesis. "
+        "Use ONLY when you can name the specific new entity or technique.\n"
+        "  inconclusive — evidence is ambiguous, incomplete, or explainable by normal operations. "
+        "Do NOT use when a clearer verdict is defensible.\n"
+        "confidence_delta calibration for finding_updates:\n"
+        "  Strong corroboration (direct match, multiple evidence_ids): +0.15 to +0.25\n"
+        "  Weak corroboration (suggestive but indirect): +0.05 to +0.10\n"
+        "  Contradicting evidence: -0.10 to -0.20\n"
+        "  Zero rows / no evidence: 0.0 (never raise confidence on empty results)\n"
+        f"{strictness_note} "
         "Output JSON only. "
         f"{_lang_instruction()} "
         "Use only these JSON keys: query_id, verdict, finding_updates, suspicious_evidence, "
         "new_hypotheses, memory_updates, report_text, missing_checks, notes. "
         "In finding_updates items, use keys: finding_id, new_status (accepted or suppressed), "
-        "confidence_delta (signed float, e.g. 0.15 to raise, -0.2 to lower). "
+        "confidence_delta (signed float). "
         "In suspicious_evidence items, use keys: evidence_id, reason, confidence (0.0-1.0). "
         "verdict must be one of: confirmed, refuted, inconclusive, newlead."
     )
@@ -229,6 +293,41 @@ def build_check_messages(
     ]
 
 
+def build_column_selection_messages(
+    headers: list[str],
+    section_key: str,
+    template_body: str,
+) -> list[dict[str, str]]:
+    system = (
+        "You are a DFIR analyst. "
+        "Given a list of column names from query results and the report section context, "
+        "select only the columns that are analytically relevant for this section. "
+        "Drop: internal row IDs, empty/null-only fields, columns redundant with another column, "
+        "and any field that a reader of this section would not care about. "
+        "Output JSON only: {\"columns\": [\"col_a\", \"col_b\", ...]}"
+    )
+    user = (
+        f"section_key: {section_key}\n\n"
+        f"template_context (first 600 chars):\n{template_body[:600]}\n\n"
+        f"available_columns: {headers}\n\n"
+        "Return only the column names worth including in the evidence table."
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def _rows_to_markdown_table(rows: list[dict[str, Any]], max_rows: int = 30) -> str:
+    if not rows:
+        return ""
+    keys = list(rows[0].keys())
+    header = "| " + " | ".join(keys) + " |"
+    separator = "| " + " | ".join("---" for _ in keys) + " |"
+    data_lines = []
+    for row in rows[:max_rows]:
+        cells = [str(row.get(k, "")).replace("|", "\\|").replace("\n", " ") for k in keys]
+        data_lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join([header, separator, *data_lines])
+
+
 def build_report_section_messages(
     section_meta: dict[str, Any],
     evidence_results: list[dict[str, Any]],
@@ -238,6 +337,7 @@ def build_report_section_messages(
     section_heading: str = "",
     current_section_outputs: dict[str, str] | None = None,
     verification_notes: list[str] | None = None,
+    raw_evidence_rows: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     trimmed_context_sections = _truncate_context_sections(context_sections)
     trimmed_current_outputs = _truncate_context_sections(current_section_outputs or {}, max_chars=1200)
@@ -246,6 +346,23 @@ def build_report_section_messages(
         if _output_language().startswith("ja")
         else "[INSUFFICIENT EVIDENCE: reason]"
     )
+    raw_table_guidance = ""
+    if raw_evidence_rows:
+        raw_table_guidance = (
+            "You are also given raw_evidence_rows — the flat evidence rows before filtering. "
+            "Apply two-dimensional filtering before embedding: "
+            "(1) Row filter: keep only rows relevant to this section; discard noise, duplicates, and rows with no analytic value. Aim for 5–25 rows. "
+            "(2) Column filter: drop columns that add no value (internal IDs, empty fields, redundant duplicates of another column). "
+            "Embed the filtered rows as a Markdown table under a '#### Raw Evidence' sub-heading inside the section body. "
+            "If no rows survive filtering, omit the table entirely. "
+        )
+    # Strip sample_rows from evidence_results to avoid sending the same rows twice when raw_evidence_rows is provided.
+    evidence_for_prompt: list[dict[str, Any]] = evidence_results
+    if raw_evidence_rows:
+        evidence_for_prompt = [
+            {k: v for k, v in result.items() if k != "sample_rows"}
+            for result in evidence_results
+        ]
     system = (
         "You are a DFIR report writer. "
         "Fill the provided Markdown section template using only the supplied evidence and prior completed sections. "
@@ -266,8 +383,13 @@ def build_report_section_messages(
         "If writing a timeline, keep events in chronological order and state the time basis when known. "
         "Recommended actions must scale with evidence strength and should not overstate weak signals. "
         "Do not output markdown fences or explanations outside the completed section body. "
+        f"{raw_table_guidance}"
         f"{_lang_instruction()}"
     )
+    raw_block = ""
+    if raw_evidence_rows:
+        table_md = _rows_to_markdown_table(raw_evidence_rows)
+        raw_block = f"\nraw_evidence_rows (apply row+column filter before embedding):\n{table_md}\n"
     user = (
         f"section_meta: {section_meta}\n\n"
         f"current_subsection: {section_heading or '(full section)'}\n\n"
@@ -275,7 +397,8 @@ def build_report_section_messages(
         f"previous_sections: {trimmed_context_sections}\n\n"
         f"current_section_progress: {trimmed_current_outputs}\n\n"
         f"verification_notes_from_prior_subsections: {verification_notes or []}\n\n"
-        f"evidence_results: {evidence_results}\n\n"
+        f"evidence_results: {evidence_for_prompt}\n"
+        f"{raw_block}\n"
         "Complete only this current template block by replacing placeholders and comments with evidence-based content. "
         "If verification_notes indicate contradiction, explicitly state what evidence refutes the claim and why.\n\n"
         f"{template_body}"

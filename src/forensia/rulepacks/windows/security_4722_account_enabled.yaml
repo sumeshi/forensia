@@ -1,12 +1,17 @@
 id: windows-security-4722-account-enabled
-title: User account enabled (Event 4722)
+title: Account enabled
 severity: medium
-confidence: 0.6
+confidence: 0.7
+required_fields:
+  - subject_user
+  - target_user
+  - computer
 tags:
   - windows
   - account-management
+  - privilege-escalation
 attack:
-  - T1098
+  - T1078
 query: |
   SELECT
       evidence_id,
@@ -18,4 +23,4 @@ query: |
   WHERE event_id = 4722
 finding:
   title: "Account enabled: {target_user} @ {computer}"
-  summary: "{subject_user} enabled account '{target_user}' on {computer} at {timestamp} (4722). This may indicate reuse of a previously disabled account or reactivation of a backdoor account."
+  summary: "{subject_user} enabled account '{target_user}' on {computer} at {timestamp}. Attackers may enable dormant or disabled accounts for persistence."

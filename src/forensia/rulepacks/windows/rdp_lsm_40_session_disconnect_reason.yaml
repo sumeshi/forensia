@@ -1,0 +1,24 @@
+id: windows-system-40-session-disconnect-reason
+title: Session disconnected with reason (RDP)
+severity: medium
+confidence: 0.65
+required_fields:
+  - computer
+  - session_id
+  - reason
+tags:
+  - windows
+  - rdp
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      session_id,
+      reason
+  FROM evtx_events
+  WHERE event_id = 40
+    AND LOWER(COALESCE(channel, '')) LIKE '%LocalSessionManager%'
+finding:
+  title: "RDP session disconnect on {computer}"
+  summary: "RDP session {session_id} disconnected on {computer} at {timestamp} due to: {reason}. Review for unauthorized session terminations."

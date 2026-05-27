@@ -1,0 +1,23 @@
+id: windows-smbclient-detailed
+title: SMB client detailed events (connectivity)
+severity: low
+confidence: 0.5
+required_fields:
+  - computer
+tags:
+  - windows
+  - smb
+  - network
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      event_id,
+      target_server,
+      message
+  FROM evtx_events
+  WHERE event_id IN (30800, 30804, 30805, 30806)
+finding:
+  title: "SMB client event {event_id} on {computer}"
+  summary: "SMB client event {event_id} on {computer} at {timestamp}. Target: {target_server}. Details: {message}."

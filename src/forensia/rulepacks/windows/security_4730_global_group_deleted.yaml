@@ -1,0 +1,26 @@
+id: windows-security-4730-global-group-deleted
+title: Security-enabled global group deleted
+severity: high
+confidence: 0.85
+required_fields:
+  - subject_user
+  - target_group
+  - computer
+tags:
+  - windows
+  - account-management
+  - defense-evasion
+attack:
+  - T1078
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_group,
+      subject_user
+  FROM evtx_events
+  WHERE event_id = 4730
+finding:
+  title: "Global group deleted: {target_group} @ {computer}"
+  summary: "{subject_user} deleted global group '{target_group}' on {computer} at {timestamp}. This may indicate attackers removing security groups to evade detection."

@@ -1,0 +1,27 @@
+id: windows-ntlm-4022-incoming-auth
+title: NTLM incoming authentication attempted
+severity: medium
+confidence: 0.6
+required_fields:
+  - computer
+  - target_user
+  - src_ip
+tags:
+  - windows
+  - ntlm
+  - lateral-movement
+attack:
+  - T1071
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      src_ip
+  FROM evtx_events
+  WHERE event_id = 4022
+    AND channel LIKE '%NTLM%'
+finding:
+  title: "NTLM incoming auth on {computer}"
+  summary: "NTLM authentication attempt received on {computer} at {timestamp}. User: {target_user}, Source IP: {src_ip}. May indicate lateral movement using NTLM."

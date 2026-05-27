@@ -1,14 +1,17 @@
-id: windows-system-7040-service-starttype-change
+id: windows-system-7040-service-starttype
 title: Service start type changed (System Event 7040)
 severity: medium
-confidence: 0.65
+confidence: 0.6
+required_fields:
+  - computer
+  - service_name
+  - message
 tags:
   - windows
-  - defense-evasion
   - service
+  - defense-evasion
 attack:
   - T1562.001
-  - T1543.003
 query: |
   SELECT
       evidence_id,
@@ -20,4 +23,4 @@ query: |
   WHERE event_id = 7040
 finding:
   title: "Service start type changed: {service_name} @ {computer}"
-  summary: "The start type of service '{service_name}' was changed on {computer} at {timestamp}. Check whether AV or backup services were set to Disabled."
+  summary: "Service '{service_name}' start type was changed on {computer} at {timestamp}. Details: {message}. Attackers may change service start type to disable security tools or enable persistence."

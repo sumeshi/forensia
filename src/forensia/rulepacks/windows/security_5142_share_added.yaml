@@ -1,0 +1,26 @@
+id: windows-security-5142-share-added
+title: Network share object added
+severity: medium
+confidence: 0.6
+required_fields:
+  - subject_user
+  - computer
+  - share_name
+tags:
+  - windows
+  - lateral-movement
+  - defense-evasion
+attack:
+  - T1071
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      subject_user,
+      share_name
+  FROM evtx_events
+  WHERE event_id = 5142
+finding:
+  title: "Share added: {share_name} @ {computer}"
+  summary: "{subject_user} added network share '{share_name}' on {computer} at {timestamp}. Attackers may add shares for lateral movement or data staging."

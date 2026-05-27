@@ -1,0 +1,26 @@
+id: windows-taskscheduler-101-task-start-failed
+title: Task started and failed immediately
+severity: medium
+confidence: 0.7
+required_fields:
+  - computer
+  - task_name
+tags:
+  - windows
+  - scheduled-task
+  - failed-execution
+attack:
+  - T1053
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      task_name,
+      message
+  FROM evtx_events
+  WHERE event_id = 101
+    AND LOWER(COALESCE(channel, '')) LIKE '%taskscheduler%'
+finding:
+  title: "Task start failed: {task_name} @ {computer}"
+  summary: "Task '{task_name}' failed to start on {computer} at {timestamp}. Details: {message}. May indicate missing executables or permission issues from attacker-planted tasks."

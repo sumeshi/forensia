@@ -1,0 +1,26 @@
+id: windows-security-4700-task-enabled
+title: Scheduled task enabled
+severity: medium
+confidence: 0.65
+required_fields:
+  - subject_user
+  - computer
+  - task_name
+tags:
+  - windows
+  - scheduled-task
+  - persistence
+attack:
+  - T1053
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      task_name,
+      subject_user
+  FROM evtx_events
+  WHERE event_id = 4700
+finding:
+  title: "Task enabled: {task_name} @ {computer}"
+  summary: "Scheduled task '{task_name}' was enabled on {computer} at {timestamp} by {subject_user}. Attackers use task enabling for persistence activation."

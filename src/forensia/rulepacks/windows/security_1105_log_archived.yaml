@@ -1,0 +1,20 @@
+id: windows-security-1105-log-archived
+title: Security log auto-archived (Event 1105)
+severity: low
+confidence: 0.5
+tags:
+  - windows
+  - log-rotation
+attack:
+  - T1070.001
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      message
+  FROM evtx_events
+  WHERE event_id = 1105
+finding:
+  title: "Security log auto-archived: {computer}"
+  summary: "The Security event log on {computer} was automatically archived at {timestamp} (1105). This occurs when the log retention policy is set to archive on full. Confirm the archive file is accessible and accounted for; a missing archive may indicate tampering."
