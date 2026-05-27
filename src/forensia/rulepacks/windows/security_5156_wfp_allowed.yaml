@@ -11,6 +11,8 @@ tags:
   - windows
   - network
   - connection
+attack:
+  - T1040
 query: |
   SELECT
       evidence_id,

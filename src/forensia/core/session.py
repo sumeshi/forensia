@@ -55,6 +55,11 @@ class Hypothesis(BaseModel):
     verdict: Literal["confirmed", "refuted"] | None = None
     summary: str = ""
     source_rule_ids: list[str] = Field(default_factory=list)
+    required_entities: list[str] = Field(default_factory=list)
+    confirm_when: dict[str, Any] | None = None
+    refute_when: dict[str, Any] | None = None
+    fallback_phase: str | None = None
+    fallback_source_rule_id: str | None = None
 
 
 class PlannedQuery(BaseModel):

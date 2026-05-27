@@ -45,3 +45,13 @@ def load_rules_from_dir(directory: str | Path, profile_path: str | Path | None =
                 continue
             rules.append(rule)
     return rules
+
+
+def load_rule_by_id(rulepacks_dir: str | Path, rule_id: str) -> Rule | None:
+    """Load a single rule by its ID from the rulepacks directory."""
+    directory = Path(rulepacks_dir)
+    for path in sorted(directory.rglob("*.yaml")):
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and data.get("id") == rule_id:
+            return Rule.model_validate(data)
+    return None

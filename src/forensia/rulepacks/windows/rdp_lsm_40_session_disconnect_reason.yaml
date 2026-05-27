@@ -9,6 +9,8 @@ required_fields:
 tags:
   - windows
   - rdp
+attack:
+  - T1021.001
 query: |
   SELECT
       evidence_id,

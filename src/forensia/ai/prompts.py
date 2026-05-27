@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 from forensia.config import get_llm_settings
@@ -16,38 +17,79 @@ class RuleContext:
     refute_when: dict[str, Any]
 
 
+@lru_cache(maxsize=1)
+def _get_cached_rules() -> list[Any]:
+    """Load and cache all rules at module level to avoid repeated file I/O."""
+    from forensia.rules.loader import load_rules_from_dir
+    from pathlib import Path
+    rules_path = Path(__file__).parent.parent / "rulepacks"
+    return load_rules_from_dir(rules_path)
+
+
 def resolve_rule_context(hypothesis: Hypothesis | None) -> RuleContext | None:
     """Resolve rule context for a hypothesis by looking up source rule declarations.
     
     If the hypothesis was generated from a rule finding, return the rule's
     correlate_with, confirm_when, and refute_when declarations.
+    Merges multiple source_rule_ids into a single RuleContext.
     """
     if hypothesis is None or not hasattr(hypothesis, 'source_rule_ids'):
         return None
     source_rule_ids = getattr(hypothesis, 'source_rule_ids', [])
     if not source_rule_ids:
         return None
-    # For now, just resolve the first rule; could be extended to merge multiple
-    rule_id = source_rule_ids[0] if source_rule_ids else None
-    if not rule_id:
-        return None
-    # Import here to avoid circular import
-    from forensia.rules.loader import load_rules_from_dir
+    
+    rules = _get_cached_rules()
+    merged_correlate_ids: set[int] = set()
+    merged_confirm_when: dict[str, Any] = {}
+    merged_refute_when: dict[str, Any] = {}
+    found_rule_id = source_rule_ids[0]
+    
+    for rule_id in source_rule_ids:
+        for rule in rules:
+            if rule.id == rule_id:
+                for corr in rule.correlate_with:
+                    merged_correlate_ids.update(corr.event_ids)
+                if rule.hypotheses:
+                    confirm = rule.hypotheses[0].confirm_when or {}
+                    refute = rule.hypotheses[0].refute_when or {}
+                    # Merge shallow dicts, first rule takes precedence for conflicts
+                    if confirm and not merged_confirm_when:
+                        merged_confirm_when = dict(confirm)
+                    if refute and not merged_refute_when:
+                        merged_refute_when = dict(refute)
+                break
+    
+    return RuleContext(
+        rule_id=found_rule_id,
+        correlate_event_ids=sorted(merged_correlate_ids),
+        confirm_when=merged_confirm_when,
+        refute_when=merged_refute_when,
+    )
+
+
+@lru_cache(maxsize=1)
+def _load_schema_hints() -> dict[str, dict[str, Any]]:
+    """Load schema hints from rulepacks/_schema/*.yaml for planner guidance.
+    
+    Cached at module level to avoid repeated file I/O.
+    """
+    import yaml
     from pathlib import Path
-    rules_path = Path(__file__).parent.parent / "rulepacks"
-    rules = load_rules_from_dir(rules_path)
-    for rule in rules:
-        if rule.id == rule_id:
-            correlate_ids = []
-            for corr in rule.correlate_with:
-                correlate_ids.extend(corr.event_ids)
-            return RuleContext(
-                rule_id=rule.id,
-                correlate_event_ids=correlate_ids,
-                confirm_when=rule.hypotheses[0].confirm_when if rule.hypotheses else {},
-                refute_when=rule.hypotheses[0].refute_when if rule.hypotheses else {},
-            )
-    return None
+    schema_dir = Path(__file__).parent.parent / "rulepacks" / "_schema"
+    hints: dict[str, dict[str, Any]] = {}
+    if not schema_dir.exists():
+        return hints
+    for path in schema_dir.glob("*.yaml"):
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if data and isinstance(data, dict):
+                table_name = data.get("table")
+                if table_name:
+                    hints[str(table_name)] = data
+        except Exception:
+            continue
+    return hints
 
 
 def _lang_instruction() -> str:
@@ -61,8 +103,7 @@ def _lang_instruction() -> str:
         f"Write all human-readable text fields in {output}: "
         "report_text, summary, notes, reason, description, purpose, stop_reason, "
         "all items in missing_checks arrays, and all free-text strings inside memory_updates. "
-        f"Hypothesis descriptions and LLM assessment text must always be in {output}. "
-        "JSON keys and enum values (verdict, status, phase, etc.) remain in English."
+        f"Hypothesis descriptions and LLM assessment text must always be in {output}."
     )
 
 
@@ -97,25 +138,6 @@ def _truncate_context_sections(context_sections: dict[str, str], max_chars: int 
             continue
         trimmed[str(section_key)] = text[:max_chars]
     return trimmed
-
-
-def _load_schema_hints() -> dict[str, dict[str, Any]]:
-    """Load schema hints from rulepacks/_schema/*.yaml for planner guidance."""
-    import yaml
-    schema_dir = Path(__file__).parent.parent / "rulepacks" / "_schema"
-    hints: dict[str, dict[str, Any]] = {}
-    if not schema_dir.exists():
-        return hints
-    for path in schema_dir.glob("*.yaml"):
-        try:
-            data = yaml.safe_load(path.read_text(encoding="utf-8"))
-            if data and isinstance(data, dict):
-                table_name = data.get("table")
-                if table_name:
-                    hints[str(table_name)] = data
-        except Exception:
-            continue
-    return hints
 
 
 def _slim_history(items: list[dict[str, Any]], max_items: int = 10) -> list[dict[str, Any]]:
@@ -169,6 +191,11 @@ def build_broad_plan_messages(
         "  - Specific: it names a concrete actor, technique, time range, or host rather than a vague claim.\n"
         "  - Non-redundant: it is meaningfully different from every active and resolved hypothesis.\n"
         "  - Evidence-grounded: at least one unresolved finding or known fact suggests it is worth investigating.\n"
+        "Hypothesis output schema — each hypothesis MUST include:\n"
+        "  - required_entities: list of entity names that must co-occur to confirm (extract from the claim).\n"
+        "  - confirm_when: {co_observed_event_ids: [...], same_host: bool, within_minutes: int} for correlation-based confirmation.\n"
+        "  - refute_when: {zero_rows: true} for refutation on empty results.\n"
+        "Prohibited phrases in hypothesis descriptions: 'unknown', 'cannot confirm', 'insufficient evidence'.\n"
         "Kill chain coverage — before proposing, mentally check each phase for open questions:\n"
         "  Initial Access | Execution | Persistence | Privilege Escalation | "
         "Defense Evasion | Credential Access | Discovery | Lateral Movement | Exfiltration.\n"
@@ -220,6 +247,22 @@ def build_hypothesis_plan_messages(
             f"This is query {query_index} of {max_queries} ({queries_remaining} queries remaining for this hypothesis). "
             "Prioritize queries that can directly confirm or refute the hypothesis over broad exploratory ones."
         )
+    
+    schema_hints = _load_schema_hints()
+    schema_guidance = ""
+    if schema_hints:
+        evtx_cols = schema_hints.get("evtx_events", {}).get("columns", [])
+        evtx_extractors = schema_hints.get("evtx_events", {}).get("json_field_extractors", {})
+        if evtx_cols:
+            schema_guidance = (
+                f"Schema guidance for evtx_events table — allowed_columns: {evtx_cols}. "
+                "Do NOT write column names outside this list in SELECT/WHERE clauses. "
+            )
+        if evtx_extractors:
+            schema_guidance += (
+                f"For fields not in allowed_columns, use json_field_extractors: {evtx_extractors}. "
+            )
+    
     system = (
         "You are a DFIR investigator running the hypothesis-specific planning phase. "
         "You must propose exactly one read-only query that tests the current hypothesis, "
@@ -227,6 +270,7 @@ def build_hypothesis_plan_messages(
         "Confirmed fact details are stored in memory/details/fact-NNN.md and can be requested via read_more "
         "when you need full context on a specific fact. "
         f"{build_investigation_framework()}"
+        f"{schema_guidance}"
         "Output JSON only. "
         f"{_lang_instruction()} "
         f"{convergence_note} "
@@ -285,6 +329,7 @@ def build_check_messages(
     max_queries: int = 5,
     observed_evidence_ids: list[str] | None = None,
     rule_context: RuleContext | None = None,
+    fallback_info: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     queries_remaining = max_queries - query_index
     if queries_remaining == 0:
@@ -334,6 +379,16 @@ def build_check_messages(
             f"Refute when: {refute_conditions}. "
             "If rule criteria are met, use them as the primary verdict basis. "
         )
+    fallback_guidance = ""
+    if fallback_info:
+        phase = fallback_info.get("phase", "")
+        source_rule = fallback_info.get("source_rule_id", "")
+        fallback_guidance = (
+            f"IMPORTANT: This result was obtained via fallback_search phase '{phase}' "
+            f"from rule '{source_rule}'. "
+            "The primary query returned 0 rows, but this fallback phase found relevant evidence. "
+            "Use this context when determining verdict and rationale. "
+        )
     system = (
         "You are a DFIR review analyst. "
         "Use the SQL result summary together with the provided structured memory context. "
@@ -345,6 +400,7 @@ def build_check_messages(
         f"{zero_evidence_note}"
         f"{entity_constraint}"
         f"{rule_verdict_guidance}"
+        f"{fallback_guidance}"
         "Always reference evidence_id values. "
         "For durable memory updates, use only observed evidence_id values that are present in this query result "
         "or in the provided finding candidates. "
@@ -552,12 +608,26 @@ def build_section_agent_plan_messages(
     reusable_facts: list[dict[str, Any]],
     reusable_evidence: list[dict[str, Any]],
 ) -> list[dict[str, str]]:
+    schema_hints = _load_schema_hints()
+    schema_guidance = ""
+    if schema_hints:
+        evtx_cols = schema_hints.get("evtx_events", {}).get("columns", [])
+        evtx_extractors = schema_hints.get("evtx_events", {}).get("json_field_extractors", {})
+        if evtx_cols:
+            schema_guidance = (
+                f"Schema guidance: evtx_events allowed_columns = {evtx_cols}. "
+                "Do NOT write column names outside this list in SELECT/WHERE clauses. "
+            )
+        if evtx_extractors:
+            schema_guidance += f"For fields not in allowed_columns, use json_field_extractors = {evtx_extractors}. "
+    
     system = (
         "You are a DFIR section-planning agent for report writing. "
         "Read the current Markdown block and decide the next best evidence-gathering action. "
         "Prefer reusing named keypoints when they clearly fit. Use read-only SQL only when keypoints are insufficient. "
         "Stop once you have enough evidence to write the block without inventing facts. "
         f"{build_investigation_framework()}"
+        f"{schema_guidance}"
         "Output JSON only. "
         f"{_lang_instruction()} "
         "Use only these JSON keys: action, purpose, keypoint, template_id, params, sql, enough_to_write. "

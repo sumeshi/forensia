@@ -24,7 +24,7 @@ class RuleProfileTests(unittest.TestCase):
         profile_path = Path("src/forensia/profiles/windows-basic.yaml")
         rules = load_rules_from_dir(rules_dir, profile_path)
 
-        self.assertEqual(62, len(rules))
+        self.assertEqual(125, len(rules))
         self.assertTrue(all(rule.attack for rule in rules))
 
     def test_ransomware_profile_filters_rule_ids(self) -> None:
@@ -74,7 +74,7 @@ class RuleProfileTests(unittest.TestCase):
         rules = load_rules_from_dir(rules_dir, profile_path)
         rule_ids = {rule.id for rule in rules}
 
-        self.assertEqual(62, len(rules))
+        self.assertEqual(125, len(rules))
         self.assertNotIn("allowlist_services", rule_ids)
 
     def test_profile_with_nonexistent_rulepack_loads_zero_rules(self) -> None:

@@ -56,6 +56,8 @@ def _render_hypothesis_memory(db: CaseDB | None, hypothesis: Hypothesis) -> str:
 def _row_to_hypothesis(row: dict[str, Any]) -> Hypothesis:
     verdict = row.get("verdict")
     source_rule_ids = row.get("source_rule_ids")
+    required_entities = row.get("required_entities")
+    confirm_when = row.get("confirm_when")
     if isinstance(source_rule_ids, str):
         try:
             import json
@@ -64,6 +66,20 @@ def _row_to_hypothesis(row: dict[str, Any]) -> Hypothesis:
             source_rule_ids = []
     if not isinstance(source_rule_ids, list):
         source_rule_ids = []
+    if isinstance(required_entities, str):
+        try:
+            import json
+            required_entities = json.loads(required_entities)
+        except Exception:
+            required_entities = []
+    if not isinstance(required_entities, list):
+        required_entities = []
+    if isinstance(confirm_when, str):
+        try:
+            import json
+            confirm_when = json.loads(confirm_when)
+        except Exception:
+            confirm_when = None
     return Hypothesis(
         id=str(row.get("hypothesis_id") or ""),
         description=str(row.get("description") or ""),
@@ -71,6 +87,8 @@ def _row_to_hypothesis(row: dict[str, Any]) -> Hypothesis:
         verdict=str(verdict) if verdict else None,
         summary=str(row.get("summary") or ""),
         source_rule_ids=[str(item) for item in source_rule_ids if item],
+        required_entities=[str(item) for item in required_entities if item],
+        confirm_when=confirm_when if isinstance(confirm_when, dict) else None,
     )
 
 
@@ -78,7 +96,7 @@ def _load_persisted_hypotheses(db: CaseDB) -> tuple[list[Hypothesis], list[Hypot
     rows = fetch_records(
         db,
         """
-        SELECT hypothesis_id, description, status, verdict, summary, source_rule_ids
+        SELECT hypothesis_id, description, status, verdict, summary, source_rule_ids, required_entities, confirm_when
         FROM hypotheses
         ORDER BY created_at, hypothesis_id
         """,
@@ -125,8 +143,9 @@ def _upsert_hypothesis(
         """
         INSERT INTO hypotheses (
             hypothesis_id, description, status, verdict, summary, origin,
-            created_session, resolved_session, created_at, updated_at, source_rule_ids
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_session, resolved_session, created_at, updated_at, source_rule_ids,
+            required_entities, confirm_when
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (hypothesis_id) DO UPDATE SET
             description = excluded.description,
             status = excluded.status,
@@ -137,7 +156,9 @@ def _upsert_hypothesis(
             resolved_session = excluded.resolved_session,
             created_at = excluded.created_at,
             updated_at = excluded.updated_at,
-            source_rule_ids = excluded.source_rule_ids
+            source_rule_ids = excluded.source_rule_ids,
+            required_entities = excluded.required_entities,
+            confirm_when = excluded.confirm_when
         """,
         (
             hypothesis.id,
@@ -151,6 +172,8 @@ def _upsert_hypothesis(
             created_at,
             now,
             json.dumps(hypothesis.source_rule_ids, ensure_ascii=False),
+            json.dumps(hypothesis.required_entities, ensure_ascii=False),
+            json.dumps(hypothesis.confirm_when, ensure_ascii=False) if hypothesis.confirm_when else None,
         ),
     )
 
@@ -175,6 +198,8 @@ def _merge_active_hypotheses(
             verdict=None,
             summary=item.summary,
             source_rule_ids=item.source_rule_ids,
+            required_entities=item.required_entities,
+            confirm_when=item.confirm_when,
         )
         by_id[item.id] = hypothesis
         _upsert_hypothesis(db, hypothesis, origin=origin, session_id=session_id)
@@ -199,6 +224,8 @@ def _resolve_hypothesis(
                 verdict=verdict,
                 summary=summary,
                 source_rule_ids=item.source_rule_ids,
+                required_entities=item.required_entities,
+                confirm_when=item.confirm_when,
             )
             state.resolved_hypotheses.append(resolved)
             _upsert_hypothesis(

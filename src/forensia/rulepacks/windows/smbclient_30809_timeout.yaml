@@ -9,6 +9,8 @@ tags:
   - windows
   - smb
   - network
+attack:
+  - T1021.002
 query: |
   SELECT
       evidence_id,

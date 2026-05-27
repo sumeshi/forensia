@@ -5,6 +5,7 @@ import hashlib
 import json
 import signal
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from re import sub
@@ -43,12 +44,53 @@ from forensia.report.writer import (
     mark_report_sections_ai_exhausted,
     render_written_report,
 )
-from forensia.rules.engine import generate_findings, run_rule, save_findings
-from forensia.rules.loader import load_rules_from_dir
+from forensia.rules.engine import execute_fallback_search, generate_findings, run_rule, save_findings
+from forensia.rules.loader import load_rule_by_id, load_rules_from_dir
 
 
 def _to_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def _query_fingerprint(sql: str) -> str:
+    """Generate a fingerprint for a query to detect duplicates."""
+    import hashlib
+    # Extract key patterns: event_id, host/computer, time bucket
+    import re
+    patterns = []
+    # Extract event_id patterns
+    event_ids = re.findall(r'event_id\s*(?:IN|=\s*)\s*([0-9,\s]+)', sql, re.IGNORECASE)
+    if event_ids:
+        patterns.append(f"ev:{event_ids[0]}")
+    # Extract computer patterns
+    computers = re.findall(r"computer\s*=\s*'([^']+)'", sql, re.IGNORECASE)
+    if computers:
+        patterns.append(f"host:{computers[0]}")
+    return hashlib.sha1("|".join(patterns).encode()).hexdigest()[:8] if patterns else "generic"
+
+
+@dataclass(slots=True)
+class HypothesisProgressTracker:
+    """Tracks hypothesis investigation progress for auto-refute/auto-confirm decisions."""
+    
+    zero_row_inconclusive_count: int = 0
+    query_fingerprints: list[str] = field(default_factory=list)
+    
+    def record(self, query_fingerprint: str, verdict: str, row_count: int) -> None:
+        """Record a query execution result."""
+        self.query_fingerprints.append(query_fingerprint)
+        if verdict == "inconclusive" and row_count == 0:
+            self.zero_row_inconclusive_count += 1
+        else:
+            self.zero_row_inconclusive_count = 0
+    
+    def should_auto_refute(self, consecutive_threshold: int = 3) -> bool:
+        """Return True after consecutive_threshold consecutive 0-row inconclusive results."""
+        return self.zero_row_inconclusive_count >= consecutive_threshold
+    
+    def should_pivot(self, current_fingerprint: str) -> bool:
+        """Detect if query fingerprint is duplicated (same event_id/host/time bucket)."""
+        return self.query_fingerprints.count(current_fingerprint) >= 2
 
 
 def _save_step(
@@ -621,8 +663,9 @@ async def investigate(
                         iteration=plan_cycle,
                         report_kw={"focus_sections": focus_sections},
                     )
-
+                    
                     candidates = _matching_findings(state.findings_snapshot, hypothesis)
+                    tracker = HypothesisProgressTracker()
                     for query_index in range(1, max_queries_per_hypothesis + 1):
                         state.focus_depth = query_index
                         try:
@@ -703,6 +746,30 @@ async def investigate(
                         try:
                             rows = fetch_records(db, planned_query.sql)
                             _log("EXEC", f"{hypothesis.id} {planned_query.query_id} — {len(rows)} rows")
+                            
+                            # REFACTOR-15/17: Fallback search execution for 0-row primary queries
+                            fallback_info = None
+                            if len(rows) == 0 and hypothesis.source_rule_ids:
+                                for source_rule_id in hypothesis.source_rule_ids:
+                                    rule = load_rule_by_id(case.rulepacks_dir, source_rule_id)
+                                    if rule and rule.fallback_search:
+                                        for fallback in rule.fallback_search:
+                                            if isinstance(fallback, dict):
+                                                phase = fallback.get("phase")
+                                                if phase not in {"keyword_in_raw_json", "related_event_ids", "artifact_table"}:
+                                                    continue
+                                                fallback_rows = execute_fallback_search(db, fallback)
+                                                if fallback_rows:
+                                                    _log("FALLBACK", f"{hypothesis.id} — found {len(fallback_rows)} rows via {phase}")
+                                                    for fb_row in fallback_rows[:20]:
+                                                        if isinstance(fb_row, dict):
+                                                            fb_row["_fallback_phase"] = phase
+                                                            fb_row["_fallback_source_rule_id"] = source_rule_id
+                                                    rows = fallback_rows[:20]
+                                                    fallback_info = {"phase": phase, "source_rule_id": source_rule_id}
+                                                    break
+                                        if fallback_info:
+                                            break
                         except Exception as exc:
                             err_msg = f"SQL execution error — {planned_query.query_id}: {exc}"
                             print(f"[red]{err_msg}[/red]")
@@ -760,6 +827,7 @@ async def investigate(
                                 ),
                                 query_index=query_index,
                                 max_queries=max_queries_per_hypothesis,
+                                fallback_info=fallback_info,
                             )
                         except Exception as exc:
                             err_msg = f"[check] LLM failed for {hypothesis.id}/{planned_query.query_id}: {exc}"
@@ -902,15 +970,17 @@ async def investigate(
                         if check_result.verdict in {"confirmed", "refuted"} or query_index >= max_queries_per_hypothesis:
                             break
                         
-                        # REFACTOR-13: Auto-refute for repeated 0-row inconclusive (simple inline check)
+                        # REFACTOR-13b: Use HypothesisProgressTracker for auto-refute
                         row_count = int(result_summary.get("row_count") or 0)
-                        recent_zero_row_inconclusive = (
-                            check_result.verdict == "inconclusive"
-                            and row_count == 0
-                            and query_index >= 2  # At least 2 queries tried
-                        )
-                        if recent_zero_row_inconclusive:
-                            _log("RESOLVE", f"{hypothesis.id} — auto-refuted after repeated 0-row inconclusive")
+                        query_fp = _query_fingerprint(planned_query.sql)
+                        tracker.record(query_fp, check_result.verdict, row_count)
+                        
+                        if tracker.should_pivot(query_fp):
+                            _log("PIVOT", f"{hypothesis.id} — duplicate query fingerprint detected")
+                            continue
+                        
+                        if tracker.should_auto_refute(consecutive_threshold=3):
+                            _log("RESOLVE", f"{hypothesis.id} — auto-refuted after 3+ consecutive 0-row inconclusive")
                             _resolve_hypothesis(
                                 db=db,
                                 state=state,

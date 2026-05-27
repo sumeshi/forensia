@@ -11,10 +11,43 @@ columns:
   - target_user
   - subject_user
   - src_ip
+  - dst_ip
+  - dst_port
+  - protocol
   - logon_type
   - process_name
+  - process_id
   - command_line
   - service_name
+  - exception_code
+  - object_dn
+  - attribute
+  - target_server
+  - target_group
+  - task_name
+  - session_id
+  - share_name
+  - access_mask
+  - normalized_src_ip
+  - normalized_target_user
+  - parent_process
+  - parent_process_id
+  - parent_cmd
+  - child_process
+  - child_process_id
+  - child_cmd
+  - parent_image
+  - file_path
+  - parent_guid
+  - child_guid
+  - clear_time
+  - clear_event_id
+  - first_seen
+  - last_seen
+  - hour_bucket
+  - request_count
+  - status
+  - reason
   - message
   - raw_json
   - tags

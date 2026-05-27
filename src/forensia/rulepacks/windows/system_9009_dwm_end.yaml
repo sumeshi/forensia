@@ -8,6 +8,8 @@ tags:
   - windows
   - rdp
   - system
+attack:
+  - T1021.001
 query: |
   SELECT
       evidence_id,

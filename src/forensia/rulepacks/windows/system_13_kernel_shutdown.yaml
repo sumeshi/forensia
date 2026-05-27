@@ -7,6 +7,8 @@ required_fields:
 tags:
   - windows
   - power
+attack:
+  - T1562.001
 query: |
   SELECT
       evidence_id,

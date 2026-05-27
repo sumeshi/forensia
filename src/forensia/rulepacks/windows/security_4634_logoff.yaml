@@ -21,4 +21,4 @@ query: |
   WHERE event_id = 4634
 finding:
   title: "Logoff for {target_user}"
-    summary: "{target_user} logged off from {computer} at {timestamp}. Correlate with 4624/4647 to confirm complete session lifecycle."
+  summary: "{target_user} logged off from {computer} at {timestamp}. Correlate with 4624/4647 to confirm complete session lifecycle."

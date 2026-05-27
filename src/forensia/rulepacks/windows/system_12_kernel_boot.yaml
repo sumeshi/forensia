@@ -2,10 +2,14 @@ id: windows-system-12-kernel-boot
 title: OS started (Kernel-General Event 12)
 severity: low
 confidence: 0.6
+required_fields:
+  - computer
 tags:
   - windows
   - system
   - boot
+attack:
+  - T1562.001
 query: |
   SELECT
       evidence_id,

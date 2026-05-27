@@ -16,6 +16,11 @@ from forensia.rules.models import Finding, Rule
 _MISSING_TEXT_VALUES = {"", "-", "n/a", "na", "none", "null", "unknown"}
 _BUILTIN_ALLOWLIST_PATH = Path(__file__).resolve().parent.parent / "rulepacks" / "windows" / "allowlist_services.yaml"
 
+FALLBACK_PHASES = {"keyword_in_raw_json", "related_event_ids", "artifact_table"}
+
+# Allowed tables for fallback search - validated against schema
+_ALLOWED_FALLBACK_TABLES = {"evtx_events", "mft_entries", "mft_timeline", "prefetch_executions"}
+
 
 def run_rule(db: CaseDB, rule: Rule) -> list[dict[str, Any]]:
     result = db.execute(rule.query)
@@ -193,3 +198,74 @@ def save_findings(case: Case, db: CaseDB, findings: list[Finding]) -> None:
                 now,
             ),
         )
+
+
+def _escape_like_pattern(keyword: str) -> str:
+    """Escape SQL LIKE wildcards in keyword pattern.
+    
+    Uses '!' as escape character to avoid backslash conflicts.
+    """
+    escaped = str(keyword).replace("!", "!!")  # Escape escape char itself
+    escaped = escaped.replace("%", "!%")  # Escape wildcard
+    escaped = escaped.replace("_", "!_")  # Escape wildcard
+    escaped = escaped.replace("'", "''")  # Escape single quote
+    return escaped
+
+
+def execute_fallback_search(db: CaseDB, fallback: dict[str, Any]) -> list[dict[str, Any]]:
+    """Execute a fallback search phase based on phase type and parameters.
+    
+    Returns empty list for invalid phase or missing required fields.
+    Logs warnings for unknown phases or invalid table names.
+    """
+    phase = fallback.get("phase")
+    if phase == "keyword_in_raw_json":
+        keywords = fallback.get("keywords") or []
+        if not keywords or not isinstance(keywords, list):
+            return []
+        valid_keywords = []
+        for kw in keywords:
+            if isinstance(kw, str):
+                valid_keywords.append(kw)
+        if not valid_keywords:
+            return []
+        like_clauses = " OR ".join(
+            f"raw_json LIKE '%{_escape_like_pattern(kw)}%' ESCAPE '!'"
+            for kw in valid_keywords
+        )
+        sql = f"SELECT * FROM evtx_events WHERE {like_clauses} LIMIT 100"
+        return run_rule(db, Rule(id="fallback-keyword", title="", query=sql))
+    if phase == "related_event_ids":
+        event_ids = fallback.get("event_ids") or []
+        if not event_ids:
+            return []
+        # Validate event_ids are integers
+        valid_event_ids = []
+        for eid in event_ids:
+            try:
+                valid_event_ids.append(int(eid))
+            except (TypeError, ValueError):
+                import logging
+                logging.warning(f"Invalid event_id in fallback: {eid}")
+                continue
+        if not valid_event_ids:
+            return []
+        event_list = ",".join(str(eid) for eid in valid_event_ids)
+        sql = f"SELECT * FROM evtx_events WHERE event_id IN ({event_list}) LIMIT 100"
+        return run_rule(db, Rule(id="fallback-correlation", title="", query=sql))
+    if phase == "artifact_table":
+        table = fallback.get("table")
+        if not table:
+            return []
+        # Validate table name against allowed tables
+        table_name = str(table).strip().lower()
+        if table_name not in _ALLOWED_FALLBACK_TABLES:
+            import logging
+            logging.warning(f"Invalid fallback table '{table}'; allowed: {_ALLOWED_FALLBACK_TABLES}")
+            return []
+        sql = f"SELECT * FROM {table_name} LIMIT 100"
+        return run_rule(db, Rule(id="fallback-artifact", title="", query=sql))
+    if phase and phase not in FALLBACK_PHASES:
+        import logging
+        logging.warning(f"Unknown fallback phase '{phase}'; valid phases: {FALLBACK_PHASES}")
+    return []

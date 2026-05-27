@@ -1,4 +1,4 @@
-id: windows-system-7040-service-starttype
+id: windows-system-7040-service-starttype-change
 title: Service start type changed (System Event 7040)
 severity: medium
 confidence: 0.6
