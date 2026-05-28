@@ -10,6 +10,7 @@ from rich import print
 from forensia.ai.audit import LLMCallLogger
 from forensia.ai.report_gap import _build_report_status
 from forensia.core.case import Case
+from forensia.core.memory import MemoryManager
 from forensia.db.database import CaseDB
 from forensia.report.writer import (
     _collect_flat_evidence_rows,
@@ -45,26 +46,52 @@ async def async_refresh_report_sections(
 ) -> dict[str, Any]:
     prior_filled = load_report_sections_map(db)
     report_brief = write_report_brief(case, db)
+    memory = MemoryManager(case)
+    stale_section_keys = {
+        str(row["section_key"])
+        for row in db.execute("SELECT section_key FROM report_sections WHERE stale = TRUE").fetchall()
+    }
     requests: list[dict[str, Any]] = []
     for template_path in template_paths:
         request = prepare_section_request(case, db, template_path, prior_filled, report_brief=report_brief)
         request["template_path"] = str(template_path)
-        requests.append(request)
+        request["is_stale"] = request.get("section_key") in stale_section_keys
+        request["needs_refresh"] = request["is_stale"] or not str(prior_filled.get(request["section_key"]) or "").strip()
+        if request["needs_refresh"]:
+            requests.append(request)
+
+    import logging
+    import re
+    _section_key_re = re.compile(r"^(\d+)_")
+
+    def sort_key(req: dict[str, Any]) -> tuple[int, int, str]:
+        section_key = str(req.get("section_key") or "")
+        is_stale = req.get("is_stale", False)
+        priority = 0 if is_stale else 1
+        match = _section_key_re.match(section_key)
+        if match:
+            order = int(match.group(1))
+        else:
+            logging.warning(
+                "section_key %r does not match '<int>_*' convention; sorting to end. "
+                "Rename the template file to [0-9]+_<slug>.md or set 'section' frontmatter.",
+                section_key,
+            )
+            order = 9999
+        return (priority, order, section_key)
+
+    requests.sort(key=sort_key)
 
     async def process_section(request: dict[str, Any]) -> tuple[dict[str, Any], str]:
         section_key = request["section_key"]
-        _log_report(f"{section_key} — writing (async parallel)")
+        _log_report(f"{section_key} — writing (sequential)")
         if progress_callback:
-            # Build report_sections payload so the frontend can highlight the
-            # writing section via is_writing flags + report_sections.current_section.
-            # (stores.ts reads payload.report_sections.current_section; sending only
-            # current_report_section at top level was the regression.)
             progress_callback(
                 {
                     "stage": "investigate/report-section",
                     "status": "running",
                     "iteration": iteration,
-                    "summary": f"[report] {section_key} writing... (async parallel)",
+                    "summary": f"[report] {section_key} writing... (sequential)",
                     "current_report_section": section_key,
                     "report_sections": _build_report_status(
                         db,
@@ -82,6 +109,7 @@ async def async_refresh_report_sections(
         try:
             for block in request.get("block_requests") or []:
                 try:
+                    is_benchmark_mode = str(block.get("mode") or "").strip().casefold() == "benchmark"
                     block_result = await async_run_section_block_agent(
                         case=request["case"],
                         db=db,
@@ -89,12 +117,15 @@ async def async_refresh_report_sections(
                         title=str(request["title"]),
                         block_heading=str(block.get("heading") or ""),
                         template_body=str(block.get("template_body") or ""),
-                        context_sections=request.get("context_sections") or {},
-                        current_section_outputs=block_outputs,
+                        context_sections={} if is_benchmark_mode else (request.get("context_sections") or {}),
+                        current_section_outputs={} if is_benchmark_mode else block_outputs,
                         report_brief=request.get("report_brief") or {},
                         base_url=base_url,
                         model=model,
+                        memory=memory,
                         max_queries_per_section=max_queries_per_section,
+                        evidence_keypoints=list(block.get("evidence_keypoints") or []),
+                        benchmark_mode=is_benchmark_mode,
                         audit_callback=lambda messages, body, section=request["section_key"], heading=block.get("heading", ""): llm_logger.write(
                             iteration=iteration,
                             phase="report-section-block",
@@ -130,7 +161,6 @@ async def async_refresh_report_sections(
             _log_report(f"{section_key} — cancelled")
             raise
 
-    workers = max(1, min(max_workers, len(requests)))
     filled_sections: dict[str, str] = {}
     for request in requests:
         try:
@@ -139,8 +169,6 @@ async def async_refresh_report_sections(
             raise
         except Exception as exc:
             if progress_callback:
-                # Include report_sections so the frontend clears the writing
-                # highlight even when a section fails mid-write.
                 progress_callback(
                     {
                         "stage": "investigate/report-section-done",
@@ -172,7 +200,7 @@ async def async_refresh_report_sections(
                     "stage": "investigate/report-section-done",
                     "status": "running",
                     "iteration": iteration,
-                    "summary": f"[report] {section_key} done (workers={workers})",
+                    "summary": f"[report] {section_key} done (sequential)",
                     "report_sections": status,
                 }
             )
@@ -184,7 +212,7 @@ async def async_refresh_report_sections(
         iteration=iteration,
         updated=len(filled_sections),
         progress_callback=progress_callback,
-        summary=f"[report] cycle done (sections={{updated}}, gaps={{gap_count}}, parallel={workers})",
+        summary="[report] cycle done (sections={updated}, gaps={gap_count}, sequential)",
     )
 
 

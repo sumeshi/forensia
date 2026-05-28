@@ -84,50 +84,62 @@ flowchart LR
     A["Artifacts<br/>EVTX / MFT / ..."]
     A -->|Ingest / Normalize| C
     C[("Case State<br/>normalized evidence")]
-    C --> D["Rule Engine<br/>KeyPoints"]
+    C --> D["Rule Engine<br/>Findings / KeyPoints"]
 
-    subgraph L["Investigation Loop"]
-        E["Build Hypothesis"]
-        F["Validate / Check"]
-        G["Refine / Expand"]
-        H["Prompt Engine + Local LLM"]
-        E --> F --> G --> E
-        E --> H --> G
+    subgraph L["Investigation Loop (per plan_cycle)"]
+        D --> E["Seed Hypotheses<br/>(rule.hypotheses + broad_plan)"]
+        E --> P["Planner<br/>SQL with schema_card"]
+        P --> X["Executor<br/>+ fallback_search if 0 rows"]
+        X --> CK["Checker<br/>verdict by required_entities"]
+        CK --> TR["Progress Tracker<br/>auto-confirm / auto-refute / pivot"]
+        TR -->|active| P
+        TR -->|resolved| R["Resolver<br/>stale sections + follow-up"]
+        R --> RW["Report Writer<br/>stale-first refresh"]
+        RW -->|new gaps| E
     end
-
-    D --> E
-    C -. evidence lookup .-> F
 
     T[("Trace State<br/>hypotheses / verdicts / gaps")]
     M[("Structured Memories<br/>working context")]
 
     E --> T
-    F --> T
-    G --> T
+    CK --> T
+    R --> T
 
     C -. derive .-> M
     T -. derive .-> M
-    M -. context .-> H
+    M -. context .-> P
+    M -. context .-> CK
 ```
 
 
 ## 仮説検証ループの流れ
 
-次のループを繰り返しながら、調査状態を整理します。
+調査は **rule 宣言を起点に駆動される** 短いループです。LLM はループ全体ではなく、各ステップで小さな判断のみを担当します。
 
-1. KeyPoints と既存の調査状態から、追うべき仮説を追加・更新し、active hypotheses を順に検証する
-2. 仮説を検証するためのクエリや確認観点を生成する
-3. DuckDB 上の証拠データを参照して検証する
-4. 結果を `confirmed` / `refuted` / `inconclusive` / `newlead` のいずれかに判定する
-5. 確認済みの事実、未解決の gap、重要エンティティ、レポート状態を更新する
-6. 残った gap や新しい lead を次のサイクルに戻す
+1. **Seed**: 検知ルールが findings を出し、ルール側に `hypotheses` 宣言があればそれを仮説雛形として active 入りさせる。同時に broad_plan が現状の gap から追加仮説を提案する。
+2. **Plan**: planner LLM が仮説 1 件に対し SQL を 1 本提案する。スキーマカード (`_schema/evtx_events.yaml` の `columns` / `json_field_extractors`) を必ず prompt に渡すため、存在しないカラム参照や JSON 抽出ミスが構造的に防がれる。
+3. **Execute**: SQL を DuckDB に発行。0 行だった場合に限り、rule 側の `fallback_search` 宣言（`keyword_in_raw_json` / `related_event_ids` / `artifact_table` の順次フェーズ）が **planner を介さず** 自動実行される。
+4. **Check**: checker LLM が `required_entities` の共起と時間順序で verdict を出す。「直接的な因果」「全過程の証明」といった逃げ口上は禁止語として明示。
+5. **Track**: `HypothesisProgressTracker` が以下を判定:
+    - `rule.confirm_when.co_observed_event_ids` を rows が全部満たす → **auto-confirmed**
+    - 連続 3 回の 0-row inconclusive → **auto-refuted**
+    - 同じ query fingerprint の重複 → planner に **pivot 指示**
+6. **Resolve**: 仮説が confirmed/refuted になった瞬間に rule 宣言の `report_sections` を `stale` 化、`follow_up_questions` を新規仮説として注入。
+7. **Report**: section refresh は stale フラグの立った section を優先処理。生成した report の gap を次サイクルの仮説に戻す。
 
 | 判定 | 意味 |
 |---|---|
-| `confirmed` | 仮説を支持する証拠がある |
-| `refuted` | 仮説を否定する証拠がある |
-| `inconclusive` | 判断材料が不足している |
+| `confirmed` | 仮説の required_entities が共起する証拠が揃った |
+| `refuted` | 矛盾証拠 or 連続 0-row で否定 |
+| `inconclusive` | 一部 entity のみ観測、欠落 entity を rationale で明示 |
 | `newlead` | 元の仮説とは別に追うべき不審点が見つかった |
+
+### この設計が「効率よく調査する」ために狙うこと
+
+- **rule に知識を集約**: 仮説テンプレ・確証条件・関連 event_id・fallback・follow-up・対応 section はすべて rule YAML に宣言し、Python 側は generic に消費するだけ。新しい攻撃手法は YAML 1 枚で追加できる。
+- **LLM の手探りを構造で抑える**: kill-chain 段階別の決まった event_id 集合を rule 宣言から渡すことで、planner が「ログオン試行を再走査」「7045 を再走査」と意味のない探索を繰り返すのを防ぐ。
+- **無限ループを宣言的に停止**: `HypothesisProgressTracker` が verdict 履歴と fingerprint 重複から自動で refuted/pivot に持っていく。LLM が `inconclusive` を返し続けても 3 イテレーションで打ち切られる。
+- **report と investigation の同期**: 仮説確定の瞬間に該当 section を stale 化するため、確証が出てから report に反映されるまでのラグが最小。confirmed/refuted 仮説は writer に直接渡るので、調査成果が本文に必ず流れる。
 
 
 ## 長期記憶の構造

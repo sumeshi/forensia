@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 import unittest
 from datetime import UTC, datetime
@@ -14,6 +15,7 @@ from forensia.ai.checker import _insert_investigation_finding
 from forensia.ai.investigator import (
     _append_hypothesis_reasoning,
     _final_summary,
+    _execute_query,
     investigate,
 )
 from forensia.ai.planner import BroadPlanResult, HypothesisPlanResult
@@ -24,12 +26,15 @@ from forensia.ai.report_gap import (
     _report_cycle_progress,
 )
 from forensia.ai.hypothesis_manager import _load_persisted_hypotheses
+from forensia.ai.hypothesis_manager import _merge_active_hypotheses
 from forensia.config import clear_llm_settings_cache, resolve_llm_config
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.db.database import CaseDB
+from forensia.rules.engine import execute_event_keyword_fallback_search
 from forensia.report.writer import (
+    _collect_flat_evidence_rows,
     _build_report_brief,
     _default_keypoints_for_section,
     _extract_claim_texts,
@@ -38,6 +43,7 @@ from forensia.report.writer import (
     _sort_markdown_table_by_first_column,
     _section_confidence,
     collect_gaps,
+    build_report_markdown_from_db,
     fill_section,
     finalize_section,
     prepare_section_request,
@@ -325,6 +331,68 @@ class PersistenceTests(unittest.TestCase):
             self.assertIn("## Incident Summary\n\nSummary text.", body)
             self.assertIn("## Evidence Scope\n\nScope text.", body)
 
+    def test_fill_section_writes_benchmark_answers_json(self) -> None:
+        def routed(*args, **kwargs):
+            messages = kwargs.get("messages")
+            if messages is None and args:
+                messages = args[0]
+            system_content = ""
+            if messages:
+                system_content = str(messages[0].get("content", ""))
+            if "benchmark answer writer" in system_content:
+                return {
+                    "id": "Q8",
+                    "status": "answered",
+                    "answer": ["OST file located at C:/Users/Alice/Mail/Archive.ost"],
+                    "missing_reason": [],
+                    "queries_run": ["benchmark_ost_file"],
+                }
+            if "section-check" in system_content:
+                return {"verdict": "sufficient", "fact_updates": []}
+            if "select only the columns" in system_content:
+                return {"columns": ["evidence_id", "file_path"]}
+            return {"action": "write", "enough_to_write": True}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            template_path = case.path / "report_template_custom" / "6_appendix.md"
+            template_path.parent.mkdir(parents=True, exist_ok=True)
+            template_path.write_text(
+                (
+                    "# Appendix\n\n"
+                    "## 8. メールデータファイル\n"
+                    "<!-- mode: benchmark -->\n"
+                    "<!-- evidence_keypoints: benchmark_ost_file -->\n"
+                    "<!-- fill -->\n"
+                ),
+                encoding="utf-8",
+            )
+            with CaseDB(case) as db:
+                with patch(
+                    "forensia.ai.section_agent.request_llm_json",
+                    side_effect=routed,
+                ):
+                    body = fill_section(
+                        case=case,
+                        db=db,
+                        template_path=template_path,
+                        context_sections={},
+                        report_brief={"top_findings": []},
+                        base_url=self._llm_base_url(),
+                        model="test-model",
+                        session_id="session-test",
+                    )
+                answers_path = case.reports_dir / "benchmark" / "answers.json"
+                answers = json.loads(answers_path.read_text(encoding="utf-8"))
+
+            self.assertIn("## 8. メールデータファイル", body)
+            self.assertIn("**ID:** Q8", body)
+            self.assertIn("**Status:** answered", body)
+            self.assertEqual(1, len(answers))
+            self.assertEqual("Q8", answers[0]["id"])
+            self.assertEqual("answered", answers[0]["status"])
+            self.assertEqual(["benchmark_ost_file"], answers[0]["queries_run"])
+
     def test_prepare_section_request_infers_ioc_keypoints_from_section_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -366,6 +434,28 @@ class PersistenceTests(unittest.TestCase):
             self.assertTrue(results["ioc_email_ost_files"]["sample_rows"][0]["file_path"].endswith(".ost"))
             self.assertIn("secret_project", results["mft_recent_folder_lnk"]["sample_rows"][0]["file_name"])
 
+    def test_prepare_section_request_extracts_block_hints(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            template_path = case.path / "report_template_custom" / "6_appendix.md"
+            template_path.parent.mkdir(parents=True, exist_ok=True)
+            template_path.write_text(
+                (
+                    "# Appendix\n\n"
+                    "## 8. メールデータファイル\n"
+                    "<!-- mode: benchmark -->\n"
+                    "<!-- evidence_keypoints: benchmark_ost_file, benchmark_prefetch_recent -->\n"
+                    "<!-- fill -->\n"
+                ),
+                encoding="utf-8",
+            )
+            with CaseDB(case) as db:
+                request = prepare_section_request(case, db, template_path, {}, report_brief={})
+
+            block = request["block_requests"][0]
+            self.assertEqual("benchmark", block["mode"])
+            self.assertEqual(["benchmark_ost_file", "benchmark_prefetch_recent"], block["evidence_keypoints"])
+
     def test_quality_gate_flags_placeholder_entities_and_non_chronological_timeline(self) -> None:
         body = (
             "| Timestamp | Host | Stage | Event | evidence_id |\n"
@@ -378,6 +468,355 @@ class PersistenceTests(unittest.TestCase):
 
         self.assertEqual(2, len(gaps))
         self.assertLess(confidence, 1.0)
+
+    def test_collect_flat_evidence_rows_filters_sparse_rows(self) -> None:
+        rows = [
+            {
+                "kind": "rows",
+                "sample_rows": [
+                    {
+                        "timestamp": "2026-05-28 10:00:00",
+                        "event_id": 4624,
+                        "process_name": "powershell.exe",
+                        "message": "NULL",
+                    },
+                    {
+                        "timestamp": None,
+                        "event_id": None,
+                        "process_name": None,
+                        "message": None,
+                    },
+                ],
+            }
+        ]
+
+        flat = _collect_flat_evidence_rows(rows, min_filled_cols=0.5)
+        self.assertEqual(1, len(flat))
+        self.assertEqual("powershell.exe", flat[0]["process_name"])
+
+    def test_finalize_section_flags_event_specific_disallowed_claims(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO evtx_events (
+                        evidence_id, source_file, channel, event_id, record_id, timestamp, computer,
+                        user_name, target_user, subject_user, src_ip, logon_type, process_name,
+                        command_line, service_name, message, raw_json, tags, severity
+                    ) VALUES (?, ?, ?, ?, ?, now(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    ("ev-4720", "a.evtx", "Security", 4720, 1, "host1", "", "alice", "alice", "admin", "", "", "", "", "", "{}", "[]", "info"),
+                )
+                result = finalize_section(
+                    db=db,
+                    section_key="3_technical",
+                    title="Technical",
+                    body="## Account Creation\n\nThe evidence suggests privilege escalation occurred.",
+                    evidence_results=[
+                        {
+                            "kind": "rows",
+                            "sample_rows": [{"event_id": 4720, "evidence_id": "ev-4720"}],
+                            "head_rows": [],
+                            "tail_rows": [],
+                            "evidence_ids": ["ev-4720"],
+                            "finding_ids": [],
+                            "hypothesis_ids": [],
+                        }
+                    ],
+                )
+
+            self.assertTrue(
+                any("disallowed wording" in str(gap) for gap in result["gaps"]),
+                msg=f"Expected event-specific claim gap in {result['gaps']}",
+            )
+
+    def test_finalize_section_flags_overstated_claims_for_non_confirmed_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO evtx_events (
+                        evidence_id, source_file, channel, event_id, record_id, timestamp, computer,
+                        user_name, target_user, subject_user, src_ip, logon_type, process_name,
+                        command_line, service_name, message, raw_json, tags, severity
+                    ) VALUES (?, ?, ?, ?, ?, now(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    ("ev-1", "a.evtx", "Security", 4720, 1, "host1", "", "alice", "alice", "admin", "", "", "", "", "", "{}", "[]", "info"),
+                )
+                result = finalize_section(
+                    db=db,
+                    section_key="3_technical",
+                    title="Technical",
+                    body="## Account Creation\n\nThe attack was confirmed and compromised the host.",
+                    evidence_results=[
+                        {
+                            "kind": "rows",
+                            "source_verdict": "newlead",
+                            "sample_rows": [{"event_id": 4720, "evidence_id": "ev-1"}],
+                            "evidence_ids": ["ev-1"],
+                            "finding_ids": [],
+                            "hypothesis_ids": [],
+                        }
+                    ],
+                )
+
+                self.assertTrue(
+                    any("cautious wording" in str(gap) for gap in result["gaps"]),
+                    msg=f"Expected strength gap in {result['gaps']}",
+                )
+
+    def test_execute_event_keyword_fallback_search_uses_event_id_keywords(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO evtx_events (
+                        evidence_id, source_file, channel, event_id, record_id, timestamp, computer,
+                        user_name, target_user, subject_user, src_ip, logon_type, process_name,
+                        command_line, service_name, message, raw_json, tags, severity
+                    ) VALUES (?, ?, ?, ?, ?, now(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "ev-4720",
+                        "a.evtx",
+                        "Security",
+                        4720,
+                        1,
+                        "host1",
+                        "",
+                        "alice",
+                        "alice",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "account created for alice",
+                        '{"message":"account created for alice"}',
+                        "[]",
+                        "info",
+                    ),
+                )
+                rows, fallback_info = execute_event_keyword_fallback_search(
+                    db, "SELECT * FROM evtx_events WHERE event_id = 4720 AND computer = 'missing'"
+                )
+
+            self.assertEqual(1, len(rows))
+            self.assertEqual("keyword_in_raw_json", fallback_info["phase"])
+            self.assertIn(4720, fallback_info["event_ids"])
+            self.assertTrue(any("account created" in keyword for keyword in fallback_info["keywords"]))
+
+    def test_execute_query_uses_keyword_fallback_for_zero_row_event_id_sql(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO evtx_events (
+                        evidence_id, source_file, channel, event_id, record_id, timestamp, computer,
+                        user_name, target_user, subject_user, src_ip, logon_type, process_name,
+                        command_line, service_name, message, raw_json, tags, severity
+                    ) VALUES (?, ?, ?, ?, ?, now(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "ev-4732",
+                        "a.evtx",
+                        "Security",
+                        4732,
+                        2,
+                        "host1",
+                        "",
+                        "bob",
+                        "bob",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "added to local group",
+                        '{"message":"added to local group"}',
+                        "[]",
+                        "info",
+                    ),
+                )
+                planned_query = PlannedQuery(
+                    query_id="Q-1",
+                    hypothesis_id="H-1",
+                    purpose="test fallback",
+                    sql="SELECT * FROM evtx_events WHERE event_id = 4732 AND computer = 'missing'",
+                )
+                hypothesis = Hypothesis(id="H-1", description="test")
+
+                rows, fallback_info = _execute_query(db, planned_query, hypothesis)
+
+            self.assertEqual(1, len(rows))
+            self.assertEqual("keyword_in_raw_json", fallback_info["phase"])
+            self.assertIn(4732, fallback_info["event_ids"])
+            self.assertTrue(any("group membership" in keyword or "added to local group" in keyword for keyword in fallback_info["keywords"]))
+
+    def test_build_report_markdown_adds_evidence_coverage_tables(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO report_sections (
+                        section_key, title, body, confidence, status, update_count, gaps, last_filled_session, last_filled_at, stale
+                    ) VALUES
+                        ('1_overview', 'Overview', '# Investigation Overview\n\n## Evidence Scope\n\nOriginal scope text.\n', 0.9, 'stable', 1, '[]', 's-1', now(), FALSE),
+                        ('2_timeline', 'Timeline', '# Timeline\n\nBody text.\n', 0.9, 'stable', 1, '[]', 's-1', now(), FALSE)
+                    """
+                )
+                db.execute(
+                    """
+                    INSERT INTO section_runs (run_id, section_key, block_heading, iteration, phase, payload, verdict, created_at)
+                    VALUES
+                        ('run-1', '1_overview', 'Evidence Scope', 1, 'query', '{"source_kind":"keypoint","source_ref":"benchmark_ost_file","result":{"keypoint":"benchmark_ost_file","source_ref":"benchmark_ost_file","source_kind":"keypoint","kind":"rows","row_count":2}}', NULL, now()),
+                        ('run-2', '2_timeline', 'Timeline', 1, 'query', '{"source_kind":"keypoint","source_ref":"benchmark_timeline_events","result":{"keypoint":"benchmark_timeline_events","source_ref":"benchmark_timeline_events","source_kind":"keypoint","kind":"rows","row_count":5}}', NULL, now())
+                    """
+                )
+                coverage_rows = db.execute(
+                    """
+                    SELECT section_key, source_query, evidence_table, row_count, used_in_answer, queried
+                    FROM section_run_coverage
+                    ORDER BY section_key, source_query
+                    """
+                ).fetchall()
+                markdown = build_report_markdown_from_db(db)
+
+            self.assertEqual(2, len(coverage_rows))
+            self.assertEqual("benchmark_ost_file", coverage_rows[0][1])
+            self.assertEqual("Yes", coverage_rows[0][4])
+            self.assertIn("#### Coverage Summary", markdown)
+            self.assertIn("benchmark_ost_file", markdown)
+            self.assertIn("#### Evidence Coverage", markdown)
+            self.assertIn("benchmark_timeline_events", markdown)
+
+    def test_finalize_section_sanitizes_raw_evidence_tables(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                finalize_section(
+                    db=db,
+                    section_key="6_appendix",
+                    title="Appendix",
+                    body=(
+                        "## 8. メールデータファイル\n\n"
+                        "#### Raw Evidence\n\n"
+                        "| timestamp | process_name | message |\n"
+                        "|---|---|---|\n"
+                        "| 2026-05-28 10:00:00 | None | NULL |\n"
+                        "\n## 9. Other\n\nSummary text.\n"
+                    ),
+                    evidence_results=[
+                        {
+                            "kind": "rows",
+                            "source_verdict": "newlead",
+                            "sample_rows": [{"timestamp": "2026-05-28 10:00:00", "process_name": "None"}],
+                            "evidence_ids": [],
+                            "finding_ids": [],
+                            "hypothesis_ids": [],
+                        }
+                    ],
+                )
+                row = db.execute(
+                    "SELECT body, gaps FROM report_sections WHERE section_key = ?",
+                    ("6_appendix",),
+                ).fetchone()
+
+            body = str(row[0] or "")
+            gaps = row[1]
+            self.assertNotIn("None", body)
+            self.assertNotIn("NULL", body)
+            self.assertIn("Raw evidence moved to reports/evidence/6_appendix.json", body)
+            self.assertIn("raw evidence rows were moved", str(gaps).lower())
+
+    def test_merge_active_hypotheses_assigns_sequential_ids_and_dedupes_description(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO hypotheses (
+                        hypothesis_id, description, status, verdict, summary, origin,
+                        created_session, resolved_session, created_at, updated_at,
+                        source_rule_ids, required_entities, confirm_when
+                    ) VALUES
+                        ('H-001', 'existing active hypothesis', 'active', NULL, '', 'broad_plan', 'S-1', NULL, now(), now(), '["rule-1"]', '["host"]', NULL),
+                        ('H-002', 'resolved reference hypothesis', 'confirmed', 'confirmed', 'done', 'broad_plan', 'S-1', 'S-2', now(), now(), '["rule-2"]', '["user"]', NULL)
+                    """
+                )
+                current = [
+                    Hypothesis(id="H-001", description="existing active hypothesis", status="active", summary="", source_rule_ids=["rule-1"], required_entities=["host"]),
+                ]
+                updates = [
+                    Hypothesis(id="H-new", description="existing active hypothesis", status="active", summary="", source_rule_ids=["rule-3"], required_entities=["computer"]),
+                    Hypothesis(id="H-new-2", description="brand new hypothesis", status="active", summary="", source_rule_ids=["rule-4"], required_entities=["service"]),
+                    Hypothesis(id="H-new-3", description="resolved reference hypothesis", status="active", summary="", source_rule_ids=["rule-5"], required_entities=["user"]),
+                ]
+                resolved = [
+                    Hypothesis(id="H-002", description="resolved reference hypothesis", status="confirmed", verdict="confirmed", summary="done"),
+                ]
+                merged = _merge_active_hypotheses(
+                    db=db,
+                    current=current,
+                    updates=updates,
+                    resolved=resolved,
+                    session_id="session-test",
+                    origin="broad_plan",
+                )
+                rows = db.execute(
+                    "SELECT hypothesis_id, description, status, source_rule_ids FROM hypotheses ORDER BY hypothesis_id"
+                ).fetchall()
+
+            ids = [row[0] for row in rows]
+            self.assertEqual(["H-001", "H-002", "H-003"], ids)
+            self.assertEqual(2, len(merged))
+            self.assertEqual({"H-001", "H-003"}, {item.id for item in merged})
+            self.assertIn("rule-3", str(rows[0][3]))
+            self.assertEqual("H-003", rows[2][0])
+
+    def test_merge_active_hypotheses_asks_llm_for_near_duplicate_description(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO hypotheses (
+                        hypothesis_id, description, status, verdict, summary, origin,
+                        created_session, resolved_session, created_at, updated_at,
+                        source_rule_ids, required_entities, confirm_when
+                    ) VALUES
+                        ('H-010', 'RDP lateral movement to deploy service', 'active', NULL, '', 'broad_plan', 'S-1', NULL, now(), now(), '["rule-1"]', '["host"]', NULL)
+                    """
+                )
+                with patch(
+                    "forensia.ai.hypothesis_manager.request_llm_json",
+                    return_value={"same_hypothesis": True, "reason": "same investigative claim"},
+                ) as mock_llm:
+                    merged = _merge_active_hypotheses(
+                        db=db,
+                        current=[Hypothesis(id="H-010", description="RDP lateral movement to deploy service", status="active", source_rule_ids=["rule-1"], required_entities=["host"])],
+                        updates=[
+                            Hypothesis(id="H-new", description="RDP lateral movement used to deploy service", status="active", source_rule_ids=["rule-2"], required_entities=["host"]),
+                        ],
+                        resolved=[],
+                        session_id="session-test",
+                        origin="broad_plan",
+                        base_url="http://localhost:1234",
+                        model="test-model",
+                    )
+                row = db.execute(
+                    "SELECT hypothesis_id, description, source_rule_ids FROM hypotheses WHERE hypothesis_id = 'H-010'"
+                ).fetchone()
+
+            self.assertEqual(1, len(merged))
+            self.assertEqual("H-010", merged[0].id)
+            self.assertEqual(1, mock_llm.call_count)
+            self.assertIn("rule-2", str(row[2]))
 
     def test_quality_gate_flags_heading_title_mismatch(self) -> None:
         gaps, confidence = _quality_gate_section(

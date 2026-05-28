@@ -65,6 +65,11 @@ hypotheses:
       within_minutes: 15
     refute_when:
       zero_rows: true
+    follow_up_questions:
+      - "What is the source host IP {src_ip} and was it used for other suspicious activity?"
+      - "Were similar lateral movements attempted on other hosts?"
+      - "Was the installed service actually executed and what was its outcome?"
+    report_sections: [3_technical, 4_gaps]
 correlate_with:
   - event_ids: [4624, 4720, 4648]
     rationale: "Account context: logon / account creation / explicit credential usage"

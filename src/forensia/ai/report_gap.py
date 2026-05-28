@@ -4,11 +4,43 @@ import hashlib
 import json
 from typing import Any
 
+from pydantic import BaseModel, Field, field_validator
+
 from forensia.ai.hypothesis_manager import _all_hypotheses, _upsert_hypothesis
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
 from forensia.report.writer import fetch_report_sections
+
+
+class GapHypothesisOutput(BaseModel):
+    """Pydantic model for validating LLM output when generating gap hypotheses."""
+    required_entities: list[str] = Field(min_length=0)
+    confirm_when: dict[str, Any] | None = None
+    description: str | None = None
+
+    @field_validator("required_entities", mode="before")
+    @classmethod
+    def coerce_required_entities(cls, v: Any) -> list[str]:
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [v] if v else []
+        if not isinstance(v, list):
+            return []
+        return [str(e) for e in v if e]
+
+    @field_validator("description")
+    @classmethod
+    def validate_description(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        lowered = v.lower()
+        prohibited = {"unknown", "cannot confirm", "cannot verify", "insufficient evidence"}
+        for phrase in prohibited:
+            if phrase in lowered:
+                raise ValueError(f"Description contains prohibited phrase: '{phrase}'")
+        return v
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -182,7 +214,14 @@ def _parse_gap_hypothesis_output(output: dict[str, Any], gap_text: str) -> tuple
     """Parse LLM output for a gap hypothesis, falling back to heuristics when needed.
     
     Returns (required_entities, confirm_when) tuple.
+    Uses GapHypothesisOutput Pydantic model for validation.
     """
+    try:
+        validated = GapHypothesisOutput(**output)
+        return validated.required_entities, validated.confirm_when
+    except Exception:
+        pass  # Fall through to safety-net heuristics
+    
     required_entities = output.get("required_entities")
     confirm_when = output.get("confirm_when")
     

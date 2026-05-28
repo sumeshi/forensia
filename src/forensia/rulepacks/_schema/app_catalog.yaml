@@ -1,0 +1,42 @@
+# Application catalog for process categorization
+# Maps executable names to behavioral categories
+mappings:
+  "GOOGLEDRIVESYNC.EXE":
+    category: cloud_sync
+    description: "Google Drive sync client"
+  "SCHTASKS.EXE":
+    category: persistence_tool
+    description: "Windows task scheduler CLI"
+  "CONSENT.EXE":
+    category: uac_related
+    description: "UAC consent dialog"
+  "UNINST.EXE":
+    category: uninstaller
+    description: "Uninstaller launcher"
+
+# Benign-known services (not suspicious by default)
+benign_known:
+  - "gupdate"
+  - "gupdatem"
+  - "google.update"
+  - "bonjour"
+  - "mdnsresponder"
+  - "msiserver"
+  - "trustedinstaller"
+  - "officeclicktorun"
+  - "osppsvc"
+  - ".net.framework.ngen"
+  - "ngen.v4"
+  - "mscorsvw"
+  - "clr_optimization"
+  - "intel.*pro.*1000"
+  - "intel.*82.*"
+  - "intel.*network"
+
+common_patterns:
+  windows_update:
+    process_names: ["wuauclt", "wuauserv", "usoclient", "musnotification"]
+  os_maintenance:
+    process_names: ["dism", "pkgmgr", "tiworker"]
+  cloud_sync:
+    process_names: ["googledrivesync", "dropbox", "onedrive", "boxsync"]

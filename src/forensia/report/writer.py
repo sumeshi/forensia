@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from forensia.core.case import Case
+from forensia.core.memory import MemoryManager
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records, normalize_value
 from forensia.report.html import render_html_report
@@ -23,6 +24,8 @@ EVIDENCE_ID_PATTERN = re.compile(r"\bev-[A-Za-z0-9._:-]+\b")
 HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.*)$")
 FINDING_ID_PATTERN = re.compile(r"\b[A-Za-z][A-Za-z0-9-]*-\d{4}\b")
 HTML_FILL_PATTERN = re.compile(r"<!--\s*fill(?:[^>]*)-->", re.IGNORECASE)
+BLOCK_HINT_PATTERN = re.compile(r"<!--\s*(?P<name>evidence_keypoints|mode)\s*:\s*(?P<value>.*?)\s*-->", re.IGNORECASE)
+RAW_EVIDENCE_HEADING_PATTERN = re.compile(r"^#{2,6}\s*Raw Evidence\s*$", re.IGNORECASE)
 EvidenceResolver = Callable[[CaseDB], list[dict[str, Any]]]
 
 
@@ -36,20 +39,42 @@ def _parse_template(template_path: str) -> str:
     return text.strip()
 
 
-def _split_template_body(template_body: str) -> tuple[str, list[dict[str, str]]]:
+def _parse_block_hints(block_body: str) -> dict[str, Any]:
+    hints: dict[str, Any] = {"evidence_keypoints": [], "mode": ""}
+    seen_keypoints: set[str] = set()
+    for match in BLOCK_HINT_PATTERN.finditer(block_body):
+        name = str(match.group("name") or "").strip().lower()
+        value = str(match.group("value") or "").strip()
+        if not name or not value:
+            continue
+        if name == "evidence_keypoints":
+            keypoints = [item.strip() for item in re.split(r"[,，\s]+", value) if item.strip()]
+            for keypoint in keypoints:
+                if keypoint in seen_keypoints:
+                    continue
+                seen_keypoints.add(keypoint)
+                hints["evidence_keypoints"].append(keypoint)
+        elif name == "mode":
+            hints["mode"] = value.casefold()
+    return hints
+
+
+def _split_template_body(template_body: str) -> tuple[str, list[dict[str, Any]]]:
     lines = template_body.splitlines()
     preamble: list[str] = []
-    blocks: list[dict[str, str]] = []
+    blocks: list[dict[str, Any]] = []
     current_heading: str | None = None
     current_lines: list[str] = []
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("## "):
             if current_heading is not None:
+                current_text = "\n".join(current_lines).strip()
                 blocks.append(
                     {
                         "heading": current_heading,
-                        "template_body": "\n".join(current_lines).strip(),
+                        "template_body": current_text,
+                        **_parse_block_hints(current_text),
                     }
                 )
             current_heading = stripped[3:].strip()
@@ -60,10 +85,12 @@ def _split_template_body(template_body: str) -> tuple[str, list[dict[str, str]]]
         else:
             current_lines.append(line)
     if current_heading is not None:
+        current_text = "\n".join(current_lines).strip()
         blocks.append(
             {
                 "heading": current_heading,
-                "template_body": "\n".join(current_lines).strip(),
+                "template_body": current_text,
+                **_parse_block_hints(current_text),
             }
         )
     preamble_text = "\n".join(preamble).strip()
@@ -206,12 +233,234 @@ def _correlation_finding_ids(finding_ids: list[str], db: CaseDB) -> list[str]:
     return [str(row.get("finding_id") or "") for row in rows if str(row.get("finding_id") or "")]
 
 
+@lru_cache(maxsize=1)
+def _load_event_id_hints() -> dict[int, dict[str, Any]]:
+    import yaml
+
+    path = Path(__file__).parent.parent / "rulepacks" / "_schema" / "event_ids.yaml"
+    if not path.exists():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+    raw_events = data.get("events") if isinstance(data, dict) else {}
+    if not isinstance(raw_events, dict):
+        return {}
+    hints: dict[int, dict[str, Any]] = {}
+    for key, value in raw_events.items():
+        try:
+            event_id = int(key)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(value, dict):
+            hints[event_id] = value
+    return hints
+
+
+def _collect_event_ids_from_results(evidence_results: list[dict[str, Any]] | None) -> set[int]:
+    event_ids: set[int] = set()
+    for result in evidence_results or []:
+        for row in (result.get("sample_rows") or []) + (result.get("head_rows") or []) + (result.get("tail_rows") or []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                event_id = int(row.get("event_id"))
+            except (TypeError, ValueError):
+                continue
+            event_ids.add(event_id)
+    return event_ids
+
+
+def _event_claim_gaps(body: str, evidence_results: list[dict[str, Any]] | None) -> list[str]:
+    hints = _load_event_id_hints()
+    event_ids = _collect_event_ids_from_results(evidence_results)
+    if not hints or not event_ids:
+        return []
+    lowered = body.casefold()
+    gaps: list[str] = []
+    for event_id in sorted(event_ids):
+        hint = hints.get(event_id)
+        if not hint:
+            continue
+        disallowed = [str(item).casefold() for item in hint.get("disallowed_without_extra") or [] if str(item).strip()]
+        if any(term and term in lowered for term in disallowed):
+            label = f"Event ID {event_id} claim uses disallowed wording without extra support."
+            if label not in gaps:
+                gaps.append(label)
+    return gaps
+
+
+def _parse_section_run_payload(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, dict):
+        return payload
+    if not isinstance(payload, str) or not payload.strip():
+        return {}
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _coverage_source_label(result: dict[str, Any], payload: dict[str, Any]) -> str:
+    candidates = [
+        str(result.get("keypoint") or "").strip(),
+        str(result.get("query_id") or "").strip(),
+        str(result.get("purpose") or "").strip(),
+        str(result.get("source_ref") or "").strip(),
+        str(payload.get("source_ref") or "").strip(),
+        str(payload.get("source_kind") or "").strip(),
+    ]
+    for candidate in candidates:
+        if candidate:
+            return candidate
+    return "unknown_source"
+
+
+def _collect_section_coverage(db: CaseDB) -> dict[str, list[dict[str, Any]]]:
+    try:
+        rows = fetch_records(
+            db,
+            """
+            SELECT section_key, source_query, evidence_table, row_count, used_in_answer, queried
+            FROM section_run_coverage
+            ORDER BY section_key, source_query
+            """,
+        )
+    except Exception:
+        rows = fetch_records(
+            db,
+            """
+            SELECT section_key, block_heading, phase, payload, created_at
+            FROM section_runs
+            WHERE phase = 'query'
+            ORDER BY created_at, iteration
+            """,
+        )
+    grouped: dict[str, dict[str, dict[str, Any]]] = {}
+    for row in rows:
+        section_key = str(row.get("section_key") or "").strip()
+        if not section_key:
+            continue
+        payload = _parse_section_run_payload(row.get("payload"))
+        result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+        source_label = str(row.get("source_query") or "").strip()
+        if not source_label:
+            source_label = _coverage_source_label(result, payload)
+        section_map = grouped.setdefault(section_key, {})
+        entry = section_map.setdefault(
+            source_label,
+            {
+                "source": source_label,
+                "queried": str(row.get("queried") or "Yes"),
+                "rows": 0,
+                "used_in_answer": str(row.get("used_in_answer") or "Yes"),
+                "source_kind": str(row.get("evidence_table") or payload.get("source_kind") or result.get("source_kind") or "").strip(),
+            },
+        )
+        try:
+            row_count = int(row.get("row_count") or result.get("row_count") or 0)
+        except (TypeError, ValueError):
+            row_count = 0
+        entry["rows"] = max(int(entry.get("rows") or 0), row_count)
+        if str(row.get("used_in_answer") or result.get("kind") or "rows") != "Yes":
+            entry["used_in_answer"] = "No"
+    return {section_key: list(section_map.values()) for section_key, section_map in grouped.items()}
+
+
+def _coverage_table_markdown(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return ""
+    header = "| Source | Queried | Rows | Used in answer |"
+    separator = "|---|---|---|---|"
+    lines = []
+    for row in rows:
+        rows_value = row.get("rows")
+        rows_text = "-" if rows_value in {None, ""} else str(rows_value)
+        lines.append(
+            f"| {str(row.get('source') or '').replace('|', '\\|')} | "
+            f"{str(row.get('queried') or 'No')} | "
+            f"{rows_text} | "
+            f"{str(row.get('used_in_answer') or 'No')} |"
+        )
+    return "\n".join([header, separator, *lines])
+
+
+def _append_coverage_table(body: str, coverage_rows: list[dict[str, Any]]) -> str:
+    table_md = _coverage_table_markdown(coverage_rows)
+    if not table_md:
+        return body
+    coverage_block = "#### Evidence Coverage\n\n" + table_md
+    text = str(body or "").rstrip()
+    if not text:
+        return coverage_block
+    if "#### Evidence Coverage" in text:
+        return text
+    return f"{text}\n\n{coverage_block}"
+
+
+def _coverage_summary_markdown(coverage_map: dict[str, list[dict[str, Any]]]) -> str:
+    rows: list[dict[str, Any]] = []
+    for section_key, items in coverage_map.items():
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            row = dict(item)
+            row["section"] = section_key
+            rows.append(row)
+    if not rows:
+        return ""
+    header = "| Section | Source | Queried | Rows | Used in answer |"
+    separator = "|---|---|---|---|---|"
+    lines = []
+    for row in rows:
+        rows_value = row.get("rows")
+        rows_text = "-" if rows_value in {None, ""} else str(rows_value)
+        lines.append(
+            f"| {str(row.get('section') or '').replace('|', '\\|')} | "
+            f"{str(row.get('source') or '').replace('|', '\\|')} | "
+            f"{str(row.get('queried') or 'No')} | "
+            f"{rows_text} | "
+            f"{str(row.get('used_in_answer') or 'No')} |"
+        )
+    return "\n".join([header, separator, *lines])
+
+
+def _replace_overview_evidence_scope(body: str, summary_md: str) -> str:
+    text = str(body or "").rstrip()
+    if not text or not summary_md:
+        return text
+    lines = text.splitlines()
+    target = "## Evidence Scope"
+    summary_block = "#### Coverage Summary\n\n" + summary_md.strip()
+    out: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if line.strip() == target:
+            out.append(line)
+            out.append("")
+            out.append(summary_block)
+            index += 1
+            while index < len(lines) and not lines[index].strip().startswith("## "):
+                index += 1
+            continue
+        out.append(line)
+        index += 1
+    rendered = "\n".join(out).strip()
+    if target not in text:
+        return f"{rendered}\n\n{summary_block}" if rendered else summary_block
+    return rendered
+
+
 def _quality_gate_section(
     section_key: str,
     title: str,
     body: str,
     gaps: list[str],
     confidence: float,
+    evidence_results: list[dict[str, Any]] | None = None,
 ) -> tuple[list[str], float]:
     gated_gaps = list(gaps)
     gated_confidence = confidence
@@ -249,6 +498,39 @@ def _quality_gate_section(
             if note not in gated_gaps:
                 gated_gaps.append(note)
             gated_confidence = min(gated_confidence, 0.65)
+    source_verdicts = {str(result.get("source_verdict") or "").strip().lower() for result in evidence_results or [] if str(result.get("source_verdict") or "").strip()}
+    if source_verdicts and "confirmed" not in source_verdicts:
+        lowered = body.casefold()
+        strong_markers = (
+            "confirmed",
+            "executed",
+            "compromised",
+            "attack succeeded",
+            "侵害",
+            "実行された",
+            "確認された",
+        )
+        if any(marker in lowered for marker in strong_markers):
+            note = "Section language is stronger than the evidence verdicts support; rewrite with cautious wording."
+            if note not in gated_gaps:
+                gated_gaps.append(note)
+            gated_confidence = min(gated_confidence, 0.6)
+    raw_evidence_patterns = (
+        "#### raw evidence",
+        "### raw evidence",
+        "raw_evidence_rows",
+        "raw evidence moved to reports/evidence/",
+    )
+    lowered_body = body.casefold()
+    if any(pattern in lowered_body for pattern in raw_evidence_patterns):
+        raw_row_dump = any(
+            token in lowered_body for token in ("| none |", "| null |", "| - |", ": none", ": null", ": -")
+        )
+        if raw_row_dump:
+            note = "Raw evidence rows should be moved to the appendix evidence export or reports/evidence JSON, not copied into the narrative body."
+            if note not in gated_gaps:
+                gated_gaps.append(note)
+            gated_confidence = min(gated_confidence, 0.55)
     return gated_gaps, gated_confidence
 
 
@@ -349,6 +631,9 @@ def _summarize_rows(
     return {
         source_type: source_id,
         "description": description,
+        "kind": "rows" if source_type == "keypoint" else "trace",
+        "source_kind": source_type,
+        "source_ref": source_id,
         "row_count": len(rows),
         "evidence_ids": evidence_ids,
         "finding_ids": finding_ids,
@@ -1033,6 +1318,9 @@ def _resolve_evidence_results(
                 {
                     "keypoint": normalized,
                     "description": "Current memory keypoint cards derived from findings.",
+                    "kind": "rows",
+                    "source_kind": "keypoint",
+                    "source_ref": normalized,
                     "row_count": len(cards),
                     "evidence_ids": [],
                     "finding_ids": [],
@@ -1139,6 +1427,26 @@ def _build_report_brief(db: CaseDB) -> dict[str, Any]:
         LIMIT 8
         """,
     )
+    confirmed_hypotheses = fetch_records(
+        db,
+        """
+        SELECT hypothesis_id, description, status, verdict, summary, source_rule_ids, required_entities
+        FROM hypotheses
+        WHERE status = 'confirmed'
+        ORDER BY updated_at DESC, hypothesis_id
+        LIMIT 8
+        """,
+    )
+    refuted_hypotheses = fetch_records(
+        db,
+        """
+        SELECT hypothesis_id, description, status, verdict, summary, source_rule_ids, required_entities
+        FROM hypotheses
+        WHERE status = 'refuted'
+        ORDER BY updated_at DESC, hypothesis_id
+        LIMIT 8
+        """,
+    )
     prior_sections = fetch_records(
         db,
         """
@@ -1165,9 +1473,17 @@ def _build_report_brief(db: CaseDB) -> dict[str, Any]:
             continue
         seen_claim_keys.add(key)
         deduped_claims.append(normalize_value(item))
+    coverage_map = _collect_section_coverage(db)
+    coverage_summary = {
+        "sections": coverage_map,
+        "section_count": len(coverage_map),
+        "total_sources": sum(len(items) for items in coverage_map.values()),
+    }
     return {
         "top_findings": [normalize_value(item) for item in findings],
         "active_hypotheses": [normalize_value(item) for item in active_hypotheses],
+        "confirmed_hypotheses": [normalize_value(item) for item in confirmed_hypotheses],
+        "refuted_hypotheses": [normalize_value(item) for item in refuted_hypotheses],
         "prior_sections": [
             {
                 "section_key": item["section_key"],
@@ -1179,6 +1495,7 @@ def _build_report_brief(db: CaseDB) -> dict[str, Any]:
             for item in prior_sections
         ],
         "existing_claims": deduped_claims,
+        "evidence_coverage": coverage_summary,
     }
 
 
@@ -1382,8 +1699,8 @@ def _upsert_report_section(
     db.execute(
         """
         INSERT INTO report_sections (
-            section_key, title, body, confidence, status, update_count, gaps, last_filled_session, last_filled_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            section_key, title, body, confidence, status, update_count, gaps, last_filled_session, last_filled_at, stale
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (section_key) DO UPDATE SET
             title = excluded.title,
             body = excluded.body,
@@ -1392,7 +1709,8 @@ def _upsert_report_section(
             update_count = excluded.update_count,
             gaps = excluded.gaps,
             last_filled_session = excluded.last_filled_session,
-            last_filled_at = excluded.last_filled_at
+            last_filled_at = excluded.last_filled_at,
+            stale = FALSE
         """,
         (
             section_key,
@@ -1404,6 +1722,7 @@ def _upsert_report_section(
             json.dumps(gaps, ensure_ascii=False),
             session_id,
             now,
+            False,
         ),
     )
     return True
@@ -1452,7 +1771,20 @@ def load_report_sections_map(db: CaseDB) -> dict[str, str]:
 
 def build_report_markdown_from_db(db: CaseDB) -> str:
     sections = fetch_report_sections(db)
-    ordered = [str(row.get("body") or "").strip() for row in sections if str(row.get("body") or "").strip()]
+    coverage_map = _collect_section_coverage(db)
+    overview_summary = _coverage_summary_markdown(coverage_map)
+    ordered: list[str] = []
+    for row in sections:
+        section_key = str(row.get("section_key") or "")
+        body = str(row.get("body") or "").strip()
+        if not body:
+            continue
+        if section_key == "1_overview" and overview_summary:
+            body = _replace_overview_evidence_scope(body, overview_summary)
+        coverage_rows = coverage_map.get(section_key, [])
+        if coverage_rows and section_key != "1_overview":
+            body = _append_coverage_table(body, coverage_rows)
+        ordered.append(body)
     if not ordered:
         return ""
     return "\n\n".join(ordered).strip() + "\n"
@@ -1475,11 +1807,13 @@ def prepare_section_request(
     title = _title_from_template_body(template_body, section_key)
     template_preamble, blocks = _split_template_body(template_body)
     if not blocks:
-        blocks = [{"heading": "", "template_body": template_body}]
+        blocks = [{"heading": "", "template_body": template_body, "evidence_keypoints": [], "mode": ""}]
     block_requests = [
         {
             "heading": block["heading"],
             "template_body": block["template_body"],
+            "evidence_keypoints": list(block.get("evidence_keypoints") or []),
+            "mode": str(block.get("mode") or ""),
         }
         for block in blocks
     ]
@@ -1506,11 +1840,13 @@ def _render_section_from_request(
 ) -> tuple[str, list[dict[str, Any]], list[str]]:
     from forensia.ai.section_agent import run_section_block_agent
 
+    memory = MemoryManager(request["case"])
     rendered_blocks: list[str] = []
     block_gaps: list[str] = []
     block_outputs: dict[str, str] = {}
     all_evidence_results: list[dict[str, Any]] = []
     for block in request.get("block_requests") or []:
+        is_benchmark_mode = str(block.get("mode") or "").strip().casefold() == "benchmark"
         block_result = run_section_block_agent(
             case=request["case"],
             db=db,
@@ -1518,12 +1854,15 @@ def _render_section_from_request(
             title=str(request["title"]),
             block_heading=str(block.get("heading") or ""),
             template_body=str(block.get("template_body") or ""),
-            context_sections=request.get("context_sections") or {},
-            current_section_outputs=block_outputs,
+            context_sections={} if is_benchmark_mode else (request.get("context_sections") or {}),
+            current_section_outputs={} if is_benchmark_mode else block_outputs,
             report_brief=request.get("report_brief") or {},
             base_url=base_url,
             model=model,
+            memory=memory,
             max_queries_per_section=max_queries_per_section,
+            evidence_keypoints=list(block.get("evidence_keypoints") or []),
+            benchmark_mode=is_benchmark_mode,
             audit_callback=audit_callback,
         )
         block_body = block_result.body
@@ -1552,6 +1891,9 @@ def finalize_section(
     extra_gaps: list[str] | None = None,
 ) -> dict[str, Any]:
     """UPSERT the section into DuckDB. Returns gap list and confidence."""
+    sanitized_body, removed_raw_evidence = _sanitize_raw_evidence_body(section_key, body)
+    if sanitized_body != body:
+        body = sanitized_body
     if section_key == "2_timeline":
         body = _sort_markdown_table_by_first_column(body)
     candidate_gaps = collect_gaps({section_key: body})
@@ -1571,7 +1913,13 @@ def finalize_section(
         body,
         candidate_gaps,
         candidate_confidence,
+        evidence_results,
     )
+    if removed_raw_evidence:
+        note = "Raw evidence rows were moved to reports/evidence JSON and replaced with normalized summaries in the section body."
+        if note not in candidate_gaps:
+            candidate_gaps.append(note)
+        candidate_confidence = min(candidate_confidence, 0.7)
     duplicate_titles = _duplicate_finding_titles(db, body)
     if duplicate_titles:
         candidate_gaps.append(
@@ -1623,18 +1971,45 @@ def finalize_section(
             confidence=candidate_confidence,
             gaps=candidate_gaps,
         )
+    event_claim_gaps = _event_claim_gaps(body, evidence_results)
+    if event_claim_gaps:
+        for gap in event_claim_gaps:
+            if gap not in candidate_gaps:
+                candidate_gaps.append(gap)
+        candidate_confidence = min(candidate_confidence, 0.7)
+        _update_section_quality_only(
+            db=db,
+            section_key=section_key,
+            confidence=candidate_confidence,
+            gaps=candidate_gaps,
+        )
     return {"gaps": candidate_gaps, "confidence": candidate_confidence}
 
 
 def _collect_flat_evidence_rows(
     evidence_results: list[dict[str, Any]],
     max_rows: int = 80,
+    min_filled_cols: float = 0.5,
 ) -> list[dict[str, Any]]:
     seen: set[str] = set()
     flat: list[dict[str, Any]] = []
     for result in evidence_results:
+        if str(result.get("kind") or "rows") != "rows":
+            continue
         for row in result.get("sample_rows") or []:
             if not isinstance(row, dict):
+                continue
+            non_empty = 0
+            total = 0
+            for value in row.values():
+                total += 1
+                if value is None:
+                    continue
+                text = str(value).strip()
+                if not text or text in {"-", "None", "NULL", "null", "N/A", "n/a"}:
+                    continue
+                non_empty += 1
+            if total and (non_empty / total) < min_filled_cols:
                 continue
             key = json.dumps(row, sort_keys=True, default=str)
             if key in seen:
@@ -1646,6 +2021,108 @@ def _collect_flat_evidence_rows(
     return flat
 
 
+def _row_to_summary_line(row: dict[str, Any]) -> str:
+    if not row:
+        return "no fields"
+    preferred_fields = (
+        "timestamp",
+        "event_id",
+        "record_id",
+        "computer",
+        "user_name",
+        "target_user",
+        "subject_user",
+        "process_name",
+        "service_name",
+        "file_path",
+        "file_name",
+        "src_ip",
+        "dst_ip",
+        "message",
+        "description",
+        "command_line",
+        "evidence_id",
+    )
+    parts: list[str] = []
+    remaining_keys = [key for key in row.keys() if key not in preferred_fields]
+    for key in preferred_fields:
+        value = row.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text or text in {"-", "None", "NULL", "null", "N/A", "n/a"}:
+            continue
+        if key == "timestamp":
+            parts.append(text)
+        elif key in {"message", "description"} and len(text) > 120:
+            parts.append(text[:117].rstrip() + "...")
+        else:
+            parts.append(f"{key}={text}")
+    if not parts:
+        for key in remaining_keys:
+            value = row.get(key)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if not text or text in {"-", "None", "NULL", "null", "N/A", "n/a"}:
+                continue
+            parts.append(f"{key}={text}")
+            if len(parts) >= 4:
+                break
+    return " ".join(parts) if parts else "no usable summary"
+
+
+def _summarize_flat_evidence_rows(rows: list[dict[str, Any]], max_rows: int = 30) -> list[dict[str, Any]]:
+    summarized: list[dict[str, Any]] = []
+    for row in rows[:max_rows]:
+        summarized.append({"summary": _row_to_summary_line(row)})
+    return summarized
+
+
+def _sanitize_raw_evidence_body(section_key: str, body: str) -> tuple[str, bool]:
+    text = str(body or "").rstrip()
+    if not text:
+        return text, False
+    lines = text.splitlines()
+    out: list[str] = []
+    removed = False
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if RAW_EVIDENCE_HEADING_PATTERN.match(line.strip()):
+            removed = True
+            out.append(line)
+            out.append("")
+            out.append(
+                f"Raw evidence moved to reports/evidence/{section_key}.json; this section keeps only normalized summaries."
+            )
+            index += 1
+            while index < len(lines):
+                next_line = lines[index]
+                if next_line.strip().startswith("## ") and not next_line.strip().startswith("### "):
+                    break
+                if next_line.strip().startswith("### ") and not next_line.strip().startswith("#### "):
+                    break
+                index += 1
+            continue
+        out.append(line)
+        index += 1
+    sanitized = "\n".join(out).strip()
+    if removed and ("| None |" in text or "| NULL |" in text or "| - |" in text or "None" in text or "NULL" in text):
+        sanitized = re.sub(r"\n{3,}", "\n\n", sanitized)
+    return sanitized, removed
+
+
+def _dump_section_trace_json(case: Case, section_key: str, evidence_results: list[dict[str, Any]]) -> None:
+    trace_rows = [normalize_value(result) for result in evidence_results if str(result.get("kind") or "rows") != "rows"]
+    if not trace_rows:
+        return
+    debug_dir = case.reports_dir / "debug"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    out_path = debug_dir / f"{section_key}_trace.json"
+    out_path.write_text(json.dumps(trace_rows, ensure_ascii=False, default=str, indent=2), encoding="utf-8")
+
+
 def _dump_section_evidence_json(case: Case, section_key: str, rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
@@ -1653,6 +2130,100 @@ def _dump_section_evidence_json(case: Case, section_key: str, rows: list[dict[st
     evidence_dir.mkdir(parents=True, exist_ok=True)
     out_path = evidence_dir / f"{section_key}.json"
     out_path.write_text(json.dumps(rows, ensure_ascii=False, default=str, indent=2), encoding="utf-8")
+
+
+def _benchmark_block_id(block_heading: str) -> str:
+    match = re.match(r"\s*(\d+)", str(block_heading or ""))
+    if match:
+        return f"Q{match.group(1)}"
+    return "Q0"
+
+
+def _coerce_string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if value is None:
+        return []
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _normalize_benchmark_answer(
+    answer: dict[str, Any],
+    *,
+    section_key: str,
+    block_heading: str,
+    status: str,
+) -> dict[str, Any]:
+    normalized_id = str(answer.get("id") or _benchmark_block_id(block_heading)).strip() or _benchmark_block_id(block_heading)
+    normalized_status = str(answer.get("status") or status or "insufficient_evidence").strip().lower()
+    if normalized_status not in {"answered", "partial", "not_found", "not_searched", "insufficient_evidence", "wrong_query"}:
+        normalized_status = status or "insufficient_evidence"
+    normalized_answer = _coerce_string_list(answer.get("answer"))
+    normalized_missing = _coerce_string_list(answer.get("missing_reason"))
+    normalized_queries = _coerce_string_list(answer.get("queries_run"))
+    return {
+        "id": normalized_id,
+        "status": normalized_status,
+        "answer": normalized_answer,
+        "missing_reason": normalized_missing,
+        "queries_run": normalized_queries,
+    }
+
+
+def _benchmark_answers_path(case: Case) -> Path:
+    return case.reports_dir / "benchmark" / "answers.json"
+
+
+def _load_benchmark_answers(case: Case) -> list[dict[str, Any]]:
+    path = _benchmark_answers_path(case)
+    if not path.exists():
+        return []
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [item for item in parsed if isinstance(item, dict)]
+
+
+def _persist_benchmark_answer(case: Case, answer: dict[str, Any]) -> None:
+    path = _benchmark_answers_path(case)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    answers = _load_benchmark_answers(case)
+    answers = [item for item in answers if str(item.get("id") or "") != str(answer.get("id") or "")]
+    answers.append(answer)
+    answers.sort(key=lambda item: str(item.get("id") or ""))
+    path.write_text(json.dumps(answers, ensure_ascii=False, default=str, indent=2), encoding="utf-8")
+
+
+def _render_benchmark_answer_markdown(answer: dict[str, Any], block_heading: str) -> str:
+    answer_lines = [f"- {str(item).strip()}" for item in (answer.get("answer") or []) if str(item).strip()]
+    missing_lines = [f"- {str(item).strip()}" for item in (answer.get("missing_reason") or []) if str(item).strip()]
+    query_lines = [f"- {str(item).strip()}" for item in (answer.get("queries_run") or []) if str(item).strip()]
+    if not answer_lines:
+        answer_lines = ["- no answer"]
+    if not missing_lines:
+        missing_lines = ["- none"]
+    if not query_lines:
+        query_lines = ["- none"]
+    lines = [
+        f"## {block_heading}",
+        "",
+        f"**ID:** {str(answer.get('id') or _benchmark_block_id(block_heading))}",
+        f"**Status:** {str(answer.get('status') or 'insufficient_evidence')}",
+        "",
+        "### Answer",
+        *answer_lines,
+        "",
+        "### Missing Reason",
+        *missing_lines,
+        "",
+        "### Queries Run",
+        *query_lines,
+    ]
+    return "\n".join(lines).strip() + "\n"
 
 
 def fill_section(
@@ -1678,6 +2249,7 @@ def fill_section(
     )
     flat_rows = _collect_flat_evidence_rows(evidence_results)
     _dump_section_evidence_json(case, request["section_key"], flat_rows)
+    _dump_section_trace_json(case, request["section_key"], evidence_results)
     finalize_section(
         db=db,
         section_key=request["section_key"],

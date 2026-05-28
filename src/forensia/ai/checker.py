@@ -7,7 +7,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 from forensia.ai.json_response import request_llm_json
-from forensia.ai.prompts import build_check_messages, resolve_rule_context
+from forensia.ai.prompts import (
+    build_check_messages,
+    build_check_verdict_messages,
+    build_check_memory_updates_messages,
+    build_check_suspicious_evidence_messages,
+    resolve_rule_context,
+)
 from forensia.config import get_llm_settings
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
@@ -484,34 +490,90 @@ def check_query_result(
     query_index: int = 1,
     max_queries: int = 5,
     fallback_info: dict[str, Any] | None = None,
+    use_phased_check: bool = True,
 ) -> CheckResult:
     overview_md = overview_md if overview_md is not None else memory.load_overview()
     memory_context_md = memory_context_md if memory_context_md is not None else memory.load_compact_context(
-        ["facts.md", "timeline.md", "tasks.md"],
+        memory.investigation_context_files(
+            hypothesis.id if hypothesis else None,
+            include_overview=False,
+        ),
         max_bytes=max(1024, memory.max_bytes // 2),
     )
     observed_evidence_ids = list(_collect_observed_evidence_ids(result_summary))
     rule_context = resolve_rule_context(hypothesis)
-    messages = build_check_messages(
-        planned_query=planned_query,
-        hypothesis=hypothesis,
-        finding_candidates=finding_candidates,
-        result_summary=result_summary,
-        overview_md=overview_md,
-        memory_context_md=memory_context_md,
-        query_index=query_index,
-        max_queries=max_queries,
-        observed_evidence_ids=observed_evidence_ids,
-        rule_context=rule_context,
-        fallback_info=fallback_info,
-    )
-    parsed = request_llm_json(
-        messages=messages,
-        model=model,
-        base_url=base_url,
-        status_callback=status_callback,
-        audit_callback=audit_callback,
-    )
+
+    if use_phased_check:
+        verdict_messages = build_check_verdict_messages(
+            planned_query=planned_query,
+            hypothesis=hypothesis,
+            result_summary=result_summary,
+            rule_context=rule_context,
+            fallback_info=fallback_info,
+        )
+        verdict_parsed = request_llm_json(
+            messages=verdict_messages,
+            model=model,
+            base_url=base_url,
+            status_callback=status_callback,
+        )
+        verdict = _normalize_verdict(verdict_parsed.get("verdict"))
+
+        memory_messages = build_check_memory_updates_messages(
+            verdict=verdict,
+            result_summary=result_summary,
+            finding_candidates=finding_candidates,
+        )
+        memory_parsed = request_llm_json(
+            messages=memory_messages,
+            model=model,
+            base_url=base_url,
+            status_callback=status_callback,
+        )
+
+        suspicious_messages = build_check_suspicious_evidence_messages(result_summary=result_summary)
+        suspicious_parsed = request_llm_json(
+            messages=suspicious_messages,
+            model=model,
+            base_url=base_url,
+            status_callback=status_callback,
+        )
+
+        merged = {
+            "query_id": verdict_parsed.get("query_id") or planned_query.query_id,
+            "verdict": verdict,
+            "rationale": verdict_parsed.get("rationale", ""),
+            "finding_updates": [],
+            "suspicious_evidence": suspicious_parsed.get("suspicious_evidence") or [],
+            "new_hypotheses": memory_parsed.get("new_hypotheses") or [],
+            "memory_updates": memory_parsed.get("memory_updates") or {},
+            "report_text": suspicious_parsed.get("report_text") or "",
+            "missing_checks": [],
+            "notes": "",
+        }
+        parsed = merged
+    else:
+        messages = build_check_messages(
+            planned_query=planned_query,
+            hypothesis=hypothesis,
+            finding_candidates=finding_candidates,
+            result_summary=result_summary,
+            overview_md=overview_md,
+            memory_context_md=memory_context_md,
+            query_index=query_index,
+            max_queries=max_queries,
+            observed_evidence_ids=observed_evidence_ids,
+            rule_context=rule_context,
+            fallback_info=fallback_info,
+        )
+        parsed = request_llm_json(
+            messages=messages,
+            model=model,
+            base_url=base_url,
+            status_callback=status_callback,
+            audit_callback=audit_callback,
+        )
+
     guarded = _guardrail_check_payload(parsed, finding_candidates, result_summary)
 
     result = CheckResult(

@@ -1,0 +1,32 @@
+table: event_ids
+events:
+  4720:
+    title: Account created
+    required_fields:
+      - subject_user
+      - target_user
+    allowed_claims:
+      - new account was created
+      - account creation was observed
+    disallowed_without_extra:
+      - attacker-created
+      - backdoor
+      - privilege escalation
+    keywords_for_string_search:
+      - account created
+      - user account management
+  4732:
+    title: Member added to local group
+    required_fields:
+      - subject_user
+      - member
+      - target_group
+    allowed_claims:
+      - account added to local group
+      - group membership change was observed
+    disallowed_without_extra:
+      - privilege escalation
+      - persistence
+    keywords_for_string_search:
+      - added to local group
+      - group membership

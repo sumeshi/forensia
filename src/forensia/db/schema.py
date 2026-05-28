@@ -129,7 +129,8 @@ CREATE TABLE IF NOT EXISTS report_sections (
     update_count INTEGER DEFAULT 0,
     gaps JSON,
     last_filled_session VARCHAR,
-    last_filled_at TIMESTAMP
+    last_filled_at TIMESTAMP,
+    stale BOOLEAN DEFAULT FALSE
 );
 
 CREATE TABLE IF NOT EXISTS claims (
@@ -194,6 +195,36 @@ CREATE TABLE IF NOT EXISTS section_runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_section_runs_section ON section_runs(section_key, block_heading, created_at);
+
+CREATE OR REPLACE VIEW section_run_coverage AS
+SELECT
+    section_key,
+    block_heading,
+    COALESCE(
+        NULLIF(json_extract_string(payload, '$.result.keypoint'), ''),
+        NULLIF(json_extract_string(payload, '$.result.query_id'), ''),
+        NULLIF(json_extract_string(payload, '$.result.purpose'), ''),
+        NULLIF(json_extract_string(payload, '$.result.source_ref'), ''),
+        NULLIF(json_extract_string(payload, '$.source_ref'), ''),
+        NULLIF(json_extract_string(payload, '$.source_kind'), ''),
+        'unknown_source'
+    ) AS source_query,
+    COALESCE(
+        NULLIF(json_extract_string(payload, '$.result.source_ref'), ''),
+        NULLIF(json_extract_string(payload, '$.result.source_kind'), ''),
+        NULLIF(json_extract_string(payload, '$.source_ref'), ''),
+        NULLIF(json_extract_string(payload, '$.source_kind'), ''),
+        'unknown'
+    ) AS evidence_table,
+    COALESCE(CAST(json_extract_string(payload, '$.result.row_count') AS INTEGER), 0) AS row_count,
+    CASE
+        WHEN COALESCE(json_extract_string(payload, '$.result.kind'), 'rows') = 'rows' THEN 'Yes'
+        ELSE 'No'
+    END AS used_in_answer,
+    'Yes' AS queried,
+    created_at
+FROM section_runs
+WHERE phase = 'query';
 
 CREATE TABLE IF NOT EXISTS ingested_files (
     sha256 VARCHAR PRIMARY KEY,

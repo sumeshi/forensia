@@ -128,10 +128,18 @@ def _request_with_optional_context(
 ) -> dict[str, Any]:
     default_context = initial_context
     if default_context is None:
-        default_context = memory.load_compact_context(
-            ["facts.md", "tasks.md"],
-            max_bytes=max(1024, memory.max_bytes // 3),
-        )
+        load_investigation_context = getattr(memory, "load_investigation_context", None)
+        if callable(load_investigation_context):
+            default_context = load_investigation_context(
+                None,
+                max_bytes=max(1024, memory.max_bytes // 3),
+                include_overview=False,
+            )
+        else:
+            default_context = memory.load_compact_context(
+                ["facts.md", "tasks.md"],
+                max_bytes=max(1024, memory.max_bytes // 3),
+            )
     parsed = request_llm_json(
         messages=messages_builder(default_context),
         model=model,
@@ -160,6 +168,7 @@ def broad_plan_investigation(
     base_url: str,
     model: str,
     max_findings: int = 10,
+    observed_keypoints: list[str] | None = None,
     overview_md: str | None = None,
     default_context_md: str | None = None,
     status_callback: Callable[[str], None] | None = None,
@@ -173,6 +182,7 @@ def broad_plan_investigation(
             extra_context_md=extra_context,
             iteration=state.iteration,
             findings_snapshot=state.findings_snapshot,
+            observed_keypoints=observed_keypoints,
             active_hypotheses=state.active_hypotheses,
             resolved_hypotheses=state.resolved_hypotheses,
             history=[item.model_dump() for item in state.history],
@@ -214,6 +224,19 @@ def plan_hypothesis_query(
     max_queries: int = 5,
 ) -> HypothesisPlanResult:
     overview_md = overview_md if overview_md is not None else memory.load_overview()
+    if default_context_md is None:
+        load_investigation_context = getattr(memory, "load_investigation_context", None)
+        if callable(load_investigation_context):
+            default_context_md = load_investigation_context(
+                hypothesis.id,
+                max_bytes=max(1024, memory.max_bytes // 3),
+                include_overview=False,
+            )
+        else:
+            default_context_md = memory.load_compact_context(
+                ["facts.md", "tasks.md"],
+                max_bytes=max(1024, memory.max_bytes // 3),
+            )
     extra_context_holder = {"value": ""}
     hypothesis_history = [
         item.model_dump()

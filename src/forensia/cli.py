@@ -285,7 +285,7 @@ def run(
     max_iter: int = typer.Option(20, "--max-iter"),
     max_queries_per_hypothesis: int = typer.Option(5, "--max-queries-per-hypothesis"),
     no_progress_limit: int = typer.Option(3, "--no-progress-limit"),
-    report_every_n_cycles: int = typer.Option(1, "--report-every-n-cycles"),
+    report_every_n_cycles: int = typer.Option(3, "--report-every-n-cycles"),
     report_parallelism: int = typer.Option(
         0,
         "--report-parallelism",
@@ -482,7 +482,7 @@ def investigate(
     max_iter: int = typer.Option(20, "--max-iter"),
     max_queries_per_hypothesis: int = typer.Option(5, "--max-queries-per-hypothesis"),
     no_progress_limit: int = typer.Option(3, "--no-progress-limit"),
-    report_every_n_cycles: int = typer.Option(1, "--report-every-n-cycles"),
+    report_every_n_cycles: int = typer.Option(3, "--report-every-n-cycles"),
     report_parallelism: int = typer.Option(
         0,
         "--report-parallelism",

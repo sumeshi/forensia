@@ -197,6 +197,102 @@ Durable conclusions must remain tied to evidence identifiers.
 
 Any new abstraction that summarizes or ranks evidence should preserve a path back to concrete evidence rows.
 
+## Investigation loop mechanics
+
+The hypothesis loop is intentionally short, declarative, and policed by code rather than by LLM judgment. Most knobs are rule-declared, not Python-encoded.
+
+### One cycle (`plan_cycle`)
+
+```
+broad_plan  →  for each active hypothesis: plan → exec(+fallback) → check → track  →  resolve  →  refresh_report(stale-first)  →  inject_gaps_as_new_hypotheses
+```
+
+- `plan_cycle` is bounded by `--max-iter`.
+- Per hypothesis, query attempts are bounded by `--max-queries-per-hypothesis`.
+- Report refresh runs at the end of each cycle (`--report-every-n-cycles`).
+
+### Hypothesis sources
+
+A hypothesis can enter `state.active_hypotheses` from three places:
+
+1. `rule.hypotheses` — instantiated when a rule fires; `source_rule_ids` is populated.
+2. `broad_plan` LLM — open-ended hypotheses generated from gaps, prior verdicts, and kill-chain coverage prompts.
+3. `follow_up_questions` — auto-spawned when a hypothesis with a `source_rule_ids` becomes confirmed.
+
+Gap hypotheses generated from report writer output flow through `_inject_gap_hypotheses` and use `GapHypothesisOutput` Pydantic validation with a heuristic safety-net only when the LLM omits `required_entities` / `confirm_when`.
+
+### Planner
+
+`build_hypothesis_plan_messages` injects the schema_card (`allowed_columns` + `json_field_extractors`) into the prompt. The planner is asked to produce one SQL query per call. The prompt forbids referencing columns outside the declared schema.
+
+### Executor + fallback
+
+The executor runs the planned SQL. If the result is 0 rows and the hypothesis has `source_rule_ids` with `fallback_search` declarations, fallback phases are executed in declared order until one returns rows. Fallback SQL is built by `engine.execute_fallback_search` — the LLM does not see or compose fallback SQL.
+
+When a fallback hits, the `fallback_info = {phase, source_rule_id}` is forwarded to the checker prompt as explicit context so the verdict accounts for the fallback origin.
+
+### Checker
+
+`build_check_messages` injects `rule_context` (resolved via `resolve_rule_context()` from `source_rule_ids`) into the prompt. Default verdict criteria are correlation-based:
+
+- `confirmed` — the hypothesis `required_entities` are co-observed in the same rows.
+- `refuted` — zero rows or contradictory entities.
+- `inconclusive` — only some required entities observed; rationale must name missing entities.
+
+The checker prompt explicitly prohibits rationale phrases like "direct causation not proven" or "requires further investigation" without naming a missing entity. When `rule_context.confirm_when` / `refute_when` are present, they override the generic criteria.
+
+### Progress tracker
+
+`HypothesisProgressTracker` is a per-hypothesis dataclass that records `(query_fingerprint, verdict, row_count)` per query. After each check, it makes one of three deterministic decisions:
+
+| Method | Condition | Effect |
+|---|---|---|
+| `should_auto_confirm(rule_context, rows)` | All `confirm_when.co_observed_event_ids` present in rows | Force `verdict=confirmed` regardless of LLM output |
+| `should_auto_refute(threshold=3)` | 3 consecutive 0-row inconclusive | Force `verdict=refuted` |
+| `should_pivot(fp)` | Same query fingerprint seen ≥ 2 times | Notify planner to pivot (avoid LLM repeating the same query) |
+
+Query fingerprints are computed from event_id / computer / time-bucket patterns in the SQL — they capture intent, not exact SQL text.
+
+### Resolver
+
+When a hypothesis resolves, `_resolve_hypothesis` performs:
+
+1. Move the hypothesis to `state.resolved_hypotheses` and upsert `status` to `confirmed` or `refuted` in DB.
+2. For each `source_rule_id`, look up the rule via cached `load_rule_by_id` and find the matching `HypothesisDeclaration` by hypothesis id.
+3. From the declaration:
+    - Extend `stale_sections` with `decl.report_sections`.
+    - On confirmed verdict, add new active hypotheses from `decl.follow_up_questions` (deduplicated by description).
+4. Issue `UPDATE report_sections SET stale = TRUE WHERE section_key = ?` for each stale section.
+
+### Report writer
+
+`async_refresh_report_sections` reads `stale` flags and sorts requests so stale sections process first. `_build_report_brief` fetches `confirmed_hypotheses` and `refuted_hypotheses` separately and passes both to the report generation prompt; the prompt instructs the LLM to reflect confirmed claims in section bodies and surface refuted claims under a "Discarded Hypotheses" subsection.
+
+After a section is filled, the upsert clears its `stale` flag.
+
+### Termination
+
+A cycle ends when one of:
+
+- All active hypotheses resolve and broad_plan signals `stop` and report gaps are empty.
+- Three consecutive cycles produce no progress (`--no-progress-limit`).
+- `--max-iter` cycles complete.
+
+`no_progress` is true for a cycle that neither resolves any hypothesis nor adds any new gap hypothesis nor changes report status counters.
+
+### Rule routing knobs
+
+| Knob | Where declared | Effect |
+|---|---|---|
+| `correlate_with` | rule | Planner prompt hint: "also examine these event ids" |
+| `confirm_when.co_observed_event_ids` | `hypotheses[]` | Tracker auto-confirm criterion |
+| `refute_when.zero_rows` | `hypotheses[]` | Checker default refutation rule |
+| `fallback_search` | rule | 0-row recovery without consulting LLM |
+| `follow_up_questions` | `hypotheses[]` | Auto-spawn next investigations on confirmation |
+| `report_sections` | `hypotheses[]` | Section staleness routing on resolution |
+
+If a contributor wants new agent behavior, the first question to ask is "can this be a rule-declared knob?". Avoid adding Python-side conditionals keyed on rule identity or event ID.
+
 ## Structured memory model
 
 Structured memory is not a chat transcript. It is a bounded working set optimized for repeated LLM calls.
@@ -458,9 +554,9 @@ Profiles define rule selection policy. Rulepacks define the actual detection log
 
 ### Rulepack contract
 
-Rulepack files currently live under `src/forensia/rulepacks/windows/` and are YAML rule definitions.
+Rulepack files live under `src/forensia/rulepacks/windows/` (and similar directories) as YAML rule definitions. Pydantic models in `src/forensia/rules/models.py` enforce the schema with `extra="forbid"`, so unknown fields are rejected at load time.
 
-Each rule has a stable contributor-facing shape:
+#### Detection part (always required)
 
 - `id`: stable rule identifier
 - `title`: human-facing rule title
@@ -472,7 +568,40 @@ Each rule has a stable contributor-facing shape:
 - `tags`: classification tags
 - `attack`: ATT&CK mappings
 
-Each result row from a rule query becomes one finding, with the originating row stored as structured evidence on that finding.
+Each result row from a rule query becomes one finding with the originating row stored as structured evidence.
+
+#### Investigation declaration (optional, drives the hypothesis loop)
+
+When a rule should also seed the LLM-driven hypothesis loop, the rule declares the investigation contract directly. The agent layer consumes this declaration generically — kill-chain knowledge is not hardcoded in Python.
+
+- `hypotheses[]`: hypothesis templates that get instantiated when this rule fires. Each entry must include:
+  - `id`: stable hypothesis identifier within the rule
+  - `segment`: kill-chain segment (`persistence`, `lateral-movement`, etc.)
+  - `description`: hypothesis claim with `{field}` placeholders bound to query row columns
+  - `required_entities`: list of entity names that must co-occur for confirmation
+  - `confirm_when`: structured correlation criteria, typically `{co_observed_event_ids: [...], same_host: bool, within_minutes: int}`. The `HypothesisProgressTracker` auto-confirms the hypothesis when `co_observed_event_ids` are all observed in query results, regardless of LLM verdict.
+  - `refute_when`: structured refutation criteria, typically `{zero_rows: true}`
+  - `follow_up_questions`: questions auto-injected as new gap hypotheses when this hypothesis becomes confirmed
+  - `report_sections`: section keys (e.g. `3_technical`, `4_gaps`) that are marked `stale` when this hypothesis resolves; the next report refresh prioritizes them
+- `correlate_with[]`: event ID groups that the planner is encouraged to also examine. Each entry is `{event_ids: [...], rationale: str}`.
+- `fallback_search[]`: phases executed automatically when the primary SQL returns 0 rows. Phases run in declared order; the planner LLM is not consulted. Allowed phases:
+  - `keyword_in_raw_json` with `keywords: [str, ...]` — LIKE-escaped match against `raw_json`
+  - `related_event_ids` with `event_ids: [int, ...]` — secondary event surface
+  - `artifact_table` with `table: str` — fall back to another normalized table (whitelisted in `engine.py`)
+
+#### Schema hints
+
+`src/forensia/rulepacks/_schema/*.yaml` is not a rule. It declares column inventories for tables the LLM may query.
+
+- `table`: table name (e.g. `evtx_events`)
+- `columns`: full column list — the planner is instructed to never reference columns outside this list
+- `json_field_extractors`: name → DuckDB JSON extraction expression — the planner is instructed to use these expressions for fields not in `columns`
+
+The loader skips `_schema/` when enumerating rules. Adding a new investigable table means adding a `_schema/<table>.yaml` and updating the agent's allowlist; the YAML itself is consumed automatically by `prompts._load_schema_hints()`.
+
+#### Allowlist files
+
+Files with `kind: allowlist_services` (or similar `kind:` prefix) are not rules and are skipped by the rule loader. They are consumed by suppression logic — see "Allowlist and suppression model" below.
 
 ### Profile contract
 
@@ -553,9 +682,9 @@ README should cover:
 | Flag | Default | When it matters |
 |---|---|---|
 | `--max-iter` | `20` | Increase only when longer investigation loops are needed |
-| `--max-queries-per-hypothesis` | `5` | Tune how deeply one hypothesis can be explored |
+| `--max-queries-per-hypothesis` | `5` | Tune how deeply one hypothesis can be explored. Tracker may resolve sooner (auto-confirm / auto-refute / pivot) regardless of this cap. |
 | `--no-progress-limit` | `3` | Relax when you want to tolerate more low-signal cycles |
-| `--report-every-n-cycles` | `1` | Increase when report refresh cost is too high |
+| `--report-every-n-cycles` | `1` | Increase when report refresh cost is too high. Note: `stale` sections (DESIGN-2) lose their priority benefit if many cycles pass between refreshes. |
 | `--report-parallelism` | `1` | Increase only if the local LLM backend can handle concurrency |
 | `--profile` | `windows-basic` | Switch to a different rule profile |
 | `--report-only` | `false` | Refill report sections without running the hypothesis loop |

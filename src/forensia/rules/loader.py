@@ -1,10 +1,48 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 
 import yaml
 
 from forensia.rules.models import Rule
+
+
+# REFACTOR-21: Cache id → Rule mapping for O(1) lookup
+@lru_cache(maxsize=None)
+def _get_rule_cache() -> dict[str, Rule]:
+    """Build and cache a mapping of rule_id to Rule objects.
+    
+    Called once on first use, then cached indefinitely.
+    """
+    rules = _load_all_rules()
+    return {rule.id: rule for rule in rules}
+
+
+def _load_all_rules() -> list[Rule]:
+    """Internal function to load all rules without caching."""
+    rulepacks_dir = Path(__file__).parent.parent / "rulepacks"
+    rules: list[Rule] = []
+    # Skip _schema directory
+    for path in sorted(rulepacks_dir.rglob("*.yaml")):
+        if "_schema" in path.parts:
+            continue
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and str(data.get("kind") or "").startswith("allowlist"):
+            continue
+        if data:
+            rule = Rule.model_validate(data)
+            rules.append(rule)
+    return rules
+
+
+def load_rule_by_id(rule_id: str) -> Rule | None:
+    """Load a single rule by its ID from the cached rule mapping (DESIGN-A5).
+
+    Rules are loaded once from the packaged rulepacks/ directory and cached.
+    """
+    cache = _get_rule_cache()
+    return cache.get(rule_id)
 
 
 def load_rules_from_dir(directory: str | Path, profile_path: str | Path | None = None) -> list[Rule]:
@@ -45,13 +83,3 @@ def load_rules_from_dir(directory: str | Path, profile_path: str | Path | None =
                 continue
             rules.append(rule)
     return rules
-
-
-def load_rule_by_id(rulepacks_dir: str | Path, rule_id: str) -> Rule | None:
-    """Load a single rule by its ID from the rulepacks directory."""
-    directory = Path(rulepacks_dir)
-    for path in sorted(directory.rglob("*.yaml")):
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
-        if isinstance(data, dict) and data.get("id") == rule_id:
-            return Rule.model_validate(data)
-    return None

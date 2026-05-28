@@ -22,6 +22,7 @@ dependencies = [
     "python-dotenv",
     "fastapi",
     "uvicorn",
+    "sqlglot",
     "evtx2es>=1.9.0",
     "mft2es>=1.7.2",
     "prefetch2es>=2.3.0",
@@ -40,6 +41,7 @@ where = ["src"]
 forensia = [
     "report/templates/*.j2",
     "report_template/*.md",
+    "rulepacks/_schema/*.yaml",
     "static/**/*",
 ]
 

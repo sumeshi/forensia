@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class FindingTemplate(BaseModel):
@@ -11,12 +11,16 @@ class FindingTemplate(BaseModel):
 
 
 class HypothesisDeclaration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    
     id: str
     segment: str
     description: str
     required_entities: list[str] = Field(default_factory=list)
     confirm_when: dict[str, Any] | None = None
     refute_when: dict[str, Any] | None = None
+    follow_up_questions: list[str] = Field(default_factory=list)
+    report_sections: list[str] = Field(default_factory=list)
 
 
 class CorrelateEvent(BaseModel):
@@ -25,6 +29,8 @@ class CorrelateEvent(BaseModel):
 
 
 class Rule(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    
     id: str
     title: str
     severity: str = "medium"

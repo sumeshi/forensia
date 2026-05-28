@@ -52,6 +52,35 @@ class CaseDB:
         self.conn.execute("ALTER TABLE findings ADD COLUMN IF NOT EXISTS attack JSON")
         self.conn.execute("ALTER TABLE report_sections ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'draft'")
         self.conn.execute("ALTER TABLE report_sections ADD COLUMN IF NOT EXISTS update_count INTEGER DEFAULT 0")
+        for column_name, column_type in (
+            ("dst_ip", "VARCHAR"),
+            ("dst_port", "VARCHAR"),
+            ("protocol", "VARCHAR"),
+            ("process_id", "VARCHAR"),
+            ("exception_code", "VARCHAR"),
+            ("object_dn", "VARCHAR"),
+            ("attribute", "VARCHAR"),
+            ("target_server", "VARCHAR"),
+            ("target_group", "VARCHAR"),
+            ("task_name", "VARCHAR"),
+            ("session_id", "VARCHAR"),
+            ("share_name", "VARCHAR"),
+            ("access_mask", "VARCHAR"),
+            ("normalized_src_ip", "VARCHAR"),
+            ("normalized_target_user", "VARCHAR"),
+            ("parent_process", "VARCHAR"),
+            ("parent_process_id", "VARCHAR"),
+            ("parent_cmd", "VARCHAR"),
+            ("child_process", "VARCHAR"),
+            ("child_process_id", "VARCHAR"),
+            ("child_cmd", "VARCHAR"),
+            ("parent_guid", "VARCHAR"),
+            ("child_guid", "VARCHAR"),
+            ("clear_time", "TIMESTAMP"),
+            ("clear_event_id", "INTEGER"),
+            ("reason", "VARCHAR"),
+        ):
+            self.conn.execute(f"ALTER TABLE evtx_events ADD COLUMN IF NOT EXISTS {column_name} {column_type}")
         self.conn.execute("UPDATE report_sections SET status = 'ai_exhausted' WHERE status = 'approved'")
         legacy_verdict = "new" + "_finding"
         self.conn.execute("UPDATE trace.ai_reviews SET verdict = 'newlead' WHERE verdict = ?", (legacy_verdict,))

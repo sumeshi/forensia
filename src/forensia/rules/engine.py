@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from string import Formatter
 from typing import Any
@@ -20,6 +22,7 @@ FALLBACK_PHASES = {"keyword_in_raw_json", "related_event_ids", "artifact_table"}
 
 # Allowed tables for fallback search - validated against schema
 _ALLOWED_FALLBACK_TABLES = {"evtx_events", "mft_entries", "mft_timeline", "prefetch_executions"}
+_EVENT_ID_SCHEMA_PATH = Path(__file__).resolve().parent.parent / "rulepacks" / "_schema" / "event_ids.yaml"
 
 
 def run_rule(db: CaseDB, rule: Rule) -> list[dict[str, Any]]:
@@ -210,6 +213,108 @@ def _escape_like_pattern(keyword: str) -> str:
     escaped = escaped.replace("_", "!_")  # Escape wildcard
     escaped = escaped.replace("'", "''")  # Escape single quote
     return escaped
+
+
+@lru_cache(maxsize=1)
+def _load_event_id_hints() -> dict[int, dict[str, Any]]:
+    if not _EVENT_ID_SCHEMA_PATH.exists():
+        return {}
+    try:
+        data = yaml.safe_load(_EVENT_ID_SCHEMA_PATH.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+    raw_events = data.get("events") if isinstance(data, dict) else {}
+    if not isinstance(raw_events, dict):
+        return {}
+    hints: dict[int, dict[str, Any]] = {}
+    for key, value in raw_events.items():
+        try:
+            event_id = int(key)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(value, dict):
+            hints[event_id] = value
+    return hints
+
+
+def _extract_event_ids_from_sql(sql: str) -> list[int]:
+    raw = re.findall(r"event_id\s*(?:IN\s*\(([^)]+)\)|=\s*(\d+))", sql, re.IGNORECASE)
+    event_ids: list[int] = []
+    seen: set[int] = set()
+    for in_group, eq_val in raw:
+        candidates: list[str] = []
+        if in_group:
+            candidates.extend(v.strip() for v in in_group.split(","))
+        if eq_val:
+            candidates.append(eq_val.strip())
+        for candidate in candidates:
+            try:
+                event_id = int(candidate)
+            except (TypeError, ValueError):
+                continue
+            if event_id in seen:
+                continue
+            seen.add(event_id)
+            event_ids.append(event_id)
+    return event_ids
+
+
+def _keywords_for_event_ids(event_ids: list[int]) -> tuple[list[str], list[int]]:
+    hints = _load_event_id_hints()
+    keywords: list[str] = []
+    seen_keywords: set[str] = set()
+    matched_event_ids: list[int] = []
+    for event_id in event_ids:
+        hint = hints.get(event_id)
+        if not hint:
+            continue
+        matched_event_ids.append(event_id)
+        for keyword in hint.get("keywords_for_string_search") or []:
+            text = str(keyword).strip()
+            if not text:
+                continue
+            normalized = text.casefold()
+            if normalized in seen_keywords:
+                continue
+            seen_keywords.add(normalized)
+            keywords.append(text)
+    return keywords, matched_event_ids
+
+
+def _execute_keyword_search(db: CaseDB, keywords: list[str]) -> list[dict[str, Any]]:
+    if not keywords:
+        return []
+    like_clauses = " OR ".join(
+        f"LOWER(CAST(raw_json AS VARCHAR)) LIKE '%{_escape_like_pattern(keyword.casefold())}%' ESCAPE '!'"
+        for keyword in keywords
+    )
+    sql = f"SELECT * FROM evtx_events WHERE {like_clauses} LIMIT 100"
+    result = db.execute(sql)
+    columns = [item[0] for item in result.description]
+    return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
+
+
+def execute_event_keyword_fallback_search(db: CaseDB, sql: str) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Fallback for queries that explicitly reference event_ids but return no rows.
+
+    Looks up event-specific string search keywords in rulepacks/_schema/event_ids.yaml,
+    then re-queries evtx_events by matching raw_json text.
+    """
+    event_ids = _extract_event_ids_from_sql(sql)
+    if not event_ids:
+        return [], None
+    keywords, matched_event_ids = _keywords_for_event_ids(event_ids)
+    if not keywords:
+        return [], None
+    rows = _execute_keyword_search(db, keywords)
+    if not rows:
+        return [], None
+    return rows, {
+        "phase": "keyword_in_raw_json",
+        "event_ids": matched_event_ids,
+        "keywords": keywords,
+        "source": "event_id_schema",
+    }
 
 
 def execute_fallback_search(db: CaseDB, fallback: dict[str, Any]) -> list[dict[str, Any]]:

@@ -28,3 +28,19 @@ query: |
 finding:
   title: "PowerShell execution after RDP logon: {target_user}@{computer}"
   summary: "PowerShell execution was observed at {powershell_time} after an RDP logon at {logon_time}. Source IP: {src_ip}. PowerShell shortly after RDP is a classic lateral movement pattern; review script content (4104) and subsequent network connections."
+hypotheses:
+  - id: lateral_movement_via_rdp_ps
+    segment: lateral-movement
+    description: "PowerShell execution after RDP logon to {computer} from {src_ip} indicates lateral movement with interactive access"
+    required_entities: [src_ip, computer, target_user, command_line]
+    confirm_when:
+      co_observed_event_ids: [4624, 4104]
+      same_host: true
+      within_minutes: 30
+    refute_when:
+      zero_rows: true
+    follow_up_questions:
+      - "What was the source host of the RDP connection from {src_ip}?"
+      - "Were additional lateral movements attempted on other hosts?"
+      - "Did the PowerShell script download or execute additional payloads?"
+    report_sections: [3_technical, 4_gaps]

@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 from forensia.ai.checker import check_query_result
 from forensia.ai.checker import _parse_new_hypotheses
+from forensia.ai.investigator import _query_fingerprint
+from forensia.ai.section_agent import _benchmark_report_brief
 from forensia.ai.planner import (
     _parse_hypotheses,
     _request_with_optional_context,
@@ -15,6 +17,7 @@ from forensia.ai.planner import (
 )
 from forensia.ai.prompts import (
     _truncate_context_sections,
+    build_benchmark_section_messages,
     build_broad_plan_messages,
     build_check_messages,
     build_hypothesis_plan_messages,
@@ -280,6 +283,20 @@ class PlannerRetryTests(unittest.TestCase):
         )
         self.assertEqual(1, len(hypotheses))
         self.assertIsNone(hypotheses[0].verdict)
+
+    def test_broad_plan_messages_use_system_assigned_hypothesis_ids(self) -> None:
+        messages = build_broad_plan_messages(
+            overview_md="# overview",
+            extra_context_md="",
+            iteration=1,
+            findings_snapshot=[],
+            active_hypotheses=[],
+            resolved_hypotheses=[],
+            history=[],
+        )
+        system = messages[0]["content"]
+        self.assertIn("<assigned by system>", system)
+        self.assertNotIn('"id": "H-new"', system)
 
     def test_materializes_query_template_into_sql(self) -> None:
         state = SessionState(session_id="session-template", iteration=1)
@@ -627,6 +644,7 @@ class PlannerRetryTests(unittest.TestCase):
                     memory=memory,
                     base_url=_llm_base_url(),
                     model="test-model",
+                    use_phased_check=False,
                 )
 
         self.assertEqual(
@@ -667,6 +685,7 @@ class PlannerRetryTests(unittest.TestCase):
                     memory=memory,
                     base_url=_llm_base_url(),
                     model="test-model",
+                    use_phased_check=False,
                 )
 
         self.assertEqual("inconclusive", captured["result"].verdict)
@@ -721,6 +740,7 @@ class PlannerRetryTests(unittest.TestCase):
                     memory=memory,
                     base_url=_llm_base_url(),
                     model="test-model",
+                    use_phased_check=False,
                 )
 
         self.assertEqual(
@@ -880,8 +900,111 @@ class PlannerRetryTests(unittest.TestCase):
 
         self.assertIn("account names ending with '$' as machine_account", framework)
         self.assertIn("never store a machine account in source_ip", framework)
-        self.assertIn("GOOGLEDRIVESYNC.EXE => cloud_sync", framework)
-        self.assertIn("SCHTASKS.EXE => persistence_tool", framework)
+        self.assertIn("GOOGLEDRIVESYNC.EXE=cloud_sync", framework)
+        self.assertIn("SCHTASKS.EXE=persistence_tool", framework)
+
+    def test_benchmark_report_brief_strips_narrative_keys(self) -> None:
+        brief = _benchmark_report_brief(
+            {
+                "investigation_objective": "Narrative objective",
+                "top_findings": [{"finding_id": "F-1"}],
+                "active_hypotheses": [{"hypothesis_id": "H-1"}],
+                "confirmed_hypotheses": [{"hypothesis_id": "H-2"}],
+                "evidence_inventory": {
+                    "time_range": "2026-05-01 to 2026-05-02",
+                    "row_counts": {"evtx_events": 12},
+                    "narrative": "drop this",
+                },
+            }
+        )
+
+        self.assertNotIn("investigation_objective", brief)
+        self.assertNotIn("top_findings", brief)
+        self.assertNotIn("active_hypotheses", brief)
+        self.assertEqual(
+            {
+                "time_range": "2026-05-01 to 2026-05-02",
+                "row_counts": {"evtx_events": 12},
+            },
+            brief["evidence_inventory"],
+        )
+
+    def test_report_section_messages_include_event_id_guidance(self) -> None:
+        messages = build_report_section_messages(
+            section_meta={"section": "3_technical"},
+            evidence_results=[
+                {
+                    "kind": "rows",
+                    "sample_rows": [{"event_id": 4720, "evidence_id": "ev-1"}],
+                    "head_rows": [],
+                    "tail_rows": [],
+                }
+            ],
+            context_sections={},
+            template_body="# Section",
+            report_brief={},
+        )
+        system = messages[0]["content"]
+        self.assertIn("Event ID 4720", system)
+        self.assertIn("allowed_claims", system)
+
+    def test_report_section_messages_include_strength_guidance_for_non_confirmed_sources(self) -> None:
+        messages = build_report_section_messages(
+            section_meta={"section": "3_technical"},
+            evidence_results=[
+                {
+                    "kind": "rows",
+                    "source_verdict": "newlead",
+                    "sample_rows": [{"event_id": 4720, "evidence_id": "ev-1"}],
+                }
+            ],
+            context_sections={},
+            template_body="# Section",
+            report_brief={},
+        )
+        system = messages[0]["content"]
+        self.assertIn("source_verdict guidance", system)
+        self.assertIn("avoid 'confirmed'", system)
+
+    def test_benchmark_section_messages_request_json_only(self) -> None:
+        messages = build_benchmark_section_messages(
+            section_meta={"section": "6_appendix", "title": "Appendix"},
+            evidence_results=[
+                {
+                    "kind": "rows",
+                    "sample_rows": [{"evidence_id": "ev-1", "file_path": "C:/Users/Alice/file.ost"}],
+                }
+            ],
+            template_body="## 8. メールデータファイル",
+            block_heading="8. メールデータファイル",
+            raw_evidence_rows=[{"summary": "file_path=C:/Users/Alice/file.ost"}],
+            benchmark_id="Q8",
+        )
+        system = messages[0]["content"]
+        self.assertIn("benchmark answer writer", system)
+        self.assertIn("Output JSON only", system)
+        self.assertIn('"answer"', system)
+        self.assertIn("queries_run", system)
+
+    def test_query_fingerprint_normalizes_equivalent_ast_forms(self) -> None:
+        left = _query_fingerprint(
+            "SELECT * FROM evtx_events WHERE event_id = 4624 AND computer = 'HOST1'"
+        )
+        right = _query_fingerprint(
+            "select * from evtx_events as e where computer = 'host1' and event_id in (4624)"
+        )
+
+        self.assertEqual(left, right)
+
+    def test_query_fingerprint_changes_for_different_event_scope(self) -> None:
+        left = _query_fingerprint(
+            "SELECT * FROM evtx_events WHERE event_id = 4624 AND computer = 'HOST1'"
+        )
+        right = _query_fingerprint(
+            "SELECT * FROM evtx_events WHERE event_id = 4634 AND computer = 'HOST1'"
+        )
+
+        self.assertNotEqual(left, right)
 
 
 if __name__ == "__main__":

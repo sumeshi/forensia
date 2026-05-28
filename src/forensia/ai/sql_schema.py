@@ -24,6 +24,7 @@ ALLOWED_TABLES = {
     "section_evidence",
     "query_cache",
     "section_runs",
+    "section_run_coverage",
 }
 
 TABLE_COLUMN_REFERENCE: dict[str, tuple[str, ...]] = {
@@ -87,15 +88,115 @@ TABLE_COLUMN_REFERENCE: dict[str, tuple[str, ...]] = {
     "section_runs": (
         "run_id", "section_key", "block_heading", "iteration", "phase", "payload", "verdict", "created_at",
     ),
+    "section_run_coverage": (
+        "section_key", "block_heading", "source_query", "evidence_table", "row_count", "used_in_answer", "queried", "created_at",
+    ),
 }
 
 
+# PROMPT-4: Load domain knowledge from YAML schema files
 @lru_cache(maxsize=1)
+def _load_logon_type_schema() -> dict:
+    """Load logon type definitions from schema file."""
+    schema_dir = Path(__file__).parent.parent / "rulepacks" / "_schema"
+    path = schema_dir / "logon_types.yaml"
+    if path.exists():
+        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return {}
+
+
+@lru_cache(maxsize=1)
+def _load_app_catalog() -> dict:
+    """Load application catalog from schema file."""
+    schema_dir = Path(__file__).parent.parent / "rulepacks" / "_schema"
+    path = schema_dir / "app_catalog.yaml"
+    if path.exists():
+        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return {}
+
+
+@lru_cache(maxsize=8)
+def _load_table_notes(table_name: str) -> dict:
+    """Load notes dict from _schema/{table_name}.yaml."""
+    schema_dir = Path(__file__).parent.parent / "rulepacks" / "_schema"
+    path = schema_dir / f"{table_name}.yaml"
+    if path.exists():
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        return data.get("notes", {})
+    return {}
+
+
+@lru_cache(maxsize=1)
+def _load_fp_reduction_guidance() -> str:
+    """Load false-positive reduction guidance from YAML schema file."""
+    schema_dir = Path(__file__).parent.parent / "rulepacks" / "_schema"
+    path = schema_dir / "false_positive_rules.yaml"
+    if not path.exists():
+        return ""
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    g = data.get("reduction_guidance", {})
+    lines = ["False-positive reduction — apply before raising confidence:"]
+    normals = g.get("normal_patterns", [])
+    if normals:
+        lines.append("  The following are generally NORMAL and should not be flagged as suspicious on their own:")
+        for item in normals:
+            lines.append(f"    - {item}")
+    amplifiers = g.get("risk_amplifiers", [])
+    if amplifiers:
+        lines.append("  Raise confidence only when ONE OR MORE of these risk amplifiers are present:")
+        for item in amplifiers:
+            lines.append(f"    + {item}")
+    lower = g.get("lower_confidence_when", [])
+    if lower:
+        lines.append("  Lower confidence when:")
+        for item in lower:
+            lines.append(f"    - {item}")
+    return "\n".join(lines) + "\n"
+
+
+def _fmt_table_notes(table_name: str) -> str:
+    """Format table notes from YAML into guidance paragraph."""
+    notes = _load_table_notes(table_name)
+    if not notes:
+        return ""
+    lines = [f"{table_name} table guidance:"]
+    for note in notes.values():
+        lines.append(f"  {note}")
+    return "\n".join(lines)
+
+
 def build_investigation_framework() -> str:
+    """Build investigation framework from schema declarations.
+    
+    PROMPT-4: Framework is built from YAML schema, not Python literals.
+    """
+    logon_schema = _load_logon_type_schema()
+    app_catalog = _load_app_catalog()
+
+    # Logon type reference
+    logontype_lines = []
+    for lt in sorted(logon_schema.get("types", {}).items(), key=lambda x: int(x[0])):
+        lt_id, lt_def = lt
+        logontype_lines.append(f"  {lt_id}  = {lt_def.get('name', '?')} ({lt_def.get('description', '')})")
+
+    # Priority events
+    priority_lines = ["Priority SQL guidance — investigate in this order when no prior history exists:"]
+    for i, pe in enumerate(logon_schema.get("priority_events", []), 1):
+        eids = pe.get("event_ids", [])
+        lts = pe.get("logon_types", [])
+        suffix = f" with logon_type IN ({lts})" if lts else ""
+        priority_lines.append(f"  {i}. event_id IN ({', '.join(str(e) for e in eids)}){suffix} — {pe.get('reason', '')}")
+
+    # App categorizations
+    app_lines = ["Application categorization guidance:"]
+    for exe, cat in app_catalog.get("mappings", {}).items():
+        app_lines.append(f"  {exe}={cat.get('category', '?')}.")
+
     table_lines = [
         f"{table_name} columns: {', '.join(TABLE_COLUMN_REFERENCE[table_name])}."
         for table_name in sorted(ALLOWED_TABLES)
     ]
+
     return (
         "Investigation framework — apply every iteration:\n"
         "  Who:  which user/account is involved (target_user, subject_user)\n"
@@ -105,41 +206,11 @@ def build_investigation_framework() -> str:
         "  What: event_id, process_name, command_line, service_name\n"
         "  How:  logon method (interpret logon_type carefully)\n\n"
         "LogonType reference:\n"
-        "  2  = Interactive (console). Physical access or RunAs.\n"
-        "  3  = Network auth. net use / PsExec / WinRM / remote MMC. Credentials do NOT remain on target.\n"
-        "  5  = Service logon. Service account credentials remain in LSA.\n"
-        "  9  = NewCredentials (RUNAS /NETWORK). Local identity unchanged; only outbound connections use the new credential.\n"
-        "  10 = RemoteInteractive (RDP). Credentials remain in LSA on the TARGET — dangerous if host is compromised.\n"
-        "  11 = CachedInteractive. DC not contacted; domain credentials cached locally.\n\n"
-        "Priority SQL guidance — investigate in this order when no prior history exists:\n"
-        "  1. Check event_id IN (1102, 104) first — log clearing indicates tampering and affects overall reliability.\n"
-        "  2. event_id=4624 with logon_type IN ('3','10') — enumerate lateral movement sources (src_ip) and targets (computer).\n"
-        "  3. event_id=4625 grouped by src_ip — identify brute-force attempts.\n"
-        "  4. event_id IN (4688, 4104) — detect PowerShell and LOLBas execution.\n"
-        "  5. event_id IN (4697, 7045, 4698) — find persistence (services, tasks).\n"
-        "  6. event_id IN (4720, 4732, 4728) — find suspicious account operations.\n\n"
-        "Interactive logon guidance:\n"
-        "  To identify the last logged-on user, query event_id = 4624 AND logon_type IN ('2','10').\n"
-        "  Treat 4728/4732 and similar group-management events as account administration, NOT logon evidence.\n\n"
-        "Entity and role normalization guidance:\n"
-        "  Treat account names ending with '$' as machine_account, not as user or source_ip.\n"
-        "  Keep source_ip, source_host, and source_account separate; never store a machine account in source_ip.\n"
-        "  Label newly_created_user only when account-creation evidence exists (for example 4720/4722) and the user was not already present earlier in the evidence window.\n"
-        "  Existing observed users should stay observed_user, suspicious_user, actor_candidate, or victim_user unless direct creation evidence says otherwise.\n\n"
-        "Application categorization guidance:\n"
-        "  GOOGLEDRIVESYNC.EXE => cloud_sync.\n"
-        "  SCHTASKS.EXE => persistence_tool.\n"
-        "  CONSENT.EXE => uac_related.\n"
-        "  UNINST.EXE => uninstaller.\n"
-        "  Common update and OS maintenance services such as Google Update, TrustedInstaller, msiserver, Bonjour, and .NET Runtime Optimization should be treated as benign-known unless stronger malicious context exists.\n\n"
-        "prefetch_executions table guidance:\n"
-        "  executable_name holds the .exe filename (e.g. 'POWERSHELL.EXE').\n"
-        "  exec_count is the total run count; last_exec_time is the most recent execution timestamp.\n"
-        "  exec_times is a JSON array of up to 8 last run timestamps.\n"
-        "  filenames is a JSON array of files loaded by the process (useful for DLL side-loading detection).\n"
-        "  IMPORTANT: prefetch_executions has NO computer/hostname column — source_file is the .pf file path.\n"
-        "  To filter by host, JOIN with evtx_events ON abs(epoch_ms(prefetch_executions.last_exec_time) - epoch_ms(evtx_events.timestamp)) < 5000 AND evtx_events.computer = ?.\n"
-        "  Or query prefetch_executions without a host filter and correlate timestamps manually.\n\n"
+        + "\n".join(logontype_lines) + "\n\n"
+        + "\n".join(priority_lines) + "\n\n"
+        + _fmt_table_notes("evtx_events") + "\n"
+        + "\n".join(app_lines) + "\n\n"
+        + _fmt_table_notes("prefetch_executions") + "\n"
         "Section-agent state tables:\n"
         "  section_facts stores reusable evidence-backed facts extracted during prior report-generation runs.\n"
         "  section_evidence links report sections/blocks to evidence_id values already judged relevant.\n"

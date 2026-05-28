@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import shutil
 from math import ceil
 from pathlib import Path
 from re import sub
@@ -20,11 +21,38 @@ def _slugify(value: str) -> str:
     return cleaned.strip("-").lower() or "unknown"
 
 
+class MemoryPaths:
+    """Central registry of memory path conventions used across prompts and MemoryManager."""
+
+    OVERVIEW = "memory/overview.md"
+    FACTS = "memory/facts.md"
+    TASKS = "memory/tasks.md"
+    TIMELINE = "memory/timeline.md"
+    SUSPICIOUS_EVIDENCE = "memory/evidence/suspicious.md"
+
+    @staticmethod
+    def hypothesis(hypothesis_id: str) -> str:
+        return f"memory/hypotheses/{hypothesis_id}.md"
+
+    @staticmethod
+    def fact_detail(index: int) -> str:
+        return f"memory/details/fact-{index:03d}.md"
+
+    @staticmethod
+    def entity(entity_type: str, name: str) -> str:
+        return f"memory/entities/{entity_type}/{name}.md"
+
+    @staticmethod
+    def keypoint(keypoint_id: str) -> str:
+        return f"memory/keypoints/{keypoint_id}.md"
+
+
 class MemoryManager:
     def __init__(self, case: Case):
         self.case = case
         self.base_dir = case.memory_dir
         self.archive_dir = self.base_dir / "archive"
+        self.scratch_dir = self.base_dir / "scratch"
         self.entities_dir = self.base_dir / "entities"
         self.entities_user_dir = self.entities_dir / "user"
         self.entities_host_dir = self.entities_dir / "host"
@@ -40,9 +68,12 @@ class MemoryManager:
         self.keypoints_dir = self.base_dir / "keypoints"
         self.evidence_dir = self.base_dir / "evidence"
         self.details_dir = self.base_dir / "details"
+        self.scratch_archive_dir = self.archive_dir / "scratch"
         for directory in (
             self.base_dir,
             self.archive_dir,
+            self.scratch_dir,
+            self.scratch_archive_dir,
             self.entities_dir,
             self.entities_user_dir,
             self.entities_host_dir,
@@ -79,6 +110,10 @@ class MemoryManager:
     @property
     def tasks_memory_path(self) -> Path:
         return self.base_dir / "tasks.md"
+
+    @property
+    def scratch_global_dir(self) -> Path:
+        return self.scratch_dir / "global"
 
     @property
     def refuted_hypotheses_path(self) -> Path:
@@ -122,6 +157,117 @@ class MemoryManager:
                 parts.append(f"# {relative}\n\n{path.read_text(encoding='utf-8')}")
         return "\n\n".join(parts)
 
+    def _markdown_files(self, directory: Path) -> list[str]:
+        if not directory.exists():
+            return []
+        return [
+            str(path.relative_to(self.base_dir))
+            for path in sorted(directory.rglob("*.md"))
+            if path.is_file()
+        ]
+
+    def _scratch_key(self, hypothesis_id: str | None) -> str:
+        hyp_id = str(hypothesis_id or "").strip()
+        if not hyp_id:
+            return "global"
+        if hyp_id.upper().startswith("H-"):
+            return hyp_id.upper()
+        return f"H-{_slugify(hyp_id).replace('-', '').upper()}"
+
+    def _hypothesis_scratch_dir(self, hypothesis_id: str | None) -> Path:
+        return self.scratch_dir / self._scratch_key(hypothesis_id)
+
+    def _hypothesis_scratch_path(self, hypothesis_id: str | None, name: str) -> Path:
+        return self._hypothesis_scratch_dir(hypothesis_id) / f"{name}.md"
+
+    def _memory_line(
+        self,
+        text: str,
+        evidence_ids: list[str],
+        *,
+        hypothesis_id: str | None = None,
+        provisional: bool = False,
+    ) -> str:
+        body = str(text).strip()
+        if not body:
+            return ""
+        meta: list[str] = []
+        if hypothesis_id:
+            meta.append(f"hypothesis: {str(hypothesis_id).strip()}")
+        meta.append("provisional" if provisional else "confirmed")
+        normalized_ids = [str(item).strip() for item in evidence_ids if str(item).strip()]
+        if normalized_ids:
+            meta.append(f"evidence: {', '.join(normalized_ids)}")
+        if meta:
+            body += f" [{' | '.join(meta)}]"
+        return f"- {body}"
+
+    def _append_markdown_entry(self, path: Path, heading: str, line: str) -> bool:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing = path.read_text(encoding="utf-8").rstrip() if path.exists() else heading
+        if not existing:
+            existing = heading
+        existing_lines = set(existing.splitlines())
+        if line in existing_lines:
+            return False
+        path.write_text(existing + "\n\n" + line + "\n", encoding="utf-8")
+        return True
+
+    def investigation_context_files(
+        self,
+        hypothesis_id: str | None = None,
+        *,
+        include_archive: bool = True,
+        include_overview: bool = True,
+        include_entities: bool = True,
+        include_keypoints: bool = True,
+        include_scratch: bool = True,
+    ) -> list[str]:
+        files: list[str] = []
+        if include_overview:
+            files.extend(["overview.md", "facts.md", "timeline.md", "tasks.md"])
+        if include_archive:
+            files.extend(["archive/refuted.md", "archive/resolved_gaps.md"])
+        if include_entities:
+            files.extend(self._markdown_files(self.entities_dir))
+        if include_keypoints:
+            files.extend(self._markdown_files(self.keypoints_dir))
+        if include_scratch:
+            files.extend(self._markdown_files(self.scratch_global_dir))
+            if hypothesis_id:
+                files.extend(self._markdown_files(self._hypothesis_scratch_dir(hypothesis_id)))
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for item in files:
+            if item in seen:
+                continue
+            seen.add(item)
+            deduped.append(item)
+        return deduped
+
+    def load_investigation_context(
+        self,
+        hypothesis_id: str | None = None,
+        *,
+        max_bytes: int | None = None,
+        include_archive: bool = True,
+        include_overview: bool = True,
+        include_entities: bool = True,
+        include_keypoints: bool = True,
+        include_scratch: bool = True,
+    ) -> str:
+        return self.load_compact_context(
+            self.investigation_context_files(
+                hypothesis_id,
+                include_archive=include_archive,
+                include_overview=include_overview,
+                include_entities=include_entities,
+                include_keypoints=include_keypoints,
+                include_scratch=include_scratch,
+            ),
+            max_bytes=max_bytes,
+        )
+
     def load_compact_context(self, files: list[str], max_bytes: int | None = None) -> str:
         budget = max_bytes if max_bytes is not None else self.max_bytes
         text = self.load_context(files)
@@ -163,45 +309,93 @@ class MemoryManager:
         path = self.keypoints_dir / f"{_slugify(kp_id).upper()}.md"
         path.write_text(content, encoding="utf-8")
 
-    def append_confirmed_fact(self, text: str, evidence_ids: list[str]) -> None:
+    def append_confirmed_fact(
+        self,
+        text: str,
+        evidence_ids: list[str],
+        hypothesis_id: str | None = None,
+        provisional: bool = False,
+    ) -> None:
         body = str(text).strip()
         if not body:
             return
         normalized_ids = sorted({str(item).strip() for item in evidence_ids if str(item).strip()})
+        line = self._memory_line(
+            body,
+            normalized_ids,
+            hypothesis_id=hypothesis_id,
+            provisional=provisional,
+        )
+        if not line:
+            return
+        if provisional:
+            self._append_markdown_entry(
+                self._hypothesis_scratch_path(hypothesis_id, "facts"),
+                "# Facts",
+                line,
+            )
+            return
         fact_hash = self._fact_hash(body, normalized_ids)
         if fact_hash in self._fact_hashes:
             return
         detail_id = self._alloc_fact_detail_id()
         preview = body[:120]
-        line = self._format_memory_line(f"[{detail_id}] {preview}", normalized_ids)
-        if not line:
-            return
-        if self._append_markdown_line(self.facts_path, "# Facts", line):
+        shared_line = self._memory_line(
+            f"[{detail_id}] {preview}",
+            normalized_ids,
+            hypothesis_id=hypothesis_id,
+            provisional=False,
+        )
+        if self._append_markdown_entry(self.facts_path, "# Facts", shared_line):
             self._write_fact_detail(detail_id, body, normalized_ids)
             self._fact_hashes.add(fact_hash)
 
-    def append_timeline_anchor(self, timestamp: str, description: str, evidence_ids: list[str]) -> None:
+    def append_timeline_anchor(
+        self,
+        timestamp: str,
+        description: str,
+        evidence_ids: list[str],
+        hypothesis_id: str | None = None,
+        provisional: bool = False,
+    ) -> None:
         timestamp_text = str(timestamp).strip()
         description_text = str(description).strip()
         if not timestamp_text or not description_text:
             return
-        line = self._format_memory_line(f"{timestamp_text}: {description_text}", evidence_ids)
-        if line and self._append_markdown_line(self.timeline_path, "# Timeline", line):
+        line = self._memory_line(
+            f"{timestamp_text}: {description_text}",
+            evidence_ids,
+            hypothesis_id=hypothesis_id,
+            provisional=provisional,
+        )
+        if line and self._append_markdown_entry(
+            self._hypothesis_scratch_path(hypothesis_id, "timeline") if provisional else self.timeline_path,
+            "# Timeline",
+            line,
+        ):
             self._rotate_timeline()
 
-    def append_task(self, text: str, kind: str) -> None:
+    def append_task(
+        self,
+        text: str,
+        kind: str,
+        hypothesis_id: str | None = None,
+        provisional: bool = False,
+    ) -> None:
         task_text = str(text).strip()
         normalized_kind = str(kind).strip()
         if normalized_kind not in {"internal_db_check", "external_lookup", "human_decision"}:
             normalized_kind = "human_decision"
         if not task_text:
             return
-        self._append_markdown_line(
-            self.tasks_memory_path,
+        line = f"- [{normalized_kind}] {task_text}"
+        self._append_markdown_entry(
+            self._hypothesis_scratch_path(hypothesis_id, "tasks") if provisional else self.tasks_memory_path,
             "# Tasks",
-            f"- [{normalized_kind}] {task_text}",
+            line,
         )
-        self.compact_if_oversized(self.tasks_memory_path)
+        if not provisional:
+            self.compact_if_oversized(self.tasks_memory_path)
 
     def append_refuted_hypothesis(self, hypothesis_id: str, description: str, reason: str) -> None:
         hyp_id = str(hypothesis_id).strip()
@@ -212,15 +406,15 @@ class MemoryManager:
         line = f"- {hyp_id}: {description_text}"
         if reason_text:
             line += f" | reason: {reason_text}"
-        self._append_markdown_line(self.refuted_hypotheses_path, "# Refuted Hypotheses", line)
+        self._append_markdown_entry(self.refuted_hypotheses_path, "# Refuted Hypotheses", line)
 
     def append_resolved_gap(self, text: str, evidence_ids: list[str]) -> None:
         body = str(text).strip()
         if not body:
             return
-        line = self._format_memory_line(body, evidence_ids)
+        line = self._memory_line(body, evidence_ids)
         if line:
-            self._append_markdown_line(self.resolved_gaps_path, "# Resolved Gaps", line)
+            self._append_markdown_entry(self.resolved_gaps_path, "# Resolved Gaps", line)
 
     def append_suspicious(self, rows: list[dict]) -> bool:
         if not rows:
@@ -253,25 +447,6 @@ class MemoryManager:
         content = existing.rstrip() + "\n" + "\n".join(appended) + "\n"
         self.suspicious_path.write_text(content, encoding="utf-8")
         self._compact_suspicious(self.suspicious_path)
-        return True
-
-    def _format_memory_line(self, text: str, evidence_ids: list[str]) -> str:
-        body = str(text).strip()
-        if not body:
-            return ""
-        normalized_ids = [str(item).strip() for item in evidence_ids if str(item).strip()]
-        if normalized_ids:
-            body += f" [evidence: {', '.join(normalized_ids)}]"
-        return f"- {body}"
-
-    def _append_markdown_line(self, path: Path, heading: str, line: str) -> bool:
-        existing = path.read_text(encoding="utf-8").rstrip() if path.exists() else heading
-        if not existing:
-            existing = heading
-        existing_lines = set(existing.splitlines())
-        if line in existing_lines:
-            return False
-        path.write_text(existing + "\n\n" + line + "\n", encoding="utf-8")
         return True
 
     def _alloc_fact_detail_id(self) -> str:
@@ -324,6 +499,41 @@ class MemoryManager:
             text, evidence_ids = parsed
             self._fact_hashes.add(self._fact_hash(text, evidence_ids))
         self._next_fact_id = max_n + 1
+
+    def promote_hypothesis_scratch(self, hypothesis_id: str | None) -> list[str]:
+        scratch_dir = self._hypothesis_scratch_dir(hypothesis_id)
+        if not scratch_dir.exists():
+            return []
+        promoted: list[str] = []
+        for relative_name, target_path, heading in (
+            ("facts.md", self.facts_path, "# Facts"),
+            ("timeline.md", self.timeline_path, "# Timeline"),
+            ("tasks.md", self.tasks_memory_path, "# Tasks"),
+        ):
+            path = scratch_dir / relative_name
+            if not path.exists():
+                continue
+            lines = path.read_text(encoding="utf-8").splitlines()
+            for line in lines:
+                stripped = line.strip()
+                if not stripped.startswith("- "):
+                    continue
+                promoted_line = stripped.replace(" [provisional]", " [confirmed]")
+                if self._append_markdown_entry(target_path, heading, promoted_line):
+                    promoted.append(promoted_line)
+        shutil.rmtree(scratch_dir, ignore_errors=True)
+        return promoted
+
+    def archive_hypothesis_scratch(self, hypothesis_id: str | None) -> list[str]:
+        scratch_dir = self._hypothesis_scratch_dir(hypothesis_id)
+        if not scratch_dir.exists():
+            return []
+        target_dir = self.scratch_archive_dir / self._scratch_key(hypothesis_id)
+        if target_dir.exists():
+            shutil.rmtree(target_dir, ignore_errors=True)
+        target_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(scratch_dir), str(target_dir))
+        return [str(target_dir)]
 
     def _entity_path(self, entity_type: str, name: str) -> Path | None:
         normalized_type = str(entity_type).strip().lower()

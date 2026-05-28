@@ -1,0 +1,19 @@
+kind: false_positive_rules
+title: "False-positive reduction rules"
+reduction_guidance:
+  normal_patterns:
+    - "LogonType=3 from the same domain to a file server or DC during business hours."
+    - "LogonType=3 from known backup agents or monitoring systems."
+    - "LogonType=5 service logons from recognized service accounts."
+  risk_amplifiers:
+    - "Source IP is external or from an unusual subnet."
+    - "Activity occurs outside business hours (night, weekend)."
+    - "Target share is ADMIN$, C$, or IPC$ (administrative shares)."
+    - "A failed-logon burst (4625 >=5 times) immediately precedes the success."
+    - "The user account is not normally associated with that computer."
+    - "AV/Defender was disabled (5001) shortly before the process execution."
+    - "Audit log was cleared (1102/104) shortly before or after."
+  lower_confidence_when:
+    - "Activity is within business hours, from known internal IPs."
+    - "The account is a known service or IT-admin account."
+    - "The action can be explained by routine IT operations."

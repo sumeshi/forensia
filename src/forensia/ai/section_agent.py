@@ -4,6 +4,8 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from forensia.ai.checker import summarize_query_result
@@ -46,6 +48,7 @@ def _coerce_confidence(value: Any, default: float = 0.5) -> float:
 from forensia.ai.json_response import request_llm_json, async_request_llm_json
 from forensia.ai.lmstudio import chat_completion, async_chat_completion
 from forensia.ai.prompts import (
+    build_benchmark_section_messages,
     build_column_selection_messages,
     build_report_section_messages,
     build_section_agent_check_messages,
@@ -53,6 +56,7 @@ from forensia.ai.prompts import (
 )
 from forensia.ai.sql_templates import query_template_catalog, render_query_template, validate_select_sql
 from forensia.core.case import Case
+from forensia.core.memory import MemoryManager
 from forensia.core.session import PlannedQuery
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
@@ -63,6 +67,7 @@ class SectionBlockResult:
     body: str
     evidence_results: list[dict[str, Any]]
     iterations: int
+    status: str
 
 
 @dataclass(slots=True)
@@ -85,6 +90,111 @@ def _cache_key(source_query: str) -> str:
 
 def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _safe_rows(rows: list[dict[str, Any]], *, limit: int = 20) -> list[dict[str, Any]]:
+    safe: list[dict[str, Any]] = []
+    for row in rows[:limit]:
+        if not isinstance(row, dict):
+            continue
+        safe.append({key: value for key, value in row.items() if key != "source_query"})
+    return safe
+
+
+def _is_valid_status(status: str) -> bool:
+    return status in {
+        "answered",
+        "partial",
+        "not_found",
+        "not_searched",
+        "insufficient_evidence",
+        "wrong_query",
+    }
+
+
+@dataclass(slots=True)
+class _RoutingRule:
+    name: str
+    keywords: tuple[str, ...]
+    keypoints: tuple[str, ...]
+
+
+@lru_cache(maxsize=1)
+def _load_question_routing() -> list[_RoutingRule]:
+    import yaml
+
+    routing_path = Path(__file__).resolve().parent.parent / "rulepacks" / "_schema" / "question_routing.yaml"
+    if not routing_path.exists():
+        return []
+    data = yaml.safe_load(routing_path.read_text(encoding="utf-8")) or {}
+    rules: list[_RoutingRule] = []
+    for entry in data.get("question_types", []) if isinstance(data, dict) else []:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        keywords = tuple(str(item).strip().casefold() for item in entry.get("keywords") or [] if str(item).strip())
+        keypoints = tuple(str(item).strip() for item in entry.get("keypoints") or [] if str(item).strip())
+        if name and keypoints:
+            rules.append(_RoutingRule(name=name, keywords=keywords, keypoints=keypoints))
+    return rules
+
+
+def _question_routing_keypoints(block_heading: str, template_body: str) -> list[str]:
+    text = f"{block_heading}\n{template_body}".casefold()
+    for rule in _load_question_routing():
+        if any(keyword in text for keyword in rule.keywords):
+            return list(rule.keypoints)
+    return []
+
+
+def _classify_block_status(
+    *,
+    verdict: str,
+    actual_query_rows: list[int],
+    actual_query_count: int,
+    reusable_rows_present: bool,
+) -> str:
+    if _is_valid_status(verdict):
+        return verdict
+    if actual_query_count <= 0:
+        return "not_searched" if reusable_rows_present else "not_searched"
+    if verdict == "block_supported":
+        return "answered"
+    if verdict == "block_contradicted":
+        if any(count > 0 for count in actual_query_rows):
+            return "wrong_query"
+        return "not_found"
+    if any(count > 0 for count in actual_query_rows):
+        return "partial"
+    if actual_query_count >= 2 and all(count == 0 for count in actual_query_rows):
+        return "not_found"
+    return "insufficient_evidence"
+
+
+def _prepend_status_badge(body: str, status: str) -> str:
+    status_line = f"**Status:** {status}"
+    text = str(body or "").strip()
+    if not text:
+        return status_line
+    if text.startswith("**Status:**"):
+        return text
+    return f"{status_line}\n\n{text}"
+
+
+def _benchmark_report_brief(report_brief: dict[str, Any] | None) -> dict[str, Any]:
+    brief = dict(report_brief or {})
+    keys_to_keep = {"evidence_inventory", "table_inventory", "row_counts", "time_range", "time_window", "source_inventory"}
+    if "evidence_inventory" in brief:
+        evidence_inventory = brief.get("evidence_inventory")
+        if isinstance(evidence_inventory, dict):
+            brief["evidence_inventory"] = {
+                key: value for key, value in evidence_inventory.items() if key in keys_to_keep
+            }
+    for key in list(brief.keys()):
+        if key in keys_to_keep or key == "evidence_inventory":
+            continue
+        brief.pop(key, None)
+    return brief
 
 
 def _audit_bridge(audit_callback):
@@ -172,7 +282,12 @@ def _load_cached_result(db: CaseDB, source_query: str) -> dict[str, Any] | None:
         parsed = json.loads(str(row[0]))
     except json.JSONDecodeError:
         return None
-    return parsed if isinstance(parsed, dict) else None
+    if not isinstance(parsed, dict):
+        return None
+    parsed.setdefault("kind", "rows")
+    parsed.setdefault("source_kind", "unknown")
+    parsed.setdefault("source_ref", source_query)
+    return parsed
 
 
 def _store_cached_result(db: CaseDB, source_query: str, payload: dict[str, Any]) -> None:
@@ -291,30 +406,69 @@ def _store_section_facts(
         )
 
 
-def _keypoint_catalog(section_key: str | None = None, template_body: str | None = None) -> list[dict[str, str]]:
+def _keypoint_catalog(
+    section_key: str | None = None,
+    template_body: str | None = None,
+    *,
+    block_heading: str | None = None,
+    evidence_keypoints: list[str] | None = None,
+) -> list[dict[str, str]]:
     """Return keypoint catalog filtered for this section, plus a few cross-cutting ones.
 
     Returning all ~40 keypoints to the planner on every iteration wastes
     tokens. Each report section only needs its own family (e.g. timeline_*)
     plus a small set of universally useful keypoints.
-    
-    When section_key is None or unmatched, fall back to keyword overlap with template_body.
+
+    Explicit evidence_keypoints from template hints win first. If absent, use
+    heading/body routing hints, then fall back to the section family default.
     """
-    from forensia.report.writer import REPORT_KEYPOINTS, _default_keypoints_for_section
+    from forensia.report.writer import REPORT_KEYPOINTS, REPORT_KEYPOINT_ALIASES, _default_keypoints_for_section
+
+    def resolve_name(name: str) -> str:
+        normalized = str(name or "").strip()
+        return REPORT_KEYPOINT_ALIASES.get(normalized, normalized)
+
+    if evidence_keypoints:
+        catalog: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for keypoint in evidence_keypoints:
+            resolved_name = resolve_name(keypoint)
+            entry = REPORT_KEYPOINTS.get(resolved_name)
+            if entry is None or resolved_name in seen:
+                continue
+            seen.add(resolved_name)
+            catalog.append({"name": keypoint, "description": entry[0]})
+        if catalog:
+            return catalog
+
+    routed_keypoints = _question_routing_keypoints(block_heading or "", template_body or "")
+    if routed_keypoints:
+        catalog: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for keypoint in routed_keypoints:
+            resolved_name = resolve_name(keypoint)
+            entry = REPORT_KEYPOINTS.get(resolved_name)
+            if entry is None or resolved_name in seen:
+                continue
+            seen.add(resolved_name)
+            catalog.append({"name": keypoint, "description": entry[0]})
+        if catalog:
+            return catalog
 
     if not section_key:
         template_body = template_body or ""
         keywords = {"logon", "user", "host", "ip", "service", "task", "powershell", "process", "execution", "event", "finding", "persistence", "defender"}
         filtered: list[dict[str, str]] = []
         for keypoint, (description, _) in sorted(REPORT_KEYPOINTS.items()):
-            if any(kw in keypoint.lower() or kw in description.lower() for kw in keywords if kw in template_body.lower()):
+            lowered = template_body.lower()
+            if any(kw in lowered and (kw in keypoint.lower() or kw in description.lower()) for kw in keywords):
                 filtered.append({"name": keypoint, "description": description})
             if len(filtered) >= 10:
                 break
         if filtered:
             return filtered
         return [{"name": keypoint, "description": description} for keypoint, (description, _) in sorted(REPORT_KEYPOINTS.items())[:10]]
-    
+
     preferred = _default_keypoints_for_section(section_key)
     catalog: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -433,11 +587,14 @@ def _facts_as_result(reusable_facts: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "keypoint": "section_facts",
         "description": "Reusable facts extracted from prior section-agent runs.",
+        "kind": "fact",
+        "source_kind": "fact",
+        "source_ref": "section_facts",
         "row_count": len(reusable_facts),
         "evidence_ids": evidence_ids,
         "finding_ids": [],
         "hypothesis_ids": [],
-        "sample_rows": reusable_facts[:20],
+        "sample_rows": _safe_rows(reusable_facts),
     }
 
 
@@ -480,11 +637,14 @@ def _evidence_as_result(reusable_evidence: list[dict[str, Any]]) -> dict[str, An
     return {
         "keypoint": "section_evidence",
         "description": "Reusable evidence links extracted from prior section-agent runs.",
+        "kind": "trace",
+        "source_kind": "trace",
+        "source_ref": "section_evidence",
         "row_count": len(reusable_evidence),
         "evidence_ids": evidence_ids,
         "finding_ids": [],
         "hypothesis_ids": [],
-        "sample_rows": reusable_evidence[:30],
+        "sample_rows": _safe_rows(reusable_evidence, limit=30),
     }
 
 
@@ -493,6 +653,9 @@ def _summarize_sql_result(sql: str, rows: list[dict[str, Any]]) -> dict[str, Any
     return {
         "keypoint": "raw_sql",
         "description": sql,
+        "kind": "rows",
+        "source_kind": "sql",
+        "source_ref": sql,
         "row_count": int(summary.get("row_count") or 0),
         "evidence_ids": list(summary.get("evidence_ids") or []),
         "finding_ids": [],
@@ -507,7 +670,7 @@ def _summarize_sql_result(sql: str, rows: list[dict[str, Any]]) -> dict[str, Any
 def _execute_keypoint(case: Case, db: CaseDB, keypoint: str) -> tuple[str, dict[str, Any]]:
     from forensia.report.writer import _resolve_evidence_results
 
-    source_query = f"KEYPOINT::{keypoint}"
+    source_query = str(keypoint or "").strip()
     cached = _load_cached_result(db, source_query)
     if cached is not None:
         return source_query, cached
@@ -515,6 +678,9 @@ def _execute_keypoint(case: Case, db: CaseDB, keypoint: str) -> tuple[str, dict[
     result = resolved[0] if resolved else {
         "keypoint": keypoint,
         "description": "",
+        "kind": "rows",
+        "source_kind": "keypoint",
+        "source_ref": keypoint,
         "row_count": 0,
         "evidence_ids": [],
         "finding_ids": [],
@@ -527,7 +693,7 @@ def _execute_keypoint(case: Case, db: CaseDB, keypoint: str) -> tuple[str, dict[
 
 def _execute_sql(db: CaseDB, sql: str) -> tuple[str, dict[str, Any]]:
     validated = validate_select_sql(sql)
-    source_query = f"SQL::{validated}"
+    source_query = validated
     cached = _load_cached_result(db, source_query)
     if cached is not None:
         return source_query, cached
@@ -577,24 +743,44 @@ def run_section_block_agent(
     report_brief: dict[str, Any] | None,
     base_url: str,
     model: str,
+    memory: MemoryManager | None = None,
     max_queries_per_section: int = 3,
+    evidence_keypoints: list[str] | None = None,
+    benchmark_mode: bool = False,
     audit_callback=None,
 ) -> SectionBlockResult:
     max_queries = max(1, int(max_queries_per_section or 1))
     collected_results: list[dict[str, Any]] = []
+    memory_context_md = ""
+    if memory is not None:
+        memory_context_md = memory.load_investigation_context(
+            None,
+            max_bytes=max(1024, memory.max_bytes // 2),
+            include_overview=False,
+            include_scratch=False,
+        )
     findings_snapshot = _findings_snapshot(db)
-    keypoint_catalog = _keypoint_catalog(section_key, template_body)
+    keypoint_catalog = _keypoint_catalog(
+        section_key,
+        template_body,
+        block_heading=block_heading,
+        evidence_keypoints=evidence_keypoints,
+    )
     template_catalog = _filter_template_catalog_by_section([], section_key, collected_results)
     reusable_facts = _load_reusable_section_facts(db, section_key)
     reusable_evidence = _load_reusable_section_evidence(db, section_key, block_heading)
     audit = _audit_bridge(audit_callback)
+    prompt_report_brief = _benchmark_report_brief(report_brief) if benchmark_mode else (report_brief or {})
     if reusable_facts:
         collected_results.append(_facts_as_result(reusable_facts))
     if reusable_evidence:
         collected_results.append(_evidence_as_result(reusable_evidence))
-    verdict = "need_more"
+    verdict = "block_needs_more"
     rationale = ""
     missing_questions: list[Any] = []
+    status = "insufficient_evidence"
+    actual_query_count = 0
+    actual_query_row_counts: list[int] = []
     for iteration in range(1, max_queries + 1):
         prior_runs = _load_prior_runs(db, section_key, block_heading)
         template_catalog = _filter_template_catalog_by_section(template_catalog, section_key, collected_results)
@@ -603,7 +789,7 @@ def run_section_block_agent(
             section_title=title,
             block_heading=block_heading,
             template_body=template_body,
-            report_brief=report_brief or {},
+            report_brief=prompt_report_brief,
             context_sections=context_sections,
             current_section_outputs=current_section_outputs,
             findings_snapshot=findings_snapshot,
@@ -612,6 +798,7 @@ def run_section_block_agent(
             prior_runs=prior_runs,
             reusable_facts=reusable_facts,
             reusable_evidence=reusable_evidence,
+            memory_context_md=memory_context_md,
         )
         try:
             plan = request_llm_json(
@@ -645,11 +832,11 @@ def run_section_block_agent(
         result: dict[str, Any]
         try:
             if plan_action.action == "facts" and (reusable_facts or reusable_evidence):
-                source_query = "STATE::facts"
+                source_query = "facts"
                 state_rows = reusable_facts if reusable_facts else reusable_evidence
                 result = _facts_as_result(reusable_facts) if reusable_facts else _evidence_as_result(reusable_evidence)
                 result["description"] = "Reused prior section-agent state."
-                result["sample_rows"] = state_rows[:20]
+                result["sample_rows"] = _safe_rows(state_rows, limit=20)
             elif plan_action.action == "template" and plan_action.planned_query and plan_action.planned_query.template_id:
                 rendered_sql = render_query_template(
                     plan_action.planned_query.template_id,
@@ -687,15 +874,23 @@ def run_section_block_agent(
             )
             continue
         collected_results.append(result)
+        if str(result.get("kind") or "rows") == "rows":
+            actual_query_count += 1
+            actual_query_row_counts.append(int(result.get("row_count") or 0))
         _store_section_run(
             db,
             section_key=section_key,
             block_heading=block_heading,
             iteration=iteration,
             phase="query",
-            payload={"source_query": source_query, "result": result},
+            payload={
+                "source_kind": str(result.get("source_kind") or "unknown"),
+                "source_ref": str(result.get("source_ref") or source_query),
+                "result": result,
+            },
         )
-        _store_section_evidence(db, section_key=section_key, block_heading=block_heading, result=result, source_query=source_query)
+        if str(result.get("kind") or "rows") == "rows":
+            _store_section_evidence(db, section_key=section_key, block_heading=block_heading, result=result, source_query=source_query)
         check_messages = build_section_agent_check_messages(
             section_key=section_key,
             section_title=title,
@@ -706,6 +901,7 @@ def run_section_block_agent(
             prior_runs=prior_runs,
             reusable_facts=reusable_facts,
             reusable_evidence=reusable_evidence,
+            memory_context_md=memory_context_md,
         )
         try:
             check = request_llm_json(
@@ -725,16 +921,26 @@ def run_section_block_agent(
             )
             # Treat as sufficient — we already have one query result; stop iterating.
             break
-        verdict = str(check.get("verdict") or "need_more").strip().lower()
+        verdict = str(check.get("verdict") or "block_needs_more").strip().lower()
         rationale = str(check.get("rationale") or "")
         missing_questions = check.get("missing_questions") if isinstance(check.get("missing_questions"), list) else []
+        status = str(check.get("status") or "").strip().lower()
+        result["source_verdict"] = verdict
+        if not _is_valid_status(status):
+            reusable_rows_present = any(str(item.get("kind") or "rows") != "rows" for item in collected_results)
+            status = _classify_block_status(
+                verdict=verdict,
+                actual_query_rows=actual_query_row_counts,
+                actual_query_count=actual_query_count,
+                reusable_rows_present=reusable_rows_present,
+            )
         _store_section_run(
             db,
             section_key=section_key,
             block_heading=block_heading,
             iteration=iteration,
             phase="check",
-            payload=check,
+            payload={**check, "status": status},
             verdict=verdict,
         )
         _store_section_facts(
@@ -744,16 +950,31 @@ def run_section_block_agent(
             result=result,
             fact_updates=check.get("fact_updates") if isinstance(check.get("fact_updates"), list) else None,
         )
-        if verdict in {"sufficient", "refuted"}:
+        if verdict in {"block_supported", "block_contradicted"}:
             break
 
     verification_notes: list[str] = []
-    if verdict == "refuted":
+    if status == "insufficient_evidence":
+        reusable_rows_present = any(str(item.get("kind") or "rows") != "rows" for item in collected_results)
+        status = _classify_block_status(
+            verdict=verdict,
+            actual_query_rows=actual_query_row_counts,
+            actual_query_count=actual_query_count,
+            reusable_rows_present=reusable_rows_present,
+        )
+    if verdict == "block_contradicted":
         notes = [rationale] if rationale else ["Evidence contradicts the template claim"]
         notes.extend(str(q) for q in missing_questions if q)
         verification_notes = notes
 
-    from forensia.report.writer import _collect_flat_evidence_rows
+    from forensia.report.writer import (
+        _benchmark_block_id,
+        _collect_flat_evidence_rows,
+        _persist_benchmark_answer,
+        _render_benchmark_answer_markdown,
+        _summarize_flat_evidence_rows,
+        _normalize_benchmark_answer,
+    )
     raw_rows = _collect_flat_evidence_rows(collected_results)
     if raw_rows:
         headers = list(raw_rows[0].keys())
@@ -762,18 +983,40 @@ def run_section_block_agent(
         selected = [c for c in (col_resp.get("columns") or []) if c in headers]
         if selected:
             raw_rows = [{c: row[c] for c in selected if c in row} for row in raw_rows]
-    messages = build_report_section_messages(
-        section_meta={"section": section_key, "title": title},
-        evidence_results=collected_results,
-        context_sections=context_sections,
-        template_body=template_body,
-        report_brief=report_brief or {},
-        section_heading=block_heading,
-        current_section_outputs=current_section_outputs,
-        verification_notes=verification_notes,
-        raw_evidence_rows=raw_rows or None,
-    )
-    body = chat_completion(messages=messages, model=model, base_url=base_url).strip()
+    prompt_rows = _summarize_flat_evidence_rows(raw_rows) if raw_rows else None
+    if benchmark_mode:
+        messages = build_benchmark_section_messages(
+            section_meta={"section": section_key, "title": title},
+            evidence_results=collected_results,
+            template_body=template_body,
+            report_brief=prompt_report_brief,
+            block_heading=block_heading,
+            raw_evidence_rows=prompt_rows,
+            verification_notes=verification_notes,
+            benchmark_id=_benchmark_block_id(block_heading),
+        )
+        benchmark_answer = request_llm_json(messages=messages, model=model, base_url=base_url, audit_callback=audit)
+        normalized_answer = _normalize_benchmark_answer(
+            benchmark_answer,
+            section_key=section_key,
+            block_heading=block_heading,
+            status=status,
+        )
+        _persist_benchmark_answer(case, normalized_answer)
+        body = _render_benchmark_answer_markdown(normalized_answer, block_heading)
+    else:
+        messages = build_report_section_messages(
+            section_meta={"section": section_key, "title": title},
+            evidence_results=collected_results,
+            context_sections=context_sections,
+            template_body=template_body,
+            report_brief=prompt_report_brief,
+            section_heading=block_heading,
+            current_section_outputs=current_section_outputs,
+            verification_notes=verification_notes,
+            raw_evidence_rows=prompt_rows,
+        )
+        body = _prepend_status_badge(chat_completion(messages=messages, model=model, base_url=base_url).strip(), status)
     if audit_callback:
         audit_callback(messages, body)
     _store_section_run(
@@ -784,7 +1027,7 @@ def run_section_block_agent(
         phase="write",
         payload={"evidence_count": len(collected_results), "body_preview": body[:400]},
     )
-    return SectionBlockResult(body=body, evidence_results=collected_results, iterations=max(len(collected_results), 1))
+    return SectionBlockResult(body=body, evidence_results=collected_results, iterations=max(len(collected_results), 1), status=status)
 
 
 async def async_run_section_block_agent(
@@ -800,13 +1043,29 @@ async def async_run_section_block_agent(
     report_brief: dict[str, Any] | None,
     base_url: str,
     model: str,
+    memory: MemoryManager | None = None,
     max_queries_per_section: int = 3,
+    evidence_keypoints: list[str] | None = None,
+    benchmark_mode: bool = False,
     audit_callback=None,
 ) -> SectionBlockResult:
     max_queries = max(1, int(max_queries_per_section or 1))
     collected_results: list[dict[str, Any]] = []
+    memory_context_md = ""
+    if memory is not None:
+        memory_context_md = memory.load_investigation_context(
+            None,
+            max_bytes=max(1024, memory.max_bytes // 2),
+            include_overview=False,
+            include_scratch=False,
+        )
     findings_snapshot = _findings_snapshot(db)
-    keypoint_catalog = _keypoint_catalog(section_key, template_body)
+    keypoint_catalog = _keypoint_catalog(
+        section_key,
+        template_body,
+        block_heading=block_heading,
+        evidence_keypoints=evidence_keypoints,
+    )
     template_catalog = _filter_template_catalog_by_section([], section_key, collected_results)
     reusable_facts = _load_reusable_section_facts(db, section_key)
     reusable_evidence = _load_reusable_section_evidence(db, section_key, block_heading)
@@ -815,9 +1074,13 @@ async def async_run_section_block_agent(
         collected_results.append(_facts_as_result(reusable_facts))
     if reusable_evidence:
         collected_results.append(_evidence_as_result(reusable_evidence))
-    verdict = "need_more"
+    prompt_report_brief = _benchmark_report_brief(report_brief) if benchmark_mode else (report_brief or {})
+    verdict = "block_needs_more"
     rationale = ""
     missing_questions: list[Any] = []
+    status = "insufficient_evidence"
+    actual_query_count = 0
+    actual_query_row_counts: list[int] = []
     for iteration in range(1, max_queries + 1):
         prior_runs = _load_prior_runs(db, section_key, block_heading)
         template_catalog = _filter_template_catalog_by_section(template_catalog, section_key, collected_results)
@@ -826,7 +1089,7 @@ async def async_run_section_block_agent(
             section_title=title,
             block_heading=block_heading,
             template_body=template_body,
-            report_brief=report_brief or {},
+            report_brief=prompt_report_brief,
             context_sections=context_sections,
             current_section_outputs=current_section_outputs,
             findings_snapshot=findings_snapshot,
@@ -835,6 +1098,7 @@ async def async_run_section_block_agent(
             prior_runs=prior_runs,
             reusable_facts=reusable_facts,
             reusable_evidence=reusable_evidence,
+            memory_context_md=memory_context_md,
         )
         try:
             plan = await async_request_llm_json(
@@ -868,11 +1132,11 @@ async def async_run_section_block_agent(
         result: dict[str, Any]
         try:
             if plan_action.action == "facts" and (reusable_facts or reusable_evidence):
-                source_query = "STATE::facts"
+                source_query = "facts"
                 state_rows = reusable_facts if reusable_facts else reusable_evidence
                 result = _facts_as_result(reusable_facts) if reusable_facts else _evidence_as_result(reusable_evidence)
                 result["description"] = "Reused prior section-agent state."
-                result["sample_rows"] = state_rows[:20]
+                result["sample_rows"] = _safe_rows(state_rows, limit=20)
             elif plan_action.action == "template" and plan_action.planned_query and plan_action.planned_query.template_id:
                 rendered_sql = render_query_template(
                     plan_action.planned_query.template_id,
@@ -907,15 +1171,23 @@ async def async_run_section_block_agent(
             )
             continue
         collected_results.append(result)
+        if str(result.get("kind") or "rows") == "rows":
+            actual_query_count += 1
+            actual_query_row_counts.append(int(result.get("row_count") or 0))
         _store_section_run(
             db,
             section_key=section_key,
             block_heading=block_heading,
             iteration=iteration,
             phase="query",
-            payload={"source_query": source_query, "result": result},
+            payload={
+                "source_kind": str(result.get("source_kind") or "unknown"),
+                "source_ref": str(result.get("source_ref") or source_query),
+                "result": result,
+            },
         )
-        _store_section_evidence(db, section_key=section_key, block_heading=block_heading, result=result, source_query=source_query)
+        if str(result.get("kind") or "rows") == "rows":
+            _store_section_evidence(db, section_key=section_key, block_heading=block_heading, result=result, source_query=source_query)
         check_messages = build_section_agent_check_messages(
             section_key=section_key,
             section_title=title,
@@ -926,6 +1198,7 @@ async def async_run_section_block_agent(
             prior_runs=prior_runs,
             reusable_facts=reusable_facts,
             reusable_evidence=reusable_evidence,
+            memory_context_md=memory_context_md,
         )
         try:
             check = await async_request_llm_json(
@@ -944,16 +1217,26 @@ async def async_run_section_block_agent(
                 payload={"error": str(exc)},
             )
             break
-        verdict = str(check.get("verdict") or "need_more").strip().lower()
+        verdict = str(check.get("verdict") or "block_needs_more").strip().lower()
         rationale = str(check.get("rationale") or "")
         missing_questions = check.get("missing_questions") if isinstance(check.get("missing_questions"), list) else []
+        status = str(check.get("status") or "").strip().lower()
+        result["source_verdict"] = verdict
+        if not _is_valid_status(status):
+            reusable_rows_present = any(str(item.get("kind") or "rows") != "rows" for item in collected_results)
+            status = _classify_block_status(
+                verdict=verdict,
+                actual_query_rows=actual_query_row_counts,
+                actual_query_count=actual_query_count,
+                reusable_rows_present=reusable_rows_present,
+            )
         _store_section_run(
             db,
             section_key=section_key,
             block_heading=block_heading,
             iteration=iteration,
             phase="check",
-            payload=check,
+            payload={**check, "status": status},
             verdict=verdict,
         )
         _store_section_facts(
@@ -963,16 +1246,31 @@ async def async_run_section_block_agent(
             result=result,
             fact_updates=check.get("fact_updates") if isinstance(check.get("fact_updates"), list) else None,
         )
-        if verdict in {"sufficient", "refuted"}:
+        if verdict in {"block_supported", "block_contradicted"}:
             break
 
     verification_notes: list[str] = []
-    if verdict == "refuted":
+    if status == "insufficient_evidence":
+        reusable_rows_present = any(str(item.get("kind") or "rows") != "rows" for item in collected_results)
+        status = _classify_block_status(
+            verdict=verdict,
+            actual_query_rows=actual_query_row_counts,
+            actual_query_count=actual_query_count,
+            reusable_rows_present=reusable_rows_present,
+        )
+    if verdict == "block_contradicted":
         notes = [rationale] if rationale else ["Evidence contradicts the template claim"]
         notes.extend(str(q) for q in missing_questions if q)
         verification_notes = notes
 
-    from forensia.report.writer import _collect_flat_evidence_rows
+    from forensia.report.writer import (
+        _benchmark_block_id,
+        _collect_flat_evidence_rows,
+        _persist_benchmark_answer,
+        _render_benchmark_answer_markdown,
+        _summarize_flat_evidence_rows,
+        _normalize_benchmark_answer,
+    )
     raw_rows = _collect_flat_evidence_rows(collected_results)
     if raw_rows:
         headers = list(raw_rows[0].keys())
@@ -981,18 +1279,40 @@ async def async_run_section_block_agent(
         selected = [c for c in (col_resp.get("columns") or []) if c in headers]
         if selected:
             raw_rows = [{c: row[c] for c in selected if c in row} for row in raw_rows]
-    messages = build_report_section_messages(
-        section_meta={"section": section_key, "title": title},
-        evidence_results=collected_results,
-        context_sections=context_sections,
-        template_body=template_body,
-        report_brief=report_brief or {},
-        section_heading=block_heading,
-        current_section_outputs=current_section_outputs,
-        verification_notes=verification_notes,
-        raw_evidence_rows=raw_rows or None,
-    )
-    body = (await async_chat_completion(messages=messages, model=model, base_url=base_url)).strip()
+    prompt_rows = _summarize_flat_evidence_rows(raw_rows) if raw_rows else None
+    if benchmark_mode:
+        messages = build_benchmark_section_messages(
+            section_meta={"section": section_key, "title": title},
+            evidence_results=collected_results,
+            template_body=template_body,
+            report_brief=prompt_report_brief,
+            block_heading=block_heading,
+            raw_evidence_rows=prompt_rows,
+            verification_notes=verification_notes,
+            benchmark_id=_benchmark_block_id(block_heading),
+        )
+        benchmark_answer = await async_request_llm_json(messages=messages, model=model, base_url=base_url, audit_callback=audit)
+        normalized_answer = _normalize_benchmark_answer(
+            benchmark_answer,
+            section_key=section_key,
+            block_heading=block_heading,
+            status=status,
+        )
+        _persist_benchmark_answer(case, normalized_answer)
+        body = _render_benchmark_answer_markdown(normalized_answer, block_heading)
+    else:
+        messages = build_report_section_messages(
+            section_meta={"section": section_key, "title": title},
+            evidence_results=collected_results,
+            context_sections=context_sections,
+            template_body=template_body,
+            report_brief=prompt_report_brief,
+            section_heading=block_heading,
+            current_section_outputs=current_section_outputs,
+            verification_notes=verification_notes,
+            raw_evidence_rows=prompt_rows,
+        )
+        body = _prepend_status_badge((await async_chat_completion(messages=messages, model=model, base_url=base_url)).strip(), status)
     if audit_callback:
         audit_callback(messages, body)
     _store_section_run(
@@ -1003,4 +1323,4 @@ async def async_run_section_block_agent(
         phase="write",
         payload={"evidence_count": len(collected_results), "body_preview": body[:400]},
     )
-    return SectionBlockResult(body=body, evidence_results=collected_results, iterations=max(len(collected_results), 1))
+    return SectionBlockResult(body=body, evidence_results=collected_results, iterations=max(len(collected_results), 1), status=status)

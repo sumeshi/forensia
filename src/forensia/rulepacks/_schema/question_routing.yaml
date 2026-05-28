@@ -1,0 +1,88 @@
+question_types:
+  - name: prefetch_recent
+    keywords:
+      - prefetch
+      - 実行履歴
+      - application execution
+      - application history
+      - 起動履歴
+    keypoints:
+      - benchmark_prefetch_recent
+      - benchmark_artifact_processes
+      - benchmark_exec_processes
+
+  - name: email_ost
+    keywords:
+      - ost
+      - pst
+      - mail
+      - email
+      - outlook
+      - メール
+      - メールデータ
+    keypoints:
+      - benchmark_ost_file
+      - benchmark_exec_related_mft
+      - benchmark_artifact_paths
+
+  - name: desktop_rename
+    keywords:
+      - desktop
+      - recent
+      - rename
+      - file name
+      - ファイル名変更
+      - desktop 上
+    keypoints:
+      - benchmark_recent_lnk
+      - benchmark_reco_desktop_paths
+
+  - name: browser_usage
+    keywords:
+      - browser
+      - chrome
+      - edge
+      - firefox
+      - web
+      - ブラウザ
+    keypoints:
+      - benchmark_reco_desktop_paths
+      - benchmark_exec_processes
+
+  - name: logon_history
+    keywords:
+      - logon
+      - logoff
+      - shutdown
+      - startup
+      - 起動
+      - 終了
+      - ログオン
+      - ログオフ
+    keypoints:
+      - benchmark_timeline_events
+      - benchmark_logon_window
+
+  - name: cloud_activity
+    keywords:
+      - cloud
+      - drive
+      - icloud
+      - onedrive
+      - dropbox
+      - クラウド
+    keypoints:
+      - benchmark_reco_desktop_paths
+      - benchmark_exec_processes
+
+  - name: antiforensics
+    keywords:
+      - wipe
+      - delete
+      - clean
+      - log clear
+      - 削除
+      - ログ消去
+    keypoints:
+      - benchmark_timeline_events
+      - benchmark_reco_system_events
