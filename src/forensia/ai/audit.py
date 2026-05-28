@@ -19,6 +19,18 @@ class LLMCallLogger:
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._counts: dict[str, int] = {}
         self._lock = threading.Lock()
+        self._total: int = 0
+
+    @property
+    def total_calls(self) -> int:
+        return self._total
+
+    def count_by_phase(self) -> dict[str, int]:
+        result: dict[str, int] = {}
+        for key, count in self._counts.items():
+            phase = key.split("-", 1)[1] if "-" in key else key
+            result[phase] = result.get(phase, 0) + count
+        return result
 
     def write(
         self,
@@ -37,6 +49,8 @@ class LLMCallLogger:
         with self._lock:
             next_index = self._counts.get(counter_key, 0) + 1
             self._counts[counter_key] = next_index
+        with self._lock:
+            self._total += 1
         file_stem = f"{iteration:02d}-{safe_phase}"
         if safe_suffix:
             file_stem += f"-{safe_suffix}"

@@ -10,7 +10,7 @@ from rich import print
 from forensia.ai.audit import LLMCallLogger
 from forensia.ai.report_gap import _build_report_status
 from forensia.core.case import Case
-from forensia.core.memory import MemoryManager
+from forensia.core.memory import MemoryManager, memory_for_section
 from forensia.db.database import CaseDB
 from forensia.report.writer import (
     _collect_flat_evidence_rows,
@@ -122,7 +122,7 @@ async def async_refresh_report_sections(
                         report_brief=request.get("report_brief") or {},
                         base_url=base_url,
                         model=model,
-                        memory=memory,
+                        memory=memory_for_section(memory, benchmark_mode=is_benchmark_mode),
                         max_queries_per_section=max_queries_per_section,
                         evidence_keypoints=list(block.get("evidence_keypoints") or []),
                         benchmark_mode=is_benchmark_mode,

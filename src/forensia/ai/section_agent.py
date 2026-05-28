@@ -217,6 +217,10 @@ def _store_section_run(
     payload: dict[str, Any],
     verdict: str | None = None,
 ) -> None:
+    if verdict is not None:
+        normalized = {"sufficient": "block_supported", "refuted": "block_contradicted"}.get(verdict, verdict)
+        from forensia.core.verdicts import assert_valid_verdict
+        assert_valid_verdict(normalized, "section_verdict")
     run_id = hashlib.sha1(
         f"{section_key}-{block_heading}-{iteration}-{phase}-{json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)}".encode(
             "utf-8"
@@ -691,7 +695,43 @@ def _execute_keypoint(case: Case, db: CaseDB, keypoint: str) -> tuple[str, dict[
     return source_query, result
 
 
+def _add_json_fallback(sql: str) -> str:
+    """Rewrite SELECT columns to add COALESCE fallback for user_name etc."""
+    if not sql or "SELECT" not in sql.upper():
+        return sql
+    if "evtx_events" not in sql.lower():
+        return sql
+
+    import re
+
+    select_match = re.search(r'SELECT\s+(.+?)\s+FROM', sql, re.IGNORECASE | re.DOTALL)
+    if not select_match:
+        return sql
+
+    select_clause = select_match.group(1)
+
+    nullable_cols = {
+        "user_name": "COALESCE(user_name, json_extract(raw_json, '$.TargetUserName'), json_extract(raw_json, '$.SubjectUserName')) AS user_name",
+        "target_user": "COALESCE(target_user, json_extract(raw_json, '$.TargetUserName'), json_extract(raw_json, '$.SubjectUserName')) AS target_user",
+        "subject_user": "COALESCE(subject_user, json_extract(raw_json, '$.SubjectUserName')) AS subject_user",
+        "src_ip": "COALESCE(src_ip, json_extract(raw_json, '$.IpAddress')) AS src_ip",
+        "logon_type": "COALESCE(logon_type, CAST(json_extract(raw_json, '$.LogonType') AS INTEGER)) AS logon_type",
+    }
+
+    new_select = select_clause
+    for col_name, replacement in nullable_cols.items():
+        pattern = r'(?:evtx_events\.)?\b' + re.escape(col_name) + r'\b'
+        if re.search(pattern, select_clause, re.IGNORECASE):
+            new_select = re.sub(pattern, replacement, new_select, flags=re.IGNORECASE)
+
+    if new_select == select_clause:
+        return sql
+
+    return sql[:select_match.start(1)] + new_select + sql[select_match.end(1):]
+
+
 def _execute_sql(db: CaseDB, sql: str) -> tuple[str, dict[str, Any]]:
+    sql = _add_json_fallback(sql)
     validated = validate_select_sql(sql)
     source_query = validated
     cached = _load_cached_result(db, source_query)
@@ -728,6 +768,72 @@ def _coerce_plan_action(plan: dict[str, Any], *, section_key: str, iteration: in
         planned_query=planned_query,
         enough_to_write=enough_to_write,
     )
+
+
+def _load_evidence_chains() -> dict[str, list[dict[str, str]]]:
+    """Load evidence_chain definitions from question_routing.yaml."""
+    import yaml
+    from pathlib import Path
+
+    routing_path = Path(__file__).resolve().parent.parent / "rulepacks" / "_schema" / "question_routing.yaml"
+    if not routing_path.exists():
+        return {}
+    try:
+        data = yaml.safe_load(routing_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+    chains: dict[str, list[dict[str, str]]] = {}
+    for qtype in data.get("question_types", []):
+        if isinstance(qtype, dict):
+            name = str(qtype.get("name", "")).strip()
+            chain = qtype.get("evidence_chain", [])
+            if name and isinstance(chain, list):
+                chains[name] = chain
+    return chains
+
+
+def _execute_evidence_chain(db: CaseDB, block_heading: str, template_body: str) -> list[dict[str, Any]]:
+    """Execute deterministic evidence chain for the block.
+    Tries each chain entry in order until one returns rows.
+    """
+    chains = _load_evidence_chains()
+    if not chains:
+        return []
+    text = f"{block_heading}\n{template_body}".casefold()
+    chain_name = None
+    for name in chains:
+        if name.replace("_", " ").casefold() in text:
+            chain_name = name
+            break
+    if chain_name is None:
+        keyword_map = {
+            "prefetch": "prefetch_recent", "execution": "prefetch_recent",
+            "email": "email_ost", "mail": "email_ost", "outlook": "email_ost", "ost": "email_ost",
+            "rename": "desktop_rename", "desktop": "desktop_rename",
+            "browser": "browser_usage", "chrome": "browser_usage", "web": "browser_usage",
+            "logon": "logon_history", "logoff": "logon_history", "shutdown": "logon_history", "startup": "logon_history",
+            "cloud": "cloud_activity", "drive": "cloud_activity",
+            "antiforensic": "antiforensics", "wipe": "antiforensics", "delete": "antiforensics", "clean": "antiforensics",
+        }
+        for keyword, cid in keyword_map.items():
+            if keyword in text:
+                chain_name = cid
+                break
+    if chain_name is None or chain_name not in chains:
+        return []
+    chain = chains[chain_name]
+    for entry in chain:
+        if isinstance(entry, dict):
+            query = entry.get("query", "")
+            if query:
+                try:
+                    from forensia.db.query import fetch_records
+                    rows = fetch_records(db, query)
+                    if rows:
+                        return rows[:50]
+                except Exception:
+                    continue
+    return []
 
 
 def run_section_block_agent(
@@ -872,7 +978,20 @@ def run_section_block_agent(
                 phase="query_error",
                 payload={"error": str(exc), "action": plan_action.action, "source_query": source_query},
             )
-            continue
+            # QA3-5: On query_error for sql/template, fallback to keypoint
+            if plan_action.action in {"sql", "template"} and keypoint_catalog:
+                fallback_kp = str(keypoint_catalog[0].get("name") or "").strip()
+                if fallback_kp:
+                    try:
+                        fb_src, fallback_result = _execute_keypoint(case, db, fallback_kp)
+                        source_query = fb_src
+                        result = fallback_result
+                    except Exception:
+                        continue
+                else:
+                    continue
+            else:
+                continue
         collected_results.append(result)
         if str(result.get("kind") or "rows") == "rows":
             actual_query_count += 1
@@ -952,6 +1071,26 @@ def run_section_block_agent(
         )
         if verdict in {"block_supported", "block_contradicted"}:
             break
+
+    # QA3-11: Try evidence chain if collected results are all zero-row
+    if actual_query_count == 0 or all(rc == 0 for rc in actual_query_row_counts):
+        chain_rows = _execute_evidence_chain(db, block_heading, template_body)
+        if chain_rows:
+            chain_result = {
+                "keypoint": "evidence_chain",
+                "description": "Evidence chain fallback results",
+                "kind": "rows",
+                "source_kind": "evidence_chain",
+                "source_ref": "question_routing",
+                "row_count": len(chain_rows),
+                "evidence_ids": [],
+                "finding_ids": [],
+                "hypothesis_ids": [],
+                "sample_rows": chain_rows[:20],
+            }
+            collected_results.append(chain_result)
+            actual_query_count += 1
+            actual_query_row_counts.append(len(chain_rows))
 
     verification_notes: list[str] = []
     if status == "insufficient_evidence":
@@ -1169,7 +1308,20 @@ async def async_run_section_block_agent(
                 phase="query_error",
                 payload={"error": str(exc), "action": plan_action.action, "source_query": source_query},
             )
-            continue
+            # QA3-5: On query_error for sql/template, fallback to keypoint
+            if plan_action.action in {"sql", "template"} and keypoint_catalog:
+                fallback_kp = str(keypoint_catalog[0].get("name") or "").strip()
+                if fallback_kp:
+                    try:
+                        fb_src, fallback_result = _execute_keypoint(case, db, fallback_kp)
+                        source_query = fb_src
+                        result = fallback_result
+                    except Exception:
+                        continue
+                else:
+                    continue
+            else:
+                continue
         collected_results.append(result)
         if str(result.get("kind") or "rows") == "rows":
             actual_query_count += 1
@@ -1248,6 +1400,26 @@ async def async_run_section_block_agent(
         )
         if verdict in {"block_supported", "block_contradicted"}:
             break
+
+    # QA3-11: Try evidence chain if collected results are all zero-row
+    if actual_query_count == 0 or all(rc == 0 for rc in actual_query_row_counts):
+        chain_rows = _execute_evidence_chain(db, block_heading, template_body)
+        if chain_rows:
+            chain_result = {
+                "keypoint": "evidence_chain",
+                "description": "Evidence chain fallback results",
+                "kind": "rows",
+                "source_kind": "evidence_chain",
+                "source_ref": "question_routing",
+                "row_count": len(chain_rows),
+                "evidence_ids": [],
+                "finding_ids": [],
+                "hypothesis_ids": [],
+                "sample_rows": chain_rows[:20],
+            }
+            collected_results.append(chain_result)
+            actual_query_count += 1
+            actual_query_row_counts.append(len(chain_rows))
 
     verification_notes: list[str] = []
     if status == "insufficient_evidence":

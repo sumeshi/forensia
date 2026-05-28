@@ -743,3 +743,41 @@ class MemoryManager:
         if path == self.suspicious_path:
             return self._compact_suspicious(path)
         return False
+
+
+class EvidenceOnlyMemory:
+    """Wraps MemoryManager exposing only evidence-based context.
+
+    Used in benchmark mode to prevent narrative contamination from
+    hypotheses, scratch, archive, or investigation overview.
+    Only facts, keypoints, entities, and suspicious evidence are loaded.
+    """
+
+    def __init__(self, inner: MemoryManager) -> None:
+        self._inner = inner
+
+    @property
+    def max_bytes(self) -> int:
+        return self._inner.max_bytes
+
+    def _evidence_files(self) -> list[str]:
+        files: list[str] = ["facts.md"]
+        files.extend(self._inner._markdown_files(self._inner.entities_dir))
+        files.extend(self._inner._markdown_files(self._inner.keypoints_dir))
+        return files
+
+    def load_investigation_context(
+        self,
+        hypothesis_id: str | None = None,
+        **kwargs: object,
+    ) -> str:
+        return self._inner.load_compact_context(self._evidence_files())
+
+
+def memory_for_section(
+    memory: MemoryManager,
+    *,
+    benchmark_mode: bool = False,
+) -> MemoryManager | EvidenceOnlyMemory:
+    """Wrap memory in EvidenceOnlyMemory for benchmark mode blocks."""
+    return EvidenceOnlyMemory(memory) if benchmark_mode else memory

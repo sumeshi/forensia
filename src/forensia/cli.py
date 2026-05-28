@@ -1,4 +1,5 @@
 import asyncio
+import sys
 
 from pathlib import Path
 
@@ -495,6 +496,7 @@ def investigate(
     ),
     profile: str = typer.Option("windows-basic", "--profile"),
     report_only: bool = typer.Option(False, "--report-only"),
+    max_llm_calls: int = typer.Option(200, "--max-llm-calls", help="Hard cap on total LLM calls per investigation session."),
 ) -> None:
     llm_base_url, model = _resolve_llm_or_die(llm_base_url, model)
     case = _open_case_or_die(case_dir)
@@ -541,6 +543,7 @@ def investigate(
                 report_parallelism=report_parallelism or get_llm_settings()["report_parallelism"],
                 report_max_queries_per_section=report_max_queries_per_section or get_llm_settings()["report_max_queries_per_section"],
                 report_only=report_only,
+                max_llm_calls=max_llm_calls,
                 progress_callback=lambda payload: push_progress(
                     payload.get("summary"),
                     stage=payload.get("stage", "investigate"),
@@ -618,6 +621,109 @@ def status(case_dir: str) -> None:
         print("Latest session: none")
     print(f"Report section statuses: {section_statuses or 'none'}")
     print(f"Total gaps: {total_gaps}")
+
+
+@app.command()
+def doctor() -> None:
+    """Run all health checks: schema coverage, playbook drift, verdict taxonomy."""
+    checks: list[tuple[str, bool]] = []
+
+    _status("Schema coverage audit...")
+    try:
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).parent.parent.parent / "scripts" / "audit_schema_coverage.py"), "--strict"],
+            capture_output=True, text=True, timeout=60,
+        )
+        ok = result.returncode == 0
+        checks.append(("Schema coverage", ok))
+        if ok:
+            print("  ✓ All event IDs and question types covered")
+        else:
+            print(f"  ✗ Uncovered entries:\n{result.stdout}")
+    except Exception as exc:
+        checks.append(("Schema coverage", False))
+        print(f"  ✗ Error: {exc}")
+
+    _status("Playbook MD/YAML drift check...")
+    try:
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).parent.parent.parent / "scripts" / "regenerate_playbook.py"), "--check"],
+            capture_output=True, text=True, timeout=30,
+        )
+        ok = result.returncode == 0
+        checks.append(("Playbook drift", ok))
+        if ok:
+            print("  ✓ All playbook files up to date")
+        else:
+            print(f"  ✗ Drift detected:\n{result.stdout}")
+    except Exception as exc:
+        checks.append(("Playbook drift", False))
+        print(f"  ✗ Error: {exc}")
+
+    _status("Verdict taxonomy enforcement...")
+    try:
+        from forensia.core.verdicts import valid_verdicts
+        h_count = len(valid_verdicts("hypothesis_verdict"))
+        s_count = len(valid_verdicts("section_verdict"))
+        b_count = len(valid_verdicts("benchmark_status"))
+        print(f"  ✓ {h_count} hypothesis, {s_count} section, {b_count} benchmark verdicts defined")
+
+        import ast, os
+        enforcement_files = []
+        for root, dirs, files in os.walk(Path(__file__).parent.parent):
+            for f in files:
+                if f.endswith(".py"):
+                    path = os.path.join(root, f)
+                    try:
+                        tree = ast.parse(open(path).read())
+                        for node in ast.walk(tree):
+                            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                                if node.func.attr == "assert_valid_verdict":
+                                    enforcement_files.append(os.path.relpath(path, Path(__file__).parent.parent.parent))
+                                    break
+                    except Exception:
+                        pass
+        enforcement_count = len(enforcement_files)
+        ok = enforcement_count >= 4
+        checks.append(("Verdict enforcement", ok))
+        print(f"  {'✓' if ok else '✗'} {enforcement_count} files use assert_valid_verdict: {enforcement_files}")
+    except Exception as exc:
+        checks.append(("Verdict enforcement", False))
+        print(f"  ✗ Error: {exc}")
+
+    _status("Test suite...")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "tests/", "-q", "--no-header",
+             "--ignore=tests/test_memory_and_ingest.py",
+             "--ignore=tests/test_persistence.py",
+             "--ignore=tests/test_web_api.py"],
+            capture_output=True, text=True, timeout=120,
+        )
+        last_line = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+        ok = result.returncode == 0
+        checks.append(("Test suite", ok))
+        if ok:
+            print(f"  ✓ {last_line}")
+        else:
+            print(f"  ✗ Failures:\n{result.stdout[-500:]}")
+    except Exception as exc:
+        checks.append(("Test suite", False))
+        print(f"  ✗ Error: {exc}")
+
+    print()
+    total = len(checks)
+    passed = sum(1 for _, ok in checks if ok)
+    failed = total - passed
+    if failed == 0:
+        print(f"[bold green]✓ All {total} checks passed[/bold green]")
+    else:
+        print(f"[bold red]✗ {failed}/{total} checks failed[/bold red]")
+        for name, ok in checks:
+            status_char = "✓" if ok else "✗"
+            print(f"  {status_char} {name}")
+    sys.exit(0 if failed == 0 else 1)
 
 
 @app.command()

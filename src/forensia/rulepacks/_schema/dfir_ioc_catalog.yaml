@@ -1,0 +1,216 @@
+# DFIR IOC Catalog — Known Indicators of Compromise and Artifact Inferences
+# Used by block agent prompts to guide evidence search and application inference
+
+# Antiforensic tools — tools used to cover tracks
+antiforensic_tools:
+  - name: Eraser
+    exe_patterns: ["Eraser.exe", "EraserSetup.exe", "eraser*.exe"]
+    mft_patterns: ["%ProgramFiles%/Eraser/", "%LocalAppData%/Eraser/"]
+    prefetch_names: ["ERASER.EXE-*.pf"]
+    event_indicators: [4688]
+    
+  - name: CCleaner
+    exe_patterns: ["ccsetup*.exe", "CCLEANER*.EXE", "ccleaner.exe", "ccleaner64.exe"]
+    mft_patterns: ["%ProgramFiles%/CCleaner/", "%LocalAppData%/CCleaner/"]
+    prefetch_names: ["CCLEANER*.pf", "CCLEAN*.pf", "CCSETUP*.pf"]
+    event_indicators: [4688]
+    
+  - name: BleachBit
+    exe_patterns: ["bleachbit.exe", "bleachbit_*.exe"]
+    mft_patterns: ["%ProgramFiles%/BleachBit/"]
+    prefetch_names: ["BLEACHBIT*.pf"]
+    
+  - name: Privazer
+    exe_patterns: ["privazer*.exe", "PrivaZer.exe"]
+    mft_patterns: ["%ProgramFiles%/PrivaZer/"]
+    
+  - name: SDelete
+    exe_patterns: ["sdelete.exe", "sdelete64.exe", "sdelete*.exe"]
+    
+  - name: DBAN
+    exe_patterns: ["dban.exe"]
+
+# Cloud sync artifacts
+cloud_sync_artifacts:
+  - service: Google Drive
+    exe_patterns: ["googledrivesync.exe", "googledrive.exe", "GoogleDriveSync.exe"]
+    paths:
+      - "%LocalAppData%/Google/Drive/"
+      - "%LocalAppData%/Google/Drive/user_default/"
+      - "%LocalAppData%/Google/Drive/user_default/sync_config.db"
+      - "%LocalAppData%/Google/Drive/user_default/snapshot.db"
+    registry: ["HKCU\\Software\\Google\\Drive"]
+    prefetch_names: ["GOOGLEDRIVESYNC*.pf"]
+    
+  - service: Apple iCloud
+    exe_patterns: ["icloudsetup.exe", "icloud.exe", "AppleCloud.exe", "iCloudDrive.exe"]
+    paths:
+      - "%LocalAppData%/Apple Computer/"
+      - "%LocalAppData%/Apple Computer/iCloud/"
+      - "%LocalAppData%/Apple Computer/MobileSync/"
+      - "%LocalAppData%/Apple/iCloud/"
+      - "%UserProfile%/iCloudDrive/"
+    prefetch_names: ["ICLOUDSETUP*.pf", "ICLOUD*.pf"]
+    
+  - service: Microsoft OneDrive
+    exe_patterns: ["onedrive.exe", "OneDrive.exe", "OneDriveSetup.exe"]
+    paths:
+      - "%LocalAppData%/Microsoft/OneDrive/"
+      - "%LocalAppData%/Microsoft/OneDrive/SyncDiagnostics/"
+      - "%UserProfile%/OneDrive/"
+    registry: ["HKCU\\Software\\Microsoft\\OneDrive"]
+    prefetch_names: ["ONEDRIVE*.pf", "ONEDRIVESETUP*.pf"]
+    
+  - service: Dropbox
+    exe_patterns: ["dropbox.exe", "Dropbox.exe"]
+    paths:
+      - "%LocalAppData%/Dropbox/"
+      - "%AppData%/Dropbox/"
+      - "%AppData%/Dropbox/config.dbx"
+      - "%UserProfile%/Dropbox/"
+    prefetch_names: ["DROPBOX*.pf"]
+
+# Email clients
+email_artifacts:
+  - client: Microsoft Outlook
+    exe_patterns: ["outlook.exe"]
+    data_files: ["*.ost", "*.pst", "*.nst", "*.oab"]
+    paths: ["%LocalAppData%/Microsoft/Outlook/", "%AppData%/Microsoft/Outlook/"]
+    prefetch_names: ["OUTLOOK*.pf"]
+    note: "OST files ALWAYS imply Microsoft Outlook — no other application uses .ost format"
+    
+  - client: Mozilla Thunderbird
+    exe_patterns: ["thunderbird.exe"]
+    paths: ["%AppData%/Thunderbird/", "%AppData%/Thunderbird/Profiles/"]
+    
+  - client: Windows Mail / Live Mail
+    exe_patterns: ["wlmail.exe", "windowsmail.exe"]
+    data_files: ["*.eml"]
+    paths: ["%LocalAppData%/Microsoft/Windows Mail/"]
+
+# Recycle Bin / Deletion artifacts
+recycle_bin:
+  paths:
+    - "$Recycle.Bin"
+    - "$RECYCLE.BIN"
+    - "$Recycle.Bin\\*"
+  events:
+    - event_id: 4663
+      description: "Delete or move to Recycle Bin"
+    - event_id: 4660
+      description: "File deleted"
+  indicators:
+    - "%SystemRoot%\\$Recycle.Bin\\"
+    - "shift-delete"
+    - "permanent deletion"
+
+# Browser artifacts
+browser_artifacts:
+  - name: Google Chrome
+    exe_patterns: ["chrome.exe"]
+    data_files: ["*.sqlite", "Bookmarks", "History", "Cookies", "Login Data"]
+    paths: ["%LocalAppData%/Google/Chrome/"]
+    version_sources:
+      - "%ProgramFiles%/Google/Chrome/Application/chrome.exe"
+    prefetch_names: ["CHROME*.pf"]
+    
+  - name: Mozilla Firefox
+    exe_patterns: ["firefox.exe"]
+    data_files: ["places.sqlite", "cookies.sqlite", "logins.json"]
+    paths: ["%AppData%/Mozilla/Firefox/Profiles/"]
+    prefetch_names: ["FIREFOX*.pf"]
+    
+  - name: Microsoft Internet Explorer
+    exe_patterns: ["iexplore.exe"]
+    data_files: ["index.dat"]
+    paths: ["%LocalAppData%/Microsoft/Internet Explorer/"]
+    version_sources:
+      - "%ProgramFiles%/Internet Explorer/iexplore.exe"
+    prefetch_names: ["IEXPLORE*.pf"]
+    
+  - name: Microsoft Edge
+    exe_patterns: ["msedge.exe", "MicrosoftEdge.exe"]
+    paths: ["%LocalAppData%/Microsoft/Edge/"]
+
+# USB / External device artifacts
+usb_artifacts:
+  registry_keys:
+    - "SYSTEM\\CurrentControlSet\\Enum\\USBSTOR"
+    - "SYSTEM\\CurrentControlSet\\Enum\\USB"
+    - "SOFTWARE\\Microsoft\\Windows Portable Devices\\Devices"
+  events:
+    - event_id: 20001
+      description: "USB drive mounted"
+    - event_id: 4663
+      description: "Access to removable storage"
+  indicators:
+    - "USB\\VID_"
+    - "Serial number"
+
+# LOLBins / Living-off-the-land binaries
+lolbins:
+  - name: PowerShell
+    exe_patterns: ["powershell.exe", "powershell_ise.exe"]
+    events: [4104, 4103, 4688]
+    suspicious_args: ["-enc", "-encodedcommand", "-w hidden", "-windowstyle hidden", "-nop", "-noprofile", "-e"]
+    
+  - name: WMIC
+    exe_patterns: ["wmic.exe"]
+    suspicious_args: ["process call create", "delete", "/node:", "/user:"]
+    
+  - name: Rundll32
+    exe_patterns: ["rundll32.exe"]
+    suspicious_args: ["javascript:", "http://", "https://", ".dll,", "url.dll"]
+    
+  - name: Regsvr32
+    exe_patterns: ["regsvr32.exe", "regsvr64.exe"]
+    suspicious_args: ["/s", "/u", "/i:", "http://", "https://", "scrobj.dll"]
+    
+  - name: Mshta
+    exe_patterns: ["mshta.exe"]
+    suspicious_args: ["javascript:", "http://", "https://", "vbscript:"]
+    
+  - name: Certutil
+    exe_patterns: ["certutil.exe"]
+    suspicious_args: ["-urlcache", "-decode", "-encode", "http://"]
+    
+  - name: Bitsadmin
+    exe_patterns: ["bitsadmin.exe"]
+    suspicious_args: ["/transfer", "/download", "/upload", "http://"]
+
+# Suspicious service/task patterns
+suspicious_patterns:
+  services:
+    - name_match: ["*backdoor*", "*beacon*", "*cobalt*", "*mimikatz*", "*meterpreter*"]
+    - unusual_paths: ["%Temp%\\*", "%AppData%\\*", "%LocalAppData%\\Temp\\*", "C:\\Users\\*\\AppData\\*"]
+    - unsigned_binaries: ["%Temp%\\*.exe", "%AppData%\\*.exe"]
+  scheduled_tasks:
+    - name_match: ["*updater*", "*update*", "*sync*", "*crypto*", "*miner*"]
+    - unusual_schedules: ["ONLOGON", "ONIDLE", "every 5 minutes", "every 1 minute"]
+
+# Persistence mechanisms
+persistence_indicators:
+  registry_run_keys:
+    - "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+    - "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce"
+    - "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+    - "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce"
+  startup_folders:
+    - "%AppData%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup"
+    - "%ProgramData%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup"
+  service_events:
+    - event_id: 7045
+      description: "A service was installed in the system"
+    - event_id: 7036
+      description: "Service started/stopped"
+    - event_id: 4697
+      description: "A service was installed in the system"
+  scheduled_task_events:
+    - event_id: 4698
+      description: "A scheduled task was created"
+    - event_id: 4699
+      description: "A scheduled task was deleted"
+    - event_id: 4700
+      description: "A scheduled task was enabled"
+    - event_id: 4701
+      description: "A scheduled task was disabled"

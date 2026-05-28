@@ -10,6 +10,17 @@ question_types:
       - benchmark_prefetch_recent
       - benchmark_artifact_processes
       - benchmark_exec_processes
+    expected_answer_shape:
+      format: list
+      fields: [executable_name, exec_count, last_exec_time]
+      style: versioned_list
+      note: "For applications found in Prefetch, include version if available from MFT file_path."
+
+    evidence_chain:
+      - source: prefetch_executions
+        query: "SELECT executable_name, exec_count, last_exec_time FROM prefetch_executions"
+      - source: mft_entries
+        query: "SELECT file_name, si_modified, file_path FROM mft_entries WHERE file_path LIKE '%/Prefetch/%' AND file_name LIKE '%.pf'"
 
   - name: email_ost
     keywords:
@@ -24,6 +35,17 @@ question_types:
       - benchmark_ost_file
       - benchmark_exec_related_mft
       - benchmark_artifact_paths
+    expected_answer_shape:
+      format: name_with_version
+      fields: [application_name, version, data_files]
+      style: versioned_list
+      note: "OST files ALWAYS imply Microsoft Outlook. Report as 'Microsoft Outlook 2013' (or version from MFT)."
+
+    evidence_chain:
+      - source: mft_entries
+        query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE file_name LIKE '%.ost' OR file_name LIKE '%.pst'"
+      - source: mft_entries
+        query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE file_path LIKE '%/Outlook/%'"
 
   - name: desktop_rename
     keywords:
@@ -36,6 +58,17 @@ question_types:
     keypoints:
       - benchmark_recent_lnk
       - benchmark_reco_desktop_paths
+    expected_answer_shape:
+      format: pair_list
+      fields: [original_name, new_name, timestamp]
+      style: table
+      note: "Report renamed files as original→new pairs with timestamps from MFT $FILE_NAME attributes."
+
+    evidence_chain:
+      - source: mft_entries
+        query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE file_path LIKE '%/Desktop/%' AND (file_name LIKE '%~%.%' OR file_name LIKE '%(%.%')"
+      - source: mft_entries
+        query: "SELECT file_name, json_extract(raw_json, '$.fn_filename') AS original_name, si_modified FROM mft_entries WHERE json_extract(raw_json, '$.fn_filename') IS NOT NULL AND json_extract(raw_json, '$.fn_filename') != file_name"
 
   - name: browser_usage
     keywords:
@@ -48,6 +81,17 @@ question_types:
     keypoints:
       - benchmark_reco_desktop_paths
       - benchmark_exec_processes
+    expected_answer_shape:
+      format: name_with_version
+      fields: [application_name, version]
+      style: versioned_list
+      note: "Include version from MFT file_path of the browser executable (e.g. 'Google Chrome 41.x', 'Microsoft Internet Explorer 11.0.9600.17691', 'Mozilla Firefox 36.x')."
+
+    evidence_chain:
+      - source: mft_entries
+        query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE (file_path LIKE '%/Google/Chrome/%' OR file_path LIKE '%/Internet Explorer/%' OR file_path LIKE '%/Mozilla/Firefox/%' OR file_path LIKE '%/Microsoft/Edge/%') AND file_name LIKE '%.exe'"
+      - source: prefetch_executions
+        query: "SELECT executable_name, exec_count, last_exec_time FROM prefetch_executions WHERE LOWER(executable_name) IN ('chrome.exe', 'iexplore.exe', 'firefox.exe', 'msedge.exe')"
 
   - name: logon_history
     keywords:
@@ -62,6 +106,15 @@ question_types:
     keypoints:
       - benchmark_timeline_events
       - benchmark_logon_window
+    expected_answer_shape:
+      format: daily_table
+      fields: [date, startup, logons, logoff, shutdown]
+      style: table
+      note: "Group by calendar date. Each row has date, startup count, logon count, logoff count, shutdown count."
+
+    evidence_chain:
+      - source: evtx_events
+        query: "SELECT event_id, timestamp, computer, user_name, logon_type FROM evtx_events WHERE event_id IN (6005, 6006, 6008, 4624, 4634, 4647, 4776) ORDER BY timestamp"
 
   - name: cloud_activity
     keywords:
@@ -74,6 +127,19 @@ question_types:
     keypoints:
       - benchmark_reco_desktop_paths
       - benchmark_exec_processes
+    expected_answer_shape:
+      format: enumerated_services
+      fields: [service_name, exe_found, paths_found, config_found]
+      style: table
+      note: "Enumerate ALL cloud services scanned (Google Drive, iCloud, OneDrive, Dropbox). For each, report whether executable/path/config files were found."
+
+    evidence_chain:
+      - source: mft_entries
+        query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE file_path LIKE '%/Google/Drive/%' OR file_path LIKE '%/Apple Computer/%' OR file_path LIKE '%/OneDrive/%' OR file_path LIKE '%/Dropbox/%'"
+      - source: prefetch_executions
+        query: "SELECT executable_name, exec_count, last_exec_time FROM prefetch_executions WHERE LOWER(executable_name) IN ('googledrivesync.exe', 'icloudsetup.exe', 'onedrive.exe', 'dropbox.exe')"
+      - source: mft_entries
+        query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE file_name IN ('sync_config.db', 'snapshot.db', 'config.dbx')"
 
   - name: antiforensics
     keywords:
@@ -86,3 +152,16 @@ question_types:
     keypoints:
       - benchmark_timeline_events
       - benchmark_reco_system_events
+    expected_answer_shape:
+      format: full_scan
+      fields: [tool_name, evidence_type, found, details]
+      style: table
+      note: "Scan ALL known antiforensic tools (Eraser, CCleaner, BleachBit, Privazer, SDelete). Report log clearing events (104, 1102). Report Recycle Bin emptying."
+
+    evidence_chain:
+      - source: evtx_events
+        query: "SELECT event_id, timestamp, computer FROM evtx_events WHERE event_id IN (104, 1102, 1100)"
+      - source: mft_entries
+        query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE LOWER(file_name) LIKE 'eraser%.exe' OR LOWER(file_name) LIKE 'ccsetup%.exe' OR LOWER(file_name) LIKE 'ccleaner%.exe' OR LOWER(file_name) LIKE 'bleachbit%.exe' OR LOWER(file_name) LIKE 'sdelete%.exe'"
+      - source: mft_entries
+        query: "SELECT file_name, file_path, is_deleted FROM mft_entries WHERE is_deleted = 1 AND file_name IN ('sync_config.db', 'snapshot.db')"

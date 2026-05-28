@@ -1323,7 +1323,6 @@ class PersistenceTests(unittest.TestCase):
                 ), patch(
                     "forensia.ai.investigator.broad_plan_investigation",
                     return_value=BroadPlanResult(
-                        read_more=[],
                         hypotheses=[],
                         stop=False,
                         stop_reason=None,
@@ -1372,7 +1371,6 @@ class PersistenceTests(unittest.TestCase):
                 generated["count"] += 1
                 index = generated["count"]
                 return BroadPlanResult(
-                    read_more=[],
                     hypotheses=[Hypothesis(id=f"H-{index}", description=f"hypothesis {index}", status="active", summary="")],
                     stop=False,
                     stop_reason=None,
@@ -1423,14 +1421,12 @@ class PersistenceTests(unittest.TestCase):
                 planned["count"] += 1
                 if planned["count"] == 1:
                     return BroadPlanResult(
-                        read_more=[],
                         hypotheses=[Hypothesis(id="H-1", description="active hypothesis", status="active", summary="")],
                         stop=True,
                         stop_reason="done",
                         raw_response={},
                     )
                 return BroadPlanResult(
-                    read_more=[],
                     hypotheses=[],
                     stop=False,
                     stop_reason=None,

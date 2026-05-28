@@ -254,11 +254,7 @@ class HypothesisProgressTracker:
         return observed
     
     def should_auto_confirm(self, rule_context: Any, rows: list[dict[str, Any]]) -> bool:
-        """Return True if co_observed_event_ids criteria are fully satisfied.
-        
-        Checks if all event_ids in rule_context.confirm_when.co_observed_event_ids
-        are present in the query results.
-        """
+        """Return True if >= 50% of co_observed_event_ids are present in query results."""
         if rule_context is None:
             return False
         confirm_when = getattr(rule_context, "confirm_when", None)
@@ -271,8 +267,11 @@ class HypothesisProgressTracker:
             required_set = set(int(eid) for eid in required_event_ids)
         except (TypeError, ValueError):
             return False
+        if not required_set:
+            return False
         observed_event_ids = self._extract_observed_event_ids(rows)
-        return required_set.issubset(observed_event_ids)
+        overlap = len(required_set & observed_event_ids)
+        return overlap / len(required_set) >= 0.5
 
     def has_partial_confirm_signal(self, rule_context: Any, rows: list[dict[str, Any]]) -> bool:
         """Return True when some, but not all, confirm_when event IDs are present."""
@@ -997,6 +996,9 @@ def _record_check_result(
             verdict=check_result.verdict,
             summary=check_result.report_text,
             evidence_ids=result_summary.get("evidence_ids", []),
+            template_id=planned_query.template_id,
+            params=planned_query.params,
+            purpose=planned_query.purpose,
         )
     )
     state.history = state.history[-50:]
@@ -1270,6 +1272,9 @@ async def _run_cycle_body(
                     iteration=plan_cycle, query_id=planned_query.query_id, hypothesis_id=hypothesis.id,
                     verdict=check_result.verdict, summary=check_result.report_text,
                     evidence_ids=result_summary.get("evidence_ids", []),
+                    template_id=planned_query.template_id,
+                    params=planned_query.params,
+                    purpose=planned_query.purpose,
                 ))
                 state.history = state.history[-50:]
                 if check_result.new_hypotheses:
@@ -1322,8 +1327,8 @@ async def _run_cycle_body(
                 query_fp = _query_fingerprint(planned_query.sql)
                 tracker.record(query_fp, check_result.verdict, row_count)
                 if tracker.should_pivot(query_fp):
-                    _log("PIVOT", f"{hypothesis.id} — duplicate query fingerprint detected")
-                    continue
+                    _log("PIVOT", f"{hypothesis.id} — duplicate query fingerprint detected, auto-exhausted")
+                    break
                 rule_context = resolve_rule_context(hypothesis)
                 partial_confirm_signal = tracker.has_partial_confirm_signal(rule_context, rows)
                 if tracker.should_auto_refute(consecutive_threshold=3) and not partial_confirm_signal:
@@ -1468,16 +1473,31 @@ async def investigate(
     template_root: Path | None = None,
     report_parallelism: int = 1,
     report_max_queries_per_section: int = 3,
+    max_llm_calls: int = 200,
 ) -> dict[str, Any]:
     state, ctx, memory, llm_logger, session_id, started_at, template_root = _init_session(
         case, db, profile, base_url, model, template_root,
     )
+    case.extract_time_range(db.conn)
+    from forensia.ai.prompts import set_case_time_range
+    set_case_time_range(case.time_range)
     status = "running"
     no_progress_count = 0
     previous_sigint = signal.getsignal(signal.SIGINT)
     signal.signal(signal.SIGINT, lambda signum, frame: setattr(ctx, "interrupted", True))
+
+    def _check_llm_budget() -> None:
+        if llm_logger.total_calls >= max_llm_calls:
+            raise RuntimeError(
+                f"LLM call budget exceeded: {llm_logger.total_calls} calls >= {max_llm_calls} max. "
+                f"Per-phase: {llm_logger.count_by_phase()}. "
+                "Increase --max-llm-calls or investigate the cause of excessive calls."
+            )
+
     try:
         for plan_cycle in range(1, max_iter + 1):
+            _check_llm_budget()
+            state.iteration = plan_cycle
             state.iteration = plan_cycle
             state.findings_snapshot = _finding_snapshot(db)
             _sync_keypoint_cards(memory, state.findings_snapshot)

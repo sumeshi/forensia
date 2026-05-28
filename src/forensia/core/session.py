@@ -4,6 +4,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from forensia.core.verdicts import assert_valid_verdict
+
 ENTITY_TYPE_ALIASES = {
     "host": "host",
     "hostname": "host",
@@ -61,6 +63,13 @@ class Hypothesis(BaseModel):
     fallback_phase: str | None = None
     fallback_source_rule_id: str | None = None
 
+    @field_validator("verdict")
+    @classmethod
+    def _validate_verdict(cls, v: str | None) -> str | None:
+        if v is not None:
+            assert_valid_verdict(v, "hypothesis_verdict")
+        return v
+
 
 class PlannedQuery(BaseModel):
     query_id: str
@@ -85,6 +94,16 @@ class HistoryEntry(BaseModel):
     verdict: str | None = None
     summary: str
     evidence_ids: list[str] = Field(default_factory=list)
+    template_id: str | None = None
+    params: dict[str, Any] = Field(default_factory=dict)
+    purpose: str = ""
+
+    @field_validator("verdict")
+    @classmethod
+    def _validate_verdict(cls, v: str | None) -> str | None:
+        if v is not None:
+            assert_valid_verdict(v, "hypothesis_verdict")
+        return v
 
 
 class SessionState(BaseModel):

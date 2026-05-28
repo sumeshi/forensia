@@ -42,6 +42,7 @@ forensia = [
     "report/templates/*.j2",
     "report_template/*.md",
     "rulepacks/_schema/*.yaml",
+    "rulepacks/_schema/playbook/*.md",
     "static/**/*",
 ]
 

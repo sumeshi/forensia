@@ -28,6 +28,28 @@ rules: []
 @dataclass(slots=True)
 class Case:
     path: Path
+    source_timezone: str = "UTC"
+    _time_range_earliest: str = ""
+    _time_range_latest: str = ""
+
+    @property
+    def time_range(self) -> dict[str, str]:
+        """Return the evidence time range as {earliest, latest} ISO strings.
+        Populated by extract_time_range() after ingestion.
+        """
+        if self._time_range_earliest and self._time_range_latest:
+            return {"earliest": self._time_range_earliest, "latest": self._time_range_latest}
+        return {}
+
+    def extract_time_range(self, conn) -> None:
+        """Query evtx_events MIN/MAX timestamp via an active DuckDB connection."""
+        try:
+            row = conn.execute("SELECT MIN(timestamp) AS earliest, MAX(timestamp) AS latest FROM evtx_events").fetchone()
+            if row:
+                self._time_range_earliest = str(row[0] or "") if row[0] is not None else ""
+                self._time_range_latest = str(row[1] or "") if row[1] is not None else ""
+        except Exception:
+            pass
 
     @property
     def raw_dir(self) -> Path:
@@ -72,6 +94,12 @@ class Case:
     @property
     def trace_database_path(self) -> Path:
         return self.db_dir / "trace.duckdb"
+
+    @property
+    def timezone_info(self) -> str:
+        """Return formatted timezone string for display."""
+        tz = self.source_timezone or "UTC"
+        return f"{tz} (DST observed for appropriate regions)"
 
     def ensure_report_templates(self, overwrite: bool = False) -> list[Path]:
         self.report_template_dir.mkdir(parents=True, exist_ok=True)

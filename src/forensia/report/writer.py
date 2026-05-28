@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from forensia.core.case import Case
-from forensia.core.memory import MemoryManager
+from forensia.core.memory import MemoryManager, memory_for_section
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records, normalize_value
 from forensia.report.html import render_html_report
@@ -1406,7 +1406,15 @@ def _collect_claim_provenance(evidence_results: list[dict[str, Any]]) -> dict[st
     }
 
 
-def _build_report_brief(db: CaseDB) -> dict[str, Any]:
+def _render_timestamp_with_timezone(timestamp_str: str, case: Case) -> str:
+    """Render timestamp with timezone qualifier."""
+    if not timestamp_str:
+        return "unknown"
+    tz = getattr(case, 'source_timezone', 'UTC')
+    return f"{timestamp_str} {tz}"
+
+
+def _build_report_brief(db: CaseDB, case: Case | None = None) -> dict[str, Any]:
     findings = fetch_records(
         db,
         """
@@ -1479,6 +1487,20 @@ def _build_report_brief(db: CaseDB) -> dict[str, Any]:
         "section_count": len(coverage_map),
         "total_sources": sum(len(items) for items in coverage_map.values()),
     }
+    tz_str = getattr(case, 'source_timezone', 'UTC') if case else 'UTC'
+    time_range_rows = fetch_records(
+        db,
+        "SELECT MIN(timestamp) AS first_event, MAX(timestamp) AS last_event FROM evtx_events",
+    )
+    time_range = {}
+    if time_range_rows:
+        first = str(time_range_rows[0].get("first_event") or "")
+        last = str(time_range_rows[0].get("last_event") or "")
+        if first or last:
+            time_range = {
+                "first_event": _render_timestamp_with_timezone(first, case) if first else "unknown",
+                "last_event": _render_timestamp_with_timezone(last, case) if last else "unknown",
+            }
     return {
         "top_findings": [normalize_value(item) for item in findings],
         "active_hypotheses": [normalize_value(item) for item in active_hypotheses],
@@ -1496,11 +1518,13 @@ def _build_report_brief(db: CaseDB) -> dict[str, Any]:
         ],
         "existing_claims": deduped_claims,
         "evidence_coverage": coverage_summary,
+        "source_timezone": tz_str,
+        "time_range": time_range,
     }
 
 
 def write_report_brief(case: Case, db: CaseDB) -> dict[str, Any]:
-    brief = _build_report_brief(db)
+    brief = _build_report_brief(db, case)
     overview_path = case.memory_dir / "overview.md"
     if overview_path.exists():
         overview_text = overview_path.read_text(encoding="utf-8")
@@ -1859,7 +1883,7 @@ def _render_section_from_request(
             report_brief=request.get("report_brief") or {},
             base_url=base_url,
             model=model,
-            memory=memory,
+            memory=memory_for_section(memory, benchmark_mode=is_benchmark_mode),
             max_queries_per_section=max_queries_per_section,
             evidence_keypoints=list(block.get("evidence_keypoints") or []),
             benchmark_mode=is_benchmark_mode,
@@ -2157,8 +2181,15 @@ def _normalize_benchmark_answer(
 ) -> dict[str, Any]:
     normalized_id = str(answer.get("id") or _benchmark_block_id(block_heading)).strip() or _benchmark_block_id(block_heading)
     normalized_status = str(answer.get("status") or status or "insufficient_evidence").strip().lower()
-    if normalized_status not in {"answered", "partial", "not_found", "not_searched", "insufficient_evidence", "wrong_query"}:
+    from forensia.core.verdicts import assert_valid_verdict
+    try:
+        assert_valid_verdict(normalized_status, "benchmark_status")
+    except ValueError:
         normalized_status = status or "insufficient_evidence"
+        try:
+            assert_valid_verdict(normalized_status, "benchmark_status")
+        except ValueError:
+            normalized_status = "insufficient_evidence"
     normalized_answer = _coerce_string_list(answer.get("answer"))
     normalized_missing = _coerce_string_list(answer.get("missing_reason"))
     normalized_queries = _coerce_string_list(answer.get("queries_run"))

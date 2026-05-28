@@ -24,7 +24,6 @@ logger = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class BroadPlanResult:
-    read_more: list[str]
     hypotheses: list[Hypothesis]
     stop: bool
     stop_reason: str | None
@@ -190,17 +189,16 @@ def broad_plan_investigation(
             max_resolved=20,
         )
 
-    parsed = _request_with_optional_context(
-        memory=memory,
-        messages_builder=messages_builder,
-        base_url=base_url,
+    # QA3-7: Use direct single call. read_more from the LLM is intentionally ignored;
+    # the stop field is used for termination.
+    parsed = request_llm_json(
+        messages=messages_builder(default_context_md or ""),
         model=model,
-        initial_context=default_context_md,
+        base_url=base_url,
         status_callback=status_callback,
         audit_callback=audit_callback,
     )
     return BroadPlanResult(
-        read_more=[str(item) for item in coerce_list(parsed.get("read_more"))],
         hypotheses=_parse_hypotheses(parsed.get("hypotheses")),
         stop=bool(parsed.get("stop", False)),
         stop_reason=str(parsed.get("stop_reason") or "") or None,

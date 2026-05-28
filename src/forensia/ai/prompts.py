@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -7,6 +8,76 @@ from typing import Any
 from forensia.config import get_llm_settings
 from forensia.core.session import ENTITY_TYPE_ALIASES, Hypothesis, PlannedQuery
 from forensia.ai.sql_schema import build_investigation_framework, _load_app_catalog, _load_fp_reduction_guidance
+
+# Module-level time range cache, set at investigation start by investigator.py
+_CASE_TIME_RANGE: dict[str, str] = {}
+
+def set_case_time_range(tr: dict[str, str]) -> None:
+    _CASE_TIME_RANGE.clear()
+    _CASE_TIME_RANGE.update(tr)
+
+def _estimate_message_tokens(text: str) -> int:
+    """Rough token estimation: ~4 chars per token for English+JSON."""
+    return len(text) // 4
+
+
+def _trim_dynamic_content(
+    messages: list[dict[str, str]],
+    *,
+    max_total_tokens: int = 28000,
+    system_weight: float = 0.5,
+) -> list[dict[str, str]]:
+    """Trim dynamic (user) message content if total estimated tokens exceed budget.
+    
+    Strategy: keep system messages intact (they contain the playbook),
+    trim user message content progressively.
+    """
+    total_est = sum(_estimate_message_tokens(m.get("content", "")) for m in messages)
+    if total_est <= max_total_tokens:
+        return messages
+    trimmed = list(messages)
+    for msg in trimmed:
+        content = msg.get("content", "")
+        est = _estimate_message_tokens(content)
+        if est > max_total_tokens * system_weight:
+            # Trim user/dynamic content — keep first 60%, drop middle 20%, keep last 20%
+            mid = len(content) // 2
+            quarter = len(content) // 4
+            head = content[:mid + quarter]
+            tail = content[mid - quarter:]
+            dedup = head + "\n...[content trimmed for budget; see full trace in db]...\n" + tail
+            msg["content"] = dedup
+            total_est = sum(_estimate_message_tokens(m.get("content", "")) for m in trimmed)
+            if total_est <= max_total_tokens:
+                break
+    return trimmed
+
+
+def _assemble_messages_with_budget(
+    builder_func: Callable[..., list[dict[str, str]]],
+    *args,
+    max_tokens: int = 28000,
+    **kwargs,
+) -> list[dict[str, str]]:
+    """Build messages via builder, then trim if budget exceeded.
+    
+    Preserves system prompt (playbook) while trimming user/dynamic content.
+    Usage: messages = _assemble_messages_with_budget(build_broad_plan_messages, ..., max_tokens=28000)
+    """
+    messages = builder_func(*args, **kwargs)
+    return _trim_dynamic_content(messages, max_total_tokens=max_tokens)
+
+
+def _time_range_guidance() -> str:
+    if _CASE_TIME_RANGE.get("earliest") and _CASE_TIME_RANGE.get("latest"):
+        return (
+            f"\n## Case Time Range\n"
+            f"Earliest event: {_CASE_TIME_RANGE['earliest']}\n"
+            f"Latest event: {_CASE_TIME_RANGE['latest']}\n"
+            "IMPORTANT: Do NOT use datetime('now') or CURRENT_TIMESTAMP — they refer to the current system time, not the case time. "
+            "All WHERE clauses on timestamp columns must use values within this range.\n"
+        )
+    return ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +164,209 @@ def _load_schema_hints() -> dict[str, dict[str, Any]]:
 
 
 @lru_cache(maxsize=1)
+def _load_schema_notes() -> str:
+    """Load schema notes from evtx_events.yaml and prefetch_executions.yaml for section agent."""
+    import yaml
+    from pathlib import Path
+    schema_dir = Path(__file__).parent.parent / "rulepacks" / "_schema"
+    notes: list[str] = []
+    
+    evtx_path = schema_dir / "evtx_events.yaml"
+    if evtx_path.exists():
+        try:
+            data = yaml.safe_load(evtx_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                evtx_notes = data.get("notes", {})
+                if isinstance(evtx_notes, dict):
+                    for key, note in evtx_notes.items():
+                        if isinstance(note, str):
+                            notes.append(f"- evtx_events.{key}: {note}")
+                extractors = data.get("json_field_extractors", {})
+                if isinstance(extractors, dict):
+                    for field, expr in list(extractors.items())[:5]:
+                        notes.append(f"- If {field.lower()} column is NULL, use {expr}")
+        except Exception:
+            pass
+    
+    prefetch_path = schema_dir / "prefetch_executions.yaml"
+    if prefetch_path.exists():
+        try:
+            data = yaml.safe_load(prefetch_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                prefetch_notes = data.get("notes", {})
+                if isinstance(prefetch_notes, dict):
+                    for key, note in prefetch_notes.items():
+                        if isinstance(note, str):
+                            notes.append(f"- prefetch_executions.{key}: {note}")
+        except Exception:
+            pass
+    
+    return "\n".join(notes)
+
+
+@lru_cache(maxsize=8)
+def _dfir_playbook(phase: str) -> str:
+    """Generate DFIR investigator playbook narrative for the given phase.
+
+    Phase is one of: 'broad_plan', 'hypothesis_plan', 'check', 'report_section',
+    'section_agent_plan', 'section_agent_check'.
+    Returns a narrative string (5-10k chars) optimized for weak LLMs.
+    """
+    import yaml
+    from pathlib import Path
+
+    schema_dir = Path(__file__).parent.parent / "rulepacks" / "_schema"
+
+    def _load_yaml(name: str) -> dict:
+        path = schema_dir / name
+        if not path.exists():
+            return {}
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    evtx_events = _load_yaml("evtx_events.yaml")
+    logon_types = _load_yaml("logon_types.yaml")
+    event_ids = _load_yaml("event_ids.yaml")
+    app_catalog = _load_yaml("app_catalog.yaml")
+    fp_rules = _load_yaml("false_positive_rules.yaml")
+    artifact_inference = _load_yaml("artifact_inference.yaml")
+
+    # Event ID narrative
+    events_data = event_ids.get("events", {}) if isinstance(event_ids, dict) else {}
+    event_narrative_parts = []
+    for eid_str, info in sorted(events_data.items(), key=lambda x: int(x[0]) if isinstance(x[0], str) and x[0].isdigit() else 0):
+        if isinstance(info, dict):
+            title = info.get("title", "")
+            allowed = info.get("allowed_claims", [])
+            disallowed = info.get("disallowed_without_extra", [])
+            required = info.get("required_fields", [])
+            keywords = info.get("keywords_for_string_search", [])
+            parts = [f"Event {eid_str} ({title})"]
+            if required:
+                parts.append(f" always query: {', '.join(required)}")
+            if allowed:
+                parts.append(f" you may claim: {'; '.join(allowed)}")
+            if disallowed:
+                parts.append(f" DO NOT claim without extra evidence: {'; '.join(disallowed)}")
+            if keywords:
+                parts.append(f" string-search keywords: {', '.join(keywords)}")
+            event_narrative_parts.append(" - " + ". ".join(parts) + ".")
+    event_narrative = "\n".join(event_narrative_parts)
+
+    # Logon types narrative
+    logon_types_data = logon_types.get("types", {}) if isinstance(logon_types, dict) else {}
+    logon_narrative_parts = []
+    for lt, info in sorted(logon_types_data.items(), key=lambda x: info.get("priority", 99) if isinstance(info, dict) else 99):
+        if isinstance(info, dict):
+            logon_narrative_parts.append(
+                f" - LogonType {lt}: {info.get('name', '')} — {info.get('description', '')} (priority {info.get('priority', '')})"
+            )
+    logon_narrative = "\n".join(logon_narrative_parts)
+
+    # Priority events narrative
+    priority_events = logon_types.get("priority_events", []) if isinstance(logon_types, dict) else []
+    priority_narrative_parts = []
+    for pe in priority_events:
+        if isinstance(pe, dict):
+            eids = pe.get("event_ids", [])
+            reason = pe.get("reason", "")
+            priority_narrative_parts.append(f" - First check events {eids}: {reason}")
+    priority_narrative = "\n".join(priority_narrative_parts)
+
+    # Schema notes narrative
+    schema_notes = evtx_events.get("notes", {}) if isinstance(evtx_events, dict) else {}
+    schema_note_parts = []
+    for key, note in schema_notes.items():
+        if isinstance(note, str):
+            schema_note_parts.append(f" - {key}: {note}")
+    schema_narrative = "\n".join(schema_note_parts)
+
+    # False positive narrative
+    fp_guidance = fp_rules.get("reduction_guidance", {}) if isinstance(fp_rules, dict) else {}
+    fp_narrative_parts = []
+    if isinstance(fp_guidance, dict):
+        for key, items in fp_guidance.items():
+            if isinstance(items, list):
+                fp_narrative_parts.append(f" {key}: {'; '.join(str(i) for i in items)}")
+    fp_narrative = "\n".join(fp_narrative_parts)
+
+    # JSON field extractors narrative
+    extractors = evtx_events.get("json_field_extractors", {}) if isinstance(evtx_events, dict) else {}
+    extractor_parts = []
+    if isinstance(extractors, dict):
+        for field, expr in extractors.items():
+            extractor_parts.append(f" - If {field.lower()} column is NULL/empty, use {expr} to extract from raw_json")
+    extractor_narrative = "\n".join(extractor_parts)
+
+    # App catalog narrative
+    app_mappings = app_catalog.get("mappings", {}) if isinstance(app_catalog, dict) else {}
+    app_narrative_parts = []
+    if isinstance(app_mappings, dict):
+        for exe, info in app_mappings.items():
+            if isinstance(info, dict):
+                app_narrative_parts.append(f" - {exe}: {info.get('category', '?')} — {info.get('description', '')}")
+    app_narrative = "\n".join(app_narrative_parts)
+
+    # Artifact-to-application inference narrative
+    artifact_parts = []
+    for artifact_type, entries in artifact_inference.items() if isinstance(artifact_inference, dict) else {}:
+        if isinstance(entries, list):
+            artifact_parts.append(f"## {artifact_type.replace('_', ' ').title()}")
+            for entry in entries:
+                if isinstance(entry, dict):
+                    pattern = entry.get("pattern", "")
+                    app = entry.get("app_name", "")
+                    category = entry.get("app_category", "")
+                    notes = entry.get("notes", "")
+                    parts = [f" - {pattern} → {app} ({category})"]
+                    if notes:
+                        parts.append(f": {notes}")
+                    artifact_parts.append("".join(parts))
+    artifact_narrative = "\n".join(artifact_parts)
+
+    # Build the base DFIR knowledge section (common to ALL phases)
+    base_playbook = f"""<DFIR_PLAYBOOK>
+You are a DFIR analyst. Follow these investigation principles.
+
+## Event ID Reference
+{event_narrative or "No event ID reference available."}
+
+## Logon Type Reference
+{logon_narrative or "No logon type reference available."}
+
+## Priority Investigation Order
+{priority_narrative or "No priority order specified."}
+
+## Schema Notes & Column Guidance
+{schema_narrative or "No schema notes available."}
+
+## JSON Field Extractors (when columns are NULL)
+{extractor_narrative or "No extractors available."}
+
+## False-Positive Reduction Guidance
+{fp_narrative or "No FP reduction guidance."}
+
+## Application Catalog (process categorization)
+{app_narrative or "No app catalog available."}
+
+## Artifact-to-Application Inference
+{artifact_narrative or "No artifact inference data available."}
+"""
+    # Phase-specific playbook loaded from external MD file
+    playbook_dir = schema_dir / "playbook"
+    phase_file = playbook_dir / f"{phase}.md"
+    phase_narrative = ""
+    if phase_file.exists():
+        try:
+            phase_narrative = phase_file.read_text(encoding="utf-8")
+        except Exception:
+            pass
+    return base_playbook + phase_narrative
+
+
 def _load_event_id_hints() -> dict[int, dict[str, Any]]:
     import yaml
     from pathlib import Path
@@ -276,30 +550,47 @@ def build_broad_plan_messages(
     resolved_hypotheses: list[Hypothesis],
     history: list[dict[str, Any]],
     observed_keypoints: list[str] | None = None,
+    uncovered_keypoints: list[dict[str, Any]] | None = None,
     max_findings: int = 10,
     max_resolved: int = 20,
 ) -> list[dict[str, str]]:
     findings = _slim_findings(findings_snapshot, max_findings)
     recent_resolved = resolved_hypotheses[-max_resolved:]
     slimmed_history = _slim_history(history, 10)
+    uncovered_guidance = ""
+    if uncovered_keypoints:
+        uncovered_guidance = f"REQUIRED — The following uncovered keypoints MUST get hypothesis coverage in this cycle: {[kp.get('name') or kp.get('description', '') for kp in uncovered_keypoints[:5]]}\n"
+
     EXAMPLE_BROAD_PLAN = '''
 <EXAMPLE verdict="broad_plan">
 Input: unresolved findings show suspicious service creation on HOST-A. Active hypotheses empty. Kill chain shows no lateral movement covered.
-Output: {"read_more": ["findings/F-123.md"], "hypotheses": [{"id": "<assigned by system>", "description": "RDP lateral movement used to deploy malicious service on HOST-A", "required_entities": ["src_ip", "computer", "target_user", "service_name"], "source_rule_ids": ["windows-system-7045-service-install"]}], "stop": false, "stop_reason": ""}
+Output: {"hypotheses": [{"id": "<assigned by system>", "description": "RDP lateral movement used to deploy malicious service on HOST-A", "required_entities": ["src_ip", "computer", "target_user", "service_name"], "source_rule_ids": ["windows-system-7045-service-install"]}], "stop": false, "stop_reason": ""}
+</EXAMPLE>
+<EXAMPLE verdict="broad_plan_antiforensic">
+Input: observed keypoints show log clearing events (104) and antiforensic tool artifacts. No hypothesis covers defense evasion.
+Output: {"read_more": ["memory/facts.md"], "hypotheses": [{"id": "<assigned by system>", "description": "Antiforensic tool execution (CCleaner/Eraser) to cover tracks after compromise", "required_entities": ["computer", "file_path", "process_name"], "source_rule_ids": ["ioc_user_data_files"]}], "stop": false, "stop_reason": ""}
+</EXAMPLE>
+<EXAMPLE verdict="broad_plan_cloud">
+Input: observed keypoints include cloud sync artifacts (Google Drive, OneDrive). No hypothesis covers data exfiltration via cloud.
+Output: {"read_more": ["memory/keypoints/KP-020.md"], "hypotheses": [{"id": "<assigned by system>", "description": "Cloud sync service (Google Drive/OneDrive) used for data exfiltration from the workstation", "required_entities": ["computer", "file_path", "process_name"], "source_rule_ids": ["ioc_email_ost_files"]}], "stop": false, "stop_reason": ""}
 </EXAMPLE>
 '''
 
     system = (
+        f"{_dfir_playbook('broad_plan')}\n"
+        f"{_time_range_guidance()}"
+        f"{uncovered_guidance}"
         "<TASK>You are a DFIR investigator running broad planning. Propose NEW hypotheses only.</TASK>\n"
         "<INPUT_SCHEMA>overview_md, unresolved_findings, observed_keypoints, active_hypotheses, resolved_hypotheses, recent_history</INPUT_SCHEMA>\n"
         "<RULES>\n"
         "hypothesis_quality: Must satisfy ALL: Falsifiable, Specific, Non-redundant, Evidence-grounded.\n"
         "hypothesis_output_schema: Each hypothesis MUST include required_entities, confirm_when, refute_when.\n"
         "prohibited_phrases: 'unknown', 'cannot confirm', 'insufficient evidence'.\n"
+        "confirm_when_rule: co_observed_event_ids must contain ONLY valid finding_ids (format: 'windows-xxx-yyyy-xxxx-xxxx'). "
+        "Do NOT include keypoint names or free text description — they will be dropped by validation.\n"
         "</RULES>\n"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
-        '  "read_more": ["memory/facts.md", "memory/details/fact-NNN.md", "entities/ip/192.168.1.1.md"],\n'
         '  "hypotheses": [{"id": "H-123", "description": "...", "required_entities": ["src_ip", "computer"], "confirm_when": {"co_observed_event_ids": [4624, 7045]}, "refute_when": {"zero_rows": true}}],\n'
         '  "stop": false,\n'
         '  "stop_reason": ""\n'
@@ -316,6 +607,7 @@ Output: {"read_more": ["findings/F-123.md"], "hypotheses": [{"id": "<assigned by
         f"extra_context_md:\n{extra_context_md}\n\n"
         f"unresolved_findings: {findings}\n"
         f"observed_keypoints: {observed_keypoints or []}\n"
+        f"uncovered_keypoints: {uncovered_keypoints or []}\n"
         f"active_hypotheses: {[item.model_dump() for item in active_hypotheses]}\n"
         f"resolved_hypotheses: {[item.model_dump() for item in recent_resolved]}\n"
         f"recent_history: {slimmed_history}\n"
@@ -337,7 +629,17 @@ def build_hypothesis_plan_messages(
     query_index: int = 1,
     max_queries: int = 5,
 ) -> list[dict[str, str]]:
-    executed_query_ids = [item.get("query_id") for item in hypothesis_history if item.get("query_id")]
+    executed_query_summaries = [
+        {
+            "query_id": item.get("query_id"),
+            "template_id": item.get("template_id"),
+            "params": item.get("params"),
+            "purpose": item.get("purpose"),
+            "verdict": item.get("verdict"),
+        }
+        for item in hypothesis_history
+        if item.get("query_id")
+    ]
     queries_remaining = max_queries - query_index + 1
     if queries_remaining <= 1:
         convergence_note = (
@@ -362,10 +664,12 @@ Output: {"read_more": [], "hypothesis": {"id": "H-5", "description": "RDP used t
 '''
 
     system = (
+        f"{_dfir_playbook('hypothesis_plan')}\n"
+        f"{_time_range_guidance()}"
         "<TASK>You are a DFIR investigator. Propose exactly one read-only query to test the current hypothesis.</TASK>\n"
         "<INPUT_SCHEMA>hypothesis, related_findings, hypothesis_history, query_templates</INPUT_SCHEMA>\n"
         f"Memory context: facts.md, tasks.md, memory/details/fact-NNN.md paths.\n"
-        f"Already-executed query IDs for this hypothesis: {executed_query_ids}\n"
+        f"Already-executed queries for this hypothesis (DO NOT repeat any — template_id+params must differ): {executed_query_summaries}\n"
         f"{build_investigation_framework()}"
         f"{schema_guidance}"
         "<RULES>\n"
@@ -502,6 +806,8 @@ Output: {"query_id": "Q125", "verdict": "inconclusive", "rationale": "Missing sr
 '''
 
     system = (
+        f"{_dfir_playbook('check')}\n"
+        f"{_time_range_guidance()}"
         "<TASK>You are a DFIR review analyst. Evaluate SQL results against hypothesis and output structured findings.</TASK>\n"
         "<INPUT_SCHEMA>SQL result summary, hypothesis with required_entities, finding candidates, evidence_ids list</INPUT_SCHEMA>\n"
         "<RULES>\n"
@@ -519,9 +825,9 @@ Output: {"query_id": "Q125", "verdict": "inconclusive", "rationale": "Missing sr
         "</MEMORY_RULES>\n"
         f"{_load_fp_reduction_guidance()}{_mandatory_missing_checks_guidance()}"
         "<VERDICT_RULES>\n"
-        "confirmed — required_entities co-observed in same rows (NOT direct causation). Confidence >= 0.7.\n"
-        "refuted — zero rows or observed entities contradict hypothesis. Confidence < 0.3.\n"
-        "inconclusive — some entities observed; MUST list missing entity types in rationale.\n"
+        "confirmed — required_entities co-observed in same rows, OR >= 50% of confirm_when.co_observed_event_ids present with matching temporal order. In DFIR, evidence presence SUFFICES for confirmation — you do not need smoking-gun causation proof. Confidence >= 0.6.\n"
+        "refuted — zero rows after a fair search, or observed entities clearly contradict hypothesis. Confidence < 0.3.\n"
+        "inconclusive — USE ONLY when the result is genuinely ambiguous AND no further query could resolve it. NEVER output 'inconclusive' for zero-row results that could instead be 'refuted'. Each hypothesis may have at most 2 inconclusive verdicts before the system treats further inconclusives as refuted. MUST list missing entity types in rationale.\n"
         "newlead — genuinely new attack surface or actor. Name the specific entity.\n"
         "Prohibited phrases: 'direct causation not proven', 'full attack chain not visible', 'requires further investigation', 'cannot be determined', 'insufficient evidence'. State exactly what entity is missing.\n"
         "</VERDICT_RULES>\n"
@@ -573,12 +879,14 @@ def build_check_verdict_messages(
         rule_verdict_guidance = f"Rule-based verdict criteria (from {rule_context.rule_id}): Confirm when: {confirm}. Refute when: {refute}. "
 
     system = (
+        f"{_dfir_playbook('check')}\n"
+        f"{_time_range_guidance()}"
         "<TASK>You are a DFIR review analyst. Determine verdict based on SQL results.</TASK>\n"
         "<INPUT_SCHEMA>SQL result summary, hypothesis, rule_context</INPUT_SCHEMA>\n"
         "<RULES>\n"
-        "confirmed: required_entities co-observed in same rows (NOT direct causation).\n"
-        "refuted: zero rows or observed entities contradict hypothesis.\n"
-        "inconclusive: some entities observed; MUST list missing entity types.\n"
+        "confirmed: required_entities co-observed, OR >= 50% of confirm_when.co_observed_event_ids present with matching temporal order. Evidence presence is enough for confirmation.\n"
+        "refuted: zero rows after a fair search, or entities contradict hypothesis.\n"
+        "inconclusive: USE SPARINGLY — at most 2 per hypothesis. Name the missing entity.\n"
         f"{rule_verdict_guidance}\n"
         "</RULES>\n"
         "<OUTPUT_SCHEMA>{\"query_id\": \"Q-123\", \"verdict\": \"confirmed|refuted|inconclusive|newlead\", \"rationale\": \"explanation\"}\n"
@@ -740,6 +1048,8 @@ Output: "## Process Execution\\n\\nOne suspicious process was observed: powershe
         )
 
     system = (
+        f"{_dfir_playbook('report_section')}\n"
+        f"{_time_range_guidance()}"
         "<TASK>You are a DFIR report writer. Fill the provided Markdown section template using only supplied evidence.</TASK>\n"
         "<INPUT_SCHEMA>section_meta, evidence_results, previous_sections, template_body</INPUT_SCHEMA>\n"
         "<RULES>\n"
@@ -751,6 +1061,7 @@ Output: "## Process Execution\\n\\nOne suspicious process was observed: powershe
         "confirmed_hypotheses: Reflect in appropriate sections; refuted_hypotheses only in 'Discarded Hypotheses' subsection.\n"
         "Recommended actions must scale with evidence strength.\n"
         f"app_categories: {app_cat_compact}\n"
+        f"{_format_artifact_inference()}"
         f"{event_guidance}"
         f"{strength_guidance}"
         "</RULES>\n"
@@ -785,6 +1096,40 @@ Output: "## Process Execution\\n\\nOne suspicious process was observed: powershe
     ]
 
 
+def _load_question_routing_raw() -> dict[str, Any]:
+    import yaml
+    from pathlib import Path
+    routing_path = Path(__file__).resolve().parent.parent / "rulepacks" / "_schema" / "question_routing.yaml"
+    try:
+        raw = yaml.safe_load(routing_path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            return raw
+    except Exception:
+        pass
+    return {}
+
+
+def _format_artifact_inference() -> str:
+    return (
+        "\nKnown artifact-to-application inferences:\n"
+        "- *.ost, *.pst files → Microsoft Outlook (almost certainly — no other app uses .ost)\n"
+        "- %LocalAppData%/Google/Drive/sync_config.db → Google Drive\n"
+        "- %LocalAppData%/Google/Drive/snapshot.db → Google Drive\n"
+        "- %LocalAppData%/Apple Computer/iCloud/ → Apple iCloud\n"
+        "- %LocalAppData%/Microsoft/OneDrive/ → Microsoft OneDrive\n"
+        "- %AppData%/Dropbox/config.dbx → Dropbox\n"
+        "- Eraser.exe → Eraser antiforensic tool\n"
+        "- ccsetup*.exe → CCleaner\n"
+        "- bleachbit.exe → BleachBit\n"
+        "- privazer*.exe → PrivaZer\n"
+        "- sdelete.exe → SDelete\n"
+        "- chrome.exe → Google Chrome\n"
+        "- iexplore.exe → Microsoft Internet Explorer\n"
+        "- firefox.exe → Mozilla Firefox\n"
+        "- msedge.exe → Microsoft Edge\n"
+    )
+
+
 def build_benchmark_section_messages(
     section_meta: dict[str, Any],
     evidence_results: list[dict[str, Any]],
@@ -807,7 +1152,28 @@ def build_benchmark_section_messages(
     block_id = str(benchmark_id or "").strip()
     if not block_id:
         block_id = str(section_meta.get("id") or "").strip()
+
+    # QA3-9: Inject expected_answer_shape from question_routing
+    shape_guidance = ""
+    block_cf = block_heading.casefold()
+    qr_raw = _load_question_routing_raw()
+    for qtype in qr_raw.get("question_types", []):
+        if isinstance(qtype, dict) and any(kw in block_cf for kw in qtype.get("keywords", [])):
+            shape = qtype.get("expected_answer_shape")
+            if shape:
+                shape_guidance = (
+                    f"<OUTPUT_FORMAT_GUIDANCE>\n"
+                    f"Expected answer shape: {shape.get('format', 'list')}\n"
+                    f"Fields to include: {shape.get('fields', [])}\n"
+                    f"Style: {shape.get('style', 'list')}\n"
+                    f"Note: {shape.get('note', '')}\n"
+                    f"</OUTPUT_FORMAT_GUIDANCE>\n"
+                )
+            break
+
     system = (
+        f"{_dfir_playbook('report_section')}\n"
+        f"{_time_range_guidance()}"
         "<TASK>You are a benchmark answer writer for a DFIR appendix block.</TASK>\n"
         "<INPUT_SCHEMA>section_meta, block_heading, template_body, evidence_results, raw_evidence_rows</INPUT_SCHEMA>\n"
         "<OUTPUT_SCHEMA>\n"
@@ -828,8 +1194,12 @@ def build_benchmark_section_messages(
         "If no relevant search ran, use not_searched.\n"
         "If the relevant search returned zero rows after search, use not_found.\n"
         "queries_run should list only the concrete keypoint/template/sql identifiers that were actually executed.\n"
+        "Never infer that a generic file extension or shortcut name alone answers the question; use wrong_query or insufficient_evidence when evidence is only tangential.\n"
+        f"{_format_artifact_inference()}"
         "</RULES>\n"
     )
+    if shape_guidance:
+        system += f"{shape_guidance}\n"
     user = (
         f"section_meta: {section_meta}\n\n"
         f"block_heading: {block_heading}\n\n"
@@ -886,9 +1256,18 @@ Output: {"action": "template", "template_id": "service-creation", "params": {"co
 </EXAMPLE>
 '''
 
+    schema_notes = _load_schema_notes()
+    schema_notes_block = f"<SCHEMA_NOTES>\n{schema_notes}\n</SCHEMA_NOTES>\n" if schema_notes else ""
+
     system = (
+        f"{_dfir_playbook('section_agent_plan')}\n"
+        f"{_time_range_guidance()}"
         "<TASK>You are a DFIR section-planning agent. Decide next evidence-gathering action for report block.</TASK>\n"
         "<INPUT_SCHEMA>section_key, block_heading, template_block, structured_memory_context, findings_snapshot, keypoint_catalog, query_template_catalog, prior_runs</INPUT_SCHEMA>\n"
+        f"{schema_notes_block}"
+        "<TIME_RULES>\nIMPORTANT: The case data may be from a DIFFERENT YEAR than the current date. "
+        "DO NOT use datetime('now') or CURRENT_TIMESTAMP in SQL queries — these refer to the current system time, not the case time. "
+        "If a time filter is needed, use a broad time range that covers the case data window.\n</TIME_RULES>\n"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
         '  "action": "sql|template|keypoint|facts|write",\n'
@@ -902,6 +1281,8 @@ Output: {"action": "template", "template_id": "service-creation", "params": {"co
         "facts_first: Reuse reusable_section_facts if they already answer the block question.\n"
         "keypoint_preferred: Use keypoint when it matches the block topic.\n"
         "template_preferred: Use template_id+params instead of raw sql.\n"
+        "error_recovery: If the prior runs show two consecutive zero-row OR query_error results, the next action must be keypoint (not sql/template). "
+        "Immediately after a query_error, do NOT retry SQL — switch to keypoint or template action.\n"
         "stop_early: Set action=write when enough evidence exists.\n"
         "</RULES>\n"
         f"{build_investigation_framework()}"
@@ -956,6 +1337,8 @@ Output: {"verdict": "block_contradicted", "status": "not_found", "rationale": "N
 </EXAMPLE>
 '''
     system = (
+        f"{_dfir_playbook('section_agent_check')}\n"
+        f"{_time_range_guidance()}"
         "<TASK>You are a DFIR section-check agent. Judge if collected evidence suffices to write the report block.</TASK>\n"
         "<INPUT_SCHEMA>collected_results, latest_result, reusable_section_facts, reusable_section_evidence, structured_memory_context, template_block</INPUT_SCHEMA>\n"
         "<OUTPUT_SCHEMA>\n"

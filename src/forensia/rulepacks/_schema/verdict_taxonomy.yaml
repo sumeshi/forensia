@@ -1,0 +1,53 @@
+# verdict_taxonomy.yaml
+# Central vocabulary for all verdict/status enums across investigation phases.
+# Every string value used as verdict/status/stage must appear here.
+
+hypothesis_verdict:
+  values:
+    - confirmed
+    - refuted
+    - inconclusive
+    - newlead
+  description: "Verdict for a hypothesis after query+check phase"
+
+section_verdict:
+  values:
+    - block_supported
+    - block_needs_more
+    - block_contradicted
+  description: "Verdict from section agent check phase"
+
+benchmark_status:
+  values:
+    - answered
+    - partial
+    - not_found
+    - not_searched
+    - insufficient_evidence
+    - wrong_query
+  description: "Status for individual benchmark question answers"
+
+claim_status:
+  values:
+    - accepted
+    - suppressed
+    - pending
+  description: "Support status for evidence-backed claims in memory"
+
+mapping:
+  hypothesis_to_section:
+    confirmed: block_supported
+    refuted: block_contradicted
+    inconclusive: block_needs_more
+    newlead: block_needs_more
+  section_to_benchmark:
+    block_supported: answered
+    block_needs_more: insufficient_evidence
+    block_contradicted: not_found
+  benchmark_to_claim:
+    answered: accepted
+    partial: pending
+    not_found: suppressed
+    not_searched: pending
+    insufficient_evidence: pending
+    wrong_query: pending

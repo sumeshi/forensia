@@ -1,0 +1,159 @@
+# artifact_inference.yaml
+# Maps observed artifacts (files, registry keys, Prefetch entries) to inferred
+# application names for use in report generation and hypothesis planning.
+#
+# Structure:
+#   artifact_type:          category of artifact (prefetch, mft, registry, file)
+#     artifact_pattern:     glob or regex pattern to match
+#       app_name:           display name for the application
+#       app_category:       functional category (browser, email, cloud_sync, antiforensic, system_tool, etc.)
+#       evidence:           how to confirm presence
+#       notes:              additional context for LLM consumption
+
+prefetch:
+  - pattern: "CHROME.EXE-*.pf"
+    app_name: "Google Chrome"
+    app_category: browser
+    evidence: "Prefetch entry for chrome.exe on system drive"
+    notes: "Browser with active web history; may contain evidence of user browsing activity"
+  - pattern: "FIREFOX.EXE-*.pf"
+    app_name: "Mozilla Firefox"
+    app_category: browser
+    evidence: "Prefetch entry for firefox.exe on system drive"
+    notes: "Alternative browser; check install directory for portable versions"
+  - pattern: "IEXPLORE.EXE-*.pf"
+    app_name: "Internet Explorer"
+    app_category: browser
+    evidence: "Prefetch entry for iexplore.exe on system drive"
+    notes: "Default Windows browser; IE history and cache in %USERPROFILE%\\AppData\\Local\\Microsoft\\Windows\\WebCache"
+  - pattern: "EDGE.EXE-*.pf"
+    app_name: "Microsoft Edge"
+    app_category: browser
+    evidence: "Prefetch entry for edge.exe on system drive"
+    notes: "Chromium-based Edge since 2020; browsing data in %USERPROFILE%\\AppData\\Local\\Microsoft\\Edge\\User Data"
+  - pattern: "BRAVE.EXE-*.pf"
+    app_name: "Brave Browser"
+    app_category: browser
+    evidence: "Prefetch entry for brave.exe on system drive"
+    notes: "Chromium-based privacy browser; check for sync data with Brave Rewards/Sync chain"
+  - pattern: "OUTLOOK.EXE-*.pf"
+    app_name: "Microsoft Outlook"
+    app_category: email
+    evidence: "Prefetch entry for outlook.exe or presence of .ost/.pst files"
+    notes: "Primary email client in enterprise environments. OST files contain offline mailbox data; PST for archives/backups"
+  - pattern: "THUNDERBIRD.EXE-*.pf"
+    app_name: "Mozilla Thunderbird"
+    app_category: email
+    evidence: "Prefetch entry for thunderbird.exe or %USERPROFILE%\\AppData\\Roaming\\Thunderbird\\Profiles"
+    notes: "Open-source email client; check for IMAP/POP3 configuration and local folders"
+  - pattern: "GOOGLEDRIVESYNC.EXE-*.pf"
+    app_name: "Google Drive"
+    app_category: cloud_sync
+    evidence: "Prefetch entry for googledrivesync.exe or presence of Google Drive folder on system drive"
+    notes: "Cloud file sync; investigate for exfiltrated or synced corporate data"
+  - pattern: "ONEDRIVE.EXE-*.pf"
+    app_name: "Microsoft OneDrive"
+    app_category: cloud_sync
+    evidence: "Prefetch entry for OneDrive.exe or %USERPROFILE%\\OneDrive directory"
+    notes: "Built-in Windows cloud sync; Known Folder Move may sync Desktop/Documents/Pictures"
+  - pattern: "DROPBOX.EXE-*.pf"
+    app_name: "Dropbox"
+    app_category: cloud_sync
+    evidence: "Prefetch entry for Dropbox.exe or %USERPROFILE%\\Dropbox directory"
+    notes: "Third-party cloud sync; check Dropbox database files for file activity timeline"
+  - pattern: "ICLOUDSETUP.EXE-*.pf"
+    app_name: "Apple iCloud"
+    app_category: cloud_sync
+    evidence: "Prefetch entry for iCloud*.exe or %USERPROFILE%\\iCloud directory"
+    notes: "Apple cloud service on Windows; iCloud Drive, Photos, and Keychain sync"
+  - pattern: "MEGA*.EXE-*.pf"
+    app_name: "MEGA"
+    app_category: cloud_sync
+    evidence: "Prefetch entry for MEGA*.exe"
+    notes: "Encrypted cloud storage; often used for sensitive data exfiltration"
+  - pattern: "ERASER.EXE-*.pf"
+    app_name: "Eraser"
+    app_category: antiforensic
+    evidence: "Prefetch entry for Eraser.exe or registry key for Eraser"
+    notes: "Antiforensic secure deletion tool. Correlate with event ID 4663 (file deletion) or gaps in MFT sequencing"
+  - pattern: "CCSETUP*.EXE-*.pf"
+    app_name: "CCleaner"
+    app_category: antiforensic
+    evidence: "Prefetch entry for ccsetup*.exe or installation directory in Program Files"
+    notes: "System cleaner; may indicate intentional evidence tampering. Check execution time vs security incident timeline"
+  - pattern: "BLEACHBIT.EXE-*.pf"
+    app_name: "BleachBit"
+    app_category: antiforensic
+    evidence: "Prefetch entry for bleachbit.exe"
+    notes: "Open-source system cleaner with secure overwrite. Indicates sophisticated antiforensic activity"
+  - pattern: "WHITE-CANYON.EXE-*.pf"
+    app_name: "WhiteCanyon SecureClean"
+    app_category: antiforensic
+    evidence: "Prefetch entry for white-canyon.exe"
+    notes: "Professional drive wiping tool; strong indicator of intentional evidence destruction"
+
+mft:
+  - pattern: "*.ost"
+    app_name: "Microsoft Outlook"
+    app_category: email
+    evidence: "MFT entry for .ost file in %USERPROFILE%\\AppData\\Local\\Microsoft\\Outlook"
+    notes: "Offline Outlook Data File; confirms Outlook usage regardless of Prefetch. Larger files (>1GB) indicate heavy email usage"
+  - pattern: "*.pst"
+    app_name: "Microsoft Outlook"
+    app_category: email
+    evidence: "MFT entry for .pst file in user profile or external drive"
+    notes: "Personal Folders file; may indicate email archiving or data staging for exfiltration"
+  - pattern: "*.sqlite"
+    app_name: "Generic application database"
+    app_category: database
+    evidence: "MFT entry for SQLite database file"
+    notes: "Many applications use SQLite; cross-reference with parent directory and process creation events"
+  - pattern: "NTUSER.DAT"
+    app_name: "Windows Registry (NTUSER)"
+    app_category: system
+    evidence: "MFT entry for NTUSER.DAT in user profile directory"
+    notes: "User registry hive; contains user-specific configuration, MRU lists, and recently accessed files"
+  - pattern: "UsnJrnl"
+    app_name: "NTFS USN Journal"
+    app_category: system
+    evidence: "USN Journal change journal entry"
+    notes: "Contains record of all file system changes; critical for timeline reconstruction"
+
+registry:
+  - pattern: "HKCU\\Software\\Microsoft\\Office\\*.Outlook\\Profiles"
+    app_name: "Microsoft Outlook"
+    app_category: email
+    evidence: "Registry key in NTUSER.DAT or UsrClass.dat"
+    notes: "Outlook profile configuration; reveals email accounts configured on the system"
+  - pattern: "HKLM\\SYSTEM\\*\\ControlSet001\\Services\\*"
+    app_name: "Windows Service"
+    app_category: system
+    evidence: "Registry key for service configuration"
+    notes: "Service execution persistence; correlate with event ID 4697 (service install) and 7036 (service state change)"
+  - pattern: "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run\\*"
+    app_name: "Windows Auto-start"
+    app_category: persistence
+    evidence: "Registry Run key entry"
+    notes: "Common persistence mechanism; correlate with event ID 4688 (process creation) for initial execution"
+  - pattern: "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\*"
+    app_name: "Windows Auto-start (user)"
+    app_category: persistence
+    evidence: "Registry Run key in user hive"
+    notes: "User-level persistence; check UserAssist for execution evidence"
+
+file:
+  - pattern: "C:\\Windows\\Prefetch\\*.pf"
+    app_name: "Windows Prefetch"
+    app_category: system
+    evidence: "Prefetch directory listing or MFT entries"
+    notes: "Prefetch files record recently executed applications with run count and last run time"
+  - pattern: "C:\\Windows\\System32\\winevt\\Logs\\*.evtx"
+    app_name: "Windows Event Logs"
+    app_category: system
+    evidence: "Event log file path"
+    notes: "Windows Event Log files; source of evtx_events table data"
+  - pattern: "C:\\Windows\\Temp\\*"
+    app_name: "Windows Temp Directory"
+    app_category: system
+    evidence: "File system artifact"
+    notes: "Common location for dropped executables and script artifacts"

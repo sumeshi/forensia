@@ -15,6 +15,46 @@ from forensia.db.query import fetch_records
 from forensia.rules.loader import load_rule_by_id
 
 
+def _clean_confirm_when(confirm_when: dict[str, Any] | None, db: CaseDB | None = None) -> dict[str, Any] | None:
+    """Remove non-finding_id entries from confirm_when.co_observed_event_ids.
+    
+    Validates that each entry is either a valid finding_id (matching DB pattern)
+    or a valid event_id (integer). Drops keypoint names, free text, etc.
+    """
+    if not confirm_when or not isinstance(confirm_when, dict):
+        return confirm_when
+    
+    co_observed = confirm_when.get("co_observed_event_ids")
+    if not co_observed or not isinstance(co_observed, list):
+        return confirm_when
+    
+    cleaned: list[str] = []
+    for entry in co_observed:
+        entry_str = str(entry).strip()
+        if not entry_str:
+            continue
+        # Keep valid finding_ids (pattern: windows-xxx-yyyy-xxxx-xxxx)
+        if re.match(r'^[a-z]+-[a-z0-9]+-[0-9]+-[a-z0-9-]+$', entry_str):
+            cleaned.append(entry_str)
+            continue
+        # Keep valid event_ids (pure integers)
+        try:
+            int(entry_str)
+            cleaned.append(entry_str)
+            continue
+        except ValueError:
+            pass
+        # Skip everything else (keypoint names, free text, etc.)
+        continue
+    
+    if not cleaned:
+        confirm_when.pop("co_observed_event_ids", None)
+    else:
+        confirm_when["co_observed_event_ids"] = cleaned
+    
+    return confirm_when if any(confirm_when.values()) else None
+
+
 def _recent_reasoning_rows(db: CaseDB, hypothesis_id: str, limit: int = 10) -> list[dict[str, Any]]:
     return fetch_records(
         db,
@@ -91,6 +131,8 @@ def _merge_hypothesis_fields(existing: Hypothesis, incoming: Hypothesis) -> Hypo
     source_rule_ids = _merge_string_lists(existing.source_rule_ids, incoming.source_rule_ids)
     required_entities = _merge_string_lists(existing.required_entities, incoming.required_entities)
     confirm_when = existing.confirm_when or incoming.confirm_when
+    if confirm_when:
+        confirm_when = _clean_confirm_when(dict(confirm_when) if isinstance(confirm_when, dict) else confirm_when)
     return Hypothesis(
         id=existing.id,
         description=existing.description or incoming.description,
@@ -110,6 +152,46 @@ def _hypothesis_tokens(description: str) -> set[str]:
     return {token for token in re.findall(r"[a-z0-9]+", _normalize_hypothesis_description(description)) if token}
 
 
+def _extract_semantic_triple(description: str) -> dict[str, str]:
+    """Extract (actor, action, target) triple from a hypothesis description."""
+    text = str(description or "").strip().casefold()
+    actor = ""
+    action = ""
+    target = ""
+    for pattern, group in [(r"(?:by|from|via)\s+(an?\s+)?([a-z0-9_-]+)", 2), (r"(external ip|attacker|user|admin|malicious|suspicious)", 1)]:
+        m = re.search(pattern, text)
+        if m:
+            actor = m.group(group)
+            break
+    for pattern in [r"(lateral movement|rdp|remote desktop|persistence|privilege escalation|defense evasion|credential access|discovery|exfiltration)", r"(create|install|deploy|modify|delete|clear|disable|bypass|elevat|escalat)", r"(execut|run|launch|invoke|schedule)"]:
+        m = re.search(pattern, text)
+        if m:
+            action = m.group(1)
+            break
+    for pattern, group in [(r"(?:to|on|into|onto)\s+(an?\s+)?([a-z0-9_-]+)", 2), (r"(?:account|service|task|process|host|server|user|group|log|event|file|folder|key)", 1)]:
+        m = re.search(pattern, text)
+        if m:
+            target = m.group(group if group else 1)
+            break
+    return {"actor": actor or "unknown", "action": action or "unknown", "target": target or "unknown"}
+
+
+def _semantic_hypothesis_similarity(left: str, right: str) -> float:
+    """Compute similarity using (actor, action, target) triples."""
+    left_triple = _extract_semantic_triple(left)
+    right_triple = _extract_semantic_triple(right)
+    matches = 0
+    for key in ("actor", "action", "target"):
+        lv = left_triple.get(key, "").strip().lower()
+        rv = right_triple.get(key, "").strip().lower()
+        if lv and rv:
+            if lv == rv or lv in rv or rv in lv:
+                matches += 1
+        elif not lv and not rv:
+            matches += 1
+    return matches / 3
+
+
 def _hypothesis_similarity(left: str, right: str) -> float:
     left_tokens = _hypothesis_tokens(left)
     right_tokens = _hypothesis_tokens(right)
@@ -118,7 +200,9 @@ def _hypothesis_similarity(left: str, right: str) -> float:
     union = left_tokens | right_tokens
     if not union:
         return 0.0
-    return len(left_tokens & right_tokens) / len(union)
+    surface_score = len(left_tokens & right_tokens) / len(union)
+    semantic_score = _semantic_hypothesis_similarity(left, right)
+    return max(surface_score, semantic_score)
 
 
 def _find_hypothesis_by_description(
@@ -245,6 +329,9 @@ def _upsert_hypothesis(
     session_id: str,
     resolved_session: str | None = None,
 ) -> None:
+    from forensia.core.verdicts import assert_valid_verdict
+    if hypothesis.verdict is not None:
+        assert_valid_verdict(hypothesis.verdict, "hypothesis_verdict")
     now = datetime.now(UTC).replace(tzinfo=None)
     existing = db.execute(
         """
@@ -264,6 +351,9 @@ def _upsert_hypothesis(
         created_at = existing[2] or now
         if prior_resolved_session is None:
             prior_resolved_session = existing[3]
+
+    # QA3-8: Clean confirm_when before persisting
+    clean_confirm_when = _clean_confirm_when(hypothesis.confirm_when, db)
 
     db.execute(
         """
@@ -299,7 +389,7 @@ def _upsert_hypothesis(
             now,
             json.dumps(hypothesis.source_rule_ids, ensure_ascii=False),
             json.dumps(hypothesis.required_entities, ensure_ascii=False),
-            json.dumps(hypothesis.confirm_when, ensure_ascii=False) if hypothesis.confirm_when else None,
+            json.dumps(clean_confirm_when, ensure_ascii=False) if clean_confirm_when else None,
         ),
     )
 
@@ -380,7 +470,7 @@ def _merge_active_hypotheses(
             summary=item.summary,
             source_rule_ids=_merge_string_lists(item.source_rule_ids),
             required_entities=_merge_string_lists(item.required_entities),
-            confirm_when=item.confirm_when,
+            confirm_when=_clean_confirm_when(item.confirm_when),
         )
         by_id[assigned_id] = hypothesis
         active_by_description[_normalize_hypothesis_description(hypothesis.description)] = hypothesis

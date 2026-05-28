@@ -67,7 +67,8 @@ class PlannerRetryTests(unittest.TestCase):
         system = messages[0]["content"]
         self.assertNotIn("Available tables:", system)
         self.assertNotIn("event_id IN (1102, 104)", system)
-        self.assertIn("memory/details/fact-NNN.md", system)
+        self.assertNotIn("memory/details/fact-NNN.md", system)
+        self.assertIn("confirm_when_rule", system)
 
     def test_hypothesis_plan_messages_list_all_allowed_tables(self) -> None:
         messages = build_hypothesis_plan_messages(
@@ -432,7 +433,7 @@ class PlannerRetryTests(unittest.TestCase):
                     )
 
         payload = mock_request.call_args.kwargs["messages"][1]["content"]
-        self.assertIn("Already-executed query IDs for this hypothesis: ['Q-old']", mock_request.call_args.kwargs["messages"][0]["content"])
+        self.assertIn("'query_id': 'Q-old'", mock_request.call_args.kwargs["messages"][0]["content"])
         self.assertIn("'query_id': 'Q-old'", payload)
         self.assertIn("'body': 'already tested'", payload)
 
