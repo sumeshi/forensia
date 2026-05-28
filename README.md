@@ -142,6 +142,41 @@ flowchart LR
 - **report と investigation の同期**: 仮説確定の瞬間に該当 section を stale 化するため、確証が出てから report に反映されるまでのラグが最小。confirmed/refuted 仮説は writer に直接渡るので、調査成果が本文に必ず流れる。
 
 
+## 宣言層 (`_schema/`) の構成
+
+ルール本体 (`rulepacks/*.yaml`) とは別に、`src/forensia/rulepacks/_schema/` 配下に「ルールが参照する共有スキーマ」と「LLM プロンプトに injection する DFIR 知識」を分離して置いている。Python 側は YAML/MD を読むだけで、知識の追加はファイル編集で完結する。
+
+| ファイル | 役割 |
+|---|---|
+| `evtx_events.yaml` / `prefetch_executions.yaml` | テーブルのスキーマカード (`columns` / `json_field_extractors`)。planner prompt に必ず injection される。存在しないカラム参照や JSON 抽出ミスを構造的に防ぐ。 |
+| `event_ids.yaml` / `logon_types.yaml` | Event ID と Logon Type の DFIR 解説。`_dfir_playbook(phase)` 経由で system prompt に展開。 |
+| `app_catalog.yaml` / `artifact_inference.yaml` | Prefetch / MFT / Registry / File 痕跡 → 推定アプリケーション の対応表 (約 28 エントリ)。Application Catalog として prompt 内に narrative 注入される。 |
+| `false_positive_rules.yaml` | 既知の FP パターン。検知結果の絞り込みと、prompt の FP Reduction セクションの両方で利用。 |
+| `dfir_ioc_catalog.yaml` | アンチフォレンジック・クラウド同期・メール・Recycle Bin など、ルール検知に乗りにくい補助 IOC 辞書。 |
+| `question_routing.yaml` | benchmark / section の question_type ごとに `expected_answer_shape` と `evidence_chain` を宣言。block agent prompt に shape spec を injection し、primary 0-row 時に chain の次のエントリを deterministic に試す。 |
+| `verdict_taxonomy.yaml` | 4 階層 (`hypothesis_verdict` / `section_verdict` / `benchmark_status` / `claim_status`) の verdict 値のホワイトリストと、層間の変換マッピング。 |
+| `playbook/*.md` | フェーズ別 (`broad_plan` / `hypothesis_plan` / `check` / `report_section` / `section_agent_plan` / `section_agent_check`) の DFIR プレイブック本文。inline literal を `prompts.py` から外出ししたもの。`<CRITICAL_RULES>` / `<FORBIDDEN_PATTERNS>` / `<SCHEMA_CONSTRAINTS>` の XML タグ付き。 |
+
+### Verdict taxonomy の強制
+
+`verdict_taxonomy.yaml` で宣言された値以外を DB に書けないよう、書き込み境界の 3 箇所で `forensia.core.verdicts.assert_valid_verdict` を呼んでいる:
+
+- `hypothesis_manager.py:_upsert_hypothesis()` — hypothesis_verdict
+- `section_agent.py:_store_section_run()` — section_verdict (normalize map で `sufficient`→`block_supported` 等を吸収)
+- `report/writer.py:_normalize_benchmark_answer()` — benchmark_status
+
+加えて `Hypothesis.verdict` / `HistoryEntry.verdict` に Pydantic `@field_validator` を持たせ、Python オブジェクト生成時点でも弾く。
+
+### プロンプトの組み立て
+
+LLM への入力は固定文字列ではなく、フェーズと文脈に応じて 4 段階で組み立てている:
+
+1. **DFIR プレイブック注入** — `_dfir_playbook(phase)` が `_schema/playbook/<phase>.md` を読み、Event ID / Logon Type / FP / Application Catalog / Query Planning Principles を narrative にまとめて system prompt 先頭に置く。
+2. **スキーマカード注入** — planner / checker に `_schema/evtx_events.yaml` の `columns` と `json_field_extractors` を渡す。
+3. **動的コンテキスト** — case の time_range、`uncovered_keypoints`、active/resolved hypotheses、recent history、observed_keypoints などを役割ごとの builder で挿入。
+4. **トークン予算ガード** — `_assemble_messages_with_budget()` が system を保護したまま user/dynamic 側のみ trim する。LLM 呼び出し総数は `LLMCallLogger` が記録し、`investigate(max_llm_calls=...)` の閾値を超えると `RuntimeError`。
+
+
 ## 長期記憶の構造
 
 forensia の長期記憶は、LLMの会話ヒストリではありません。  
@@ -213,6 +248,36 @@ Structured Memories は、より詳細には下記のようなファイル群で
 
 なお、LLM のリクエスト / レスポンス本文は `ai_logs/` に保存されます。
 これは調査状態の正本ではなく、「AI に何を渡し、何が返ったか」を後から人間が監査するための可観測性ログです。
+
+### 仮説単位の作業記憶分離 (scratch)
+
+`memory/` は「現在の調査全体で共有して良い事実」だけを持ち、仮説検証中の暫定情報は別ディレクトリに隔離する。
+
+| 場所 | 内容 |
+|---|---|
+| `memory/scratch/H-NNN/` | 個別仮説の検証中に LLM が書き出した provisional な facts / timeline / tasks。 |
+| `memory/scratch/global/` | hypothesis_id が紐づかない暫定メモ。 |
+| `archive/scratch/H-NNN/` | refuted 仮説の scratch を退避した先。 |
+
+書き込み振り分けは `_apply_memory_updates` が `hypothesis_id` と `verdict` を見て行う。仮説が `confirmed` になった瞬間に `promote_hypothesis_scratch()` が scratch を `memory/` 本体へ昇格し、`refuted` のときは `archive_hypothesis_scratch()` で archive に移送する。Investigation context loader は対象仮説の scratch のみを読むため、未確証の暫定情報が無関係な仮説の検証に汚染することはない。
+
+### Benchmark block 向けの限定ビュー (`EvidenceOnlyMemory`)
+
+仮説検証ループと benchmark / appendix の block 生成は同じ memory を読むと汚染するため、`core/memory.py:EvidenceOnlyMemory` が wrapper として facts / keypoints / entities のみを露出する。block agent への memory 受け渡しは `memory_for_section(memory, benchmark_mode=...)` を 1 箇所通すルールに統一しており、`section_refresher.py` / `report/writer.py` の 2 箇所だけが呼び出し側になる。
+
+
+## 一貫性チェックと運用ツール
+
+宣言層 (`_schema/`)、ルール、Python コード、ドキュメントが乖離しないよう、ルール側を正と見なした audit スクリプト群を用意している。
+
+| コマンド | 役割 |
+|---|---|
+| `scripts/audit_schema_coverage.py` | ルール YAML の `query` フィールド (SQL) を sqlglot で AST 解析し、参照されている `event_id` 集合を抽出。`event_ids.yaml` / `question_routing.yaml` のカバレッジを照合する。 |
+| `scripts/regenerate_playbook.py` | `_schema/playbook/*.md` 内の `<!-- AUTO-FROM: ... -->` マーカーで囲まれたセクションを、対応する YAML から再生成する。`--check` で乖離検出 (exit 1)、引数なしで書き込み。 |
+| `scripts/cycle_summary.py <case_dir>` | `progress_events.json` をパースし、cycle ごとの hypothesis 数 delta と benchmark 進捗を Markdown table 化する。 |
+| `forensia doctor` | 上記スクリプトと pytest をまとめて実行する複合チェック。Schema coverage / Playbook drift / Verdict taxonomy enforcement の AST スキャン / Test suite を順に走らせ、各項目を ✓/✗ で表示し、いずれか fail なら exit 1。 |
+
+加えて `core/case.py` で case metadata に `source_timezone` を持たせ、`report/writer.py:_render_timestamp_with_timezone()` で全タイムスタンプの表示時にゾーン情報を付与する。重複クエリ検出 (`investigator.py:_query_fingerprint`) は sqlglot AST ベースの正規化 SQL ハッシュで、空白や別名違いに惑わされずに「同じことをやろうとしている」を判定する。
 
 
 ## クイックスタート

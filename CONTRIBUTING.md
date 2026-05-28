@@ -92,6 +92,7 @@ forensia serve ./dist/DESKTOP-001
 | `investigate` | Continue the hypothesis loop on an existing case |
 | `status` | Show current case state in read-only form |
 | `serve` | Serve FastAPI and the built Svelte UI |
+| `doctor` | Run schema coverage, playbook drift, verdict taxonomy AST scan, and pytest as a single self-check |
 
 ## Repository map
 
@@ -129,6 +130,11 @@ case001/
       refuted.md
       resolved_gaps.md
       timeline_archive.md
+      scratch/
+        H-001/
+    scratch/
+      global/
+      H-002/
     entities/
       user/
       host/
@@ -197,6 +203,26 @@ Durable conclusions must remain tied to evidence identifiers.
 
 Any new abstraction that summarizes or ranks evidence should preserve a path back to concrete evidence rows.
 
+### Verdict values are enumerated, not free text
+
+Verdict strings are not free-form. The allowed set per layer is declared in `src/forensia/rulepacks/_schema/verdict_taxonomy.yaml` and enforced at three write boundaries via `forensia.core.verdicts.assert_valid_verdict`:
+
+| Layer | Site |
+|---|---|
+| `hypothesis_verdict` | `hypothesis_manager.py:_upsert_hypothesis()` and `Hypothesis.verdict` field validator |
+| `section_verdict` | `section_agent.py:_store_section_run()` (with normalize map for `sufficient`/`refuted` aliases) |
+| `benchmark_status` | `report/writer.py:_normalize_benchmark_answer()` |
+
+`HistoryEntry.verdict` also has a Pydantic `@field_validator`. Adding a new verdict value requires editing `verdict_taxonomy.yaml`; bypassing the validator from Python is treated as a bug.
+
+The taxonomy file also declares cross-layer mappings (`hypothesis_to_section`, `section_to_benchmark`, `benchmark_to_claim`). Cross-layer code should call `map_verdict()` rather than building its own translation table.
+
+### LLM call budget is a hard cap
+
+`audit.LLMCallLogger` records every call. `investigator.investigate(max_llm_calls=...)` (CLI: `--max-llm-calls`, default 200) raises `RuntimeError` when the total is exceeded. This is not a soft warning; the loop terminates. Phase counts are available via `LLMCallLogger.count_by_phase()`.
+
+Prompt assembly enforces a separate token budget. `_assemble_messages_with_budget()` protects system messages and trims user/dynamic content first. Do not bypass this by concatenating directly into system messages.
+
 ## Investigation loop mechanics
 
 The hypothesis loop is intentionally short, declarative, and policed by code rather than by LLM judgment. Most knobs are rule-declared, not Python-encoded.
@@ -251,7 +277,7 @@ The checker prompt explicitly prohibits rationale phrases like "direct causation
 | `should_auto_refute(threshold=3)` | 3 consecutive 0-row inconclusive | Force `verdict=refuted` |
 | `should_pivot(fp)` | Same query fingerprint seen ≥ 2 times | Notify planner to pivot (avoid LLM repeating the same query) |
 
-Query fingerprints are computed from event_id / computer / time-bucket patterns in the SQL — they capture intent, not exact SQL text.
+Query fingerprints are computed by `investigator._query_fingerprint`. The current implementation parses the SQL with sqlglot into an AST, canonicalizes it, and hashes the canonical form together with extracted event_id / computer markers. This makes whitespace, alias, and ordering differences collapse to the same fingerprint. If sqlglot import fails the function falls back to a textual normalization so the loop still terminates.
 
 ### Resolver
 
@@ -311,6 +337,9 @@ Structured memory is not a chat transcript. It is a bounded working set optimize
 | `memory/evidence/suspicious.md` | Compact table of suspicious evidence selected during checks | Regeneratable, compactable |
 | `memory/details/fact-NNN.md` | Detailed body for indexed facts | Regeneratable from durable evidence-backed updates |
 | `memory/archive/*.md` | Archived but still readable historical memory fragments | Regeneratable |
+| `memory/scratch/H-NNN/*.md` | Provisional facts/timeline/tasks scoped to a single hypothesis under verification | Promoted to shared memory on confirm, archived on refute |
+| `memory/scratch/global/*.md` | Provisional notes not tied to any hypothesis | Regeneratable |
+| `memory/archive/scratch/H-NNN/` | Refuted-hypothesis scratch retained for audit | Read-only after archival |
 
 ### Memory update rules
 
@@ -334,6 +363,23 @@ Compaction exists to keep context small without destroying durable state.
 - `facts.md`, `timeline.md`, `archive/refuted.md`, and `archive/resolved_gaps.md` are intentionally exempt from generic local compaction.
 
 This means memory files do not share the same retention policy. Do not generalize one file's behavior to all memory files.
+
+### Per-hypothesis scratch lifecycle
+
+Memory updates during hypothesis verification are routed by `_apply_memory_updates` based on `hypothesis_id` and `verdict`:
+
+- While a hypothesis is active, provisional facts/timeline/tasks go to `memory/scratch/<hypothesis_id>/`.
+- When the hypothesis becomes `confirmed`, `MemoryManager.promote_hypothesis_scratch(hypothesis_id)` merges the scratch entries into shared memory (`facts.md`, `timeline.md`, `tasks.md`) and deletes the scratch directory.
+- When the hypothesis becomes `refuted`, `MemoryManager.archive_hypothesis_scratch(hypothesis_id)` moves the scratch directory under `archive/scratch/<hypothesis_id>/` instead of merging.
+- The investigation context loader supports `include_scratch=True` with a `hypothesis_id` argument so that only the scratch of the hypothesis currently under verification is fed back to the LLM. Other hypotheses' provisional notes do not leak across.
+
+This separation is the reason memory writes must carry `hypothesis_id` whenever the source is a hypothesis check. Generic helpers that drop `hypothesis_id` will write to shared memory unconditionally and break the lifecycle.
+
+### Limited memory view for benchmark blocks (`EvidenceOnlyMemory`)
+
+Benchmark and appendix blocks must not see narrative memory built up by the hypothesis loop (`H-NNN.md`, lateral-movement narrative, etc.) — that content would bias section answers toward already-formed conclusions. The wrapper `core.memory.EvidenceOnlyMemory` exposes only `facts`, `keypoints`, and `entities` and hides the rest.
+
+The choice between full memory and the wrapper is made by `core.memory.memory_for_section(memory, benchmark_mode=...)`. Section-fill code paths in `section_refresher.py` and `report/writer.py` MUST go through this helper rather than constructing `EvidenceOnlyMemory` directly. Audit by grepping `EvidenceOnlyMemory(` — only the helper itself should match.
 
 ### Memory should stay reconstructable
 
@@ -589,15 +635,30 @@ When a rule should also seed the LLM-driven hypothesis loop, the rule declares t
   - `related_event_ids` with `event_ids: [int, ...]` — secondary event surface
   - `artifact_table` with `table: str` — fall back to another normalized table (whitelisted in `engine.py`)
 
-#### Schema hints
+#### Declaration layer (`_schema/`)
 
-`src/forensia/rulepacks/_schema/*.yaml` is not a rule. It declares column inventories for tables the LLM may query.
+`src/forensia/rulepacks/_schema/` is not a rule directory. The loader skips it when enumerating rules. It holds the shared schema and DFIR knowledge that rules and prompts both consume. Adding knowledge here is preferred over hardcoding it in Python.
+
+| File | Consumed by | Role |
+|---|---|---|
+| `evtx_events.yaml`, `prefetch_executions.yaml` | `prompts._load_schema_hints()` | Table column inventory (`columns`) and JSON extraction expressions (`json_field_extractors`). Injected into planner/checker prompts. |
+| `event_ids.yaml`, `logon_types.yaml` | `prompts._dfir_playbook()` | Event ID and Logon Type narrative knowledge base. |
+| `app_catalog.yaml`, `artifact_inference.yaml` | `prompts._dfir_playbook()` | Prefetch/MFT/Registry/File → application inference catalog. |
+| `false_positive_rules.yaml` | Rule engine + `prompts._dfir_playbook()` | Known FP patterns; used both for finding filtering and for the FP reduction section of prompts. |
+| `dfir_ioc_catalog.yaml` | `prompts._dfir_playbook()` | Supplementary IOC dictionary (antiforensic tools, cloud sync, mail, recycle bin). |
+| `question_routing.yaml` | `section_agent.py`, `prompts.build_section_agent_*` | Per question_type declarations: `expected_answer_shape` injected into block-agent prompt, `evidence_chain` consumed deterministically by `_load_evidence_chains()` / `_execute_evidence_chain()` when the primary query returns 0 rows. |
+| `verdict_taxonomy.yaml` | `core/verdicts.py` | Verdict whitelist and cross-layer mappings (see "Verdict values are enumerated"). |
+| `playbook/*.md` | `prompts._dfir_playbook(phase)` | Phase-specific playbook bodies (`broad_plan`, `hypothesis_plan`, `check`, `report_section`, `section_agent_plan`, `section_agent_check`). Includes `<CRITICAL_RULES>` / `<FORBIDDEN_PATTERNS>` / `<SCHEMA_CONSTRAINTS>` blocks. |
+
+Schema-hint columns (`columns`, `json_field_extractors`) are mandatory:
 
 - `table`: table name (e.g. `evtx_events`)
 - `columns`: full column list — the planner is instructed to never reference columns outside this list
 - `json_field_extractors`: name → DuckDB JSON extraction expression — the planner is instructed to use these expressions for fields not in `columns`
 
-The loader skips `_schema/` when enumerating rules. Adding a new investigable table means adding a `_schema/<table>.yaml` and updating the agent's allowlist; the YAML itself is consumed automatically by `prompts._load_schema_hints()`.
+Adding a new investigable table means adding a `_schema/<table>.yaml` and updating the agent's allowlist; the YAML itself is consumed automatically by `prompts._load_schema_hints()`.
+
+`playbook/*.md` may contain `<!-- AUTO-FROM: <yaml-path> -->` … `<!-- /AUTO-FROM -->` markers. Content inside those markers is regenerated from the named YAML by `scripts/regenerate_playbook.py`. Do not hand-edit auto sections; edit the source YAML instead, then run the regenerator.
 
 #### Allowlist files
 
@@ -652,6 +713,19 @@ This is a post-generation presentation and triage control. It is not a pre-filte
 - Treat case-local `report_template/` as an overrideable input copied at case initialization.
 - Do not rely on case-local copies for profiles or rulepacks today; those are resolved from the package tree.
 
+## Maintenance scripts
+
+`scripts/` holds offline audits used to keep the declaration layer, code, and docs aligned. They are not part of the runtime; `forensia doctor` bundles them.
+
+| Script | Purpose |
+|---|---|
+| `scripts/audit_schema_coverage.py` | Parses every rule YAML's `query` SQL with sqlglot, extracts referenced `event_id` values (equality + `IN` clause), and reports coverage against `event_ids.yaml` and `question_routing.yaml`. Replaces the prior text-based extractor which silently produced empty sets. |
+| `scripts/regenerate_playbook.py` | Re-renders `<!-- AUTO-FROM: ... -->` sections in `_schema/playbook/*.md` from their source YAMLs. `--check` exits non-zero on drift (intended for CI); default mode writes. |
+| `scripts/cycle_summary.py <case_dir>` | Parses `progress_events.json` and emits a Markdown table of hypothesis delta and benchmark progress per cycle. Debug aid only. |
+| `forensia doctor` | CLI command (`cli.py`) that runs schema coverage, playbook drift check, a verdict taxonomy AST scan, and pytest in sequence. Exits 0 only when all pass. |
+
+`scripts/` is not a Python package; tests that import from it rely on the root `conftest.py` adding the repo root to `sys.path`.
+
 ## UI considerations
 
 - `forensia serve` serves the built UI through FastAPI.
@@ -682,6 +756,7 @@ README should cover:
 | Flag | Default | When it matters |
 |---|---|---|
 | `--max-iter` | `20` | Increase only when longer investigation loops are needed |
+| `--max-llm-calls` | `200` | Hard cap on total LLM calls per `investigate` run. Exceeding raises `RuntimeError`. |
 | `--max-queries-per-hypothesis` | `5` | Tune how deeply one hypothesis can be explored. Tracker may resolve sooner (auto-confirm / auto-refute / pivot) regardless of this cap. |
 | `--no-progress-limit` | `3` | Relax when you want to tolerate more low-signal cycles |
 | `--report-every-n-cycles` | `1` | Increase when report refresh cost is too high. Note: `stale` sections (DESIGN-2) lose their priority benefit if many cycles pass between refreshes. |
