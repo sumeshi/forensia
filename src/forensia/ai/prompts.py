@@ -1180,7 +1180,7 @@ def build_benchmark_section_messages(
         "{\n"
         '  \"id\": \"Q8\",\n'
         '  \"status\": \"answered|partial|not_found|not_searched|insufficient_evidence|wrong_query\",\n'
-        '  \"answer\": [\"concise normalized statements\"],\n'
+        '  \"answer\": [\"concise normalized statements\" OR {\"field\": \"value\", ...}],\n'
         '  \"missing_reason\": [\"why evidence is missing or incomplete\"],\n'
         '  \"queries_run\": [\"keypoint or SQL query identifiers actually used\"]\n'
         "}\n"
@@ -1189,7 +1189,9 @@ def build_benchmark_section_messages(
         "Return exactly one JSON object.\n"
         "Do not return markdown, code fences, or prose outside JSON.\n"
         "Output JSON only.\n"
-        "Keep answer items short and normalized; no raw tables and no NULL/None-heavy dumps.\n"
+        "Keep answer items short and normalized; no NULL/None-heavy dumps.\n"
+        "When OUTPUT_FORMAT_GUIDANCE indicates Style: table, return answer as a list of JSON objects, each keyed by the declared fields (one row per object). Otherwise return answer as a list of short strings.\n"
+        "Do not pre-format answer items as Markdown tables or pipe-separated rows; emit objects and the writer renders the table.\n"
         "If evidence is incomplete, status must be partial or insufficient_evidence, and missing_reason must explain what is missing.\n"
         "If no relevant search ran, use not_searched.\n"
         "If the relevant search returned zero rows after search, use not_found.\n"

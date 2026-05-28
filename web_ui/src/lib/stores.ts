@@ -3,11 +3,14 @@ import { writable } from "svelte/store";
 import { api, parseProgressEvent } from "./api";
 import type {
   AIReviewDTO,
+  AttackCoverageRowDTO,
+  EntityCardDTO,
   CaseDTO,
   CaseStatsDTO,
   EventVolumePointDTO,
   FindingDTO,
   HypothesesResponseDTO,
+  HypothesisReasoningEntryDTO,
   InvestigationStepDTO,
   MftTimelineDTO,
   ProgressEventDTO,
@@ -24,11 +27,20 @@ export const steps = writable<InvestigationStepDTO[]>([]);
 export const reportSections = writable<ReportSectionDTO[]>([]);
 export const timeline = writable<MftTimelineDTO[]>([]);
 export const eventVolume = writable<EventVolumePointDTO[]>([]);
+export const eventVolumeDetected = writable<EventVolumePointDTO[]>([]);
+export const eventVolumeYears = writable<EventVolumePointDTO[]>([]);
 export const aiReviews = writable<AIReviewDTO[]>([]);
+export const latestReasoning = writable<HypothesisReasoningEntryDTO[]>([]);
+export const attackCoverage = writable<AttackCoverageRowDTO[]>([]);
+export const entities = writable<EntityCardDTO[]>([]);
 export const progress = writable<ProgressEventDTO | null>(null);
 export const connection = writable<"idle" | "connected" | "error">("idle");
-export const volumeBucket = writable<"hour" | "day">("hour");
-export const volumeSource = writable<"all" | "detected">("all");
+// Hierarchical drill-down path for Event Volume:
+//   []                  → bucket=year   (whole record range)
+//   [2024]              → bucket=month  (within 2024)
+//   [2024, 5]           → bucket=day    (within 2024-05)
+//   [2024, 5, 29]       → bucket=hour   (within 2024-05-29)
+export const volumeDrill = writable<number[]>([]);
 export const detailsTab = writable<"findings" | "steps" | "sessions" | "activity" | "mft">("findings");
 export const selectedFindingId = writable<string | null>(null);
 
@@ -79,12 +91,35 @@ function scheduleRefresh(): void {
   }, 400);
 }
 
+function drillToParams(path: number[]): { bucket: "year" | "month" | "day" | "hour"; start?: string; end?: string } {
+  // Chart granularity is always "one level finer than the picker depth":
+  //   no filter  → day across all data
+  //   year       → day across that year
+  //   year+month → day across that month
+  //   year+month+day → hour across that day
+  if (path.length === 0) return { bucket: "day" };
+  if (path.length === 1) {
+    const [y] = path;
+    return { bucket: "day", start: `${y}-01-01`, end: `${y + 1}-01-01` };
+  }
+  if (path.length === 2) {
+    const [y, m] = path;
+    const next = m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, "0")}-01`;
+    return { bucket: "day", start: `${y}-${String(m).padStart(2, "0")}-01`, end: next };
+  }
+  const [y, m, d] = path;
+  const startStr = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  const startDate = new Date(`${startStr}T00:00:00Z`);
+  const endDate = new Date(startDate.getTime() + 86400_000);
+  const endStr = endDate.toISOString().slice(0, 10);
+  return { bucket: "hour", start: startStr, end: endStr };
+}
+
 export async function refreshAll(): Promise<void> {
-  let bucketValue: "hour" | "day" = "hour";
-  let sourceValue: "all" | "detected" = "all";
-  volumeBucket.subscribe((value) => (bucketValue = value))();
-  volumeSource.subscribe((value) => (sourceValue = value))();
-  const [caseResult, statsResult, findingsResult, hypothesesResult, sessionsResult, reportResult, timelineResult, eventVolumeResult, reviewsResult] =
+  let drillValue: number[] = [];
+  volumeDrill.subscribe((value) => (drillValue = value))();
+  const { bucket: volumeBucketParam, start: volumeStart, end: volumeEnd } = drillToParams(drillValue);
+  const [caseResult, statsResult, findingsResult, hypothesesResult, sessionsResult, reportResult, timelineResult, eventVolumeResult, eventVolumeDetectedResult, eventVolumeYearsResult, reviewsResult, reasoningResult, coverageResult, entitiesResult] =
     await Promise.allSettled([
       api.getCase(),
       api.getStats(),
@@ -93,8 +128,13 @@ export async function refreshAll(): Promise<void> {
       api.getSessions(),
       api.getReportSections(),
       api.getTimeline(),
-      api.getEventVolume(bucketValue, sourceValue),
-      api.getAiReviews()
+      api.getEventVolume(volumeBucketParam, "all", volumeStart, volumeEnd),
+      api.getEventVolume(volumeBucketParam, "detected", volumeStart, volumeEnd),
+      api.getEventVolume("year", "all"),
+      api.getAiReviews(),
+      api.getLatestReasoning(10),
+      api.getAttackCoverage(),
+      api.getEntities()
     ]);
 
   if (caseResult.status === "fulfilled") caseInfo.set(caseResult.value);
@@ -107,7 +147,12 @@ export async function refreshAll(): Promise<void> {
   if (reportResult.status === "fulfilled") reportSections.set(mergeReportSections(reportResult.value, currentProgress));
   if (timelineResult.status === "fulfilled") timeline.set(timelineResult.value);
   if (eventVolumeResult.status === "fulfilled") eventVolume.set(eventVolumeResult.value);
+  if (eventVolumeDetectedResult.status === "fulfilled") eventVolumeDetected.set(eventVolumeDetectedResult.value);
+  if (eventVolumeYearsResult.status === "fulfilled") eventVolumeYears.set(eventVolumeYearsResult.value);
   if (reviewsResult.status === "fulfilled") aiReviews.set(reviewsResult.value);
+  if (reasoningResult.status === "fulfilled") latestReasoning.set(reasoningResult.value);
+  if (coverageResult.status === "fulfilled") attackCoverage.set(coverageResult.value);
+  if (entitiesResult.status === "fulfilled") entities.set(entitiesResult.value);
 
   if (sessionsResult.status === "fulfilled") {
     const latestSessionId = sessionsResult.value[0]?.session_id ?? "";

@@ -84,14 +84,14 @@ async def async_refresh_report_sections(
 
     async def process_section(request: dict[str, Any]) -> tuple[dict[str, Any], str]:
         section_key = request["section_key"]
-        _log_report(f"{section_key} — writing (sequential)")
+        _log_report(f"{section_key} — writing")
         if progress_callback:
             progress_callback(
                 {
                     "stage": "investigate/report-section",
                     "status": "running",
                     "iteration": iteration,
-                    "summary": f"[report] {section_key} writing... (sequential)",
+                    "summary": f"[report] {section_key} writing...",
                     "current_report_section": section_key,
                     "report_sections": _build_report_status(
                         db,
@@ -200,7 +200,7 @@ async def async_refresh_report_sections(
                     "stage": "investigate/report-section-done",
                     "status": "running",
                     "iteration": iteration,
-                    "summary": f"[report] {section_key} done (sequential)",
+                    "summary": f"[report] {section_key} done",
                     "report_sections": status,
                 }
             )

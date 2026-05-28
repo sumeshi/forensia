@@ -2172,6 +2172,25 @@ def _coerce_string_list(value: Any) -> list[str]:
     return [text] if text else []
 
 
+def _coerce_answer_items(value: Any) -> list[Any]:
+    """Preserve dict items (rendered as a Markdown table), coerce others to strings."""
+    if isinstance(value, list):
+        out: list[Any] = []
+        for item in value:
+            if isinstance(item, dict):
+                if any(str(v).strip() for v in item.values()):
+                    out.append(item)
+            else:
+                text = str(item).strip()
+                if text:
+                    out.append(text)
+        return out
+    if value is None:
+        return []
+    text = str(value).strip()
+    return [text] if text else []
+
+
 def _normalize_benchmark_answer(
     answer: dict[str, Any],
     *,
@@ -2190,7 +2209,7 @@ def _normalize_benchmark_answer(
             assert_valid_verdict(normalized_status, "benchmark_status")
         except ValueError:
             normalized_status = "insufficient_evidence"
-    normalized_answer = _coerce_string_list(answer.get("answer"))
+    normalized_answer = _coerce_answer_items(answer.get("answer"))
     normalized_missing = _coerce_string_list(answer.get("missing_reason"))
     normalized_queries = _coerce_string_list(answer.get("queries_run"))
     return {
@@ -2229,12 +2248,37 @@ def _persist_benchmark_answer(case: Case, answer: dict[str, Any]) -> None:
     path.write_text(json.dumps(answers, ensure_ascii=False, default=str, indent=2), encoding="utf-8")
 
 
+def _render_answer_block(items: list[Any]) -> list[str]:
+    """Render answer items as a Markdown table when every item is a dict; otherwise bullets."""
+    if not items:
+        return ["- no answer"]
+    dicts = [item for item in items if isinstance(item, dict)]
+    if dicts and len(dicts) == len(items):
+        keys: list[str] = []
+        for item in dicts:
+            for key in item.keys():
+                if key not in keys:
+                    keys.append(key)
+        if not keys:
+            return ["- no answer"]
+
+        def cell(value: Any) -> str:
+            return str(value if value is not None else "").replace("|", "\\|").replace("\n", " ").strip()
+
+        header = "| " + " | ".join(keys) + " |"
+        divider = "| " + " | ".join(["---"] * len(keys)) + " |"
+        body_rows = [
+            "| " + " | ".join(cell(item.get(key)) for key in keys) + " |"
+            for item in dicts
+        ]
+        return [header, divider, *body_rows]
+    return [f"- {str(item).strip()}" for item in items if not isinstance(item, dict) and str(item).strip()]
+
+
 def _render_benchmark_answer_markdown(answer: dict[str, Any], block_heading: str) -> str:
-    answer_lines = [f"- {str(item).strip()}" for item in (answer.get("answer") or []) if str(item).strip()]
+    answer_block = _render_answer_block(list(answer.get("answer") or []))
     missing_lines = [f"- {str(item).strip()}" for item in (answer.get("missing_reason") or []) if str(item).strip()]
     query_lines = [f"- {str(item).strip()}" for item in (answer.get("queries_run") or []) if str(item).strip()]
-    if not answer_lines:
-        answer_lines = ["- no answer"]
     if not missing_lines:
         missing_lines = ["- none"]
     if not query_lines:
@@ -2246,7 +2290,7 @@ def _render_benchmark_answer_markdown(answer: dict[str, Any], block_heading: str
         f"**Status:** {str(answer.get('status') or 'insufficient_evidence')}",
         "",
         "### Answer",
-        *answer_lines,
+        *answer_block,
         "",
         "### Missing Reason",
         *missing_lines,

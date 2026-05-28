@@ -67,10 +67,57 @@ export const openGapsView = derived([reportSections], ([$reportSections]) => {
       gap
     }))
   );
-  return rows.slice(0, 8);
+  return rows;
 });
 
 export const recentResolvedSummary = derived([hypotheses], ([$hypotheses]) => {
   const resolved = $hypotheses.resolved.slice(0, 3);
   return resolved.map((item) => `${formatVerdict(item.verdict)}: ${item.description}`);
+});
+
+export const verdictBreakdown = derived([hypotheses], ([$hypotheses]) => {
+  let confirmed = 0;
+  let refuted = 0;
+  let inconclusive = 0;
+  for (const h of $hypotheses.resolved) {
+    if (h.verdict === "confirmed") confirmed++;
+    else if (h.verdict === "refuted") refuted++;
+    else if (h.verdict === "inconclusive") inconclusive++;
+  }
+  return {
+    confirmed,
+    refuted,
+    inconclusive,
+    active: $hypotheses.active.length
+  };
+});
+
+export const topRules = derived([findings], ([$findings]) => {
+  const counts = new Map<string, { accepted: number; suppressed: number; title: string }>();
+  for (const f of $findings) {
+    const key = f.rule_id ?? "unknown";
+    const row = counts.get(key) ?? { accepted: 0, suppressed: 0, title: f.title };
+    if (f.status === "suppressed") row.suppressed++;
+    else row.accepted++;
+    row.title = f.title;
+    counts.set(key, row);
+  }
+  return Array.from(counts.entries())
+    .map(([ruleId, stats]) => ({ ruleId, ...stats }))
+    .sort((a, b) => (b.accepted + b.suppressed) - (a.accepted + a.suppressed))
+    .slice(0, 8);
+});
+
+export const severityBreakdown = derived([findings], ([$findings]) => {
+  const highAccepted = $findings.filter((f) => f.severity === "high" && f.status !== "suppressed").length;
+  const highSuppressed = $findings.filter((f) => f.severity === "high" && f.status === "suppressed").length;
+  const mediumAccepted = $findings.filter((f) => f.severity === "medium" && f.status !== "suppressed").length;
+  const mediumSuppressed = $findings.filter((f) => f.severity === "medium" && f.status === "suppressed").length;
+  const lowAccepted = $findings.filter((f) => f.severity === "low" && f.status !== "suppressed").length;
+  const lowSuppressed = $findings.filter((f) => f.severity === "low" && f.status === "suppressed").length;
+  return {
+    highAccepted, highSuppressed,
+    mediumAccepted, mediumSuppressed,
+    lowAccepted, lowSuppressed
+  };
 });

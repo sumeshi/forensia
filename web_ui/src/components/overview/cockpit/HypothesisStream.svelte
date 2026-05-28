@@ -1,0 +1,48 @@
+<script lang="ts">
+  import ActiveHypotheses from "./ActiveHypotheses.svelte";
+  import LatestReasoning from "../LatestReasoning.svelte";
+  import type { HypothesisReasoningEntryDTO } from "../../../lib/types";
+
+  type HypothesisThread = {
+    id: string;
+    description: string;
+    summary: string;
+    latestReasoning: HypothesisReasoningEntryDTO[];
+    reasoningCount: number;
+    latestIteration: number | null;
+    latestReasoningAt: string | null;
+  };
+
+  export let activeHypotheses: HypothesisThread[] = [];
+  export let latestReasoningItems: HypothesisReasoningEntryDTO[] = [];
+
+  let tab: "active" | "reasoning" = "active";
+</script>
+
+<section class="panel min-w-0 p-4">
+  <div class="mb-3 flex items-center justify-between gap-2">
+    <h3 class="panel-title">Hypotheses</h3>
+    <div class="flex rounded-full border border-mocha-surface1 bg-mocha-surface0 p-1">
+      <button
+        class={`rounded-full px-3 py-1 text-xs ${tab === "active" ? "bg-mocha-mauve text-mocha-base" : "text-mocha-subtext0"}`}
+        type="button"
+        on:click={() => (tab = "active")}
+      >
+        Active ({activeHypotheses.length})
+      </button>
+      <button
+        class={`rounded-full px-3 py-1 text-xs ${tab === "reasoning" ? "bg-mocha-mauve text-mocha-base" : "text-mocha-subtext0"}`}
+        type="button"
+        on:click={() => (tab = "reasoning")}
+      >
+        Reasoning ({latestReasoningItems.length})
+      </button>
+    </div>
+  </div>
+
+  {#if tab === "active"}
+    <ActiveHypotheses items={activeHypotheses} embedded />
+  {:else}
+    <LatestReasoning items={latestReasoningItems} embedded />
+  {/if}
+</section>

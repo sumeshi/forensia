@@ -5,35 +5,41 @@
   import ActivityBanner from "./components/layout/ActivityBanner.svelte";
   import Header from "./components/layout/Header.svelte";
   import KpiBar from "./components/layout/KpiBar.svelte";
+  import type { KpiItem } from "./components/layout/kpi_types";
   import Cockpit from "./components/overview/cockpit/Cockpit.svelte";
-  import ImportantFindings from "./components/report/ImportantFindings.svelte";
   import ReportDraftProgress from "./components/report/ReportDraftProgress.svelte";
   import VolumeTimeline from "./components/VolumeTimeline.svelte";
+  import AttackCoverage from "./components/overview/AttackCoverage.svelte";
+  import TopRules from "./components/overview/TopRules.svelte";
+  import TopEntities from "./components/overview/TopEntities.svelte";
+  import { reportProgress } from "./lib/derived/report_progress";
   import { currentTask, runningQuery } from "./lib/derived/ai_activity";
   import {
     activeHypothesesView,
-    currentHypothesis,
-    nextAction,
     openGapsView,
-    whatWeKnow,
-    whyItMatters
+    verdictBreakdown,
+    severityBreakdown,
+    topRules
   } from "./lib/derived/cockpit";
-  import { reportProgress } from "./lib/derived/report_progress";
   import {
+    attackCoverage,
     caseInfo,
+    entities,
     caseStats,
     connectProgress,
     connection,
     eventVolume,
+    eventVolumeDetected,
+    eventVolumeYears,
     findings,
+    latestReasoning,
     progress,
     refreshAll,
     reportSections,
     sessions,
     steps,
     timeline,
-    volumeBucket,
-    volumeSource
+    volumeDrill
   } from "./lib/stores";
   import { formatStage, getInvestigateSubphase, getPipelinePhase } from "./lib/format";
 
@@ -42,13 +48,8 @@
     return connectProgress();
   });
 
-  async function updateBucket(value: "hour" | "day") {
-    $volumeBucket = value;
-    await refreshAll();
-  }
-
-  async function updateSource(value: "all" | "detected") {
-    $volumeSource = value;
+  async function updateDrill(next: number[]) {
+    $volumeDrill = next;
     await refreshAll();
   }
 
@@ -67,38 +68,32 @@
     {
       label: "Findings",
       value: Intl.NumberFormat("ja-JP").format($caseStats?.findings_accepted ?? 0),
-      tone: "text-mocha-peach"
+      tone: "text-mocha-peach",
+      breakdown: [
+        { label: "High", value: $severityBreakdown.highAccepted, color: "bg-mocha-red" },
+        { label: "Medium", value: $severityBreakdown.mediumAccepted, color: "bg-mocha-yellow" },
+        { label: "Low", value: $severityBreakdown.lowAccepted, color: "bg-mocha-green" }
+      ]
     },
     {
-      label: "Active Hyp",
-      value: Intl.NumberFormat("ja-JP").format($caseStats?.active_hypotheses ?? 0),
-      tone: "text-mocha-mauve"
+      label: "Hypotheses",
+      value: Intl.NumberFormat("ja-JP").format(
+        ($caseStats?.active_hypotheses ?? 0) + ($caseStats?.resolved_hypotheses ?? 0)
+      ),
+      tone: "text-mocha-mauve",
+      breakdown: [
+        { label: "Active", value: $verdictBreakdown.active, color: "bg-mocha-mauve" },
+        { label: "Confirmed", value: $verdictBreakdown.confirmed, color: "bg-mocha-green" },
+        { label: "Refuted", value: $verdictBreakdown.refuted, color: "bg-mocha-red" },
+        { label: "Inconclusive", value: $verdictBreakdown.inconclusive, color: "bg-mocha-yellow" }
+      ]
     },
     {
       label: "Open Gaps",
       value: Intl.NumberFormat("ja-JP").format($caseStats?.open_gaps ?? 0),
       tone: "text-mocha-yellow"
-    },
-    {
-      label: "Sessions",
-      value: Intl.NumberFormat("ja-JP").format($caseStats?.sessions ?? 0)
-    },
-    {
-      label: "Iteration",
-      value: `${Intl.NumberFormat("ja-JP").format($caseStats?.total_iterations ?? 0)} iter / ${Intl.NumberFormat("ja-JP").format($caseStats?.sessions ?? 0)} sessions`,
-      tone: "text-mocha-blue"
-    },
-    {
-      label: "Reviewed",
-      value: `${$reportProgress.humanReviewed}/${$reportProgress.total}`,
-      tone: "text-mocha-green"
-    },
-    {
-      label: "AI Exhausted",
-      value: `${$reportProgress.aiExhausted}`,
-      tone: "text-mocha-teal"
     }
-  ];
+  ] satisfies KpiItem[];
 </script>
 
 <svelte:head>
@@ -122,26 +117,28 @@
 
   <VolumeTimeline
     points={$eventVolume}
-    bucket={$volumeBucket}
-    source={$volumeSource}
-    onBucketChange={updateBucket}
-    onSourceChange={updateSource}
-  />
-
-  <Cockpit
-    whatWeKnowItems={$whatWeKnow}
-    currentHypothesisView={$currentHypothesis}
-    whyItMattersText={$whyItMatters}
-    nextActionText={$nextAction}
-    aiTask={$currentTask}
-    runningQuery={$runningQuery}
-    activeHypotheses={$activeHypothesesView}
-    openGaps={$openGapsView}
+    detectedPoints={$eventVolumeDetected}
+    yearsSummary={$eventVolumeYears}
+    drill={$volumeDrill}
+    onDrillChange={updateDrill}
   />
 
   <ReportDraftProgress sections={$reportSections} progress={$reportProgress} />
 
-  <ImportantFindings findings={$findings} />
+  <AttackCoverage items={$attackCoverage} />
+
+  <Cockpit
+    aiTask={$currentTask}
+    runningQuery={$runningQuery}
+    activeHypotheses={$activeHypothesesView}
+    openGaps={$openGapsView}
+    latestReasoningItems={$latestReasoning}
+  />
+
+  <section class="grid gap-3 md:grid-cols-2">
+    <TopRules items={$topRules} />
+    <TopEntities items={$entities} />
+  </section>
 
   <DetailsTabs
     findings={$findings}

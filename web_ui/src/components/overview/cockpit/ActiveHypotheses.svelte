@@ -20,6 +20,7 @@
   };
 
   export let items: HypothesisThread[] = [];
+  export let embedded = false;
 
   let openId = "";
   let loadingId = "";
@@ -69,13 +70,15 @@
   }
 </script>
 
-<section class="panel min-w-0 p-4">
-  <div class="mb-3 flex items-center justify-between gap-2">
-    <h3 class="panel-title">Active Hypotheses</h3>
-    {#if items.length > 0}
-      <span class="text-[11px] uppercase tracking-[0.16em] text-mocha-overlay1">{items.length} threads</span>
-    {/if}
-  </div>
+<svelte:element this={embedded ? "div" : "section"} class={embedded ? "min-w-0" : "panel min-w-0 p-4"}>
+  {#if !embedded}
+    <div class="mb-3 flex items-center justify-between gap-2">
+      <h3 class="panel-title">Active Hypotheses</h3>
+      {#if items.length > 0}
+        <span class="text-[11px] uppercase tracking-[0.16em] text-mocha-overlay1">{items.length} threads</span>
+      {/if}
+    </div>
+  {/if}
 
   {#if items.length === 0}
     <p class="text-sm text-mocha-subtext1">No active hypotheses.</p>
@@ -168,4 +171,4 @@
       {/each}
     </div>
   {/if}
-</section>
+</svelte:element>

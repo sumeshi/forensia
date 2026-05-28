@@ -1,5 +1,7 @@
 import type {
   AIReviewDTO,
+  AttackCoverageRowDTO,
+  EntityCardDTO,
   CaseDTO,
   CaseStatsDTO,
   ClaimDTO,
@@ -56,8 +58,21 @@ export const api = {
   getClaims: (sectionKey?: string) =>
     getJson<ClaimDTO[]>(sectionKey ? `/api/claims?section_key=${encodeURIComponent(sectionKey)}` : "/api/claims"),
   getTimeline: () => getJson<MftTimelineDTO[]>("/api/mft-timeline?limit=200"),
-  getEventVolume: (bucket = "hour", source: "all" | "detected" = "all") =>
-    getJson<EventVolumePointDTO[]>(`/api/event-volume?bucket=${bucket}&source=${source}`),
+  getEventVolume: (
+    bucket: "year" | "month" | "day" | "hour" = "day",
+    source: "all" | "detected" = "all",
+    start?: string,
+    end?: string,
+  ) => {
+    const params = new URLSearchParams({ bucket, source });
+    if (start) params.set("start", start);
+    if (end) params.set("end", end);
+    return getJson<EventVolumePointDTO[]>(`/api/event-volume?${params.toString()}`);
+  },
+  getAttackCoverage: () => getJson<AttackCoverageRowDTO[]>("/api/attack-coverage"),
+  getEntities: () => getJson<EntityCardDTO[]>("/api/entities"),
+  getLatestReasoning: (limit = 10) =>
+    getJson<HypothesisReasoningEntryDTO[]>(`/api/hypotheses-reasoning?limit=${limit}`),
   getAiReviews: () => getJson<AIReviewDTO[]>("/api/ai-reviews"),
   connectStream(after = 0): EventSource {
     const url = new URL("/api/stream", window.location.origin);

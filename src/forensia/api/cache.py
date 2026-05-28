@@ -8,6 +8,8 @@ from forensia.api.progress import list_progress_events
 from forensia.api.service import (
     get_case_dto,
     get_case_stats_dto,
+    list_attack_coverage_dto,
+    list_entity_cards_dto,
     list_event_volume_dto,
     list_ai_reviews_dto,
     list_claims_dto,
@@ -85,12 +87,20 @@ def write_full_api_snapshots(case: Case, db: CaseDB) -> None:
         snapshot_dir / "mft_timeline.json",
         [item.model_dump(mode="json") for item in list_mft_timeline_dto(db, limit=500)],
     )
-    for bucket in ("hour", "day"):
+    for bucket in ("year", "month", "day", "hour"):
         for source in ("all", "detected"):
             _write_json(
                 snapshot_dir / f"event_volume_{bucket}_{source}.json",
                 [item.model_dump(mode="json") for item in list_event_volume_dto(db, bucket=bucket, source=source)],
             )
+    _write_json(
+        snapshot_dir / "entities.json",
+        [item.model_dump(mode="json") for item in list_entity_cards_dto(case)],
+    )
+    _write_json(
+        snapshot_dir / "attack_coverage.json",
+        [item.model_dump(mode="json") for item in list_attack_coverage_dto(db)],
+    )
     _write_json(
         snapshot_dir / "ai_reviews.json",
         [item.model_dump(mode="json") for item in list_ai_reviews_dto(db)],

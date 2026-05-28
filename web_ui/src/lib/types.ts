@@ -1,5 +1,7 @@
 export type {
   AIReviewDTO,
+  AttackCoverageRowDTO,
+  EntityCardDTO,
   CaseDTO,
   CaseStatsDTO,
   ClaimDTO,

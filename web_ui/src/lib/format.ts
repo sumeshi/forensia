@@ -22,9 +22,20 @@ export function reasoningToneClass(value: string | null | undefined): string {
   return "bg-mocha-overlay1";
 }
 
+export function parseServerTimestamp(value: string): Date {
+  // Backend serializes naive UTC datetimes via datetime.isoformat() without a
+  // timezone marker. JS new Date() would interpret these as local time, which
+  // produces 9h drift on JST machines. Treat any ISO-shaped string without an
+  // explicit timezone as UTC.
+  const trimmed = value.trim();
+  const hasTz = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(trimmed);
+  const normalized = trimmed.includes("T") ? trimmed : trimmed.replace(" ", "T");
+  return new Date(hasTz ? normalized : normalized + "Z");
+}
+
 export function formatRelativeTime(value: string | null | undefined): string {
   if (!value) return "-";
-  const target = new Date(value);
+  const target = parseServerTimestamp(value);
   if (Number.isNaN(target.getTime())) return "-";
   const diffMs = Date.now() - target.getTime();
   const diffSec = Math.max(0, Math.floor(diffMs / 1000));

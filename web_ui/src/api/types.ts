@@ -141,6 +141,21 @@ export type ProgressEventDTO = {
   payload: Record<string, unknown>;
 };
 
+export type EntityCardDTO = {
+  kind: string;
+  name: string;
+  mention_count: number | null;
+};
+
+export type AttackCoverageRowDTO = {
+  tactic: string;
+  technique_id: string;
+  technique_name: string | null;
+  count: number;
+  accepted: number;
+  suppressed: number;
+};
+
 export type EventVolumePointDTO = {
   bucket: string;
   series: string;

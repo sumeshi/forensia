@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import date as _date
 from pathlib import Path
 from typing import Any
 
@@ -8,9 +9,11 @@ import yaml
 
 from forensia.api.dto import (
     AIReviewDTO,
+    AttackCoverageRowDTO,
     CaseDTO,
     CaseStatsDTO,
     ClaimDTO,
+    EntityCardDTO,
     EventVolumePointDTO,
     FindingDTO,
     HypothesisDTO,
@@ -452,8 +455,74 @@ def list_ai_reviews_dto(
     return [AIReviewDTO.model_validate(_normalize_row(row)) for row in rows]
 
 
-def list_event_volume_dto(db: CaseDB, bucket: str = "hour", source: str = "all") -> list[EventVolumePointDTO]:
-    bucket_expr = "day" if bucket == "day" else "hour"
+_VALID_BUCKETS = {"year", "month", "day", "hour"}
+# Drop pre-1980 (Windows epoch 1601 garbage) and far-future overflow
+# (NTFS int64-MAX → 3220 / 30828 etc when raw FILETIME is misinterpreted).
+_VOLUME_MIN_YEAR = 1980
+_VOLUME_MAX_YEAR = _date.today().year + 5
+_BUCKET_RANK = {"year": 0, "month": 1, "day": 2, "hour": 3}
+
+
+def _trunc_key(timestamp_iso: str, bucket: str) -> str:
+    t = timestamp_iso.replace(" ", "T")
+    if bucket == "year":
+        return t[:4] + "-01-01T00:00:00"
+    if bucket == "month":
+        return t[:7] + "-01T00:00:00"
+    if bucket == "day":
+        return t[:10] + "T00:00:00"
+    return t[:13] + ":00:00"
+
+
+def aggregate_event_volume(
+    items: list[EventVolumePointDTO],
+    target_bucket: str,
+    start: str | None = None,
+    end: str | None = None,
+) -> list[EventVolumePointDTO]:
+    if target_bucket not in _VALID_BUCKETS:
+        return list(items)
+    grouped: dict[tuple[str, str], int] = {}
+    for item in items:
+        ts = item.bucket
+        if ts[:4].isdigit():
+            year = int(ts[:4])
+            if year < _VOLUME_MIN_YEAR or year > _VOLUME_MAX_YEAR:
+                continue
+        if start and ts < start:
+            continue
+        if end and ts >= end:
+            continue
+        key = (_trunc_key(ts, target_bucket), item.series)
+        grouped[key] = grouped.get(key, 0) + item.count
+    result = [
+        EventVolumePointDTO(bucket=k[0], series=k[1], count=v)
+        for k, v in grouped.items()
+    ]
+    result.sort(key=lambda item: (item.bucket, item.series))
+    return result
+
+
+def list_event_volume_dto(
+    db: CaseDB,
+    bucket: str = "day",
+    source: str = "all",
+    start: str | None = None,
+    end: str | None = None,
+) -> list[EventVolumePointDTO]:
+    bucket_expr = bucket if bucket in _VALID_BUCKETS else "day"
+    range_clauses: list[str] = [
+        f"EXTRACT(year FROM timestamp) BETWEEN {_VOLUME_MIN_YEAR} AND {_VOLUME_MAX_YEAR}",
+    ]
+    range_params: list[Any] = []
+    if start:
+        range_clauses.append("timestamp >= ?")
+        range_params.append(start)
+    if end:
+        range_clauses.append("timestamp < ?")
+        range_params.append(end)
+    range_sql = " AND ".join(range_clauses)
+
     if source == "detected":
         rows = fetch_records(
             db,
@@ -480,8 +549,16 @@ def list_event_volume_dto(db: CaseDB, bucket: str = "hour", source: str = "all")
                 if isinstance(created_at, str) and created_at:
                     timestamps.append(created_at)
             for timestamp in timestamps:
-                normalized = timestamp.replace(" ", "T")
-                key = normalized[:13] + ":00:00" if bucket_expr == "hour" else normalized[:10] + "T00:00:00"
+                if not timestamp[:4].isdigit():
+                    continue
+                year = int(timestamp[:4])
+                if year < _VOLUME_MIN_YEAR or year > _VOLUME_MAX_YEAR:
+                    continue
+                if start and timestamp < start:
+                    continue
+                if end and timestamp >= end:
+                    continue
+                key = _trunc_key(timestamp, bucket_expr)
                 bucket_counts[key] = bucket_counts.get(key, 0) + 1
         return [
             EventVolumePointDTO(bucket=bucket_key, series="detected", count=count)
@@ -496,10 +573,11 @@ def list_event_volume_dto(db: CaseDB, bucket: str = "hour", source: str = "all")
                 f"""
                 SELECT date_trunc('{bucket_expr}', timestamp) AS bucket, channel AS series, COUNT(*) AS count
                 FROM evtx_events
-                WHERE timestamp IS NOT NULL
+                WHERE timestamp IS NOT NULL AND {range_sql}
                 GROUP BY 1, 2
                 ORDER BY 1, 2
-                """
+                """,
+                tuple(range_params) if range_params else None,
             )
         )
     if source in {"mft", "all"}:
@@ -511,11 +589,11 @@ def list_event_volume_dto(db: CaseDB, bucket: str = "hour", source: str = "all")
                        CASE WHEN ? = 'all' THEN 'mft:' || timestamp_type ELSE timestamp_type END AS series,
                        COUNT(*) AS count
                 FROM mft_timeline
-                WHERE timestamp IS NOT NULL
+                WHERE timestamp IS NOT NULL AND {range_sql}
                 GROUP BY 1, 2
                 ORDER BY 1, 2
                 """,
-                (source,),
+                tuple([source, *range_params]),
             )
         )
     normalized = []
@@ -528,3 +606,79 @@ def list_event_volume_dto(db: CaseDB, bucket: str = "hour", source: str = "all")
         normalized.append(EventVolumePointDTO.model_validate(item))
     normalized.sort(key=lambda item: (item.bucket, item.series))
     return normalized
+
+
+def list_entity_cards_dto(case: Case) -> list[EntityCardDTO]:
+    result: list[EntityCardDTO] = []
+    entities_dir = case.memory_dir / "entities"
+    if not entities_dir.exists():
+        return result
+    for kind_dir in sorted(entities_dir.iterdir()):
+        if not kind_dir.is_dir():
+            continue
+        kind = kind_dir.name
+        for path in sorted(kind_dir.glob("*.md")):
+            result.append(EntityCardDTO(
+                kind=kind,
+                name=path.stem,
+                mention_count=None,
+            ))
+    return result
+
+
+def list_attack_coverage_dto(db: CaseDB) -> list[AttackCoverageRowDTO]:
+    rows = fetch_records(
+        db,
+        """
+        SELECT attack, status
+        FROM findings
+        WHERE attack IS NOT NULL
+          AND json_array_length(CAST(attack AS JSON)) > 0
+        """,
+    )
+    tactic_order = [
+        "initial-access", "execution", "persistence", "privilege-escalation",
+        "defense-evasion", "credential-access", "discovery", "lateral-movement",
+        "collection", "command-and-control", "exfiltration", "impact",
+    ]
+    coverage: dict[str, dict[str, dict[str, int]]] = {}
+    for row in rows:
+        attack_val = normalize_value(row.get("attack"))
+        if not isinstance(attack_val, list):
+            continue
+        status = str(row.get("status") or "accepted")
+        for entry in attack_val:
+            if not isinstance(entry, dict):
+                continue
+            tactic = str(entry.get("tactic") or "").lower().strip()
+            technique_id = str(entry.get("technique_id") or "").strip().upper()
+            technique_name = str(entry.get("technique_name") or entry.get("name") or "")
+            if not tactic or not technique_id:
+                continue
+            if tactic not in tactic_order:
+                tactic_order.append(tactic)
+            tech_map = coverage.setdefault(tactic, {})
+            tech_entry = tech_map.setdefault(technique_id, {"count": 0, "accepted": 0, "suppressed": 0, "technique_name": technique_name})
+            tech_entry["count"] += 1
+            if status == "suppressed":
+                tech_entry["suppressed"] += 1
+            else:
+                tech_entry["accepted"] += 1
+            if technique_name and not tech_entry.get("technique_name"):
+                tech_entry["technique_name"] = technique_name
+
+    result: list[AttackCoverageRowDTO] = []
+    for tactic in tactic_order:
+        tech_map = coverage.get(tactic)
+        if not tech_map:
+            continue
+        for technique_id, stats in sorted(tech_map.items()):
+            result.append(AttackCoverageRowDTO(
+                tactic=tactic,
+                technique_id=technique_id,
+                technique_name=stats.get("technique_name"),
+                count=stats["count"],
+                accepted=stats["accepted"],
+                suppressed=stats["suppressed"],
+            ))
+    return result

@@ -16,9 +16,11 @@ from fastapi.staticfiles import StaticFiles
 from forensia.api.cache import load_snapshot, write_api_snapshots
 from forensia.api.dto import (
     AIReviewDTO,
+    AttackCoverageRowDTO,
     CaseDTO,
     CaseStatsDTO,
     ClaimDTO,
+    EntityCardDTO,
     EventVolumePointDTO,
     FindingDTO,
     HypothesesResponseDTO,
@@ -31,9 +33,12 @@ from forensia.api.dto import (
 )
 from forensia.api.progress import list_progress_events
 from forensia.api.service import (
+    aggregate_event_volume,
     get_case_dto,
     get_case_stats_dto,
     get_finding_dto,
+    list_attack_coverage_dto,
+    list_entity_cards_dto,
     list_event_volume_dto,
     list_ai_reviews_dto,
     list_claims_dto,
@@ -272,16 +277,51 @@ def create_app(case: Case) -> FastAPI:
         with CaseDB(case) as db:
             return list_mft_timeline_dto(db, from_timestamp=from_timestamp, to_timestamp=to_timestamp, limit=limit)
 
+    @app.get("/api/entities", response_model=list[EntityCardDTO])
+    def api_entities() -> list[EntityCardDTO]:
+        snapshot = cached("entities.json")
+        if snapshot is not None:
+            return [EntityCardDTO.model_validate(item) for item in snapshot]
+        return list_entity_cards_dto(case)
+
+    @app.get("/api/attack-coverage", response_model=list[AttackCoverageRowDTO])
+    def api_attack_coverage() -> list[AttackCoverageRowDTO]:
+        snapshot = cached("attack_coverage.json")
+        if snapshot is not None:
+            return [AttackCoverageRowDTO.model_validate(item) for item in snapshot]
+        with CaseDB(case) as db:
+            return list_attack_coverage_dto(db)
+
     @app.get("/api/event-volume", response_model=list[EventVolumePointDTO])
     def api_event_volume(
-        bucket: Annotated[str, Query(pattern="^(hour|day)$")] = "hour",
+        bucket: Annotated[str, Query(pattern="^(year|month|day|hour)$")] = "day",
         source: Annotated[str, Query(pattern="^(all|detected)$")] = "all",
+        start: str | None = None,
+        end: str | None = None,
     ) -> list[EventVolumePointDTO]:
-        snapshot = cached(f"event_volume_{bucket}_{source}.json")
-        if snapshot is not None:
-            return [EventVolumePointDTO.model_validate(item) for item in snapshot]
-        with CaseDB(case) as db:
-            return list_event_volume_dto(db, bucket=bucket, source=source)
+        # 1) Try exact snapshot match (only for full-range queries).
+        if not start and not end:
+            snapshot = cached(f"event_volume_{bucket}_{source}.json")
+            if snapshot is not None:
+                return [EventVolumePointDTO.model_validate(item) for item in snapshot]
+
+        # 2) Try a live DB query.
+        try:
+            with CaseDB(case) as db:
+                return list_event_volume_dto(db, bucket=bucket, source=source, start=start, end=end)
+        except Exception:
+            pass
+
+        # 3) Fall back to aggregating from a finer-grained snapshot.
+        for finer in ("hour", "day"):
+            if finer == bucket:
+                continue
+            src = cached(f"event_volume_{finer}_{source}.json")
+            if src is None:
+                continue
+            items = [EventVolumePointDTO.model_validate(item) for item in src]
+            return aggregate_event_volume(items, bucket, start=start, end=end)
+        return []
 
     @app.get("/api/ai-reviews", response_model=list[AIReviewDTO])
     def api_ai_reviews(finding_id: str | None = None, hypothesis_id: str | None = None) -> list[AIReviewDTO]:

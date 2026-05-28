@@ -162,6 +162,21 @@ class ProgressEventDTO(DTOModel):
     created_at: str | None = None
 
 
+class EntityCardDTO(DTOModel):
+    kind: str
+    name: str
+    mention_count: int | None = None
+
+
+class AttackCoverageRowDTO(DTOModel):
+    tactic: str
+    technique_id: str
+    technique_name: str | None = None
+    count: int = 0
+    accepted: int = 0
+    suppressed: int = 0
+
+
 class EventVolumePointDTO(DTOModel):
     bucket: str
     series: str
