@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from dataclasses import dataclass
@@ -836,6 +837,405 @@ def _execute_evidence_chain(db: CaseDB, block_heading: str, template_body: str) 
     return []
 
 
+
+@dataclass(slots=True)
+class _BlockContext:
+    case: Case
+    db: CaseDB
+    section_key: str
+    title: str
+    block_heading: str
+    template_body: str
+    base_url: str
+    model: str
+    audit: Callable | None
+    keypoint_catalog: list[dict]
+    template_catalog: list[dict]
+    reusable_facts: list[dict[str, Any]]
+    reusable_evidence: list[dict[str, Any]]
+    memory_context_md: str
+    benchmark_mode: bool
+    max_queries: int
+    findings_snapshot: list[dict[str, Any]]
+    prompt_report_brief: dict[str, Any]
+
+
+def _prepare_block_context(
+    *,
+    case: Case,
+    db: CaseDB,
+    section_key: str,
+    title: str,
+    block_heading: str,
+    template_body: str,
+    base_url: str,
+    model: str,
+    memory: MemoryManager | None,
+    max_queries: int,
+    evidence_keypoints: list[str] | None,
+    benchmark_mode: bool,
+    audit_callback,
+    report_brief: dict[str, Any] | None,
+) -> _BlockContext:
+    memory_context_md = ""
+    if memory is not None:
+        memory_context_md = memory.load_investigation_context(
+            None,
+            max_bytes=max(1024, memory.max_bytes // 2),
+            include_overview=False,
+            include_scratch=False,
+        )
+    findings_snapshot = _findings_snapshot(db)
+    keypoint_catalog = _keypoint_catalog(
+        section_key,
+        template_body,
+        block_heading=block_heading,
+        evidence_keypoints=evidence_keypoints,
+    )
+    template_catalog = _filter_template_catalog_by_section([], section_key, [])
+    reusable_facts = _load_reusable_section_facts(db, section_key)
+    reusable_evidence = _load_reusable_section_evidence(db, section_key, block_heading)
+    audit = _audit_bridge(audit_callback)
+    prompt_report_brief = _benchmark_report_brief(report_brief) if benchmark_mode else (report_brief or {})
+    return _BlockContext(
+        case=case,
+        db=db,
+        section_key=section_key,
+        title=title,
+        block_heading=block_heading,
+        template_body=template_body,
+        base_url=base_url,
+        model=model,
+        audit=audit,
+        keypoint_catalog=keypoint_catalog,
+        template_catalog=template_catalog,
+        reusable_facts=reusable_facts,
+        reusable_evidence=reusable_evidence,
+        memory_context_md=memory_context_md,
+        benchmark_mode=benchmark_mode,
+        max_queries=max_queries,
+        findings_snapshot=findings_snapshot,
+        prompt_report_brief=prompt_report_brief,
+    )
+
+
+def _run_block_plan(
+    ctx: _BlockContext,
+    iteration: int,
+    prior_runs: list[dict[str, Any]],
+    template_catalog: list[dict[str, Any]],
+    context_sections: dict[str, str],
+    current_section_outputs: dict[str, str],
+) -> SectionPlanAction | None:
+    plan_messages = build_section_agent_plan_messages(
+        section_key=ctx.section_key,
+        section_title=ctx.title,
+        block_heading=ctx.block_heading,
+        template_body=ctx.template_body,
+        report_brief=ctx.prompt_report_brief,
+        context_sections=context_sections,
+        current_section_outputs=current_section_outputs,
+        findings_snapshot=ctx.findings_snapshot,
+        keypoint_catalog=ctx.keypoint_catalog,
+        query_template_catalog=template_catalog,
+        prior_runs=prior_runs,
+        reusable_facts=ctx.reusable_facts,
+        reusable_evidence=ctx.reusable_evidence,
+        memory_context_md=ctx.memory_context_md,
+    )
+    try:
+        plan = request_llm_json(
+            messages=plan_messages,
+            model=ctx.model,
+            base_url=ctx.base_url,
+            audit_callback=ctx.audit,
+        )
+    except Exception as exc:
+        _store_section_run(
+            ctx.db,
+            section_key=ctx.section_key,
+            block_heading=ctx.block_heading,
+            iteration=iteration,
+            phase="plan_error",
+            payload={"error": str(exc)},
+        )
+        return None
+    _store_section_run(
+        ctx.db,
+        section_key=ctx.section_key,
+        block_heading=ctx.block_heading,
+        iteration=iteration,
+        phase="plan",
+        payload=plan,
+    )
+    return _coerce_plan_action(plan, section_key=ctx.section_key, iteration=iteration)
+
+
+def _execute_block_plan(
+    ctx: _BlockContext,
+    plan_action: SectionPlanAction,
+    iteration: int,
+) -> tuple[str, dict[str, Any]] | None:
+    source_query = ""
+    result: dict[str, Any]
+    try:
+        if plan_action.action == "facts" and (ctx.reusable_facts or ctx.reusable_evidence):
+            source_query = "facts"
+            state_rows = ctx.reusable_facts if ctx.reusable_facts else ctx.reusable_evidence
+            result = _facts_as_result(ctx.reusable_facts) if ctx.reusable_facts else _evidence_as_result(ctx.reusable_evidence)
+            result["description"] = "Reused prior section-agent state."
+            result["sample_rows"] = _safe_rows(state_rows, limit=20)
+        elif plan_action.action == "template" and plan_action.planned_query and plan_action.planned_query.template_id:
+            rendered_sql = render_query_template(
+                plan_action.planned_query.template_id,
+                plan_action.planned_query.params,
+            )
+            source_query, result = _execute_sql(ctx.db, rendered_sql)
+            result["keypoint"] = f"template:{plan_action.planned_query.template_id}"
+            result["description"] = (
+                f"{plan_action.planned_query.template_id} {plan_action.planned_query.params}"
+            )
+            result["query_id"] = plan_action.planned_query.query_id
+            result["purpose"] = plan_action.planned_query.purpose
+        elif plan_action.action == "sql" and plan_action.planned_query and plan_action.planned_query.sql:
+            source_query, result = _execute_sql(ctx.db, plan_action.planned_query.sql)
+            result["query_id"] = plan_action.planned_query.query_id
+            result["purpose"] = plan_action.planned_query.purpose
+        else:
+            keypoint = plan_action.keypoint or ""
+            if not keypoint:
+                section_prefix = ctx.section_key.split("_", 1)[-1].split("-", 1)[0]
+                matching = [item["name"] for item in ctx.keypoint_catalog if item["name"].startswith(section_prefix)]
+                keypoint = matching[0] if matching else (ctx.keypoint_catalog[0]["name"] if ctx.keypoint_catalog else "top_keypoints")
+            source_query, result = _execute_keypoint(ctx.case, ctx.db, keypoint)
+    except Exception as exc:
+        _store_section_run(
+            ctx.db,
+            section_key=ctx.section_key,
+            block_heading=ctx.block_heading,
+            iteration=iteration,
+            phase="query_error",
+            payload={"error": str(exc), "action": plan_action.action, "source_query": source_query},
+        )
+        if plan_action.action in {"sql", "template"} and ctx.keypoint_catalog:
+            fallback_kp = str(ctx.keypoint_catalog[0].get("name") or "").strip()
+            if fallback_kp:
+                try:
+                    fb_src, fallback_result = _execute_keypoint(ctx.case, ctx.db, fallback_kp)
+                    return fb_src, fallback_result
+                except Exception:
+                    return None
+            else:
+                return None
+        else:
+            return None
+    return source_query, result
+
+
+def _run_block_check(
+    ctx: _BlockContext,
+    iteration: int,
+    result: dict[str, Any],
+    collected_results: list[dict[str, Any]],
+    prior_runs: list[dict[str, Any]],
+    actual_query_count: int,
+    actual_query_row_counts: list[int],
+    source_query: str,
+) -> tuple[str, str, list[Any], str] | None:
+    check_messages = build_section_agent_check_messages(
+        section_key=ctx.section_key,
+        section_title=ctx.title,
+        block_heading=ctx.block_heading,
+        template_body=ctx.template_body,
+        collected_results=collected_results,
+        latest_result=result,
+        prior_runs=prior_runs,
+        reusable_facts=ctx.reusable_facts,
+        reusable_evidence=ctx.reusable_evidence,
+        memory_context_md=ctx.memory_context_md,
+    )
+    try:
+        check = request_llm_json(
+            messages=check_messages,
+            model=ctx.model,
+            base_url=ctx.base_url,
+            audit_callback=ctx.audit,
+        )
+    except Exception as exc:
+        _store_section_run(
+            ctx.db,
+            section_key=ctx.section_key,
+            block_heading=ctx.block_heading,
+            iteration=iteration,
+            phase="check_error",
+            payload={"error": str(exc)},
+        )
+        return None
+    verdict = str(check.get("verdict") or "block_needs_more").strip().lower()
+    rationale = str(check.get("rationale") or "")
+    missing_questions = check.get("missing_questions") if isinstance(check.get("missing_questions"), list) else []
+    status = str(check.get("status") or "").strip().lower()
+    result["source_verdict"] = verdict
+    if not _is_valid_status(status):
+        reusable_rows_present = any(str(item.get("kind") or "rows") != "rows" for item in collected_results)
+        status = _classify_block_status(
+            verdict=verdict,
+            actual_query_rows=actual_query_row_counts,
+            actual_query_count=actual_query_count,
+            reusable_rows_present=reusable_rows_present,
+        )
+    _store_section_run(
+        ctx.db,
+        section_key=ctx.section_key,
+        block_heading=ctx.block_heading,
+        iteration=iteration,
+        phase="check",
+        payload={**check, "status": status},
+        verdict=verdict,
+    )
+    _store_section_facts(
+        ctx.db,
+        section_key=ctx.section_key,
+        source_query=source_query,
+        result=result,
+        fact_updates=check.get("fact_updates") if isinstance(check.get("fact_updates"), list) else None,
+    )
+    return verdict, rationale, missing_questions, status
+
+
+def _try_evidence_chain_fallback(
+    ctx: _BlockContext,
+    collected_results: list[dict[str, Any]],
+    actual_query_count: int,
+    actual_query_row_counts: list[int],
+) -> int:
+    if actual_query_count == 0 or all(rc == 0 for rc in actual_query_row_counts):
+        chain_rows = _execute_evidence_chain(ctx.db, ctx.block_heading, ctx.template_body)
+        if chain_rows:
+            chain_result = {
+                "keypoint": "evidence_chain",
+                "description": "Evidence chain fallback results",
+                "kind": "rows",
+                "source_kind": "evidence_chain",
+                "source_ref": "question_routing",
+                "row_count": len(chain_rows),
+                "evidence_ids": [],
+                "finding_ids": [],
+                "hypothesis_ids": [],
+                "sample_rows": chain_rows[:20],
+            }
+            collected_results.append(chain_result)
+            actual_query_row_counts.append(len(chain_rows))
+            return actual_query_count + 1
+    return actual_query_count
+
+
+def _select_columns_via_llm(
+    ctx: _BlockContext,
+    raw_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not raw_rows:
+        return raw_rows
+    headers = list(raw_rows[0].keys())
+    col_msgs = build_column_selection_messages(headers, ctx.section_key, ctx.template_body)
+    col_resp = request_llm_json(messages=col_msgs, model=ctx.model, base_url=ctx.base_url)
+    selected = [c for c in (col_resp.get("columns") or []) if c in headers]
+    if selected:
+        return [{c: row[c] for c in selected if c in row} for row in raw_rows]
+    return raw_rows
+
+
+def _write_block_body(
+    ctx: _BlockContext,
+    collected_results: list[dict[str, Any]],
+    prompt_report_brief: dict[str, Any],
+    context_sections: dict[str, str],
+    current_section_outputs: dict[str, str],
+    status: str,
+    verdict: str,
+    rationale: str,
+    missing_questions: list[Any],
+    actual_query_count: int,
+    actual_query_row_counts: list[int],
+    audit_callback=None,
+) -> tuple[str, str]:
+    from forensia.report.writer import (
+        _benchmark_block_id,
+        _collect_flat_evidence_rows,
+        _persist_benchmark_answer,
+        _render_benchmark_answer_markdown,
+        _summarize_flat_evidence_rows,
+        _normalize_benchmark_answer,
+    )
+
+    verification_notes: list[str] = []
+    if status == "insufficient_evidence":
+        reusable_rows_present = any(str(item.get("kind") or "rows") != "rows" for item in collected_results)
+        status_inner = _classify_block_status(
+            verdict=verdict,
+            actual_query_rows=actual_query_row_counts,
+            actual_query_count=actual_query_count,
+            reusable_rows_present=reusable_rows_present,
+        )
+    else:
+        status_inner = status
+    if verdict == "block_contradicted":
+        notes = [rationale] if rationale else ["Evidence contradicts the template claim"]
+        notes.extend(str(q) for q in missing_questions if q)
+        verification_notes = notes
+
+    raw_rows = _collect_flat_evidence_rows(collected_results)
+    if raw_rows:
+        raw_rows = _select_columns_via_llm(ctx, raw_rows)
+    prompt_rows = _summarize_flat_evidence_rows(raw_rows) if raw_rows else None
+
+    if ctx.benchmark_mode:
+        messages = build_benchmark_section_messages(
+            section_meta={"section": ctx.section_key, "title": ctx.title},
+            evidence_results=collected_results,
+            template_body=ctx.template_body,
+            report_brief=prompt_report_brief,
+            block_heading=ctx.block_heading,
+            raw_evidence_rows=prompt_rows,
+            verification_notes=verification_notes,
+            benchmark_id=_benchmark_block_id(ctx.block_heading),
+        )
+        benchmark_answer = request_llm_json(messages=messages, model=ctx.model, base_url=ctx.base_url, audit_callback=ctx.audit)
+        normalized_answer = _normalize_benchmark_answer(
+            benchmark_answer,
+            section_key=ctx.section_key,
+            block_heading=ctx.block_heading,
+            status=status_inner,
+        )
+        _persist_benchmark_answer(ctx.case, normalized_answer)
+        body = _render_benchmark_answer_markdown(normalized_answer, ctx.block_heading)
+    else:
+        messages = build_report_section_messages(
+            section_meta={"section": ctx.section_key, "title": ctx.title},
+            evidence_results=collected_results,
+            context_sections=context_sections,
+            template_body=ctx.template_body,
+            report_brief=prompt_report_brief,
+            section_heading=ctx.block_heading,
+            current_section_outputs=current_section_outputs,
+            verification_notes=verification_notes,
+            raw_evidence_rows=prompt_rows,
+        )
+        body = _prepend_status_badge(chat_completion(messages=messages, model=ctx.model, base_url=ctx.base_url).strip(), status_inner)
+
+    if audit_callback:
+        audit_callback(messages, body)
+    _store_section_run(
+        ctx.db,
+        section_key=ctx.section_key,
+        block_heading=ctx.block_heading,
+        iteration=max(len(collected_results), 1),
+        phase="write",
+        payload={"evidence_count": len(collected_results), "body_preview": body[:400]},
+    )
+    return body, status_inner
+
+
 def run_section_block_agent(
     *,
     case: Case,
@@ -856,142 +1256,39 @@ def run_section_block_agent(
     audit_callback=None,
 ) -> SectionBlockResult:
     max_queries = max(1, int(max_queries_per_section or 1))
-    collected_results: list[dict[str, Any]] = []
-    memory_context_md = ""
-    if memory is not None:
-        memory_context_md = memory.load_investigation_context(
-            None,
-            max_bytes=max(1024, memory.max_bytes // 2),
-            include_overview=False,
-            include_scratch=False,
-        )
-    findings_snapshot = _findings_snapshot(db)
-    keypoint_catalog = _keypoint_catalog(
-        section_key,
-        template_body,
-        block_heading=block_heading,
-        evidence_keypoints=evidence_keypoints,
+    ctx = _prepare_block_context(
+        case=case, db=db, section_key=section_key, title=title,
+        block_heading=block_heading, template_body=template_body,
+        base_url=base_url, model=model, memory=memory,
+        max_queries=max_queries, evidence_keypoints=evidence_keypoints,
+        benchmark_mode=benchmark_mode, audit_callback=audit_callback,
+        report_brief=report_brief,
     )
-    template_catalog = _filter_template_catalog_by_section([], section_key, collected_results)
-    reusable_facts = _load_reusable_section_facts(db, section_key)
-    reusable_evidence = _load_reusable_section_evidence(db, section_key, block_heading)
-    audit = _audit_bridge(audit_callback)
-    prompt_report_brief = _benchmark_report_brief(report_brief) if benchmark_mode else (report_brief or {})
-    if reusable_facts:
-        collected_results.append(_facts_as_result(reusable_facts))
-    if reusable_evidence:
-        collected_results.append(_evidence_as_result(reusable_evidence))
+    collected_results: list[dict[str, Any]] = []
+    if ctx.reusable_facts:
+        collected_results.append(_facts_as_result(ctx.reusable_facts))
+    if ctx.reusable_evidence:
+        collected_results.append(_evidence_as_result(ctx.reusable_evidence))
     verdict = "block_needs_more"
     rationale = ""
     missing_questions: list[Any] = []
     status = "insufficient_evidence"
     actual_query_count = 0
     actual_query_row_counts: list[int] = []
-    for iteration in range(1, max_queries + 1):
+    template_catalog = ctx.template_catalog
+    for iteration in range(1, ctx.max_queries + 1):
         prior_runs = _load_prior_runs(db, section_key, block_heading)
         template_catalog = _filter_template_catalog_by_section(template_catalog, section_key, collected_results)
-        plan_messages = build_section_agent_plan_messages(
-            section_key=section_key,
-            section_title=title,
-            block_heading=block_heading,
-            template_body=template_body,
-            report_brief=prompt_report_brief,
-            context_sections=context_sections,
-            current_section_outputs=current_section_outputs,
-            findings_snapshot=findings_snapshot,
-            keypoint_catalog=keypoint_catalog,
-            query_template_catalog=template_catalog,
-            prior_runs=prior_runs,
-            reusable_facts=reusable_facts,
-            reusable_evidence=reusable_evidence,
-            memory_context_md=memory_context_md,
+        plan_action = _run_block_plan(
+            ctx, iteration, prior_runs, template_catalog,
+            context_sections, current_section_outputs,
         )
-        try:
-            plan = request_llm_json(
-                messages=plan_messages,
-                model=model,
-                base_url=base_url,
-                audit_callback=audit,
-            )
-        except Exception as exc:
-            _store_section_run(
-                db,
-                section_key=section_key,
-                block_heading=block_heading,
-                iteration=iteration,
-                phase="plan_error",
-                payload={"error": str(exc)},
-            )
+        if plan_action is None or plan_action.action == "write":
             break
-        _store_section_run(
-            db,
-            section_key=section_key,
-            block_heading=block_heading,
-            iteration=iteration,
-            phase="plan",
-            payload=plan,
-        )
-        plan_action = _coerce_plan_action(plan, section_key=section_key, iteration=iteration)
-        if plan_action.action == "write":
-            break
-        source_query = ""
-        result: dict[str, Any]
-        try:
-            if plan_action.action == "facts" and (reusable_facts or reusable_evidence):
-                source_query = "facts"
-                state_rows = reusable_facts if reusable_facts else reusable_evidence
-                result = _facts_as_result(reusable_facts) if reusable_facts else _evidence_as_result(reusable_evidence)
-                result["description"] = "Reused prior section-agent state."
-                result["sample_rows"] = _safe_rows(state_rows, limit=20)
-            elif plan_action.action == "template" and plan_action.planned_query and plan_action.planned_query.template_id:
-                rendered_sql = render_query_template(
-                    plan_action.planned_query.template_id,
-                    plan_action.planned_query.params,
-                )
-                source_query, result = _execute_sql(db, rendered_sql)
-                result["keypoint"] = f"template:{plan_action.planned_query.template_id}"
-                result["description"] = (
-                    f"{plan_action.planned_query.template_id} {plan_action.planned_query.params}"
-                )
-                result["query_id"] = plan_action.planned_query.query_id
-                result["purpose"] = plan_action.planned_query.purpose
-            elif plan_action.action == "sql" and plan_action.planned_query and plan_action.planned_query.sql:
-                source_query, result = _execute_sql(db, plan_action.planned_query.sql)
-                result["query_id"] = plan_action.planned_query.query_id
-                result["purpose"] = plan_action.planned_query.purpose
-            else:
-                keypoint = plan_action.keypoint or ""
-                if not keypoint:
-                    section_prefix = section_key.split("_", 1)[-1].split("-", 1)[0]
-                    matching = [item["name"] for item in keypoint_catalog if item["name"].startswith(section_prefix)]
-                    keypoint = matching[0] if matching else (keypoint_catalog[0]["name"] if keypoint_catalog else "top_keypoints")
-                source_query, result = _execute_keypoint(case, db, keypoint)
-        except Exception as exc:
-            # Don't crash the whole section because one query failed.
-            # Record the error, skip this iteration, and let the loop try again
-            # (or fall through to the final write phase with whatever data we have).
-            _store_section_run(
-                db,
-                section_key=section_key,
-                block_heading=block_heading,
-                iteration=iteration,
-                phase="query_error",
-                payload={"error": str(exc), "action": plan_action.action, "source_query": source_query},
-            )
-            # QA3-5: On query_error for sql/template, fallback to keypoint
-            if plan_action.action in {"sql", "template"} and keypoint_catalog:
-                fallback_kp = str(keypoint_catalog[0].get("name") or "").strip()
-                if fallback_kp:
-                    try:
-                        fb_src, fallback_result = _execute_keypoint(case, db, fallback_kp)
-                        source_query = fb_src
-                        result = fallback_result
-                    except Exception:
-                        continue
-                else:
-                    continue
-            else:
-                continue
+        outcome = _execute_block_plan(ctx, plan_action, iteration)
+        if outcome is None:
+            continue
+        source_query, result = outcome
         collected_results.append(result)
         if str(result.get("kind") or "rows") == "rows":
             actual_query_count += 1
@@ -1010,90 +1307,123 @@ def run_section_block_agent(
         )
         if str(result.get("kind") or "rows") == "rows":
             _store_section_evidence(db, section_key=section_key, block_heading=block_heading, result=result, source_query=source_query)
-        check_messages = build_section_agent_check_messages(
-            section_key=section_key,
-            section_title=title,
-            block_heading=block_heading,
-            template_body=template_body,
-            collected_results=collected_results,
-            latest_result=result,
-            prior_runs=prior_runs,
-            reusable_facts=reusable_facts,
-            reusable_evidence=reusable_evidence,
-            memory_context_md=memory_context_md,
+        check_result = _run_block_check(
+            ctx, iteration, result, collected_results, prior_runs,
+            actual_query_count, actual_query_row_counts, source_query,
         )
-        try:
-            check = request_llm_json(
-                messages=check_messages,
-                model=model,
-                base_url=base_url,
-                audit_callback=audit,
-            )
-        except Exception as exc:
-            _store_section_run(
-                db,
-                section_key=section_key,
-                block_heading=block_heading,
-                iteration=iteration,
-                phase="check_error",
-                payload={"error": str(exc)},
-            )
-            # Treat as sufficient — we already have one query result; stop iterating.
+        if check_result is None:
             break
-        verdict = str(check.get("verdict") or "block_needs_more").strip().lower()
-        rationale = str(check.get("rationale") or "")
-        missing_questions = check.get("missing_questions") if isinstance(check.get("missing_questions"), list) else []
-        status = str(check.get("status") or "").strip().lower()
-        result["source_verdict"] = verdict
-        if not _is_valid_status(status):
-            reusable_rows_present = any(str(item.get("kind") or "rows") != "rows" for item in collected_results)
-            status = _classify_block_status(
-                verdict=verdict,
-                actual_query_rows=actual_query_row_counts,
-                actual_query_count=actual_query_count,
-                reusable_rows_present=reusable_rows_present,
-            )
-        _store_section_run(
-            db,
-            section_key=section_key,
-            block_heading=block_heading,
-            iteration=iteration,
-            phase="check",
-            payload={**check, "status": status},
-            verdict=verdict,
-        )
-        _store_section_facts(
-            db,
-            section_key=section_key,
-            source_query=source_query,
-            result=result,
-            fact_updates=check.get("fact_updates") if isinstance(check.get("fact_updates"), list) else None,
-        )
+        verdict, rationale, missing_questions, status = check_result
         if verdict in {"block_supported", "block_contradicted"}:
             break
+    actual_query_count = _try_evidence_chain_fallback(ctx, collected_results, actual_query_count, actual_query_row_counts)
+    body, final_status = _write_block_body(
+        ctx, collected_results, ctx.prompt_report_brief,
+        context_sections, current_section_outputs,
+        status, verdict, rationale, missing_questions,
+        actual_query_count, actual_query_row_counts,
+        audit_callback=audit_callback,
+    )
+    return SectionBlockResult(body=body, evidence_results=collected_results, iterations=max(len(collected_results), 1), status=final_status)
 
-    # QA3-11: Try evidence chain if collected results are all zero-row
-    if actual_query_count == 0 or all(rc == 0 for rc in actual_query_row_counts):
-        chain_rows = _execute_evidence_chain(db, block_heading, template_body)
-        if chain_rows:
-            chain_result = {
-                "keypoint": "evidence_chain",
-                "description": "Evidence chain fallback results",
-                "kind": "rows",
-                "source_kind": "evidence_chain",
-                "source_ref": "question_routing",
-                "row_count": len(chain_rows),
-                "evidence_ids": [],
-                "finding_ids": [],
-                "hypothesis_ids": [],
-                "sample_rows": chain_rows[:20],
-            }
-            collected_results.append(chain_result)
-            actual_query_count += 1
-            actual_query_row_counts.append(len(chain_rows))
 
-    verification_notes: list[str] = []
-    if status == "insufficient_evidence":
+async def _run_block_plan_async(
+    ctx: _BlockContext,
+    iteration: int,
+    prior_runs: list[dict[str, Any]],
+    template_catalog: list[dict[str, Any]],
+    context_sections: dict[str, str],
+    current_section_outputs: dict[str, str],
+) -> SectionPlanAction | None:
+    plan_messages = build_section_agent_plan_messages(
+        section_key=ctx.section_key,
+        section_title=ctx.title,
+        block_heading=ctx.block_heading,
+        template_body=ctx.template_body,
+        report_brief=ctx.prompt_report_brief,
+        context_sections=context_sections,
+        current_section_outputs=current_section_outputs,
+        findings_snapshot=ctx.findings_snapshot,
+        keypoint_catalog=ctx.keypoint_catalog,
+        query_template_catalog=template_catalog,
+        prior_runs=prior_runs,
+        reusable_facts=ctx.reusable_facts,
+        reusable_evidence=ctx.reusable_evidence,
+        memory_context_md=ctx.memory_context_md,
+    )
+    try:
+        plan = await async_request_llm_json(
+            messages=plan_messages,
+            model=ctx.model,
+            base_url=ctx.base_url,
+            audit_callback=ctx.audit,
+        )
+    except Exception as exc:
+        _store_section_run(
+            ctx.db,
+            section_key=ctx.section_key,
+            block_heading=ctx.block_heading,
+            iteration=iteration,
+            phase="plan_error",
+            payload={"error": str(exc)},
+        )
+        return None
+    _store_section_run(
+        ctx.db,
+        section_key=ctx.section_key,
+        block_heading=ctx.block_heading,
+        iteration=iteration,
+        phase="plan",
+        payload=plan,
+    )
+    return _coerce_plan_action(plan, section_key=ctx.section_key, iteration=iteration)
+
+
+async def _run_block_check_async(
+    ctx: _BlockContext,
+    iteration: int,
+    result: dict[str, Any],
+    collected_results: list[dict[str, Any]],
+    prior_runs: list[dict[str, Any]],
+    actual_query_count: int,
+    actual_query_row_counts: list[int],
+    source_query: str,
+) -> tuple[str, str, list[Any], str] | None:
+    check_messages = build_section_agent_check_messages(
+        section_key=ctx.section_key,
+        section_title=ctx.title,
+        block_heading=ctx.block_heading,
+        template_body=ctx.template_body,
+        collected_results=collected_results,
+        latest_result=result,
+        prior_runs=prior_runs,
+        reusable_facts=ctx.reusable_facts,
+        reusable_evidence=ctx.reusable_evidence,
+        memory_context_md=ctx.memory_context_md,
+    )
+    try:
+        check = await async_request_llm_json(
+            messages=check_messages,
+            model=ctx.model,
+            base_url=ctx.base_url,
+            audit_callback=ctx.audit,
+        )
+    except Exception as exc:
+        _store_section_run(
+            ctx.db,
+            section_key=ctx.section_key,
+            block_heading=ctx.block_heading,
+            iteration=iteration,
+            phase="check_error",
+            payload={"error": str(exc)},
+        )
+        return None
+    verdict = str(check.get("verdict") or "block_needs_more").strip().lower()
+    rationale = str(check.get("rationale") or "")
+    missing_questions = check.get("missing_questions") if isinstance(check.get("missing_questions"), list) else []
+    status = str(check.get("status") or "").strip().lower()
+    result["source_verdict"] = verdict
+    if not _is_valid_status(status):
         reusable_rows_present = any(str(item.get("kind") or "rows") != "rows" for item in collected_results)
         status = _classify_block_status(
             verdict=verdict,
@@ -1101,11 +1431,54 @@ def run_section_block_agent(
             actual_query_count=actual_query_count,
             reusable_rows_present=reusable_rows_present,
         )
-    if verdict == "block_contradicted":
-        notes = [rationale] if rationale else ["Evidence contradicts the template claim"]
-        notes.extend(str(q) for q in missing_questions if q)
-        verification_notes = notes
+    _store_section_run(
+        ctx.db,
+        section_key=ctx.section_key,
+        block_heading=ctx.block_heading,
+        iteration=iteration,
+        phase="check",
+        payload={**check, "status": status},
+        verdict=verdict,
+    )
+    _store_section_facts(
+        ctx.db,
+        section_key=ctx.section_key,
+        source_query=source_query,
+        result=result,
+        fact_updates=check.get("fact_updates") if isinstance(check.get("fact_updates"), list) else None,
+    )
+    return verdict, rationale, missing_questions, status
 
+
+async def _select_columns_via_llm_async(
+    ctx: _BlockContext,
+    raw_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not raw_rows:
+        return raw_rows
+    headers = list(raw_rows[0].keys())
+    col_msgs = build_column_selection_messages(headers, ctx.section_key, ctx.template_body)
+    col_resp = await async_request_llm_json(messages=col_msgs, model=ctx.model, base_url=ctx.base_url)
+    selected = [c for c in (col_resp.get("columns") or []) if c in headers]
+    if selected:
+        return [{c: row[c] for c in selected if c in row} for row in raw_rows]
+    return raw_rows
+
+
+async def _write_block_body_async(
+    ctx: _BlockContext,
+    collected_results: list[dict[str, Any]],
+    prompt_report_brief: dict[str, Any],
+    context_sections: dict[str, str],
+    current_section_outputs: dict[str, str],
+    status: str,
+    verdict: str,
+    rationale: str,
+    missing_questions: list[Any],
+    actual_query_count: int,
+    actual_query_row_counts: list[int],
+    audit_callback=None,
+) -> tuple[str, str]:
     from forensia.report.writer import (
         _benchmark_block_id,
         _collect_flat_evidence_rows,
@@ -1114,59 +1487,74 @@ def run_section_block_agent(
         _summarize_flat_evidence_rows,
         _normalize_benchmark_answer,
     )
+
+    verification_notes: list[str] = []
+    if status == "insufficient_evidence":
+        reusable_rows_present = any(str(item.get("kind") or "rows") != "rows" for item in collected_results)
+        status_inner = _classify_block_status(
+            verdict=verdict,
+            actual_query_rows=actual_query_row_counts,
+            actual_query_count=actual_query_count,
+            reusable_rows_present=reusable_rows_present,
+        )
+    else:
+        status_inner = status
+    if verdict == "block_contradicted":
+        notes = [rationale] if rationale else ["Evidence contradicts the template claim"]
+        notes.extend(str(q) for q in missing_questions if q)
+        verification_notes = notes
+
     raw_rows = _collect_flat_evidence_rows(collected_results)
     if raw_rows:
-        headers = list(raw_rows[0].keys())
-        col_msgs = build_column_selection_messages(headers, section_key, template_body)
-        col_resp = request_llm_json(messages=col_msgs, model=model, base_url=base_url)
-        selected = [c for c in (col_resp.get("columns") or []) if c in headers]
-        if selected:
-            raw_rows = [{c: row[c] for c in selected if c in row} for row in raw_rows]
+        raw_rows = await _select_columns_via_llm_async(ctx, raw_rows)
     prompt_rows = _summarize_flat_evidence_rows(raw_rows) if raw_rows else None
-    if benchmark_mode:
+
+    if ctx.benchmark_mode:
         messages = build_benchmark_section_messages(
-            section_meta={"section": section_key, "title": title},
+            section_meta={"section": ctx.section_key, "title": ctx.title},
             evidence_results=collected_results,
-            template_body=template_body,
+            template_body=ctx.template_body,
             report_brief=prompt_report_brief,
-            block_heading=block_heading,
+            block_heading=ctx.block_heading,
             raw_evidence_rows=prompt_rows,
             verification_notes=verification_notes,
-            benchmark_id=_benchmark_block_id(block_heading),
+            benchmark_id=_benchmark_block_id(ctx.block_heading),
         )
-        benchmark_answer = request_llm_json(messages=messages, model=model, base_url=base_url, audit_callback=audit)
+        benchmark_answer = await async_request_llm_json(messages=messages, model=ctx.model, base_url=ctx.base_url, audit_callback=ctx.audit)
         normalized_answer = _normalize_benchmark_answer(
             benchmark_answer,
-            section_key=section_key,
-            block_heading=block_heading,
-            status=status,
+            section_key=ctx.section_key,
+            block_heading=ctx.block_heading,
+            status=status_inner,
         )
-        _persist_benchmark_answer(case, normalized_answer)
-        body = _render_benchmark_answer_markdown(normalized_answer, block_heading)
+        _persist_benchmark_answer(ctx.case, normalized_answer)
+        body = _render_benchmark_answer_markdown(normalized_answer, ctx.block_heading)
     else:
         messages = build_report_section_messages(
-            section_meta={"section": section_key, "title": title},
+            section_meta={"section": ctx.section_key, "title": ctx.title},
             evidence_results=collected_results,
             context_sections=context_sections,
-            template_body=template_body,
+            template_body=ctx.template_body,
             report_brief=prompt_report_brief,
-            section_heading=block_heading,
+            section_heading=ctx.block_heading,
             current_section_outputs=current_section_outputs,
             verification_notes=verification_notes,
             raw_evidence_rows=prompt_rows,
         )
-        body = _prepend_status_badge(chat_completion(messages=messages, model=model, base_url=base_url).strip(), status)
+        llm_text = await async_chat_completion(messages=messages, model=ctx.model, base_url=ctx.base_url)
+        body = _prepend_status_badge(llm_text.strip(), status_inner)
+
     if audit_callback:
         audit_callback(messages, body)
     _store_section_run(
-        db,
-        section_key=section_key,
-        block_heading=block_heading,
+        ctx.db,
+        section_key=ctx.section_key,
+        block_heading=ctx.block_heading,
         iteration=max(len(collected_results), 1),
         phase="write",
         payload={"evidence_count": len(collected_results), "body_preview": body[:400]},
     )
-    return SectionBlockResult(body=body, evidence_results=collected_results, iterations=max(len(collected_results), 1), status=status)
+    return body, status_inner
 
 
 async def async_run_section_block_agent(
@@ -1189,139 +1577,39 @@ async def async_run_section_block_agent(
     audit_callback=None,
 ) -> SectionBlockResult:
     max_queries = max(1, int(max_queries_per_section or 1))
-    collected_results: list[dict[str, Any]] = []
-    memory_context_md = ""
-    if memory is not None:
-        memory_context_md = memory.load_investigation_context(
-            None,
-            max_bytes=max(1024, memory.max_bytes // 2),
-            include_overview=False,
-            include_scratch=False,
-        )
-    findings_snapshot = _findings_snapshot(db)
-    keypoint_catalog = _keypoint_catalog(
-        section_key,
-        template_body,
-        block_heading=block_heading,
-        evidence_keypoints=evidence_keypoints,
+    ctx = _prepare_block_context(
+        case=case, db=db, section_key=section_key, title=title,
+        block_heading=block_heading, template_body=template_body,
+        base_url=base_url, model=model, memory=memory,
+        max_queries=max_queries, evidence_keypoints=evidence_keypoints,
+        benchmark_mode=benchmark_mode, audit_callback=audit_callback,
+        report_brief=report_brief,
     )
-    template_catalog = _filter_template_catalog_by_section([], section_key, collected_results)
-    reusable_facts = _load_reusable_section_facts(db, section_key)
-    reusable_evidence = _load_reusable_section_evidence(db, section_key, block_heading)
-    audit = _audit_bridge(audit_callback)
-    if reusable_facts:
-        collected_results.append(_facts_as_result(reusable_facts))
-    if reusable_evidence:
-        collected_results.append(_evidence_as_result(reusable_evidence))
-    prompt_report_brief = _benchmark_report_brief(report_brief) if benchmark_mode else (report_brief or {})
+    collected_results: list[dict[str, Any]] = []
+    if ctx.reusable_facts:
+        collected_results.append(_facts_as_result(ctx.reusable_facts))
+    if ctx.reusable_evidence:
+        collected_results.append(_evidence_as_result(ctx.reusable_evidence))
     verdict = "block_needs_more"
     rationale = ""
     missing_questions: list[Any] = []
     status = "insufficient_evidence"
     actual_query_count = 0
     actual_query_row_counts: list[int] = []
-    for iteration in range(1, max_queries + 1):
+    template_catalog = ctx.template_catalog
+    for iteration in range(1, ctx.max_queries + 1):
         prior_runs = _load_prior_runs(db, section_key, block_heading)
         template_catalog = _filter_template_catalog_by_section(template_catalog, section_key, collected_results)
-        plan_messages = build_section_agent_plan_messages(
-            section_key=section_key,
-            section_title=title,
-            block_heading=block_heading,
-            template_body=template_body,
-            report_brief=prompt_report_brief,
-            context_sections=context_sections,
-            current_section_outputs=current_section_outputs,
-            findings_snapshot=findings_snapshot,
-            keypoint_catalog=keypoint_catalog,
-            query_template_catalog=template_catalog,
-            prior_runs=prior_runs,
-            reusable_facts=reusable_facts,
-            reusable_evidence=reusable_evidence,
-            memory_context_md=memory_context_md,
+        plan_action = await _run_block_plan_async(
+            ctx, iteration, prior_runs, template_catalog,
+            context_sections, current_section_outputs,
         )
-        try:
-            plan = await async_request_llm_json(
-                messages=plan_messages,
-                model=model,
-                base_url=base_url,
-                audit_callback=audit,
-            )
-        except Exception as exc:
-            _store_section_run(
-                db,
-                section_key=section_key,
-                block_heading=block_heading,
-                iteration=iteration,
-                phase="plan_error",
-                payload={"error": str(exc)},
-            )
+        if plan_action is None or plan_action.action == "write":
             break
-        _store_section_run(
-            db,
-            section_key=section_key,
-            block_heading=block_heading,
-            iteration=iteration,
-            phase="plan",
-            payload=plan,
-        )
-        plan_action = _coerce_plan_action(plan, section_key=section_key, iteration=iteration)
-        if plan_action.action == "write":
-            break
-        source_query = ""
-        result: dict[str, Any]
-        try:
-            if plan_action.action == "facts" and (reusable_facts or reusable_evidence):
-                source_query = "facts"
-                state_rows = reusable_facts if reusable_facts else reusable_evidence
-                result = _facts_as_result(reusable_facts) if reusable_facts else _evidence_as_result(reusable_evidence)
-                result["description"] = "Reused prior section-agent state."
-                result["sample_rows"] = _safe_rows(state_rows, limit=20)
-            elif plan_action.action == "template" and plan_action.planned_query and plan_action.planned_query.template_id:
-                rendered_sql = render_query_template(
-                    plan_action.planned_query.template_id,
-                    plan_action.planned_query.params,
-                )
-                source_query, result = _execute_sql(db, rendered_sql)
-                result["keypoint"] = f"template:{plan_action.planned_query.template_id}"
-                result["description"] = (
-                    f"{plan_action.planned_query.template_id} {plan_action.planned_query.params}"
-                )
-                result["query_id"] = plan_action.planned_query.query_id
-                result["purpose"] = plan_action.planned_query.purpose
-            elif plan_action.action == "sql" and plan_action.planned_query and plan_action.planned_query.sql:
-                source_query, result = _execute_sql(db, plan_action.planned_query.sql)
-                result["query_id"] = plan_action.planned_query.query_id
-                result["purpose"] = plan_action.planned_query.purpose
-            else:
-                keypoint = plan_action.keypoint or ""
-                if not keypoint:
-                    section_prefix = section_key.split("_", 1)[-1].split("-", 1)[0]
-                    matching = [item["name"] for item in keypoint_catalog if item["name"].startswith(section_prefix)]
-                    keypoint = matching[0] if matching else (keypoint_catalog[0]["name"] if keypoint_catalog else "top_keypoints")
-                source_query, result = _execute_keypoint(case, db, keypoint)
-        except Exception as exc:
-            _store_section_run(
-                db,
-                section_key=section_key,
-                block_heading=block_heading,
-                iteration=iteration,
-                phase="query_error",
-                payload={"error": str(exc), "action": plan_action.action, "source_query": source_query},
-            )
-            # QA3-5: On query_error for sql/template, fallback to keypoint
-            if plan_action.action in {"sql", "template"} and keypoint_catalog:
-                fallback_kp = str(keypoint_catalog[0].get("name") or "").strip()
-                if fallback_kp:
-                    try:
-                        fb_src, fallback_result = _execute_keypoint(case, db, fallback_kp)
-                        source_query = fb_src
-                        result = fallback_result
-                    except Exception:
-                        continue
-                else:
-                    continue
-            else:
-                continue
+        outcome = _execute_block_plan(ctx, plan_action, iteration)
+        if outcome is None:
+            continue
+        source_query, result = outcome
         collected_results.append(result)
         if str(result.get("kind") or "rows") == "rows":
             actual_query_count += 1
@@ -1340,159 +1628,22 @@ async def async_run_section_block_agent(
         )
         if str(result.get("kind") or "rows") == "rows":
             _store_section_evidence(db, section_key=section_key, block_heading=block_heading, result=result, source_query=source_query)
-        check_messages = build_section_agent_check_messages(
-            section_key=section_key,
-            section_title=title,
-            block_heading=block_heading,
-            template_body=template_body,
-            collected_results=collected_results,
-            latest_result=result,
-            prior_runs=prior_runs,
-            reusable_facts=reusable_facts,
-            reusable_evidence=reusable_evidence,
-            memory_context_md=memory_context_md,
+        check_result = await _run_block_check_async(
+            ctx, iteration, result, collected_results, prior_runs,
+            actual_query_count, actual_query_row_counts, source_query,
         )
-        try:
-            check = await async_request_llm_json(
-                messages=check_messages,
-                model=model,
-                base_url=base_url,
-                audit_callback=audit,
-            )
-        except Exception as exc:
-            _store_section_run(
-                db,
-                section_key=section_key,
-                block_heading=block_heading,
-                iteration=iteration,
-                phase="check_error",
-                payload={"error": str(exc)},
-            )
+        if check_result is None:
             break
-        verdict = str(check.get("verdict") or "block_needs_more").strip().lower()
-        rationale = str(check.get("rationale") or "")
-        missing_questions = check.get("missing_questions") if isinstance(check.get("missing_questions"), list) else []
-        status = str(check.get("status") or "").strip().lower()
-        result["source_verdict"] = verdict
-        if not _is_valid_status(status):
-            reusable_rows_present = any(str(item.get("kind") or "rows") != "rows" for item in collected_results)
-            status = _classify_block_status(
-                verdict=verdict,
-                actual_query_rows=actual_query_row_counts,
-                actual_query_count=actual_query_count,
-                reusable_rows_present=reusable_rows_present,
-            )
-        _store_section_run(
-            db,
-            section_key=section_key,
-            block_heading=block_heading,
-            iteration=iteration,
-            phase="check",
-            payload={**check, "status": status},
-            verdict=verdict,
-        )
-        _store_section_facts(
-            db,
-            section_key=section_key,
-            source_query=source_query,
-            result=result,
-            fact_updates=check.get("fact_updates") if isinstance(check.get("fact_updates"), list) else None,
-        )
+        verdict, rationale, missing_questions, status = check_result
         if verdict in {"block_supported", "block_contradicted"}:
             break
-
-    # QA3-11: Try evidence chain if collected results are all zero-row
-    if actual_query_count == 0 or all(rc == 0 for rc in actual_query_row_counts):
-        chain_rows = _execute_evidence_chain(db, block_heading, template_body)
-        if chain_rows:
-            chain_result = {
-                "keypoint": "evidence_chain",
-                "description": "Evidence chain fallback results",
-                "kind": "rows",
-                "source_kind": "evidence_chain",
-                "source_ref": "question_routing",
-                "row_count": len(chain_rows),
-                "evidence_ids": [],
-                "finding_ids": [],
-                "hypothesis_ids": [],
-                "sample_rows": chain_rows[:20],
-            }
-            collected_results.append(chain_result)
-            actual_query_count += 1
-            actual_query_row_counts.append(len(chain_rows))
-
-    verification_notes: list[str] = []
-    if status == "insufficient_evidence":
-        reusable_rows_present = any(str(item.get("kind") or "rows") != "rows" for item in collected_results)
-        status = _classify_block_status(
-            verdict=verdict,
-            actual_query_rows=actual_query_row_counts,
-            actual_query_count=actual_query_count,
-            reusable_rows_present=reusable_rows_present,
-        )
-    if verdict == "block_contradicted":
-        notes = [rationale] if rationale else ["Evidence contradicts the template claim"]
-        notes.extend(str(q) for q in missing_questions if q)
-        verification_notes = notes
-
-    from forensia.report.writer import (
-        _benchmark_block_id,
-        _collect_flat_evidence_rows,
-        _persist_benchmark_answer,
-        _render_benchmark_answer_markdown,
-        _summarize_flat_evidence_rows,
-        _normalize_benchmark_answer,
+    actual_query_count = _try_evidence_chain_fallback(ctx, collected_results, actual_query_count, actual_query_row_counts)
+    body, final_status = await _write_block_body_async(
+        ctx, collected_results, ctx.prompt_report_brief,
+        context_sections, current_section_outputs,
+        status, verdict, rationale, missing_questions,
+        actual_query_count, actual_query_row_counts,
+        audit_callback=audit_callback,
     )
-    raw_rows = _collect_flat_evidence_rows(collected_results)
-    if raw_rows:
-        headers = list(raw_rows[0].keys())
-        col_msgs = build_column_selection_messages(headers, section_key, template_body)
-        col_resp = await async_request_llm_json(messages=col_msgs, model=model, base_url=base_url)
-        selected = [c for c in (col_resp.get("columns") or []) if c in headers]
-        if selected:
-            raw_rows = [{c: row[c] for c in selected if c in row} for row in raw_rows]
-    prompt_rows = _summarize_flat_evidence_rows(raw_rows) if raw_rows else None
-    if benchmark_mode:
-        messages = build_benchmark_section_messages(
-            section_meta={"section": section_key, "title": title},
-            evidence_results=collected_results,
-            template_body=template_body,
-            report_brief=prompt_report_brief,
-            block_heading=block_heading,
-            raw_evidence_rows=prompt_rows,
-            verification_notes=verification_notes,
-            benchmark_id=_benchmark_block_id(block_heading),
-        )
-        benchmark_answer = await async_request_llm_json(messages=messages, model=model, base_url=base_url, audit_callback=audit)
-        normalized_answer = _normalize_benchmark_answer(
-            benchmark_answer,
-            section_key=section_key,
-            block_heading=block_heading,
-            status=status,
-        )
-        _persist_benchmark_answer(case, normalized_answer)
-        body = _render_benchmark_answer_markdown(normalized_answer, block_heading)
-    else:
-        messages = build_report_section_messages(
-            section_meta={"section": section_key, "title": title},
-            evidence_results=collected_results,
-            context_sections=context_sections,
-            template_body=template_body,
-            report_brief=prompt_report_brief,
-            section_heading=block_heading,
-            current_section_outputs=current_section_outputs,
-            verification_notes=verification_notes,
-            raw_evidence_rows=prompt_rows,
-        )
-        body = _prepend_status_badge((await async_chat_completion(messages=messages, model=model, base_url=base_url)).strip(), status)
-    if audit_callback:
-        audit_callback(messages, body)
-    _store_section_run(
-        db,
-        section_key=section_key,
-        block_heading=block_heading,
-        iteration=max(len(collected_results), 1),
-        phase="write",
-        payload={"evidence_count": len(collected_results), "body_preview": body[:400]},
-    )
-    return SectionBlockResult(body=body, evidence_results=collected_results, iterations=max(len(collected_results), 1), status=status)
+    return SectionBlockResult(body=body, evidence_results=collected_results, iterations=max(len(collected_results), 1), status=final_status)
+

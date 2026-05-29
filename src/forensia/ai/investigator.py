@@ -45,7 +45,7 @@ from forensia.ai.section_refresher import async_refresh_report_sections
 from forensia.config import get_llm_settings
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
-from forensia.core.session import ENTITY_ROLES, HistoryEntry, Hypothesis, SessionState
+from forensia.core.session import ENTITY_ROLES, HistoryEntry, Hypothesis, PlannedQuery, SessionState
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
 from forensia.report.writer import (
@@ -100,6 +100,7 @@ def _ctx_get_report_status(
     focus_sections: list[str] | None = None,
     refresh: bool = False,
 ) -> dict[str, Any]:
+    """Return the current or refreshed report status, optionally filtered to specific sections."""
     if refresh:
         ctx.report_status = _build_report_status(db)
     return _overlay_report_status(ctx.report_status, current_section=current_section, focus_sections=focus_sections)
@@ -112,6 +113,7 @@ def _ctx_refresh_caches(
     model: str,
     current_hypothesis_id: str | None = None,
 ) -> None:
+    """Reload memory context caches and compact overview if needed."""
     memory.compact_overview_if_needed(base_url=base_url, model=model)
     ctx.memory_overview = memory.load_compact_context(["overview.md"], max_bytes=memory.max_bytes)
     ctx.current_hypothesis_id = current_hypothesis_id
@@ -127,13 +129,13 @@ def _ctx_refresh_caches(
     )
 
 
-def _query_fingerprint(sql: str) -> str:
+def _query_fingerprint(sql: str | None) -> str:
     """Generate a fingerprint for a query to detect duplicates.
 
     Uses sqlglot AST normalization when available so semantically equivalent
     queries produce the same fingerprint regardless of formatting or aliasing.
     """
-    sql = sql.strip()
+    sql = (sql or "").strip()
     if not sql:
         return "generic"
 
@@ -253,39 +255,44 @@ class HypothesisProgressTracker:
                     pass
         return observed
     
-    def should_auto_confirm(self, rule_context: Any, rows: list[dict[str, Any]]) -> bool:
-        """Return True if >= 50% of co_observed_event_ids are present in query results."""
-        if rule_context is None:
-            return False
-        confirm_when = getattr(rule_context, "confirm_when", None)
+    def _confirm_set_from(self, rule_context: Any, hypothesis: Any = None) -> set[int]:
+        """Pull co_observed_event_ids from rule_context first, falling back to the
+        hypothesis itself (broad_plan-derived hypotheses have no rule_context)."""
+        confirm_when = None
+        if rule_context is not None:
+            confirm_when = getattr(rule_context, "confirm_when", None)
+        if not confirm_when and hypothesis is not None:
+            confirm_when = getattr(hypothesis, "confirm_when", None)
         if not confirm_when:
-            return False
-        required_event_ids = confirm_when.get("co_observed_event_ids")
+            return set()
+        required_event_ids = confirm_when.get("co_observed_event_ids") if isinstance(confirm_when, dict) else None
         if not required_event_ids:
-            return False
-        try:
-            required_set = set(int(eid) for eid in required_event_ids)
-        except (TypeError, ValueError):
-            return False
+            return set()
+        out: set[int] = set()
+        for eid in required_event_ids:
+            try:
+                out.add(int(str(eid).strip()))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def should_auto_confirm(self, rule_context: Any, rows: list[dict[str, Any]], hypothesis: Any = None) -> bool:
+        """Return True if >= 50% of co_observed_event_ids are present in query results.
+
+        Accepts confirm_when from rule_context OR from the hypothesis itself so
+        broad_plan-derived hypotheses (no source_rule_ids) can also auto-confirm.
+        """
+        required_set = self._confirm_set_from(rule_context, hypothesis)
         if not required_set:
             return False
         observed_event_ids = self._extract_observed_event_ids(rows)
         overlap = len(required_set & observed_event_ids)
         return overlap / len(required_set) >= 0.5
 
-    def has_partial_confirm_signal(self, rule_context: Any, rows: list[dict[str, Any]]) -> bool:
+    def has_partial_confirm_signal(self, rule_context: Any, rows: list[dict[str, Any]], hypothesis: Any = None) -> bool:
         """Return True when some, but not all, confirm_when event IDs are present."""
-        if rule_context is None:
-            return False
-        confirm_when = getattr(rule_context, "confirm_when", None)
-        if not confirm_when:
-            return False
-        required_event_ids = confirm_when.get("co_observed_event_ids")
-        if not required_event_ids:
-            return False
-        try:
-            required_set = set(int(eid) for eid in required_event_ids)
-        except (TypeError, ValueError):
+        required_set = self._confirm_set_from(rule_context, hypothesis)
+        if not required_set:
             return False
         observed_event_ids = self._extract_observed_event_ids(rows)
         return bool(required_set & observed_event_ids) and not required_set.issubset(observed_event_ids)
@@ -301,6 +308,7 @@ def _save_step(
     output_json: Any,
     suffix: str | None = None,
 ) -> None:
+    """Persist an investigation step (input/output JSON) to the database."""
     step_id = f"{session_id}-{iteration:02d}-{phase}"
     if suffix:
         step_id = f"{step_id}-{suffix}"
@@ -332,6 +340,7 @@ def _reasoning_entry_id(
     phase: str,
     query_id: str | None,
 ) -> str:
+    """Generate a deterministic SHA1-based ID for a reasoning entry."""
     body = f"{hypothesis_id}-{iteration}-{phase}-{query_id or '-'}"
     return hashlib.sha1(body.encode("utf-8")).hexdigest()[:16]
 
@@ -346,6 +355,7 @@ def _append_hypothesis_reasoning(
     verdict: str | None = None,
     query_id: str | None = None,
 ) -> str | None:
+    """Persist a free-text reasoning entry linked to a hypothesis and phase."""
     text = str(body).strip()
     if not hypothesis_id or not text:
         return None
@@ -373,6 +383,7 @@ def _append_hypothesis_reasoning(
 
 
 def _seed_findings(case: Case, db: CaseDB, profile: str) -> int:
+    """Run all rules once to seed initial findings, unless already populated."""
     existing = db.execute("SELECT COUNT(*) FROM findings").fetchone()[0]
     if existing:
         return int(existing)
@@ -389,6 +400,7 @@ def _seed_findings(case: Case, db: CaseDB, profile: str) -> int:
 
 
 def _load_profile_config(profile: str) -> dict[str, Any]:
+    """Load the YAML configuration for a given profile name."""
     profile_path = Path(__file__).parent.parent / "profiles" / f"{profile}.yaml"
     if not profile_path.exists():
         return {}
@@ -396,6 +408,7 @@ def _load_profile_config(profile: str) -> dict[str, Any]:
 
 
 def _initialize_overview(memory: MemoryManager, case: Case, profile_config: dict[str, Any] | None = None) -> None:
+    """Create the initial investigation overview memory file if it doesn't exist yet."""
     objective = str((profile_config or {}).get("objective") or "").strip()
     if memory.has_overview():
         return
@@ -424,6 +437,7 @@ def _initialize_overview(memory: MemoryManager, case: Case, profile_config: dict
 
 
 def _ensure_profile_objective(memory: MemoryManager, profile_config: dict[str, Any] | None = None) -> None:
+    """Patch the investigation objective from profile config into overview and tasks."""
     objective = str((profile_config or {}).get("objective") or "").strip()
     if not objective:
         return
@@ -448,6 +462,7 @@ def _ensure_profile_objective(memory: MemoryManager, profile_config: dict[str, A
 
 
 def _finding_snapshot(db: CaseDB, limit: int = 20) -> list[dict[str, Any]]:
+    """Fetch the top findings ordered by confidence and recency."""
     return fetch_records(
         db,
         """
@@ -461,6 +476,7 @@ def _finding_snapshot(db: CaseDB, limit: int = 20) -> list[dict[str, Any]]:
 
 
 def _render_entity_memory(entity_type: str, name: str, notes: str, role: str = "") -> str:
+    """Generate a Markdown entity memory block from type, name, role, and notes."""
     normalized_type = str(entity_type).strip().lower() or "entity"
     normalized_name = str(name).strip()
     lines = [f"# {normalized_type}: {normalized_name}", "", f"- type: {normalized_type}", f"- name: {normalized_name}"]
@@ -478,6 +494,7 @@ def _keypoint_card_id(index: int) -> str:
 
 
 def _sync_keypoint_cards(memory: MemoryManager, findings_snapshot: list[dict[str, Any]]) -> None:
+    """Reconcile findings → keypoint-memory cards, removing stale entries."""
     for index, finding in enumerate(findings_snapshot, start=1):
         evidence_ids: list[str] = []
         evidence = finding.get("evidence")
@@ -519,6 +536,7 @@ def _sync_hypothesis_cards(
     active_hypotheses: list[Hypothesis],
     resolved_hypotheses: list[Hypothesis],
 ) -> None:
+    """Remove hypothesis memory files that no longer correspond to active or resolved hypotheses."""
     valid_ids = {
         sub(r"[^a-zA-Z0-9._-]+", "-", str(item.id).strip()).strip("-") or "unknown"
         for item in [*active_hypotheses, *resolved_hypotheses]
@@ -529,6 +547,7 @@ def _sync_hypothesis_cards(
 
 
 def _matching_findings(snapshot: list[dict[str, Any]], hypothesis: Hypothesis | None) -> list[dict[str, Any]]:
+    """Return findings whose title/summary/severity share tokens with the hypothesis description."""
     if hypothesis is None:
         return snapshot[:10]
     words = {token.lower() for token in hypothesis.description.split() if len(token) >= 3}
@@ -546,6 +565,7 @@ def _matching_findings(snapshot: list[dict[str, Any]], hypothesis: Hypothesis | 
 
 
 def _observed_keypoints_from_findings(snapshot: list[dict[str, Any]], limit: int = 20) -> list[str]:
+    """Format findings as human-readable keypoint labels for LLM context."""
     keypoints: list[str] = []
     for item in snapshot[:limit]:
         title = str(item.get("title") or "").strip()
@@ -594,6 +614,7 @@ def _audit_broad_plan_hypotheses(
     state: SessionState,
     hypotheses: list[Hypothesis],
 ) -> list[dict[str, Any]]:
+    """Classify each new hypothesis as new/duplicate/follow_up/related against existing ones."""
     audits: list[dict[str, Any]] = []
     existing = [*state.active_hypotheses, *state.resolved_hypotheses]
     for hyp in hypotheses:
@@ -646,6 +667,7 @@ def _select_focus_hypotheses(state: SessionState, max_items: int = 2) -> list[Hy
 
 
 def _final_summary(state: SessionState) -> str:
+    """Build a human-readable summary of the investigation outcome."""
     if state.resolved_hypotheses:
         lines = []
         for item in state.resolved_hypotheses[-5:]:
@@ -669,6 +691,7 @@ def _apply_memory_updates(
     current_hypothesis_id: str | None = None,
     db: CaseDB | None = None,
 ) -> None:
+    """Persist facts, timeline, tasks, entities, and hypothesis cards from a check output."""
     updates = check_output.get("memory_updates") or {}
     verdict = str(check_output.get("verdict") or "confirmed").strip().lower()
     provisional = verdict != "confirmed"
@@ -817,6 +840,7 @@ async def _run_broad_plan_phase(
 async def _investigate_one_hypothesis(
     hypothesis: Hypothesis,
     state: SessionState,
+    ctx: _Ctx,
     memory: MemoryManager,
     db: CaseDB,
     base_url: str,
@@ -826,47 +850,239 @@ async def _investigate_one_hypothesis(
     session_id: str,
     max_queries_per_hypothesis: int,
     case: Case,
+    query_limit: int | None = None,
+    emit_fn: Callable[..., None] | None = None,
+    llm_status_fn: Callable[[str], None] | None = None,
 ) -> tuple[bool, SessionState, dict[str, str]]:
-    """Investigate a single hypothesis. Returns (progress_made, updated_state, focus_sections)."""
+    """Investigate a single hypothesis with full emit/save/memory lifecycle.
+    Returns (cycle_progress, updated_state, focus_sections).
+    """
+    candidates = _matching_findings(state.findings_snapshot, hypothesis)
     tracker = HypothesisProgressTracker()
-    for query_index in range(1, max_queries_per_hypothesis + 1):
+    cycle_progress = False
+    focus_sections = _guess_related_sections(hypothesis.description)
+    limit = query_limit if query_limit is not None else max_queries_per_hypothesis
+    for query_index in range(1, limit + 1):
         state.focus_depth = query_index
-        planned_query = _plan_next_query(state, hypothesis, query_index, max_queries_per_hypothesis, memory, db, base_url, model, llm_logger, plan_cycle, session_id)
-        if planned_query is None:
-            break
-
-        rows, fallback_info = _execute_query(db, planned_query, hypothesis)
-        if rows is None:
-            continue
-        if fallback_info:
-            _log(
-                "FALLBACK",
-                f"{hypothesis.id} — found {len(rows)} rows via {fallback_info.get('phase')}"
-                + (
-                    f" event_ids={fallback_info.get('event_ids', [])} keywords={fallback_info.get('keywords', [])}"
-                    if fallback_info.get("phase") == "keyword_in_raw_json"
-                    else ""
+        try:
+            hypothesis_plan = plan_hypothesis_query(
+                state=state, hypothesis=hypothesis, finding_candidates=candidates,
+                memory=memory, base_url=base_url, model=model, db=db,
+                overview_md=ctx.memory_overview, default_context_md=ctx.memory_plan,
+                status_callback=llm_status_fn or (lambda msg: print(f"[yellow]{msg}[/yellow]")),
+                audit_callback=lambda msgs, out, parsed, hid=hypothesis.id, qi=query_index: llm_logger.write(
+                    iteration=plan_cycle, phase="plan-hypothesis", input_messages=msgs,
+                    output=parsed, model=model, base_url=base_url, suffix=f"{hid}-{qi:02d}",
                 ),
+                query_index=query_index, max_queries=max_queries_per_hypothesis,
             )
-
-        result_summary = summarize_query_result(rows)
-        check_result = _check_query(planned_query, hypothesis, result_summary, state.findings_snapshot, memory, base_url, model, query_index, max_queries_per_hypothesis)
-        if check_result is None:
+        except Exception as exc:
+            err_msg = f"[plan-hypothesis] LLM failed for {hypothesis.id}: {exc}"
+            print(f"[red]{err_msg}[/red]")
+            _append_hypothesis_reasoning(db=db, hypothesis_id=hypothesis.id, session_id=session_id,
+                                         iteration=plan_cycle, phase="plan", body=err_msg)
+            break
+        _save_step(db=db, session_id=session_id, iteration=plan_cycle, phase="plan-hypothesis",
+                   hypothesis_id=hypothesis.id,
+                   input_json={"hypothesis": hypothesis.model_dump(), "query_index": query_index},
+                   output_json=hypothesis_plan.raw_response, suffix=f"{hypothesis.id}-{query_index:02d}")
+        if hypothesis_plan.hypothesis is not None:
+            hypothesis = hypothesis_plan.hypothesis
+            _upsert_hypothesis(db, hypothesis, origin="broad_plan", session_id=session_id)
+        if not hypothesis_plan.query:
+            if not hypothesis_plan.needs_more:
+                break
             continue
-
-        _record_check_result(state, hypothesis, planned_query, check_result, result_summary, session_id, plan_cycle, db)
-        _apply_outcome(state, hypothesis, check_result, session_id, db)
-
-        query_fp = _query_fingerprint(planned_query.sql)
-        tracker.record(query_fp, check_result.verdict, int(result_summary.get("row_count") or 0))
-
+        planned_query = hypothesis_plan.query
+        reasoning_entry_id = _append_hypothesis_reasoning(
+            db=db, hypothesis_id=hypothesis.id, session_id=session_id,
+            iteration=plan_cycle, phase="plan", body=planned_query.purpose, query_id=planned_query.query_id,
+        )
+        _log("QUERY", f"{hypothesis.id} {planned_query.query_id} — {planned_query.purpose}")
+        if emit_fn:
+            emit_fn("investigate/do", f"[do] {planned_query.query_id}: {planned_query.purpose}",
+                    iteration=plan_cycle, report_kw={"focus_sections": focus_sections},
+                    current_query=planned_query.query_id, hypothesis_id=hypothesis.id,
+                    reasoning_entry_id=reasoning_entry_id)
+        try:
+            rows = fetch_records(db, planned_query.sql)
+            _log("EXEC", f"{hypothesis.id} {planned_query.query_id} — {len(rows)} rows")
+            fallback_info = None
+            if len(rows) == 0 and hypothesis.source_rule_ids:
+                for source_rule_id in hypothesis.source_rule_ids:
+                    rule = load_rule_by_id(source_rule_id)
+                    if rule and rule.fallback_search:
+                        for fallback in rule.fallback_search:
+                            if isinstance(fallback, dict):
+                                ph = fallback.get("phase")
+                                if ph not in {"keyword_in_raw_json", "related_event_ids", "artifact_table"}:
+                                    continue
+                                fb_rows = execute_fallback_search(db, fallback)
+                                if fb_rows:
+                                    _log("FALLBACK", f"{hypothesis.id} — found {len(fb_rows)} rows via {ph}")
+                                    for r in fb_rows[:20]:
+                                        if isinstance(r, dict):
+                                            r["_fallback_phase"] = ph
+                                            r["_fallback_source_rule_id"] = source_rule_id
+                                    rows = fb_rows[:20]
+                                    fallback_info = {"phase": ph, "source_rule_id": source_rule_id}
+                                    break
+                        if fallback_info:
+                            break
+            if len(rows) == 0 and fallback_info is None:
+                fb_rows, fb_info = execute_event_keyword_fallback_search(db, planned_query.sql)
+                if fb_rows:
+                    _log(
+                        "FALLBACK",
+                        f"{hypothesis.id} — found {len(fb_rows)} rows via keyword_in_raw_json"
+                        + (
+                            f" event_ids={fb_info.get('event_ids', [])} keywords={fb_info.get('keywords', [])}"
+                            if fb_info
+                            else ""
+                        ),
+                    )
+                    for r in fb_rows[:20]:
+                        if isinstance(r, dict):
+                            r["_fallback_phase"] = "keyword_in_raw_json"
+                            r["_fallback_source_rule_id"] = "event_id_schema"
+                    rows = fb_rows[:20]
+                    fallback_info = fb_info or {"phase": "keyword_in_raw_json", "source_rule_id": "event_id_schema"}
+                    fallback_info["query_sql"] = planned_query.sql
+        except Exception as exc:
+            err_msg = f"SQL execution error — {planned_query.query_id}: {exc}"
+            print(f"[red]{err_msg}[/red]")
+            if emit_fn:
+                emit_fn("investigate/do", f"[do] {err_msg}", iteration=plan_cycle, hypothesis_id=hypothesis.id)
+            _append_hypothesis_reasoning(db=db, hypothesis_id=hypothesis.id, session_id=session_id,
+                                         iteration=plan_cycle, phase="do", body=err_msg,
+                                         query_id=planned_query.query_id)
+            continue
+        result_summary = summarize_query_result(rows)
+        _save_step(db=db, session_id=session_id, iteration=plan_cycle, phase="do",
+                   hypothesis_id=hypothesis.id,
+                   input_json={"planned_query": planned_query.model_dump(), "query_index": query_index},
+                   output_json=result_summary, suffix=f"{planned_query.query_id}-{query_index:02d}")
+        try:
+            check_result = check_query_result(
+                case=case, db=db, session_id=session_id, iteration=plan_cycle,
+                planned_query=planned_query, hypothesis=hypothesis,
+                finding_candidates=candidates, result_summary=result_summary,
+                memory=memory, base_url=base_url, model=model,
+                overview_md=ctx.memory_overview, memory_context_md=ctx.memory_check,
+                status_callback=llm_status_fn or (lambda msg: print(f"[yellow]{msg}[/yellow]")),
+                audit_callback=lambda msgs, out, parsed, qid=planned_query.query_id, qi=query_index: llm_logger.write(
+                    iteration=plan_cycle, phase="check", input_messages=msgs,
+                    output=parsed, model=model, base_url=base_url, suffix=f"{qid}-{qi:02d}",
+                ),
+                query_index=query_index, max_queries=max_queries_per_hypothesis,
+                fallback_info=fallback_info,
+            )
+        except Exception as exc:
+            err_msg = f"[check] LLM failed for {hypothesis.id}/{planned_query.query_id}: {exc}"
+            print(f"[red]{err_msg}[/red]")
+            _append_hypothesis_reasoning(db=db, hypothesis_id=hypothesis.id, session_id=session_id,
+                                         iteration=plan_cycle, phase="check", body=err_msg,
+                                         query_id=planned_query.query_id)
+            continue
+        _save_step(db=db, session_id=session_id, iteration=plan_cycle, phase="check",
+                   hypothesis_id=hypothesis.id,
+                   input_json={"planned_query": planned_query.model_dump(),
+                               "hypothesis": hypothesis.model_dump(), "result_summary": result_summary},
+                   output_json=check_result.raw_response, suffix=f"{planned_query.query_id}-{query_index:02d}")
+        reasoning_entry_id = _append_hypothesis_reasoning(
+            db=db, hypothesis_id=hypothesis.id, session_id=session_id,
+            iteration=plan_cycle, phase="check", body=check_result.report_text,
+            verdict=check_result.verdict, query_id=planned_query.query_id,
+        )
+        chk_txt = (check_result.report_text or "").strip().replace("\n", " ")
+        if len(chk_txt) > 120:
+            chk_txt = chk_txt[:117] + "..."
+        _log("CHECK", f"{hypothesis.id} {planned_query.query_id} — verdict={check_result.verdict}" + (f": {chk_txt}" if chk_txt else ""))
+        if emit_fn:
+            emit_fn("investigate/check", f"[check] {hypothesis.id}: verdict={check_result.verdict} query={planned_query.query_id}",
+                    iteration=plan_cycle, report_kw={"focus_sections": focus_sections},
+                    current_query=planned_query.query_id, hypothesis_id=hypothesis.id, reasoning_entry_id=reasoning_entry_id)
+        state.history.append(HistoryEntry(
+            iteration=plan_cycle, query_id=planned_query.query_id, hypothesis_id=hypothesis.id,
+            verdict=check_result.verdict, summary=check_result.report_text,
+            evidence_ids=result_summary.get("evidence_ids", []),
+            template_id=planned_query.template_id,
+            params=planned_query.params,
+            purpose=planned_query.purpose,
+        ))
+        state.history = state.history[-50:]
+        if check_result.new_hypotheses:
+            state.active_hypotheses = _merge_active_hypotheses(
+                db=db, current=state.active_hypotheses, updates=check_result.new_hypotheses,
+                resolved=state.resolved_hypotheses, session_id=session_id, origin="check_new",
+            )
+        if check_result.verdict in {"confirmed", "refuted"}:
+            _resolve_hypothesis(db=db, state=state, hypothesis_id=hypothesis.id,
+                                verdict=check_result.verdict, summary=check_result.report_text,
+                                session_id=session_id)
+            _log("RESOLVE", f"{hypothesis.id} — {check_result.verdict} (resolved={len(state.resolved_hypotheses)})")
+            cycle_progress = True
+        elif check_result.verdict == "newlead" or check_result.progress:
+            cycle_progress = True
+            _upsert_hypothesis(db=db, hypothesis=Hypothesis(
+                id=hypothesis.id, description=hypothesis.description,
+                status="active", verdict=None, summary=check_result.report_text,
+            ), origin="check_new", session_id=session_id)
+        _apply_memory_updates(
+            memory=memory, active_hypotheses=state.active_hypotheses,
+            resolved_hypotheses=state.resolved_hypotheses,
+            check_output={**check_result.raw_response, "memory_updates": check_result.memory_updates,
+                          "suspicious_evidence": check_result.suspicious_evidence},
+            current_hypothesis_id=hypothesis.id,
+            db=db,
+        )
+        try:
+            memory.compact_overview_if_needed(base_url=base_url, model=model)
+            memory.compact_oversized_with_llm(base_url=base_url, model=model)
+        except Exception as exc:
+            print(f"[yellow][memory] compaction failed: {exc}[/yellow]")
+        if check_result.verdict == "confirmed":
+            memory.promote_hypothesis_scratch(hypothesis.id)
+        elif check_result.verdict == "refuted":
+            memory.archive_hypothesis_scratch(hypothesis.id)
+        _ctx_refresh_caches(ctx, memory, base_url, model, current_hypothesis_id=hypothesis.id)
+        _save_step(db=db, session_id=session_id, iteration=plan_cycle, phase="act",
+                   hypothesis_id=hypothesis.id,
+                   input_json={"hypothesis_id": hypothesis.id, "query_id": planned_query.query_id},
+                   output_json={"verdict": check_result.verdict,
+                                "active_hypotheses": [h.model_dump() for h in state.active_hypotheses],
+                                "resolved_hypotheses": [h.model_dump() for h in state.resolved_hypotheses]},
+                   suffix=f"{planned_query.query_id}-{query_index:02d}")
+        if emit_fn:
+            emit_fn("investigate/act", f"[act] {hypothesis.id}: verdict={check_result.verdict} resolved={len(state.resolved_hypotheses)}",
+                    iteration=plan_cycle, report_kw={"focus_sections": focus_sections})
         if check_result.verdict in {"confirmed", "refuted"} or query_index >= max_queries_per_hypothesis:
             break
-        if tracker.should_auto_refute():
-            _resolve_hypothesis(db, state, hypothesis.id, "refuted", "Auto-refuted: repeated 0-row inconclusive results.", session_id)
-            return True, state, _guess_related_sections(hypothesis.description)
+        row_count = int(result_summary.get("row_count") or 0)
+        query_fp = _query_fingerprint(planned_query.sql)
+        tracker.record(query_fp, check_result.verdict, row_count)
+        if tracker.should_pivot(query_fp):
+            _log("PIVOT", f"{hypothesis.id} — duplicate query fingerprint detected, auto-exhausted")
+            break
+        rule_context = resolve_rule_context(hypothesis)
+        partial_confirm_signal = tracker.has_partial_confirm_signal(rule_context, rows, hypothesis)
+        if tracker.should_auto_refute(consecutive_threshold=3) and not partial_confirm_signal:
+            _log("RESOLVE", f"{hypothesis.id} — auto-refuted after 3+ consecutive 0-row inconclusive")
+            _resolve_hypothesis(db=db, state=state, hypothesis_id=hypothesis.id, verdict="refuted",
+                                summary="Auto-refuted: repeated 0-row inconclusive results indicate the hypothesis cannot be verified with available evidence.",
+                                session_id=session_id)
+            cycle_progress = True
+            break
+        if check_result.verdict == "inconclusive":
+            if tracker.should_auto_confirm(rule_context, rows, hypothesis):
+                _log("RESOLVE", f"{hypothesis.id} — auto-confirmed via co_observed_event_ids")
+                _resolve_hypothesis(db=db, state=state, hypothesis_id=hypothesis.id, verdict="confirmed",
+                                    summary="Auto-confirmed: all co_observed_event_ids from rule context were found in query results.",
+                                    session_id=session_id)
+                cycle_progress = True
+                break
 
-    return False, state, _guess_related_sections(hypothesis.description)
+    return cycle_progress, state, focus_sections
 
 
 def _plan_next_query(
@@ -911,11 +1127,60 @@ def _plan_next_query(
             query_index=query_index,
             max_queries=max_queries,
         )
-        if hypothesis_plan.hypothesis is not None:
+        if hypothesis_plan.hypothesis is not None and _hypothesis_actually_changed(hypothesis, hypothesis_plan.hypothesis):
             return None  # Hypothesis updated, need to reload
-        return hypothesis_plan.query
+        query = hypothesis_plan.query
+        if query is None or not getattr(query, "sql", None):
+            query = _fallback_planned_query_from_hypothesis(hypothesis, query_index)
+        return query
     except Exception:
+        return _fallback_planned_query_from_hypothesis(hypothesis, query_index)
+
+
+def _hypothesis_actually_changed(original: Hypothesis, returned: Hypothesis) -> bool:
+    """Detect a real planner update vs the LLM echoing the input hypothesis back."""
+    if original.id != returned.id:
+        return True
+    if (original.description or "").strip() != (returned.description or "").strip():
+        return True
+    orig_cw = original.confirm_when or {}
+    ret_cw = returned.confirm_when or {}
+    if sorted(map(str, orig_cw.get("co_observed_event_ids", []) or [])) != sorted(map(str, ret_cw.get("co_observed_event_ids", []) or [])):
+        return True
+    if sorted(map(str, original.required_entities or [])) != sorted(map(str, returned.required_entities or [])):
+        return True
+    return False
+
+
+def _fallback_planned_query_from_hypothesis(hypothesis: Hypothesis, query_index: int) -> PlannedQuery | None:
+    """When the planner LLM fails to emit a runnable query, synthesize one from
+    the hypothesis's confirm_when.co_observed_event_ids. This guarantees the
+    check phase fires at least once per cycle instead of looping forever.
+    """
+    confirm_when = hypothesis.confirm_when or {}
+    ids = confirm_when.get("co_observed_event_ids") or []
+    event_ids: list[int] = []
+    for entry in ids:
+        try:
+            event_ids.append(int(str(entry).strip()))
+        except (TypeError, ValueError):
+            continue
+    if not event_ids:
         return None
+    id_list = ", ".join(str(eid) for eid in event_ids)
+    sql = (
+        "SELECT event_id, timestamp, computer, channel, raw_json "
+        f"FROM evtx_events WHERE event_id IN ({id_list}) "
+        "ORDER BY timestamp LIMIT 500"
+    )
+    return PlannedQuery(
+        query_id=f"Q-{hypothesis.id}-fb{query_index}",
+        hypothesis_id=hypothesis.id,
+        purpose=f"Fallback: enumerate evidence rows for event_ids {event_ids} (planner did not emit SQL).",
+        template_id=None,
+        params={},
+        sql=sql,
+    )
 
 
 def _execute_query(db: CaseDB, planned_query: PlannedQuery, hypothesis: Hypothesis) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
@@ -1025,6 +1290,66 @@ def _apply_outcome(
         )
 
 
+async def _run_broad_plan_step(
+    state: SessionState,
+    ctx: _Ctx,
+    db: CaseDB,
+    case: Case,
+    session_id: str,
+    base_url: str,
+    model: str,
+    memory: MemoryManager,
+    llm_logger: LLMCallLogger,
+    plan_cycle: int,
+    observed_keypoints: list[dict[str, Any]],
+    emit_fn: Callable[..., None] | None,
+    llm_status_fn: Callable[[str], None],
+) -> bool:
+    """Execute broad planning step. Returns stop flag."""
+    observed_keypoint_labels = [
+        f"{item['keypoint']} (rows={item['row_count']})"
+        for item in observed_keypoints
+    ]
+    plan_input = state.model_dump()
+    try:
+        broad_plan: BroadPlanResult = broad_plan_investigation(
+            state=state, memory=memory, base_url=base_url, model=model, max_findings=20,
+            observed_keypoints=observed_keypoint_labels or _observed_keypoints_from_findings(state.findings_snapshot),
+            overview_md=ctx.memory_overview, default_context_md=ctx.memory_plan,
+            status_callback=llm_status_fn,
+            audit_callback=lambda msgs, out, parsed: llm_logger.write(
+                iteration=plan_cycle, phase="plan-broad", input_messages=msgs,
+                output=parsed, model=model, base_url=base_url,
+            ),
+        )
+        state.active_hypotheses = _merge_active_hypotheses(
+            db=db, current=state.active_hypotheses, updates=broad_plan.hypotheses,
+            resolved=state.resolved_hypotheses, session_id=session_id, origin="broad_plan",
+        )
+        stop_flag = broad_plan.stop
+        _save_step(db=db, session_id=session_id, iteration=plan_cycle, phase="plan-broad",
+                   hypothesis_id=None, input_json=plan_input, output_json=broad_plan.raw_response)
+        _save_step(
+            db=db,
+            session_id=session_id,
+            iteration=plan_cycle,
+            phase="plan-broad-audit",
+            hypothesis_id=None,
+            input_json={"hypotheses": [item.model_dump() for item in broad_plan.hypotheses]},
+            output_json={"audits": _audit_broad_plan_hypotheses(state, broad_plan.hypotheses)},
+        )
+        _log("PLAN", f"+{len(broad_plan.hypotheses)} new hypotheses (active={len(state.active_hypotheses)}, stop={broad_plan.stop})")
+        if emit_fn:
+            emit_fn("investigate/plan", f"[plan] new_hypotheses={len(broad_plan.hypotheses)} active={len(state.active_hypotheses)}", iteration=plan_cycle)
+        return stop_flag
+    except Exception as exc:
+        err_msg = f"[plan-broad] LLM failed: {exc}"
+        print(f"[red]{err_msg}[/red]")
+        if emit_fn:
+            emit_fn("investigate/plan", err_msg, iteration=plan_cycle)
+        return False
+
+
 async def _run_cycle_body(
     *,
     state: "SessionState",
@@ -1067,10 +1392,6 @@ async def _run_cycle_body(
     focus_sections: list[str] = []
     report_before = _ctx_get_report_status(ctx, db)
     observed_keypoints = _scan_report_keypoints(case, db)
-    observed_keypoint_labels = [
-        f"{item['keypoint']} (rows={item['row_count']})"
-        for item in observed_keypoints
-    ]
     _save_step(
         db=db,
         session_id=session_id,
@@ -1082,41 +1403,12 @@ async def _run_cycle_body(
     )
 
     if not report_only:
-        plan_input = state.model_dump()
-        try:
-            broad_plan: BroadPlanResult = broad_plan_investigation(
-                state=state, memory=memory, base_url=base_url, model=model, max_findings=20,
-                observed_keypoints=observed_keypoint_labels or _observed_keypoints_from_findings(state.findings_snapshot),
-                overview_md=ctx.memory_overview, default_context_md=ctx.memory_plan,
-                status_callback=llm_status,
-                audit_callback=lambda msgs, out, parsed: llm_logger.write(
-                    iteration=plan_cycle, phase="plan-broad", input_messages=msgs,
-                    output=parsed, model=model, base_url=base_url,
-                ),
-            )
-            state.active_hypotheses = _merge_active_hypotheses(
-                db=db, current=state.active_hypotheses, updates=broad_plan.hypotheses,
-                resolved=state.resolved_hypotheses, session_id=session_id, origin="broad_plan",
-            )
-            broad_plan_stop = broad_plan.stop
-            _save_step(db=db, session_id=session_id, iteration=plan_cycle, phase="plan-broad",
-                       hypothesis_id=None, input_json=plan_input, output_json=broad_plan.raw_response)
-            _save_step(
-                db=db,
-                session_id=session_id,
-                iteration=plan_cycle,
-                phase="plan-broad-audit",
-                hypothesis_id=None,
-                input_json={"hypotheses": [item.model_dump() for item in broad_plan.hypotheses]},
-                output_json={"audits": _audit_broad_plan_hypotheses(state, broad_plan.hypotheses)},
-            )
-            _log("PLAN", f"+{len(broad_plan.hypotheses)} new hypotheses (active={len(state.active_hypotheses)}, stop={broad_plan.stop})")
-            _emit("investigate/plan", f"[plan] new_hypotheses={len(broad_plan.hypotheses)} active={len(state.active_hypotheses)}", iteration=plan_cycle)
-        except Exception as exc:
-            err_msg = f"[plan-broad] LLM failed: {exc}"
-            print(f"[red]{err_msg}[/red]")
-            _emit("investigate/plan", err_msg, iteration=plan_cycle)
-
+        broad_plan_stop = await _run_broad_plan_step(
+            state=state, ctx=ctx, db=db, case=case, session_id=session_id,
+            base_url=base_url, model=model, memory=memory, llm_logger=llm_logger,
+            plan_cycle=plan_cycle, observed_keypoints=observed_keypoints,
+            emit_fn=_emit, llm_status_fn=llm_status,
+        )
         focus_hypotheses = _select_focus_hypotheses(state, max_items=2)
         for hypothesis in focus_hypotheses:
             if ctx.interrupted:
@@ -1128,224 +1420,16 @@ async def _run_cycle_body(
             _log("HYPOTHESIS", f"{hypothesis.id} — {hypothesis.description}")
             _emit("investigate/hypothesis", f"[hypothesis] {hypothesis.id}: {hypothesis.description}",
                   iteration=plan_cycle, report_kw={"focus_sections": focus_sections})
-            candidates = _matching_findings(state.findings_snapshot, hypothesis)
-            tracker = HypothesisProgressTracker()
-            focus_max_queries = max(max_queries_per_hypothesis, 10)
-            for query_index in range(1, focus_max_queries + 1):
-                state.focus_depth = query_index
-                try:
-                    hypothesis_plan = plan_hypothesis_query(
-                        state=state, hypothesis=hypothesis, finding_candidates=candidates,
-                        memory=memory, base_url=base_url, model=model, db=db,
-                        overview_md=ctx.memory_overview, default_context_md=ctx.memory_plan,
-                        status_callback=llm_status,
-                        audit_callback=lambda msgs, out, parsed, hid=hypothesis.id, qi=query_index: llm_logger.write(
-                            iteration=plan_cycle, phase="plan-hypothesis", input_messages=msgs,
-                            output=parsed, model=model, base_url=base_url, suffix=f"{hid}-{qi:02d}",
-                        ),
-                        query_index=query_index, max_queries=max_queries_per_hypothesis,
-                    )
-                except Exception as exc:
-                    err_msg = f"[plan-hypothesis] LLM failed for {hypothesis.id}: {exc}"
-                    print(f"[red]{err_msg}[/red]")
-                    _append_hypothesis_reasoning(db=db, hypothesis_id=hypothesis.id, session_id=session_id,
-                                                 iteration=plan_cycle, phase="plan", body=err_msg)
-                    break
-                _save_step(db=db, session_id=session_id, iteration=plan_cycle, phase="plan-hypothesis",
-                           hypothesis_id=hypothesis.id,
-                           input_json={"hypothesis": hypothesis.model_dump(), "query_index": query_index},
-                           output_json=hypothesis_plan.raw_response, suffix=f"{hypothesis.id}-{query_index:02d}")
-                if hypothesis_plan.hypothesis is not None:
-                    hypothesis = hypothesis_plan.hypothesis
-                    _upsert_hypothesis(db, hypothesis, origin="broad_plan", session_id=session_id)
-                if not hypothesis_plan.query:
-                    if not hypothesis_plan.needs_more:
-                        break
-                    continue
-                planned_query = hypothesis_plan.query
-                reasoning_entry_id = _append_hypothesis_reasoning(
-                    db=db, hypothesis_id=hypothesis.id, session_id=session_id,
-                    iteration=plan_cycle, phase="plan", body=planned_query.purpose, query_id=planned_query.query_id,
-                )
-                _log("QUERY", f"{hypothesis.id} {planned_query.query_id} — {planned_query.purpose}")
-                _emit("investigate/do", f"[do] {planned_query.query_id}: {planned_query.purpose}",
-                      iteration=plan_cycle, report_kw={"focus_sections": focus_sections},
-                      current_query=planned_query.query_id, hypothesis_id=hypothesis.id,
-                      reasoning_entry_id=reasoning_entry_id)
-                try:
-                    rows = fetch_records(db, planned_query.sql)
-                    _log("EXEC", f"{hypothesis.id} {planned_query.query_id} — {len(rows)} rows")
-                    fallback_info = None
-                    if len(rows) == 0 and hypothesis.source_rule_ids:
-                        for source_rule_id in hypothesis.source_rule_ids:
-                            rule = load_rule_by_id(source_rule_id)
-                            if rule and rule.fallback_search:
-                                for fallback in rule.fallback_search:
-                                    if isinstance(fallback, dict):
-                                        ph = fallback.get("phase")
-                                        if ph not in {"keyword_in_raw_json", "related_event_ids", "artifact_table"}:
-                                            continue
-                                        fb_rows = execute_fallback_search(db, fallback)
-                                        if fb_rows:
-                                            _log("FALLBACK", f"{hypothesis.id} — found {len(fb_rows)} rows via {ph}")
-                                            for r in fb_rows[:20]:
-                                                if isinstance(r, dict):
-                                                    r["_fallback_phase"] = ph
-                                                    r["_fallback_source_rule_id"] = source_rule_id
-                                            rows = fb_rows[:20]
-                                            fallback_info = {"phase": ph, "source_rule_id": source_rule_id}
-                                            break
-                                if fallback_info:
-                                    break
-                    if len(rows) == 0 and fallback_info is None:
-                        fb_rows, fb_info = execute_event_keyword_fallback_search(db, planned_query.sql)
-                        if fb_rows:
-                            _log(
-                                "FALLBACK",
-                                f"{hypothesis.id} — found {len(fb_rows)} rows via keyword_in_raw_json"
-                                + (
-                                    f" event_ids={fb_info.get('event_ids', [])} keywords={fb_info.get('keywords', [])}"
-                                    if fb_info
-                                    else ""
-                                ),
-                            )
-                            for r in fb_rows[:20]:
-                                if isinstance(r, dict):
-                                    r["_fallback_phase"] = "keyword_in_raw_json"
-                                    r["_fallback_source_rule_id"] = "event_id_schema"
-                            rows = fb_rows[:20]
-                            fallback_info = fb_info or {"phase": "keyword_in_raw_json", "source_rule_id": "event_id_schema"}
-                            fallback_info["query_sql"] = planned_query.sql
-                except Exception as exc:
-                    err_msg = f"SQL execution error — {planned_query.query_id}: {exc}"
-                    print(f"[red]{err_msg}[/red]")
-                    _emit("investigate/do", f"[do] {err_msg}", iteration=plan_cycle, hypothesis_id=hypothesis.id)
-                    _append_hypothesis_reasoning(db=db, hypothesis_id=hypothesis.id, session_id=session_id,
-                                                 iteration=plan_cycle, phase="do", body=err_msg,
-                                                 query_id=planned_query.query_id)
-                    continue
-                result_summary = summarize_query_result(rows)
-                _save_step(db=db, session_id=session_id, iteration=plan_cycle, phase="do",
-                           hypothesis_id=hypothesis.id,
-                           input_json={"planned_query": planned_query.model_dump(), "query_index": query_index},
-                           output_json=result_summary, suffix=f"{planned_query.query_id}-{query_index:02d}")
-                try:
-                    check_result = check_query_result(
-                        case=case, db=db, session_id=session_id, iteration=plan_cycle,
-                        planned_query=planned_query, hypothesis=hypothesis,
-                        finding_candidates=candidates, result_summary=result_summary,
-                        memory=memory, base_url=base_url, model=model,
-                        overview_md=ctx.memory_overview, memory_context_md=ctx.memory_check,
-                        status_callback=llm_status,
-                        audit_callback=lambda msgs, out, parsed, qid=planned_query.query_id, qi=query_index: llm_logger.write(
-                            iteration=plan_cycle, phase="check", input_messages=msgs,
-                            output=parsed, model=model, base_url=base_url, suffix=f"{qid}-{qi:02d}",
-                        ),
-                        query_index=query_index, max_queries=max_queries_per_hypothesis,
-                        fallback_info=fallback_info,
-                    )
-                except Exception as exc:
-                    err_msg = f"[check] LLM failed for {hypothesis.id}/{planned_query.query_id}: {exc}"
-                    print(f"[red]{err_msg}[/red]")
-                    _append_hypothesis_reasoning(db=db, hypothesis_id=hypothesis.id, session_id=session_id,
-                                                 iteration=plan_cycle, phase="check", body=err_msg,
-                                                 query_id=planned_query.query_id)
-                    continue
-                _save_step(db=db, session_id=session_id, iteration=plan_cycle, phase="check",
-                           hypothesis_id=hypothesis.id,
-                           input_json={"planned_query": planned_query.model_dump(),
-                                       "hypothesis": hypothesis.model_dump(), "result_summary": result_summary},
-                           output_json=check_result.raw_response, suffix=f"{planned_query.query_id}-{query_index:02d}")
-                reasoning_entry_id = _append_hypothesis_reasoning(
-                    db=db, hypothesis_id=hypothesis.id, session_id=session_id,
-                    iteration=plan_cycle, phase="check", body=check_result.report_text,
-                    verdict=check_result.verdict, query_id=planned_query.query_id,
-                )
-                chk_txt = (check_result.report_text or "").strip().replace("\n", " ")
-                if len(chk_txt) > 120:
-                    chk_txt = chk_txt[:117] + "..."
-                _log("CHECK", f"{hypothesis.id} {planned_query.query_id} — verdict={check_result.verdict}" + (f": {chk_txt}" if chk_txt else ""))
-                _emit("investigate/check", f"[check] {hypothesis.id}: verdict={check_result.verdict} query={planned_query.query_id}",
-                      iteration=plan_cycle, report_kw={"focus_sections": focus_sections},
-                      current_query=planned_query.query_id, hypothesis_id=hypothesis.id, reasoning_entry_id=reasoning_entry_id)
-                state.history.append(HistoryEntry(
-                    iteration=plan_cycle, query_id=planned_query.query_id, hypothesis_id=hypothesis.id,
-                    verdict=check_result.verdict, summary=check_result.report_text,
-                    evidence_ids=result_summary.get("evidence_ids", []),
-                    template_id=planned_query.template_id,
-                    params=planned_query.params,
-                    purpose=planned_query.purpose,
-                ))
-                state.history = state.history[-50:]
-                if check_result.new_hypotheses:
-                    state.active_hypotheses = _merge_active_hypotheses(
-                        db=db, current=state.active_hypotheses, updates=check_result.new_hypotheses,
-                        resolved=state.resolved_hypotheses, session_id=session_id, origin="check_new",
-                    )
-                if check_result.verdict in {"confirmed", "refuted"}:
-                    _resolve_hypothesis(db=db, state=state, hypothesis_id=hypothesis.id,
-                                        verdict=check_result.verdict, summary=check_result.report_text,
-                                        session_id=session_id)
-                    _log("RESOLVE", f"{hypothesis.id} — {check_result.verdict} (resolved={len(state.resolved_hypotheses)})")
-                    cycle_progress = True
-                elif check_result.verdict == "newlead" or check_result.progress:
-                    cycle_progress = True
-                    _upsert_hypothesis(db=db, hypothesis=Hypothesis(
-                        id=hypothesis.id, description=hypothesis.description,
-                        status="active", verdict=None, summary=check_result.report_text,
-                    ), origin="check_new", session_id=session_id)
-                _apply_memory_updates(
-                    memory=memory, active_hypotheses=state.active_hypotheses,
-                    resolved_hypotheses=state.resolved_hypotheses,
-                    check_output={**check_result.raw_response, "memory_updates": check_result.memory_updates,
-                                  "suspicious_evidence": check_result.suspicious_evidence},
-                    current_hypothesis_id=hypothesis.id,
-                    db=db,
-                )
-                try:
-                    memory.compact_overview_if_needed(base_url=base_url, model=model)
-                    memory.compact_oversized_with_llm(base_url=base_url, model=model)
-                except Exception as exc:
-                    print(f"[yellow][memory] compaction failed: {exc}[/yellow]")
-                if check_result.verdict == "confirmed":
-                    memory.promote_hypothesis_scratch(hypothesis.id)
-                elif check_result.verdict == "refuted":
-                    memory.archive_hypothesis_scratch(hypothesis.id)
-                _ctx_refresh_caches(ctx, memory, base_url, model, current_hypothesis_id=hypothesis.id)
-                _save_step(db=db, session_id=session_id, iteration=plan_cycle, phase="act",
-                           hypothesis_id=hypothesis.id,
-                           input_json={"hypothesis_id": hypothesis.id, "query_id": planned_query.query_id},
-                           output_json={"verdict": check_result.verdict,
-                                        "active_hypotheses": [h.model_dump() for h in state.active_hypotheses],
-                                        "resolved_hypotheses": [h.model_dump() for h in state.resolved_hypotheses]},
-                           suffix=f"{planned_query.query_id}-{query_index:02d}")
-                _emit("investigate/act", f"[act] {hypothesis.id}: verdict={check_result.verdict} resolved={len(state.resolved_hypotheses)}",
-                      iteration=plan_cycle, report_kw={"focus_sections": focus_sections})
-                if check_result.verdict in {"confirmed", "refuted"} or query_index >= max_queries_per_hypothesis:
-                    break
-                row_count = int(result_summary.get("row_count") or 0)
-                query_fp = _query_fingerprint(planned_query.sql)
-                tracker.record(query_fp, check_result.verdict, row_count)
-                if tracker.should_pivot(query_fp):
-                    _log("PIVOT", f"{hypothesis.id} — duplicate query fingerprint detected, auto-exhausted")
-                    break
-                rule_context = resolve_rule_context(hypothesis)
-                partial_confirm_signal = tracker.has_partial_confirm_signal(rule_context, rows)
-                if tracker.should_auto_refute(consecutive_threshold=3) and not partial_confirm_signal:
-                    _log("RESOLVE", f"{hypothesis.id} — auto-refuted after 3+ consecutive 0-row inconclusive")
-                    _resolve_hypothesis(db=db, state=state, hypothesis_id=hypothesis.id, verdict="refuted",
-                                        summary="Auto-refuted: repeated 0-row inconclusive results indicate the hypothesis cannot be verified with available evidence.",
-                                        session_id=session_id)
-                    cycle_progress = True
-                    break
-                if check_result.verdict == "inconclusive":
-                    if tracker.should_auto_confirm(rule_context, rows):
-                        _log("RESOLVE", f"{hypothesis.id} — auto-confirmed via co_observed_event_ids")
-                        _resolve_hypothesis(db=db, state=state, hypothesis_id=hypothesis.id, verdict="confirmed",
-                                            summary="Auto-confirmed: all co_observed_event_ids from rule context were found in query results.",
-                                            session_id=session_id)
-                        cycle_progress = True
-                        break
+            progress, state, sections = await _investigate_one_hypothesis(
+                hypothesis=hypothesis, state=state, ctx=ctx, memory=memory, db=db,
+                base_url=base_url, model=model, plan_cycle=plan_cycle,
+                llm_logger=llm_logger, session_id=session_id,
+                max_queries_per_hypothesis=max_queries_per_hypothesis, case=case,
+                query_limit=max(max_queries_per_hypothesis, 10),
+                emit_fn=_emit, llm_status_fn=llm_status,
+            )
+            if progress:
+                cycle_progress = True
 
     return broad_plan_stop, cycle_progress, focus_sections, report_before
 
@@ -1475,6 +1559,7 @@ async def investigate(
     report_max_queries_per_section: int = 3,
     max_llm_calls: int = 200,
 ) -> dict[str, Any]:
+    """Run the full investigation loop: broad plan → hypothesis loop → report refresh, with termination checks and LLM budget enforcement."""
     state, ctx, memory, llm_logger, session_id, started_at, template_root = _init_session(
         case, db, profile, base_url, model, template_root,
     )

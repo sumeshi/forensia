@@ -204,14 +204,9 @@ def _load_schema_notes() -> str:
     return "\n".join(notes)
 
 
-@lru_cache(maxsize=8)
-def _dfir_playbook(phase: str) -> str:
-    """Generate DFIR investigator playbook narrative for the given phase.
-
-    Phase is one of: 'broad_plan', 'hypothesis_plan', 'check', 'report_section',
-    'section_agent_plan', 'section_agent_check'.
-    Returns a narrative string (5-10k chars) optimized for weak LLMs.
-    """
+@lru_cache(maxsize=1)
+def _load_dfir_yamls() -> dict[str, Any]:
+    """Load all DFIR YAML schemas from _schema/ directory with caching."""
     import yaml
     from pathlib import Path
 
@@ -227,16 +222,18 @@ def _dfir_playbook(phase: str) -> str:
         except Exception:
             return {}
 
-    evtx_events = _load_yaml("evtx_events.yaml")
-    logon_types = _load_yaml("logon_types.yaml")
-    event_ids = _load_yaml("event_ids.yaml")
-    app_catalog = _load_yaml("app_catalog.yaml")
-    fp_rules = _load_yaml("false_positive_rules.yaml")
-    artifact_inference = _load_yaml("artifact_inference.yaml")
+    return {
+        "evtx_events": _load_yaml("evtx_events.yaml"),
+        "logon_types": _load_yaml("logon_types.yaml"),
+        "event_ids": _load_yaml("event_ids.yaml"),
+        "app_catalog": _load_yaml("app_catalog.yaml"),
+        "fp_rules": _load_yaml("false_positive_rules.yaml"),
+        "artifact_inference": _load_yaml("artifact_inference.yaml"),
+    }
 
-    # Event ID narrative
-    events_data = event_ids.get("events", {}) if isinstance(event_ids, dict) else {}
-    event_narrative_parts = []
+
+def _render_event_narrative(events_data: dict) -> str:
+    parts: list[str] = []
     for eid_str, info in sorted(events_data.items(), key=lambda x: int(x[0]) if isinstance(x[0], str) and x[0].isdigit() else 0):
         if isinstance(info, dict):
             title = info.get("title", "")
@@ -244,119 +241,170 @@ def _dfir_playbook(phase: str) -> str:
             disallowed = info.get("disallowed_without_extra", [])
             required = info.get("required_fields", [])
             keywords = info.get("keywords_for_string_search", [])
-            parts = [f"Event {eid_str} ({title})"]
+            line_parts = [f"Event {eid_str} ({title})"]
             if required:
-                parts.append(f" always query: {', '.join(required)}")
+                line_parts.append(f" always query: {', '.join(required)}")
             if allowed:
-                parts.append(f" you may claim: {'; '.join(allowed)}")
+                line_parts.append(f" you may claim: {'; '.join(allowed)}")
             if disallowed:
-                parts.append(f" DO NOT claim without extra evidence: {'; '.join(disallowed)}")
+                line_parts.append(f" DO NOT claim without extra evidence: {'; '.join(disallowed)}")
             if keywords:
-                parts.append(f" string-search keywords: {', '.join(keywords)}")
-            event_narrative_parts.append(" - " + ". ".join(parts) + ".")
-    event_narrative = "\n".join(event_narrative_parts)
+                line_parts.append(f" string-search keywords: {', '.join(keywords)}")
+            parts.append(" - " + ". ".join(line_parts) + ".")
+    return "\n".join(parts)
 
-    # Logon types narrative
-    logon_types_data = logon_types.get("types", {}) if isinstance(logon_types, dict) else {}
-    logon_narrative_parts = []
-    for lt, info in sorted(logon_types_data.items(), key=lambda x: info.get("priority", 99) if isinstance(info, dict) else 99):
+
+def _render_logon_narrative(logon_types_data: dict) -> str:
+    parts: list[str] = []
+    for lt, info in sorted(logon_types_data.items(), key=lambda x: x[1].get("priority", 99) if isinstance(x[1], dict) else 99):
         if isinstance(info, dict):
-            logon_narrative_parts.append(
-                f" - LogonType {lt}: {info.get('name', '')} — {info.get('description', '')} (priority {info.get('priority', '')})"
+            parts.append(
+                f" - LogonType {lt}: {info.get('name', '')} \u2014 {info.get('description', '')} (priority {info.get('priority', '')})"
             )
-    logon_narrative = "\n".join(logon_narrative_parts)
+    return "\n".join(parts)
 
-    # Priority events narrative
-    priority_events = logon_types.get("priority_events", []) if isinstance(logon_types, dict) else []
-    priority_narrative_parts = []
+
+def _render_priority_narrative(priority_events: list) -> str:
+    parts: list[str] = []
     for pe in priority_events:
         if isinstance(pe, dict):
             eids = pe.get("event_ids", [])
             reason = pe.get("reason", "")
-            priority_narrative_parts.append(f" - First check events {eids}: {reason}")
-    priority_narrative = "\n".join(priority_narrative_parts)
+            parts.append(f" - First check events {eids}: {reason}")
+    return "\n".join(parts)
 
-    # Schema notes narrative
-    schema_notes = evtx_events.get("notes", {}) if isinstance(evtx_events, dict) else {}
-    schema_note_parts = []
-    for key, note in schema_notes.items():
+
+def _render_schema_narrative(schema_notes: dict) -> str:
+    parts: list[str] = []
+    for key, note in sorted(schema_notes.items()):
         if isinstance(note, str):
-            schema_note_parts.append(f" - {key}: {note}")
-    schema_narrative = "\n".join(schema_note_parts)
+            parts.append(f" - {key}: {note}")
+    return "\n".join(parts)
 
-    # False positive narrative
-    fp_guidance = fp_rules.get("reduction_guidance", {}) if isinstance(fp_rules, dict) else {}
-    fp_narrative_parts = []
+
+def _render_fp_narrative(fp_guidance: dict) -> str:
+    parts: list[str] = []
     if isinstance(fp_guidance, dict):
         for key, items in fp_guidance.items():
             if isinstance(items, list):
-                fp_narrative_parts.append(f" {key}: {'; '.join(str(i) for i in items)}")
-    fp_narrative = "\n".join(fp_narrative_parts)
+                parts.append(f" {key}: {'; '.join(str(i) for i in items)}")
+    return "\n".join(parts)
 
-    # JSON field extractors narrative
-    extractors = evtx_events.get("json_field_extractors", {}) if isinstance(evtx_events, dict) else {}
-    extractor_parts = []
+
+def _render_extractor_narrative(extractors: dict) -> str:
+    parts: list[str] = []
     if isinstance(extractors, dict):
         for field, expr in extractors.items():
-            extractor_parts.append(f" - If {field.lower()} column is NULL/empty, use {expr} to extract from raw_json")
-    extractor_narrative = "\n".join(extractor_parts)
+            parts.append(f" - If {field.lower()} column is NULL/empty, use {expr} to extract from raw_json")
+    return "\n".join(parts)
 
-    # App catalog narrative
-    app_mappings = app_catalog.get("mappings", {}) if isinstance(app_catalog, dict) else {}
-    app_narrative_parts = []
+
+def _render_app_catalog_narrative(app_mappings: dict) -> str:
+    parts: list[str] = []
     if isinstance(app_mappings, dict):
         for exe, info in app_mappings.items():
             if isinstance(info, dict):
-                app_narrative_parts.append(f" - {exe}: {info.get('category', '?')} — {info.get('description', '')}")
-    app_narrative = "\n".join(app_narrative_parts)
+                parts.append(f" - {exe}: {info.get('category', '?')} \u2014 {info.get('description', '')}")
+    return "\n".join(parts)
 
-    # Artifact-to-application inference narrative
-    artifact_parts = []
-    for artifact_type, entries in artifact_inference.items() if isinstance(artifact_inference, dict) else {}:
+
+def _render_artifact_inference_narrative(artifact_data: dict) -> str:
+    parts: list[str] = []
+    for artifact_type, entries in artifact_data.items():
         if isinstance(entries, list):
-            artifact_parts.append(f"## {artifact_type.replace('_', ' ').title()}")
+            parts.append(f"## {artifact_type.replace('_', ' ').title()}")
             for entry in entries:
                 if isinstance(entry, dict):
                     pattern = entry.get("pattern", "")
                     app = entry.get("app_name", "")
                     category = entry.get("app_category", "")
                     notes = entry.get("notes", "")
-                    parts = [f" - {pattern} → {app} ({category})"]
+                    line_parts = [f" - {pattern} \u2192 {app} ({category})"]
                     if notes:
-                        parts.append(f": {notes}")
-                    artifact_parts.append("".join(parts))
-    artifact_narrative = "\n".join(artifact_parts)
+                        line_parts.append(f": {notes}")
+                    parts.append("".join(line_parts))
+    return "\n".join(parts)
 
-    # Build the base DFIR knowledge section (common to ALL phases)
-    base_playbook = f"""<DFIR_PLAYBOOK>
-You are a DFIR analyst. Follow these investigation principles.
 
-## Event ID Reference
-{event_narrative or "No event ID reference available."}
+@lru_cache(maxsize=8)
+def _dfir_playbook(phase: str) -> str:
+    """Generate DFIR investigator playbook narrative for the given phase.
 
-## Logon Type Reference
-{logon_narrative or "No logon type reference available."}
+    Phase is one of: 'broad_plan', 'hypothesis_plan', 'check', 'report_section',
+    'section_agent_plan', 'section_agent_check'.
+    Returns a narrative string (5-10k chars) optimized for weak LLMs.
+    """
+    from pathlib import Path
 
-## Priority Investigation Order
-{priority_narrative or "No priority order specified."}
+    yamls = _load_dfir_yamls()
 
-## Schema Notes & Column Guidance
-{schema_narrative or "No schema notes available."}
+    events_data = yamls["event_ids"].get("events", {}) if isinstance(yamls["event_ids"], dict) else {}
+    logon_types_data = yamls["logon_types"].get("types", {}) if isinstance(yamls["logon_types"], dict) else {}
+    priority_events = yamls["logon_types"].get("priority_events", []) if isinstance(yamls["logon_types"], dict) else []
+    schema_notes = yamls["evtx_events"].get("notes", {}) if isinstance(yamls["evtx_events"], dict) else {}
+    fp_guidance = yamls["fp_rules"].get("reduction_guidance", {}) if isinstance(yamls["fp_rules"], dict) else {}
+    extractors = yamls["evtx_events"].get("json_field_extractors", {}) if isinstance(yamls["evtx_events"], dict) else {}
+    app_mappings = yamls["app_catalog"].get("mappings", {}) if isinstance(yamls["app_catalog"], dict) else {}
+    artifact_data = yamls["artifact_inference"] if isinstance(yamls["artifact_inference"], dict) else {}
 
-## JSON Field Extractors (when columns are NULL)
-{extractor_narrative or "No extractors available."}
+    event_narrative = _render_event_narrative(events_data)
+    logon_narrative = _render_logon_narrative(logon_types_data)
+    priority_narrative = _render_priority_narrative(priority_events)
+    schema_narrative = _render_schema_narrative(schema_notes)
+    fp_narrative = _render_fp_narrative(fp_guidance)
+    extractor_narrative = _render_extractor_narrative(extractors)
+    app_narrative = _render_app_catalog_narrative(app_mappings)
+    artifact_narrative = _render_artifact_inference_narrative(artifact_data)
 
-## False-Positive Reduction Guidance
-{fp_narrative or "No FP reduction guidance."}
+    # Phase-aware sections. Planning phases (broad_plan / hypothesis_plan) don't
+    # need evidence-interpretation references; cutting them saves ~25% of the
+    # system prompt for those calls.
+    planning_phases = {"broad_plan", "hypothesis_plan"}
+    interpretation_phases = {"check", "report_section", "section_agent_check"}
+    include_fp = phase in interpretation_phases
+    include_app_catalog = phase not in planning_phases  # planners don't interpret process names
+    include_artifact_inference = phase in interpretation_phases
 
-## Application Catalog (process categorization)
-{app_narrative or "No app catalog available."}
-
-## Artifact-to-Application Inference
-{artifact_narrative or "No artifact inference data available."}
-"""
+    sections = [
+        "<DFIR_PLAYBOOK>",
+        "You are a DFIR analyst. Follow these investigation principles.",
+        "",
+        "## Event ID Reference",
+        event_narrative or "No event ID reference available.",
+        "",
+        "## Logon Type Reference",
+        logon_narrative or "No logon type reference available.",
+        "",
+        "## Priority Investigation Order",
+        priority_narrative or "No priority order specified.",
+        "",
+        "## Schema Notes & Column Guidance",
+        schema_narrative or "No schema notes available.",
+        "",
+        "## JSON Field Extractors (when columns are NULL)",
+        extractor_narrative or "No extractors available.",
+    ]
+    if include_fp:
+        sections.extend([
+            "",
+            "## False-Positive Reduction Guidance",
+            fp_narrative or "No FP reduction guidance.",
+        ])
+    if include_app_catalog:
+        sections.extend([
+            "",
+            "## Application Catalog (process categorization)",
+            app_narrative or "No app catalog available.",
+        ])
+    if include_artifact_inference:
+        sections.extend([
+            "",
+            "## Artifact-to-Application Inference",
+            artifact_narrative or "No artifact inference data available.",
+        ])
+    base_playbook = "\n".join(sections) + "\n"
     # Phase-specific playbook loaded from external MD file
-    playbook_dir = schema_dir / "playbook"
+    playbook_dir = Path(__file__).parent.parent / "rulepacks" / "_schema" / "playbook"
     phase_file = playbook_dir / f"{phase}.md"
     phase_narrative = ""
     if phase_file.exists():
@@ -709,22 +757,10 @@ Output: {"read_more": [], "hypothesis": {"id": "H-5", "description": "RDP used t
 
 
 
-def build_check_messages(
-    planned_query: PlannedQuery,
-    hypothesis: Hypothesis | None,
-    finding_candidates: list[dict[str, Any]],
-    result_summary: dict[str, Any],
-    overview_md: str,
-    memory_context_md: str,
-    query_index: int = 1,
-    max_queries: int = 5,
-    observed_evidence_ids: list[str] | None = None,
-    rule_context: RuleContext | None = None,
-    fallback_info: dict[str, Any] | None = None,
-) -> list[dict[str, str]]:
+def _check_strictness_note(query_index: int, max_queries: int) -> str:
     queries_remaining = max_queries - query_index
     if queries_remaining == 0:
-        strictness_note = (
+        return (
             f"CONVERGENCE REQUIRED: This is query {query_index} of {max_queries} — the FINAL check for this hypothesis. "
             "You must commit to a definitive verdict now. "
             "If any evidence leans one way, use 'confirmed' or 'refuted'. "
@@ -732,58 +768,74 @@ def build_check_messages(
             "Do not output 'newlead' on the final query — new leads will not be pursued at this stage."
         )
     elif queries_remaining == 1:
-        strictness_note = (
+        return (
             f"This is query {query_index} of {max_queries} — one query remains after this. "
             "Be willing to lean toward a verdict if the evidence is suggestive but not conclusive. "
             "Use 'newlead' only if you have identified a genuinely distinct attack surface not yet investigated."
         )
-    else:
-        strictness_note = (
-            f"This is query {query_index} of {max_queries} ({queries_remaining} checks remaining). "
-            "Apply standard evidentiary rigor."
-        )
-    evidence_id_guidance = ""
-    if observed_evidence_ids:
-        evidence_id_guidance = (
-            f"The following evidence_ids are valid for this query: {observed_evidence_ids[:50]}. "
-            "Only reference evidence_ids from this list in your output. "
-        )
-    zero_evidence = int(result_summary.get("row_count") or 0) == 0
-    zero_evidence_note = ""
-    if zero_evidence:
-        zero_evidence_note = (
-            "IMPORTANT: The query result contains 0 rows — 'confirmed' verdict is forbidden. "
-            "Use 'refuted' if the hypothesis is clearly disproven, or 'inconclusive' if the result is ambiguous. "
-        )
+    return (
+        f"This is query {query_index} of {max_queries} ({queries_remaining} checks remaining). "
+        "Apply standard evidentiary rigor."
+    )
+
+
+def _check_evidence_id_guidance(observed_evidence_ids: list[str] | None) -> str:
+    if not observed_evidence_ids:
+        return ""
+    return (
+        f"The following evidence_ids are valid for this query: {observed_evidence_ids[:50]}. "
+        "Only reference evidence_ids from this list in your output. "
+    )
+
+
+def _check_zero_evidence_note(result_summary: dict) -> str:
+    if int(result_summary.get("row_count") or 0) != 0:
+        return ""
+    return (
+        "IMPORTANT: The query result contains 0 rows — 'confirmed' verdict is forbidden. "
+        "Use 'refuted' if the hypothesis is clearly disproven, or 'inconclusive' if the result is ambiguous. "
+    )
+
+
+def _check_entity_constraint() -> str:
     entity_type_list = list(ENTITY_TYPE_ALIASES.keys())
-    entity_constraint = (
+    return (
         f"When adding entities, entity_type must be one of: {entity_type_list}. "
         "Do not emit placeholder values ('n/a', 'unknown', empty string) as entity names or types. "
     )
-    rule_verdict_guidance = ""
-    if rule_context:
-        confirm_conditions = rule_context.confirm_when or {}
-        refute_conditions = rule_context.refute_when or {}
-        rule_verdict_guidance = (
-            f"Rule-based verdict criteria (from {rule_context.rule_id}): "
-            f"Confirm when: {confirm_conditions}. "
-            f"Refute when: {refute_conditions}. "
-            "If rule criteria are met, use them as the primary verdict basis. "
-        )
-    fallback_guidance = ""
-    if fallback_info:
-        phase = fallback_info.get("phase", "")
-        source_rule = fallback_info.get("source_rule_id", "")
-        event_ids = fallback_info.get("event_ids") or []
-        keywords = fallback_info.get("keywords") or []
-        fallback_guidance = (
-            f"IMPORTANT: This result was obtained via fallback_search phase '{phase}' "
-            f"from rule '{source_rule}'. "
-            "The primary query returned 0 rows, but this fallback phase found relevant evidence. "
-            f"{f'Event IDs from the query were {event_ids}. ' if event_ids else ''}"
-            f"{f'String-search keywords used were {keywords}. ' if keywords else ''}"
-            "Use this context when determining verdict and rationale. "
-        )
+
+
+def _check_rule_verdict_guidance(rule_context: RuleContext | None) -> str:
+    if not rule_context:
+        return ""
+    confirm_conditions = rule_context.confirm_when or {}
+    refute_conditions = rule_context.refute_when or {}
+    return (
+        f"Rule-based verdict criteria (from {rule_context.rule_id}): "
+        f"Confirm when: {confirm_conditions}. "
+        f"Refute when: {refute_conditions}. "
+        "If rule criteria are met, use them as the primary verdict basis. "
+    )
+
+
+def _check_fallback_guidance(fallback_info: dict | None) -> str:
+    if not fallback_info:
+        return ""
+    phase = fallback_info.get("phase", "")
+    source_rule = fallback_info.get("source_rule_id", "")
+    event_ids = fallback_info.get("event_ids") or []
+    keywords = fallback_info.get("keywords") or []
+    return (
+        f"IMPORTANT: This result was obtained via fallback_search phase '{phase}' "
+        f"from rule '{source_rule}'. "
+        "The primary query returned 0 rows, but this fallback phase found relevant evidence. "
+        f"{f'Event IDs from the query were {event_ids}. ' if event_ids else ''}"
+        f"{f'String-search keywords used were {keywords}. ' if keywords else ''}"
+        "Use this context when determining verdict and rationale. "
+    )
+
+
+def _check_example_block(rule_context: RuleContext | None, fallback_info: dict | None, zero_evidence: bool) -> str:
     EXAMPLE_CONFIRMED = '''
 <EXAMPLE verdict="confirmed">
 Input: hypothesis requires entities {src_ip, computer, target_user} to confirm lateral movement.
@@ -804,7 +856,29 @@ Input: hypothesis requires {src_ip, computer} for lateral movement. Query return
 Output: {"query_id": "Q125", "verdict": "inconclusive", "rationale": "Missing src_ip in observed row. Need query to identify source IP of logon events to HOST-B.", "finding_updates": [], "memory_updates": {}}
 </EXAMPLE>
 '''
+    return f"{EXAMPLE_CONFIRMED}{EXAMPLE_REFUTED_ZERO}{EXAMPLE_INCONCLUSIVE}"
 
+
+def build_check_messages(
+    planned_query: PlannedQuery,
+    hypothesis: Hypothesis | None,
+    finding_candidates: list[dict[str, Any]],
+    result_summary: dict[str, Any],
+    overview_md: str,
+    memory_context_md: str,
+    query_index: int = 1,
+    max_queries: int = 5,
+    observed_evidence_ids: list[str] | None = None,
+    rule_context: RuleContext | None = None,
+    fallback_info: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    """Build full check-phase messages for evaluating a query result.
+
+    Injects verdict taxonomy rules, entity constraints, zero-evidence
+    guardrails, and rule-based criteria."""
+    str_fallback = _check_fallback_guidance(fallback_info)
+    zero_evidence = int(result_summary.get("row_count") or 0) == 0
+    entity_type_list = list(ENTITY_TYPE_ALIASES.keys())
     system = (
         f"{_dfir_playbook('check')}\n"
         f"{_time_range_guidance()}"
@@ -812,10 +886,10 @@ Output: {"query_id": "Q125", "verdict": "inconclusive", "rationale": "Missing sr
         "<INPUT_SCHEMA>SQL result summary, hypothesis with required_entities, finding candidates, evidence_ids list</INPUT_SCHEMA>\n"
         "<RULES>\n"
         f"evidence_ids: Only reference evidence_ids from this query: {observed_evidence_ids[:50] if observed_evidence_ids else 'none available'}\n"
-        f"zero_evidence: {zero_evidence_note}\n"
+        f"zero_evidence: {_check_zero_evidence_note(result_summary)}\n"
         f"entity_constraint: entity_type must be one of: {entity_type_list}. No placeholder values.\n"
-        f"rule_based: {rule_verdict_guidance}\n"
-        f"fallback: {fallback_guidance}\n"
+        f"rule_based: {_check_rule_verdict_guidance(rule_context)}\n"
+        f"fallback: {str_fallback}\n"
         "</RULES>\n"
         "<MEMORY_RULES>\n"
         "facts: always include observed evidence_ids from the current query result. Do not emit speculative or unconfirmed items into memory_updates.facts. If you cannot cite observed evidence_ids, omit the fact.\n"
@@ -831,7 +905,7 @@ Output: {"query_id": "Q125", "verdict": "inconclusive", "rationale": "Missing sr
         "newlead — genuinely new attack surface or actor. Name the specific entity.\n"
         "Prohibited phrases: 'direct causation not proven', 'full attack chain not visible', 'requires further investigation', 'cannot be determined', 'insufficient evidence'. State exactly what entity is missing.\n"
         "</VERDICT_RULES>\n"
-        f"{strictness_note}\n"
+        f"{_check_strictness_note(query_index, max_queries)}\n"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
         '  "query_id": "Q-123",\n'
@@ -845,7 +919,7 @@ Output: {"query_id": "Q125", "verdict": "inconclusive", "rationale": "Missing sr
         '  "notes": ""\n'
         "}\n"
         "</OUTPUT_SCHEMA>\n"
-        f"{EXAMPLE_CONFIRMED}{EXAMPLE_REFUTED_ZERO}{EXAMPLE_INCONCLUSIVE}"
+        f"{_check_example_block(rule_context, fallback_info, zero_evidence)}"
         "Output JSON only. "
         f"{_lang_instruction()} "
     )
@@ -984,6 +1058,34 @@ def _rows_to_markdown_table(rows: list[dict[str, Any]], max_rows: int = 30) -> s
     return "\n".join([header, separator, *data_lines])
 
 
+def _section_verification_block(verification_notes: list[str] | None) -> str:
+    return f"verification_notes_from_prior_subsections: {verification_notes or []}\n\n"
+
+
+def _section_evidence_block(raw_evidence_rows: list[dict] | None) -> str:
+    if not raw_evidence_rows:
+        return ""
+    return (
+        "You are also given normalized evidence summaries derived from row-level evidence. "
+        "Treat them as reference only; do not paste raw tables or raw field dumps into the narrative body. "
+        "Use them to write a short, normalized one-line summary of each relevant observation. "
+        "If the section needs an appendix-style evidence note, place it in a dedicated Raw Evidence subsection with concise summaries only, never with NULL/None-heavy raw rows. "
+    )
+
+
+def _section_coverage_block(report_brief: dict) -> str:
+    return _format_evidence_coverage(report_brief)
+
+
+def _section_context_block(context_sections: dict[str, str], current_section_outputs: dict[str, str]) -> str:
+    trimmed_context = _truncate_context_sections(context_sections)
+    trimmed_current = _truncate_context_sections(current_section_outputs, max_chars=1200)
+    return (
+        f"previous_sections: {trimmed_context}\n\n"
+        f"current_section_progress: {trimmed_current}\n\n"
+    )
+
+
 def build_report_section_messages(
     section_meta: dict[str, Any],
     evidence_results: list[dict[str, Any]],
@@ -995,29 +1097,20 @@ def build_report_section_messages(
     verification_notes: list[str] | None = None,
     raw_evidence_rows: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
-    trimmed_context_sections = _truncate_context_sections(context_sections)
-    trimmed_current_outputs = _truncate_context_sections(current_section_outputs or {}, max_chars=1200)
+    """Build messages for report section writing with evidence and template context."""
+
     insufficient_evidence_placeholder = (
         "【調査不足: 理由】"
         if _output_language().startswith("ja")
         else "[INSUFFICIENT EVIDENCE: reason]"
     )
-    raw_table_guidance = ""
-    if raw_evidence_rows:
-        raw_table_guidance = (
-            "You are also given normalized evidence summaries derived from row-level evidence. "
-            "Treat them as reference only; do not paste raw tables or raw field dumps into the narrative body. "
-            "Use them to write a short, normalized one-line summary of each relevant observation. "
-            "If the section needs an appendix-style evidence note, place it in a dedicated Raw Evidence subsection with concise summaries only, never with NULL/None-heavy raw rows. "
-        )
-    coverage_guidance = _format_evidence_coverage(report_brief)
+    coverage_guidance = _section_coverage_block(report_brief or {})
     if str(section_meta.get("section") or "").strip() == "1_overview" and coverage_guidance:
         coverage_guidance = (
             "Use the following evidence coverage summary as the canonical Evidence Scope. "
             "Do not invent sources that are not listed.\n"
             f"{coverage_guidance}\n"
         )
-    # Strip sample_rows from evidence_results to avoid sending the same rows twice when raw_evidence_rows is provided.
     evidence_for_prompt: list[dict[str, Any]] = [result for result in evidence_results if str(result.get("kind") or "rows") == "rows"]
     if not evidence_for_prompt:
         evidence_for_prompt = evidence_results
@@ -1066,8 +1159,9 @@ Output: "## Process Execution\\n\\nOne suspicious process was observed: powershe
         f"{strength_guidance}"
         "</RULES>\n"
     )
-    if raw_table_guidance:
-        system += f"{raw_table_guidance}\n"
+    evidence_guidance = _section_evidence_block(raw_evidence_rows)
+    if evidence_guidance:
+        system += f"{evidence_guidance}\n"
     if coverage_guidance:
         system += f"{coverage_guidance}\n"
     system += f"{EXAMPLE_REPORT_SECTION}"
@@ -1080,9 +1174,8 @@ Output: "## Process Execution\\n\\nOne suspicious process was observed: powershe
         f"section_meta: {section_meta}\n\n"
         f"current_subsection: {section_heading or '(full section)'}\n\n"
         f"report_brief: {report_brief or {}}\n\n"
-        f"previous_sections: {trimmed_context_sections}\n\n"
-        f"current_section_progress: {trimmed_current_outputs}\n\n"
-        f"verification_notes_from_prior_subsections: {verification_notes or []}\n\n"
+        f"{_section_context_block(context_sections, current_section_outputs or {})}"
+        f"{_section_verification_block(verification_notes)}"
         f"evidence_coverage: {report_brief.get('evidence_coverage') if isinstance(report_brief, dict) else {}}\n\n"
         f"evidence_results: {evidence_for_prompt}\n"
         f"{raw_block}\n"
