@@ -576,6 +576,15 @@ section key は **stable な識別子** として扱うこと。ファイル名�
 - claim の provenance は evidence_query summary から計算(自由文の引用テキストだけに頼らない)。
 - gap は明示的な insufficient-evidence マーカーから parse され、次サイクルの仮説に投入。
 
+### 内蔵テンプレートと評価用テンプレートの分離
+
+| 場所 | 用途 |
+|---|---|
+| `src/forensia/report_template/` | パッケージ同梱の汎用インシデントレポート。`forensia init` で各ケースに `report_template/` としてコピーされる。 |
+| `./templates/` (リポジトリルート) | このソフトウェアの推論精度を計測するためのベンチマーク専用テンプレート。BENCHMARK.md / BENCHMARK-ANSWERS.md と対応し、6_appendix で 12 個の Scored Question を block として展開する。 |
+
+ベンチマーク評価時は `forensia run ... --template-dir ./templates` で指定して使う。ベンチマーク以外の通常運用ではこの templates/ は使わない。
+
 ## SQL 安全性
 
 LLM が出した SQL は読み取り専用の証拠アクセスとして扱います。

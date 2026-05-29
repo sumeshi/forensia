@@ -32,3 +32,24 @@ query: |
 finding:
   title: "Encoded or obfuscated PowerShell script block (4104): {computer}"
   summary: "An encoded or obfuscated PowerShell script block was detected on {computer} at {timestamp}. Executing user: {target_user}. This strongly suggests malware download or execution."
+hypotheses:
+  - id: malicious_powershell_execution
+    segment: execution
+    description: "Encoded or obfuscated PowerShell script block detected on {computer} executed by {target_user} indicates malicious execution"
+    required_entities: [computer, target_user]
+    confirm_when:
+      co_observed_event_ids: [4104, 4688]
+      same_host: true
+      within_minutes: 5
+    refute_when:
+      zero_rows: true
+    follow_up_questions:
+      - "What command was decoded from the obfuscated PowerShell block on {computer}?"
+      - "Did the PowerShell process on {computer} initiate network connections?"
+      - "Is there a parent process (4688) that launched PowerShell on {computer}?"
+    report_sections: [3_technical, 4_gaps]
+fallback_search:
+  - phase: artifact_table
+    table: prefetch_executions
+    keywords: ["powershell.exe", "powershell_ise.exe"]
+    rationale: "PowerShell execution may appear in prefetch even if script block logging is incomplete"

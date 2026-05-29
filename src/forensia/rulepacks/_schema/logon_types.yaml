@@ -1,21 +1,37 @@
 # Logon type reference for evtx_events
 # Used by build_investigation_framework() to explain logon_type meanings
 types:
+  "0":
+    name: SYSTEM
+    description: "Used only by SYSTEM account. Not a normal user logon."
+    priority: 3
   "2":
     name: Interactive
-    description: "Physical access or RunAs"
+    description: "Physical access or RunAs. Credentials may remain in LSA."
     priority: 2
   "3":
     name: Network
     description: "net use / PsExec / WinRM / remote MMC. Credentials do NOT remain on target."
     priority: 1
+  "4":
+    name: Batch
+    description: "Scheduled tasks and other non-interactive batch execution. Passwords may be stored as LSA Secret."
+    priority: 2
   "5":
     name: Service
-    description: "Service account credentials remain in LSA."
+    description: "Service account credentials remain in LSA. Passwords may be stored as LSA Secret."
     priority: 3
+  "7":
+    name: Unlock
+    description: "Workstation unlock. GINA DLL-based logon type for unlocking a locked session."
+    priority: 3
+  "8":
+    name: NetworkCleartext
+    description: "Basic auth / WinRM CredSSP / IIS 6.0+. Reusable credentials remain on target — high credential theft risk."
+    priority: 1
   "9":
     name: NewCredentials
-    description: "RUNAS /NETWORK. Local identity unchanged; only outbound connections use the new credential."
+    description: "RUNAS /NETWORK. Local identity unchanged; only outbound connections use the new credential. Credentials may remain in LSA."
     priority: 2
   "10":
     name: RemoteInteractive
@@ -25,10 +41,19 @@ types:
     name: CachedInteractive
     description: "DC not contacted; domain credentials cached locally."
     priority: 2
+  "12":
+    name: CachedRemoteInteractive
+    description: "RemoteInteractive-like session using cached credentials. Internal audit use."
+    priority: 2
+  "13":
+    name: CachedUnlock
+    description: "Workstation unlock using cached domain credentials."
+    priority: 3
 
-interactive_types: [2, 10]
-network_types: [3, 9, 10]
+interactive_types: [2, 10, 11]
+network_types: [3, 8, 9, 10]
 service_types: [5]
+batch_types: [4]
 
 # Priority investigation order
 priority_events:
@@ -39,9 +64,29 @@ priority_events:
     reason: "Enumerate lateral movement sources (src_ip) and targets (computer)."
   - event_ids: [4625]
     reason: "Group by src_ip to identify brute-force attempts."
+  - event_ids: [4768, 4769]
+    reason: "Kerberos ticket requests (DC only) — detect Kerberoasting, Golden/Silver Ticket abuse."
+  - event_ids: [4776]
+    reason: "NTLM authentication by DC — detect NTLM relay or brute force."
+  - event_ids: [4648]
+    reason: "Explicit credential use — RUNAS or scheduled task with alternate credentials, often used for lateral movement."
+  - event_ids: [4672]
+    reason: "Admin logon — correlate with 4624 to identify privileged session creation."
   - event_ids: [4688, 4104]
     reason: "Detect PowerShell and LOLBas execution."
   - event_ids: [4697, 7045, 4698]
     reason: "Find persistence (services, tasks)."
-  - event_ids: [4720, 4732, 4728]
-    reason: "Find suspicious account operations."
+  - event_ids: [4700, 4701, 4702]
+    reason: "Task enable/disable/update — detect defense evasion or persistence modification."
+  - event_ids: [4720, 4722, 4726, 4732, 4733, 4738, 4740]
+    reason: "Find suspicious account operations (create, enable, delete, group change, lockout)."
+  - event_ids: [4723, 4724]
+    reason: "Password changes and resets — detect potential credential theft follow-up."
+  - event_ids: [5140]
+    reason: "SMB share access — detect lateral movement via admin shares."
+  - event_ids: [21, 22, 24, 25, 4778, 4779]
+    reason: "RDP session lifecycle — track remote desktop connections including disconnects and reconnects."
+  - event_ids: [5156, 5157]
+    reason: "WFP connection events — detect C2 or scanning (noisy, use with filtering)."
+  - event_ids: [7036, 7040]
+    reason: "Service state/start type changes — detect EDR/AV stop or persistence modification."

@@ -7,8 +7,8 @@ rule_ids:
   - windows-defender-5001-realtime-disabled
   - windows-security-4697-service-install
   - windows-security-5140-admin-share-access
-  - windows-security-4720-account-created
-  - windows-security-4732-local-admin-added
+  - windows-security-4720-account-lifecycle
+  - windows-security-4728-group-change
   - windows-security-4625-failed-logon
   - windows-security-4688-powershell
   - windows-powershell-4104-encoded

@@ -23,3 +23,23 @@ query: |
 finding:
   title: "RDP session logon success: {target_user} @ {computer}"
   summary: "A successful RDP session logon (LocalSessionManager 21) was observed on {computer} at {timestamp}. Source IP: {src_ip}. Correlate with Security 4624 (LogonType=10) to validate the user and session."
+hypotheses:
+  - id: rdp_session_lateral_movement
+    segment: lateral-movement
+    description: "RDP session established from {src_ip} to {computer} as {target_user} may indicate lateral movement"
+    required_entities: [src_ip, computer, target_user]
+    confirm_when:
+      co_observed_event_ids: [21, 4624]
+      same_host: true
+      within_minutes: 5
+    refute_when:
+      zero_rows: true
+    follow_up_questions:
+      - "Does {src_ip} appear in other RDP sessions across the environment?"
+      - "Was suspicious process execution observed on {computer} after this session?"
+      - "Is this RDP session consistent with normal administrative behavior?"
+    report_sections: [3_technical, 4_gaps]
+fallback_search:
+  - phase: related_event_ids
+    event_ids: [4624, 4778]
+    rationale: "RDP session logon may correlate with Security 4624 or RDP reconnect 4778"

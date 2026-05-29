@@ -31,7 +31,7 @@ EVIDENCE_ID_PATTERN = re.compile(r"\bev-[A-Za-z0-9._:-]+\b")
 HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.*)$")
 FINDING_ID_PATTERN = re.compile(r"\b[A-Za-z][A-Za-z0-9-]*-\d{4}\b")
 HTML_FILL_PATTERN = re.compile(r"<!--\s*fill(?:[^>]*)-->", re.IGNORECASE)
-BLOCK_HINT_PATTERN = re.compile(r"<!--\s*(?P<name>evidence_keypoints|mode)\s*:\s*(?P<value>.*?)\s*-->", re.IGNORECASE)
+BLOCK_HINT_PATTERN = re.compile(r"<!--\s*(?P<name>evidence_keypoints|mode|benchmark_id)\s*:\s*(?P<value>.*?)\s*-->", re.IGNORECASE)
 RAW_EVIDENCE_HEADING_PATTERN = re.compile(r"^#{2,6}\s*Raw Evidence\s*$", re.IGNORECASE)
 EvidenceResolver = Callable[[CaseDB], list[dict[str, Any]]]
 
@@ -67,7 +67,7 @@ def _parse_template(template_path: str) -> tuple[str, TemplateMeta]:
 
 def _parse_block_hints(block_body: str) -> dict[str, Any]:
     """Extract hint annotations (evidence_keypoints, mode) from a block's HTML comment markers."""
-    hints: dict[str, Any] = {"evidence_keypoints": [], "mode": ""}
+    hints: dict[str, Any] = {"evidence_keypoints": [], "mode": "", "benchmark_id": ""}
     seen_keypoints: set[str] = set()
     for match in BLOCK_HINT_PATTERN.finditer(block_body):
         name = str(match.group("name") or "").strip().lower()
@@ -83,6 +83,8 @@ def _parse_block_hints(block_body: str) -> dict[str, Any]:
                 hints["evidence_keypoints"].append(keypoint)
         elif name == "mode":
             hints["mode"] = value.casefold()
+        elif name == "benchmark_id":
+            hints["benchmark_id"] = value.strip()
     return hints
 
 
@@ -2061,13 +2063,14 @@ def prepare_section_request(
     title = _title_from_template_body(template_body, section_key)
     template_preamble, blocks = _split_template_body(template_body)
     if not blocks:
-        blocks = [{"heading": "", "template_body": template_body, "evidence_keypoints": [], "mode": ""}]
+        blocks = [{"heading": "", "template_body": template_body, "evidence_keypoints": [], "mode": "", "benchmark_id": ""}]
     block_requests = [
         {
             "heading": block["heading"],
             "template_body": block["template_body"],
             "evidence_keypoints": list(block.get("evidence_keypoints") or []),
             "mode": str(block.get("mode") or ""),
+            "benchmark_id": str(block.get("benchmark_id") or ""),
         }
         for block in blocks
     ]

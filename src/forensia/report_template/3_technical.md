@@ -6,5 +6,5 @@
 ## Execution and Persistence
 <!-- Process execution, persistence mechanisms, anti-forensics techniques -->
 
-## Network Activity
+## Authentication and Lateral Movement
 <!-- Network connections, lateral movement, external communications -->

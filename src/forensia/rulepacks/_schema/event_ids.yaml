@@ -1,5 +1,241 @@
 table: event_ids
 events:
+  1100:
+    title: Event Log service shutdown
+    required_fields:
+      - computer
+    allowed_claims:
+      - event log service was shut down
+      - logging was intentionally stopped
+    disallowed_without_extra:
+      - log tampering (needs adjacent evidence of events before shutdown)
+      - attacker action (could be admin maintenance)
+    keywords_for_string_search:
+      - log service
+      - shutdown
+  1102:
+    title: Security log cleared
+    required_fields:
+      - subject_user
+      - computer
+    allowed_claims:
+      - security log was cleared
+      - log tampering detected
+    disallowed_without_extra:
+      - automated wiping (need process evidence)
+      - attacker action (verify user context)
+    keywords_for_string_search:
+      - log cleared
+      - audit log
+  104:
+    title: System log cleared
+    required_fields:
+      - computer
+    allowed_claims:
+      - system log was cleared
+      - log tampering detected
+    disallowed_without_extra:
+      - automated log rotation (check retention policy)
+      - attacker action (verify adjacent events)
+    keywords_for_string_search:
+      - log cleared
+      - event log
+  4624:
+    title: Account logon
+    required_fields:
+      - target_user
+      - logon_type
+      - src_ip
+      - auth_package
+    allowed_claims:
+      - successful authentication
+      - logon type indicates session kind
+      - interactive logon observed
+      - network logon observed
+      - RDP logon observed
+    disallowed_without_extra:
+      - lateral movement (need src host context)
+      - compromise (need credential source)
+      - privilege escalation (need admin token)
+    keywords_for_string_search:
+      - logon
+      - auth
+  4625:
+    title: Logon failure
+    required_fields:
+      - target_user
+      - logon_type
+      - src_ip
+      - status
+      - sub_status
+    allowed_claims:
+      - failed authentication
+      - brute force attempt (if clustered by src_ip)
+      - password spray observed (if many users, few attempts each)
+    disallowed_without_extra:
+      - targeted attack (could be user typo)
+      - credential theft (need success evidence)
+    keywords_for_string_search:
+      - logon failure
+      - auth failed
+    failure_codes:
+      "0xC0000064": user does not exist
+      "0xC000006A": wrong password
+      "0xC000006D": bad username or auth method
+      "0xC000006E": account restriction violation (hour/lockout)
+      "0xC000006F": logon outside allowed hours
+      "0xC0000070": workstation restriction
+      "0xC0000071": expired password
+      "0xC0000072": account disabled
+      "0xC00000DC": account locked
+      "0xC0000133": clock skew between client and DC
+      "0xC000015B": logon type not granted
+      "0xC0000193": account expired
+      "0xC0000413": new logon denied (Kerberos armoring required)
+  4634:
+    title: Logoff
+    required_fields:
+      - target_user
+      - logon_type
+    allowed_claims:
+      - user logged off
+      - session ended normally
+    disallowed_without_extra:
+      - forced termination (need process evidence)
+      - session hijacking (next to 4624 without prior logoff)
+    keywords_for_string_search:
+      - logoff
+      - session end
+  4647:
+    title: Initiated logoff
+    required_fields:
+      - target_user
+    allowed_claims:
+      - user initiated logoff
+      - user voluntarily ended session
+    disallowed_without_extra:
+      - malicious action (benign user action)
+    keywords_for_string_search:
+      - logoff initiated
+      - user logoff
+  4648:
+    title: Explicit credential logon
+    required_fields:
+      - subject_user
+      - target_user
+      - process_name
+      - src_ip
+    allowed_claims:
+      - explicit credential use
+      - RUNAS or scheduled task with alternate credentials
+      - service running as different user
+    disallowed_without_extra:
+      - lateral movement (need target info)
+      - credential theft (check process legitimacy)
+    keywords_for_string_search:
+      - explicit credential
+      - runas
+  4672:
+    title: Admin logon / special privileges assigned
+    required_fields:
+      - target_user
+      - logon_type
+    allowed_claims:
+      - administrator logged on
+      - privileged account used
+      - new logon has admin rights
+    disallowed_without_extra:
+      - privilege escalation (admin by default)
+      - compromise (admin accounts are expected to log on)
+    keywords_for_string_search:
+      - special privilege
+      - admin logon
+  4673:
+    title: Sensitive privilege use
+    required_fields:
+      - subject_user
+      - process_name
+    allowed_claims:
+      - sensitive privilege was invoked
+      - privileged operation attempted
+    disallowed_without_extra:
+      - attack (could be legitimate admin tool)
+    keywords_for_string_search:
+      - privilege
+      - sensitive
+  4697:
+    title: Service install (Security)
+    required_fields:
+      - subject_user
+      - service_name
+      - service_command
+    allowed_claims:
+      - service was installed
+      - new service created
+      - persistence via service
+    disallowed_without_extra:
+      - legitimate software install (check vendor/signer)
+      - driver install (different audit subcategory)
+    keywords_for_string_search:
+      - service install
+      - service created
+  4698:
+    title: Scheduled task created
+    required_fields:
+      - subject_user
+      - task_name
+      - task_command
+    allowed_claims:
+      - scheduled task was created
+      - persistence via scheduled task
+      - delayed execution trigger
+    disallowed_without_extra:
+      - legitimate task creation (check publisher/source)
+    keywords_for_string_search:
+      - task created
+      - scheduled task
+  4700:
+    title: Scheduled task enabled
+    required_fields:
+      - subject_user
+      - task_name
+    allowed_claims:
+      - scheduled task was enabled
+      - previously disabled task activated
+    disallowed_without_extra:
+      - admin maintenance (check context)
+    keywords_for_string_search:
+      - task enabled
+      - task activated
+  4701:
+    title: Scheduled task disabled
+    required_fields:
+      - subject_user
+      - task_name
+    allowed_claims:
+      - scheduled task was disabled
+      - defense evasion via task disable
+    disallowed_without_extra:
+      - admin maintenance
+      - performance optimization
+    keywords_for_string_search:
+      - task disabled
+      - task deactivated
+  4702:
+    title: Scheduled task updated
+    required_fields:
+      - subject_user
+      - task_name
+      - task_command
+    allowed_claims:
+      - scheduled task was updated
+      - task content modified
+      - persistence updated
+    disallowed_without_extra:
+      - legitimate update (check diff)
+    keywords_for_string_search:
+      - task updated
+      - task modified
   4720:
     title: Account created
     required_fields:
@@ -15,6 +251,62 @@ events:
     keywords_for_string_search:
       - account created
       - user account management
+  4722:
+    title: Account enabled
+    required_fields:
+      - subject_user
+      - target_user
+    allowed_claims:
+      - account was enabled
+      - disabled account re-activated
+    disallowed_without_extra:
+      - attacker re-enabling backdoor
+      - privilege escalation
+    keywords_for_string_search:
+      - account enabled
+      - user enabled
+  4723:
+    title: Password change attempt
+    required_fields:
+      - subject_user
+      - target_user
+    allowed_claims:
+      - password was changed
+      - user changed own password
+    disallowed_without_extra:
+      - attacker changing password to lock out user
+      - credential theft (cannot prove theft from this alone)
+    keywords_for_string_search:
+      - password change
+      - password attempt
+  4724:
+    title: Password reset attempt
+    required_fields:
+      - subject_user
+      - target_user
+    allowed_claims:
+      - password was reset by admin
+      - forced password change
+    disallowed_without_extra:
+      - attacker resetting password (check if admin account was compromised)
+      - privilege escalation
+    keywords_for_string_search:
+      - password reset
+      - forced password change
+  4726:
+    title: Account deleted
+    required_fields:
+      - subject_user
+      - target_user
+    allowed_claims:
+      - account was deleted
+      - account removal observed
+    disallowed_without_extra:
+      - attacker removing traces
+      - privilege escalation (need group context)
+    keywords_for_string_search:
+      - account deleted
+      - user removed
   4732:
     title: Member added to local group
     required_fields:
@@ -30,3 +322,313 @@ events:
     keywords_for_string_search:
       - added to local group
       - group membership
+  4733:
+    title: Member removed from local group
+    required_fields:
+      - subject_user
+      - member
+      - target_group
+    allowed_claims:
+      - account removed from local group
+      - group membership removed
+    disallowed_without_extra:
+      - attacker removing traces of compromise
+      - defense evasion
+    keywords_for_string_search:
+      - removed from local group
+      - group member removed
+  4738:
+    title: Account changed
+    required_fields:
+      - subject_user
+      - target_user
+      - changed_attributes
+    allowed_claims:
+      - account attributes were modified
+      - account properties changed
+    disallowed_without_extra:
+      - attacker modifying account for persistence
+    keywords_for_string_search:
+      - account changed
+      - user modified
+  4740:
+    title: Account locked out
+    required_fields:
+      - target_user
+    allowed_claims:
+      - account was locked out
+      - brute force likely cause
+    disallowed_without_extra:
+      - password spray (check if many accounts locked)
+      - targeted attack (single account)
+    keywords_for_string_search:
+      - account locked
+      - lockout
+  4768:
+    title: Kerberos TGT requested
+    required_fields:
+      - target_user
+      - src_ip
+      - target_computer
+    allowed_claims:
+      - Kerberos TGT was issued
+      - user authenticated via Kerberos
+      - Kerberos authentication observed
+    disallowed_without_extra:
+      - Golden Ticket (need anomalous TGT duration or PAC)
+      - Kerberoasting pre-work (need service ticket context)
+    keywords_for_string_search:
+      - kerberos tgt
+      - ticket granted
+  4769:
+    title: Kerberos service ticket requested
+    required_fields:
+      - target_user
+      - service_name
+      - src_ip
+    allowed_claims:
+      - Kerberos service ticket was issued
+      - service access via Kerberos
+      - TGS request observed
+    disallowed_without_extra:
+      - Kerberoasting (check encryption type and volume)
+      - Silver Ticket (need anomalous PAC or ticket options)
+      - lateral movement (need target context)
+    keywords_for_string_search:
+      - kerberos service ticket
+      - tgs request
+  4776:
+    title: NTLM authentication by DC
+    required_fields:
+      - target_user
+      - src_ip
+    allowed_claims:
+      - NTLM authentication was attempted
+      - NTLM credential use observed
+    disallowed_without_extra:
+      - credential relay (NTLM relay needs additional evidence)
+      - brute force (check failure count)
+    keywords_for_string_search:
+      - ntlm auth
+      - ntlm authentication
+  4778:
+    title: RDP reconnection / session resumed
+    required_fields:
+      - target_user
+      - computer
+    allowed_claims:
+      - RDP session was reconnected
+      - terminal services session resumed
+    disallowed_without_extra:
+      - attacker reconnecting to persistent session (need session timeline)
+    keywords_for_string_search:
+      - rdp reconnect
+      - terminal session resume
+  4779:
+    title: RDP disconnection
+    required_fields:
+      - target_user
+      - computer
+    allowed_claims:
+      - RDP session was disconnected
+      - terminal services session disconnected
+    disallowed_without_extra:
+      - attacker disconnecting after actions (need process evidence)
+    keywords_for_string_search:
+      - rdp disconnect
+      - terminal session disconnect
+  21:
+    title: RDP LSM session logon
+    required_fields:
+      - target_user
+      - session_id
+    allowed_claims:
+      - RDP session logon succeeded
+      - Remote Desktop Services session start
+    disallowed_without_extra:
+      - lateral movement (need source host context)
+    keywords_for_string_search:
+      - rdp session
+      - remote desktop logon
+  22:
+    title: RDP shell start
+    required_fields:
+      - target_user
+      - session_id
+    allowed_claims:
+      - RDP shell started
+      - interactive desktop loaded for RDP
+    disallowed_without_extra:
+      - attacker interaction (shell start is normal after logon)
+    keywords_for_string_search:
+      - rdp shell
+      - shell start
+  24:
+    title: RDP session disconnection
+    required_fields:
+      - target_user
+      - session_id
+    allowed_claims:
+      - RDP session was disconnected
+      - Remote Desktop session ended
+    disallowed_without_extra:
+      - attacker disconnecting (could be normal user)
+    keywords_for_string_search:
+      - rdp disconnect
+      - session disconnect
+  25:
+    title: RDP session reconnection
+    required_fields:
+      - target_user
+      - session_id
+    allowed_claims:
+      - RDP session was reconnected
+      - user resumed existing session
+    disallowed_without_extra:
+      - attacker reconnecting to hijacked session (need timeline)
+    keywords_for_string_search:
+      - rdp reconnect
+      - session reconnect
+  4103:
+    title: PowerShell module logging
+    required_fields:
+      - payload
+      - computer
+    allowed_claims:
+      - PowerShell module was used
+      - PowerShell command invoked
+      - PowerShell pipeline execution
+    disallowed_without_extra:
+      - malicious PowerShell (could be admin scripting)
+      - obfuscated command (need decoded payload)
+    keywords_for_string_search:
+      - powershell module
+      - pipeline execution
+  4104:
+    title: PowerShell script block logging
+    required_fields:
+      - script_block
+      - computer
+    allowed_claims:
+      - PowerShell script block was executed
+      - PowerShell code execution observed
+      - script content captured
+    disallowed_without_extra:
+      - malicious script (could be legitimate automation)
+      - encoded command (need decoded content)
+    keywords_for_string_search:
+      - powershell scriptblock
+      - script block logging
+  4105:
+    title: PowerShell pipeline start
+    required_fields:
+      - computer
+    allowed_claims:
+      - PowerShell pipeline execution started
+      - script block began executing
+    disallowed_without_extra:
+      - malicious execution (check script block content)
+    keywords_for_string_search:
+      - powershell start
+      - pipeline start
+  400:
+    title: PowerShell engine started
+    required_fields:
+      - computer
+    allowed_claims:
+      - PowerShell engine was started
+      - new PowerShell process launched
+    disallowed_without_extra:
+      - malicious use (PowerShell is frequently used legitimately)
+    keywords_for_string_search:
+      - powershell engine
+      - powershell start
+  5140:
+    title: Share access
+    required_fields:
+      - subject_user
+      - share_name
+      - src_ip
+    allowed_claims:
+      - network share was accessed
+      - SMB share access observed
+    disallowed_without_extra:
+      - lateral movement (need process context)
+      - data exfiltration (need file names and volume)
+    keywords_for_string_search:
+      - share access
+      - smb access
+  5156:
+    title: Connection allowed (WFP)
+    required_fields:
+      - src_ip
+      - dest_ip
+      - dest_port
+      - protocol
+    allowed_claims:
+      - network connection was allowed
+      - outbound/inbound connection permitted
+    disallowed_without_extra:
+      - C2 communication (need process and payload context)
+      - data exfiltration (need volume and destination)
+    keywords_for_string_search:
+      - connection allowed
+      - wfp allow
+  5157:
+    title: Connection denied (WFP)
+    required_fields:
+      - src_ip
+      - dest_ip
+      - dest_port
+      - protocol
+    allowed_claims:
+      - network connection was blocked
+      - firewall denied connection
+    disallowed_without_extra:
+      - attack attempt (could be scanning or misconfig)
+      - C2 blocked (check volume and destination)
+    keywords_for_string_search:
+      - connection denied
+      - wfp block
+  7036:
+    title: Service state change
+    required_fields:
+      - service_name
+      - service_state
+    allowed_claims:
+      - service started or stopped
+      - service state transition observed
+    disallowed_without_extra:
+      - attacker stopping EDR/AV (check which service)
+      - persistence (check if new service)
+    keywords_for_string_search:
+      - service state
+      - service change
+  7040:
+    title: Service start type changed
+    required_fields:
+      - service_name
+      - service_start_type
+    allowed_claims:
+      - service start type was modified
+      - service automatic/demand start toggled
+    disallowed_without_extra:
+      - attacker modifying service for persistence
+      - defense evasion (check service name)
+    keywords_for_string_search:
+      - service start type
+      - service startup change
+  7045:
+    title: Service install (System)
+    required_fields:
+      - service_name
+      - service_command
+    allowed_claims:
+      - service was installed
+      - new service created (System log)
+    disallowed_without_extra:
+      - legitimate software install
+      - driver install
+    keywords_for_string_search:
+      - service install
+      - service created

@@ -46,3 +46,19 @@ query: |
 finding:
   title: "New account immediately added to Administrators: {target_user} @ {computer}"
   summary: "The account '{target_user}' was created by {creator} at {created_time} and then added to Administrators by {adder} at {added_time}. This strongly suggests backdoor account creation. Confirm whether the creator and adder are the same operator and review other lateral movement activity around the same time."
+hypotheses:
+  - id: backdoor_account_admin_escalation
+    segment: persistence
+    description: "Account '{target_user}' was created and added to Administrators on {computer}, indicating backdoor creation with immediate privilege escalation"
+    required_entities: [computer, target_user, creator]
+    confirm_when:
+      co_observed_event_ids: [4720, 4732]
+      same_host: true
+      within_minutes: 30
+    refute_when:
+      zero_rows: true
+    follow_up_questions:
+      - "Are {creator} and {adder} on {computer} the same or different accounts?"
+      - "What other actions were performed by '{target_user}' on {computer} after gaining admin access?"
+      - "Were similar account creation patterns observed on other hosts in the environment?"
+    report_sections: [3_technical, 4_gaps]

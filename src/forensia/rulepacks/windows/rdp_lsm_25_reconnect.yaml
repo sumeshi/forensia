@@ -23,3 +23,19 @@ query: |
 finding:
   title: "RDP session reconnect: {target_user} @ {computer}"
   summary: "An RDP session reconnect (LocalSessionManager 25) was observed on {computer} at {timestamp}. Source IP: {src_ip}. This may indicate reuse of an existing session by an attacker."
+hypotheses:
+  - id: rdp_session_reuse
+    segment: lateral-movement
+    description: "RDP session reconnect from {src_ip} to {computer} as {target_user} may indicate session reuse by an attacker"
+    required_entities: [src_ip, computer, target_user]
+    confirm_when:
+      co_observed_event_ids: [25, 4624]
+      same_host: true
+      within_minutes: 5
+    refute_when:
+      zero_rows: true
+    follow_up_questions:
+      - "When was the original RDP session on {computer} established (LSM 21)?"
+      - "What activity occurred on {computer} during the session reconnection?"
+      - "Is {src_ip} consistent with the original session source IP on {computer}?"
+    report_sections: [3_technical, 4_gaps]

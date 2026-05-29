@@ -166,3 +166,59 @@ question_types:
         query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE LOWER(file_name) LIKE 'eraser%.exe' OR LOWER(file_name) LIKE 'ccsetup%.exe' OR LOWER(file_name) LIKE 'ccleaner%.exe' OR LOWER(file_name) LIKE 'bleachbit%.exe' OR LOWER(file_name) LIKE 'sdelete%.exe'"
       - source: mft_entries
         query: "SELECT file_name, file_path, is_deleted FROM mft_entries WHERE is_deleted = 1 AND file_name IN ('sync_config.db', 'snapshot.db')"
+
+  - name: host_identity
+    keywords:
+      - 端末識別
+      - ホスト名
+      - computer name
+      - host name
+    keypoints:
+      - benchmark_hosts
+    expected_answer_shape:
+      format: list
+      fields: [host_id]
+      style: list
+    evidence_chain:
+      - source: evtx_events
+        query: "SELECT DISTINCT computer FROM evtx_events WHERE computer IS NOT NULL"
+      - source: mft_entries
+        query: "SELECT DISTINCT json_extract(raw_json, '$.computer') AS host FROM mft_entries WHERE json_extract(raw_json, '$.computer') IS NOT NULL"
+
+  - name: host_logons
+    keywords:
+      - 最終ログオン
+      - last logon
+      - logon user
+    keypoints:
+      - benchmark_host_logons
+    expected_answer_shape:
+      format: daily_table
+      fields: [date, startup, logons, logoff, shutdown]
+      style: table
+    evidence_chain:
+      - source: evtx_events
+        query: "SELECT DATE(timestamp) AS date, target_user, event_id, COUNT(*) AS n FROM evtx_events WHERE event_id IN (4624, 4634, 4647, 6005, 6006) GROUP BY 1, 2, 3"
+
+  - name: accounts_summary
+    keywords:
+      - アカウント一覧
+      - account list
+    keypoints:
+      - benchmark_accounts_summary
+    evidence_chain:
+      - source: evtx_events
+        query: "SELECT DISTINCT target_user FROM evtx_events WHERE event_id IN (4624, 4720) AND target_user IS NOT NULL"
+
+  - name: investigation_window
+    keywords:
+      - シャットダウン
+      - shutdown
+      - startup
+      - 起動
+    keypoints:
+      - benchmark_window
+      - benchmark_timeline_events
+    evidence_chain:
+      - source: evtx_events
+        query: "SELECT timestamp, event_id, computer FROM evtx_events WHERE event_id IN (1074, 6005, 6006, 6008, 6013, 7001, 7002) ORDER BY timestamp"

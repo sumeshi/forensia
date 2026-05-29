@@ -27,3 +27,22 @@ query: |
 finding:
   title: "RDP logon for {target_user}"
   summary: "An RDP logon for {target_user} was observed on {computer} at {timestamp}. Source IP: {src_ip}. Correlate with LSM 21 and RCM 1149, and if the source IP is external, check for 4688 or 4104 execution within 15 minutes after logon."
+hypotheses:
+  - id: lateral_movement_via_rdp
+    segment: lateral-movement
+    description: "RDP logon (logon_type 10) from {src_ip} to {computer} as {target_user} may indicate lateral movement"
+    required_entities: [src_ip, computer, target_user]
+    confirm_when:
+      co_observed_event_ids: [4624]
+      same_host: true
+      within_minutes: 5
+    refute_when:
+      zero_rows: true
+    follow_up_questions:
+      - "Was this RDP session followed by process execution (4688) or service install (4697) on {computer}?"
+      - "Is {src_ip} a known administrative workstation or jump host?"
+      - "Was account {target_user} used from multiple source IPs?"
+    report_sections: [3_technical, 4_gaps]
+correlate_with:
+  - event_ids: [4625, 4768, 4776]
+    rationale: "preceding failures or kerberos/NTLM auth"

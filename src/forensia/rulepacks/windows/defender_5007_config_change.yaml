@@ -1,0 +1,46 @@
+id: windows-defender-5007-config-change
+title: Windows Defender configuration change (Event 5007)
+severity: high
+confidence: 0.8
+tags:
+  - windows
+  - defense-evasion
+  - defender
+attack:
+  - T1562.001
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      target_user,
+      message
+  FROM evtx_events
+  WHERE event_id = 5007
+finding:
+  title: "Defender configuration change (5007): {computer}"
+  summary: "Windows Defender configuration was modified on {computer} at {timestamp}. User: {target_user}. Details: {message}. Configuration changes may indicate attempts to disable or bypass protection features."
+hypotheses:
+  - id: defense_evasion_via_defender_config
+    segment: defense-evasion
+    description: "Windows Defender configuration changed on {computer} at {timestamp} may indicate an attempt to disable security monitoring"
+    required_entities: [computer, target_user]
+    confirm_when:
+      co_observed_event_ids: [5007, 5001, 1116, 1117]
+      same_host: true
+      within_minutes: 60
+    refute_when:
+      zero_rows: true
+    follow_up_questions:
+      - "What specific configuration value was changed in the Defender settings on {computer}?"
+      - "Was real-time protection (5001) disabled or malware detected (1116/1117) shortly after this change?"
+      - "Did suspicious process execution occur within 60 minutes after the configuration change?"
+    report_sections: [3_technical, 4_gaps]
+fallback_search:
+  - phase: related_event_ids
+    event_ids: [5007]
+    rationale: "Event 5007 config changes may be logged with varying channel names"
+  - phase: artifact_table
+    table: prefetch_executions
+    keywords: ["msmpeng.exe", "mpcmdrun.exe"]
+    rationale: "Defender component execution may appear in prefetch"

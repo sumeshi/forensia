@@ -47,3 +47,19 @@ query: |
 finding:
   title: "Scheduled task creation after network logon: {src_ip} -> {computer}"
   summary: "After a network logon from {src_ip} to {computer} at {logon_time}, a scheduled task was created at {task_time}. This is a typical pattern for remote persistence."
+hypotheses:
+  - id: remote_persistence_via_task
+    segment: lateral-movement
+    description: "Network logon from {src_ip} to {computer} followed by task creation indicates remote persistence via scheduled task"
+    required_entities: [src_ip, computer, target_user]
+    confirm_when:
+      co_observed_event_ids: [4624, 4698]
+      same_host: true
+      within_minutes: 15
+    refute_when:
+      zero_rows: true
+    follow_up_questions:
+      - "What command does the created task on {computer} execute?"
+      - "Was the task triggered and what was the outcome on {computer}?"
+      - "Is {src_ip} associated with other lateral movement patterns?"
+    report_sections: [3_technical, 4_gaps]

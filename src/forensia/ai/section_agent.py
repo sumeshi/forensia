@@ -51,7 +51,6 @@ from forensia.ai.json_response import request_llm_json, async_request_llm_json
 from forensia.ai.lmstudio import chat_completion, async_chat_completion
 from forensia.ai.prompts import (
     build_benchmark_classify_messages,
-    build_benchmark_section_messages,
     build_paragraph_narrate_messages,
     build_report_section_messages,
     build_section_agent_check_messages,
@@ -908,6 +907,7 @@ class _BlockContext:
     max_queries: int
     findings_snapshot: list[dict[str, Any]]
     prompt_report_brief: dict[str, Any]
+    benchmark_id: str = ""
 
 
 def _prepare_block_context(
@@ -924,6 +924,7 @@ def _prepare_block_context(
     max_queries: int,
     evidence_keypoints: list[str] | None,
     benchmark_mode: bool,
+    benchmark_id: str = "",
     audit_callback,
     report_brief: dict[str, Any] | None,
 ) -> _BlockContext:
@@ -966,6 +967,7 @@ def _prepare_block_context(
         max_queries=max_queries,
         findings_snapshot=findings_snapshot,
         prompt_report_brief=prompt_report_brief,
+        benchmark_id=benchmark_id,
     )
 
 
@@ -1196,6 +1198,7 @@ def _format_benchmark_answer(
     block_heading: str,
     status: str,
     case: Case,
+    benchmark_id: str = "",
 ) -> dict:
     """Pure code. Format benchmark answer from picked rows + expected_answer_shape."""
     from forensia.report.writer import _benchmark_block_id, _normalize_benchmark_answer, _persist_benchmark_answer, _render_benchmark_answer_markdown
@@ -1211,8 +1214,9 @@ def _format_benchmark_answer(
                 entry[field] = row.get(field, row.get(f"normalized_{field}", ""))
             answer_data.append(entry)
 
+    resolved_id = benchmark_id.strip() if benchmark_id else _benchmark_block_id(block_heading)
     normalized_answer = {
-        "id": _benchmark_block_id(block_heading),
+        "id": resolved_id,
         "section": section_key,
         "status": status,
         "rationale": classification.get("rationale", ""),
@@ -1274,6 +1278,7 @@ def _write_block_body(
             block_heading=ctx.block_heading,
             evidence_rows=prompt_rows or [],
             expected_shape=expected_shape,
+            time_range=ctx.case.time_range,
         )
         classification = request_llm_json(
             messages=classify_messages,
@@ -1281,7 +1286,7 @@ def _write_block_body(
             base_url=ctx.base_url,
             audit_callback=ctx.audit,
         )
-        picked_row_ids = classification.get("picked_row_ids", [])
+        picked_row_ids = [str(item) for item in (classification.get("picked_row_ids") or [])]
         picked_rows = [r for r in (raw_rows or []) if str(r.get("evidence_id") or r.get("id") or "") in picked_row_ids]
         body = _format_benchmark_answer(
             classification=classification,
@@ -1291,6 +1296,7 @@ def _write_block_body(
             block_heading=ctx.block_heading,
             status=status_inner,
             case=ctx.case,
+            benchmark_id=ctx.benchmark_id,
         )
         messages = classify_messages
     else:
@@ -1351,6 +1357,7 @@ def run_section_block_agent(
     max_queries_per_section: int = 3,
     evidence_keypoints: list[str] | None = None,
     benchmark_mode: bool = False,
+    benchmark_id: str = "",
     audit_callback=None,
 ) -> SectionBlockResult:
     """Run the complete plan->query->check->write loop for one report section block.
@@ -1366,8 +1373,8 @@ def run_section_block_agent(
         block_heading=block_heading, template_body=template_body,
         base_url=base_url, model=model, memory=memory,
         max_queries=max_queries, evidence_keypoints=evidence_keypoints,
-        benchmark_mode=benchmark_mode, audit_callback=audit_callback,
-        report_brief=report_brief,
+        benchmark_mode=benchmark_mode, benchmark_id=benchmark_id,
+        audit_callback=audit_callback, report_brief=report_brief,
     )
     collected_results: list[dict[str, Any]] = []
     if ctx.reusable_facts:
@@ -1435,6 +1442,7 @@ async def async_run_section_block_agent(
     max_queries_per_section: int = 3,
     evidence_keypoints: list[str] | None = None,
     benchmark_mode: bool = False,
+    benchmark_id: str = "",
     audit_callback=None,
 ) -> SectionBlockResult:
     """Async wrapper around run_section_block_agent using asyncio.to_thread."""
@@ -1446,6 +1454,6 @@ async def async_run_section_block_agent(
         report_brief=report_brief, base_url=base_url, model=model,
         memory=memory, max_queries_per_section=max_queries_per_section,
         evidence_keypoints=evidence_keypoints, benchmark_mode=benchmark_mode,
-        audit_callback=audit_callback,
+        benchmark_id=benchmark_id, audit_callback=audit_callback,
     )
 

@@ -152,6 +152,7 @@ async def _render_section_blocks(
                     max_queries_per_section=max_queries_per_section,
                     evidence_keypoints=list(block.get("evidence_keypoints") or []),
                     benchmark_mode=is_benchmark_mode,
+                    benchmark_id=str(block.get("benchmark_id") or ""),
                     audit_callback=lambda messages, body, section=request["section_key"], heading=block.get("heading", ""): llm_logger.write(
                         iteration=iteration,
                         phase="report-section-block",

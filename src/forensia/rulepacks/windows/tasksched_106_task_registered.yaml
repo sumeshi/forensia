@@ -22,3 +22,19 @@ query: |
 finding:
   title: "Task registered: {computer} ({subject_user})"
   summary: "A TaskScheduler Operational task registration event (106) was observed on {computer} at {timestamp}. Actor: {subject_user}. Message: {message}. Review together with 4698 for complementary task creation evidence."
+hypotheses:
+  - id: persistence_via_task_registration
+    segment: persistence
+    description: "Task registered on {computer} by {subject_user} may be a persistence mechanism via scheduled task"
+    required_entities: [computer, subject_user]
+    confirm_when:
+      co_observed_event_ids: [106, 4698]
+      same_host: true
+      within_minutes: 5
+    refute_when:
+      zero_rows: true
+    follow_up_questions:
+      - "What action does the registered task on {computer} perform?"
+      - "What trigger conditions are configured for the task on {computer}?"
+      - "Was the task registered after a network logon to {computer}?"
+    report_sections: [3_technical, 4_gaps]

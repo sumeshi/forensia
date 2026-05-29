@@ -26,3 +26,19 @@ query: |
 finding:
   title: "WMI activity on {computer}"
   summary: "WMI event {event_id} observed on {computer} at {timestamp}. User: {user_name}. Details: {message}. WMI is commonly used for lateral movement and execution."
+hypotheses:
+  - id: wmi_lateral_movement
+    segment: lateral-movement
+    description: "WMI activity ({event_id}) on {computer} by {user_name} may indicate lateral movement or remote execution"
+    required_entities: [computer, user_name]
+    confirm_when:
+      co_observed_event_ids: [5857, 5858, 4688]
+      same_host: true
+      within_minutes: 15
+    refute_when:
+      zero_rows: true
+    follow_up_questions:
+      - "What specific WMI operation was performed on {computer}?"
+      - "Was a process created (4688) on {computer} as a result of this WMI activity?"
+      - "Is {user_name} on {computer} associated with other lateral movement indicators?"
+    report_sections: [3_technical, 4_gaps]

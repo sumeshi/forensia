@@ -21,3 +21,19 @@ query: |
 finding:
   title: "Scheduled task created: {computer} ({subject_user})"
   summary: "{subject_user} created a scheduled task on {computer} at {timestamp}. Review the execution command and creator account; this is a common persistence technique."
+hypotheses:
+  - id: persistence_via_scheduled_task
+    segment: persistence
+    description: "Scheduled task created by {subject_user} on {computer} may be a persistence mechanism"
+    required_entities: [subject_user, computer]
+    confirm_when:
+      co_observed_event_ids: [4698, 106]
+      same_host: true
+      within_minutes: 5
+    refute_when:
+      zero_rows: true
+    follow_up_questions:
+      - "What command does the scheduled task execute on {computer}?"
+      - "When is the task trigger configured on {computer}?"
+      - "Was the task created after a network logon on {computer}?"
+    report_sections: [3_technical, 4_gaps]

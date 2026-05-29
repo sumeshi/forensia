@@ -16,7 +16,7 @@ from forensia.ai.planner import (
 )
 from forensia.ai.prompts import (
     _truncate_context_sections,
-    build_benchmark_section_messages,
+    build_benchmark_classify_messages,
     build_report_section_messages,
 )
 from forensia.ai.sql_schema import build_investigation_framework
@@ -715,25 +715,20 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertIn("source_verdict guidance", system)
         self.assertIn("avoid 'confirmed'", system)
 
-    def test_benchmark_section_messages_request_json_only(self) -> None:
-        messages = build_benchmark_section_messages(
-            section_meta={"section": "6_appendix", "title": "Appendix"},
-            evidence_results=[
-                {
-                    "kind": "rows",
-                    "sample_rows": [{"evidence_id": "ev-1", "file_path": "C:/Users/Alice/file.ost"}],
-                }
-            ],
-            template_body="## 8. メールデータファイル",
+    def test_benchmark_classify_messages_request_picked_row_ids_only(self) -> None:
+        messages = build_benchmark_classify_messages(
+            question="## 8. メールデータファイル",
             block_heading="8. メールデータファイル",
-            raw_evidence_rows=[{"summary": "file_path=C:/Users/Alice/file.ost"}],
-            benchmark_id="Q8",
+            evidence_rows=[{"evidence_id": "ev-1", "file_path": "C:/Users/Alice/file.ost"}],
+            expected_shape={"format": "name_with_version", "fields": ["application_name", "version", "data_files"]},
         )
         system = messages[0]["content"]
-        self.assertIn("benchmark answer writer", system)
-        self.assertIn("Output JSON only", system)
-        self.assertIn('"answer"', system)
-        self.assertIn("queries_run", system)
+        user = messages[1]["content"]
+        self.assertIn("benchmark_classifier", system)
+        self.assertIn("picked_row_ids", system)
+        self.assertNotIn('"answer"', system)
+        self.assertIn("ev-1", user)
+        self.assertIn("application_name", user)
 
     def test_query_fingerprint_normalizes_equivalent_ast_forms(self) -> None:
         left = _query_fingerprint(

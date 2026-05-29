@@ -1,0 +1,58 @@
+id: leakage-mft-desktop-rename-burst
+title: Desktop file rename burst observed
+severity: high
+confidence: 0.55
+required_fields:
+  - file_name
+  - file_path
+  - si_modified
+  - fn_modified
+tags:
+  - leakage
+  - staging
+  - rename
+  - insider-threat
+attack:
+  - T1567
+  - T1005
+query: |
+  SELECT
+      evidence_id,
+      file_name,
+      file_path,
+      si_modified,
+      fn_modified,
+      fn_category
+  FROM mft_entries
+  WHERE
+      LOWER(file_path) LIKE '%/desktop/%'
+      AND fn_modified != si_modified
+      AND fn_category = 0
+finding:
+  title: "Desktop file rename burst on {file_path}"
+  summary: "File '{file_name}' on Desktop has fn_modified ({fn_modified}) differing from si_modified ({si_modified}), indicating a rename operation. Multiple rename events in quick succession may indicate data staging for exfiltration."
+hypotheses:
+  - id: leakage-desktop-rename-staging
+    segment: exfiltration
+    description: "Desktop file '{file_name}' renamed at {fn_modified} may indicate data staging for exfiltration"
+    required_entities: [computer, file_path]
+    confirm_when:
+      co_observed_event_ids: [4663]
+      keywords: [rename, staging, desktop]
+    refute_when:
+      zero_rows: true
+    follow_up_questions:
+      - "Are there archive files (zip/rar/7z) created nearby on Desktop?"
+      - "Was cloud sync or USB device mounted near the rename timestamp?"
+    report_sections:
+      - 3_technical
+      - 5_recommendations
+correlate_with:
+  - event_ids: [4663]
+    rationale: "File access events to identify which user accessed renamed files"
+  - event_ids: [4688]
+    rationale: "Process execution including compression tools or cloud sync clients"
+fallback_search:
+  - phase: keyword_in_raw_json
+    keywords: [rename, move, copy, staging]
+    rationale: "Rename operations may be reflected in USN journal or process command lines"

@@ -55,3 +55,19 @@ query: |
 finding:
   title: "Suspicious execution after Defender disablement: {computer}"
   summary: "After Defender real-time protection was disabled on {computer} at {disabled_time}, {process_name} executed at {exec_time}. Command line: {command_line}. This strongly suggests defense evasion immediately preceding malware execution."
+hypotheses:
+  - id: defense_evasion_then_execution
+    segment: defense-evasion
+    description: "Defender disabled on {computer} followed by {process_name} execution indicates defense evasion preceding malicious activity"
+    required_entities: [computer, target_user, process_name]
+    confirm_when:
+      co_observed_event_ids: [5001, 4688]
+      same_host: true
+      within_minutes: 60
+    refute_when:
+      zero_rows: true
+    follow_up_questions:
+      - "What was the full command line executed on {computer} after Defender was disabled?"
+      - "Was the executed {process_name} on {computer} signed or unsigned?"
+      - "Were there network connections initiated by {process_name} on {computer}?"
+    report_sections: [3_technical, 4_gaps]

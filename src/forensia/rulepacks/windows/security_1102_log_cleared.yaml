@@ -20,3 +20,22 @@ query: |
 finding:
   title: "[CRITICAL] Security log cleared: {computer} ({subject_user})"
   summary: "{subject_user} cleared the Security event log on {computer} at {timestamp} (1102). Log reliability is now compromised, and events before this point may be missing, which impacts confidence in the overall investigation."
+hypotheses:
+  - id: defense_evasion_via_log_clear
+    segment: defense-evasion
+    description: "Security log cleared on {computer} by {subject_user} indicates defense evasion to cover tracks"
+    required_entities: [computer, subject_user]
+    confirm_when:
+      co_observed_event_ids: [1102, 104, 1100]
+      same_host: true
+      within_minutes: 10
+    refute_when:
+      zero_rows: true
+    follow_up_questions:
+      - "What events immediately preceded the log clear on {computer}?"
+      - "Were other log channels (System, Application) also cleared on {computer}?"
+      - "Is {subject_user} a legitimate administrator performing routine maintenance on {computer}?"
+    report_sections: [3_technical, 4_gaps]
+correlate_with:
+  - event_ids: [104, 1100]
+    rationale: "other log channels also cleared"

@@ -22,3 +22,19 @@ query: |
 finding:
   title: "PowerShell module logging event: {computer}"
   summary: "A PowerShell module logging event (4103) was observed on {computer} at {timestamp}. User: {target_user}. Message: {message}. Module names alone are not enough; look for non-default or obfuscated module names and correlate with 4104."
+hypotheses:
+  - id: suspicious_powershell_module_load
+    segment: execution
+    description: "PowerShell module loaded on {computer} by {target_user} may indicate suspicious or offensive tooling"
+    required_entities: [computer, target_user]
+    confirm_when:
+      co_observed_event_ids: [4103, 4104]
+      same_host: true
+      within_minutes: 5
+    refute_when:
+      zero_rows: true
+    follow_up_questions:
+      - "What module names were loaded on {computer} and are they non-standard?"
+      - "Is there a corresponding script block (4104) on {computer} for the module usage?"
+      - "Was the PowerShell session on {computer} initiated remotely or locally?"
+    report_sections: [3_technical, 4_gaps]

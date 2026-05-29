@@ -26,3 +26,19 @@ query: |
 finding:
   title: "Service installation: {service_name} @ {computer}"
   summary: "{subject_user} installed service '{service_name}' on {computer} at {timestamp}. Review the executable path and investigate whether this represents persistence or malware deployment."
+hypotheses:
+  - id: persistence_via_service
+    segment: persistence
+    description: "Service '{service_name}' installed by {subject_user} on {computer} may be a persistence mechanism"
+    required_entities: [subject_user, service_name, computer]
+    confirm_when:
+      co_observed_event_ids: [4697, 7045]
+      same_host: true
+      within_minutes: 5
+    refute_when:
+      zero_rows: true
+    follow_up_questions:
+      - "What is the binary path of service '{service_name}' on {computer}?"
+      - "Was the service set to auto-start on {computer}?"
+      - "Did the service '{service_name}' execute after installation (7036 system state change) on {computer}?"
+    report_sections: [3_technical, 4_gaps]

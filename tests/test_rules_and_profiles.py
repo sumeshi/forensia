@@ -24,7 +24,7 @@ class RuleProfileTests(unittest.TestCase):
         profile_path = Path("src/forensia/profiles/windows-basic.yaml")
         rules = load_rules_from_dir(rules_dir, profile_path)
 
-        self.assertEqual(125, len(rules))
+        self.assertEqual(113, len(rules))
         self.assertTrue(all(rule.attack for rule in rules))
 
     def test_ransomware_profile_filters_rule_ids(self) -> None:
@@ -59,9 +59,8 @@ class RuleProfileTests(unittest.TestCase):
             "security_4688_suspicious_tools.yaml": {"target_user", "computer", "process_name", "command_line"},
             "security_4697_service_install.yaml": {"subject_user", "service_name", "computer"},
             "system_7045_service_installed.yaml": {"service_name", "computer", "subject_user"},
-            "security_4720_account_created.yaml": {"subject_user", "target_user", "computer"},
-            "security_4728_domain_admin_added.yaml": {"subject_user", "target_user", "computer", "message"},
-            "security_4732_local_admin_added.yaml": {"subject_user", "target_user", "computer", "message"},
+            "security_4720_account_lifecycle_consolidated.yaml": {"target_user", "computer", "subject_user_name"},
+            "security_4728_group_change_consolidated.yaml": {"target_user", "computer", "subject_user_name", "message"},
         }
         rules_dir = Path("src/forensia/rulepacks/windows")
         for filename, fields in expected.items():
@@ -74,7 +73,7 @@ class RuleProfileTests(unittest.TestCase):
         rules = load_rules_from_dir(rules_dir, profile_path)
         rule_ids = {rule.id for rule in rules}
 
-        self.assertEqual(125, len(rules))
+        self.assertEqual(113, len(rules))
         self.assertNotIn("allowlist_services", rule_ids)
 
     def test_profile_with_nonexistent_rulepack_loads_zero_rules(self) -> None:
@@ -123,19 +122,12 @@ class RuleProfileTests(unittest.TestCase):
             "security_4698_task_created.yaml",
             "security_4699_task_deleted.yaml",
             "security_4719_audit_policy_changed.yaml",
-            "security_4720_account_created.yaml",
-            "security_4722_account_enabled.yaml",
+            "security_4720_account_lifecycle_consolidated.yaml",
             "security_4723_password_change.yaml",
-            "security_4724_password_reset.yaml",
-            "security_4726_account_deleted.yaml",
-            "security_4728_domain_admin_added.yaml",
-            "security_4729_global_group_removed.yaml",
-            "security_4732_local_admin_added.yaml",
-            "security_4738_account_changed.yaml",
+            "security_4728_group_change_consolidated.yaml",
             "security_4740_account_lockout.yaml",
             "security_4756_universal_group_added.yaml",
-            "security_4768_tgt_request.yaml",
-            "security_4769_st_request.yaml",
+            "security_4768_4769_kerberos_consolidated.yaml",
             "security_4771_pre_auth_failed.yaml",
             "security_4776_ntlm_auth.yaml",
             "security_4778_rdp_reconnect.yaml",

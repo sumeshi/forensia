@@ -1,0 +1,50 @@
+id: windows-security-4728-group-change
+title: Security group membership changes (Add, Remove, Modify, Delete)
+severity: high
+confidence: 0.75
+required_fields:
+  - target_user
+  - computer
+  - subject_user_name
+  - event_id
+  - message
+tags:
+  - windows
+  - group-management
+  - privilege-escalation
+  - account-management
+attack:
+  - T1098
+  - T1078
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      event_id,
+      target_user,
+      subject_user_name,
+      message
+  FROM evtx_events
+  WHERE event_id IN (4728, 4729, 4730, 4732, 4733, 4734, 4735, 4737, 4738)
+finding:
+  title: "Group membership change on ${computer}"
+  summary: "Event ${event_id} — account ${target_user} modified by ${subject_user_name} on ${computer}"
+hypotheses:
+  - id: windows-security-4728-privilege-escalation
+    segment: privilege-escalation
+    description: "Account ${target_user} was added to a privileged group (4728/4732/4756) by ${subject_user_name} on ${computer}, indicating privilege escalation"
+    required_entities: [computer, target_user, subject_user_name]
+    confirm_when:
+      co_observed_event_ids: [4728, 4732, 4756]
+    refute_when:
+      zero_rows: true
+    follow_up_questions:
+      - "Was the target account subsequently used for logon (4624)?"
+      - "Was the adding account compromised?"
+    report_sections:
+      - 3_technical
+      - 4_gaps
+correlate_with:
+  - event_ids: [4720, 4624]
+    rationale: "account created then added to group, or group member logon"

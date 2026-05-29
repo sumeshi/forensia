@@ -1,0 +1,58 @@
+id: windows-security-4720-account-lifecycle
+title: Account lifecycle events (Create, Enable, Password Reset, Delete)
+severity: high
+confidence: 0.7
+required_fields:
+  - target_user
+  - computer
+  - subject_user_name
+  - event_id
+tags:
+  - windows
+  - account-management
+  - persistence
+  - credential-abuse
+attack:
+  - T1136.001
+  - T1098
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      event_id,
+      target_user,
+      target_domain,
+      subject_user_name,
+      json_extract(raw_json, '$.EventData.TargetSid') AS target_sid
+  FROM evtx_events
+  WHERE event_id IN (4720, 4722, 4724, 4726)
+finding:
+  title: "Account lifecycle event on ${computer}"
+  summary: "Event ${event_id} for user ${target_user} by ${subject_user_name}"
+hypotheses:
+  - id: windows-security-4720-backdoor-account
+    segment: persistence
+    description: "Account ${target_user} was created (4720) on ${computer} as a potential backdoor, especially if followed by group membership changes (4732) or logon (4624)"
+    required_entities: [computer, target_user, target_sid]
+    confirm_when:
+      co_observed_event_ids: [4732, 4624]
+    refute_when:
+      zero_rows: true
+    follow_up_questions:
+      - "4624 logon by the created account"
+      - "4732 group membership change for the account"
+    report_sections:
+      - 3_technical
+  - id: windows-security-4724-password-reset
+    segment: credential-access
+    description: "Password reset (4724) performed by ${subject_user_name} for ${target_user} on ${computer} — potential privilege escalation or account takeover"
+    required_entities: [computer, target_user, subject_user_name]
+    confirm_when:
+      co_observed_event_ids: [4624]
+    refute_when:
+      zero_rows: true
+    follow_up_questions:
+      - "4624 logon after password reset"
+    report_sections:
+      - 3_technical

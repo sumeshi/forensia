@@ -16,7 +16,7 @@ from forensia.db.database import CaseDB
 from forensia.rules.models import Finding, Rule
 
 _MISSING_TEXT_VALUES = {"", "-", "n/a", "na", "none", "null", "unknown"}
-_BUILTIN_ALLOWLIST_PATH = Path(__file__).resolve().parent.parent / "rulepacks" / "windows" / "allowlist_services.yaml"
+_BUILTIN_ALLOWLIST_PATH = Path(__file__).resolve().parent.parent / "rulepacks" / "_schema" / "suppression" / "allowlist_services.yaml"
 
 FALLBACK_PHASES = {"keyword_in_raw_json", "related_event_ids", "artifact_table"}
 

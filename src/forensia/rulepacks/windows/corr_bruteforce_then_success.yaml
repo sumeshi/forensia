@@ -51,3 +51,19 @@ query: |
 finding:
   title: "Brute-force followed by successful logon: {src_ip} -> {computer} ({target_user})"
   summary: "After {fail_count} failed logons from {src_ip} against {target_user} on {computer}, a successful logon occurred at {success_time}. This is a strong indicator that a brute-force or password spraying attempt succeeded."
+hypotheses:
+  - id: brute_force_success_intrusion
+    segment: credential-access
+    description: "{fail_count} failed logons from {src_ip} followed by successful logon on {computer} as {target_user} indicates successful brute-force or password spray intrusion"
+    required_entities: [src_ip, computer, target_user]
+    confirm_when:
+      co_observed_event_ids: [4625, 4624]
+      same_host: true
+      within_minutes: 10
+    refute_when:
+      zero_rows: true
+    follow_up_questions:
+      - "What actions were taken from {src_ip} after gaining access to {computer} as {target_user}?"
+      - "Were lateral movement attempts observed from {computer} to other hosts?"
+      - "What privilege level did {target_user} on {computer} have?"
+    report_sections: [3_technical, 4_gaps]

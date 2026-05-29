@@ -1,0 +1,55 @@
+id: windows-security-4768-4769-kerberos
+title: Kerberos authentication events (TGT request, Service ticket request)
+severity: medium
+confidence: 0.6
+tags:
+  - windows
+  - kerberos
+  - authentication
+  - credential-access
+  - lateral-movement
+attack:
+  - T1558
+  - T1550.003
+query: |
+  SELECT
+      evidence_id,
+      timestamp,
+      computer,
+      event_id,
+      target_user,
+      service_name,
+      src_ip,
+      failure_code
+  FROM evtx_events
+  WHERE event_id IN (4768, 4769)
+finding:
+  title: "Kerberos activity for ${target_user} on ${computer}"
+  summary: "Event ${event_id} — user ${target_user} on ${computer} from ${src_ip} (service: ${service_name}, failure code: ${failure_code})"
+hypotheses:
+  - id: windows-security-4768-kerberoasting
+    segment: credential-access
+    description: "Service ticket requests (4769) for ${service_name} by ${target_user} on ${computer} may indicate Kerberoasting — request service tickets for offline cracking"
+    required_entities: [computer, target_user, service_name]
+    confirm_when:
+      co_observed_event_ids: [4769]
+    refute_when:
+      zero_rows: true
+    follow_up_questions:
+      - "Was the service account's password weak or guessable?"
+      - "Were unusual volumes of 4769 requests observed?"
+    report_sections:
+      - 3_technical
+  - id: windows-security-4768-as-rep-roasting
+    segment: credential-access
+    description: "TGT requests (4768) for ${target_user} from ${src_ip} on ${computer} — potential AS-REP roasting if the account does not require pre-authentication"
+    required_entities: [computer, target_user, src_ip]
+    confirm_when:
+      co_observed_event_ids: [4768]
+    refute_when:
+      zero_rows: true
+    follow_up_questions:
+      - "Does the account have 'Do not require Kerberos pre-authentication' set?"
+      - "Were TGT requests observed outside business hours?"
+    report_sections:
+      - 3_technical

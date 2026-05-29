@@ -232,3 +232,12 @@ UI 画面 (cockpit) は次で構成されます。
 - このツールの目的はレポートの材料を半自動で集めることであり、出力結果は必ず人間が検証してください。
 - オフライン動作を前提に設計していますが、ローカル LLM の準備 (モデルダウンロード、推論サーバの起動)は別途必要です。
 - forensia は開発中のソフトウェアです。実装上の詳細、リポジトリ構成、内部不変条件などは [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。
+
+## ベンチマーク
+
+このツールは `./templates/` にあるベンチマーク専用テンプレートを使用して、DFIR 推論精度を評価できます。
+
+    forensia run ./sample/DESKTOP-001 --out ./benchmark-output --profile windows-basic --template-dir ./templates
+    forensia report benchmark-output
+
+詳細は [BENCHMARK.md](./BENCHMARK.md) を参照してください。

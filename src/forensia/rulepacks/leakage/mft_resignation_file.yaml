@@ -1,0 +1,56 @@
+id: leakage-mft-resignation-file
+title: Resignation-related file observed
+severity: medium
+confidence: 0.6
+required_fields:
+  - file_name
+  - file_path
+  - si_modified
+  - fn_modified
+tags:
+  - leakage
+  - insider-threat
+  - resignation
+attack:
+  - T1567
+query: |
+  SELECT
+      evidence_id,
+      file_name,
+      file_path,
+      si_modified,
+      fn_modified
+  FROM mft_entries
+  WHERE
+      LOWER(file_name) LIKE '%resignation%' OR
+      LOWER(file_name) LIKE '%resign%' OR
+      LOWER(file_name) LIKE '%quit%' OR
+      LOWER(file_name) LIKE '%resignation%'
+finding:
+  title: "Resignation-related file detected: {file_name}"
+  summary: "File matching resignation keywords found at {file_path}. Review timestamps {si_modified} / {fn_modified} to correlate with user activity and potential data exfiltration prior to departure."
+hypotheses:
+  - id: leakage-resignation-data-exfil
+    segment: exfiltration
+    description: "Employee may have exfiltrated sensitive data via {file_path} prior to resignation date"
+    required_entities: [computer, target_user, file_path]
+    confirm_when:
+      co_observed_event_ids: [4663]
+      keywords: [resignation, resign, quit]
+    refute_when:
+      zero_rows: true
+    follow_up_questions:
+      - "Browser history around resignation file timestamp"
+      - "Cloud sync activity near resignation date"
+    report_sections:
+      - 3_technical
+      - 5_recommendations
+correlate_with:
+  - event_ids: [4663]
+    rationale: "File access events to verify active access to sensitive files"
+  - event_ids: [4688]
+    rationale: "Process execution including browser or cloud sync processes"
+fallback_search:
+  - phase: keyword_in_raw_json
+    keywords: [resignation, resign, 退職]
+    rationale: "Resignation-related activity may be logged in event data or process command lines"
