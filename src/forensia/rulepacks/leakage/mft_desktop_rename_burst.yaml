@@ -21,13 +21,12 @@ query: |
       file_name,
       file_path,
       si_modified,
-      fn_modified,
-      fn_category
+      fn_modified
   FROM mft_entries
   WHERE
       LOWER(file_path) LIKE '%/desktop/%'
       AND fn_modified != si_modified
-      AND fn_category = 0
+      AND is_directory = FALSE
 finding:
   title: "Desktop file rename burst on {file_path}"
   summary: "File '{file_name}' on Desktop has fn_modified ({fn_modified}) differing from si_modified ({si_modified}), indicating a rename operation. Multiple rename events in quick succession may indicate data staging for exfiltration."

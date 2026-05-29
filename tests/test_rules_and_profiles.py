@@ -59,8 +59,8 @@ class RuleProfileTests(unittest.TestCase):
             "security_4688_suspicious_tools.yaml": {"target_user", "computer", "process_name", "command_line"},
             "security_4697_service_install.yaml": {"subject_user", "service_name", "computer"},
             "system_7045_service_installed.yaml": {"service_name", "computer", "subject_user"},
-            "security_4720_account_lifecycle_consolidated.yaml": {"target_user", "computer", "subject_user_name"},
-            "security_4728_group_change_consolidated.yaml": {"target_user", "computer", "subject_user_name", "message"},
+            "security_4720_account_lifecycle_consolidated.yaml": {"target_user", "computer", "subject_user"},
+            "security_4728_group_change_consolidated.yaml": {"target_user", "computer", "subject_user", "message"},
         }
         rules_dir = Path("src/forensia/rulepacks/windows")
         for filename, fields in expected.items():

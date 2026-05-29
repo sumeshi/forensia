@@ -5,7 +5,7 @@ confidence: 0.75
 required_fields:
   - target_user
   - computer
-  - subject_user_name
+  - subject_user
   - event_id
   - message
 tags:
@@ -23,18 +23,18 @@ query: |
       computer,
       event_id,
       target_user,
-      subject_user_name,
+      subject_user,
       message
   FROM evtx_events
   WHERE event_id IN (4728, 4729, 4730, 4732, 4733, 4734, 4735, 4737, 4738)
 finding:
   title: "Group membership change on ${computer}"
-  summary: "Event ${event_id} — account ${target_user} modified by ${subject_user_name} on ${computer}"
+  summary: "Event ${event_id} — account ${target_user} modified by ${subject_user} on ${computer}"
 hypotheses:
   - id: windows-security-4728-privilege-escalation
     segment: privilege-escalation
-    description: "Account ${target_user} was added to a privileged group (4728/4732/4756) by ${subject_user_name} on ${computer}, indicating privilege escalation"
-    required_entities: [computer, target_user, subject_user_name]
+    description: "Account ${target_user} was added to a privileged group (4728/4732/4756) by ${subject_user} on ${computer}, indicating privilege escalation"
+    required_entities: [computer, target_user, subject_user]
     confirm_when:
       co_observed_event_ids: [4728, 4732, 4756]
     refute_when:

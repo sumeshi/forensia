@@ -247,13 +247,6 @@
     else onDrillChange([drill[0], drill[1], d]);
   }
 
-  function rangeLabel(): string {
-    if (drill.length === 0) return "All";
-    if (drill.length === 1) return `${drill[0]}`;
-    if (drill.length === 2) return `${drill[0]}-${String(drill[1]).padStart(2, "0")}`;
-    return `${drill[0]}-${String(drill[1]).padStart(2, "0")}-${String(drill[2]).padStart(2, "0")}`;
-  }
-
   function btnClass(active: boolean): string {
     return `rounded px-2 py-0.5 text-xs ${
       active
@@ -265,7 +258,7 @@
 
 <section class="panel p-4">
   <div class="flex items-center justify-between gap-3">
-    <h2 class="panel-title">Event Volume <span class="ml-2 text-xs text-mocha-subtext0">{rangeLabel()}</span></h2>
+    <h2 class="panel-title">Event Volume</h2>
     {#if drill.length > 0}
       <button
         class="rounded-full border border-mocha-surface1 px-3 py-0.5 text-xs text-mocha-subtext0 hover:text-mocha-text"

@@ -20,7 +20,7 @@ query: |
       target_user,
       service_name,
       src_ip,
-      failure_code
+      json_extract(raw_json, '$.EventData.Status') AS failure_code
   FROM evtx_events
   WHERE event_id IN (4768, 4769)
 finding:

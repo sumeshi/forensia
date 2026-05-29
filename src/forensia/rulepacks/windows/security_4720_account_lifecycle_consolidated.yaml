@@ -5,7 +5,7 @@ confidence: 0.7
 required_fields:
   - target_user
   - computer
-  - subject_user_name
+  - subject_user
   - event_id
 tags:
   - windows
@@ -22,14 +22,14 @@ query: |
       computer,
       event_id,
       target_user,
-      target_domain,
-      subject_user_name,
+      subject_user,
+      json_extract(raw_json, '$.EventData.TargetDomainName') AS target_domain,
       json_extract(raw_json, '$.EventData.TargetSid') AS target_sid
   FROM evtx_events
   WHERE event_id IN (4720, 4722, 4724, 4726)
 finding:
   title: "Account lifecycle event on ${computer}"
-  summary: "Event ${event_id} for user ${target_user} by ${subject_user_name}"
+  summary: "Event ${event_id} for user ${target_user} by ${subject_user}"
 hypotheses:
   - id: windows-security-4720-backdoor-account
     segment: persistence
@@ -46,8 +46,8 @@ hypotheses:
       - 3_technical
   - id: windows-security-4724-password-reset
     segment: credential-access
-    description: "Password reset (4724) performed by ${subject_user_name} for ${target_user} on ${computer} — potential privilege escalation or account takeover"
-    required_entities: [computer, target_user, subject_user_name]
+    description: "Password reset (4724) performed by ${subject_user} for ${target_user} on ${computer} — potential privilege escalation or account takeover"
+    required_entities: [computer, target_user, subject_user]
     confirm_when:
       co_observed_event_ids: [4624]
     refute_when:
