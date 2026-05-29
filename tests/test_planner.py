@@ -244,8 +244,8 @@ class PlannerRetryTests(unittest.TestCase):
             report_brief={},
         )
         payload = messages[1]["content"]
-        self.assertIn("x" * 1500, payload)
-        self.assertNotIn("x" * 1600, payload)
+        self.assertIn("x" * 120, payload)
+        self.assertNotIn("x" * 200, payload)
 
     def test_report_section_messages_placeholder_follows_output_language(self) -> None:
         with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "en"}):
@@ -305,17 +305,17 @@ class PlannerRetryTests(unittest.TestCase):
         responses = [
             {
                 "read_more": [],
-                "hypothesis": {"id": "H0", "description": "failed logon burst"},
-                "query": {
-                    "query_id": "QT1",
-                    "hypothesis_id": "H0",
-                    "purpose": "failed logons by src_ip",
-                    "template_id": "q_failed_logon_by_ip_window",
-                    "params": {"hours": 24, "threshold": 5},
-                    "sql": "",
-                },
-                "needs_more": True,
-            }
+                "intent": "Find failed logon events grouped by source IP",
+                "target_table": "evtx_events",
+                "filters_required": ["event_id = 4625"],
+                "time_window": "case time range",
+                "expected_row_shape": "event_id, timestamp, src_ip",
+            },
+            {
+                "template_id": "q_failed_logon_by_ip_window",
+                "params": {"hours": 24, "threshold": 5},
+                "purpose": "failed logons by src_ip",
+            },
         ]
 
         with patch("forensia.ai.planner.request_llm_json", side_effect=responses):
@@ -338,25 +338,23 @@ class PlannerRetryTests(unittest.TestCase):
         responses = [
             {
                 "read_more": [],
-                "hypothesis": {"id": "H1", "description": "test hypothesis"},
-                "query": {
-                    "query_id": "Q1",
-                    "hypothesis_id": "H1",
-                    "purpose": "test",
-                    "sql": "SELECT * FROM nope",
-                },
-                "needs_more": True,
+                "intent": "test intent",
+                "target_table": "evtx_events",
+                "filters_required": [],
+                "time_window": "All",
+                "expected_row_shape": "cols",
             },
             {
-                "read_more": [],
-                "hypothesis": {"id": "H1", "description": "test hypothesis"},
-                "query": {
-                    "query_id": "Q1b",
-                    "hypothesis_id": "H1",
-                    "purpose": "retry",
-                    "sql": "SELECT * FROM findings",
-                },
-                "needs_more": False,
+                "template_id": None,
+                "sql": "SELECT * FROM nope",
+                "params": {},
+                "purpose": "test",
+            },
+            {
+                "template_id": None,
+                "sql": "SELECT * FROM findings",
+                "params": {},
+                "purpose": "retry",
             },
         ]
 
@@ -370,28 +368,28 @@ class PlannerRetryTests(unittest.TestCase):
                 model="test-model",
             )
 
-        self.assertEqual(2, mock_request.call_count)
+        self.assertEqual(3, mock_request.call_count)
         self.assertIsNotNone(result.query)
         self.assertEqual("SELECT * FROM findings", result.query.sql)
 
     def test_plan_hypothesis_query_logs_debug_when_query_parse_fails(self) -> None:
         state = SessionState(session_id="session-1", iteration=1)
         hypothesis = Hypothesis(id="H1", description="test hypothesis")
-        response = {
-            "read_more": [],
-            "hypothesis": {"id": "H1", "description": "test hypothesis"},
-            "query": {
-                "query_id": "Q-bad",
-                "hypothesis_id": "H1",
-                "purpose": "broken",
-                "template_id": "missing-template",
-                "params": {},
-                "sql": "",
+        responses = [
+            {
+                "read_more": [],
+                "intent": "test intent",
+                "target_table": "evtx_events",
+                "filters_required": [],
+                "time_window": "All",
+                "expected_row_shape": "cols",
             },
-            "needs_more": True,
-        }
+            {"template_id": "missing-template", "sql": "", "params": {}, "purpose": "broken"},
+            {"template_id": "missing-template", "sql": "", "params": {}, "purpose": "broken"},
+            {"template_id": "missing-template", "sql": "", "params": {}, "purpose": "broken"},
+        ]
 
-        with patch("forensia.ai.planner.request_llm_json", return_value=response), self.assertLogs(
+        with patch("forensia.ai.planner.request_llm_json", side_effect=responses), self.assertLogs(
             "forensia.ai.planner", level="DEBUG"
         ) as logs:
             result = plan_hypothesis_query(
@@ -409,7 +407,10 @@ class PlannerRetryTests(unittest.TestCase):
     def test_plan_hypothesis_query_includes_recent_db_history_on_resume(self) -> None:
         state = SessionState(session_id="session-db", iteration=2)
         hypothesis = Hypothesis(id="H1", description="test hypothesis")
-        response = {"read_more": [], "query": None, "needs_more": False}
+        responses = [
+            {"read_more": [], "intent": "test", "target_table": "evtx_events"},
+            {"sql": "SELECT 1", "purpose": "test"},
+        ]
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -421,7 +422,7 @@ class PlannerRetryTests(unittest.TestCase):
                     ) VALUES ('HR-1', 'H1', 'S-1', 1, 'check', 'inconclusive', 'Q-old', 'already tested', now())
                     """
                 )
-                with patch("forensia.ai.planner.request_llm_json", return_value=response) as mock_request:
+                with patch("forensia.ai.planner.request_llm_json", side_effect=responses) as mock_request:
                     plan_hypothesis_query(
                         state=state,
                         hypothesis=hypothesis,
@@ -432,10 +433,9 @@ class PlannerRetryTests(unittest.TestCase):
                         db=db,
                     )
 
-        payload = mock_request.call_args.kwargs["messages"][1]["content"]
-        self.assertIn("'query_id': 'Q-old'", mock_request.call_args.kwargs["messages"][0]["content"])
-        self.assertIn("'query_id': 'Q-old'", payload)
-        self.assertIn("'body': 'already tested'", payload)
+        # Check the intent-phase call (first call) for DB history
+        first_call_system = mock_request.call_args_list[0].kwargs["messages"][0]["content"]
+        self.assertIn('"query_id": "Q-old"', first_call_system)
 
     def test_plan_hypothesis_query_dedupes_local_and_db_query_ids(self) -> None:
         state = SessionState(
@@ -453,7 +453,10 @@ class PlannerRetryTests(unittest.TestCase):
             ],
         )
         hypothesis = Hypothesis(id="H1", description="test hypothesis")
-        response = {"read_more": [], "query": None, "needs_more": False}
+        responses = [
+            {"read_more": [], "intent": "test", "target_table": "evtx_events"},
+            {"sql": "SELECT 1", "purpose": "test"},
+        ]
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -465,7 +468,7 @@ class PlannerRetryTests(unittest.TestCase):
                     ) VALUES ('HR-1', 'H1', 'S-1', 1, 'check', 'inconclusive', 'Q-local', 'duplicate row', now())
                     """
                 )
-                with patch("forensia.ai.planner.request_llm_json", return_value=response) as mock_request:
+                with patch("forensia.ai.planner.request_llm_json", side_effect=responses) as mock_request:
                     plan_hypothesis_query(
                         state=state,
                         hypothesis=hypothesis,
@@ -476,10 +479,9 @@ class PlannerRetryTests(unittest.TestCase):
                         db=db,
                     )
 
-        system = mock_request.call_args.kwargs["messages"][0]["content"]
-        user = mock_request.call_args.kwargs["messages"][1]["content"]
-        self.assertEqual(1, system.count("Q-local"))
-        self.assertEqual(1, user.count("'query_id': 'Q-local'"))
+        # Check the intent-phase call (first call) for deduplication
+        first_call_system = mock_request.call_args_list[0].kwargs["messages"][0]["content"]
+        self.assertEqual(1, first_call_system.count("Q-local"))
 
     def test_parse_hypotheses_logs_debug_on_validation_failure(self) -> None:
         with self.assertLogs("forensia.ai.planner", level="DEBUG") as logs:
@@ -511,26 +513,15 @@ class PlannerRetryTests(unittest.TestCase):
         responses = [
             {
                 "read_more": [],
-                "hypothesis": {"id": "H2", "description": "test hypothesis"},
-                "query": {
-                    "query_id": "Q2",
-                    "hypothesis_id": "H2",
-                    "purpose": "test",
-                    "sql": "SELECT * FROM nope",
-                },
-                "needs_more": True,
+                "intent": "test intent",
+                "target_table": "evtx_events",
+                "filters_required": [],
+                "time_window": "All",
+                "expected_row_shape": "cols",
             },
-            {
-                "read_more": [],
-                "hypothesis": {"id": "H2", "description": "test hypothesis"},
-                "query": {
-                    "query_id": "Q2b",
-                    "hypothesis_id": "H2",
-                    "purpose": "retry",
-                    "sql": "DELETE FROM findings",
-                },
-                "needs_more": True,
-            },
+            {"template_id": None, "sql": "SELECT * FROM nope", "params": {}, "purpose": "test"},
+            {"template_id": None, "sql": "DELETE FROM findings", "params": {}, "purpose": "retry1"},
+            {"template_id": None, "sql": "DELETE FROM findings", "params": {}, "purpose": "retry2"},
         ]
 
         with patch("forensia.ai.planner.request_llm_json", side_effect=responses):

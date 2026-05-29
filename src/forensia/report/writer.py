@@ -503,6 +503,7 @@ class _GateCtx:
     section_key: str
     title: str
     evidence_results: list[dict[str, Any]] | None
+    db: CaseDB | None
 
 
 QualityCheck = Callable[[str, _GateCtx], tuple[str | None, float | None]]
@@ -647,6 +648,25 @@ def _check_out_of_range_timestamp(body: str, ctx: _GateCtx) -> tuple[str | None,
     return None, None
 
 
+def _check_overused_evidence_id(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+    if ctx.db is None:
+        return None, None
+    used_ids = set(EVIDENCE_ID_PATTERN.findall(body))
+    if not used_ids:
+        return None, None
+    overused: list[str] = []
+    for eid in used_ids:
+        count = ctx.db.execute(
+            "SELECT COUNT(DISTINCT section_key) FROM section_evidence WHERE evidence_id = ?",
+            (eid,),
+        ).fetchone()[0]
+        if count > 2:
+            overused.append(eid)
+    if overused:
+        return f"Evidence id reused across > 2 sections: {overused[:3]}", 0.7
+    return None, None
+
+
 _QUALITY_CHECKS: tuple[QualityCheck, ...] = (
     _check_placeholder_entity,
     _check_template_marker,
@@ -663,6 +683,7 @@ _QUALITY_CHECKS: tuple[QualityCheck, ...] = (
     _check_citation_token_no_finding_id,
     _check_duplicate_paragraph,
     _check_out_of_range_timestamp,
+    _check_overused_evidence_id,
 )
 
 
@@ -673,9 +694,10 @@ def _quality_gate_section(
     gaps: list[str],
     confidence: float,
     evidence_results: list[dict[str, Any]] | None = None,
+    db: CaseDB | None = None,
 ) -> tuple[list[str], float]:
     """Apply quality-gating checks to a section body, returning augmented gaps and adjusted confidence."""
-    ctx = _GateCtx(section_key=section_key, title=title, evidence_results=evidence_results)
+    ctx = _GateCtx(section_key=section_key, title=title, evidence_results=evidence_results, db=db)
     gated_gaps = list(gaps)
     gated_confidence = confidence
     for check in _QUALITY_CHECKS:
@@ -1657,42 +1679,27 @@ def _query_evtx_time_range(db: CaseDB, case: Case | None = None) -> dict[str, st
     return time_range
 
 
-def _build_report_brief(db: CaseDB, case: Case | None = None) -> dict[str, Any]:
-    """Assemble a structured brief of top findings, hypotheses, section excerpts, and coverage data for LLM context."""
-    findings = _query_top_findings(db)
-    active_hypotheses = _query_hypotheses_by_status(db, "active")
-    confirmed_hypotheses = _query_hypotheses_by_status(db, "confirmed")
-    refuted_hypotheses = _query_hypotheses_by_status(db, "refuted")
-    prior_sections = _query_prior_sections(db)
-    existing_claims = _query_existing_claims(db)
-    deduped_claims = _dedupe_claims(existing_claims)
+def _summarize_section_coverage(db: CaseDB) -> dict[str, Any]:
     coverage_map = _collect_section_coverage(db)
-    coverage_summary = {
+    return {
         "sections": coverage_map,
         "section_count": len(coverage_map),
         "total_sources": sum(len(items) for items in coverage_map.values()),
     }
-    tz_str = getattr(case, 'source_timezone', 'UTC') if case else 'UTC'
-    time_range = _query_evtx_time_range(db, case)
+
+
+def _build_report_brief(db: CaseDB, case: Case | None = None) -> dict[str, Any]:
+    """Assemble a structured brief of top findings, hypotheses, section excerpts, and coverage data for LLM context."""
     return {
-        "top_findings": [normalize_value(item) for item in findings],
-        "active_hypotheses": [normalize_value(item) for item in active_hypotheses],
-        "confirmed_hypotheses": [normalize_value(item) for item in confirmed_hypotheses],
-        "refuted_hypotheses": [normalize_value(item) for item in refuted_hypotheses],
-        "prior_sections": [
-            {
-                "section_key": item["section_key"],
-                "title": item["title"],
-                "confidence": item["confidence"],
-                "status": item["status"],
-                "excerpt": str(item.get("body_excerpt") or "").strip(),
-            }
-            for item in prior_sections
-        ],
-        "existing_claims": deduped_claims,
-        "evidence_coverage": coverage_summary,
-        "source_timezone": tz_str,
-        "time_range": time_range,
+        "top_findings": [normalize_value(item) for item in _query_top_findings(db)],
+        "active_hypotheses": [normalize_value(item) for item in _query_hypotheses_by_status(db, "active")],
+        "confirmed_hypotheses": [normalize_value(item) for item in _query_hypotheses_by_status(db, "confirmed")],
+        "refuted_hypotheses": [normalize_value(item) for item in _query_hypotheses_by_status(db, "refuted")],
+        "prior_sections": _query_prior_sections(db),
+        "existing_claims": _dedupe_claims(_query_existing_claims(db)),
+        "evidence_coverage": _summarize_section_coverage(db),
+        "source_timezone": getattr(case, "source_timezone", "UTC") if case else "UTC",
+        "time_range": _query_evtx_time_range(db, case),
     }
 
 
@@ -2051,7 +2058,7 @@ def _render_section_from_request(
     memory = MemoryManager(request["case"])
     rendered_blocks: list[str] = []
     block_gaps: list[str] = []
-    block_outputs: dict[str, str] = {}
+    block_outline: list[dict] = []
     all_evidence_results: list[dict[str, Any]] = []
     for block in request.get("block_requests") or []:
         is_benchmark_mode = str(block.get("mode") or "").strip().casefold() == "benchmark"
@@ -2063,7 +2070,7 @@ def _render_section_from_request(
             block_heading=str(block.get("heading") or ""),
             template_body=str(block.get("template_body") or ""),
             context_sections={} if is_benchmark_mode else (request.get("context_sections") or {}),
-            current_section_outputs={} if is_benchmark_mode else block_outputs,
+            current_section_outline=[] if is_benchmark_mode else block_outline,
             report_brief=request.get("report_brief") or {},
             base_url=base_url,
             model=model,
@@ -2077,7 +2084,10 @@ def _render_section_from_request(
         rendered_blocks.append(block_body)
         heading = str(block.get("heading") or "").strip()
         if heading:
-            block_outputs[heading] = block_body
+            block_outline.append({
+                "heading": heading,
+                "summary": (block_body.split("\n", 1)[0])[:120],
+            })
         all_evidence_results.extend(block_result.evidence_results)
         block_level_gaps, _ = _verify_block_output(db, block_body)
         for gap in block_level_gaps:
@@ -2152,6 +2162,18 @@ def _run_post_upsert_gap_checks(
     return candidate_gaps, candidate_confidence, needs_update
 
 
+def _read_persisted_section(db: CaseDB, section_key: str) -> dict[str, Any]:
+    row = db.execute(
+        "SELECT body, confidence, gaps FROM report_sections WHERE section_key = ?",
+        (section_key,),
+    ).fetchone()
+    persisted_confidence = float(row[1] or 0.0)
+    persisted_gaps = normalize_value(row[2]) or []
+    if not isinstance(persisted_gaps, list):
+        persisted_gaps = []
+    return {"gaps": persisted_gaps, "confidence": persisted_confidence}
+
+
 def finalize_section(
     db: CaseDB,
     section_key: str,
@@ -2171,6 +2193,7 @@ def finalize_section(
         candidate_gaps,
         candidate_confidence,
         evidence_results,
+        db=db,
     )
     if removed_raw:
         note = "Raw evidence rows were moved to reports/evidence JSON and replaced with normalized summaries in the section body."
@@ -2193,16 +2216,7 @@ def finalize_section(
         session_id=session_id,
     )
     if not updated:
-        row = db.execute(
-            "SELECT body, confidence, gaps FROM report_sections WHERE section_key = ?",
-            (section_key,),
-        ).fetchone()
-        persisted_body = str(row[0] or "")
-        persisted_confidence = float(row[1] or 0.0)
-        persisted_gaps = normalize_value(row[2]) or []
-        if not isinstance(persisted_gaps, list):
-            persisted_gaps = []
-        return {"gaps": persisted_gaps, "confidence": persisted_confidence}
+        return _read_persisted_section(db, section_key)
     claim_statuses = _upsert_claims(db, section_key, body, evidence_results or [])
     candidate_gaps, candidate_confidence, needs_update = _run_post_upsert_gap_checks(
         db, section_key, body, evidence_results, claim_statuses, candidate_gaps, candidate_confidence,

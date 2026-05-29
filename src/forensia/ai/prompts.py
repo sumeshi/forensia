@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -540,6 +542,31 @@ def _truncate_context_sections(context_sections: dict[str, str], max_chars: int 
     return trimmed
 
 
+def _slim_report_brief_for_section(report_brief: dict, section_key: str) -> dict:
+    """Strip top_findings/hypotheses; keep only structural fields."""
+    if not report_brief:
+        return {}
+    if section_key == "1_overview":
+        return report_brief
+    return {
+        "time_range": report_brief.get("time_range"),
+        "source_timezone": report_brief.get("source_timezone"),
+        "investigation_objective": report_brief.get("investigation_objective"),
+    }
+
+
+def _summarize_context_sections(context_sections: dict[str, str]) -> dict[str, str]:
+    """Return {section_key: first-line 120-char prefix} instead of full body."""
+    summary: dict[str, str] = {}
+    for key, body in context_sections.items():
+        text = str(body or "").strip()
+        if not text:
+            continue
+        first_line = text.split("\n", 1)[0].strip()[:120]
+        summary[str(key)] = first_line
+    return summary
+
+
 _SQL_COOKBOOK = """
 <SQL_COOKBOOK>
 Copy and adapt these templates rather than inventing SQL from scratch.
@@ -785,6 +812,13 @@ Output: {"read_more": ["memory/keypoints/KP-020.md"], "hypotheses": [{"id": "<as
         "prohibited_phrases: 'unknown', 'cannot confirm', 'insufficient evidence'.\n"
         "confirm_when_rule: co_observed_event_ids entries must be either integer event IDs (e.g. 4624, 7045) OR finding_ids (format: 'windows-xxx-yyyy-xxxx-xxxx'). "
         "Integer event IDs are preferred. Do NOT include keypoint names, free text, or quoted-string numbers — they will be dropped by validation.\n"
+        "dedup_critical: NEVER re-state an existing active or resolved hypothesis using synonyms or different wording. "
+        "例: 'lateral movement via RDP' と 'RDP remote access used for lateral movement' は THE SAME。 "
+        "active_hypotheses と resolved_hypotheses を熟読してから新規提案する。\n"
+        "semantic_dedup: 同じ (actor, action, target) triple は重複扱い。 "
+        "例: 'Service creation used for persistence' と 'Persistence via service installation' は同じ。\n"
+        "coverage_rule: REQUIRED — uncovered_keypoints が空でなければ、TOP 3 をカバーする仮説を「ちょうど 1 つ」生成する。 "
+        "全 uncovered が既存仮説でカバーされているなら stop=true。\n"
         "</RULES>\n"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
@@ -915,6 +949,82 @@ Output: {"read_more": [], "hypothesis": {"id": "H-5", "description": "RDP used t
     ]
 
 
+def build_query_intent_messages(
+    hypothesis,
+    recent_history: list[dict],
+    finding_candidates: list[dict],
+    active_hypotheses: list[Hypothesis],
+    time_range: dict,
+    schema_context: str,
+    extra_context_md: str = "",
+) -> list[dict[str, str]]:
+    """Build messages for the query_intent_planner phase.
+    
+    Decides WHAT data to fetch for this hypothesis, not HOW.
+    Uses read_more expansion for memory context.
+    """
+    system = (
+        f"{_dfir_playbook('hypothesis_plan')}\n"
+        f"{_time_range_guidance()}"
+        "<TASK>You are a query_intent_planner. Decide WHAT data to fetch for the given hypothesis. Do NOT write SQL.</TASK>\n"
+        "<INPUT_SCHEMA>\n"
+        f"hypothesis: {hypothesis.model_dump() if hasattr(hypothesis, 'model_dump') else hypothesis}\n"
+        f"recent_history: {json.dumps(recent_history, ensure_ascii=False, default=str)}\n"
+        f"time_range: {json.dumps(time_range, ensure_ascii=False, default=str)}\n"
+        f"schema: {schema_context}\n"
+        "</INPUT_SCHEMA>\n"
+        "<OUTPUT_SCHEMA>\n"
+        "{\n"
+        '  "read_more": ["list of memory paths for additional context, or empty list"],\n'
+        '  "intent": "string — one sentence describing what data to retrieve",\n'
+        '  "target_table": "evtx_events | mft_entries | mft_timeline | prefetch_executions",\n'
+        '  "filters_required": ["list of column-level filters needed"],\n'
+        '  "time_window": "string describing time bounds",\n'
+        '  "expected_row_shape": "string describing expected columns"\n'
+        "}\n"
+        "</OUTPUT_SCHEMA>"
+    )
+    user = (
+        f"hypothesis.description: {hypothesis.description}\n"
+        f"hypothesis.required_entities: {getattr(hypothesis, 'required_entities', [])}\n"
+        f"active_hypotheses: {[h.model_dump() if hasattr(h, 'model_dump') else dict(h) for h in active_hypotheses]}\n"
+        f"extra_context:\n{extra_context_md}\n"
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def build_sql_composer_messages(
+    intent: dict,
+    table_schema_card: str,
+    template_catalog: list[dict],
+    time_range: dict,
+) -> list[dict[str, str]]:
+    """Build messages for the sql_composer phase.
+    
+    Produces a valid DuckDB SELECT statement that satisfies `intent`.
+    Idempotent — no read_more cycle needed.
+    """
+    system = (
+        f"{_dfir_playbook('hypothesis_plan')}\n"
+        "<TASK>You are a sql_composer. Write a DuckDB SQL query that satisfies the given intent. Output template_id or raw SQL.</TASK>\n"
+        "<INPUT_SCHEMA>\n"
+        f"intent: {json.dumps(intent, ensure_ascii=False)}\n"
+        f"table_schema: {table_schema_card}\n"
+        f"template_catalog: {json.dumps(template_catalog[:10], ensure_ascii=False)}\n"
+        "</INPUT_SCHEMA>\n"
+        "<OUTPUT_SCHEMA>\n"
+        "{\n"
+        '  "template_id": "string | null — if a template matches",\n'
+        '  "sql": "string | null — raw SQL if no template matches",\n'
+        '  "params": {"key": "value"},\n'
+        '  "purpose": "string — why this query answers the hypothesis"\n'
+        "}\n"
+        "</OUTPUT_SCHEMA>"
+    )
+    user = json.dumps({"intent": intent}, ensure_ascii=False, default=str)
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
 def _check_strictness_note(query_index: int, max_queries: int) -> str:
     queries_remaining = max_queries - query_index
     if queries_remaining == 0:
@@ -1036,16 +1146,15 @@ def build_check_messages(
     guardrails, and rule-based criteria."""
     str_fallback = _check_fallback_guidance(fallback_info)
     zero_evidence = int(result_summary.get("row_count") or 0) == 0
-    entity_type_list = list(ENTITY_TYPE_ALIASES.keys())
     system = (
         f"{_dfir_playbook('check')}\n"
         f"{_time_range_guidance()}"
         "<TASK>You are a DFIR review analyst. Evaluate SQL results against hypothesis and output structured findings.</TASK>\n"
         "<INPUT_SCHEMA>SQL result summary, hypothesis with required_entities, finding candidates, evidence_ids list</INPUT_SCHEMA>\n"
         "<RULES>\n"
-        f"evidence_ids: Only reference evidence_ids from this query: {observed_evidence_ids[:50] if observed_evidence_ids else 'none available'}\n"
+        f"evidence_ids: {_check_evidence_id_guidance(observed_evidence_ids) or 'none available'}\n"
         f"zero_evidence: {_check_zero_evidence_note(result_summary)}\n"
-        f"entity_constraint: entity_type must be one of: {entity_type_list}. No placeholder values.\n"
+        f"{_check_entity_constraint()}\n"
         f"rule_based: {_check_rule_verdict_guidance(rule_context)}\n"
         f"fallback: {str_fallback}\n"
         "</RULES>\n"
@@ -1214,6 +1323,84 @@ def build_column_selection_messages(
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+def build_verdict_review_messages(
+    hypothesis,
+    planned_query,
+    result_summary: dict,
+    time_range: dict,
+    strictness_note: str = "",
+) -> list[dict[str, str]]:
+    """role: verdict_reviewer.
+    Goal: classify the SQL result vs hypothesis as confirmed/refuted/inconclusive.
+    Output JSON: {verdict, rationale, confidence}
+    """
+    system = (
+        f"{_dfir_playbook('check')}\n"
+        f"{_time_range_guidance()}"
+        "<TASK>You are a verdict_reviewer. Classify the SQL result against the hypothesis as confirmed, refuted, or inconclusive.</TASK>\n"
+        "<OUTPUT_SCHEMA>\n"
+        "{\n"
+        '  "verdict": "confirmed | refuted | inconclusive",\n'
+        '  "rationale": "string — concise reason (< 200 chars)",\n'
+        '  "confidence": 0.0-1.0\n'
+        "}\n"
+        "</OUTPUT_SCHEMA>"
+    )
+    user = (
+        f"hypothesis: {hypothesis.description if hasattr(hypothesis, 'description') else hypothesis}\n"
+        f"query: {planned_query.sql if hasattr(planned_query, 'sql') else planned_query}\n"
+        f"result_summary: {json.dumps(result_summary, ensure_ascii=False)}\n"
+        f"{strictness_note}"
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def build_finding_extractor_messages(
+    hypothesis, result_rows: list[dict], verdict: str, rationale: str
+) -> list[dict[str, str]]:
+    """role: finding_extractor.
+    Goal: extract finding entries IFF verdict == confirmed.
+    Called only when verdict is confirmed.
+    """
+    system = (
+        "<TASK>You are a finding_extractor. Extract findings from the confirmed query results. Only output findings if the evidence clearly supports a specific security event.</TASK>\n"
+        "<OUTPUT_SCHEMA>\n"
+        "{\n"
+        '  "findings": [{"title": "string", "severity": "low|medium|high|critical", "evidence_ids": ["str"]}]\n'
+        "}\n"
+        "</OUTPUT_SCHEMA>"
+    )
+    user = (
+        f"hypothesis: {hypothesis.description if hasattr(hypothesis, 'description') else hypothesis}\n"
+        f"verdict: {verdict}\n"
+        f"rationale: {rationale}\n"
+        f"result_rows: {json.dumps(result_rows[:10], default=str, ensure_ascii=False)}\n"
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def build_memory_updater_messages(
+    hypothesis, verdict: str, rationale: str
+) -> list[dict[str, str]]:
+    """role: memory_updater.
+    Goal: propose durable memory writes (facts.md additions).
+    """
+    system = (
+        "<TASK>You are a memory_updater. Propose durable fact updates based on the investigation result.</TASK>\n"
+        "<OUTPUT_SCHEMA>\n"
+        "{\n"
+        '  "memory_updates": [{"path": "facts.md | timeline.md | entities/*.md", "content": "string"}]\n'
+        "}\n"
+        "</OUTPUT_SCHEMA>"
+    )
+    user = (
+        f"hypothesis: {hypothesis.description if hasattr(hypothesis, 'description') else hypothesis}\n"
+        f"verdict: {verdict}\n"
+        f"rationale: {rationale}\n"
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
 def _rows_to_markdown_table(rows: list[dict[str, Any]], max_rows: int = 30) -> str:
     if not rows:
         return ""
@@ -1246,13 +1433,29 @@ def _section_coverage_block(report_brief: dict) -> str:
     return _format_evidence_coverage(report_brief)
 
 
-def _section_context_block(context_sections: dict[str, str], current_section_outputs: dict[str, str]) -> str:
-    trimmed_context = _truncate_context_sections(context_sections)
-    trimmed_current = _truncate_context_sections(current_section_outputs, max_chars=1200)
-    return (
-        f"previous_sections: {trimmed_context}\n\n"
-        f"current_section_progress: {trimmed_current}\n\n"
-    )
+def _format_outline(outline: list[dict]) -> str:
+    if not outline:
+        return ""
+    lines = ["<PRIOR_BLOCKS_IN_THIS_SECTION>"]
+    for entry in outline:
+        heading = entry.get("heading", "")
+        summary = entry.get("summary", "")
+        lines.append(f"  - **{heading}:** {summary}")
+    lines.append("</PRIOR_BLOCKS_IN_THIS_SECTION>")
+    return "\n".join(lines)
+
+
+def _section_context_block(context_sections: dict[str, str], current_section_outline: list[dict]) -> str:
+    trimmed_context = _summarize_context_sections(context_sections)
+    lines = [f"previous_sections: {trimmed_context}\n"]
+    if current_section_outline:
+        lines.append("<PRIOR_BLOCKS_IN_THIS_SECTION>")
+        for entry in current_section_outline:
+            heading = entry.get("heading", "")
+            summary = entry.get("summary", "")
+            lines.append(f"  - **{heading}:** {summary}")
+        lines.append("</PRIOR_BLOCKS_IN_THIS_SECTION>")
+    return "\n".join(lines)
 
 
 def build_report_section_messages(
@@ -1262,7 +1465,7 @@ def build_report_section_messages(
     template_body: str,
     report_brief: dict[str, Any] | None = None,
     section_heading: str = "",
-    current_section_outputs: dict[str, str] | None = None,
+    current_section_outline: list[dict] | None = None,
     verification_notes: list[str] | None = None,
     raw_evidence_rows: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
@@ -1342,8 +1545,8 @@ Output: "## Process Execution\\n\\nOne suspicious process was observed: powershe
     user = (
         f"section_meta: {section_meta}\n\n"
         f"current_subsection: {section_heading or '(full section)'}\n\n"
-        f"report_brief: {report_brief or {}}\n\n"
-        f"{_section_context_block(context_sections, current_section_outputs or {})}"
+        f"report_brief: {_slim_report_brief_for_section(report_brief or {}, str(section_meta.get('section') or ''))}\n\n"
+        f"{_section_context_block(context_sections, current_section_outline or [])}"
         f"{_section_verification_block(verification_notes)}"
         f"evidence_coverage: {report_brief.get('evidence_coverage') if isinstance(report_brief, dict) else {}}\n\n"
         f"evidence_results: {evidence_for_prompt}\n"
@@ -1444,9 +1647,10 @@ def build_benchmark_section_messages(
         f"{_time_range_guidance()}"
         "<TASK>You are a benchmark answer writer for a DFIR appendix block.</TASK>\n"
         "<INPUT_SCHEMA>section_meta, block_heading, template_body, evidence_results, raw_evidence_rows</INPUT_SCHEMA>\n"
+        f"<BENCHMARK_ID>The id field of your output MUST be exactly: {block_id}</BENCHMARK_ID>\n"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
-        '  \"id\": \"Q8\",\n'
+        '  \"id\": \"<copy BENCHMARK_ID verbatim>\",\n'
         '  \"status\": \"answered|partial|not_found|not_searched|insufficient_evidence|wrong_query\",\n'
         '  \"answer\": [\"concise normalized statements\" OR {\"field\": \"value\", ...}],\n'
         '  \"missing_reason\": [\"why evidence is missing or incomplete\"],\n'
@@ -1474,7 +1678,7 @@ def build_benchmark_section_messages(
         f"section_meta: {section_meta}\n\n"
         f"block_heading: {block_heading}\n\n"
         f"benchmark_id: {block_id}\n\n"
-        f"report_brief: {report_brief or {}}\n\n"
+        f"report_brief: {_slim_report_brief_for_section(report_brief or {}, str(section_meta.get('section') or ''))}\n\n"
         f"verification_notes: {verification_notes or []}\n\n"
         f"evidence_results: {evidence_for_prompt}\n\n"
         f"normalized_evidence_rows:\n" + ("\n".join(summary_lines) if summary_lines else "- none") + "\n\n"
@@ -1486,12 +1690,40 @@ def build_benchmark_section_messages(
     ]
 
 
+def build_benchmark_classify_messages(
+    question: str,
+    block_heading: str,
+    evidence_rows: list[dict],
+    expected_shape: dict | None,
+) -> list[dict[str, str]]:
+    """role: benchmark_classifier.
+    Goal: decide answer status and pick which evidence_rows answer the question.
+    Output: {status, picked_row_ids, rationale}
+    """
+    system = (
+        "<TASK>You are a benchmark_classifier. Decide the answer status and pick which evidence rows answer the question. "
+        "Do NOT write narrative.</TASK>\n"
+        "<OUTPUT_SCHEMA>\n"
+        "{\n"
+        '  "status": "answered | partial | not_found | not_searched | wrong_query",\n'
+        '  "picked_row_ids": ["list of evidence row identifiers"],\n'
+        '  "rationale": "string"\n'
+        "}\n"
+        "</OUTPUT_SCHEMA>"
+    )
+    user = (
+        f"question: {question}\n"
+        f"block_heading: {block_heading}\n"
+        f"evidence_rows: {json.dumps(evidence_rows[:20], default=str, ensure_ascii=False)}\n"
+        f"expected_shape: {json.dumps(expected_shape or {}, ensure_ascii=False)}\n"
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
 def _filter_prior_runs_by_heading(prior_runs: list[dict[str, Any]], block_heading: str, limit: int = 6) -> list[dict[str, Any]]:
-    """Filter prior runs by block_heading match first, then fall back to recency."""
+    """Filter prior runs by block_heading match."""
     heading_matches = [run for run in prior_runs if str(run.get("block_heading") or "") == str(block_heading)]
-    if heading_matches:
-        return heading_matches[-limit:]
-    return prior_runs[-limit:]
+    return heading_matches[-limit:]
 
 
 def build_section_agent_plan_messages(
@@ -1502,7 +1734,7 @@ def build_section_agent_plan_messages(
     template_body: str,
     report_brief: dict[str, Any],
     context_sections: dict[str, str],
-    current_section_outputs: dict[str, str],
+    current_section_outline: list[dict],
     findings_snapshot: list[dict[str, Any]],
     keypoint_catalog: list[dict[str, str]],
     query_template_catalog: list[dict[str, Any]],
@@ -1572,9 +1804,9 @@ Output: {"action": "template", "template_id": "service-creation", "params": {"co
         f"block_heading: {block_heading}\n\n"
         f"template_block:\n{template_body}\n\n"
         f"structured_memory_context:\n{memory_context_md}\n\n"
-        f"report_brief: {report_brief}\n\n"
+        f"report_brief: {_slim_report_brief_for_section(report_brief, section_key)}\n\n"
         f"previous_sections: {_truncate_context_sections(context_sections)}\n\n"
-        f"current_section_progress: {_truncate_context_sections(current_section_outputs or {}, max_chars=1200)}\n\n"
+        f"current_section_outline: {_format_outline(current_section_outline or [])}\n\n"
         f"findings_snapshot: {findings_snapshot[:10]}\n\n"
         f"reusable_section_facts: {reusable_facts[:12]}\n\n"
         f"reusable_section_evidence: {reusable_evidence[:20]}\n\n"
@@ -1655,4 +1887,110 @@ Output: {"verdict": "block_contradicted", "status": "not_found", "rationale": "N
     if contradicted_history:
         user += f"contradicted_attempts_previous_iterations: {contradicted_history}\n\n"
     user += f"prior_runs: {_filter_prior_runs_by_heading(prior_runs, block_heading)}\n"
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def build_section_outline_messages(
+    template_body: str,
+    relevant_evidence: list[dict],
+    time_range: dict,
+    section_meta: dict,
+) -> list[dict[str, str]]:
+    """role: section_outliner.
+    Goal: assign each evidence item to ONE paragraph; produce outline JSON.
+    """
+    system = (
+        f"{_dfir_playbook('report_section')}\n"
+        f"{_time_range_guidance()}"
+        "<TASK>You are a section_outliner. Assign evidence items to template paragraphs. Do NOT write narrative text.</TASK>\n"
+        "<INPUT_SCHEMA>\n"
+        f"template_body: {template_body}\n"
+        f"time_range: {time_range}\n"
+        "</INPUT_SCHEMA>\n"
+        "<OUTPUT_SCHEMA>\n"
+        "{\n"
+        '  "outline": [{"heading": "str", "key_points": ["str"], "evidence_ids": ["str"]}]\n'
+        "}\n"
+        "</OUTPUT_SCHEMA>"
+    )
+    evidence_summary = "\n".join(
+        f"- {e.get('evidence_id', '?')}: {e.get('summary', str(e)[:100])}"
+        for e in (relevant_evidence or [])
+    )
+    user = (
+        f"section_meta: {json.dumps(section_meta, ensure_ascii=False)}\n"
+        f"available_evidence:\n{evidence_summary or 'No evidence available.'}\n"
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def build_paragraph_narrate_messages(
+    heading: str,
+    key_points: list[str],
+    evidence_rows: list[dict],
+    template_body: str,
+    language: str = "en",
+) -> list[dict[str, str]]:
+    """role: section_narrator.
+    Goal: write ONE markdown paragraph for the given heading using the evidence.
+    NO access to other sections, NO full report_brief, NO findings list.
+    """
+    system = (
+        "<TASK>You are a section_narrator. Write one markdown paragraph for the given heading using the supplied evidence. "
+        "Cite evidence_ids inline. Keep the paragraph factual and concise.</TASK>\n"
+        f"Language: {language}\n"
+        "<OUTPUT_SCHEMA>Return a single markdown paragraph string.</OUTPUT_SCHEMA>"
+    )
+    user = (
+        f"Heading: {heading}\n"
+        f"Key points: {json.dumps(key_points, ensure_ascii=False)}\n"
+        f"Template body context: {template_body[:500]}\n"
+        f"Evidence rows: {json.dumps(evidence_rows[:10], default=str, ensure_ascii=False)}\n"
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def build_gap_identifier_messages(
+    observed_keypoints: list[dict],
+    uncovered_keypoints: list[dict],
+    active_hypotheses_slim: list[dict],
+) -> list[dict[str, str]]:
+    """role: gap_identifier.
+    Goal: identify which uncovered_keypoints lack active hypothesis coverage.
+    """
+    system = (
+        "<TASK>You are a gap_identifier. Identify which uncovered keypoints lack active hypothesis coverage.</TASK>\n"
+        "<OUTPUT_SCHEMA>\n"
+        "{\n"
+        '  "gap_areas": [{"keypoint_id": "str", "why_uncovered": "str", "required_entities": ["str"]}]\n'
+        "}\n"
+        "</OUTPUT_SCHEMA>"
+    )
+    user = (
+        f"observed_keypoints: {json.dumps(observed_keypoints[:10], ensure_ascii=False)}\n"
+        f"uncovered_keypoints: {json.dumps(uncovered_keypoints[:10], ensure_ascii=False)}\n"
+        f"active_hypotheses: {json.dumps(active_hypotheses_slim, ensure_ascii=False)}\n"
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def build_hypothesis_drafter_messages(
+    gap_area: dict,
+    available_rules: list[dict],
+) -> list[dict[str, str]]:
+    """role: hypothesis_drafter.
+    Goal: draft ONE hypothesis targeting the given gap_area.
+    """
+    system = (
+        "<TASK>You are a hypothesis_drafter. Draft ONE hypothesis targeting the given gap_area.</TASK>\n"
+        "<OUTPUT_SCHEMA>\n"
+        "{\n"
+        '  "hypothesis": {"description": "str", "required_entities": ["str"], "source_rule_ids": ["str"], "confirm_when": "str"}\n'
+        "}\n"
+        "</OUTPUT_SCHEMA>"
+    )
+    user = (
+        f"gap_area: {json.dumps(gap_area, ensure_ascii=False)}\n"
+        f"available_rules: {json.dumps(available_rules[:5], ensure_ascii=False)}\n"
+    )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]

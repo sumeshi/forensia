@@ -26,14 +26,16 @@ from forensia.ai.audit import LLMCallLogger
 from forensia.ai.checker import check_query_result, summarize_query_result
 from forensia.ai.hypothesis_manager import (
     _all_hypotheses,
+    _hypothesis_similarity,
     _load_persisted_hypotheses,
     _merge_active_hypotheses,
     _render_hypothesis_memory,
     _resolve_hypothesis,
     _upsert_hypothesis,
 )
-from forensia.ai.planner import BroadPlanResult, broad_plan_investigation, plan_hypothesis_query
-from forensia.ai.prompts import resolve_rule_context
+from forensia.ai.json_response import request_llm_json
+from forensia.ai.planner import BroadPlanResult, _compute_uncovered_keypoints, broad_plan_investigation, plan_hypothesis_query
+from forensia.ai.prompts import _slim_hypothesis_dump, build_gap_identifier_messages, build_hypothesis_drafter_messages, resolve_rule_context
 from forensia.ai.report_gap import (
     _build_report_status,
     _guess_related_sections,
@@ -61,7 +63,7 @@ from forensia.rules.engine import (
     run_rule,
     save_findings,
 )
-from forensia.rules.loader import load_rule_by_id, load_rules_from_dir
+from forensia.rules.loader import _get_rule_cache, load_rule_by_id, load_rules_from_dir
 
 
 def _to_json(value: Any) -> str:
@@ -1290,6 +1292,37 @@ def _apply_outcome(
         )
 
 
+def _dedup_new_hypotheses(new_hypotheses: list[Hypothesis], active_hypotheses: list[Hypothesis], threshold: float = 0.85) -> list[Hypothesis]:
+    """Filter out hypotheses that are too similar to existing active ones."""
+    accepted = []
+    for new_h in new_hypotheses:
+        is_duplicate = False
+        for existing in active_hypotheses:
+            if _hypothesis_similarity(new_h.description, existing.description) > threshold:
+                is_duplicate = True
+                break
+        if not is_duplicate:
+            accepted.append(new_h)
+    return accepted
+
+
+def _parse_hypothesis_from_drafter(parsed: dict[str, Any]) -> Hypothesis | None:
+    """Parse drafter LLM output into a Hypothesis object.
+
+    The drafter returns ``{"hypothesis": {"description": "...", "required_entities": [...], "source_rule_ids": [...], "confirm_when": ...}}``.
+    Assigns a placeholder id that ``_merge_active_hypotheses`` will replace.
+    """
+    hyp_raw = parsed.get("hypothesis")
+    if not isinstance(hyp_raw, dict):
+        return None
+    hyp_raw.setdefault("id", "draft")
+    hyp_raw.setdefault("source_rule_ids", [])
+    try:
+        return Hypothesis.model_validate(hyp_raw)
+    except Exception:
+        return None
+
+
 async def _run_broad_plan_step(
     state: SessionState,
     ctx: _Ctx,
@@ -1305,42 +1338,72 @@ async def _run_broad_plan_step(
     emit_fn: Callable[..., None] | None,
     llm_status_fn: Callable[[str], None],
 ) -> bool:
-    """Execute broad planning step. Returns stop flag."""
+    """Execute broad planning step (2-stage: gap_identifier → hypothesis_drafter). Returns stop flag."""
     observed_keypoint_labels = [
         f"{item['keypoint']} (rows={item['row_count']})"
         for item in observed_keypoints
     ]
     plan_input = state.model_dump()
     try:
-        broad_plan: BroadPlanResult = broad_plan_investigation(
-            state=state, memory=memory, base_url=base_url, model=model, max_findings=20,
-            observed_keypoints=observed_keypoint_labels or _observed_keypoints_from_findings(state.findings_snapshot),
-            overview_md=ctx.memory_overview, default_context_md=ctx.memory_plan,
+        # 1) gap_identifier — identify which keypoints lack hypothesis coverage
+        observed_kp_strs = observed_keypoint_labels or _observed_keypoints_from_findings(state.findings_snapshot)
+        uncovered_keypoints = _compute_uncovered_keypoints(observed_kp_strs, state.active_hypotheses, state.resolved_hypotheses)
+        active_hypotheses_slim = [_slim_hypothesis_dump(h) for h in state.active_hypotheses]
+        gap_msgs = build_gap_identifier_messages(
+            observed_keypoints=observed_keypoints,
+            uncovered_keypoints=uncovered_keypoints,
+            active_hypotheses_slim=active_hypotheses_slim,
+        )
+        gap_parsed = request_llm_json(
+            messages=gap_msgs, model=model, base_url=base_url,
             status_callback=llm_status_fn,
             audit_callback=lambda msgs, out, parsed: llm_logger.write(
-                iteration=plan_cycle, phase="plan-broad", input_messages=msgs,
+                iteration=plan_cycle, phase="plan-broad-gap", input_messages=msgs,
                 output=parsed, model=model, base_url=base_url,
             ),
         )
+        gap_areas = gap_parsed.get("gap_areas", [])
+
+        # 2) hypothesis_drafter — draft one hypothesis per gap area
+        rule_cache = _get_rule_cache()
+        available_rules = [rule.model_dump() for rule in rule_cache.values()]
+        drafted_hypotheses: list[Hypothesis] = []
+        for gap in gap_areas:
+            h_msgs = build_hypothesis_drafter_messages(gap, available_rules)
+            h_parsed = request_llm_json(
+                messages=h_msgs, model=model, base_url=base_url,
+                status_callback=llm_status_fn,
+                audit_callback=lambda msgs, out, parsed: llm_logger.write(
+                    iteration=plan_cycle, phase="plan-broad-draft", input_messages=msgs,
+                    output=parsed, model=model, base_url=base_url,
+                ),
+            )
+            hyp = _parse_hypothesis_from_drafter(h_parsed)
+            if hyp:
+                drafted_hypotheses.append(hyp)
+
+        # 3) dedup + merge
+        deduped = _dedup_new_hypotheses(drafted_hypotheses, state.active_hypotheses)
         state.active_hypotheses = _merge_active_hypotheses(
-            db=db, current=state.active_hypotheses, updates=broad_plan.hypotheses,
+            db=db, current=state.active_hypotheses, updates=deduped,
             resolved=state.resolved_hypotheses, session_id=session_id, origin="broad_plan",
         )
-        stop_flag = broad_plan.stop
+        stop_flag = not bool(gap_areas)
         _save_step(db=db, session_id=session_id, iteration=plan_cycle, phase="plan-broad",
-                   hypothesis_id=None, input_json=plan_input, output_json=broad_plan.raw_response)
+                   hypothesis_id=None, input_json=plan_input,
+                   output_json={"gap_areas": gap_areas, "hypotheses": [h.model_dump() for h in drafted_hypotheses]})
         _save_step(
             db=db,
             session_id=session_id,
             iteration=plan_cycle,
             phase="plan-broad-audit",
             hypothesis_id=None,
-            input_json={"hypotheses": [item.model_dump() for item in broad_plan.hypotheses]},
-            output_json={"audits": _audit_broad_plan_hypotheses(state, broad_plan.hypotheses)},
+            input_json={"hypotheses": [item.model_dump() for item in drafted_hypotheses]},
+            output_json={"audits": _audit_broad_plan_hypotheses(state, drafted_hypotheses)},
         )
-        _log("PLAN", f"+{len(broad_plan.hypotheses)} new hypotheses (active={len(state.active_hypotheses)}, stop={broad_plan.stop})")
+        _log("PLAN", f"+{len(drafted_hypotheses)} new hypotheses (active={len(state.active_hypotheses)}, stop={stop_flag})")
         if emit_fn:
-            emit_fn("investigate/plan", f"[plan] new_hypotheses={len(broad_plan.hypotheses)} active={len(state.active_hypotheses)}", iteration=plan_cycle)
+            emit_fn("investigate/plan", f"[plan] new_hypotheses={len(drafted_hypotheses)} active={len(state.active_hypotheses)}", iteration=plan_cycle)
         return stop_flag
     except Exception as exc:
         err_msg = f"[plan-broad] LLM failed: {exc}"

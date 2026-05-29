@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import Callable
@@ -8,7 +9,13 @@ from typing import Any
 
 from forensia.ai.json_response import request_llm_json
 from forensia.ai.hypothesis_manager import _recent_reasoning_rows
-from forensia.ai.prompts import build_broad_plan_messages, build_hypothesis_plan_messages
+from forensia.ai.prompts import (
+    _build_schema_guidance,
+    _trim_dynamic_content,
+    build_broad_plan_messages,
+    build_query_intent_messages,
+    build_sql_composer_messages,
+)
 from forensia.ai.sql_templates import (
     coerce_list,
     query_template_catalog,
@@ -142,6 +149,61 @@ def _retry_query_once(
     if status_callback:
         status_callback(f"Planner SQL still invalid after {_PLANNER_SQL_MAX_RETRIES} retries; will fall back.")
     return current
+
+
+def _retry_sql_composer(
+    base_messages: list[dict[str, str]],
+    hypothesis_id: str,
+    query_index: int,
+    base_url: str,
+    model: str,
+    status_callback: Callable[[str], None] | None = None,
+    audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Retry SQL composition up to _PLANNER_SQL_MAX_RETRIES times when SQL validation fails.
+    
+    Unlike _retry_query_once, this operates on the flattened composer response
+    format (template_id/sql/params/purpose) without read_more or hypothesis wrapping.
+    """
+    messages = list(base_messages)
+    for attempt in range(1, _PLANNER_SQL_MAX_RETRIES + 1):
+        parsed = request_llm_json(
+            messages=messages,
+            model=model,
+            base_url=base_url,
+            status_callback=status_callback,
+            audit_callback=audit_callback,
+        )
+        query_dict = {
+            "query_id": f"{hypothesis_id}-q{query_index}",
+            "hypothesis_id": hypothesis_id,
+            "purpose": parsed.get("purpose", ""),
+            "template_id": parsed.get("template_id"),
+            "params": parsed.get("params", {}),
+            "sql": parsed.get("sql", ""),
+        }
+        try:
+            _materialize_planned_query(query_dict)
+            return parsed
+        except ValueError as exc:
+            if status_callback:
+                status_callback(
+                    f"SQL composer rejected (attempt {attempt}/{_PLANNER_SQL_MAX_RETRIES}): {exc}."
+                )
+            if attempt >= _PLANNER_SQL_MAX_RETRIES:
+                return parsed
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"Attempt {attempt}/{_PLANNER_SQL_MAX_RETRIES}: the previous SQL was rejected. "
+                    f"Error: {exc}. "
+                    "MUST return corrected JSON with template_id (or null), sql (raw SELECT), params, purpose. "
+                    "Do NOT leave both template_id and sql blank. "
+                    "Use a valid SELECT statement against evtx_events / mft_entries / mft_timeline / prefetch_executions / findings. "
+                    "Use simple SELECT cols FROM table WHERE event_id = N style if unsure."
+                ),
+            })
+    return parsed
 
 
 def _request_with_optional_context(
@@ -380,55 +442,82 @@ def plan_hypothesis_query(
 ) -> HypothesisPlanResult:
     """Plan the next query for a single hypothesis.
 
-    Merges DB-persisted reasoning rows, calls the planner with read_more
-    context expansion, retries SQL validation up to 3 times, and returns
-    the parsed HypothesisPlanResult."""
+    Two-phase split (PRM-010):
+    1. query_intent_planner: decides WHAT data to fetch
+    2. sql_composer: produces the SELECT statement
+
+    Phase 1 uses read_more context expansion; phase 2 is idempotent with
+    SQL validation retry."""
 
     overview_md = overview_md if overview_md is not None else memory.load_overview()
     default_context_md = _resolve_planner_context(memory, hypothesis, default_context_md, initial_context=None)
     extra_context_holder = {"value": ""}
     hypothesis_history, seen_query_ids = _build_hypothesis_history(state, hypothesis, db, limit=10)
+    schema_card = _build_schema_guidance("evtx_events")
 
-    def messages_builder(extra_context: str) -> list[dict[str, str]]:
+    # Phase 1: Query Intent Planning (WHAT data to fetch)
+    def intent_messages_builder(extra_context: str) -> list[dict[str, str]]:
         extra_context_holder["value"] = extra_context
-        return build_hypothesis_plan_messages(
-            overview_md=overview_md,
-            extra_context_md=extra_context,
-            iteration=state.iteration,
+        return build_query_intent_messages(
             hypothesis=hypothesis,
+            recent_history=hypothesis_history,
             finding_candidates=finding_candidates,
-            hypothesis_history=hypothesis_history,
-            query_templates=query_template_catalog(),
-            query_index=query_index,
-            max_queries=max_queries,
+            active_hypotheses=state.active_hypotheses,
+            time_range={},
+            schema_context=schema_card,
+            extra_context_md=extra_context,
         )
 
-    parsed = _request_with_optional_context(
+    intent_response = _request_with_optional_context(
         memory=memory,
-        messages_builder=messages_builder,
+        messages_builder=intent_messages_builder,
         base_url=base_url,
         model=model,
         initial_context=default_context_md,
         status_callback=status_callback,
         audit_callback=audit_callback,
     )
-    parsed = _retry_query_once(
-        parsed=parsed,
-        messages_builder=messages_builder,
-        extra_context=extra_context_holder["value"],
+
+    # Phase 2: SQL Composition (HOW to write the query)
+    composer_messages = build_sql_composer_messages(
+        intent=intent_response,
+        table_schema_card=schema_card,
+        template_catalog=query_template_catalog(),
+        time_range={},
+    )
+    composer_messages = _trim_dynamic_content(composer_messages)
+
+    composer_response = _retry_sql_composer(
+        base_messages=composer_messages,
+        hypothesis_id=hypothesis.id,
+        query_index=query_index,
         base_url=base_url,
         model=model,
         status_callback=status_callback,
         audit_callback=audit_callback,
     )
 
-    parsed_hypothesis, planned_query = _parse_planner_output(parsed)
+    # Build PlannedQuery from composer response via shared helper
+    wrapper = {
+        "hypothesis": None,
+        "query": {
+            "query_id": f"{hypothesis.id}-q{query_index}",
+            "hypothesis_id": hypothesis.id,
+            "purpose": composer_response.get("purpose", ""),
+            "template_id": composer_response.get("template_id"),
+            "params": composer_response.get("params", {}),
+            "sql": composer_response.get("sql", ""),
+        } if composer_response.get("template_id") or composer_response.get("sql") else None,
+    }
+    _, planned_query = _parse_planner_output(wrapper)
+
+    read_more = [str(item) for item in coerce_list(intent_response.get("read_more"))]
 
     return HypothesisPlanResult(
-        read_more=[str(item) for item in coerce_list(parsed.get("read_more"))],
-        hypothesis=parsed_hypothesis,
+        read_more=read_more,
+        hypothesis=None,
         query=planned_query,
-        needs_more=bool(parsed.get("needs_more", True)),
-        stop_reason=str(parsed.get("stop_reason") or "") or None,
-        raw_response=parsed,
+        needs_more=planned_query is not None,
+        stop_reason=None if planned_query else "SQL composition failed after retries",
+        raw_response=composer_response,
     )

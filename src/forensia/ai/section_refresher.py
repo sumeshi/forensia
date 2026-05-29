@@ -129,7 +129,7 @@ async def _render_section_blocks(
 
     rendered_blocks: list[str] = []
     block_gaps: list[str] = []
-    block_outputs: dict[str, str] = {}
+    block_outline: list[dict] = []
     all_evidence_results: list[dict[str, Any]] = []
 
     try:
@@ -144,7 +144,7 @@ async def _render_section_blocks(
                     block_heading=str(block.get("heading") or ""),
                     template_body=str(block.get("template_body") or ""),
                     context_sections={} if is_benchmark_mode else (request.get("context_sections") or {}),
-                    current_section_outputs={} if is_benchmark_mode else block_outputs,
+                    current_section_outline=[] if is_benchmark_mode else block_outline,
                     report_brief=request.get("report_brief") or {},
                     base_url=base_url,
                     model=model,
@@ -170,7 +170,10 @@ async def _render_section_blocks(
             rendered_blocks.append(block_result.body)
             heading = str(block.get("heading") or "").strip()
             if heading:
-                block_outputs[heading] = block_result.body
+                block_outline.append({
+                    "heading": heading,
+                    "summary": (block_result.body.split("\n", 1)[0])[:120],
+                })
             all_evidence_results.extend(block_result.evidence_results)
             block_body_gaps, _ = _verify_block_output(db, block_result.body)
             for gap in block_body_gaps:

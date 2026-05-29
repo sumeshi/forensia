@@ -286,32 +286,58 @@ def report_write(
     print(f"HTML report written to {report_html}")
 
 
+def _make_initial_progress_state(
+    model: str | None, llm_base_url: str | None,
+    stage: str = "init", summary: str = "Case initialized",
+) -> dict:
+    return {
+        "stage": stage,
+        "status": "running",
+        "iteration": 0,
+        "current_query": None,
+        "summary": summary,
+        "recent_logs": [],
+        "llm_model": model,
+        "llm_base_url": llm_base_url,
+        "hypotheses": [],
+        "report_sections": {
+            "items": [],
+            "current_section": None,
+            "focus_sections": [],
+            "total_gaps": 0,
+            "total_body_chars": 0,
+        },
+    }
+
+
 def _run_init_stage(
-    out: str, llm_base_url: str | None, model: str | None,
-    template_dir: str | None, init: bool, profile: str,
-) -> tuple[Case, CaseTasks, Path | None, Path]:
+    case: Case, db: CaseDB, out: str, llm_base_url: str | None, model: str | None,
+    template_dir: str | None, init: bool,
+) -> tuple[Case, CaseTasks, Path | None]:
     """Initialize case, tasks, resolve template root and profile path."""
-    case = Case.init(out)
     tasks = CaseTasks.for_case(case)
     template_root = _resolve_template_dir(case, template_dir) if (llm_base_url and model) else None
-    profile_path = _resolve_profile_path(profile)
 
     if init:
-        with CaseDB(case) as existing_db:
-            _reset_case_tables(existing_db)
+        _reset_case_tables(db)
         case.clear_runtime_outputs(preserve_memory=True, preserve_ai_logs=True, drop_database=False)
         case = Case.init(out)
         tasks = CaseTasks.for_case(case)
         template_root = _resolve_template_dir(case, template_dir) if (llm_base_url and model) else None
 
-    return case, tasks, template_root, profile_path
+    return case, tasks, template_root
 
 
 def _run_ingest_stage(
     case: Case, db: CaseDB, tasks: CaseTasks, input_dir: str,
-    push_progress, stage_status,
+    push_progress,
 ) -> dict:
     """Ingest evidence files (EVTX, MFT, Prefetch) into the case."""
+
+    def stage_status(message: str) -> None:
+        _status(message)
+        push_progress(message, stage="ingest", status="running", summary=message)
+
     _status(f"Stage 1/4: ingest from {input_dir}")
     push_progress(f"[ingest] scanning {input_dir}", stage="ingest", status="running")
     counts = ingest_all(case, input_dir, db=db, progress_callback=stage_status)
@@ -411,6 +437,7 @@ def _run_investigate_stage(
 
     _status(f"Stage 4/4: investigate with model={model}")
     push_progress(f"[investigate] starting - model={model}", stage="investigate", status="running")
+    write_api_snapshots(case, db)
     result = asyncio.run(
         investigate_loop(
             case=case,
@@ -495,54 +522,28 @@ def run(
 ) -> None:
     """Run the full pipeline: ingest, normalize, analyze, investigate, and report."""
     llm_base_url, model = resolve_llm_config(llm_base_url, model)
-    case, tasks, template_root, profile_path = _run_init_stage(
-        out, llm_base_url, model, template_dir, init, profile,
-    )
+    case = Case.init(out)
+    profile_path = _resolve_profile_path(profile)
 
     with CaseDB(case) as db:
         clear_progress_events(db)
         push_progress = _progress_pusher(
-            db,
-            {
-                "stage": "init",
-                "status": "running",
-                "iteration": 0,
-                "current_query": None,
-                "summary": "Case initialized",
-                "recent_logs": [],
-                "llm_model": model,
-                "llm_base_url": llm_base_url,
-                "hypotheses": [],
-                "report_sections": {
-                    "items": [],
-                    "current_section": None,
-                    "focus_sections": [],
-                    "total_gaps": 0,
-                    "total_body_chars": 0,
-                },
-            },
+            db, _make_initial_progress_state(model, llm_base_url),
         )
-
-        def stage_status(message: str) -> None:
-            _status(message)
-            push_progress(message, stage="ingest", status="running", summary=message)
-
         push_progress("Case ready", stage="init", summary=f"Case: {case.path}")
 
-        ingest_counts = _run_ingest_stage(case, db, tasks, input_dir, push_progress, stage_status)
+        case, tasks, template_root = _run_init_stage(case, db, out, llm_base_url, model, template_dir, init)
+        ingest_counts = _run_ingest_stage(case, db, tasks, input_dir, push_progress)
         normalized_this_run = _run_normalize_stage(case, db, tasks, init, ingest_counts, push_progress)
-        total_findings = _run_analyze_stage(
-            case, db, tasks, profile, profile_path, init, normalized_this_run, push_progress,
-        )
-        write_api_snapshots(case, db)
+        total_findings = _run_analyze_stage(case, db, tasks, profile, profile_path, init, normalized_this_run, push_progress)
         _run_investigate_stage(
             case, db, tasks, llm_base_url, model, template_root, profile, push_progress,
             max_iter=max_iter,
             max_queries_per_hypothesis=max_queries_per_hypothesis,
             no_progress_limit=no_progress_limit,
             report_every_n_cycles=report_every_n_cycles,
-            report_parallelism=report_parallelism or get_llm_settings()["report_parallelism"],
-            report_max_queries_per_section=report_max_queries_per_section or get_llm_settings()["report_max_queries_per_section"],
+            report_parallelism=report_parallelism,
+            report_max_queries_per_section=report_max_queries_per_section,
         )
         report_path = _run_report_stage(case, db, tasks, push_progress)
 

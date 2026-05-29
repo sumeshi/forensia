@@ -288,7 +288,8 @@ class PersistenceTests(unittest.TestCase):
 
         gaps, confidence = _quality_gate_section("2_timeline", "Attack Timeline", body, [], 1.0)
 
-        self.assertEqual(2, len(gaps))
+        self.assertTrue(any("Placeholder entity values detected" in g for g in gaps))
+        self.assertTrue(any("events are not strictly chronological" in g for g in gaps))
         self.assertLess(confidence, 1.0)
 
     def test_collect_flat_evidence_rows_filters_sparse_rows(self) -> None:
@@ -674,8 +675,7 @@ class PersistenceTests(unittest.TestCase):
 
         gaps, confidence = _quality_gate_section("5_recommendations", "Recommended Actions", body, [], 1.0)
 
-        self.assertEqual(1, len(gaps))
-        self.assertIn("evidence strength", gaps[0].lower())
+        self.assertTrue(any("Recommendations should state evidence strength" in g for g in gaps))
         self.assertLess(confidence, 1.0)
 
     def test_sort_markdown_table_by_first_column_orders_timeline_rows(self) -> None:
@@ -763,7 +763,7 @@ class PersistenceTests(unittest.TestCase):
                 brief = _build_report_brief(db)
 
             self.assertEqual(1, len(brief["prior_sections"]))
-            self.assertLessEqual(len(brief["prior_sections"][0]["excerpt"]), 400)
+            self.assertLessEqual(len(brief["prior_sections"][0]["body_excerpt"]), 400)
 
     def test_build_report_brief_dedupes_existing_claims(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
