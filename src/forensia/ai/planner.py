@@ -313,7 +313,6 @@ def _parse_planner_output(parsed: dict[str, Any]) -> tuple[Hypothesis | None, Pl
 def plan_hypothesis_query(
     state: SessionState,
     hypothesis: Hypothesis,
-    finding_candidates: list[dict[str, Any]],
     memory: MemoryManager,
     base_url: str,
     model: str,
@@ -323,7 +322,6 @@ def plan_hypothesis_query(
     status_callback: Callable[[str], None] | None = None,
     audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
     query_index: int = 1,
-    max_queries: int = 5,
 ) -> HypothesisPlanResult:
     """Plan the next query for a single hypothesis.
 
@@ -346,7 +344,6 @@ def plan_hypothesis_query(
         return build_query_intent_messages(
             hypothesis=hypothesis,
             recent_history=hypothesis_history,
-            finding_candidates=finding_candidates,
             active_hypotheses=state.active_hypotheses,
             time_range={},
             schema_context=schema_card,

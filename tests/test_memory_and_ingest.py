@@ -647,9 +647,9 @@ class MemoryAndIngestTests(unittest.TestCase):
             ) as mock_render_written, patch("forensia.cli.render_html_report") as mock_render_html, patch(
                 "forensia.cli.write_api_snapshots"
             ):
-                cli_module.run(
+                cli_module.investigate(
+                    case_dir=str(output_dir),
                     input_dir=str(input_dir),
-                    out=str(output_dir),
                     profile="windows-basic",
                     llm_base_url=None,
                     model=None,
@@ -908,7 +908,7 @@ class MemoryAndIngestTests(unittest.TestCase):
                 "forensia.cli.render_written_report",
                 return_value=(output_dir / "reports" / "report.md", output_dir / "reports" / "report.html"),
             ), patch("forensia.cli.write_api_snapshots"):
-                run_result = runner.invoke(cli_module.app, ["run", str(input_dir), "--out", str(output_dir)])
+                run_result = runner.invoke(cli_module.app, ["investigate", str(output_dir), str(input_dir)])
 
             self.assertEqual(0, run_result.exit_code, run_result.output)
             self.assertIn("prefetch_files=1", run_result.output)

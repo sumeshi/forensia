@@ -140,47 +140,47 @@ LLM_MODEL="qwen/qwen3-8b"
 アーティファクト (EVTX / MFT / Prefetch など) を `input/` に置き、次を実行します。
 
 ```bash
-forensia run ./input --out ./case001 --profile windows-basic
+forensia investigate case001 ./input --profile windows-basic
 ```
 
-`run` は取り込み、正規化、ルール検知、仮説検証、レポート生成までを一括で実行します。LLM が未設定の場合、仮説検証フェーズはスキップされます。
+`investigate` は取り込み、正規化、ルール検知、仮説検証、レポート生成までを一括で実行します。LLM が未設定の場合、仮説検証フェーズはスキップされます。
 
 ## 使い方
 
-### 一括実行
+### 一括実行 (新規ケース)
 
 ```bash
-forensia run ./input --out ./case001 --profile windows-basic
+forensia investigate case001 ./input --profile windows-basic
 ```
 
 長く調査ループを回す場合は `--max-iter` を指定します(既定 20)。
 
 ```bash
-forensia run ./input --out ./case001 --profile windows-basic --max-iter 50
+forensia investigate case001 ./input --profile windows-basic --max-iter 50
 ```
 
 レポートテンプレートを差し替えるときは `--template-dir` を使います。
 
 ```bash
-forensia run ./input --out ./case001 --template-dir ./my-templates
+forensia investigate case001 ./input --template-dir ./my-templates
 ```
 
-出力先を初期化してやり直す場合は `--init` を指定します。`raw/` / `findings/` / `reports/` と再解析結果はクリアされますが、`memory/` と `ai_logs/` は保持されます。
+出力先を初期化してやり直す場合は `--rerun` を指定します。
 
 ```bash
-forensia run ./input --out ./case001 --profile windows-basic --init
+forensia investigate case001 ./input --profile windows-basic --rerun
 ```
 
-### 調査を続ける
+### 調査を続ける (既存ケース)
 
-同じケースに対して `investigate` を再実行すると、前回までの仮説・gap・記憶・レポート状態を引き継いで調査を続けます。
+既存ケースに対して `investigate` を実行すると、前回までの仮説・gap・記憶・レポート状態を引き継いで調査を続けます。`input_dir` は省略可能です。
 
 ```bash
 forensia investigate case001 --max-iter 50
 forensia investigate case001 --template-dir ./my-templates
 ```
 
-### 追加のエビデンスを取り込む
+### 追加エビデンスの取り込み
 
 追加で EVTX / MFT などが届いた場合は既存ケースに `add` で取り込みます。重複は hash で避けられます。
 
@@ -196,11 +196,11 @@ forensia add case001 ./input
 forensia report case001
 ```
 
-LLM でレポートセクションを再生成するには `report-write` を使います。
+LLM でレポートセクションを再生成するには `--write` フラグを追加します。
 
 ```bash
-forensia report-write case001
-forensia report-write case001 --template-dir ./my-templates
+forensia report case001 --write
+forensia report case001 --write --template-dir ./my-templates
 ```
 
 同梱テンプレートを任意の場所に書き出すには:
@@ -237,7 +237,7 @@ UI 画面 (cockpit) は次で構成されます。
 
 このツールは `./templates/` にあるベンチマーク専用テンプレートを使用して、DFIR 推論精度を評価できます。
 
-    forensia run ./sample/DESKTOP-001 --out ./benchmark-output --profile windows-basic --template-dir ./templates
+    forensia investigate benchmark-output ./sample/DESKTOP-001 --profile windows-basic --template-dir ./templates
     forensia report benchmark-output
 
 詳細は [BENCHMARK.md](./BENCHMARK.md) を参照してください。

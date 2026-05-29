@@ -2174,7 +2174,6 @@ def _collect_initial_gaps(
 
 def _run_post_upsert_gap_checks(
     db: CaseDB,
-    section_key: str,
     body: str,
     evidence_results: list[dict[str, Any]] | None,
     claim_statuses: list[str],
@@ -2265,7 +2264,7 @@ def finalize_section(
         return _read_persisted_section(db, section_key)
     claim_statuses = _upsert_claims(db, section_key, body, evidence_results or [])
     candidate_gaps, candidate_confidence, needs_update = _run_post_upsert_gap_checks(
-        db, section_key, body, evidence_results, claim_statuses, candidate_gaps, candidate_confidence,
+        db, body, evidence_results, claim_statuses, candidate_gaps, candidate_confidence,
     )
     if needs_update:
         _update_section_quality_only(

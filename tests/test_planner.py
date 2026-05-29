@@ -131,8 +131,7 @@ class PlannerRetryTests(unittest.TestCase):
         with patch("forensia.ai.planner.request_llm_json", side_effect=responses):
             result = plan_hypothesis_query(
                 state=state,
-                hypothesis=hypothesis,
-                finding_candidates=[],
+hypothesis=hypothesis,
                 memory=_MemoryStub(),
                 base_url=_llm_base_url(),
                 model="test-model",
@@ -171,8 +170,7 @@ class PlannerRetryTests(unittest.TestCase):
         with patch("forensia.ai.planner.request_llm_json", side_effect=responses) as mock_request:
             result = plan_hypothesis_query(
                 state=state,
-                hypothesis=hypothesis,
-                finding_candidates=[],
+hypothesis=hypothesis,
                 memory=_MemoryStub(),
                 base_url=_llm_base_url(),
                 model="test-model",
@@ -204,8 +202,7 @@ class PlannerRetryTests(unittest.TestCase):
         ) as logs:
             result = plan_hypothesis_query(
                 state=state,
-                hypothesis=hypothesis,
-                finding_candidates=[],
+hypothesis=hypothesis,
                 memory=_MemoryStub(),
                 base_url=_llm_base_url(),
                 model="test-model",
@@ -235,8 +232,7 @@ class PlannerRetryTests(unittest.TestCase):
                 with patch("forensia.ai.planner.request_llm_json", side_effect=responses) as mock_request:
                     plan_hypothesis_query(
                         state=state,
-                        hypothesis=hypothesis,
-                        finding_candidates=[],
+hypothesis=hypothesis,
                         memory=_MemoryStub(),
                         base_url=_llm_base_url(),
                         model="test-model",
@@ -253,9 +249,9 @@ class PlannerRetryTests(unittest.TestCase):
             iteration=2,
             history=[
                 HistoryEntry(
-                    iteration=1,
                     query_id="Q-local",
                     hypothesis_id="H1",
+                    iteration=1,
                     verdict="inconclusive",
                     summary="already tested",
                     evidence_ids=[],
@@ -281,8 +277,7 @@ class PlannerRetryTests(unittest.TestCase):
                 with patch("forensia.ai.planner.request_llm_json", side_effect=responses) as mock_request:
                     plan_hypothesis_query(
                         state=state,
-                        hypothesis=hypothesis,
-                        finding_candidates=[],
+hypothesis=hypothesis,
                         memory=_MemoryStub(),
                         base_url=_llm_base_url(),
                         model="test-model",
@@ -330,8 +325,7 @@ class PlannerRetryTests(unittest.TestCase):
         with patch("forensia.ai.planner.request_llm_json", side_effect=responses):
             result = plan_hypothesis_query(
                 state=state,
-                hypothesis=hypothesis,
-                finding_candidates=[],
+hypothesis=hypothesis,
                 memory=_MemoryStub(),
                 base_url=_llm_base_url(),
                 model="test-model",
@@ -393,7 +387,6 @@ class PlannerRetryTests(unittest.TestCase):
                     case=case,
                     db=db,
                     session_id="S-1",
-                    iteration=1,
                     planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
                     hypothesis=Hypothesis(id="H1", description="desc"),
                     finding_candidates=[],
@@ -427,7 +420,6 @@ class PlannerRetryTests(unittest.TestCase):
                     case=case,
                     db=db,
                     session_id="S-1",
-                    iteration=1,
                     planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
                     hypothesis=Hypothesis(id="H1", description="desc"),
                     finding_candidates=[{"finding_id": "F-1"}],
@@ -462,7 +454,6 @@ class PlannerRetryTests(unittest.TestCase):
                     case=case,
                     db=db,
                     session_id="S-1",
-                    iteration=1,
                     planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
                     hypothesis=Hypothesis(id="H1", description="desc"),
                     finding_candidates=[{"finding_id": "F-1"}],
@@ -500,7 +491,6 @@ class PlannerRetryTests(unittest.TestCase):
                     case=case,
                     db=db,
                     session_id="S-1",
-                    iteration=1,
                     planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
                     hypothesis=Hypothesis(id="H1", description="desc"),
                     finding_candidates=[],
@@ -544,7 +534,6 @@ class PlannerRetryTests(unittest.TestCase):
                     case=case,
                     db=db,
                     session_id="S-1",
-                    iteration=1,
                     planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
                     hypothesis=Hypothesis(id="H1", description="desc"),
                     finding_candidates=[],
@@ -596,7 +585,6 @@ class PlannerRetryTests(unittest.TestCase):
                     case=case,
                     db=db,
                     session_id="S-1",
-                    iteration=1,
                     planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
                     hypothesis=Hypothesis(id="H1", description="desc"),
                     finding_candidates=[],

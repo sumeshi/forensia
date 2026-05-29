@@ -363,12 +363,9 @@ def _record_hypothesis_assessment(
 
 
 def _insert_investigation_finding(
-    case: Case,
     db: CaseDB,
     session_id: str,
-    iteration: int,
     planned_query: PlannedQuery,
-    hypothesis: Hypothesis | None,
     result_summary: dict[str, Any],
     report_text: str,
 ) -> str:
@@ -414,7 +411,6 @@ def apply_check_result(
     case: Case,
     db: CaseDB,
     session_id: str,
-    iteration: int,
     planned_query: PlannedQuery,
     hypothesis: Hypothesis | None,
     result_summary: dict[str, Any],
@@ -482,12 +478,9 @@ def apply_check_result(
 
     if check_result.verdict == "newlead":
         finding_id = _insert_investigation_finding(
-            case=case,
             db=db,
             session_id=session_id,
-            iteration=iteration,
             planned_query=planned_query,
-            hypothesis=hypothesis,
             result_summary=result_summary,
             report_text=check_result.report_text,
         )
@@ -511,7 +504,6 @@ def check_query_result(
     case: Case,
     db: CaseDB,
     session_id: str,
-    iteration: int,
     planned_query: PlannedQuery,
     hypothesis: Hypothesis | None,
     finding_candidates: list[dict[str, Any]],
@@ -522,10 +514,6 @@ def check_query_result(
     overview_md: str | None = None,
     memory_context_md: str | None = None,
     status_callback: Callable[[str], None] | None = None,
-    audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
-    query_index: int = 1,
-    max_queries: int = 5,
-    fallback_info: dict[str, Any] | None = None,
 ) -> CheckResult:
     """Run the LLM-based query result check: verdict + memory + suspicious evidence.
 
@@ -620,7 +608,6 @@ def check_query_result(
         case=case,
         db=db,
         session_id=session_id,
-        iteration=iteration,
         planned_query=planned_query,
         hypothesis=hypothesis,
         result_summary=result_summary,

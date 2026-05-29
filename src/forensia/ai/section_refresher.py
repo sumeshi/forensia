@@ -241,7 +241,6 @@ async def async_refresh_report_sections(
     llm_logger: LLMCallLogger,
     progress_callback: Callable[[dict[str, Any]], None] | None,
     focus_sections: list[str] | None,
-    max_workers: int,
     max_queries_per_section: int,
 ) -> dict[str, Any]:
     """Orchestrate async report section refresh: prepare, render blocks, finalize.

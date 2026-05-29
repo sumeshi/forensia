@@ -149,7 +149,7 @@ def _open_case_or_die(case_dir: str) -> Case:
         raise typer.BadParameter(
             "case_dir must point to an initialized case directory.\n"
             f"missing: {target / 'manifest.yaml'}\n"
-            f"initialize first with: forensia init {target}"
+            f"initialize with: forensia investigate {target} <input_dir>"
         ) from exc
 
 
@@ -179,14 +179,7 @@ def _seed_api_snapshots_if_possible(case: Case) -> None:
         _status(f"serve snapshot refresh skipped: {exc}")
 
 
-@app.command()
-def init(case_dir: str) -> None:
-    case = Case.init(case_dir)
-    clear_api_snapshots(case)
-    print(f"Initialized case at {case.path}")
-
-
-@app.command("templates-export")
+@app.command("templates-export", hidden=True)
 def templates_export(
     output_dir: str,
     force: bool = typer.Option(False, "--force", help="Overwrite existing packaged template files in the target directory"),
@@ -227,63 +220,50 @@ def add(case_dir: str, input_dir: str) -> None:
 
 
 @app.command()
-def report(case_dir: str, output: str | None = typer.Option(None, "--output")) -> None:
-    case = _open_case_or_die(case_dir)
-    with CaseDB(case) as db:
-        report_md, report_html = render_written_report(case, db)
-        path = render_html_report(case, db, output_path=output) if output else report_html
-        write_api_snapshots(case, db)
-    print(f"Markdown report written to {report_md}")
-    print(f"HTML report written to {path}")
-
-
-@app.command("report-write")
-def report_write(
+def report(
     case_dir: str,
+    output: str | None = typer.Option(None, "--output"),
+    write: bool = typer.Option(False, "--write", help="Regenerate report sections using LLM-driven agentic writing"),
     template_dir: str | None = typer.Option(None, "--template-dir"),
     llm_base_url: str | None = typer.Option(None, "--llm-base-url"),
     model: str | None = typer.Option(None, "--model"),
-    report_parallelism: int = typer.Option(
-        0,
-        "--report-parallelism",
-        help="Concurrent LLM workers for section fill. 0 = use LLM_REPORT_PARALLELISM env (default 1)",
-    ),
     report_max_queries_per_section: int = typer.Option(
         0,
         "--report-max-queries-per-section",
         help="Max iterative agent queries per report block. 0 = use LLM_REPORT_MAX_QUERIES_PER_SECTION env (default 3)",
     ),
 ) -> None:
-    """Regenerate report sections using LLM-driven agentic writing."""
-    llm_base_url, model = _resolve_llm_or_die(llm_base_url, model)
     case = _open_case_or_die(case_dir)
-    tasks = CaseTasks.for_case(case)
-    template_root = _resolve_template_dir(case, template_dir)
-    parallelism = report_parallelism or get_llm_settings()["report_parallelism"]
-    max_queries = report_max_queries_per_section or get_llm_settings()["report_max_queries_per_section"]
-    _status(f"Writing report from templates: {template_root} (parallelism={parallelism}, max_queries={max_queries})")
     with CaseDB(case) as db:
-        asyncio.run(
-            investigate_loop(
-                case=case,
-                db=db,
-                base_url=llm_base_url,
-                model=model,
-                max_iter=1,
-                no_progress_limit=1,
-                profile="windows-basic",
-                max_queries_per_hypothesis=0,
-                report_only=True,
-                template_root=template_root,
-                report_parallelism=parallelism,
-                report_max_queries_per_section=max_queries,
+        if write:
+            llm_base_url, model = _resolve_llm_or_die(llm_base_url, model)
+            tasks = CaseTasks.for_case(case)
+            template_root = _resolve_template_dir(case, template_dir)
+            max_queries = report_max_queries_per_section or get_llm_settings()["report_max_queries_per_section"]
+            _status(f"Writing report from templates: {template_root} (max_queries={max_queries})")
+            asyncio.run(
+                investigate_loop(
+                    case=case,
+                    db=db,
+                    base_url=llm_base_url,
+                    model=model,
+                    max_iter=1,
+                    no_progress_limit=1,
+                    profile="windows-basic",
+                    max_queries_per_hypothesis=0,
+                    report_only=True,
+                    template_root=template_root,
+                    report_max_queries_per_section=max_queries,
+                )
             )
-        )
-        report_md, report_html = render_written_report(case, db)
+        report_md, report_path = render_written_report(case, db)
+        path = render_html_report(case, db, output_path=output) if output else report_path
         write_api_snapshots(case, db)
-        tasks.mark_done("report", str(report_html))
     print(f"Markdown report written to {report_md}")
-    print(f"HTML report written to {report_html}")
+    print(f"HTML report written to {path}")
+
+
+
 
 
 def _make_initial_progress_state(
@@ -427,7 +407,7 @@ def _run_investigate_stage(
     template_root: Path | None, profile: str, push_progress,
     *, max_iter: int, max_queries_per_hypothesis: int,
     no_progress_limit: int, report_every_n_cycles: int,
-    report_parallelism: int, report_max_queries_per_section: int,
+    report_max_queries_per_section: int, max_llm_calls: int,
 ) -> None:
     """Run LLM-driven investigation loop (or skip if LLM not configured)."""
     if not (llm_base_url and model):
@@ -450,8 +430,8 @@ def _run_investigate_stage(
             no_progress_limit=no_progress_limit,
             profile=profile,
             report_every_n_cycles=report_every_n_cycles,
-            report_parallelism=report_parallelism or get_llm_settings()["report_parallelism"],
             report_max_queries_per_section=report_max_queries_per_section or get_llm_settings()["report_max_queries_per_section"],
+            max_llm_calls=max_llm_calls,
             progress_callback=lambda payload: push_progress(
                 payload.get("summary"),
                 stage=payload.get("stage", "investigate"),
@@ -496,34 +476,53 @@ def _run_report_stage(
     return report_path
 
 
+
+
+
 @app.command()
-def run(
-    input_dir: str,
-    out: str = typer.Option(..., "--out"),
+def investigate(
+    case_dir: str,
+    input_dir: str | None = typer.Argument(None, help="Evidence input directory (required for new cases)"),
     profile: str = typer.Option("windows-basic", "--profile"),
     llm_base_url: str | None = typer.Option(None, "--llm-base-url"),
     model: str | None = typer.Option(None, "--model"),
     template_dir: str | None = typer.Option(None, "--template-dir"),
+    rerun: bool = typer.Option(False, "--rerun", help="Reset case tables before rerun"),
+    report_only: bool = typer.Option(False, "--report-only", help="Skip investigation, just write report"),
     max_iter: int = typer.Option(20, "--max-iter"),
     max_queries_per_hypothesis: int = typer.Option(5, "--max-queries-per-hypothesis"),
     no_progress_limit: int = typer.Option(3, "--no-progress-limit"),
     report_every_n_cycles: int = typer.Option(3, "--report-every-n-cycles"),
-    report_parallelism: int = typer.Option(
-        0,
-        "--report-parallelism",
-        help="Concurrent LLM workers for section fill. 0 = use LLM_REPORT_PARALLELISM env (default 1)",
-    ),
     report_max_queries_per_section: int = typer.Option(
         0,
         "--report-max-queries-per-section",
         help="Max iterative agent queries per report block. 0 = use LLM_REPORT_MAX_QUERIES_PER_SECTION env (default 3)",
     ),
-    init: bool = typer.Option(False, "--init", help="Clear raw/db/findings/reports before rerun"),
+    max_llm_calls: int = typer.Option(200, "--max-llm-calls", help="Hard cap on total LLM calls per investigation session."),
 ) -> None:
-    """Run the full pipeline: ingest, normalize, analyze, investigate, and report."""
+    """Run full investigation pipeline: ingest, normalize, analyze, investigate, and report."""
     llm_base_url, model = resolve_llm_config(llm_base_url, model)
-    case = Case.init(out)
-    profile_path = _resolve_profile_path(profile)
+
+    case_path = Path(case_dir)
+    case_exists = (case_path / "manifest.yaml").exists()
+
+    if not case_exists:
+        if input_dir is None:
+            raise typer.BadParameter("New case requires an input_dir argument")
+        case = Case.init(case_dir)
+        clear_api_snapshots(case)
+        _status(f"Initialized case at {case.path}")
+    else:
+        case = _open_case_or_die(case_dir)
+
+    if rerun:
+        _status("Resetting case tables for rerun")
+        with CaseDB(case) as db:
+            _reset_case_tables(db)
+        case.clear_runtime_outputs(preserve_memory=True, preserve_ai_logs=True, drop_database=False)
+        case = Case.init(case_dir)
+        clear_api_snapshots(case)
+        _status(f"Re-initialized case at {case.path}")
 
     with CaseDB(case) as db:
         clear_progress_events(db)
@@ -532,175 +531,32 @@ def run(
         )
         push_progress("Case ready", stage="init", summary=f"Case: {case.path}")
 
-        case, tasks, template_root = _run_init_stage(case, db, out, llm_base_url, model, template_dir, init)
-        ingest_counts = _run_ingest_stage(case, db, tasks, input_dir, push_progress)
-        normalized_this_run = _run_normalize_stage(case, db, tasks, init, ingest_counts, push_progress)
-        total_findings = _run_analyze_stage(case, db, tasks, profile, profile_path, init, normalized_this_run, push_progress)
-        _run_investigate_stage(
-            case, db, tasks, llm_base_url, model, template_root, profile, push_progress,
-            max_iter=max_iter,
-            max_queries_per_hypothesis=max_queries_per_hypothesis,
-            no_progress_limit=no_progress_limit,
-            report_every_n_cycles=report_every_n_cycles,
-            report_parallelism=report_parallelism,
-            report_max_queries_per_section=report_max_queries_per_section,
-        )
-        report_path = _run_report_stage(case, db, tasks, push_progress)
+        tasks = CaseTasks.for_case(case)
+        template_root = _resolve_template_dir(case, template_dir) if (llm_base_url and model) else None
 
-    print(f"Run complete. Report: {report_path}")
+        if input_dir is not None and not report_only:
+            profile_path = _resolve_profile_path(profile)
+            ingest_counts = _run_ingest_stage(case, db, tasks, input_dir, push_progress)
+            normalized_this_run = _run_normalize_stage(case, db, tasks, rerun, ingest_counts, push_progress)
+            _run_analyze_stage(case, db, tasks, profile, profile_path, rerun, normalized_this_run, push_progress)
 
-
-@app.command()
-def investigate(
-    case_dir: str,
-    llm_base_url: str | None = typer.Option(None, "--llm-base-url"),
-    model: str | None = typer.Option(None, "--model"),
-    template_dir: str | None = typer.Option(None, "--template-dir"),
-    max_iter: int = typer.Option(20, "--max-iter"),
-    max_queries_per_hypothesis: int = typer.Option(5, "--max-queries-per-hypothesis"),
-    no_progress_limit: int = typer.Option(3, "--no-progress-limit"),
-    report_every_n_cycles: int = typer.Option(3, "--report-every-n-cycles"),
-    report_parallelism: int = typer.Option(
-        0,
-        "--report-parallelism",
-        help="Concurrent LLM workers for section fill. 0 = use LLM_REPORT_PARALLELISM env (default 1)",
-    ),
-    report_max_queries_per_section: int = typer.Option(
-        0,
-        "--report-max-queries-per-section",
-        help="Max iterative agent queries per report block. 0 = use LLM_REPORT_MAX_QUERIES_PER_SECTION env (default 3)",
-    ),
-    profile: str = typer.Option("windows-basic", "--profile"),
-    report_only: bool = typer.Option(False, "--report-only"),
-    max_llm_calls: int = typer.Option(200, "--max-llm-calls", help="Hard cap on total LLM calls per investigation session."),
-) -> None:
-    """Run the LLM-driven investigation loop on an existing case."""
-    llm_base_url, model = _resolve_llm_or_die(llm_base_url, model)
-    case = _open_case_or_die(case_dir)
-    tasks = CaseTasks.for_case(case)
-    template_root = _resolve_template_dir(case, template_dir)
-    _resolve_profile_path(profile)
-    _status(f"Starting investigate for case={case.path.name} model={model}")
-    with CaseDB(case) as db:
-        clear_progress_events(db)
-        push_progress = _progress_pusher(
-            db,
-            {
-                "stage": "investigate",
-                "status": "running",
-                "iteration": 0,
-                "current_query": None,
-                "summary": f"Starting investigate for case={case.path.name}",
-                "recent_logs": [f"[investigate] starting - model={model}"],
-                "llm_model": model,
-                "llm_base_url": llm_base_url,
-                "hypotheses": [],
-                "report_sections": {
-                    "items": [],
-                    "current_section": None,
-                    "focus_sections": [],
-                    "total_gaps": 0,
-                    "total_body_chars": 0,
-                },
-            },
-        )
-        push_progress()
-        result = asyncio.run(
-            investigate_loop(
-                case=case,
-                db=db,
-                base_url=llm_base_url,
-                model=model,
-                template_root=template_root,
+        if not report_only:
+            _run_investigate_stage(
+                case, db, tasks, llm_base_url, model, template_root, profile, push_progress,
                 max_iter=max_iter,
                 max_queries_per_hypothesis=max_queries_per_hypothesis,
                 no_progress_limit=no_progress_limit,
-                profile=profile,
                 report_every_n_cycles=report_every_n_cycles,
-                report_parallelism=report_parallelism or get_llm_settings()["report_parallelism"],
-                report_max_queries_per_section=report_max_queries_per_section or get_llm_settings()["report_max_queries_per_section"],
-                report_only=report_only,
+                report_max_queries_per_section=report_max_queries_per_section,
                 max_llm_calls=max_llm_calls,
-                progress_callback=lambda payload: push_progress(
-                    payload.get("summary"),
-                    stage=payload.get("stage", "investigate"),
-                    status=payload.get("status", "running"),
-                    iteration=payload.get("iteration", 0),
-                    current_query=payload.get("current_query"),
-                    summary=payload.get("summary"),
-                    hypotheses=payload.get("hypotheses", []),
-                    report_sections=payload.get("report_sections", {}),
-                ),
             )
-        )
-        tasks.mark_done(
-            "investigate",
-            f"session={result['session_id']}, status={result['status']}, iterations={result['iteration']}",
-        )
-        push_progress(
-            f"[investigate] done - session={result['session_id']} status={result['status']}",
-            stage="completed",
-            status=result["status"],
-            iteration=result["iteration"],
-            summary=result["summary"],
-            hypotheses=result.get("hypotheses", []),
-            report_sections=result.get("report_sections", {}),
-        )
-        write_api_snapshots(case, db)
-    print(
-        f"Investigation session {result['session_id']} finished with status={result['status']} at iteration={result['iteration']}"
-    )
-    print(result["summary"])
+
+        report_path = _run_report_stage(case, db, tasks, push_progress)
+
+    print(f"Investigation complete. Report: {report_path}")
 
 
-@app.command()
-def status(case_dir: str) -> None:
-    case = _open_case_or_die(case_dir)
-    with CaseDB(case) as db:
-        counts = _count_records(db)
-        latest_session = db.execute(
-            """
-            SELECT session_id, status, started_at
-            FROM investigation_sessions
-            ORDER BY started_at DESC, session_id DESC
-            LIMIT 1
-            """
-        ).fetchone()
-        section_statuses = fetch_records(
-            db,
-            """
-            SELECT status, COUNT(*) AS count
-            FROM report_sections
-            GROUP BY status
-            ORDER BY status
-            """
-        )
-        total_gaps = int(
-            db.execute(
-                """
-                SELECT COALESCE(SUM(CASE
-                    WHEN json_array_length(CAST(gaps AS JSON)) IS NULL THEN 0
-                    ELSE json_array_length(CAST(gaps AS JSON))
-                END), 0)
-                FROM report_sections
-                """
-            ).fetchone()[0]
-            or 0
-        )
-    print(f"Case: {case.path}")
-    print(f"Counts: {counts}")
-    if latest_session:
-        print(
-            "Latest session: "
-            f"id={latest_session[0]} status={latest_session[1]} started_at={latest_session[2]}"
-        )
-    else:
-        print("Latest session: none")
-    print(f"Report section statuses: {section_statuses or 'none'}")
-    print(f"Total gaps: {total_gaps}")
-
-
-@app.command()
+@app.command(hidden=True)
 def doctor() -> None:
     """Run all health checks: schema coverage, playbook drift, verdict taxonomy."""
     checks: list[tuple[str, bool]] = []

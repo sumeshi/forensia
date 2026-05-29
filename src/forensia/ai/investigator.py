@@ -803,7 +803,7 @@ async def _investigate_one_hypothesis(
         state.focus_depth = query_index
         try:
             hypothesis_plan = plan_hypothesis_query(
-                state=state, hypothesis=hypothesis, finding_candidates=candidates,
+                state=state, hypothesis=hypothesis,
                 memory=memory, base_url=base_url, model=model, db=db,
                 overview_md=ctx.memory_overview, default_context_md=ctx.memory_plan,
                 status_callback=llm_status_fn or (lambda msg: print(f"[yellow]{msg}[/yellow]")),
@@ -811,7 +811,7 @@ async def _investigate_one_hypothesis(
                     iteration=plan_cycle, phase="plan-hypothesis", input_messages=msgs,
                     output=parsed, model=model, base_url=base_url, suffix=f"{hid}-{qi:02d}",
                 ),
-                query_index=query_index, max_queries=max_queries_per_hypothesis,
+                query_index=query_index,
             )
         except Exception as exc:
             err_msg = f"[plan-hypothesis] LLM failed for {hypothesis.id}: {exc}"
@@ -901,18 +901,12 @@ async def _investigate_one_hypothesis(
                    output_json=result_summary, suffix=f"{planned_query.query_id}-{query_index:02d}")
         try:
             check_result = check_query_result(
-                case=case, db=db, session_id=session_id, iteration=plan_cycle,
+                case=case, db=db, session_id=session_id,
                 planned_query=planned_query, hypothesis=hypothesis,
                 finding_candidates=candidates, result_summary=result_summary,
                 memory=memory, base_url=base_url, model=model,
                 overview_md=ctx.memory_overview, memory_context_md=ctx.memory_check,
                 status_callback=llm_status_fn or (lambda msg: print(f"[yellow]{msg}[/yellow]")),
-                audit_callback=lambda msgs, out, parsed, qid=planned_query.query_id, qi=query_index: llm_logger.write(
-                    iteration=plan_cycle, phase="check", input_messages=msgs,
-                    output=parsed, model=model, base_url=base_url, suffix=f"{qid}-{qi:02d}",
-                ),
-                query_index=query_index, max_queries=max_queries_per_hypothesis,
-                fallback_info=fallback_info,
             )
         except Exception as exc:
             err_msg = f"[check] LLM failed for {hypothesis.id}/{planned_query.query_id}: {exc}"
@@ -1022,58 +1016,6 @@ async def _investigate_one_hypothesis(
     return cycle_progress, state, focus_sections
 
 
-def _plan_next_query(
-    state: SessionState,
-    hypothesis: Hypothesis,
-    query_index: int,
-    max_queries: int,
-    memory: MemoryManager,
-    db: CaseDB,
-    base_url: str,
-    model: str,
-    llm_logger: LLMCallLogger,
-    plan_cycle: int,
-    session_id: str,
-) -> PlannedQuery | None:
-    """Plan next query for a hypothesis. Returns planned query or None if no more needed."""
-    candidates = _matching_findings(state.findings_snapshot, hypothesis)
-    try:
-        hypothesis_plan = plan_hypothesis_query(
-            state=state,
-            hypothesis=hypothesis,
-            finding_candidates=candidates,
-            memory=memory,
-            base_url=base_url,
-            model=model,
-            db=db,
-            overview_md=memory.load_compact_context(["overview.md"], max_bytes=memory.max_bytes),
-            default_context_md=memory.load_investigation_context(
-                hypothesis.id,
-                max_bytes=max(1024, memory.max_bytes // 3),
-                include_overview=False,
-            ),
-            status_callback=lambda msg: print(f"[yellow]{msg}[/yellow]"),
-            audit_callback=lambda messages, output, parsed: llm_logger.write(
-                iteration=plan_cycle,
-                phase="plan-hypothesis",
-                input_messages=messages,
-                output=parsed,
-                model=model,
-                base_url=base_url,
-            ),
-            query_index=query_index,
-            max_queries=max_queries,
-        )
-        if hypothesis_plan.hypothesis is not None and _hypothesis_actually_changed(hypothesis, hypothesis_plan.hypothesis):
-            return None  # Hypothesis updated, need to reload
-        query = hypothesis_plan.query
-        if query is None or not getattr(query, "sql", None):
-            query = _fallback_planned_query_from_hypothesis(hypothesis, query_index)
-        return query
-    except Exception:
-        return _fallback_planned_query_from_hypothesis(hypothesis, query_index)
-
-
 def _hypothesis_actually_changed(original: Hypothesis, returned: Hypothesis) -> bool:
     """Detect a real planner update vs the LLM echoing the input hypothesis back."""
     if original.id != returned.id:
@@ -1153,8 +1095,6 @@ async def _check_query(
     memory: MemoryManager,
     base_url: str,
     model: str,
-    query_index: int,
-    max_queries: int,
 ) -> CheckResult | None:
     """Execute check phase. Returns CheckResult or None on error."""
     try:
@@ -1162,7 +1102,6 @@ async def _check_query(
             case=None,
             db=None,
             session_id="",
-            iteration=0,
             planned_query=planned_query,
             hypothesis=hypothesis,
             finding_candidates=_matching_findings(findings_snapshot, hypothesis),
@@ -1172,8 +1111,6 @@ async def _check_query(
             model=model,
             overview_md=None,
             memory_context_md=None,
-            query_index=query_index,
-            max_queries=max_queries,
         )
     except Exception:
         return None
@@ -1185,9 +1122,7 @@ def _record_check_result(
     planned_query: PlannedQuery,
     check_result: CheckResult,
     result_summary: dict[str, Any],
-    session_id: str,
     plan_cycle: int,
-    db: CaseDB,
 ) -> None:
     """Record check outcome to history and state."""
     state.history.append(
@@ -1260,13 +1195,10 @@ def _parse_hypothesis_from_drafter(parsed: dict[str, Any]) -> Hypothesis | None:
 
 async def _run_broad_plan_step(
     state: SessionState,
-    ctx: _Ctx,
     db: CaseDB,
-    case: Case,
     session_id: str,
     base_url: str,
     model: str,
-    memory: MemoryManager,
     llm_logger: LLMCallLogger,
     plan_cycle: int,
     observed_keypoints: list[dict[str, Any]],
@@ -1402,8 +1334,8 @@ async def _run_cycle_body(
 
     if not report_only:
         broad_plan_stop = await _run_broad_plan_step(
-            state=state, ctx=ctx, db=db, case=case, session_id=session_id,
-            base_url=base_url, model=model, memory=memory, llm_logger=llm_logger,
+            state=state, db=db, session_id=session_id,
+            base_url=base_url, model=model, llm_logger=llm_logger,
             plan_cycle=plan_cycle, observed_keypoints=observed_keypoints,
             emit_fn=_emit, llm_status_fn=llm_status,
         )
@@ -1445,7 +1377,6 @@ async def _run_report_phase(
     llm_logger: "LLMCallLogger",
     progress_callback: Callable[[dict[str, Any]], None] | None,
     focus_sections: list[str],
-    report_parallelism: int,
     report_max_queries_per_section: int,
     state: "SessionState",
     report_before: dict[str, Any],
@@ -1462,7 +1393,7 @@ async def _run_report_phase(
             case=case, db=db, session_id=session_id, iteration=plan_cycle,
             base_url=base_url, model=model, template_paths=template_paths,
             llm_logger=llm_logger, progress_callback=progress_callback,
-            focus_sections=focus_sections, max_workers=report_parallelism,
+            focus_sections=focus_sections,
             max_queries_per_section=report_max_queries_per_section,
         )
     except Exception as exc:
@@ -1553,7 +1484,6 @@ async def investigate(
     report_every_n_cycles: int = 1,
     report_only: bool = False,
     template_root: Path | None = None,
-    report_parallelism: int = 1,
     report_max_queries_per_section: int = 3,
     max_llm_calls: int = 200,
 ) -> dict[str, Any]:
@@ -1601,7 +1531,6 @@ async def investigate(
                 report_every_n_cycles=report_every_n_cycles, template_root=template_root,
                 base_url=base_url, model=model, llm_logger=llm_logger,
                 progress_callback=progress_callback, focus_sections=focus_sections,
-                report_parallelism=report_parallelism,
                 report_max_queries_per_section=report_max_queries_per_section,
                 state=state, report_before=report_before, memory=memory,
             )

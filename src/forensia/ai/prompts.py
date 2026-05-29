@@ -745,7 +745,6 @@ def _slim_history(items: list[dict[str, Any]], max_items: int = 10) -> list[dict
 def build_query_intent_messages(
     hypothesis,
     recent_history: list[dict],
-    finding_candidates: list[dict],
     active_hypotheses: list[Hypothesis],
     time_range: dict[str, str] | None = None,
     schema_context: str = "",
@@ -1290,7 +1289,6 @@ def build_paragraph_narrate_messages(
     evidence_rows: list[dict],
     template_body: str,
     language: str = "en",
-    time_range: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
     """role: section_narrator.
     Goal: write ONE markdown paragraph for the given heading using the evidence.

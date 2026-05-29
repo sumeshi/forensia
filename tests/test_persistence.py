@@ -861,12 +861,9 @@ class PersistenceTests(unittest.TestCase):
                 clear_llm_settings_cache()
                 with CaseDB(case) as db:
                     finding_id = _insert_investigation_finding(
-                        case=case,
                         db=db,
                         session_id="S-1",
-                        iteration=1,
                         planned_query=planned_query,
-                        hypothesis=None,
                         result_summary={"sample_rows": []},
                         report_text="body",
                     )
@@ -923,7 +920,10 @@ class PersistenceTests(unittest.TestCase):
                     "report_sections": {"items": []},
                 }
 
-            with patch("forensia.cli.investigate_loop", side_effect=fake_investigate_loop):
+            with patch("forensia.cli.investigate_loop", side_effect=fake_investigate_loop), patch(
+                "forensia.cli.render_written_report",
+                return_value=(case.path / "reports" / "report.md", case.path / "reports" / "report.html"),
+            ):
                 result = runner.invoke(
                     cli_module.app,
                     [
@@ -1001,10 +1001,9 @@ class PersistenceTests(unittest.TestCase):
                 result = runner.invoke(
                     cli_module.app,
                     [
-                        "run",
-                        str(input_dir),
-                        "--out",
+                        "investigate",
                         str(output_dir),
+                        str(input_dir),
                         "--llm-base-url",
                         "http://127.0.0.1:1234",
                         "--model",
@@ -1026,10 +1025,9 @@ class PersistenceTests(unittest.TestCase):
             result = runner.invoke(
                 cli_module.app,
                 [
-                    "run",
-                    str(input_dir),
-                    "--out",
+                    "investigate",
                     str(output_dir),
+                    str(input_dir),
                     "--profile",
                     "does-not-exist",
                 ],

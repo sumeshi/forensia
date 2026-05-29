@@ -31,7 +31,6 @@ LLM_MEMORY_MAX_BYTES=16384
 | `LLM_THINKING_LANGUAGE` | 思考プロンプトの言語 |
 | `LLM_OUTPUT_LANGUAGE` | 人間向け出力の言語 |
 | `LLM_MEMORY_MAX_BYTES` | 記憶ファイルの圧縮トリガとなるしきい値 |
-| `LLM_REPORT_PARALLELISM` | レポートセクション充填の既定並列度 |
 | `FORENSIA_API_BASE_URL` | UI 開発時の API ベース URL |
 | `FORENSIA_UI_ORIGINS` | FastAPI の CORS 許可リスト(カンマ区切り) |
 

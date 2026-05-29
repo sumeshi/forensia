@@ -1230,9 +1230,6 @@ def _format_benchmark_answer(
 def _write_block_body(
     ctx: _BlockContext,
     collected_results: list[dict[str, Any]],
-    prompt_report_brief: dict[str, Any],
-    context_sections: dict[str, str],
-    current_section_outline: list[dict],
     status: str,
     verdict: str,
     rationale: str,
@@ -1416,8 +1413,7 @@ def run_section_block_agent(
             break
     actual_query_count = _try_evidence_chain_fallback(ctx, collected_results, actual_query_count, actual_query_row_counts)
     body, final_status = _write_block_body(
-        ctx, collected_results, ctx.prompt_report_brief,
-        context_sections, current_section_outline,
+        ctx, collected_results,
         status, verdict, rationale, missing_questions,
         actual_query_count, actual_query_row_counts,
         audit_callback=audit_callback,
