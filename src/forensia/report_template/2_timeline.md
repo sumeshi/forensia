@@ -1,3 +1,7 @@
+---
+behaviors:
+  - require_chronological_table
+---
 # Activity Timeline
 
 ## Log Integrity

@@ -17,7 +17,7 @@ from forensia.ai.investigator import (
     _final_summary,
     _execute_query,
 )
-from forensia.ai.planner import BroadPlanResult, HypothesisPlanResult
+from forensia.ai.planner import HypothesisPlanResult
 from forensia.ai.report_gap import (
     _classify_gap_kind,
     _gap_hypothesis_id,
@@ -286,7 +286,7 @@ class PersistenceTests(unittest.TestCase):
             "| 2026-05-16 09:00:00 | host1 | Execution | process | ev-1 |\n"
         )
 
-        gaps, confidence = _quality_gate_section("2_timeline", "Attack Timeline", body, [], 1.0)
+        gaps, confidence = _quality_gate_section("2_timeline", "Attack Timeline", body, [], 1.0, behaviors=("require_chronological_table",))
 
         self.assertTrue(any("Placeholder entity values detected" in g for g in gaps))
         self.assertTrue(any("events are not strictly chronological" in g for g in gaps))
@@ -602,7 +602,7 @@ class PersistenceTests(unittest.TestCase):
             self.assertIn("rule-3", str(rows[0][3]))
             self.assertEqual("H-003", rows[2][0])
 
-    def test_merge_active_hypotheses_asks_llm_for_near_duplicate_description(self) -> None:
+    def test_merge_active_hypotheses_dedup_by_similarity_score(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -616,30 +616,22 @@ class PersistenceTests(unittest.TestCase):
                         ('H-010', 'RDP lateral movement to deploy service', 'active', NULL, '', 'broad_plan', 'S-1', NULL, now(), now(), '["rule-1"]', '["host"]', NULL)
                     """
                 )
-                with patch(
-                    "forensia.ai.hypothesis_manager.request_llm_json",
-                    return_value={"same_hypothesis": True, "reason": "same investigative claim"},
-                ) as mock_llm:
-                    merged = _merge_active_hypotheses(
-                        db=db,
-                        current=[Hypothesis(id="H-010", description="RDP lateral movement to deploy service", status="active", source_rule_ids=["rule-1"], required_entities=["host"])],
-                        updates=[
-                            Hypothesis(id="H-new", description="RDP lateral movement used to deploy service", status="active", source_rule_ids=["rule-2"], required_entities=["host"]),
-                        ],
-                        resolved=[],
-                        session_id="session-test",
-                        origin="broad_plan",
-                        base_url="http://localhost:1234",
-                        model="test-model",
-                    )
-                row = db.execute(
-                    "SELECT hypothesis_id, description, source_rule_ids FROM hypotheses WHERE hypothesis_id = 'H-010'"
-                ).fetchone()
-
-            self.assertEqual(1, len(merged))
-            self.assertEqual("H-010", merged[0].id)
-            self.assertEqual(1, mock_llm.call_count)
-            self.assertIn("rule-2", str(row[2]))
+                merged = _merge_active_hypotheses(
+                    db=db,
+                    current=[Hypothesis(id="H-010", description="RDP lateral movement to deploy service", status="active", source_rule_ids=["rule-1"], required_entities=["host"])],
+                    updates=[
+                        Hypothesis(id="H-new", description="RDP lateral movement used to deploy service", status="active", source_rule_ids=["rule-2"], required_entities=["host"]),
+                    ],
+                    resolved=[],
+                    session_id="session-test",
+                    origin="broad_plan",
+                )
+                rows = db.execute(
+                    "SELECT hypothesis_id, description, source_rule_ids FROM hypotheses ORDER BY hypothesis_id"
+                ).fetchall()
+                self.assertEqual(1, len(merged))
+                self.assertEqual("H-010", merged[0].id)
+                self.assertIn("rule-2", str(rows[0][2]))
 
     def test_quality_gate_flags_heading_title_mismatch(self) -> None:
         gaps, confidence = _quality_gate_section(
@@ -673,7 +665,7 @@ class PersistenceTests(unittest.TestCase):
             "| High | Isolate host1 now | suspicious activity observed |\n"
         )
 
-        gaps, confidence = _quality_gate_section("5_recommendations", "Recommended Actions", body, [], 1.0)
+        gaps, confidence = _quality_gate_section("5_recommendations", "Recommended Actions", body, [], 1.0, behaviors=("require_recommendations_strength",))
 
         self.assertTrue(any("Recommendations should state evidence strength" in g for g in gaps))
         self.assertLess(confidence, 1.0)

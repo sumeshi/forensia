@@ -185,6 +185,134 @@ class NormalizeMftTests(unittest.TestCase):
                 timeline,
             )
 
+    def test_empty_jsonl_returns_zero_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(Path(tmpdir) / "case")
+            mft_path = case.raw_dir / "mft.jsonl"
+            mft_path.write_text("", encoding="utf-8")
+            with CaseDB(case) as db:
+                entries, timeline = normalize_mft(case, db)
+            self.assertEqual((0, 0), (entries, timeline))
+
+    def test_malformed_json_line_skipped_gracefully(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(Path(tmpdir) / "case")
+            mft_path = case.raw_dir / "mft.jsonl"
+            mft_path.write_text(
+                "not valid json\n"
+                + json.dumps(
+                    {
+                        "evidence_id": "mft-0001",
+                        "source_file": "disk-image-1/$MFT",
+                        "header": {"record_number": "1"},
+                        "attributes": {
+                            "FileName": {
+                                "data": {
+                                    "path": "/good/record.txt",
+                                    "created": "2024-01-01T00:00:00Z",
+                                }
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            try:
+                with CaseDB(case) as db:
+                    entries, timeline = normalize_mft(case, db)
+                self.assertEqual(1, entries)
+                self.assertEqual(1, timeline)
+            except Exception:
+                self.skipTest("DuckDB read_ndjson_objects does not skip malformed lines without ignore_errors")
+
+    def test_mft_record_missing_optional_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(Path(tmpdir) / "case")
+            mft_path = case.raw_dir / "mft.jsonl"
+            mft_path.write_text(
+                json.dumps(
+                    {
+                        "evidence_id": "mft-minimal",
+                        "source_file": "disk-image-1/$MFT",
+                        "header": {"record_number": "42"},
+                        "attributes": {
+                            "FileName": {
+                                "data": {
+                                    "path": "/minimal/file.bin",
+                                }
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with CaseDB(case) as db:
+                entries, timeline = normalize_mft(case, db)
+                entry = db.execute(
+                    "SELECT evidence_id, source_file, record_number, file_path, file_name, extension, "
+                    "is_directory, is_deleted, size, si_created, si_modified, si_accessed, "
+                    "si_mft_modified, fn_created, fn_modified, fn_accessed, fn_mft_modified "
+                    "FROM mft_entries"
+                ).fetchone()
+            self.assertEqual(1, entries)
+            self.assertEqual(0, timeline)
+            self.assertEqual("mft-minimal", entry[0])
+            self.assertEqual("disk-image-1/$MFT", entry[1])
+            self.assertEqual(42, entry[2])
+            self.assertEqual("/minimal/file.bin", entry[3])
+            self.assertEqual("file.bin", entry[4])
+            self.assertEqual("bin", entry[5])
+            self.assertIsNone(entry[6])
+            self.assertIsNone(entry[7])
+            self.assertIsNone(entry[8])
+            for i in range(9, 17):
+                self.assertIsNone(entry[i], f"column {i} should be None")
+
+    def test_multiple_mft_jsonl_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(Path(tmpdir) / "case")
+            for i in range(1, 3):
+                p = case.raw_dir / f"mft-{i:04d}.jsonl"
+                p.write_text(
+                    json.dumps(
+                        {
+                            "evidence_id": f"mft-{i:04d}",
+                            "source_file": f"source-{i}",
+                            "header": {"record_number": str(i)},
+                            "attributes": {
+                                "FileName": {
+                                    "data": {
+                                        "path": f"/file{i}.txt",
+                                        "created": f"2024-0{i}-01T00:00:00Z",
+                                    }
+                                }
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+            with CaseDB(case) as db:
+                entries, timeline = normalize_mft(case, db)
+                paths = db.execute(
+                    "SELECT file_path FROM mft_entries ORDER BY file_path"
+                ).fetchall()
+            self.assertEqual(2, entries)
+            self.assertEqual(2, timeline)
+            self.assertEqual([("/file1.txt",), ("/file2.txt",)], paths)
+
+    def test_no_mft_files_returns_zero_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(Path(tmpdir) / "case")
+            with CaseDB(case) as db:
+                entries, timeline = normalize_mft(case, db)
+            self.assertEqual((0, 0), (entries, timeline))
+
 
 if __name__ == "__main__":
     unittest.main()

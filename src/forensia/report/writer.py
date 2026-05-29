@@ -16,6 +16,12 @@ from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records, normalize_value
 from forensia.report.html import render_html_report
 
+
+@dataclass(frozen=True)
+class TemplateMeta:
+    behaviors: tuple[str, ...] = ()
+
+
 GAP_PATTERN = re.compile(
     r"\[INSUFFICIENT EVIDENCE:\s*([^\]]+)\]|【調査不足:\s*([^】]+)】",
     re.IGNORECASE,
@@ -30,15 +36,33 @@ RAW_EVIDENCE_HEADING_PATTERN = re.compile(r"^#{2,6}\s*Raw Evidence\s*$", re.IGNO
 EvidenceResolver = Callable[[CaseDB], list[dict[str, Any]]]
 
 
+def _parse_frontmatter(text: str) -> dict:
+    """Extract YAML frontmatter dict from text starting with ---."""
+    if not text.startswith("---\n"):
+        return {}
+    parts = text.split("---\n", 2)
+    if len(parts) < 3:
+        return {}
+    import yaml
+    try:
+        meta = yaml.safe_load(parts[1])
+    except Exception:
+        meta = {}
+    return meta if isinstance(meta, dict) else {}
+
+
 @lru_cache(maxsize=None)
-def _parse_template(template_path: str) -> str:
-    """Parse YAML front matter from a template file, returning only the body."""
+def _parse_template(template_path: str) -> tuple[str, TemplateMeta]:
+    """Parse YAML front matter from a template file, returning (body, meta)."""
     text = Path(template_path).read_text(encoding="utf-8")
+    meta = _parse_frontmatter(text)
     if text.startswith("---\n"):
         parts = text.split("---\n", 2)
-        if len(parts) == 3:
-            return parts[2].strip()
-    return text.strip()
+        body = parts[2].strip() if len(parts) == 3 else text.strip()
+    else:
+        body = text.strip()
+    behaviors = tuple(meta.get("behaviors") or [])
+    return body, TemplateMeta(behaviors=behaviors)
 
 
 def _parse_block_hints(block_body: str) -> dict[str, Any]:
@@ -504,6 +528,7 @@ class _GateCtx:
     title: str
     evidence_results: list[dict[str, Any]] | None
     db: CaseDB | None
+    behaviors: tuple[str, ...] = ()
 
 
 QualityCheck = Callable[[str, _GateCtx], tuple[str | None, float | None]]
@@ -528,13 +553,13 @@ def _check_heading_mismatch(body: str, ctx: _GateCtx) -> tuple[str | None, float
 
 
 def _check_timeline_ordering(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
-    if ctx.section_key == "2_timeline" and not _timeline_rows_are_chronological(body):
+    if "require_chronological_table" in ctx.behaviors and not _timeline_rows_are_chronological(body):
         return "Timeline ordering requires review; events are not strictly chronological.", 0.6
     return None, None
 
 
 def _check_recommendations_strength(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
-    if ctx.section_key == "5_recommendations":
+    if "require_recommendations_strength" in ctx.behaviors:
         lowered = body.lower()
         strength_markers = (
             "confirmed",
@@ -695,9 +720,10 @@ def _quality_gate_section(
     confidence: float,
     evidence_results: list[dict[str, Any]] | None = None,
     db: CaseDB | None = None,
+    behaviors: tuple[str, ...] = (),
 ) -> tuple[list[str], float]:
     """Apply quality-gating checks to a section body, returning augmented gaps and adjusted confidence."""
-    ctx = _GateCtx(section_key=section_key, title=title, evidence_results=evidence_results, db=db)
+    ctx = _GateCtx(section_key=section_key, title=title, evidence_results=evidence_results, db=db, behaviors=behaviors)
     gated_gaps = list(gaps)
     gated_confidence = confidence
     for check in _QUALITY_CHECKS:
@@ -1982,6 +2008,19 @@ def load_report_sections_map(db: CaseDB) -> dict[str, str]:
     }
 
 
+@lru_cache(maxsize=None)
+def _load_template_meta(section_key: str) -> TemplateMeta:
+    """Load template frontmatter metadata for a section key from the packaged template."""
+    from importlib import resources
+    try:
+        text = resources.files("forensia").joinpath(f"report_template/{section_key}.md").read_text(encoding="utf-8")
+    except Exception:
+        return TemplateMeta()
+    meta = _parse_frontmatter(text)
+    behaviors = tuple(meta.get("behaviors") or [])
+    return TemplateMeta(behaviors=behaviors)
+
+
 def build_report_markdown_from_db(db: CaseDB) -> str:
     """Reassemble the full report Markdown from persisted report sections, injecting coverage tables."""
     sections = fetch_report_sections(db)
@@ -1993,10 +2032,11 @@ def build_report_markdown_from_db(db: CaseDB) -> str:
         body = str(row.get("body") or "").strip()
         if not body:
             continue
-        if section_key == "1_overview" and overview_summary:
+        meta = _load_template_meta(section_key)
+        if "canonical_evidence_scope" in meta.behaviors and overview_summary:
             body = _replace_overview_evidence_scope(body, overview_summary)
         coverage_rows = coverage_map.get(section_key, [])
-        if coverage_rows and section_key != "1_overview":
+        if coverage_rows and "canonical_evidence_scope" not in meta.behaviors:
             body = _append_coverage_table(body, coverage_rows)
         ordered.append(body)
     if not ordered:
@@ -2016,7 +2056,7 @@ def prepare_section_request(
     Pure I/O against DuckDB; safe to call from the main thread before
     dispatching parallel LLM workers.
     """
-    template_body = _parse_template(str(template_path))
+    template_body, template_meta = _parse_template(str(template_path))
     section_key = Path(template_path).stem
     title = _title_from_template_body(template_body, section_key)
     template_preamble, blocks = _split_template_body(template_body)
@@ -2040,6 +2080,7 @@ def prepare_section_request(
         "block_requests": block_requests,
         "context_sections": dict(context_sections),
         "report_brief": report_brief or {},
+        "template_meta": template_meta,
     }
 
 
@@ -2099,11 +2140,11 @@ def _render_section_from_request(
     return body, all_evidence_results, block_gaps
 
 
-def _preprocess_section_body(section_key: str, body: str) -> tuple[str, bool]:
+def _preprocess_section_body(section_key: str, body: str, *, template_meta: TemplateMeta | None = None) -> tuple[str, bool]:
     sanitized_body, removed_raw_evidence = _sanitize_raw_evidence_body(section_key, body)
     if sanitized_body != body:
         body = sanitized_body
-    if section_key == "2_timeline":
+    if template_meta and "require_chronological_table" in template_meta.behaviors:
         body = _sort_markdown_table_by_first_column(body)
     return body, removed_raw_evidence
 
@@ -2182,9 +2223,10 @@ def finalize_section(
     evidence_results: list[dict[str, Any]] | None = None,
     session_id: str | None = None,
     extra_gaps: list[str] | None = None,
+    template_meta: TemplateMeta | None = None,
 ) -> dict[str, Any]:
     """UPSERT the section into DuckDB. Returns gap list and confidence."""
-    body, removed_raw = _preprocess_section_body(section_key, body)
+    body, removed_raw = _preprocess_section_body(section_key, body, template_meta=template_meta)
     candidate_gaps, candidate_confidence = _collect_initial_gaps(db, section_key, body, extra_gaps)
     candidate_gaps, candidate_confidence = _quality_gate_section(
         section_key,
@@ -2194,6 +2236,7 @@ def finalize_section(
         candidate_confidence,
         evidence_results,
         db=db,
+        behaviors=template_meta.behaviors if template_meta else (),
     )
     if removed_raw:
         note = "Raw evidence rows were moved to reports/evidence JSON and replaced with normalized summaries in the section body."
@@ -2566,6 +2609,7 @@ def fill_section(
         evidence_results=evidence_results,
         session_id=session_id,
         extra_gaps=block_gaps,
+        template_meta=request.get("template_meta"),
     )
     return body
 

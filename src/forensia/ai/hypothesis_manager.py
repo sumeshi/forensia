@@ -6,9 +6,8 @@ from typing import Any
 
 import json
 
-from forensia.ai.json_response import request_llm_json
 from forensia.ai.prompts import resolve_rule_context
-from forensia.config import resolve_llm_config
+
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
@@ -207,6 +206,11 @@ def _hypothesis_similarity(left: str, right: str) -> float:
         return 0.0
     surface_score = len(left_tokens & right_tokens) / len(union)
     semantic_score = _semantic_hypothesis_similarity(left, right)
+    left_triple = _extract_semantic_triple(left)
+    right_triple = _extract_semantic_triple(right)
+    all_unknown = all(v == "unknown" for v in left_triple.values()) or all(v == "unknown" for v in right_triple.values())
+    if all_unknown:
+        return surface_score
     return max(surface_score, semantic_score)
 
 
@@ -238,37 +242,6 @@ def _best_hypothesis_match(
             best_hypothesis = hypothesis
     return best_hypothesis, best_score
 
-
-def _ask_same_hypothesis(
-    *,
-    existing: Hypothesis,
-    incoming: Hypothesis,
-    base_url: str,
-    model: str,
-) -> bool:
-    """Ask the LLM whether two hypothesis descriptions refer to the same underlying claim."""
-    system = (
-        "<TASK>You judge whether two hypothesis descriptions refer to the same underlying hypothesis.</TASK>\n"
-        "<OUTPUT_SCHEMA>{\"same_hypothesis\": true|false, \"reason\": \"short explanation\"}</OUTPUT_SCHEMA>\n"
-        "<RULES>\n"
-        "Return JSON only.\n"
-        "Answer true only when the descriptions are substantively the same investigative claim.\n"
-        "Answer false when the new wording introduces a materially different actor, action, target, or condition.\n"
-        "</RULES>\n"
-    )
-    user = (
-        f"existing_hypothesis: {existing.model_dump()}\n"
-        f"incoming_hypothesis: {incoming.model_dump()}\n"
-    )
-    try:
-        response = request_llm_json(
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            base_url=base_url,
-            model=model,
-        )
-    except Exception:
-        return True
-    return bool(response.get("same_hypothesis"))
 
 
 def _row_to_hypothesis(row: dict[str, Any]) -> Hypothesis:
@@ -415,12 +388,8 @@ def _merge_active_hypotheses(
     resolved: list[Hypothesis],
     session_id: str,
     origin: str,
-    base_url: str | None = None,
-    model: str | None = None,
 ) -> list[Hypothesis]:
     """Merge incoming hypotheses into the active set with dedup, aliasing, and an active cap."""
-    resolved_base_url, resolved_model = resolve_llm_config(base_url, model)
-    llm_enabled = bool(resolved_base_url and resolved_model)
     resolved_ids = {item.id for item in resolved}
     by_id = {item.id: item for item in current if item.id not in resolved_ids}
     skipped_for_cap: list[str] = []
@@ -436,14 +405,7 @@ def _merge_active_hypotheses(
             existing = active_by_description.get(_normalize_hypothesis_description(item.description))
         if existing is None:
             best_active, best_active_score = _best_hypothesis_match(list(by_id.values()), item.description)
-            if best_active is not None and best_active_score > 0.8:
-                if llm_enabled and not _ask_same_hypothesis(
-                    existing=best_active,
-                    incoming=item,
-                    base_url=str(resolved_base_url),
-                    model=str(resolved_model),
-                ):
-                    best_active = None
+            if best_active is not None and best_active_score > 0.85:
                 existing = best_active
         if existing is not None:
             merged = _merge_hypothesis_fields(existing, item)
@@ -457,14 +419,7 @@ def _merge_active_hypotheses(
         resolved_existing = resolved_by_description.get(_normalize_hypothesis_description(item.description))
         if resolved_existing is None:
             best_resolved, best_resolved_score = _best_hypothesis_match(resolved, item.description)
-            if best_resolved is not None and best_resolved_score > 0.8:
-                if llm_enabled and not _ask_same_hypothesis(
-                    existing=best_resolved,
-                    incoming=item,
-                    base_url=str(resolved_base_url),
-                    model=str(resolved_model),
-                ):
-                    best_resolved = None
+            if best_resolved is not None and best_resolved_score > 0.85:
                 resolved_existing = best_resolved
         if resolved_existing is not None:
             merged = _merge_hypothesis_fields(resolved_existing, item)

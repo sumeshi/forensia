@@ -1,19 +1,8 @@
 # Contributing to forensia
 
-forensia is a local-first DFIR investigation tool. Contributions are welcome, but the project prioritizes architectural stability over feature breadth.
+このドキュメントは forensia の実装に手を入れる開発者向けの内部仕様書です。コードを変更しても保たれるべき不変条件、責務の境界、状態の所有関係をまとめています。ユーザ向けの概要は [README.md](README.md) を参照してください。
 
-This document is implementation-facing. It focuses on invariants, state boundaries, and responsibilities that should remain stable even when the code changes.
-
-## Priorities
-
-The current implementation is built around these constraints:
-
-- Raw evidence must not leave the local environment.
-- Small local LLMs are assumed to be weak and must be constrained by structure.
-- Every durable conclusion must remain traceable back to evidence.
-- A case must be resumable without reconstructing state from chat history.
-
-## Setup
+## 開発環境
 
 ### Python
 
@@ -23,7 +12,7 @@ cd forensia
 uv sync
 ```
 
-Example `.env`:
+`.env` の例:
 
 ```dotenv
 LLM_BASE_URL="http://127.0.0.1:1234"
@@ -34,19 +23,19 @@ LLM_OUTPUT_LANGUAGE=ja
 LLM_MEMORY_MAX_BYTES=16384
 ```
 
-| Variable | Meaning |
+| 変数 | 意味 |
 |---|---|
-| `LLM_BASE_URL` | LLM API base URL |
-| `LLM_MODEL` | Model name used for investigation and report writing |
-| `LLM_MAX_TOKENS` | Max tokens per response |
-| `LLM_THINKING_LANGUAGE` | Language used for internal reasoning prompts |
-| `LLM_OUTPUT_LANGUAGE` | Language used for human-facing output |
-| `LLM_MEMORY_MAX_BYTES` | Compaction threshold for selected memory files |
-| `LLM_REPORT_PARALLELISM` | Default parallelism for report section filling |
-| `FORENSIA_API_BASE_URL` | API base URL used by the UI dev workflow |
-| `FORENSIA_UI_ORIGINS` | Comma-separated CORS allowlist for FastAPI |
+| `LLM_BASE_URL` | LLM API のベース URL |
+| `LLM_MODEL` | 仮説検証・レポート生成で使うモデル名 |
+| `LLM_MAX_TOKENS` | 1 リクエストあたりの最大トークン数 |
+| `LLM_THINKING_LANGUAGE` | 思考プロンプトの言語 |
+| `LLM_OUTPUT_LANGUAGE` | 人間向け出力の言語 |
+| `LLM_MEMORY_MAX_BYTES` | 記憶ファイルの圧縮トリガとなるしきい値 |
+| `LLM_REPORT_PARALLELISM` | レポートセクション充填の既定並列度 |
+| `FORENSIA_API_BASE_URL` | UI 開発時の API ベース URL |
+| `FORENSIA_UI_ORIGINS` | FastAPI の CORS 許可リスト(カンマ区切り) |
 
-The CLI flag for the base URL is `--llm-base-url`.
+CLI で base URL を指定する場合は `--llm-base-url`。
 
 ### Web UI
 
@@ -55,60 +44,53 @@ cd web_ui
 npx pnpm install
 ```
 
-## Common commands
-
-### Backend
+### よく使うコマンド
 
 ```bash
+# バックエンドテスト
 UV_CACHE_DIR=/tmp/uv-cache PYTHONPATH=src uv run python -m unittest discover -s tests
-```
 
-### Frontend
-
-```bash
+# フロントエンド
 cd web_ui
 npx svelte-check
 npx pnpm test
 npx pnpm build
-```
 
-### Local execution
-
-```bash
+# ローカル実行
 forensia run ./sample/DESKTOP-001 --out ./dist/DESKTOP-001 --profile windows-basic --max-iter 20
 forensia status ./dist/DESKTOP-001
 forensia serve ./dist/DESKTOP-001
 ```
 
-## CLI surface
+## リポジトリ構成
 
-| Command | Role |
-|---|---|
-| `init` | Initialize an empty case directory |
-| `add` | Incrementally ingest new artifacts into an existing case |
-| `report` | Render Markdown and HTML from existing `report_sections` |
-| `report-write` | Refill report sections from current evidence, then render |
-| `run` | Execute ingest → normalize → analyze → investigate → report |
-| `investigate` | Continue the hypothesis loop on an existing case |
-| `status` | Show current case state in read-only form |
-| `serve` | Serve FastAPI and the built Svelte UI |
-| `doctor` | Run schema coverage, playbook drift, verdict taxonomy AST scan, and pytest as a single self-check |
-
-## Repository map
-
-| Layer | Main location | Responsibility |
+| レイヤー | 主な場所 | 責務 |
 |---|---|---|
-| Ingest | `src/forensia/ingest` | Convert source artifacts into raw JSONL |
-| Normalize | `src/forensia/normalize` | Load normalized evidence into DuckDB |
-| Rules | `src/forensia/rules` and `src/forensia/rulepacks` | Execute YAML rules and generate findings |
-| Investigation | `src/forensia/ai/investigator.py` | Run the hypothesis loop |
-| Planner / Checker | `src/forensia/ai/planner.py` and `src/forensia/ai/checker.py` | Propose SQL checks and evaluate results |
-| Memory | `src/forensia/core/memory.py` | Maintain structured working memory |
-| Report | `src/forensia/report` | Fill report sections and render reports |
-| API | `src/forensia/api` and `src/forensia/web.py` | FastAPI, DTOs, and SSE |
+| Ingest | `src/forensia/ingest/` | アーティファクトを正規化前 JSONL に変換 |
+| Normalize | `src/forensia/normalize/` | JSONL を DuckDB に取り込み |
+| Rules | `src/forensia/rules/` + `src/forensia/rulepacks/` | YAML ルール実行と finding 生成 |
+| Investigation | `src/forensia/ai/investigator.py` | 仮説検証ループのオーケストレーション |
+| Planner / Checker | `src/forensia/ai/planner.py` / `checker.py` | SQL 計画と結果評価 |
+| Memory | `src/forensia/core/memory.py` | 構造化作業記憶の管理 |
+| Report | `src/forensia/report/` | レポートセクションの充填と書き出し |
+| API | `src/forensia/api/` + `src/forensia/web.py` | FastAPI / DTO / SSE |
 | UI | `web_ui/` | Svelte 5 UI |
 
-## Case layout
+### CLI
+
+| コマンド | 役割 |
+|---|---|
+| `init` | 空のケースディレクトリを作成 |
+| `add` | 既存ケースに追加アーティファクトを取り込み |
+| `report` | 既存 `report_sections` から Markdown / HTML を書き出し |
+| `report-write` | 現在の証拠からレポートセクションを再充填してから書き出し |
+| `run` | ingest → normalize → analyze → investigate → report の一連を実行 |
+| `investigate` | 既存ケースで仮説ループを継続 |
+| `status` | ケース状態を読み取り専用で表示 |
+| `serve` | FastAPI と Svelte UI を提供 |
+| `doctor` | schema coverage / playbook drift / verdict taxonomy AST / pytest をまとめて実行 |
+
+### ケースのレイアウト
 
 ```text
 case001/
@@ -151,702 +133,653 @@ case001/
     api/
 ```
 
-### Directory responsibilities
-
-| Path | Responsibility |
+| パス | 責務 |
 |---|---|
-| `raw/` | Reprocessable raw JSONL generated during ingest |
-| `db/case.duckdb` | Durable investigation state tied to evidence and report output |
-| `db/trace.duckdb` | Durable execution trace for sessions, steps, and progress |
-| `allowlist.yaml` | Rule-scoped suppression configuration |
-| `memory/` | Regeneratable working context for LLM calls |
-| `ai_logs/` | Per-call LLM request and response logs |
-| `reports/` | Human-facing rendered output and API snapshots |
+| `raw/` | 再処理可能な正規化前 JSONL |
+| `db/case.duckdb` | 証拠とそれに紐づく永続調査結果 |
+| `db/trace.duckdb` | セッション / ステップ / 進捗履歴 |
+| `allowlist.yaml` | rule_id ベースの suppression 設定 |
+| `memory/` | LLM 向けの再生成可能な作業文脈 |
+| `ai_logs/` | LLM リクエスト / レスポンスの監査ログ |
+| `reports/` | レポート出力と API スナップショット |
 
-## Architectural invariants
+## 状態の 3 層分離
 
-### Three state classes
+forensia は信頼度と寿命が異なる 3 種の状態を分離して扱います。
 
-forensia separates state into three classes with different trust levels and lifetimes.
-
-| State class | Storage | Purpose |
+| 種類 | 場所 | 役割 |
 |---|---|---|
-| Case State | `db/case.duckdb` | Normalized evidence and durable investigation objects derived from that evidence |
-| Trace State | `db/trace.duckdb` | Investigation sessions, per-step I/O, reasoning trail, and progress history |
-| Structured Memory | `memory/**/*.md` | Regeneratable working context assembled for LLM consumption |
+| Case State | `db/case.duckdb` | 取り込んだアーティファクトを正規化した証拠と、それから導かれる永続調査オブジェクト。原則 immutable。 |
+| Trace State | `db/trace.duckdb` | 調査セッションのライフサイクル、ステップ I/O、進捗履歴。原則 append-only。 |
+| Structured Memory | `memory/**/*.md` | Case と Trace から LLM 向けに再構成した文脈。regeneratable。 |
 
-These classes must remain separate.
+これらの境界は壊さないこと。
 
-- Case State is the source of truth for evidence-backed investigation results.
-- Trace State is the source of truth for execution history.
-- Structured Memory is a projection, not an authority.
+- Case State は「ケースが現状何を含んでいるか」を答える正本。
+- Trace State は「どうやって現在状態に達したか」を答える正本。
+- Memory は **projection** であり、authority ではない。
 
-### LLM output is never the source of truth
+## アーキテクチャ不変条件
 
-The implementation records LLM activity, but does not treat raw model output as authoritative state.
+### LLM 出力は正本ではない
 
-- LLM request and response bodies are stored under `ai_logs/<session_id>/`.
-- Investigation step `input_json` and `output_json` are stored in `trace.investigation_steps`.
-- Durable objects such as findings, hypotheses, claims, and report sections live in DuckDB.
-- Memory markdown is derived state and may be regenerated or compacted.
+実装は LLM の活動を記録しますが、生の出力を永続状態としては扱いません。
 
-If a new feature needs durable state, it should be represented in the database rather than only in markdown or logs.
+- LLM のリクエスト / レスポンスは `ai_logs/<session_id>/` に保存。
+- 各ステップの `input_json` / `output_json` は `trace.investigation_steps` に保存。
+- findings / hypotheses / claims / report_sections は DuckDB に永続化。
+- Memory Markdown は derived state であり、再生成可能。
 
-### Evidence traceability is required
+新機能が永続状態を要するなら、Markdown やログだけでなく DuckDB のテーブルに表現すること。
 
-Durable conclusions must remain tied to evidence identifiers.
+### 証拠への traceability を保つ
 
-- Evidence tables store normalized primary records.
-- Findings carry structured evidence references.
-- Memory facts and timeline anchors include evidence references.
-- Claims store linked `finding_ids`, `hypothesis_ids`, and `evidence_ids`.
+durable な結論は evidence_id まで辿れること。
 
-Any new abstraction that summarizes or ranks evidence should preserve a path back to concrete evidence rows.
+- 証拠テーブルは正規化された原本レコードを持つ。
+- findings は構造化された evidence 参照を持つ。
+- memory の facts / timeline には evidence 参照を含める。
+- claims は `finding_ids` / `hypothesis_ids` / `evidence_ids` をリンクとして持つ。
 
-### Verdict values are enumerated, not free text
+新たに証拠を要約・ランキングする抽象を追加するときは、必ず元証拠への参照経路を保つこと。
 
-Verdict strings are not free-form. The allowed set per layer is declared in `src/forensia/rulepacks/_schema/verdict_taxonomy.yaml` and enforced at three write boundaries via `forensia.core.verdicts.assert_valid_verdict`:
+### verdict 値は列挙であり自由文字列ではない
 
-| Layer | Site |
+verdict 文字列は許可リストです。許可値は `src/forensia/rulepacks/_schema/verdict_taxonomy.yaml` で宣言され、3 箇所の書き込み境界で `forensia.core.verdicts.assert_valid_verdict` により強制されます。
+
+| レイヤー | 強制サイト |
 |---|---|
-| `hypothesis_verdict` | `hypothesis_manager.py:_upsert_hypothesis()` and `Hypothesis.verdict` field validator |
-| `section_verdict` | `section_agent.py:_store_section_run()` (with normalize map for `sufficient`/`refuted` aliases) |
+| `hypothesis_verdict` | `hypothesis_manager.py:_upsert_hypothesis()` + `Hypothesis.verdict` field validator |
+| `section_verdict` | `section_agent.py:_store_section_run()`(`sufficient`/`refuted` 等のエイリアスは normalize map で吸収) |
 | `benchmark_status` | `report/writer.py:_normalize_benchmark_answer()` |
 
-`HistoryEntry.verdict` also has a Pydantic `@field_validator`. Adding a new verdict value requires editing `verdict_taxonomy.yaml`; bypassing the validator from Python is treated as a bug.
+`HistoryEntry.verdict` にも Pydantic `@field_validator`。新しい verdict 値を増やすなら `verdict_taxonomy.yaml` を編集すること。validator を Python から回避するのはバグ扱い。
 
-The taxonomy file also declares cross-layer mappings (`hypothesis_to_section`, `section_to_benchmark`, `benchmark_to_claim`). Cross-layer code should call `map_verdict()` rather than building its own translation table.
+taxonomy ファイルは層間マッピング (`hypothesis_to_section`、`section_to_benchmark`、`benchmark_to_claim`) も宣言しているので、層間変換が必要なら `map_verdict()` を呼び、独自テーブルを作らないこと。
 
-### LLM call budget is a hard cap
+### LLM 呼び出し総数は hard cap
 
-`audit.LLMCallLogger` records every call. `investigator.investigate(max_llm_calls=...)` (CLI: `--max-llm-calls`, default 200) raises `RuntimeError` when the total is exceeded. This is not a soft warning; the loop terminates. Phase counts are available via `LLMCallLogger.count_by_phase()`.
+`audit.LLMCallLogger` がすべての呼び出しを記録し、`investigator.investigate(max_llm_calls=...)`(CLI: `--max-llm-calls`、既定 200)を超えると `RuntimeError`。soft warning ではなく、ループが終了します。phase 別の集計は `LLMCallLogger.count_by_phase()` で取れます。
 
-Prompt assembly enforces a separate token budget. `_assemble_messages_with_budget()` protects system messages and trims user/dynamic content first. Do not bypass this by concatenating directly into system messages.
+プロンプト組み立てには別途トークン予算ガードがあります。`_assemble_messages_with_budget()` は system メッセージを保護したまま、user / dynamic 側の content を先に trim します。これを迂回して system に直接連結しないこと。
 
-## Investigation loop mechanics
+## 仮説検証ループの内部
 
-The hypothesis loop is intentionally short, declarative, and policed by code rather than by LLM judgment. Most knobs are rule-declared, not Python-encoded.
-
-### One cycle (`plan_cycle`)
+### 1 サイクル (`plan_cycle`) の流れ
 
 ```
-broad_plan  →  for each active hypothesis: plan → exec(+fallback) → check → track  →  resolve  →  refresh_report(stale-first)  →  inject_gaps_as_new_hypotheses
+broad_plan → for each active hypothesis: plan → exec(+fallback) → check → track → resolve → refresh_report(stale-first) → inject_gaps_as_new_hypotheses
 ```
 
-- `plan_cycle` is bounded by `--max-iter`.
-- Per hypothesis, query attempts are bounded by `--max-queries-per-hypothesis`.
-- Report refresh runs at the end of each cycle (`--report-every-n-cycles`).
+- `plan_cycle` は `--max-iter` で上限。
+- 仮説あたりのクエリ試行は `--max-queries-per-hypothesis` で上限。
+- レポート再充填は `--report-every-n-cycles` ごとに走る。
 
-### Hypothesis sources
+### 仮説の入り口
 
-A hypothesis can enter `state.active_hypotheses` from three places:
+`state.active_hypotheses` に入る仮説は 3 経路あります。
 
-1. `rule.hypotheses` — instantiated when a rule fires; `source_rule_ids` is populated.
-2. `broad_plan` LLM — open-ended hypotheses generated from gaps, prior verdicts, and kill-chain coverage prompts.
-3. `follow_up_questions` — auto-spawned when a hypothesis with a `source_rule_ids` becomes confirmed.
+1. `rule.hypotheses`:ルール発火時にテンプレから生成。`source_rule_ids` が埋まる。
+2. `gap_identifier` + `hypothesis_drafter`:gap 領域から起案。`source_rule_ids` は空。
+3. `follow_up_questions`:confirmed になった `source_rule_ids` 付き仮説から自動派生。
 
-Gap hypotheses generated from report writer output flow through `_inject_gap_hypotheses` and use `GapHypothesisOutput` Pydantic validation with a heuristic safety-net only when the LLM omits `required_entities` / `confirm_when`.
+レポート writer から出る gap 仮説は `_inject_gap_hypotheses` を通り、`GapHypothesisOutput` の Pydantic バリデーションで形を整え、LLM が `required_entities` / `confirm_when` を落とした場合はヒューリスティックなセーフティネットで補完します。
+
+### LLM 役割分割の地図
+
+`prompts.py` で定義されているプロンプトビルダーと役割の対応:
+
+| Phase | ビルダー | 目的 |
+|---|---|---|
+| broad_plan | `build_gap_identifier_messages` | 観測 keypoint と未カバー keypoint から gap_areas を特定 |
+| broad_plan | `build_hypothesis_drafter_messages` | 1 gap_area につき 1 仮説を起案 |
+| plan | `build_query_intent_messages` | 何を取りに行くかを JSON で表現 |
+| plan | `build_sql_composer_messages` | intent と schema_card から SELECT を組む |
+| check | `build_verdict_review_messages` | rows と仮説から verdict を出す(3 フィールドのみ) |
+| check | `build_finding_extractor_messages` | verdict==confirmed のときだけ findings を抽出 |
+| check | `build_memory_updater_messages` | verdict 確定後に durable memory updates を提案 |
+| section_agent | `build_section_agent_plan_messages` | 次のアクション(query / facts / write)を選択 |
+| section_agent | `build_section_agent_check_messages` | 集めた証拠が write 可能か判断 |
+| section_write | `build_section_outline_messages` | 段落割り当てを JSON で決める |
+| section_write | `build_paragraph_narrate_messages` | 1 段落の Markdown を書く |
+| benchmark | `build_benchmark_classify_messages` | status と採用 row を選ぶ(整形は code 側) |
+
+LLM が「ルーティング」「テンプレマッチング」「決定論的フォーマット整形」を兼ねないよう、ビルダーの粒度を保ってください。新ロールを足すときは `<TASK>` を 1 文で書けるか確認すること。
 
 ### Planner
 
-`build_hypothesis_plan_messages` injects schema cards for all known DB tables and a SQL cookbook into the prompt. The planner is asked to produce one query per call.
+`build_query_intent_messages` → `build_sql_composer_messages` の 2 段呼びです。
 
-- **Schema cards** (`<SCHEMA_CARDS>`): each table YAML in `rulepacks/_schema/*.yaml` exposes `core_columns` (the short list shown to the LLM, 5-13 columns), `column_descriptions` (one-line use hints), and `columns` (the full list, used only by the SQL validator). Surfaced tables: `evtx_events`, `mft_entries`, `mft_timeline`, `prefetch_executions`, `findings`.
-- **SQL cookbook** (`<SQL_COOKBOOK>`): six ready-to-adapt SELECT templates (event_id enumeration, time-window filter, GROUP BY summary, COALESCE for NULL columns, MFT path LIKE, Prefetch executable lookup). Weak local LLMs are expected to copy-and-edit rather than synthesize from scratch.
-- **Retry**: `_retry_query_once` retries SQL generation up to `_PLANNER_SQL_MAX_RETRIES = 3` times when `validate_select_sql` rejects the query; each retry message re-references the schema cards and cookbook.
-- **Fallback**: when the planner cannot produce valid SQL after retries, `_fallback_planned_query_from_hypothesis` synthesises a deterministic `SELECT … FROM evtx_events WHERE event_id IN (…) ORDER BY timestamp LIMIT 500` from `hypothesis.confirm_when.co_observed_event_ids`. This guarantees the check phase runs.
-- **Echo detection**: planners that return the input `hypothesis` unchanged are detected by `_hypothesis_actually_changed` (compares id, description, confirm_when, required_entities). Echoed hypotheses do not trigger a reload — the planner's query is used instead.
+- **schema cards** (`<SCHEMA_CARDS>`):`rulepacks/_schema/*.yaml` の `core_columns`(planner に見せる短いリスト、5〜13 列)+ `column_descriptions`(1 行説明)+ `columns`(SQL validator 用フルリスト)。surface するテーブルは `evtx_events` / `mft_entries` / `mft_timeline` / `prefetch_executions` / `findings`。
+- **SQL クックブック** (`<SQL_COOKBOOK>`):event_id 列挙 / 時間範囲 / GROUP BY / COALESCE / MFT path LIKE / Prefetch という 6 種の SELECT テンプレ。弱い LLM はゼロから合成せず、これをコピー編集することを想定。
+- **SQL リトライ**:`validate_select_sql` で弾かれたら `_retry_query_once` が最大 `_PLANNER_SQL_MAX_RETRIES = 3` 回まで `sql_composer` のみを再呼び出し。intent 段階は再実行しない。
+- **フォールバック**:リトライしても valid SQL にならなければ、`_fallback_planned_query_from_hypothesis` が `hypothesis.confirm_when.co_observed_event_ids` から `SELECT … FROM evtx_events WHERE event_id IN (…) ORDER BY timestamp LIMIT 500` を deterministic に生成。check フェーズは必ず走る。
 
-### Executor + fallback
+### Executor とフォールバック
 
-The executor runs the planned SQL. If the result is 0 rows and the hypothesis has `source_rule_ids` with `fallback_search` declarations, fallback phases are executed in declared order until one returns rows. Fallback SQL is built by `engine.execute_fallback_search` — the LLM does not see or compose fallback SQL.
+executor は計画された SQL を実行します。0 行で、かつ仮説に `source_rule_ids` + `fallback_search` 宣言があれば、宣言順にフォールバックフェーズを試行します。fallback SQL は `engine.execute_fallback_search` がコードで組み、LLM は介在しません。
 
-When a fallback hits, the `fallback_info = {phase, source_rule_id}` is forwarded to the checker prompt as explicit context so the verdict accounts for the fallback origin.
+フォールバックがヒットしたら `fallback_info = {phase, source_rule_id}` を checker プロンプトに渡し、verdict にフォールバック由来であることを反映させます。
 
 ### Checker
 
-`build_check_messages` injects `rule_context` (resolved via `resolve_rule_context()` from `source_rule_ids`) into the prompt. Default verdict criteria are correlation-based:
+`build_verdict_review_messages` が verdict / rationale / confidence の 3 フィールドのみ返します。default 基準は相関ベース:
 
-- `confirmed` — the hypothesis `required_entities` are co-observed in the same rows.
-- `refuted` — zero rows or contradictory entities.
-- `inconclusive` — only some required entities observed; rationale must name missing entities.
+- `confirmed`:`required_entities` が同じ rows で共起。
+- `refuted`:0 行または矛盾 entity。
+- `inconclusive`:一部の required_entities のみ観測 → rationale で欠落 entity を名指しすること。
 
-The checker prompt explicitly prohibits rationale phrases like "direct causation not proven" or "requires further investigation" without naming a missing entity. When `rule_context.confirm_when` / `refute_when` are present, they override the generic criteria.
+「直接的因果は証明されていない」「さらなる調査が必要」のような名指しなしの hedge は禁止語として明示。
 
-### Progress tracker
+verdict==confirmed のときだけ `build_finding_extractor_messages` が呼ばれ、structured findings を抽出。`build_memory_updater_messages` は verdict 確定後に durable memory updates を提案します。
 
-`HypothesisProgressTracker` is a per-hypothesis dataclass that records `(query_fingerprint, verdict, row_count)` per query. After each check, it makes one of four deterministic decisions:
+### Progress Tracker
 
-| Method | Condition | Effect |
+`HypothesisProgressTracker` は仮説単位の dataclass で、各クエリの `(query_fingerprint, verdict, row_count)` を記録。check のたびに次の決定論的判定を行います。
+
+| メソッド | 条件 | 効果 |
 |---|---|---|
-| `should_auto_confirm(rule_context, rows, hypothesis)` | ≥ 50% of `confirm_when.co_observed_event_ids` present in rows. Pulled from `rule_context` when available, else from the hypothesis itself so broad_plan-derived hypotheses can also auto-confirm. | Force `verdict=confirmed` regardless of LLM output |
-| `should_auto_refute(threshold=3)` | 3 consecutive 0-row inconclusive (and no partial confirm signal) | Force `verdict=refuted` |
-| `should_pivot(fp)` | Same query fingerprint seen ≥ 2 times | Notify planner to pivot (avoid LLM repeating the same query) |
-| `_investigate_one_hypothesis` short-circuit | First plan attempt produces no executable query (no SQL, no template, no fallback from `confirm_when`) | Force `verdict=refuted` immediately with reason `no executable evidence path` |
+| `should_auto_confirm(rule_context, rows, hypothesis)` | `confirm_when.co_observed_event_ids` の 50% 以上が rows に存在。rule_context にあれば優先、なければ hypothesis 自身から取得。 | LLM verdict を無視して confirmed に強制 |
+| `should_auto_refute(threshold=3)` | 3 連続 0-row inconclusive(かつ partial 信号なし) | refuted に強制 |
+| `should_pivot(fp)` | 同じ query fingerprint が 2 回以上出現 | planner に pivot 指示 |
+| `_investigate_one_hypothesis` short-circuit | 初回 plan で SQL / template / `confirm_when` フォールバックのいずれも組めない | 即 refuted (`no executable evidence path`) |
 
-Query fingerprints are computed by `investigator._query_fingerprint`. The current implementation parses the SQL with sqlglot into an AST, canonicalizes it, and hashes the canonical form together with extracted event_id / computer markers. This makes whitespace, alias, and ordering differences collapse to the same fingerprint. If sqlglot import fails the function falls back to a textual normalization so the loop still terminates.
+`query_fingerprint` は sqlglot AST を canonicalize して event_id / computer マーカーと合わせてハッシュ化したものです。空白や別名違いを吸収します。sqlglot 不在時は文字列正規化に fallback。
 
-`_merge_active_hypotheses` enforces `MAX_ACTIVE_HYPOTHESES = 8`. Updates to existing hypotheses are not affected; only new additions past the cap are dropped (with a `[CAP]` log line) so the planner prompt size stays bounded across cycles.
+`_merge_active_hypotheses` は `MAX_ACTIVE_HYPOTHESES = 8` を強制。既存仮説の更新はカウント対象外で、上限超過分の新規だけが drop されます(`[CAP]` ログ)。
+
+### 仮説 dedup
+
+仮説の同一性判定はコード側で完結します(LLM 同一性判定 `_ask_same_hypothesis` は撤去済み)。
+
+- `_hypothesis_similarity` (`hypothesis_manager.py`):triple (actor / action / target) ベースの類似度。
+- `_dedup_new_hypotheses` (`investigator.py`):drafter 出力後、active との類似度 > 0.85 で drop。
+- `_best_hypothesis_match` (`hypothesis_manager.py`):`_merge_active_hypotheses` 内で同一の閾値判定により upsert 先を決める。
 
 ### Resolver
 
-When a hypothesis resolves, `_resolve_hypothesis` performs:
+仮説が確定すると `_resolve_hypothesis` が次を行います。
 
-1. Move the hypothesis to `state.resolved_hypotheses` and upsert `status` to `confirmed` or `refuted` in DB.
-2. For each `source_rule_id`, look up the rule via cached `load_rule_by_id` and find the matching `HypothesisDeclaration` by hypothesis id.
-3. From the declaration:
-    - Extend `stale_sections` with `decl.report_sections`.
-    - On confirmed verdict, add new active hypotheses from `decl.follow_up_questions` (deduplicated by description).
-4. Issue `UPDATE report_sections SET stale = TRUE WHERE section_key = ?` for each stale section.
-
-### Report writer
-
-`async_refresh_report_sections` reads `stale` flags and sorts requests so stale sections process first. `_build_report_brief` fetches `confirmed_hypotheses` and `refuted_hypotheses` separately and passes both to the report generation prompt; the prompt instructs the LLM to reflect confirmed claims in section bodies and surface refuted claims under a "Discarded Hypotheses" subsection.
-
-After a section is filled, the upsert clears its `stale` flag.
+1. `state.resolved_hypotheses` に移動し、DB の `status` を `confirmed` / `refuted` に upsert。
+2. 各 `source_rule_id` についてキャッシュされた `load_rule_by_id` でルールを引き、id 一致する `HypothesisDeclaration` を探す。
+3. 宣言から:
+   - `stale_sections` に `decl.report_sections` を追加。
+   - confirmed のときは `decl.follow_up_questions` を新たな active 仮説に追加(description で dedup)。
+4. 該当 section について `UPDATE report_sections SET stale = TRUE WHERE section_key = ?` を発行。
 
 ### Termination
 
-A cycle ends when one of:
+サイクルが終了する条件は次のいずれか。
 
-- All active hypotheses resolve and broad_plan signals `stop` and report gaps are empty.
-- Three consecutive cycles produce no progress (`--no-progress-limit`).
-- `--max-iter` cycles complete.
+- すべての active 仮説が解決し、broad_plan が `stop` を出し、レポート gap が空。
+- 3 サイクル連続で進捗なし (`--no-progress-limit`)。
+- `--max-iter` サイクル完了。
 
-`no_progress` is true for a cycle that neither resolves any hypothesis nor adds any new gap hypothesis nor changes report status counters.
+「進捗なし」は仮説解決も新規 gap 仮説追加もレポート status カウンタ変動もないサイクルを指します。
 
-### Rule routing knobs
+### ルール経由で挙動を変えるノブ
 
-| Knob | Where declared | Effect |
+| ノブ | 宣言場所 | 効果 |
 |---|---|---|
-| `correlate_with` | rule | Planner prompt hint: "also examine these event ids" |
-| `confirm_when.co_observed_event_ids` | `hypotheses[]` | Tracker auto-confirm criterion |
-| `refute_when.zero_rows` | `hypotheses[]` | Checker default refutation rule |
-| `fallback_search` | rule | 0-row recovery without consulting LLM |
-| `follow_up_questions` | `hypotheses[]` | Auto-spawn next investigations on confirmation |
-| `report_sections` | `hypotheses[]` | Section staleness routing on resolution |
+| `correlate_with` | rule | planner プロンプトに「これらの event id も見ろ」ヒント |
+| `confirm_when.co_observed_event_ids` | `hypotheses[]` | tracker の auto-confirm 基準 |
+| `refute_when.zero_rows` | `hypotheses[]` | checker のデフォルト refutation |
+| `fallback_search` | rule | LLM 不在の 0-row リカバリ |
+| `follow_up_questions` | `hypotheses[]` | confirmed 時に次の調査を自動派生 |
+| `report_sections` | `hypotheses[]` | 解決時に stale 化するセクション |
 
-If a contributor wants new agent behavior, the first question to ask is "can this be a rule-declared knob?". Avoid adding Python-side conditionals keyed on rule identity or event ID.
+新しい agent 挙動を追加するときは「これはルール宣言ノブで表せないか?」を最初に問うこと。Python 側で rule_id や event_id に分岐するコードは避ける。
 
-## Structured memory model
+## プロンプトの組み立て
 
-Structured memory is not a chat transcript. It is a bounded working set optimized for repeated LLM calls.
+LLM 入力は固定文字列ではなく、フェーズと文脈に応じて段階的に組み立てます。
 
-### Current memory files
+1. **DFIR プレイブック注入(phase-aware)**:`_dfir_playbook(phase)` が `_schema/playbook/<phase>.md` を読む。planning 系(`broad_plan`、`hypothesis_plan`)では Application Catalog / Artifact-to-Application Inference / FP Reduction を意図的に省略(これらは evidence 解釈用)。interpretation 系(`check`、`report_section`、`section_agent_check`)では全部入り。
+2. **schema_card + SQL クックブック注入**:planner / checker に 5 テーブル分の `<SCHEMA_CARDS>` と 6 種の `<SQL_COOKBOOK>` を渡し、ゼロから SQL を書かせない。
+3. **動的コンテキスト**:case の `time_range`、`uncovered_keypoints`、active / resolved hypotheses、recent history、observed_keypoints を役割ごとの builder で挿入。hypothesis は `_slim_hypothesis_dump` で null / 空フィールドを落として serialize、findings は `_slim_findings` が同一 rule パターンを `count` 付き 1 行に集約。
+4. **report_brief のセクション別スリム化**:`_slim_report_brief_for_section` がセクション key を見て、`1_overview` 以外は `time_range` / `source_timezone` / `investigation_objective` のみに削る。top_findings や全仮説の丸ごとダンプは行わない。
+5. **トークン予算ガード**:`_assemble_messages_with_budget()` が system を保護したまま user / dynamic 側のみ trim する。
 
-| Path | Role | Durability |
+### セクション間汚染の防止
+
+レポート生成時の文脈隔離は次のルールで担保しています。
+
+- `_summarize_context_sections`:過去セクション本文は **タイトル + 先頭 120 字** のみで渡す。フル本文は流さない。
+- `current_section_outline`:同一セクション内の先行ブロックは **見出し + 120 字サマリの list** で渡す(本文は渡さない)。
+- `_filter_prior_runs_by_heading`:現在の block_heading に一致する prior_runs のみを採用。fallback で「直近の別 heading」を流入させない。
+- `_load_reusable_section_evidence` / `_load_reusable_section_facts`:`section_key = ?` 完全一致のみで scope。`block_heading` での横断マッチや family LIKE はしない。
+
+## 構造化記憶モデル
+
+構造化記憶は会話履歴ではなく、繰り返し LLM 呼び出し向けに最適化された bounded な作業集合です。
+
+### 記憶ファイル一覧
+
+| パス | 役割 | 寿命 |
 |---|---|---|
-| `memory/overview.md` | High-level case summary and current investigation policy | Regeneratable, compactable |
-| `memory/tasks.md` | Active unresolved tasks and gaps | Regeneratable, compactable |
-| `memory/facts.md` | Confirmed facts currently worth carrying in context | Regeneratable, not compacted by local trimming |
-| `memory/timeline.md` | Important time anchors for active reasoning | Regeneratable, rotated into archive when long |
-| `memory/entities/{user,host,ip}/*.md` | Stable cards for important entities | Regeneratable, LLM-compactable |
-| `memory/hypotheses/*.md` | Per-hypothesis state cards | Regeneratable, LLM-compactable |
-| `memory/keypoints/*.md` | Cards synced from the current findings snapshot | Regeneratable |
-| `memory/evidence/suspicious.md` | Compact table of suspicious evidence selected during checks | Regeneratable, compactable |
-| `memory/details/fact-NNN.md` | Detailed body for indexed facts | Regeneratable from durable evidence-backed updates |
-| `memory/archive/*.md` | Archived but still readable historical memory fragments | Regeneratable |
-| `memory/scratch/H-NNN/*.md` | Provisional facts/timeline/tasks scoped to a single hypothesis under verification | Promoted to shared memory on confirm, archived on refute |
-| `memory/scratch/global/*.md` | Provisional notes not tied to any hypothesis | Regeneratable |
-| `memory/archive/scratch/H-NNN/` | Refuted-hypothesis scratch retained for audit | Read-only after archival |
+| `memory/overview.md` | ケース全体の高水準サマリと方針 | regeneratable、LLM 圧縮あり |
+| `memory/tasks.md` | アクティブな未解決タスク / gap | regeneratable、ローカル圧縮 |
+| `memory/facts.md` | 文脈に乗せるべき確認済み事実 | regeneratable、generic 圧縮対象外 |
+| `memory/timeline.md` | アクティブ推論用の重要時刻 | 長くなったら archive へローテーション |
+| `memory/entities/{user,host,ip}/*.md` | 重要 entity のカード | LLM 圧縮あり |
+| `memory/hypotheses/*.md` | 仮説ごとの状態カード | LLM 圧縮あり |
+| `memory/keypoints/*.md` | 現在の findings snapshot から同期される注目点カード | regeneratable |
+| `memory/evidence/suspicious.md` | check 中に LLM が指定した不審証拠の表 | ローカル圧縮 |
+| `memory/details/fact-NNN.md` | facts.md の索引項目に対応する詳細本文 | regeneratable |
+| `memory/archive/*.md` | アーカイブ済みの履歴フラグメント | regeneratable |
+| `memory/scratch/H-NNN/*.md` | 仮説検証中の暫定 facts / timeline / tasks | confirm 時に共有記憶へ昇格、refute 時に archive へ退避 |
+| `memory/scratch/global/*.md` | 仮説に紐づかない暫定メモ | regeneratable |
+| `memory/archive/scratch/H-NNN/` | refuted 仮説の scratch | アーカイブ後は read-only |
 
-### Memory update rules
+### 更新ルール
 
-Memory updates are append-only or upsert-style projections from investigation output.
+記憶更新は append-only または upsert スタイルです。
 
-- Facts are appended with deduplication based on normalized text plus evidence IDs.
-- A fact written to `facts.md` is indexed and expanded into `memory/details/fact-NNN.md`.
-- Timeline anchors are appended and rotated into `archive/timeline_archive.md` when the active list grows too long.
-- Tasks are appended with a constrained kind: `internal_db_check`, `external_lookup`, or `human_decision`.
-- Refuted hypotheses and resolved gaps are archived rather than deleted.
-- Entity cards and hypothesis cards are upserted by stable identifiers.
-- Keypoint cards are synchronized from the current findings snapshot and stale cards are removed.
+- facts は正規化テキスト + evidence_ids で dedup して追加。
+- `facts.md` に書かれた事実は索引化され、`memory/details/fact-NNN.md` として本文展開される。
+- timeline anchor は追加され、活性リストが長くなれば `archive/timeline_archive.md` にローテーション。
+- tasks は `internal_db_check` / `external_lookup` / `human_decision` のいずれかの種別で追加。
+- refuted 仮説と resolved gap は削除せず archive。
+- entity カードと hypothesis カードは安定 id で upsert。
+- keypoint カードは findings snapshot と同期され、stale なものは削除。
 
-### Memory compaction policy
+### 圧縮ポリシー
 
-Compaction exists to keep context small without destroying durable state.
+durable state を壊さずに文脈を小さく保つことが目的です。
 
-- `overview.md` may be compacted with the LLM when it exceeds `LLM_MEMORY_MAX_BYTES`.
-- Entity cards and hypothesis cards may also be compacted with the LLM.
-- `tasks.md` and `evidence/suspicious.md` are compacted by trimming older rows.
-- `facts.md`, `timeline.md`, `archive/refuted.md`, and `archive/resolved_gaps.md` are intentionally exempt from generic local compaction.
+- `overview.md`:`LLM_MEMORY_MAX_BYTES` 超過時に LLM で要約圧縮。
+- entity カード / hypothesis カード:LLM 圧縮。
+- `tasks.md` / `evidence/suspicious.md`:古い行を trim。
+- `facts.md` / `timeline.md` / `archive/refuted.md` / `archive/resolved_gaps.md`:generic ローカル圧縮の対象外。
 
-This means memory files do not share the same retention policy. Do not generalize one file's behavior to all memory files.
+これらは挙動が違うので、1 つのファイルの挙動を全 memory に一般化しないこと。
 
-### Per-hypothesis scratch lifecycle
+### 仮説単位の scratch ライフサイクル
 
-Memory updates during hypothesis verification are routed by `_apply_memory_updates` based on `hypothesis_id` and `verdict`:
+`_apply_memory_updates` は `hypothesis_id` と `verdict` を見て書き込み先を振り分けます。
 
-- While a hypothesis is active, provisional facts/timeline/tasks go to `memory/scratch/<hypothesis_id>/`.
-- When the hypothesis becomes `confirmed`, `MemoryManager.promote_hypothesis_scratch(hypothesis_id)` merges the scratch entries into shared memory (`facts.md`, `timeline.md`, `tasks.md`) and deletes the scratch directory.
-- When the hypothesis becomes `refuted`, `MemoryManager.archive_hypothesis_scratch(hypothesis_id)` moves the scratch directory under `archive/scratch/<hypothesis_id>/` instead of merging.
-- The investigation context loader supports `include_scratch=True` with a `hypothesis_id` argument so that only the scratch of the hypothesis currently under verification is fed back to the LLM. Other hypotheses' provisional notes do not leak across.
+- 仮説が active な間、暫定 facts / timeline / tasks は `memory/scratch/<hypothesis_id>/` に隔離。
+- `confirmed` の瞬間に `MemoryManager.promote_hypothesis_scratch(hypothesis_id)` が共有記憶へマージし、scratch ディレクトリを削除。
+- `refuted` の瞬間に `MemoryManager.archive_hypothesis_scratch(hypothesis_id)` が `archive/scratch/<hypothesis_id>/` に移送。
+- Investigation context loader は `include_scratch=True` + 対象 `hypothesis_id` をサポートし、現在検証中の仮説の scratch だけを LLM に戻す。他仮説の暫定情報は流入しない。
 
-This separation is the reason memory writes must carry `hypothesis_id` whenever the source is a hypothesis check. Generic helpers that drop `hypothesis_id` will write to shared memory unconditionally and break the lifecycle.
+仮説起源の memory write には必ず `hypothesis_id` を持たせること。`hypothesis_id` を落とすヘルパは共有記憶に無条件書き込みしてしまい、このライフサイクルを壊します。
 
-### Limited memory view for benchmark blocks (`EvidenceOnlyMemory`)
+### benchmark 向けの限定ビュー (`EvidenceOnlyMemory`)
 
-Benchmark and appendix blocks must not see narrative memory built up by the hypothesis loop (`H-NNN.md`, lateral-movement narrative, etc.) — that content would bias section answers toward already-formed conclusions. The wrapper `core.memory.EvidenceOnlyMemory` exposes only `facts`, `keypoints`, and `entities` and hides the rest.
+benchmark / appendix ブロックが仮説ループで作られた narrative memory(`H-NNN.md`、ラテラルムーブメント要約など)を見ると、既に形成された結論にブロック回答が引き寄せられます。`core.memory.EvidenceOnlyMemory` は wrapper として `facts` / `keypoints` / `entities` のみを露出し、それ以外を隠します。
 
-The choice between full memory and the wrapper is made by `core.memory.memory_for_section(memory, benchmark_mode=...)`. Section-fill code paths in `section_refresher.py` and `report/writer.py` MUST go through this helper rather than constructing `EvidenceOnlyMemory` directly. Audit by grepping `EvidenceOnlyMemory(` — only the helper itself should match.
+切り替えは `core.memory.memory_for_section(memory, benchmark_mode=...)` の 1 箇所で行います。`section_refresher.py` / `report/writer.py` の section 充填経路は **必ず** このヘルパ経由で呼ぶこと。`grep EvidenceOnlyMemory(` で出るのはヘルパ本体のみであるべきです。
 
-### Memory should stay reconstructable
+### 記憶は再構成可能であること
 
-Structured memory should remain a projection from database state plus prior evidence-backed investigation output.
+構造化記憶は DB と先行する evidence-backed 出力からの projection に留めます。
 
-- Do not store exclusive business logic only in memory markdown.
-- Do not introduce state that can only be recovered from the latest prompt context.
-- Prefer stable identifiers in filenames and index entries.
-- Prefer additive history over in-place narrative rewriting, except for explicitly summarized files such as `overview.md`.
+- 排他的なビジネスロジックを memory Markdown だけに置かない。
+- 直近のプロンプト文脈からしか復元できない状態を作らない。
+- ファイル名と索引項目には安定 id を使う。
+- 明示的に要約されたファイル(`overview.md` など)を除き、追記履歴を in-place な書き換えより優先する。
 
-## Database responsibilities
+## DuckDB のテーブル
 
-### Split between `case.duckdb` and `trace.duckdb`
+### `case.duckdb`(Case State)
 
-The database layer is intentionally split.
-
-- `case.duckdb` stores evidence and durable investigation products.
-- `trace.duckdb` stores execution trace and operational history.
-
-At runtime, `trace.duckdb` is attached as the `trace` schema, and trace tables are also exposed through temporary views for reads. This allows query code to read a unified logical schema while preserving physical separation between durable case state and trace state.
-
-### What belongs in Case State
-
-The following categories belong in `case.duckdb`:
-
-- Normalized evidence tables
-- Findings produced from rules or evidence review
-- Hypothesis records and their current durable status
-- Report section bodies, support confidence, and gap state
-- Claims that link report text back to evidence and findings
-- Ingest bookkeeping such as file hashes
-
-Case State should answer: "What does the case currently contain?"
-
-### What belongs in Trace State
-
-The following categories belong in `trace.duckdb`:
-
-- Investigation session lifecycle
-- Per-step planner and checker I/O
-- Hypothesis reasoning trail entries
-- Progress events emitted for UI or status tracking
-- AI review history
-
-Trace State should answer: "How did the system reach the current state?"
-
-### Do not collapse the split
-
-Do not use trace tables as a substitute for durable case objects. Do not put evidence-backed case conclusions only in trace history.
-
-If a datum is needed after compaction, replay, or UI refresh as part of the current case state, it belongs in `case.duckdb`.
-
-## Main DuckDB tables
-
-### Core tables in `case.duckdb`
-
-| Table | Responsibility |
+| テーブル | 責務 |
 |---|---|
-| `evtx_events` | Normalized EVTX records |
-| `mft_entries` | Normalized MFT entries |
-| `mft_timeline` | Timeline rows derived from MFT timestamps |
-| `findings` | Evidence-backed findings and their reviewable metadata |
-| `hypotheses` | Durable hypothesis registry and current status |
-| `report_sections` | Report body, confidence, status, gaps, and fill history |
-| `claims` | Links between report assertions and supporting findings, hypotheses, and evidence |
-| `ingested_files` | File identity and deduplication bookkeeping |
+| `evtx_events` | 正規化された EVTX レコード |
+| `mft_entries` | 正規化された MFT エントリ |
+| `mft_timeline` | MFT タイムスタンプから派生したタイムライン行 |
+| `findings` | 証拠に紐づいた findings とレビュー用メタデータ |
+| `hypotheses` | 仮説レジストリと現在のステータス |
+| `report_sections` | レポート本文 / confidence / status / gaps / 充填履歴 |
+| `claims` | レポート記述と finding / hypothesis / evidence のリンク |
+| `ingested_files` | 取り込み済みファイルの hash 帳簿 |
 
-### Trace tables in `trace.duckdb`
+### `trace.duckdb`(Trace State)
 
-| Table | Responsibility |
+| テーブル | 責務 |
 |---|---|
-| `trace.ai_reviews` | AI review outputs tied to findings |
-| `trace.investigation_sessions` | Investigation run boundaries and final status |
-| `trace.investigation_steps` | Per-step planner/checker inputs and outputs |
-| `trace.hypothesis_reasoning` | Reasoning trail per hypothesis |
-| `trace.progress_events` | UI-facing progress stream history |
+| `trace.ai_reviews` | findings に紐づいた AI レビュー出力 |
+| `trace.investigation_sessions` | 調査セッションの境界と終了 status |
+| `trace.investigation_steps` | planner / checker のステップ I/O |
+| `trace.hypothesis_reasoning` | 仮説単位の推論履歴 |
+| `trace.progress_events` | UI 向け進捗イベント |
 
-## Core model boundaries
+実行時に `trace.duckdb` は `trace` スキーマとしてアタッチされ、trace テーブルは一時 view 経由でも参照できます。読み取りは統一論理スキーマでありながら物理的には Case / Trace が分かれます。
 
-| Term | Meaning |
+### 分離を崩さない
+
+- trace テーブルを durable な case オブジェクトの代わりにしない。
+- 証拠に紐づく case 結論を trace 履歴だけに置かない。
+
+圧縮、リプレイ、UI リフレッシュ後にも必要な情報は `case.duckdb` に置くこと。
+
+## 概念モデルの境界
+
+| 用語 | 意味 |
 |---|---|
-| Evidence | Normalized raw records such as EVTX or MFT rows |
-| Finding | An observed condition or signal derived from evidence |
-| Hypothesis | An interpretation to validate or refute |
-| Claim | A report statement presented to the human reader |
-| Gap | Missing information that blocks confidence |
+| Evidence | EVTX / MFT 行のような正規化済み生レコード |
+| Finding | 証拠から導かれた観測条件・信号 |
+| Hypothesis | 検証・反証する解釈 |
+| Claim | レポートで読者に提示する記述 |
+| Gap | confidence を阻む未知 |
 
-These boundaries matter.
+これらの境界を混ぜると推論の監査と安全な再開が困難になります。Evidence と Finding は証拠近傍、Hypothesis は解釈、Claim はレポート向け、Gap は未知。
 
-- Evidence is raw or normalized source material.
-- Findings are still evidence-near.
-- Hypotheses are interpretive.
-- Claims are report-facing.
-- Gaps represent what is still unknown.
+### Finding ライフサイクル
 
-Mixing these layers makes it harder to audit reasoning and harder to resume a case safely.
+`suppressed` は削除ではありません。
 
-## Finding lifecycle
+- suppressed な finding は durable なケース記録の一部として残る。
+- suppression は表示とワークフロー意味論を変えるだけで、証拠の存在は変えない。
+- finding が suppressed でも evidence リンクは残す。
 
-`suppressed` is not deletion.
+## レポートセクションの状態
 
-- A suppressed finding remains part of the durable case record.
-- Suppression changes presentation and workflow semantics, not evidence existence.
-- Evidence links must remain available even when a finding is suppressed.
+`report_sections.status` は 4 値:
 
-## Report section state
+- `draft`:証拠 gap がある / 弱い support
+- `stable`:AI ワークフロー上で既知の gap なし
+- `ai_exhausted`:AI ワークフローがこれ以上の有意な手がかりを生成しなくなった
+- `human_reviewed`:人間が明示的にレビュー済み
 
-`report_sections.status` currently uses four states:
+これらは workflow state であり、evidence state ではありません。
 
-- `draft`: the section still has evidence gaps or weak support
-- `stable`: the section currently has no known gap from the AI workflow
-- `ai_exhausted`: the AI workflow stopped producing meaningful additional leads
-- `human_reviewed`: a human explicitly reviewed the section
+## レポート品質ゲート
 
-These are workflow states, not evidence states.
+各セクション本文充填後、`_quality_gate_section`(`report/writer.py`)が静的チェックを走らせ、検出ごとに gap を追加して confidence を上限値まで下げます。検査はテンプレ非依存で全セクションに適用されます。
 
-## Report quality gates
+セクション固有の挙動は `behaviors:` frontmatter で宣言します。例: `require_chronological_table` / `require_recommendations_strength` / `canonical_evidence_scope`。`_GateCtx.behaviors` を見て発火条件を分岐します。section_key を Python 側でハードコードしないこと。
 
-After a section body is filled by the section agent, `_quality_gate_section` in `report/writer.py` runs a static checklist over the produced markdown. Each failing check appends a gap entry to the section and caps the section confidence at a fixed ceiling. The checks are intentionally generic so they apply to every section regardless of template.
+現在の検査:
 
-Current checks:
-
-| Check | Trigger | Confidence cap |
+| 検査 | 発火条件 | confidence 上限 |
 |---|---|---|
-| Placeholder entity | `PLACEHOLDER_ENTITY_PATTERN` matches | 0.5 |
-| Template marker leak | `HTML_FILL_PATTERN` matches | 0.3 |
-| Heading / title mismatch | first `#`-heading in body diverges from `report_sections.title` | 0.65 |
-| Timeline ordering | section_key `2_timeline` with non-monotone date column | 0.6 |
-| Recommendations strength | section_key `5_recommendations` missing `confirmed` / `may indicate` / verification-first wording | 0.65 |
-| Verdict inflation | source verdicts have no `confirmed` but body uses strong language (`confirmed`, `compromised`, `侵害`, etc.) | 0.6 |
-| Raw evidence dump | section body contains a raw evidence subheading with NULL/None-heavy rows | 0.55 |
-| Output language drift | body characters disagree with `LLM_OUTPUT_LANGUAGE` (JA expected but EN body, or vice versa) | 0.4 |
-| Open-question markers | `?` / `？` / `TBD` / `要確認` / `未調査` / `XXX` in body | 0.55 |
-| Empty body | substantive text (after stripping tables / headings / quotes) shorter than 80 chars | 0.3 |
-| Bullet-only | only `-` / `*` lines, no narrative paragraph | 0.6 |
-| Hedge without citation | `may` / `could` / `思われる` etc. present but no timestamp and no finding_id | 0.5 |
-| Citation token without finding_id | body says `evidence` / `根拠` etc. but no `windows-…` finding_id is cited | 0.6 |
-| Duplicate paragraph | two paragraphs of length ≥ 40 with identical text | 0.5 |
-| Out-of-range timestamp | a parsed `YYYY-MM-DD` in body has year > today+1 or < 1990 (NTFS overflow / fabrication) | 0.4 |
-
-The gap notes feed back into `report_sections.gaps`, which the next investigation cycle treats as additional hypotheses. Adding a new gate should be a single function check with a new note string; do not introduce template-specific logic here.
-
-## Report templates
-
-Report templates are contributor-defined section contracts, not durable report state.
-
-### Template ownership boundary
-
-- Template files live under `src/forensia/report_template/`.
-- Each initialized case also gets a case-local `report_template/` directory copied from the packaged defaults.
-- CLI report generation prefers the case-local template directory when present.
-- Contributors may also point `report-write` at an explicit `--template-dir`.
-
-This means template files are inputs to report generation, while the generated section bodies live in `report_sections` in DuckDB.
-
-### Template contract
-
-Each template is a Markdown document with optional YAML frontmatter.
-
-Current stable frontmatter fields are:
-
-- `section`: stable section key used as the report section identity
-- `title`: human-facing section title
-- `prompt`: section-specific writing instructions for the LLM
-- `evidence_queries`: read-only SQL queries whose results are summarized and supplied to the LLM
-
-The template body is the structural scaffold the LLM completes. It is not stored as the durable section body after generation.
-
-### Section identity and ordering
-
-- Templates are discovered by filename pattern `[0-9]*_*.md`.
-- Template refresh order is the lexical filename order.
-- The durable `section_key` is taken from frontmatter `section` when present, otherwise the file stem is used.
-- Report rendering orders sections by `section_key`.
-
-Contributors should therefore treat section keys as stable identifiers. Renaming a file is less important than changing a section key.
-
-### What belongs in templates
-
-Templates should define:
-
-- report structure
-- section-local writing requirements
-- evidence access requirements through `evidence_queries`
-- explicit placeholders for unsupported statements
-
-Templates should be authored in English.
-
-- Frontmatter such as `title` and `prompt` should be written in English.
-- The scaffold Markdown headings, table headers, comments, and placeholders should also be written in English.
-- Output language for generated reports remains a runtime concern controlled by LLM settings; template authoring language is a contributor-facing convention.
-
-Templates should not define:
-
-- durable workflow state
-- mutable report status
-- provenance storage rules
-- current section body as authoritative state
-
-Those concerns belong in DuckDB, especially `report_sections` and `claims`.
-
-### Template interaction with DB state
-
-The template system writes durable report state back into the database.
-
-- Completed section bodies are UPSERTed into `report_sections`.
-- Confidence is derived from gap markers found in the generated body.
-- Claims are extracted from the generated body and written into `claims`.
-- Claim provenance is computed from the evidence query summaries, not from free-text citations alone.
-- Gaps are parsed from explicit insufficient-evidence markers and fed back into later investigation cycles.
-
-This is why section templates are not merely presentation assets. They define the contract between evidence-backed reporting and the investigation loop.
-
-## SQL safety model
-
-LLM-proposed SQL is treated as read-only evidence access.
-
-- Only `SELECT` and `WITH` statements are accepted.
-- Multiple statements are rejected.
-- Destructive SQL is rejected.
-- Queries are restricted to an allowlisted set of tables.
-
-This boundary is fundamental to the current architecture. The model can propose evidence access, but it does not mutate the database through generated SQL.
-
-## Built-in rule coverage
-
-The bundled Windows rulepacks currently focus on:
-
-- authentication and logon activity
-- Kerberos and NTLM
-- RDP
-- PowerShell and LOLBas execution
-- service- and task-based persistence
-- account operations
-- log tampering and audit changes
-- Defender-related activity
-- reboot and shutdown artifacts
-
-Rules live under `src/forensia/rulepacks/windows/` and currently combine SQL, finding templates, and ATT&CK metadata.
-
-## Profiles and rulepacks
-
-Profiles define rule selection policy. Rulepacks define the actual detection logic.
-
-### Rulepack contract
-
-Rulepack files live under `src/forensia/rulepacks/windows/` (and similar directories) as YAML rule definitions. Pydantic models in `src/forensia/rules/models.py` enforce the schema with `extra="forbid"`, so unknown fields are rejected at load time.
-
-#### Detection part (always required)
-
-- `id`: stable rule identifier
-- `title`: human-facing rule title
-- `severity`: default severity for generated findings
-- `confidence`: default confidence for generated findings
-- `query`: read-only SQL executed against normalized evidence
-- `finding.title`: title template rendered from query row fields
-- `finding.summary`: summary template rendered from query row fields
-- `tags`: classification tags
-- `attack`: ATT&CK mappings
-
-Each result row from a rule query becomes one finding with the originating row stored as structured evidence.
-
-#### Investigation declaration (optional, drives the hypothesis loop)
-
-When a rule should also seed the LLM-driven hypothesis loop, the rule declares the investigation contract directly. The agent layer consumes this declaration generically — kill-chain knowledge is not hardcoded in Python.
-
-- `hypotheses[]`: hypothesis templates that get instantiated when this rule fires. Each entry must include:
-  - `id`: stable hypothesis identifier within the rule
-  - `segment`: kill-chain segment (`persistence`, `lateral-movement`, etc.)
-  - `description`: hypothesis claim with `{field}` placeholders bound to query row columns
-  - `required_entities`: list of entity names that must co-occur for confirmation
-  - `confirm_when`: structured correlation criteria, typically `{co_observed_event_ids: [...], same_host: bool, within_minutes: int}`. The `HypothesisProgressTracker` auto-confirms the hypothesis when `co_observed_event_ids` are all observed in query results, regardless of LLM verdict.
-  - `refute_when`: structured refutation criteria, typically `{zero_rows: true}`
-  - `follow_up_questions`: questions auto-injected as new gap hypotheses when this hypothesis becomes confirmed
-  - `report_sections`: section keys (e.g. `3_technical`, `4_gaps`) that are marked `stale` when this hypothesis resolves; the next report refresh prioritizes them
-- `correlate_with[]`: event ID groups that the planner is encouraged to also examine. Each entry is `{event_ids: [...], rationale: str}`.
-- `fallback_search[]`: phases executed automatically when the primary SQL returns 0 rows. Phases run in declared order; the planner LLM is not consulted. Allowed phases:
-  - `keyword_in_raw_json` with `keywords: [str, ...]` — LIKE-escaped match against `raw_json`
-  - `related_event_ids` with `event_ids: [int, ...]` — secondary event surface
-  - `artifact_table` with `table: str` — fall back to another normalized table (whitelisted in `engine.py`)
-
-#### Declaration layer (`_schema/`)
-
-`src/forensia/rulepacks/_schema/` is not a rule directory. The loader skips it when enumerating rules. It holds the shared schema and DFIR knowledge that rules and prompts both consume. Adding knowledge here is preferred over hardcoding it in Python.
-
-| File | Consumed by | Role |
-|---|---|---|
-| `evtx_events.yaml`, `mft_entries.yaml`, `mft_timeline.yaml`, `prefetch_executions.yaml`, `findings.yaml` | `prompts._build_schema_guidance()` via `_load_schema_hints()` | DB-table schema cards. Each YAML carries `core_columns` (planner-facing subset), `column_descriptions` (per-column hint), `columns` (full list for the SQL validator), `json_field_extractors` (raw_json fallbacks). All five tables are surfaced together in the planner prompt as `<SCHEMA_CARDS>`. |
-| `event_ids.yaml`, `logon_types.yaml` | `prompts._dfir_playbook()` | Event ID and Logon Type narrative knowledge base. |
-| `app_catalog.yaml`, `artifact_inference.yaml` | `prompts._dfir_playbook()` | Prefetch/MFT/Registry/File → application inference catalog. Suppressed for planning-phase prompts (`broad_plan`, `hypothesis_plan`); included only for interpretation phases (`check`, `report_section`, `section_agent_check`). |
-| `false_positive_rules.yaml` | Rule engine + `prompts._dfir_playbook()` | Known FP patterns; used both for finding filtering and for the FP reduction section of prompts. Interpretation-phase only. |
-| `dfir_ioc_catalog.yaml` | `prompts._dfir_playbook()` | Supplementary IOC dictionary (antiforensic tools, cloud sync, mail, recycle bin). |
-| `question_routing.yaml` | `section_agent.py`, `prompts.build_section_agent_*` | Per question_type declarations: `expected_answer_shape` injected into block-agent prompt, `evidence_chain` consumed deterministically by `_load_evidence_chains()` / `_execute_evidence_chain()` when the primary query returns 0 rows. |
-| `verdict_taxonomy.yaml` | `core/verdicts.py` | Verdict whitelist and cross-layer mappings (see "Verdict values are enumerated"). |
-| `playbook/*.md` | `prompts._dfir_playbook(phase)` | Phase-specific playbook bodies (`broad_plan`, `hypothesis_plan`, `check`, `report_section`, `section_agent_plan`, `section_agent_check`). Includes `<CRITICAL_RULES>` / `<FORBIDDEN_PATTERNS>` / `<SCHEMA_CONSTRAINTS>` blocks. |
-
-DB-table schema YAMLs must declare:
-
-- `table`: table name (e.g. `evtx_events`)
-- `core_columns`: short list of the most useful columns. This is what the planner LLM sees in the schema card. Keep it ≤ 13 entries.
-- `column_descriptions`: dict mapping each `core_columns` entry to a one-line description. Skip entries are tolerated but discouraged.
-- `columns`: full column list — used silently by `validate_select_sql` to reject SELECT/WHERE on undeclared columns.
-- `json_field_extractors` (optional): name → DuckDB JSON extraction expression, surfaced when a column is NULL and the field actually lives inside `raw_json`.
-- `notes` (optional): free-form hints (timestomp guidance, no_host_column on prefetch, etc.) appended to the schema card.
-
-The planner prompt also receives `<SQL_COOKBOOK>` — six ready-to-adapt SELECT templates defined inline in `prompts.py` (`_SQL_COOKBOOK`). Weak local LLMs are expected to copy-and-edit a cookbook entry rather than synthesize SQL from scratch.
-
-Adding a new investigable table means adding a `_schema/<table>.yaml` and updating `ALLOWED_TABLES` in `sql_schema.py`; the YAML is consumed automatically by `_load_schema_hints()`.
-
-`playbook/*.md` may contain `<!-- AUTO-FROM: <yaml-path> -->` … `<!-- /AUTO-FROM -->` markers. Content inside those markers is regenerated from the named YAML by `scripts/regenerate_playbook.py`. Do not hand-edit auto sections; edit the source YAML instead, then run the regenerator.
-
-#### Allowlist files
-
-Files with `kind: allowlist_services` (or similar `kind:` prefix) are not rules and are skipped by the rule loader. They are consumed by suppression logic — see "Allowlist and suppression model" below.
-
-### Profile contract
-
-Profiles currently live under `src/forensia/profiles/` and select subsets of the available rules.
-
-Current stable profile fields are:
-
-- `name`: profile name
-- `rulepacks`: directories or paths under the rulepack root to include
-- `rule_ids`: optional allowlist of specific rule IDs within the selected rulepacks
-
-Conceptually:
-
-- rulepacks choose the broad detection domain
-- `rule_ids` narrows within that domain
-
-Profiles are selection metadata. They should not duplicate rule logic.
-
-### What should remain stable
-
-- Rule IDs should be treated as persistent external identifiers.
-- A profile should continue to mean "which rules are active", not "how those rules execute".
-- Rule queries should remain read-only and evidence-oriented.
-- Finding templates should remain row-driven so each finding preserves evidence traceability.
-- Packaged rule metadata and finding text templates should be authored in English.
-
-If contributors need new behavior that changes execution semantics rather than selection semantics, it likely belongs in the rule engine, not in the profile format.
-
-### Allowlist and suppression model
-
-`allowlist.yaml` is conceptually adjacent to profiles and rules, but it does not select rules.
-
-- Profiles decide which rules run.
-- Rules decide which candidate findings are generated.
-- The allowlist decides which generated findings should be marked `suppressed` based on rule-scoped field matches.
-
-The current allowlist model matches:
-
-- one `rule_id`
-- one or more field predicates under `when`
-- values taken from the first structured evidence row on the generated finding
-
-This is a post-generation presentation and triage control. It is not a pre-filter on evidence ingestion or rule execution.
-
-### File layout conventions
-
-- Keep packaged defaults in `src/forensia/report_template/`, `src/forensia/profiles/`, and `src/forensia/rulepacks/`.
-- Treat case-local `report_template/` as an overrideable input copied at case initialization.
-- Do not rely on case-local copies for profiles or rulepacks today; those are resolved from the package tree.
-
-## Test policy: no LLM path in pytest
-
-The test suite must finish in seconds, not minutes. To keep it that way:
-
-- **Do not write tests that go through the LLM call path**, even with `patch("...request_llm_json", ...)` mocks. Full investigation cycles (`investigate(...)`, `broad_plan_investigation`, `plan_hypothesis_query`, `run_section_block_agent`, `fill_section`, `async_refresh_report_sections`) involve too many side effects (DuckDB writes, memory I/O, file scans) to be cheap even with mocked LLM responses.
-- **Do not write tests that hit a real LLM server.** A previous `tests/test_benchmark_e2e_real_llm.py` (gated by `FORENSIA_LLM_BASE_URL`) was removed for this reason.
-- Cover those paths instead with: pure-function tests of helpers (`_slim_findings`, `_quality_gate_section`, `_render_benchmark_answer_markdown`, etc.), DB-only tests for persistence, and CLI/HTTP tests with the LLM modules un-imported.
-- If you genuinely need to verify investigation-loop behavior, do it manually with `forensia investigate ...` against a local model and inspect `ai_logs/`. Don't encode that as a pytest run.
-
-## Maintenance scripts
-
-`scripts/` holds offline audits used to keep the declaration layer, code, and docs aligned. They are not part of the runtime; `forensia doctor` bundles them.
-
-| Script | Purpose |
+| Placeholder entity | `PLACEHOLDER_ENTITY_PATTERN` 一致 | 0.5 |
+| Template marker leak | `HTML_FILL_PATTERN` 一致 | 0.3 |
+| Heading / title mismatch | 本文先頭の `#` 見出しが `report_sections.title` と乖離 | 0.65 |
+| Timeline ordering | `require_chronological_table` 持ちセクションで date 列が非単調 | 0.6 |
+| Recommendations strength | `require_recommendations_strength` 持ちセクションで `confirmed` / `may indicate` / verification 関連語が欠落 | 0.65 |
+| Verdict inflation | source verdict に `confirmed` がないのに本文が強い断定語を使う | 0.6 |
+| Raw evidence dump | NULL / None だらけの raw evidence 表が混入 | 0.55 |
+| Output language drift | 本文の言語が `LLM_OUTPUT_LANGUAGE` と乖離 | 0.4 |
+| Open-question markers | `?` / `？` / `TBD` / `要確認` / `未調査` / `XXX` | 0.55 |
+| Empty body | 表 / 見出し / 引用を除いた実質本文が 80 字未満 | 0.3 |
+| Bullet-only | bullet 行のみで narrative なし | 0.6 |
+| Hedge without citation | `may` / `could` / `思われる` 等があるのに timestamp も finding_id も引用なし | 0.5 |
+| Citation token without finding_id | `evidence` / `根拠` 等を含むのに finding_id がない | 0.6 |
+| Duplicate paragraph | 長さ 40 以上の同一段落が 2 つ | 0.5 |
+| Out-of-range timestamp | 本文の `YYYY-MM-DD` が今日 + 1 を超えるか 1990 未満 | 0.4 |
+| Overused evidence id | 同一 evidence_id が 3 以上のセクションで引用 | 0.7 |
+
+gap notes は `report_sections.gaps` に積まれ、次サイクルでは追加仮説として扱われます。新規ゲートを追加するときは 1 関数 + 1 note 文字列に閉じ込め、テンプレ固有ロジックを書かないこと。
+
+## レポートテンプレート契約
+
+テンプレートはコントリビュータが定義する section の契約であり、durable なレポート状態ではありません。
+
+### 所有境界
+
+- テンプレートファイルは `src/forensia/report_template/` 配下。
+- 初期化済みケースには case-local の `report_template/` がパッケージ既定からコピーされる。
+- CLI のレポート生成は case-local テンプレが存在するときはそれを優先。
+- `report-write --template-dir` で明示的に外部テンプレを指定可能。
+
+テンプレートは入力であり、生成されたセクション本文は `report_sections` に永続化されます。
+
+### Frontmatter フィールド
+
+各テンプレートはオプションの YAML frontmatter を持つ Markdown ファイルです。
+
+| フィールド | 役割 |
 |---|---|
-| `scripts/audit_schema_coverage.py` | Parses every rule YAML's `query` SQL with sqlglot, extracts referenced `event_id` values (equality + `IN` clause), and reports coverage against `event_ids.yaml` and `question_routing.yaml`. Replaces the prior text-based extractor which silently produced empty sets. |
-| `scripts/regenerate_playbook.py` | Re-renders `<!-- AUTO-FROM: ... -->` sections in `_schema/playbook/*.md` from their source YAMLs. `--check` exits non-zero on drift (intended for CI); default mode writes. |
-| `scripts/cycle_summary.py <case_dir>` | Parses `progress_events.json` and emits a Markdown table of hypothesis delta and benchmark progress per cycle. Debug aid only. |
-| `forensia doctor` | CLI command (`cli.py`) that runs schema coverage, playbook drift check, a verdict taxonomy AST scan, and pytest in sequence. Exits 0 only when all pass. |
+| `section` | 安定した section key |
+| `title` | 人間向けセクションタイトル |
+| `prompt` | LLM へのセクション別執筆指示 |
+| `evidence_queries` | 読み取り専用 SQL。結果が要約されて LLM に渡る |
+| `behaviors` | quality gate / 振る舞いフラグの list(例: `require_chronological_table`) |
 
-`scripts/` is not a Python package; tests that import from it rely on the root `conftest.py` adding the repo root to `sys.path`.
+`behaviors` を増やしたいときは writer.py 側の `_GateCtx.behaviors` 判定を 1 箇所だけ伸ばし、section_key にハードコードしないこと。
 
-## UI considerations
+### Section の同一性と順序
 
-- `forensia serve` serves the built UI through FastAPI.
-- `web_ui/dist/` is a build artifact used for serving.
-- When DuckDB is unavailable due to a lock, the UI falls back to `reports/api/*.json` snapshots.
+- ファイル名パターン `[0-9]*_*.md` でテンプレを発見。
+- 再充填順はファイル名の lexical 順。
+- durable な `section_key` は frontmatter `section` を優先し、無ければファイル stem。
+- レポート出力は `section_key` で並び替え。
 
-### Cockpit composition
+section key は **stable な識別子** として扱うこと。ファイル名のリネームより key 変更のほうが影響が大きい。
 
-The default cockpit page (`web_ui/src/App.svelte`) renders, top to bottom:
+### テンプレートで宣言すること / しないこと
 
-1. `Header` — case name, current pipeline phase, LLM model, last update timestamp.
-2. `KpiBar` — Events / Findings / Hypotheses / Open Gaps. The Findings and Hypotheses tiles include a thin stacked breakdown bar (Findings → severity High/Medium/Low; Hypotheses → Active/Confirmed/Refuted/Inconclusive). Bars are computed from `caseStats` + the `severityBreakdown` / `verdictBreakdown` stores; no separate panels.
-3. `VolumeTimeline` — Chart.js mixed chart. Default view is day-resolution over the whole record range. A button-strip range picker (year → month → day) narrows the range; selecting a single day swaps the chart granularity to hour. Detected findings render as a line overlay on the events stacked bar.
-4. `ReportDraftProgress` — section-level fill status.
-5. `AttackCoverage` — ATT&CK tactic × technique matrix derived from `findings.attack`.
-6. `Cockpit` — `AiActivityPanel`, then a `HypothesisStream` panel with tab-switch between Active Hypotheses (sorted by `latestReasoningAt` desc) and Latest Reasoning stream, then `OpenGaps`.
-7. `TopRules` + `TopEntities` (two-column grid).
-8. `DetailsTabs` — findings / steps / sessions / activity / mft raw views.
+宣言する:
 
-### Event Volume API contract
+- レポート構造
+- セクション固有の執筆要求
+- `evidence_queries` 経由の証拠アクセス要求
+- 証拠不十分時のプレースホルダ
 
-`GET /api/event-volume` accepts `bucket=year|month|day|hour`, `source=all|detected`, optional `start` / `end` ISO timestamps. Resolution order in `web.py`:
+宣言しない:
 
-1. Exact snapshot file (`reports/api/event_volume_<bucket>_<source>.json`) for full-range queries.
-2. Live `CaseDB` query.
-3. Aggregation fallback (`aggregate_event_volume`) from a finer-grained snapshot when the DB is locked and no exact snapshot exists. This lets year/month views render from existing day/hour snapshots without requiring a fresh cycle.
+- durable なワークフロー状態
+- mutable なレポート status
+- provenance 保存ルール
+- セクション本文の正本(これは `report_sections` テーブル)
 
-`list_event_volume_dto` filters out timestamps with year < 1980 (Windows epoch 1601 garbage) or year > today + 5 (NTFS FILETIME overflow such as 3220 / 30828). The same filter applies to in-memory `aggregate_event_volume`.
+テンプレ著作は英語で揃えること。frontmatter (`title`、`prompt`)、scaffold の見出し、表頭、コメント、プレースホルダはすべて英語。出力言語は runtime の `LLM_OUTPUT_LANGUAGE` で制御されます。
 
-### Server-side date sanity
+### DB 連携
 
-Anywhere the API or report writer accepts a timestamp from raw evidence, apply the 1980 ≤ year ≤ today + 5 sanity range. Report-writer's quality gate flags out-of-range dates in narrative bodies too (see "Report quality gates"). Do not assume MFT/EVTX timestamps are valid.
+- 充填済みセクション本文は `report_sections` に UPSERT。
+- confidence は本文の gap マーカーから導出。
+- claims は本文から抽出して `claims` に書き込み。
+- claim の provenance は evidence_query summary から計算(自由文の引用テキストだけに頼らない)。
+- gap は明示的な insufficient-evidence マーカーから parse され、次サイクルの仮説に投入。
 
-### Frontend timestamp parsing
+## SQL 安全性
 
-`web_ui/src/lib/format.ts:parseServerTimestamp` exists because backend `datetime.isoformat()` on naive UTC datetimes produces strings without a `Z` suffix; JS `new Date()` would interpret these as local time and skew "X ago" displays. All UI code that compares server timestamps to `Date.now()` must go through `parseServerTimestamp`.
+LLM が出した SQL は読み取り専用の証拠アクセスとして扱います。
 
-## README boundary
+- `SELECT` と `WITH` のみ許可。
+- 複文は拒否。
+- 破壊的 SQL は拒否。
+- テーブルは allowlist で制限。
 
-Keep public-facing material in `README.md`.
+この境界は現行アーキテクチャの根幹です。LLM は証拠アクセスを「提案」できても、生成 SQL で DB を mutate することはできません。
 
-README should cover:
+## 宣言層 (`_schema/`)
 
-- value proposition
-- user-facing workflow
-- high-level architecture
-- installation and usage
+`src/forensia/rulepacks/_schema/` はルールディレクトリではなく、ルールとプロンプトが共有するスキーマと DFIR 知識を置く場所です。ローダは enumerate 時にスキップします。
 
-`CONTRIBUTING.md` should cover:
-
-- architectural invariants
-- state ownership
-- schema responsibilities
-- investigation and memory semantics
-- contributor-facing implementation constraints
-
-## Investigation flags
-
-| Flag | Default | When it matters |
+| ファイル | 消費側 | 役割 |
 |---|---|---|
-| `--max-iter` | `20` | Increase only when longer investigation loops are needed |
-| `--max-llm-calls` | `200` | Hard cap on total LLM calls per `investigate` run. Exceeding raises `RuntimeError`. |
-| `--max-queries-per-hypothesis` | `5` | Tune how deeply one hypothesis can be explored. Tracker may resolve sooner (auto-confirm / auto-refute / pivot) regardless of this cap. |
-| `--no-progress-limit` | `3` | Relax when you want to tolerate more low-signal cycles |
-| `--report-every-n-cycles` | `1` | Increase when report refresh cost is too high. Note: `stale` sections (DESIGN-2) lose their priority benefit if many cycles pass between refreshes. |
-| `--report-parallelism` | `1` | Increase only if the local LLM backend can handle concurrency |
-| `--profile` | `windows-basic` | Switch to a different rule profile |
-| `--report-only` | `false` | Refill report sections without running the hypothesis loop |
+| `evtx_events.yaml` / `mft_entries.yaml` / `mft_timeline.yaml` / `prefetch_executions.yaml` / `findings.yaml` | `prompts._build_schema_guidance()` 経由 `_load_schema_hints()` | DB テーブルの schema card。`core_columns`(planner 向け短いサブセット)+ `column_descriptions`(1 行説明)+ `columns`(SQL validator 用)+ `json_field_extractors`(raw_json fallback)。5 テーブル分が `<SCHEMA_CARDS>` として一括注入される。 |
+| `event_ids.yaml` / `logon_types.yaml` | `prompts._dfir_playbook()` | Event ID / Logon Type の DFIR 解説。 |
+| `app_catalog.yaml` / `artifact_inference.yaml` | `prompts._dfir_playbook()` | Prefetch / MFT / Registry / File → アプリ推定。planning 系では意図的に省略、interpretation 系のみに注入。 |
+| `false_positive_rules.yaml` | rule engine + `prompts._dfir_playbook()` | 既知 FP。interpretation 系プロンプトのみで参照。 |
+| `dfir_ioc_catalog.yaml` | `prompts._dfir_playbook()` | アンチフォレンジック / クラウド同期 / メール / Recycle Bin 等の補助 IOC 辞書。 |
+| `question_routing.yaml` | `section_agent.py` + `prompts.build_section_agent_*` + `prompts.build_benchmark_classify_messages` | question_type ごとの `expected_answer_shape`(コード側 `format_benchmark_answer` が消費)と `evidence_chain`(primary 0-row 時に `_execute_evidence_chain` が決定論的に試行)。 |
+| `verdict_taxonomy.yaml` | `core/verdicts.py` | verdict 値の whitelist と層間マッピング。 |
+| `playbook/*.md` | `prompts._dfir_playbook(phase)` | フェーズ別 (`broad_plan` / `hypothesis_plan` / `check` / `report_section` / `section_agent_plan` / `section_agent_check`) のプレイブック本文。`<CRITICAL_RULES>` / `<FORBIDDEN_PATTERNS>` / `<SCHEMA_CONSTRAINTS>` 等のタグ付き。 |
 
-## Rerun semantics
+DB テーブル schema YAML は次を宣言すること。
 
-- `forensia run` includes investigation by default.
-- To reinitialize an output directory, use `--init`.
-- `report` is render-only.
-- `report-write` performs section refill before rendering.
+- `table`:テーブル名(例: `evtx_events`)。
+- `core_columns`:planner LLM が見る短いリスト。13 以下に保つ。
+- `column_descriptions`:各 `core_columns` に対する 1 行説明。
+- `columns`:全列リスト(`validate_select_sql` が undeclared 列の SELECT / WHERE を弾くのに使う)。
+- `json_field_extractors`(任意):列が NULL のときに raw_json から拾う DuckDB JSON 抽出式。
+- `notes`(任意):timestomp 注意点や Prefetch の `no_host_column` 等のヒント。
+
+新しい investigable テーブルを追加するなら `_schema/<table>.yaml` を置き、`sql_schema.py` の `ALLOWED_TABLES` を更新します。YAML は `_load_schema_hints()` で自動消費されます。
+
+`playbook/*.md` は `<!-- AUTO-FROM: <yaml-path> -->` ... `<!-- /AUTO-FROM -->` マーカー内を `scripts/regenerate_playbook.py` が再生成します。マーカー内は手編集せず、ソース YAML を編集して再生成すること。
+
+### Allowlist
+
+`kind: allowlist_services` のように `kind:` プレフィックスを持つファイルはルールではなく、ローダがスキップします。suppression ロジックが消費します(「Allowlist と suppression」節)。
+
+## ルールパック / プロファイル契約
+
+### Rulepack
+
+ルールパックは `src/forensia/rulepacks/windows/`(または類似)配下の YAML 定義です。`src/forensia/rules/models.py` の Pydantic モデルが `extra="forbid"` でスキーマ強制するため、未知フィールドはロード時に弾かれます。
+
+#### 検出部(必須)
+
+- `id`:安定したルール識別子
+- `title`:人間向けタイトル
+- `severity`:findings の既定 severity
+- `confidence`:findings の既定 confidence
+- `query`:正規化済み証拠への読み取り専用 SQL
+- `finding.title` / `finding.summary`:行フィールドから render するテンプレ
+- `tags`:分類タグ
+- `attack`:ATT&CK マッピング
+
+ルールクエリの 1 行が 1 finding になります。元行は構造化 evidence として保存。
+
+#### 投資宣言(任意、仮説ループを駆動)
+
+ルールが LLM 駆動の仮説ループも seed するなら、次を宣言します。Python 側はこれを generic に消費します(kill-chain 知識は Python にハードコードしない)。
+
+- `hypotheses[]`:ルール発火時に instantiate される仮説テンプレ。各エントリには:
+  - `id`:ルール内安定 id
+  - `segment`:kill-chain segment(`persistence`、`lateral-movement` 等)
+  - `description`:`{field}` プレースホルダ付き仮説文(クエリ行カラムにバインドされる)
+  - `required_entities`:confirm に必要な entity 名
+  - `confirm_when`:`{co_observed_event_ids: [...], same_host: bool, within_minutes: int}` のような相関基準。`HypothesisProgressTracker` が auto-confirm を判定。
+  - `refute_when`:`{zero_rows: true}` 等の refutation 基準
+  - `follow_up_questions`:confirmed 時に自動 spawn される質問
+  - `report_sections`:解決時に stale 化する section キー
+- `correlate_with[]`:planner が「これも見ろ」と促される event ID 群。`{event_ids: [...], rationale: str}`。
+- `fallback_search[]`:primary SQL 0 行時に宣言順で実行されるフェーズ。LLM 不在。許可フェーズは:
+  - `keyword_in_raw_json`(LIKE エスケープ)
+  - `related_event_ids`(別 event 表面)
+  - `artifact_table`(別の正規化テーブル、`engine.py` で whitelist)
+
+### Profile
+
+プロファイルはルール選択ポリシーです。`src/forensia/profiles/` 配下。
+
+| フィールド | 役割 |
+|---|---|
+| `name` | プロファイル名 |
+| `rulepacks` | rulepack root 配下の対象ディレクトリ / パス |
+| `rule_ids` | 任意の特定ルール ID 許可リスト |
+
+プロファイルは選択メタデータです。ルールロジックを複製しないこと。
+
+### 安定であるべきこと
+
+- ルール ID は外部識別子として永続的に扱う。
+- プロファイルは「どのルールが active か」を意味し、「どう実行するか」ではない。
+- ルールクエリは read-only / 証拠指向のまま保つ。
+- finding テンプレは行駆動で、各 finding が evidence traceability を保つ。
+- パッケージ同梱のルールメタデータと finding テキストは英語で書く。
+
+選択意味論ではなく実行意味論を変える必要があるなら、それは rule engine の変更であり、profile フォーマットの変更ではありません。
+
+### Allowlist と suppression モデル
+
+`allowlist.yaml` は概念的にルールに隣接しますが、ルールを選択しません。
+
+- プロファイルがどのルールを走らせるかを決める。
+- ルールが候補 findings を生成する。
+- allowlist が rule_id スコープのフィールドマッチで `suppressed` を決める。
+
+現在のマッチモデルは:
+
+- 1 つの `rule_id`
+- `when` 配下の 1 つ以上のフィールド述語
+- 値は対象 finding の最初の構造化 evidence 行から取得
+
+これは pre-filter ではなく post-generation な提示・triage コントロールです。
+
+### ファイル配置慣習
+
+- パッケージ既定は `src/forensia/report_template/` / `profiles/` / `rulepacks/` 配下に置く。
+- case-local `report_template/` は初期化時にコピーされる override 入力として扱う。
+- 現状、profile と rulepack の case-local コピーには依存しないこと(package tree から解決される)。
+
+## テスト方針
+
+テストスイートは秒単位で完了させ続けるため、次のルールを守ること。
+
+- **LLM 呼び出し経路を通るテストを書かない**。`patch("...request_llm_json", ...)` でモックしても、完全な調査サイクル(`investigate(...)`、`run_section_block_agent`、`async_refresh_report_sections` など)は副作用(DuckDB 書き込み、memory I/O、ファイル走査)が多すぎて軽くなりません。
+- **実 LLM サーバを叩くテストを書かない**。過去にあった `tests/test_benchmark_e2e_real_llm.py`(`FORENSIA_LLM_BASE_URL` で gate)は同じ理由で削除済み。
+- 代わりに次でカバーする:純粋関数ヘルパのユニットテスト(`_slim_findings`、`_quality_gate_section`、`_render_benchmark_answer_markdown` 等)、永続化の DB-only テスト、LLM モジュールを import しない CLI / HTTP テスト。
+- 調査ループの挙動を本気で見たいときは、ローカルモデル相手に `forensia investigate ...` を回し、`ai_logs/` を目で確認する。pytest にしない。
+
+## 補助スクリプトと `forensia doctor`
+
+`scripts/` は宣言層 / コード / ドキュメントを揃え続けるためのオフライン監査群です。runtime ではなく、`forensia doctor` がこれらをまとめて実行します。
+
+| スクリプト | 用途 |
+|---|---|
+| `scripts/audit_schema_coverage.py` | 全ルール YAML の `query` SQL を sqlglot で AST 解析し、参照される `event_id` 値(`=` と `IN`)を抽出。`event_ids.yaml` / `question_routing.yaml` のカバレッジを照合。 |
+| `scripts/regenerate_playbook.py` | `_schema/playbook/*.md` の `<!-- AUTO-FROM: ... -->` セクションをソース YAML から再生成。`--check` で drift 検出(exit 1)、引数なしで書き込み。 |
+| `scripts/cycle_summary.py <case_dir>` | `progress_events.json` を解析し、cycle ごとの仮説 delta と benchmark 進捗を Markdown 表化。デバッグ補助。 |
+| `forensia doctor` | CLI コマンド。schema coverage / playbook drift check / verdict taxonomy AST スキャン / pytest を順に実行し、全部 pass のときだけ exit 0。 |
+
+`scripts/` は Python パッケージではありません。`scripts/` から import するテストは、`conftest.py` がリポジトリ root を `sys.path` に追加していることに依存します。
+
+## UI 周辺
+
+- `forensia serve` がビルド済み UI を FastAPI 経由で配信。
+- `web_ui/dist/` は配信用のビルド成果物。
+- DuckDB がロック中なら、UI は `reports/api/*.json` スナップショットにフォールバック。
+
+### Cockpit 構成
+
+`web_ui/src/App.svelte` は上から順に:
+
+1. `Header`:ケース名、現在 phase、LLM モデル、最終更新タイムスタンプ。
+2. `KpiBar`:Events / Findings / Hypotheses / Open Gaps の 4 KPI。Findings タイルに severity 内訳(High/Medium/Low)、Hypotheses タイルに verdict 内訳(Active/Confirmed/Refuted/Inconclusive)の細い積み棒。`caseStats` + `severityBreakdown` / `verdictBreakdown` ストアから算出。
+3. `VolumeTimeline`:Chart.js 複合チャート。既定は全期間 day 解像度。range picker(年→月→日)で絞り込み、1 日を選ぶと hour 解像度に切替。検知 finding は折れ線オーバーレイ。
+4. `ReportDraftProgress`:セクション単位の充填状態。
+5. `AttackCoverage`:`findings.attack` から tactic × technique マトリックス。
+6. `Cockpit`:`AiActivityPanel`、Active Hypotheses(`latestReasoningAt` desc)と Latest Reasoning ストリームをタブ切替する `HypothesisStream`、`OpenGaps`。
+7. `TopRules` + `TopEntities`(2 列グリッド)。
+8. `DetailsTabs`:findings / steps / sessions / activity / mft の生データタブ。
+
+### Event Volume API 契約
+
+`GET /api/event-volume` は `bucket=year|month|day|hour`、`source=all|detected`、任意の `start` / `end` ISO timestamp を受け付けます。`web.py` の解決順:
+
+1. 全範囲クエリならスナップショットファイル(`reports/api/event_volume_<bucket>_<source>.json`)。
+2. ライブ `CaseDB` クエリ。
+3. DB ロック中で正確スナップショットが無い場合、より細い snapshot から `aggregate_event_volume` で集計。これで年 / 月 view が day / hour snapshot から再現できます。
+
+`list_event_volume_dto` は year < 1980(Windows epoch 1601 ゴミ)と year > today + 5(NTFS FILETIME overflow、3220 / 30828 等)を除外。`aggregate_event_volume` でも同じフィルタを適用。
+
+### サーバ側 date 健全性
+
+API やレポート writer が raw 証拠からタイムスタンプを受け取る箇所では、1980 ≤ year ≤ today + 5 の健全性レンジを適用すること。レポート writer の quality gate も narrative 中の range 外日付を検出(「レポート品質ゲート」節)。MFT / EVTX タイムスタンプを valid と仮定しない。
+
+### フロントエンドの timestamp 解析
+
+`web_ui/src/lib/format.ts:parseServerTimestamp` の存在理由は、バックエンドの `datetime.isoformat()` が naive UTC datetime に対して `Z` サフィックスなし文字列を返すためです。JS の `new Date()` はこれをローカル時刻と解釈し、"X 前" 表示が狂います。サーバ timestamp を `Date.now()` と比較する UI コードは必ずこの関数を通すこと。
+
+## 投資フラグ
+
+| フラグ | 既定 | いつ気にするか |
+|---|---|---|
+| `--max-iter` | `20` | 長く回したいときだけ増やす |
+| `--max-llm-calls` | `200` | `investigate` あたりの LLM 呼び出し総数 hard cap。超過で `RuntimeError`。 |
+| `--max-queries-per-hypothesis` | `5` | 1 仮説あたりの探索深さ。tracker が auto-confirm / refute / pivot で先に解決することはある。 |
+| `--no-progress-limit` | `3` | 低信号サイクルを許容したいときに緩める |
+| `--report-every-n-cycles` | `1` | レポート再充填コストが高すぎるときに増やす。間が空くと `stale` の優先順位効果が薄れる。 |
+| `--report-parallelism` | `1` | ローカル LLM バックエンドが並列耐えるときだけ増やす |
+| `--profile` | `windows-basic` | 別のルールプロファイルに切替 |
+| `--report-only` | `false` | 仮説ループを回さずレポートだけ再充填 |
+
+## 再実行のセマンティクス
+
+- `forensia run` は既定で investigation を含む。
+- 出力ディレクトリを初期化するには `--init`。
+- `report` は render のみ。
+- `report-write` は section 再充填してから render。
+
+## README との境界
+
+README はユーザ向け価値提案・ワークフロー・高レベルアーキテクチャ・インストール / 使い方を扱います。CONTRIBUTING はアーキテクチャ不変条件・状態所有・スキーマ責務・調査と記憶のセマンティクス・コントリビュータ向けの実装制約を扱います。新しい章を足すときはこの境界を意識すること。

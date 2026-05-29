@@ -8,10 +8,6 @@ from typing import Any
 
 from forensia.ai.json_response import request_llm_json
 from forensia.ai.prompts import (
-    build_check_messages,
-    build_check_memory_updates_messages,
-    build_check_suspicious_evidence_messages,
-    build_check_verdict_messages,
     build_finding_extractor_messages,
     build_memory_updater_messages,
     build_verdict_review_messages,
@@ -530,14 +526,12 @@ def check_query_result(
     query_index: int = 1,
     max_queries: int = 5,
     fallback_info: dict[str, Any] | None = None,
-    use_phased_check: bool = True,
 ) -> CheckResult:
-    """Run the full LLM-based query result check: verdict + memory + suspicious evidence.
+    """Run the LLM-based query result check: verdict + memory + suspicious evidence.
 
-    Supports phased checking (separate LLM calls for verdict, memory, and suspicious
-    evidence) when use_phased_check=True, or a single combined call otherwise.
-    Applies guardrails via _guardrail_check_payload and persists results via
-    apply_check_result.
+    Uses phased checking (separate LLM calls for verdict, memory, and
+    suspicious evidence). Applies guardrails via _guardrail_check_payload
+    and persists results via apply_check_result.
     """
     overview_md = overview_md if overview_md is not None else memory.load_overview()
     memory_context_md = memory_context_md if memory_context_md is not None else memory.load_compact_context(
@@ -550,89 +544,65 @@ def check_query_result(
     observed_evidence_ids = list(_collect_observed_evidence_ids(result_summary))
     rule_context = resolve_rule_context(hypothesis)
 
-    if use_phased_check:
-        # Step 1: verdict_reviewer — classify result against hypothesis
-        verdict_messages = build_verdict_review_messages(
-            hypothesis=hypothesis,
-            planned_query=planned_query,
-            result_summary=result_summary,
-            time_range={},
-        )
-        verdict_parsed = request_llm_json(
-            messages=verdict_messages,
-            model=model,
-            base_url=base_url,
-            status_callback=status_callback,
-        )
-        verdict = _normalize_verdict(verdict_parsed.get("verdict"))
+    # Step 1: verdict_reviewer — classify result against hypothesis
+    verdict_messages = build_verdict_review_messages(
+        hypothesis=hypothesis,
+        planned_query=planned_query,
+        result_summary=result_summary,
+        time_range={},
+    )
+    verdict_parsed = request_llm_json(
+        messages=verdict_messages,
+        model=model,
+        base_url=base_url,
+        status_callback=status_callback,
+    )
+    verdict = _normalize_verdict(verdict_parsed.get("verdict"))
 
-        # Step 2: finding_extractor — extract structured findings (only for confirmed)
-        extracted_findings: list[dict[str, Any]] = []
-        if verdict == "confirmed":
-            finding_messages = build_finding_extractor_messages(
-                hypothesis=hypothesis,
-                result_rows=result_summary.get("sample_rows") or [],
-                verdict=verdict,
-                rationale=verdict_parsed.get("rationale", ""),
-            )
-            finding_parsed = request_llm_json(
-                messages=finding_messages,
-                model=model,
-                base_url=base_url,
-                status_callback=status_callback,
-            )
-            extracted_findings = finding_parsed.get("findings") or []
-
-        # Step 3: memory_updater — propose durable memory writes
-        memory_messages = build_memory_updater_messages(
+    # Step 2: finding_extractor — extract structured findings (only for confirmed)
+    extracted_findings: list[dict[str, Any]] = []
+    if verdict == "confirmed":
+        finding_messages = build_finding_extractor_messages(
             hypothesis=hypothesis,
+            result_rows=result_summary.get("sample_rows") or [],
             verdict=verdict,
             rationale=verdict_parsed.get("rationale", ""),
         )
-        memory_parsed = request_llm_json(
-            messages=memory_messages,
+        finding_parsed = request_llm_json(
+            messages=finding_messages,
             model=model,
             base_url=base_url,
             status_callback=status_callback,
         )
+        extracted_findings = finding_parsed.get("findings") or []
 
-        merged = {
-            "query_id": verdict_parsed.get("query_id") or planned_query.query_id,
-            "verdict": verdict,
-            "rationale": verdict_parsed.get("rationale", ""),
-            "finding_updates": [],
-            "suspicious_evidence": [],
-            "new_hypotheses": memory_parsed.get("new_hypotheses") or [],
-            "memory_updates": memory_parsed.get("memory_updates") or {},
-            "report_text": verdict_parsed.get("rationale", "") or "",
-            "missing_checks": [],
-            "notes": "",
-            "extracted_findings": extracted_findings,
-        }
-        parsed = merged
-    else:
-        messages = build_check_messages(
-            planned_query=planned_query,
-            hypothesis=hypothesis,
-            finding_candidates=finding_candidates,
-            result_summary=result_summary,
-            overview_md=overview_md,
-            memory_context_md=memory_context_md,
-            query_index=query_index,
-            max_queries=max_queries,
-            observed_evidence_ids=observed_evidence_ids,
-            rule_context=rule_context,
-            fallback_info=fallback_info,
-        )
-        parsed = request_llm_json(
-            messages=messages,
-            model=model,
-            base_url=base_url,
-            status_callback=status_callback,
-            audit_callback=audit_callback,
-        )
+    # Step 3: memory_updater — propose durable memory writes
+    memory_messages = build_memory_updater_messages(
+        hypothesis=hypothesis,
+        verdict=verdict,
+        rationale=verdict_parsed.get("rationale", ""),
+    )
+    memory_parsed = request_llm_json(
+        messages=memory_messages,
+        model=model,
+        base_url=base_url,
+        status_callback=status_callback,
+    )
 
-    guarded = _guardrail_check_payload(parsed, finding_candidates, result_summary)
+    merged = {
+        "query_id": verdict_parsed.get("query_id") or planned_query.query_id,
+        "verdict": verdict,
+        "rationale": verdict_parsed.get("rationale", ""),
+        "finding_updates": [],
+        "suspicious_evidence": [],
+        "new_hypotheses": memory_parsed.get("new_hypotheses") or [],
+        "memory_updates": memory_parsed.get("memory_updates") or {},
+        "report_text": verdict_parsed.get("rationale", "") or "",
+        "missing_checks": [],
+        "notes": "",
+        "extracted_findings": extracted_findings,
+    }
+    guarded = _guardrail_check_payload(merged, finding_candidates, result_summary)
 
     result = CheckResult(
         query_id=guarded.get("query_id") or planned_query.query_id,
@@ -644,7 +614,7 @@ def check_query_result(
         report_text=str(guarded.get("report_text") or ""),
         new_leads=0,
         progress=False,
-        raw_response=parsed,
+        raw_response=merged,
     )
     result.new_leads, result.progress = apply_check_result(
         case=case,

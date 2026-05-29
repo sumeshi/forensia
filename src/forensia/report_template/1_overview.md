@@ -1,3 +1,7 @@
+---
+behaviors:
+  - canonical_evidence_scope
+---
 # Investigation Overview
 
 ## Executive Summary

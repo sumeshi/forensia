@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -9,15 +8,8 @@ from functools import lru_cache
 from typing import Any
 
 from forensia.config import get_llm_settings
-from forensia.core.session import ENTITY_TYPE_ALIASES, Hypothesis, PlannedQuery
-from forensia.ai.sql_schema import build_investigation_framework, _load_app_catalog, _load_fp_reduction_guidance
-
-# Module-level time range cache, set at investigation start by investigator.py
-_CASE_TIME_RANGE: dict[str, str] = {}
-
-def set_case_time_range(tr: dict[str, str]) -> None:
-    _CASE_TIME_RANGE.clear()
-    _CASE_TIME_RANGE.update(tr)
+from forensia.core.session import Hypothesis
+from forensia.ai.sql_schema import build_investigation_framework, _load_app_catalog
 
 def _estimate_message_tokens(text: str) -> int:
     """Rough token estimation: ~4 chars per token for English+JSON."""
@@ -71,13 +63,13 @@ def _assemble_messages_with_budget(
     return _trim_dynamic_content(messages, max_total_tokens=max_tokens)
 
 
-def _time_range_guidance() -> str:
+def _time_range_guidance(time_range: dict[str, str] | None = None) -> str:
     """Return time-range constraint guidance if the case has one, otherwise empty string."""
-    if _CASE_TIME_RANGE.get("earliest") and _CASE_TIME_RANGE.get("latest"):
+    if time_range and time_range.get("earliest") and time_range.get("latest"):
         return (
             f"\n## Case Time Range\n"
-            f"Earliest event: {_CASE_TIME_RANGE['earliest']}\n"
-            f"Latest event: {_CASE_TIME_RANGE['latest']}\n"
+            f"Earliest event: {time_range['earliest']}\n"
+            f"Latest event: {time_range['latest']}\n"
             "IMPORTANT: Do NOT use datetime('now') or CURRENT_TIMESTAMP — they refer to the current system time, not the case time. "
             "All WHERE clauses on timestamp columns must use values within this range.\n"
         )
@@ -455,17 +447,6 @@ def _output_language() -> str:
     return str(get_llm_settings()["output_language"]).lower()
 
 
-def _mandatory_missing_checks_guidance() -> str:
-    return """
-Mandatory missing_checks:
-   - If a logon is confirmed → add: 'Other host logons from the same src_ip', 'Presence of 4688/4104 within 15 minutes after logon'
-   - If process execution is confirmed → add: 'Confirm parent process name', 'Check whether the executing user aligns with normal duties'
-   - If service/task creation is confirmed → add: 'Path of the executable behind the service', 'Presence of 7036 (service start)'
-   - If Defender disable is confirmed → add: 'Presence of 4688/4104 immediately afterward', 'Correlation with 1116 (malware detection)'
-   - If account-related: add: 'Owner organization confirmation', 'User interview required'
-"""
-
-
 _RULE_INSTANCE_SUFFIX = re.compile(r"-(\d{4,})$")
 
 
@@ -760,202 +741,14 @@ def _slim_history(items: list[dict[str, Any]], max_items: int = 10) -> list[dict
     return slimmed
 
 
-def build_broad_plan_messages(
-    overview_md: str,
-    extra_context_md: str,
-    iteration: int,
-    findings_snapshot: list[dict[str, Any]],
-    active_hypotheses: list[Hypothesis],
-    resolved_hypotheses: list[Hypothesis],
-    history: list[dict[str, Any]],
-    observed_keypoints: list[str] | None = None,
-    uncovered_keypoints: list[dict[str, Any]] | None = None,
-    max_findings: int = 10,
-    max_resolved: int = 20,
-) -> list[dict[str, str]]:
-    """Build system+user messages for the broad-planning phase.
-
-    Injects DFIR playbook, time-range guidance, and example outputs. Sends
-    investigation state (findings, hypotheses, history) as user context."""
-
-    findings = _slim_findings(findings_snapshot, max_findings)
-    recent_resolved = resolved_hypotheses[-max_resolved:]
-    slimmed_history = _slim_history(history, 10)
-    uncovered_guidance = ""
-    if uncovered_keypoints:
-        uncovered_guidance = f"REQUIRED — The following uncovered keypoints MUST get hypothesis coverage in this cycle: {[kp.get('name') or kp.get('description', '') for kp in uncovered_keypoints[:5]]}\n"
-
-    EXAMPLE_BROAD_PLAN = '''
-<EXAMPLE verdict="broad_plan">
-Input: unresolved findings show suspicious service creation on HOST-A. Active hypotheses empty. Kill chain shows no lateral movement covered.
-Output: {"hypotheses": [{"id": "<assigned by system>", "description": "RDP lateral movement used to deploy malicious service on HOST-A", "required_entities": ["src_ip", "computer", "target_user", "service_name"], "source_rule_ids": ["windows-system-7045-service-install"]}], "stop": false, "stop_reason": ""}
-</EXAMPLE>
-<EXAMPLE verdict="broad_plan_antiforensic">
-Input: observed keypoints show log clearing events (104) and antiforensic tool artifacts. No hypothesis covers defense evasion.
-Output: {"read_more": ["memory/facts.md"], "hypotheses": [{"id": "<assigned by system>", "description": "Antiforensic tool execution (CCleaner/Eraser) to cover tracks after compromise", "required_entities": ["computer", "file_path", "process_name"], "source_rule_ids": ["ioc_user_data_files"]}], "stop": false, "stop_reason": ""}
-</EXAMPLE>
-<EXAMPLE verdict="broad_plan_cloud">
-Input: observed keypoints include cloud sync artifacts (Google Drive, OneDrive). No hypothesis covers data exfiltration via cloud.
-Output: {"read_more": ["memory/keypoints/KP-020.md"], "hypotheses": [{"id": "<assigned by system>", "description": "Cloud sync service (Google Drive/OneDrive) used for data exfiltration from the workstation", "required_entities": ["computer", "file_path", "process_name"], "source_rule_ids": ["ioc_email_ost_files"]}], "stop": false, "stop_reason": ""}
-</EXAMPLE>
-'''
-
-    system = (
-        f"{_dfir_playbook('broad_plan')}\n"
-        f"{_time_range_guidance()}"
-        f"{uncovered_guidance}"
-        "<TASK>You are a DFIR investigator running broad planning. Propose NEW hypotheses only.</TASK>\n"
-        "<INPUT_SCHEMA>overview_md, unresolved_findings, observed_keypoints, active_hypotheses, resolved_hypotheses, recent_history</INPUT_SCHEMA>\n"
-        "<RULES>\n"
-        "hypothesis_quality: Must satisfy ALL: Falsifiable, Specific, Non-redundant, Evidence-grounded.\n"
-        "hypothesis_output_schema: Each hypothesis MUST include required_entities, confirm_when, refute_when.\n"
-        "prohibited_phrases: 'unknown', 'cannot confirm', 'insufficient evidence'.\n"
-        "confirm_when_rule: co_observed_event_ids entries must be either integer event IDs (e.g. 4624, 7045) OR finding_ids (format: 'windows-xxx-yyyy-xxxx-xxxx'). "
-        "Integer event IDs are preferred. Do NOT include keypoint names, free text, or quoted-string numbers — they will be dropped by validation.\n"
-        "dedup_critical: NEVER re-state an existing active or resolved hypothesis using synonyms or different wording. "
-        "例: 'lateral movement via RDP' と 'RDP remote access used for lateral movement' は THE SAME。 "
-        "active_hypotheses と resolved_hypotheses を熟読してから新規提案する。\n"
-        "semantic_dedup: 同じ (actor, action, target) triple は重複扱い。 "
-        "例: 'Service creation used for persistence' と 'Persistence via service installation' は同じ。\n"
-        "coverage_rule: REQUIRED — uncovered_keypoints が空でなければ、TOP 3 をカバーする仮説を「ちょうど 1 つ」生成する。 "
-        "全 uncovered が既存仮説でカバーされているなら stop=true。\n"
-        "</RULES>\n"
-        "<OUTPUT_SCHEMA>\n"
-        "{\n"
-        '  "hypotheses": [{"id": "H-123", "description": "...", "required_entities": ["src_ip", "computer"], "confirm_when": {"co_observed_event_ids": [4624, 7045]}, "refute_when": {"zero_rows": true}}],\n'
-        '  "stop": false,\n'
-        '  "stop_reason": ""\n'
-        "}\n"
-        "</OUTPUT_SCHEMA>\n"
-        f"{EXAMPLE_BROAD_PLAN}"
-        "Output JSON only. "
-        f"{_lang_instruction()} "
-    )
-    user = (
-        "Current investigation state:\n"
-        f"plan_cycle: {iteration}\n"
-        f"overview_md:\n{overview_md}\n\n"
-        f"extra_context_md:\n{extra_context_md}\n\n"
-        f"unresolved_findings: {findings}\n"
-        f"observed_keypoints: {observed_keypoints or []}\n"
-        f"uncovered_keypoints: {uncovered_keypoints or []}\n"
-        f"active_hypotheses: {[_slim_hypothesis_dump(item) for item in active_hypotheses]}\n"
-        f"resolved_hypotheses: {[_slim_hypothesis_dump(item) for item in recent_resolved]}\n"
-        f"recent_history: {slimmed_history}\n"
-    )
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ]
-
-
-def build_hypothesis_plan_messages(
-    overview_md: str,
-    extra_context_md: str,
-    iteration: int,
-    hypothesis: Hypothesis,
-    finding_candidates: list[dict[str, Any]],
-    hypothesis_history: list[dict[str, Any]],
-    query_templates: list[dict[str, Any]],
-    query_index: int = 1,
-    max_queries: int = 5,
-) -> list[dict[str, str]]:
-    """Build messages for hypothesis-specific query planning.
-
-    Includes schema guidance, convergence notes near the last allowed query,
-    and structured summaries of already-executed queries to avoid repeats."""
-
-    executed_query_summaries = [
-        {
-            "query_id": item.get("query_id"),
-            "template_id": item.get("template_id"),
-            "params": item.get("params"),
-            "purpose": item.get("purpose"),
-            "verdict": item.get("verdict"),
-        }
-        for item in hypothesis_history
-        if item.get("query_id")
-    ]
-    queries_remaining = max_queries - query_index + 1
-    if queries_remaining <= 1:
-        convergence_note = (
-            f"IMPORTANT: This is query {query_index} of {max_queries} — your LAST allowed query for this hypothesis. "
-            "You must either propose one final decisive query that can definitively confirm or refute the hypothesis, "
-            "or set needs_more=false with a stop_reason explaining why the hypothesis cannot be resolved further. "
-            "Do not propose an exploratory query that is likely to return inconclusive results."
-        )
-    else:
-        convergence_note = (
-            f"This is query {query_index} of {max_queries} ({queries_remaining} queries remaining for this hypothesis). "
-            "Prioritize queries that can directly confirm or refute the hypothesis over broad exploratory ones."
-        )
-    
-    schema_guidance = _build_schema_guidance("evtx_events")
-
-    EXAMPLE_HYPOTHESIS_PLAN = '''
-<EXAMPLE verdict="hypothesis_plan">
-Input: hypothesis='RDP used to HOST-B by admin'. Query history empty. Templates available for logon queries.
-Output: {"read_more": [], "hypothesis": {"id": "H-5", "description": "RDP used to HOST-B by admin"}, "query": {"query_id": "Q-5a", "hypothesis_id": "H-5", "purpose": "Find RDP logons to HOST-B by admin", "template_id": "logon-by-user", "params": {"computer": "HOST-B", "user": "admin", "logon_type": "10"}}, "needs_more": true, "stop_reason": ""}
-</EXAMPLE>
-'''
-
-    system = (
-        f"{_dfir_playbook('hypothesis_plan')}\n"
-        f"{_time_range_guidance()}"
-        "<TASK>You are a DFIR investigator. Propose exactly one read-only query to test the current hypothesis.</TASK>\n"
-        "<INPUT_SCHEMA>hypothesis, related_findings, hypothesis_history, query_templates</INPUT_SCHEMA>\n"
-        f"Memory context: facts.md, tasks.md, memory/details/fact-NNN.md paths.\n"
-        f"Already-executed queries for this hypothesis (DO NOT repeat any — template_id+params must differ): {executed_query_summaries}\n"
-        f"{build_investigation_framework()}"
-        f"{schema_guidance}"
-        "<RULES>\n"
-        "convergence: On last query, propose decisive test. Do not output exploratory queries.\n"
-        "query_required: MUST provide ONE of (a) template_id + params for a template in query_templates, OR (b) raw SELECT sql string. Never leave both blank — that aborts the investigation.\n"
-        "template_preference: Use template_id only when an entry in query_templates fits exactly. Otherwise emit raw SELECT sql against the allowed tables (evtx_events, mft_entries, mft_timeline, prefetch_executions, findings).\n"
-        "sql_rules: Read-only SELECT only. Use the schema_card columns. Reference WHERE timestamp within the case time range.\n"
-        "</RULES>\n"
-        f"{convergence_note}\n"
-        "<OUTPUT_SCHEMA>\n"
-        "{\n"
-        '  "read_more": [],\n'
-        '  "hypothesis": {"id": "H-123", "description": "...", "required_entities": [], "confirm_when": {}, "refute_when": {}},\n'
-        '  "query": {"query_id": "Q-123", "hypothesis_id": "H-123", "purpose": "...", "template_id": "..." | null, "params": {}, "sql": "SELECT ... | null"},\n'
-        '  "needs_more": true|false,\n'
-        '  "stop_reason": ""\n'
-        "}\n"
-        "</OUTPUT_SCHEMA>\n"
-        '<EXAMPLE verdict="raw_sql_fallback">\n'
-        'Input: hypothesis is about event_id 104 log clearing. No template_id covers it.\n'
-        'Output: {"read_more": [], "hypothesis": {"id": "H-002", "description": "..."}, "query": {"query_id": "Q-002-1", "hypothesis_id": "H-002", "purpose": "Enumerate all log-clear events", "template_id": null, "params": {}, "sql": "SELECT timestamp, computer, channel, raw_json FROM evtx_events WHERE event_id = 104 ORDER BY timestamp"}, "needs_more": false, "stop_reason": ""}\n'
-        '</EXAMPLE>\n'
-        f"{EXAMPLE_HYPOTHESIS_PLAN}"
-        "Output JSON only. "
-        f"{_lang_instruction()} "
-    )
-    user = (
-        "Current hypothesis-planning state:\n"
-        f"plan_cycle: {iteration}\n"
-        f"queries_remaining: {queries_remaining}\n"
-        f"overview_md:\n{overview_md}\n\n"
-        f"extra_context_md:\n{extra_context_md}\n\n"
-        f"hypothesis: {_slim_hypothesis_dump(hypothesis)}\n"
-        f"related_findings: {finding_candidates}\n"
-        f"hypothesis_history: {hypothesis_history}\n"
-        f"query_templates: {query_templates}\n"
-    )
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ]
-
 
 def build_query_intent_messages(
     hypothesis,
     recent_history: list[dict],
     finding_candidates: list[dict],
     active_hypotheses: list[Hypothesis],
-    time_range: dict,
-    schema_context: str,
+    time_range: dict[str, str] | None = None,
+    schema_context: str = "",
     extra_context_md: str = "",
 ) -> list[dict[str, str]]:
     """Build messages for the query_intent_planner phase.
@@ -965,7 +758,7 @@ def build_query_intent_messages(
     """
     system = (
         f"{_dfir_playbook('hypothesis_plan')}\n"
-        f"{_time_range_guidance()}"
+        f"{_time_range_guidance(time_range)}"
         "<TASK>You are a query_intent_planner. Decide WHAT data to fetch for the given hypothesis. Do NOT write SQL.</TASK>\n"
         "<INPUT_SCHEMA>\n"
         f"hypothesis: {hypothesis.model_dump() if hasattr(hypothesis, 'model_dump') else hypothesis}\n"
@@ -995,9 +788,9 @@ def build_query_intent_messages(
 
 def build_sql_composer_messages(
     intent: dict,
-    table_schema_card: str,
-    template_catalog: list[dict],
-    time_range: dict,
+    table_schema_card: str = "",
+    template_catalog: list[dict] | None = None,
+    time_range: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
     """Build messages for the sql_composer phase.
     
@@ -1025,309 +818,12 @@ def build_sql_composer_messages(
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def _check_strictness_note(query_index: int, max_queries: int) -> str:
-    queries_remaining = max_queries - query_index
-    if queries_remaining == 0:
-        return (
-            f"CONVERGENCE REQUIRED: This is query {query_index} of {max_queries} — the FINAL check for this hypothesis. "
-            "You must commit to a definitive verdict now. "
-            "If any evidence leans one way, use 'confirmed' or 'refuted'. "
-            "Reserve 'inconclusive' only when the result is genuinely ambiguous AND no further query could resolve it. "
-            "Do not output 'newlead' on the final query — new leads will not be pursued at this stage."
-        )
-    elif queries_remaining == 1:
-        return (
-            f"This is query {query_index} of {max_queries} — one query remains after this. "
-            "Be willing to lean toward a verdict if the evidence is suggestive but not conclusive. "
-            "Use 'newlead' only if you have identified a genuinely distinct attack surface not yet investigated."
-        )
-    return (
-        f"This is query {query_index} of {max_queries} ({queries_remaining} checks remaining). "
-        "Apply standard evidentiary rigor."
-    )
-
-
-def _check_evidence_id_guidance(observed_evidence_ids: list[str] | None) -> str:
-    if not observed_evidence_ids:
-        return ""
-    return (
-        f"The following evidence_ids are valid for this query: {observed_evidence_ids[:50]}. "
-        "Only reference evidence_ids from this list in your output. "
-    )
-
-
-def _check_zero_evidence_note(result_summary: dict) -> str:
-    if int(result_summary.get("row_count") or 0) != 0:
-        return ""
-    return (
-        "IMPORTANT: The query result contains 0 rows — 'confirmed' verdict is forbidden. "
-        "Use 'refuted' if the hypothesis is clearly disproven, or 'inconclusive' if the result is ambiguous. "
-    )
-
-
-def _check_entity_constraint() -> str:
-    entity_type_list = list(ENTITY_TYPE_ALIASES.keys())
-    return (
-        f"When adding entities, entity_type must be one of: {entity_type_list}. "
-        "Do not emit placeholder values ('n/a', 'unknown', empty string) as entity names or types. "
-    )
-
-
-def _check_rule_verdict_guidance(rule_context: RuleContext | None) -> str:
-    if not rule_context:
-        return ""
-    confirm_conditions = rule_context.confirm_when or {}
-    refute_conditions = rule_context.refute_when or {}
-    return (
-        f"Rule-based verdict criteria (from {rule_context.rule_id}): "
-        f"Confirm when: {confirm_conditions}. "
-        f"Refute when: {refute_conditions}. "
-        "If rule criteria are met, use them as the primary verdict basis. "
-    )
-
-
-def _check_fallback_guidance(fallback_info: dict | None) -> str:
-    if not fallback_info:
-        return ""
-    phase = fallback_info.get("phase", "")
-    source_rule = fallback_info.get("source_rule_id", "")
-    event_ids = fallback_info.get("event_ids") or []
-    keywords = fallback_info.get("keywords") or []
-    return (
-        f"IMPORTANT: This result was obtained via fallback_search phase '{phase}' "
-        f"from rule '{source_rule}'. "
-        "The primary query returned 0 rows, but this fallback phase found relevant evidence. "
-        f"{f'Event IDs from the query were {event_ids}. ' if event_ids else ''}"
-        f"{f'String-search keywords used were {keywords}. ' if keywords else ''}"
-        "Use this context when determining verdict and rationale. "
-    )
-
-
-def _check_example_block(rule_context: RuleContext | None, fallback_info: dict | None, zero_evidence: bool) -> str:
-    EXAMPLE_CONFIRMED = '''
-<EXAMPLE verdict="confirmed">
-Input: hypothesis requires entities {src_ip, computer, target_user} to confirm lateral movement.
-Query returned rows showing src_ip='192.168.10.50', computer='HOST-B', target_user='admin' all in the same rows.
-Output: {"query_id": "Q123", "verdict": "confirmed", "rationale": "All required entities co-observed in results. src_ip 192.168.10.50 accessed HOST-B with admin account.", "finding_updates": [{"finding_id": "F456", "new_status": "accepted", "confidence_delta": 0.2}], "memory_updates": {"facts": [{"fact_type": "lateral_movement", "fact_key": "source_ip->host", "fact_value": "192.168.10.50->HOST-B", "evidence_ids": ["E789"]}]}}
-</EXAMPLE>
-'''
-    EXAMPLE_REFUTED_ZERO = '''
-<EXAMPLE verdict="refuted">
-Input: hypothesis suggests admin account was created for attacker persistence.
-Query returned 0 rows, no 4720 (user creation) events for 'admin' found.
-Output: {"query_id": "Q124", "verdict": "refuted", "rationale": "Zero rows for admin account creation. The account may be pre-existing or the log was cleared.", "finding_updates": [], "memory_updates": {"refuted_hypotheses": [{"hypothesis_id": "H99", "reason": "No creation evidence found"}]}}
-</EXAMPLE>
-'''
-    EXAMPLE_INCONCLUSIVE = '''
-<EXAMPLE verdict="inconclusive">
-Input: hypothesis requires {src_ip, computer} for lateral movement. Query returned 1 row with computer='HOST-B' but no src_ip.
-Output: {"query_id": "Q125", "verdict": "inconclusive", "rationale": "Missing src_ip in observed row. Need query to identify source IP of logon events to HOST-B.", "finding_updates": [], "memory_updates": {}}
-</EXAMPLE>
-'''
-    return f"{EXAMPLE_CONFIRMED}{EXAMPLE_REFUTED_ZERO}{EXAMPLE_INCONCLUSIVE}"
-
-
-def build_check_messages(
-    planned_query: PlannedQuery,
-    hypothesis: Hypothesis | None,
-    finding_candidates: list[dict[str, Any]],
-    result_summary: dict[str, Any],
-    overview_md: str,
-    memory_context_md: str,
-    query_index: int = 1,
-    max_queries: int = 5,
-    observed_evidence_ids: list[str] | None = None,
-    rule_context: RuleContext | None = None,
-    fallback_info: dict[str, Any] | None = None,
-) -> list[dict[str, str]]:
-    """Build full check-phase messages for evaluating a query result.
-
-    Injects verdict taxonomy rules, entity constraints, zero-evidence
-    guardrails, and rule-based criteria."""
-    str_fallback = _check_fallback_guidance(fallback_info)
-    zero_evidence = int(result_summary.get("row_count") or 0) == 0
-    system = (
-        f"{_dfir_playbook('check')}\n"
-        f"{_time_range_guidance()}"
-        "<TASK>You are a DFIR review analyst. Evaluate SQL results against hypothesis and output structured findings.</TASK>\n"
-        "<INPUT_SCHEMA>SQL result summary, hypothesis with required_entities, finding candidates, evidence_ids list</INPUT_SCHEMA>\n"
-        "<RULES>\n"
-        f"evidence_ids: {_check_evidence_id_guidance(observed_evidence_ids) or 'none available'}\n"
-        f"zero_evidence: {_check_zero_evidence_note(result_summary)}\n"
-        f"{_check_entity_constraint()}\n"
-        f"rule_based: {_check_rule_verdict_guidance(rule_context)}\n"
-        f"fallback: {str_fallback}\n"
-        "</RULES>\n"
-        "<MEMORY_RULES>\n"
-        "facts: always include observed evidence_ids from the current query result. Do not emit speculative or unconfirmed items into memory_updates.facts. If you cannot cite observed evidence_ids, omit the fact.\n"
-        "finding_updates format: finding_id, new_status (accepted or suppressed), confidence_delta\n"
-        "suspicious_evidence format: evidence_id, reason, confidence (0.0-1.0)\n"
-        "entities require entity_type and role.\n"
-        "</MEMORY_RULES>\n"
-        f"{_load_fp_reduction_guidance()}{_mandatory_missing_checks_guidance()}"
-        "<VERDICT_RULES>\n"
-        "confirmed — required_entities co-observed in same rows, OR >= 50% of confirm_when.co_observed_event_ids present with matching temporal order. In DFIR, evidence presence SUFFICES for confirmation — you do not need smoking-gun causation proof. Confidence >= 0.6.\n"
-        "refuted — zero rows after a fair search, or observed entities clearly contradict hypothesis. Confidence < 0.3.\n"
-        "inconclusive — USE ONLY when the result is genuinely ambiguous AND no further query could resolve it. NEVER output 'inconclusive' for zero-row results that could instead be 'refuted'. Each hypothesis may have at most 2 inconclusive verdicts before the system treats further inconclusives as refuted. MUST list missing entity types in rationale.\n"
-        "newlead — genuinely new attack surface or actor. Name the specific entity.\n"
-        "Prohibited phrases: 'direct causation not proven', 'full attack chain not visible', 'requires further investigation', 'cannot be determined', 'insufficient evidence'. State exactly what entity is missing.\n"
-        "</VERDICT_RULES>\n"
-        f"{_check_strictness_note(query_index, max_queries)}\n"
-        "<OUTPUT_SCHEMA>\n"
-        "{\n"
-        '  "query_id": "Q-123",\n'
-        '  "verdict": "confirmed",\n'
-        '  "finding_updates": [{"finding_id": "F-456", "new_status": "accepted", "confidence_delta": 0.2}],\n'
-        '  "suspicious_evidence": [{"evidence_id": "E-789", "reason": "encoded command line", "confidence": 0.9}],\n'
-        '  "new_hypotheses": [],\n'
-        '  "memory_updates": {"facts": [{"fact_type": "lateral_movement", "fact_key": "src_ip->host", "fact_value": "192.168.1.1->HOST-A", "evidence_ids": ["E-789"]}],\n'
-        '  "report_text": "RDP logon observed from external IP to HOST-A",\n'
-        '  "missing_checks": [],\n'
-        '  "notes": ""\n'
-        "}\n"
-        "</OUTPUT_SCHEMA>\n"
-        f"{_check_example_block(rule_context, fallback_info, zero_evidence)}"
-        "Output JSON only. "
-        f"{_lang_instruction()} "
-    )
-    user = (
-        "Evaluate the following query result.\n"
-        f"overview_md:\n{overview_md}\n\n"
-        f"structured_memory_context:\n{memory_context_md}\n\n"
-        f"planned_query: {planned_query.model_dump()}\n"
-        f"hypothesis: {_slim_hypothesis_dump(hypothesis) if hypothesis else None}\n"
-        f"finding_candidates: {finding_candidates}\n"
-        f"result_summary: {result_summary}\n"
-    )
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ]
-
-
-def build_check_verdict_messages(
-    planned_query: PlannedQuery,
-    hypothesis: Hypothesis | None,
-    result_summary: dict[str, Any],
-    rule_context: RuleContext | None = None,
-    fallback_info: dict[str, Any] | None = None,
-) -> list[dict[str, str]]:
-    """Build verdict-only check messages as the first phase of phased checking.
-
-    Narrowly focuses on verdict determination (confirmed/refuted/inconclusive/newlead)
-    without memory-update or suspicious-evidence extraction."""
-
-    zero_evidence = int(result_summary.get("row_count") or 0) == 0
-    rule_verdict_guidance = ""
-    if rule_context:
-        confirm = rule_context.confirm_when or {}
-        refute = rule_context.refute_when or {}
-        rule_verdict_guidance = f"Rule-based verdict criteria (from {rule_context.rule_id}): Confirm when: {confirm}. Refute when: {refute}. "
-
-    system = (
-        f"{_dfir_playbook('check')}\n"
-        f"{_time_range_guidance()}"
-        "<TASK>You are a DFIR review analyst. Determine verdict based on SQL results.</TASK>\n"
-        "<INPUT_SCHEMA>SQL result summary, hypothesis, rule_context</INPUT_SCHEMA>\n"
-        "<RULES>\n"
-        "confirmed: required_entities co-observed, OR >= 50% of confirm_when.co_observed_event_ids present with matching temporal order. Evidence presence is enough for confirmation.\n"
-        "refuted: zero rows after a fair search, or entities contradict hypothesis.\n"
-        "inconclusive: USE SPARINGLY — at most 2 per hypothesis. Name the missing entity.\n"
-        f"{rule_verdict_guidance}\n"
-        "</RULES>\n"
-        "<OUTPUT_SCHEMA>{\"query_id\": \"Q-123\", \"verdict\": \"confirmed|refuted|inconclusive|newlead\", \"rationale\": \"explanation\"}\n"
-        "Output JSON only. "
-        f"{_lang_instruction()} "
-    )
-    user = (
-        f"planned_query: {planned_query.model_dump()}\n"
-        f"hypothesis: {_slim_hypothesis_dump(hypothesis) if hypothesis else None}\n"
-        f"result_summary: {result_summary}\n"
-    )
-    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
-
-
-def build_check_memory_updates_messages(
-    verdict: str,
-    result_summary: dict[str, Any],
-    finding_candidates: list[dict[str, Any]],
-    overview_md: str | None = None,
-) -> list[dict[str, str]]:
-    """Build messages for durable memory extraction (facts, timeline, entities) after a verdict."""
-
-    system = (
-        "<TASK>You are a DFIR review analyst. Extract durable memory updates based on verdict.</TASK>\n"
-        "<INPUT_SCHEMA>verdict, SQL result, finding candidates</INPUT_SCHEMA>\n"
-        "<RULES>\n"
-        "facts: Include evidence_ids; for co-observed entities, facts, timestamps.\n"
-        "timeline: Include evidence_ids; central attack timestamps.\n"
-        "tasks: Unresolved questions with kind (internal_db_check/external_lookup/human_decision).\n"
-        "entities: entity_type + name + role; include evidence_ids.\n"
-        "refuted_hypotheses/resolved_gaps: When hypothesis disproven or gap resolved.\n"
-        "Only output items you can cite with evidence_ids.\n"
-        "</RULES>\n"
-        "<OUTPUT_SCHEMA>{\"memory_updates\": {\"facts\": [...], \"timeline\": [...], \"tasks\": [...], \"entities\": [...], \"refuted_hypotheses\": [...], \"resolved_gaps\": [...]}}\n"
-        "Output JSON only. "
-        f"{_lang_instruction()} "
-    )
-    user = (
-        f"verdict: {verdict}\n"
-        f"result_summary: {result_summary}\n"
-        f"finding_candidates: {finding_candidates}\n"
-    )
-    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
-
-
-def build_check_suspicious_evidence_messages(
-    result_summary: dict[str, Any],
-) -> list[dict[str, str]]:
-    """Build messages for suspicious-evidence identification and report-text generation."""
-
-    system = (
-        "<TASK>You are a DFIR review analyst. Identify suspicious evidence from SQL results.</TASK>\n"
-        "<INPUT_SCHEMA>SQL result rows (sample_rows)</INPUT_SCHEMA>\n"
-        "<RULES>\n"
-        "suspicious_evidence: List evidence_ids with reason and confidence (0.0-1.0).\n"
-        "reason: Why this evidence is suspicious (encoded command, unusual time, external IP, etc.).\n"
-        "report_text: Brief summary sentence in output language.\n"
-        "</RULES>\n"
-        "<OUTPUT_SCHEMA>{\"suspicious_evidence\": [{\"evidence_id\": \"E-123\", \"reason\": \"...\", \"confidence\": 0.9}], \"report_text\": \"...\"}\n"
-        "Output JSON only. "
-        f"{_lang_instruction()} "
-    )
-    user = f"sample_rows: {result_summary.get('sample_rows') or []}\n"
-    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
-
-
-def build_column_selection_messages(
-    headers: list[str],
-    section_key: str,
-    template_body: str,
-) -> list[dict[str, str]]:
-    """Build messages asking LLM to select analytically relevant columns from a query result set."""
-
-    system = (
-        "You are a DFIR analyst. "
-        "Given a list of column names from query results and the report section context, "
-        "select only the columns that are analytically relevant for this section. "
-        "Drop: internal row IDs, empty/null-only fields, columns redundant with another column, "
-        "and any field that a reader of this section would not care about. "
-        "Output JSON only: {\"columns\": [\"col_a\", \"col_b\", ...]}"
-    )
-    user = (
-        f"section_key: {section_key}\n\n"
-        f"template_context (first 600 chars):\n{template_body[:600]}\n\n"
-        f"available_columns: {headers}\n\n"
-        "Return only the column names worth including in the evidence table."
-    )
-    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
-
 
 def build_verdict_review_messages(
     hypothesis,
     planned_query,
     result_summary: dict,
-    time_range: dict,
+    time_range: dict[str, str] | None = None,
     strictness_note: str = "",
 ) -> list[dict[str, str]]:
     """role: verdict_reviewer.
@@ -1336,7 +832,7 @@ def build_verdict_review_messages(
     """
     system = (
         f"{_dfir_playbook('check')}\n"
-        f"{_time_range_guidance()}"
+        f"{_time_range_guidance(time_range)}"
         "<TASK>You are a verdict_reviewer. Classify the SQL result against the hypothesis as confirmed, refuted, or inconclusive.</TASK>\n"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
@@ -1356,7 +852,8 @@ def build_verdict_review_messages(
 
 
 def build_finding_extractor_messages(
-    hypothesis, result_rows: list[dict], verdict: str, rationale: str
+    hypothesis, result_rows: list[dict], verdict: str, rationale: str,
+    time_range: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
     """role: finding_extractor.
     Goal: extract finding entries IFF verdict == confirmed.
@@ -1380,7 +877,8 @@ def build_finding_extractor_messages(
 
 
 def build_memory_updater_messages(
-    hypothesis, verdict: str, rationale: str
+    hypothesis, verdict: str, rationale: str,
+    time_range: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
     """role: memory_updater.
     Goal: propose durable memory writes (facts.md additions).
@@ -1468,97 +966,50 @@ def build_report_section_messages(
     current_section_outline: list[dict] | None = None,
     verification_notes: list[str] | None = None,
     raw_evidence_rows: list[dict[str, Any]] | None = None,
+    time_range: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
     """Build messages for report section writing with evidence and template context."""
 
-    insufficient_evidence_placeholder = (
-        "【調査不足: 理由】"
-        if _output_language().startswith("ja")
-        else "[INSUFFICIENT EVIDENCE: reason]"
-    )
-    coverage_guidance = _section_coverage_block(report_brief or {})
-    if str(section_meta.get("section") or "").strip() == "1_overview" and coverage_guidance:
-        coverage_guidance = (
-            "Use the following evidence coverage summary as the canonical Evidence Scope. "
-            "Do not invent sources that are not listed.\n"
-            f"{coverage_guidance}\n"
-        )
-    evidence_for_prompt: list[dict[str, Any]] = [result for result in evidence_results if str(result.get("kind") or "rows") == "rows"]
-    if not evidence_for_prompt:
-        evidence_for_prompt = evidence_results
-    if raw_evidence_rows:
-        evidence_for_prompt = [
-            {k: v for k, v in result.items() if k != "sample_rows"}
-            for result in evidence_results
-        ]
-    EXAMPLE_REPORT_SECTION = '''
-<EXAMPLE verdict="report_section">
-Input: section_meta={'section': '3_technical'}, template_body='## Process Execution\\nLook for suspicious processes.', evidence_results=[{'sample_rows': [{'evidence_id': 'E1', 'process_name': 'powershell.exe', 'command_line': '-enc ...'}]}]
-Output: "## Process Execution\\n\\nOne suspicious process was observed: powershell.exe with encoded command line (evidence_id: E1)."
-</EXAMPLE>
-'''
-
-    app_catalog = _load_app_catalog()
-    app_cat_compact = ", ".join(
-        f"{exe}={info.get('category', '?')}"
-        for exe, info in app_catalog.get("mappings", {}).items()
-    ) or "see investigation framework"
-    event_guidance = _build_event_id_guidance(evidence_results)
-    source_verdicts = _collect_source_verdicts(evidence_results)
-    strength_guidance = ""
-    if source_verdicts and all(verdict != "confirmed" for verdict in source_verdicts):
-        strength_guidance = (
-            "source_verdict guidance: Every supplied evidence result is below confirmed. "
-            "Use cautious language only; avoid 'confirmed', 'executed', 'compromised', 'attack succeeded', or equivalent strong assertions unless additional evidence explicitly supports them.\n"
-        )
+    placeholder = "【調査不足: 理由】" if _output_language().startswith("ja") else "[INSUFFICIENT EVIDENCE: reason]"
+    cov = _section_coverage_block(report_brief or {})
+    if cov and str(section_meta.get("section") or "").strip() == "1_overview":
+        cov = f"Use the following evidence coverage summary as the canonical Evidence Scope. Do not invent sources that are not listed.\n{cov}\n"
+    evidence = [r for r in evidence_results if str(r.get("kind") or "rows") != "rows"] or evidence_results
+    sv = _collect_source_verdicts(evidence_results)
+    strength = ""
+    if sv and all(v != "confirmed" for v in sv):
+        strength = "source_verdict guidance: Every supplied evidence result is below confirmed. Use cautious language only; avoid 'confirmed', 'executed', 'compromised', 'attack succeeded', or equivalent strong assertions unless additional evidence explicitly supports them.\n"
+    app_cat = ", ".join(f"{e}={i.get('category','?')}" for e, i in _load_app_catalog().get("mappings",{}).items()) or "see investigation framework"
 
     system = (
-        f"{_dfir_playbook('report_section')}\n"
-        f"{_time_range_guidance()}"
+        f"{_dfir_playbook('report_section')}\n{_time_range_guidance(time_range)}"
         "<TASK>You are a DFIR report writer. Fill the provided Markdown section template using only supplied evidence.</TASK>\n"
         "<INPUT_SCHEMA>section_meta, evidence_results, previous_sections, template_body</INPUT_SCHEMA>\n"
-        "<RULES>\n"
-        "confidence_matrix: confidence >= 0.8 => 'confirmed'/'observed'; confidence >= 0.5 and < 0.8 => 'strongly suggests'; confidence < 0.5 => 'requires further investigation'.\n"
+        "<RULES>\nconfidence_matrix: confidence >= 0.8 => 'confirmed'/'observed'; confidence >= 0.5 => 'strongly suggests'; confidence < 0.5 => 'requires further investigation'.\n"
         "Do not use 'confirmed' for findings or conclusions below 0.8 confidence.\n"
         "Match wording to confidence: use cautious language for low-confidence items.\n"
-        f"no_invented_facts: Write placeholder only for unsupported claims. Placeholder: {insufficient_evidence_placeholder}\n"
+        f"no_invented_facts: Write placeholder for unsupported claims: {placeholder}\n"
         "no_causation: Correlation is not proof of causation.\n"
         "confirmed_hypotheses: Reflect in appropriate sections; refuted_hypotheses only in 'Discarded Hypotheses' subsection.\n"
         "Recommended actions must scale with evidence strength.\n"
-        f"app_categories: {app_cat_compact}\n"
-        f"{_format_artifact_inference()}"
-        f"{event_guidance}"
-        f"{strength_guidance}"
-        "</RULES>\n"
+        f"app_categories: {app_cat}\n{_format_artifact_inference()}{_build_event_id_guidance(evidence_results)}{strength}</RULES>\n"
+        f"{_section_evidence_block(raw_evidence_rows)}{cov or ''}"
+        '<EXAMPLE verdict="report_section">\nInput: section_meta={\'section\': \'3_technical\'}, evidence_results=[{\'sample_rows\': [{\'evidence_id\': \'E1\', \'process_name\': \'powershell.exe\'}]}]\nOutput: "## Process Execution\\n\\nOne suspicious process was observed: powershell.exe (evidence_id: E1)."\n</EXAMPLE>\n'
+        f"Output Markdown only (no fences). {_lang_instruction()}"
     )
-    evidence_guidance = _section_evidence_block(raw_evidence_rows)
-    if evidence_guidance:
-        system += f"{evidence_guidance}\n"
-    if coverage_guidance:
-        system += f"{coverage_guidance}\n"
-    system += f"{EXAMPLE_REPORT_SECTION}"
-    system += f"Output Markdown only (no fences). {_lang_instruction()}"
     raw_block = ""
     if raw_evidence_rows:
-        table_md = _rows_to_markdown_table(raw_evidence_rows)
-        raw_block = f"\nnormalized_evidence_rows (summaries only; do not mirror raw tables):\n{table_md}\n"
+        raw_block = f"\nnormalized_evidence_rows (summaries only; do not mirror raw tables):\n{_rows_to_markdown_table(raw_evidence_rows)}\n"
     user = (
-        f"section_meta: {section_meta}\n\n"
-        f"current_subsection: {section_heading or '(full section)'}\n\n"
-        f"report_brief: {_slim_report_brief_for_section(report_brief or {}, str(section_meta.get('section') or ''))}\n\n"
+        f"section_meta: {section_meta}\ncurrent_subsection: {section_heading or '(full section)'}\n"
+        f"report_brief: {_slim_report_brief_for_section(report_brief or {}, str(section_meta.get('section') or ''))}\n"
         f"{_section_context_block(context_sections, current_section_outline or [])}"
         f"{_section_verification_block(verification_notes)}"
-        f"evidence_coverage: {report_brief.get('evidence_coverage') if isinstance(report_brief, dict) else {}}\n\n"
-        f"evidence_results: {evidence_for_prompt}\n"
-        f"{raw_block}\n"
-        "Complete only this current template block by replacing placeholders and comments with evidence-based content. "
-        "If verification_notes indicate contradiction, explicitly state what evidence refutes the claim and why.\n\n"
+        f"evidence_results: {evidence}\n{raw_block}\n"
+        "Complete only this current template block by replacing placeholders with evidence-based content.\n"
         f"{template_body}"
     )
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ]
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
 def _load_question_routing_raw() -> dict[str, Any]:
@@ -1605,6 +1056,7 @@ def build_benchmark_section_messages(
     raw_evidence_rows: list[dict[str, Any]] | None = None,
     verification_notes: list[str] | None = None,
     benchmark_id: str | None = None,
+    time_range: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
     """Build messages for benchmark appendix blocks with structured JSON output schema.
 
@@ -1644,7 +1096,7 @@ def build_benchmark_section_messages(
 
     system = (
         f"{_dfir_playbook('report_section')}\n"
-        f"{_time_range_guidance()}"
+        f"{_time_range_guidance(time_range)}"
         "<TASK>You are a benchmark answer writer for a DFIR appendix block.</TASK>\n"
         "<INPUT_SCHEMA>section_meta, block_heading, template_body, evidence_results, raw_evidence_rows</INPUT_SCHEMA>\n"
         f"<BENCHMARK_ID>The id field of your output MUST be exactly: {block_id}</BENCHMARK_ID>\n"
@@ -1695,6 +1147,7 @@ def build_benchmark_classify_messages(
     block_heading: str,
     evidence_rows: list[dict],
     expected_shape: dict | None,
+    time_range: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
     """role: benchmark_classifier.
     Goal: decide answer status and pick which evidence_rows answer the question.
@@ -1742,6 +1195,7 @@ def build_section_agent_plan_messages(
     reusable_facts: list[dict[str, Any]],
     reusable_evidence: list[dict[str, Any]],
     memory_context_md: str = "",
+    time_range: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
     """Build messages for the section agent's plan phase — decide next evidence action.
 
@@ -1768,7 +1222,7 @@ Output: {"action": "template", "template_id": "service-creation", "params": {"co
 
     system = (
         f"{_dfir_playbook('section_agent_plan')}\n"
-        f"{_time_range_guidance()}"
+        f"{_time_range_guidance(time_range)}"
         "<TASK>You are a DFIR section-planning agent. Decide next evidence-gathering action for report block.</TASK>\n"
         "<INPUT_SCHEMA>section_key, block_heading, template_block, structured_memory_context, findings_snapshot, keypoint_catalog, query_template_catalog, prior_runs</INPUT_SCHEMA>\n"
         f"{schema_notes_block}"
@@ -1829,6 +1283,7 @@ def build_section_agent_check_messages(
     reusable_facts: list[dict[str, Any]],
     reusable_evidence: list[dict[str, Any]],
     memory_context_md: str = "",
+    time_range: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
     """Build messages for the section agent's check phase — verify evidence sufficiency.
 
@@ -1850,7 +1305,7 @@ Output: {"verdict": "block_contradicted", "status": "not_found", "rationale": "N
 '''
     system = (
         f"{_dfir_playbook('section_agent_check')}\n"
-        f"{_time_range_guidance()}"
+        f"{_time_range_guidance(time_range)}"
         "<TASK>You are a DFIR section-check agent. Judge if collected evidence suffices to write the report block.</TASK>\n"
         "<INPUT_SCHEMA>collected_results, latest_result, reusable_section_facts, reusable_section_evidence, structured_memory_context, template_block</INPUT_SCHEMA>\n"
         "<OUTPUT_SCHEMA>\n"
@@ -1893,15 +1348,15 @@ Output: {"verdict": "block_contradicted", "status": "not_found", "rationale": "N
 def build_section_outline_messages(
     template_body: str,
     relevant_evidence: list[dict],
-    time_range: dict,
-    section_meta: dict,
+    time_range: dict[str, str] | None = None,
+    section_meta: dict | None = None,
 ) -> list[dict[str, str]]:
     """role: section_outliner.
     Goal: assign each evidence item to ONE paragraph; produce outline JSON.
     """
     system = (
         f"{_dfir_playbook('report_section')}\n"
-        f"{_time_range_guidance()}"
+        f"{_time_range_guidance(time_range)}"
         "<TASK>You are a section_outliner. Assign evidence items to template paragraphs. Do NOT write narrative text.</TASK>\n"
         "<INPUT_SCHEMA>\n"
         f"template_body: {template_body}\n"
@@ -1930,6 +1385,7 @@ def build_paragraph_narrate_messages(
     evidence_rows: list[dict],
     template_body: str,
     language: str = "en",
+    time_range: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
     """role: section_narrator.
     Goal: write ONE markdown paragraph for the given heading using the evidence.
@@ -1954,6 +1410,7 @@ def build_gap_identifier_messages(
     observed_keypoints: list[dict],
     uncovered_keypoints: list[dict],
     active_hypotheses_slim: list[dict],
+    time_range: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
     """role: gap_identifier.
     Goal: identify which uncovered_keypoints lack active hypothesis coverage.
@@ -1977,6 +1434,7 @@ def build_gap_identifier_messages(
 def build_hypothesis_drafter_messages(
     gap_area: dict,
     available_rules: list[dict],
+    time_range: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
     """role: hypothesis_drafter.
     Goal: draft ONE hypothesis targeting the given gap_area.

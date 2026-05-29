@@ -34,7 +34,7 @@ from forensia.ai.hypothesis_manager import (
     _upsert_hypothesis,
 )
 from forensia.ai.json_response import request_llm_json
-from forensia.ai.planner import BroadPlanResult, _compute_uncovered_keypoints, broad_plan_investigation, plan_hypothesis_query
+from forensia.ai.planner import _compute_uncovered_keypoints, plan_hypothesis_query
 from forensia.ai.prompts import _slim_hypothesis_dump, build_gap_identifier_messages, build_hypothesis_drafter_messages, resolve_rule_context
 from forensia.ai.report_gap import (
     _build_report_status,
@@ -772,71 +772,6 @@ def _apply_memory_updates(
         slug = hypothesis.description[:40]
         content = _render_hypothesis_memory(None, hypothesis)
         memory.upsert_hypothesis(hypothesis.id, slug, content)
-
-
-# DESIGN-A1: Extracted sub-functions for investigate() monolith
-
-async def _run_broad_plan_phase(
-    state: SessionState,
-    memory: MemoryManager,
-    base_url: str,
-    model: str,
-    plan_cycle: int,
-    llm_logger: LLMCallLogger,
-    db: CaseDB,
-    session_id: str,
-) -> tuple[int, bool, SessionState]:
-    """Execute broad planning phase. Returns (new_hypotheses_count, stop_flag, updated_state)."""
-    memory_overview_cache = memory.load_compact_context(["overview.md"], max_bytes=memory.max_bytes)
-    memory_plan_context_cache = memory.load_investigation_context(
-        None,
-        max_bytes=max(1024, memory.max_bytes // 3),
-        include_overview=False,
-    )
-    try:
-        observed_keypoints = _scan_report_keypoints(case, db)
-        broad_plan: BroadPlanResult = broad_plan_investigation(
-            state=state,
-            memory=memory,
-            base_url=base_url,
-            model=model,
-            max_findings=20,
-            observed_keypoints=[f"{item['keypoint']} (rows={item['row_count']})" for item in observed_keypoints]
-            or _observed_keypoints_from_findings(state.findings_snapshot),
-            overview_md=memory_overview_cache,
-            default_context_md=memory_plan_context_cache,
-            status_callback=lambda msg: print(f"[yellow]{msg}[/yellow]"),
-            audit_callback=lambda messages, output, parsed: llm_logger.write(
-                iteration=plan_cycle,
-                phase="plan-broad",
-                input_messages=messages,
-                output=parsed,
-                model=model,
-                base_url=base_url,
-            ),
-        )
-        state.active_hypotheses = _merge_active_hypotheses(
-            db=db,
-            current=state.active_hypotheses,
-            updates=broad_plan.hypotheses,
-            resolved=state.resolved_hypotheses,
-            session_id=session_id,
-            origin="broad_plan",
-        )
-        audit_rows = _audit_broad_plan_hypotheses(state, broad_plan.hypotheses)
-        _save_step(
-            db=db,
-            session_id=session_id,
-            iteration=plan_cycle,
-            phase="plan-broad-audit",
-            hypothesis_id=None,
-            input_json={"hypotheses": [item.model_dump() for item in broad_plan.hypotheses]},
-            output_json={"audits": audit_rows},
-        )
-        return len(broad_plan.hypotheses), broad_plan.stop, state
-    except Exception as exc:
-        print(f"[red][plan-broad] LLM failed: {exc}[/red]")
-        return 0, False, state
 
 
 async def _investigate_one_hypothesis(
@@ -1627,8 +1562,6 @@ async def investigate(
         case, db, profile, base_url, model, template_root,
     )
     case.extract_time_range(db.conn)
-    from forensia.ai.prompts import set_case_time_range
-    set_case_time_range(case.time_range)
     status = "running"
     no_progress_count = 0
     previous_sigint = signal.getsignal(signal.SIGINT)

@@ -1,3 +1,7 @@
+---
+behaviors:
+  - require_recommendations_strength
+---
 # Recommendations
 
 ## Immediate Actions

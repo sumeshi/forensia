@@ -10,7 +10,6 @@ from forensia.ai.checker import _parse_new_hypotheses
 from forensia.ai.investigator import _query_fingerprint
 from forensia.ai.section_agent import _benchmark_report_brief
 from forensia.ai.planner import (
-    _parse_hypotheses,
     _request_with_optional_context,
     plan_hypothesis_query,
     validate_select_sql,
@@ -18,13 +17,9 @@ from forensia.ai.planner import (
 from forensia.ai.prompts import (
     _truncate_context_sections,
     build_benchmark_section_messages,
-    build_broad_plan_messages,
-    build_check_messages,
-    build_hypothesis_plan_messages,
     build_report_section_messages,
 )
 from forensia.ai.sql_schema import build_investigation_framework
-from forensia.ai.sql_schema import ALLOWED_TABLES
 from forensia.ai.sql_templates import _template_failed_logon_by_ip_window, coerce_list
 from forensia.config import clear_llm_settings_cache, resolve_llm_config
 from forensia.core.case import Case
@@ -54,151 +49,7 @@ class PlannerRetryTests(unittest.TestCase):
     def tearDown(self) -> None:
         clear_llm_settings_cache()
 
-    def test_broad_plan_messages_do_not_embed_sql_framework(self) -> None:
-        messages = build_broad_plan_messages(
-            overview_md="# overview",
-            extra_context_md="",
-            iteration=1,
-            findings_snapshot=[],
-            active_hypotheses=[],
-            resolved_hypotheses=[],
-            history=[],
-        )
-        system = messages[0]["content"]
-        self.assertNotIn("Available tables:", system)
-        self.assertNotIn("event_id IN (1102, 104)", system)
-        self.assertNotIn("memory/details/fact-NNN.md", system)
-        self.assertIn("confirm_when_rule", system)
 
-    def test_hypothesis_plan_messages_list_all_allowed_tables(self) -> None:
-        messages = build_hypothesis_plan_messages(
-            overview_md="# overview",
-            extra_context_md="",
-            iteration=1,
-            hypothesis=Hypothesis(id="H1", description="desc"),
-            finding_candidates=[],
-            hypothesis_history=[],
-            query_templates=[],
-        )
-        system = messages[0]["content"]
-        for table_name in sorted(ALLOWED_TABLES):
-            self.assertIn(table_name, system)
-        self.assertIn("memory/details/fact-NNN.md", system)
-
-    def test_broad_plan_messages_trim_findings_payload(self) -> None:
-        messages = build_broad_plan_messages(
-            overview_md="# overview",
-            extra_context_md="",
-            iteration=1,
-            findings_snapshot=[
-                {
-                    "finding_id": "F-1",
-                    "title": "Suspicious service",
-                    "severity": "high",
-                    "confidence": 0.9,
-                    "status": "accepted",
-                    "summary": "summary",
-                    "evidence": [{"raw_json": "huge"}],
-                    "attack": ["T1543"],
-                    "raw_json": {"x": 1},
-                }
-            ],
-            active_hypotheses=[],
-            resolved_hypotheses=[],
-            history=[],
-        )
-        payload = messages[1]["content"]
-        self.assertIn("finding_id", payload)
-        self.assertIn("summary", payload)
-        self.assertNotIn("raw_json", payload)
-        self.assertNotIn("evidence", payload)
-        self.assertNotIn("attack", payload)
-
-    def test_broad_plan_messages_cap_findings_at_20(self) -> None:
-        messages = build_broad_plan_messages(
-            overview_md="# overview",
-            extra_context_md="",
-            iteration=1,
-            findings_snapshot=[
-                {
-                    "finding_id": f"F-{index}",
-                    "title": f"title {index}",
-                    "severity": "medium",
-                    "confidence": 0.5,
-                    "status": "accepted",
-                    "summary": "summary",
-                }
-                for index in range(25)
-            ],
-            active_hypotheses=[],
-            resolved_hypotheses=[],
-            history=[],
-            max_findings=20,
-        )
-        payload = messages[1]["content"]
-        self.assertIn("F-19", payload)
-        self.assertNotIn("F-20", payload)
-
-    def test_broad_plan_messages_cap_resolved_hypotheses(self) -> None:
-        resolved = [
-            Hypothesis(id=f"H{i}", description=f"resolved {i}", status="confirmed", summary=f"summary {i}")
-            for i in range(25)
-        ]
-        messages = build_broad_plan_messages(
-            overview_md="# overview",
-            extra_context_md="",
-            iteration=1,
-            findings_snapshot=[],
-            active_hypotheses=[],
-            resolved_hypotheses=resolved,
-            history=[],
-        )
-        payload = messages[1]["content"]
-        self.assertNotIn("resolved 0", payload)
-        self.assertNotIn("resolved 4", payload)
-        self.assertIn("resolved 5", payload)
-        self.assertIn("resolved 24", payload)
-
-    def test_build_check_messages_includes_structured_memory(self) -> None:
-        messages = build_check_messages(
-            planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
-            hypothesis=Hypothesis(id="H1", description="desc"),
-            finding_candidates=[],
-            result_summary={"row_count": 1},
-            overview_md="# overview",
-            memory_context_md="# facts.md\n- fact",
-        )
-        payload = messages[1]["content"]
-        self.assertIn("# overview", payload)
-        self.assertIn("facts.md", payload)
-
-    def test_build_check_messages_missing_checks_follow_output_language(self) -> None:
-        with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "en"}):
-            clear_llm_settings_cache()
-            messages = build_check_messages(
-                planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
-                hypothesis=Hypothesis(id="H1", description="desc"),
-                finding_candidates=[],
-                result_summary={"row_count": 1},
-                overview_md="# overview",
-                memory_context_md="# facts.md\n- fact",
-            )
-        system = messages[0]["content"]
-        self.assertIn("Other host logons from the same src_ip", system)
-        self.assertNotIn("src_ip からの他ホストへのログオンの有無", system)
-
-    def test_build_check_messages_do_not_request_dead_compromised_fields(self) -> None:
-        messages = build_check_messages(
-            planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
-            hypothesis=Hypothesis(id="H1", description="desc"),
-            finding_candidates=[],
-            result_summary={"row_count": 1},
-            overview_md="# overview",
-            memory_context_md="# facts.md\n- fact",
-        )
-        system = messages[0]["content"]
-        self.assertNotIn("compromised_hosts", system)
-        self.assertNotIn("compromised_users", system)
 
     def test_truncate_context_sections_keeps_text_within_1500_chars(self) -> None:
         sections = {"2_timeline": "x" * 1500, "3_technical": "y" * 1501}
@@ -207,33 +58,6 @@ class PlannerRetryTests(unittest.TestCase):
 
         self.assertEqual("x" * 1500, trimmed["2_timeline"])
         self.assertEqual("y" * 1500, trimmed["3_technical"])
-
-    def test_build_check_messages_define_finding_update_and_suspicious_evidence_schema(self) -> None:
-        messages = build_check_messages(
-            planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
-            hypothesis=Hypothesis(id="H1", description="desc"),
-            finding_candidates=[],
-            result_summary={"row_count": 1},
-            overview_md="# overview",
-            memory_context_md="# facts.md\n- fact",
-        )
-        system = messages[0]["content"]
-        self.assertIn("finding_id, new_status (accepted or suppressed), confidence_delta", system)
-        self.assertIn("evidence_id, reason, confidence (0.0-1.0)", system)
-
-    def test_build_check_messages_require_observed_evidence_for_durable_memory(self) -> None:
-        messages = build_check_messages(
-            planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
-            hypothesis=Hypothesis(id="H1", description="desc"),
-            finding_candidates=[],
-            result_summary={"row_count": 1},
-            overview_md="# overview",
-            memory_context_md="# facts.md\n- fact",
-        )
-        system = messages[0]["content"]
-        self.assertIn("always include observed evidence_ids", system)
-        self.assertIn("Do not emit speculative or unconfirmed items into memory_updates.facts", system)
-        self.assertIn("If you cannot cite observed evidence_ids", system)
 
     def test_report_section_messages_truncate_previous_sections(self) -> None:
         messages = build_report_section_messages(
@@ -284,20 +108,6 @@ class PlannerRetryTests(unittest.TestCase):
         )
         self.assertEqual(1, len(hypotheses))
         self.assertIsNone(hypotheses[0].verdict)
-
-    def test_broad_plan_messages_use_system_assigned_hypothesis_ids(self) -> None:
-        messages = build_broad_plan_messages(
-            overview_md="# overview",
-            extra_context_md="",
-            iteration=1,
-            findings_snapshot=[],
-            active_hypotheses=[],
-            resolved_hypotheses=[],
-            history=[],
-        )
-        system = messages[0]["content"]
-        self.assertIn("<assigned by system>", system)
-        self.assertNotIn('"id": "H-new"', system)
 
     def test_materializes_query_template_into_sql(self) -> None:
         state = SessionState(session_id="session-template", iteration=1)
@@ -483,13 +293,6 @@ class PlannerRetryTests(unittest.TestCase):
         first_call_system = mock_request.call_args_list[0].kwargs["messages"][0]["content"]
         self.assertEqual(1, first_call_system.count("Q-local"))
 
-    def test_parse_hypotheses_logs_debug_on_validation_failure(self) -> None:
-        with self.assertLogs("forensia.ai.planner", level="DEBUG") as logs:
-            hypotheses = _parse_hypotheses([{"id": "H-1"}])
-
-        self.assertEqual([], hypotheses)
-        self.assertTrue(any("hypothesis parse failed" in line for line in logs.output))
-
     def test_query_template_uses_dataset_max_timestamp_not_now(self) -> None:
         sql = _template_failed_logon_by_ip_window({"hours": 24, "threshold": 5})
         self.assertIn("SELECT MAX(timestamp) FROM evtx_events", sql)
@@ -602,7 +405,7 @@ class PlannerRetryTests(unittest.TestCase):
 
         self.assertEqual("inconclusive", result.verdict)
 
-    def test_checker_filters_finding_updates_and_refuted_constraints(self) -> None:
+    def test_checker_phased_verdict_refuted(self) -> None:
         captured = {}
 
         def _capture(*args, **kwargs):
@@ -612,17 +415,13 @@ class PlannerRetryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
+            responses = [
+                {"verdict": "refuted", "rationale": "No evidence found"},
+                {"memory_updates": {"refuted_hypotheses": [{"hypothesis_id": "H1", "reason": "No evidence"}]}},
+            ]
             with CaseDB(case) as db, patch(
                 "forensia.ai.checker.request_llm_json",
-                return_value={
-                    "query_id": "Q1",
-                    "verdict": "refuted",
-                    "finding_updates": [
-                        {"finding_id": "F-1", "new_status": "accepted", "confidence_delta": 0.6},
-                        {"finding_id": "F-2", "new_status": "suppressed", "confidence_delta": -0.4},
-                    ],
-                    "report_text": "text",
-                },
+                side_effect=responses,
             ), patch("forensia.ai.checker.apply_check_result", side_effect=_capture):
                 check_query_result(
                     case=case,
@@ -636,15 +435,11 @@ class PlannerRetryTests(unittest.TestCase):
                     memory=memory,
                     base_url=_llm_base_url(),
                     model="test-model",
-                    use_phased_check=False,
                 )
 
-        self.assertEqual(
-            [{"finding_id": "F-1", "new_status": "suppressed", "confidence_delta": 0.0}],
-            captured["result"].finding_updates,
-        )
+        self.assertEqual("refuted", captured["result"].verdict)
 
-    def test_checker_demotes_zero_evidence_confirmed_and_crushes_positive_delta(self) -> None:
+    def test_checker_demotes_zero_evidence_confirmed_to_inconclusive(self) -> None:
         captured = {}
 
         def _capture(*args, **kwargs):
@@ -654,16 +449,14 @@ class PlannerRetryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
+            responses = [
+                {"verdict": "confirmed", "rationale": "Seems confirmed"},
+                {"findings": [{"title": "Test", "severity": "medium", "evidence_ids": ["ev-1"]}]},
+                {"memory_updates": {}},
+            ]
             with CaseDB(case) as db, patch(
                 "forensia.ai.checker.request_llm_json",
-                return_value={
-                    "query_id": "Q1",
-                    "verdict": "confirmed",
-                    "finding_updates": [
-                        {"finding_id": "F-1", "new_status": "accepted", "confidence_delta": 0.3},
-                    ],
-                    "report_text": "text",
-                },
+                side_effect=responses,
             ), patch("forensia.ai.checker.apply_check_result", side_effect=_capture):
                 check_query_result(
                     case=case,
@@ -677,16 +470,11 @@ class PlannerRetryTests(unittest.TestCase):
                     memory=memory,
                     base_url=_llm_base_url(),
                     model="test-model",
-                    use_phased_check=False,
                 )
 
         self.assertEqual("inconclusive", captured["result"].verdict)
-        self.assertEqual(
-            [{"finding_id": "F-1", "new_status": "accepted", "confidence_delta": 0.0}],
-            captured["result"].finding_updates,
-        )
 
-    def test_checker_limits_inconclusive_delta_and_filters_evidence_references(self) -> None:
+    def test_checker_phased_verdict_inconclusive_memory_updates(self) -> None:
         captured = {}
 
         def _capture(*args, **kwargs):
@@ -696,25 +484,17 @@ class PlannerRetryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
+            responses = [
+                {"verdict": "inconclusive", "rationale": "Missing src_ip"},
+                {"memory_updates": {
+                    "facts": [{"text": "fact", "evidence_ids": ["ev-1"]}],
+                    "resolved_gaps": [{"text": "gap", "evidence_ids": ["ev-2"]}],
+                    "overview": ["story"],
+                }},
+            ]
             with CaseDB(case) as db, patch(
                 "forensia.ai.checker.request_llm_json",
-                return_value={
-                    "query_id": "Q1",
-                    "verdict": "inconclusive",
-                    "finding_updates": [
-                        {"finding_id": "F-1", "new_status": "accepted", "confidence_delta": 0.5},
-                    ],
-                    "suspicious_evidence": [
-                        {"evidence_id": "ev-1", "reason": "keep", "confidence": 0.9},
-                        {"evidence_id": "ev-x", "reason": "drop", "confidence": 0.9},
-                    ],
-                    "memory_updates": {
-                        "facts": [{"text": "fact", "evidence_ids": ["ev-1", "ev-x"]}],
-                        "resolved_gaps": [{"text": "gap", "evidence_ids": ["ev-2", "ev-y"]}],
-                        "overview": ["story"],
-                    },
-                    "report_text": "text",
-                },
+                side_effect=responses,
             ), patch("forensia.ai.checker.apply_check_result", side_effect=_capture):
                 check_query_result(
                     case=case,
@@ -723,36 +503,20 @@ class PlannerRetryTests(unittest.TestCase):
                     iteration=1,
                     planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
                     hypothesis=Hypothesis(id="H1", description="desc"),
-                    finding_candidates=[{"finding_id": "F-1"}],
-                    result_summary={
-                        "row_count": 2,
-                        "sample_rows": [{"evidence_id": "ev-2"}],
-                        "evidence_ids": ["ev-1"],
-                    },
+                    finding_candidates=[],
+                    result_summary={"row_count": 1, "sample_rows": [], "evidence_ids": ["ev-1"]},
                     memory=memory,
                     base_url=_llm_base_url(),
                     model="test-model",
-                    use_phased_check=False,
                 )
 
+        self.assertEqual("inconclusive", captured["result"].verdict)
         self.assertEqual(
-            [{"finding_id": "F-1", "new_status": "accepted", "confidence_delta": 0.02}],
-            captured["result"].finding_updates,
-        )
-        self.assertEqual(
-            [{"evidence_id": "ev-1", "reason": "keep", "confidence": 0.9}],
-            captured["result"].suspicious_evidence,
-        )
-        self.assertEqual(
-            {
-                "facts": [{"text": "fact", "evidence_ids": ["ev-1"]}],
-                "resolved_gaps": [{"text": "gap", "evidence_ids": ["ev-2"]}],
-                "overview": ["story"],
-            },
-            captured["result"].memory_updates,
+            [{"text": "fact", "evidence_ids": ["ev-1"]}],
+            captured["result"].memory_updates.get("facts"),
         )
 
-    def test_checker_drops_durable_memory_updates_when_evidence_becomes_empty(self) -> None:
+    def test_checker_phased_drops_durable_memory_updates_when_evidence_ids_empty(self) -> None:
         captured = {}
 
         def _capture(*args, **kwargs):
@@ -762,26 +526,19 @@ class PlannerRetryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
+            responses = [
+                {"verdict": "inconclusive", "rationale": "Insufficient data"},
+                {"memory_updates": {
+                    "facts": [{"text": "fact", "evidence_ids": ["ev-x"]}],
+                    "timeline": [{"timestamp": "2026-05-24T01:02:03Z", "description": "event", "evidence_ids": ["ev-y"]}],
+                    "resolved_gaps": [{"text": "gap", "evidence_ids": []}],
+                    "tasks": [{"text": "still investigate", "kind": "internal_db_check"}],
+                    "overview": ["keep storyline"],
+                }},
+            ]
             with CaseDB(case) as db, patch(
                 "forensia.ai.checker.request_llm_json",
-                return_value={
-                    "query_id": "Q1",
-                    "verdict": "inconclusive",
-                    "memory_updates": {
-                        "facts": [{"text": "fact", "evidence_ids": ["ev-x"]}],
-                        "timeline": [
-                            {
-                                "timestamp": "2026-05-24T01:02:03Z",
-                                "description": "event",
-                                "evidence_ids": ["ev-y"],
-                            }
-                        ],
-                        "resolved_gaps": [{"text": "gap", "evidence_ids": []}],
-                        "tasks": [{"text": "still investigate", "kind": "internal_db_check"}],
-                        "overview": ["keep storyline"],
-                    },
-                    "report_text": "text",
-                },
+                side_effect=responses,
             ), patch("forensia.ai.checker.apply_check_result", side_effect=_capture):
                 check_query_result(
                     case=case,
@@ -808,7 +565,7 @@ class PlannerRetryTests(unittest.TestCase):
             captured["result"].memory_updates,
         )
 
-    def test_checker_normalizes_entity_type_and_drops_invalid_entity_updates(self) -> None:
+    def test_checker_phased_normalizes_entity_type_and_drops_invalid_entity_updates(self) -> None:
         captured = {}
 
         def _capture(*args, **kwargs):

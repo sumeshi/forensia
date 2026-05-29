@@ -50,10 +50,8 @@ def _coerce_confidence(value: Any, default: float = 0.5) -> float:
 from forensia.ai.json_response import request_llm_json, async_request_llm_json
 from forensia.ai.lmstudio import chat_completion, async_chat_completion
 from forensia.ai.prompts import (
-    _CASE_TIME_RANGE,
     build_benchmark_classify_messages,
     build_benchmark_section_messages,
-    build_column_selection_messages,
     build_paragraph_narrate_messages,
     build_report_section_messages,
     build_section_agent_check_messages,
@@ -1069,18 +1067,18 @@ def _execute_block_plan(
     return source_query, result
 
 
-def _select_columns_via_llm(
-    ctx: _BlockContext,
+def _select_columns_by_template(
     raw_rows: list[dict[str, Any]],
+    section_key: str,
+    template_body: str,
 ) -> list[dict[str, Any]]:
     if not raw_rows:
         return raw_rows
     headers = list(raw_rows[0].keys())
-    col_msgs = build_column_selection_messages(headers, ctx.section_key, ctx.template_body)
-    col_resp = request_llm_json(messages=col_msgs, model=ctx.model, base_url=ctx.base_url)
-    selected = [c for c in (col_resp.get("columns") or []) if c in headers]
-    if selected:
-        return [{c: row[c] for c in selected if c in row} for row in raw_rows]
+    tpl_cf = template_body.casefold()
+    mentioned = [h for h in headers if h.casefold() in tpl_cf]
+    if mentioned:
+        return [{c: row[c] for c in mentioned} for row in raw_rows]
     return raw_rows
 
 
@@ -1266,7 +1264,7 @@ def _write_block_body(
 
     raw_rows = _collect_flat_evidence_rows(collected_results)
     if raw_rows:
-        raw_rows = _select_columns_via_llm(ctx, raw_rows)
+        raw_rows = _select_columns_by_template(raw_rows, ctx.section_key, ctx.template_body)
     prompt_rows = _summarize_flat_evidence_rows(raw_rows) if raw_rows else None
 
     if ctx.benchmark_mode:
@@ -1294,11 +1292,12 @@ def _write_block_body(
             status=status_inner,
             case=ctx.case,
         )
+        messages = classify_messages
     else:
         outline_messages = build_section_outline_messages(
             template_body=ctx.template_body,
             relevant_evidence=collected_results,
-            time_range=_CASE_TIME_RANGE,
+            time_range=ctx.case.time_range,
             section_meta={"section": ctx.section_key, "title": ctx.title},
         )
         outline = request_llm_json(
@@ -1320,6 +1319,7 @@ def _write_block_body(
             chat_completion(messages=narrate_messages, model=ctx.model, base_url=ctx.base_url).strip(),
             status_inner,
         )
+        messages = narrate_messages
 
     if audit_callback:
         audit_callback(messages, body)
