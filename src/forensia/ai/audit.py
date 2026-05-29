@@ -43,6 +43,7 @@ class LLMCallLogger:
         base_url: str,
         suffix: str | None = None,
     ) -> None:
+        """Serialize an LLM call transcript to a JSON file on disk."""
         safe_phase = _slugify(phase)
         safe_suffix = _slugify(suffix or "")
         counter_key = f"{iteration:02d}-{safe_phase}-{safe_suffix}"

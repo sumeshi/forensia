@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from functools import lru_cache
 import hashlib
 import json
 import re
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date as _date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ EvidenceResolver = Callable[[CaseDB], list[dict[str, Any]]]
 
 @lru_cache(maxsize=None)
 def _parse_template(template_path: str) -> str:
+    """Parse YAML front matter from a template file, returning only the body."""
     text = Path(template_path).read_text(encoding="utf-8")
     if text.startswith("---\n"):
         parts = text.split("---\n", 2)
@@ -40,6 +42,7 @@ def _parse_template(template_path: str) -> str:
 
 
 def _parse_block_hints(block_body: str) -> dict[str, Any]:
+    """Extract hint annotations (evidence_keypoints, mode) from a block's HTML comment markers."""
     hints: dict[str, Any] = {"evidence_keypoints": [], "mode": ""}
     seen_keypoints: set[str] = set()
     for match in BLOCK_HINT_PATTERN.finditer(block_body):
@@ -60,6 +63,7 @@ def _parse_block_hints(block_body: str) -> dict[str, Any]:
 
 
 def _split_template_body(template_body: str) -> tuple[str, list[dict[str, Any]]]:
+    """Split a template body into preamble and annotated Markdown blocks delimited by ## headings."""
     lines = template_body.splitlines()
     preamble: list[str] = []
     blocks: list[dict[str, Any]] = []
@@ -122,6 +126,7 @@ def _section_family(section_key: str) -> str:
 
 
 def _default_keypoints_for_section(section_key: str) -> list[str]:
+    """Return the default keypoint names to resolve as evidence for a given section key."""
     family = _section_family(section_key)
     prefixes = SECTION_KEYPOINT_PREFIXES.get(family, ())
     names: list[str] = []
@@ -138,6 +143,7 @@ def _default_keypoints_for_section(section_key: str) -> list[str]:
 
 
 def _section_confidence(body: str) -> float:
+    """Estimate confidence from the ratio of gap markers to total paragraphs."""
     paragraphs = [item.strip() for item in re.split(r"\n\s*\n", body) if item.strip()]
     paragraph_count = max(len(paragraphs), 1)
     gap_count = len(GAP_PATTERN.findall(body))
@@ -145,6 +151,7 @@ def _section_confidence(body: str) -> float:
 
 
 def _timeline_rows_are_chronological(body: str) -> bool:
+    """Verify that timeline Markdown table rows are sorted by first-column timestamp."""
     timestamps: list[str] = []
     for line in body.splitlines():
         if not line.startswith("|"):
@@ -169,6 +176,7 @@ def _normalized_text_key(text: str) -> str:
 
 
 def _first_heading_text(body: str) -> str:
+    """Extract the first H1 heading text from a Markdown body."""
     for line in body.splitlines():
         match = HEADING_PATTERN.match(line.strip())
         if match and len(match.group(1)) == 1:
@@ -182,6 +190,7 @@ def _title_from_template_body(template_body: str, fallback: str) -> str:
 
 
 def _title_matches_body_heading(title: str, body: str) -> bool:
+    """Check whether a section title is compatible with the first H1 heading in the body."""
     heading = _first_heading_text(body)
     if not heading:
         return True
@@ -196,6 +205,7 @@ def _title_matches_body_heading(title: str, body: str) -> bool:
 
 
 def _duplicate_finding_titles(db: CaseDB, body: str) -> list[str]:
+    """Detect finding titles that appear more than twice in a section body."""
     lowered_body = body.casefold()
     duplicates: list[str] = []
     rows = fetch_records(
@@ -217,6 +227,7 @@ def _duplicate_finding_titles(db: CaseDB, body: str) -> list[str]:
 
 
 def _correlation_finding_ids(finding_ids: list[str], db: CaseDB) -> list[str]:
+    """Filter a list of finding IDs to those belonging to correlation rules."""
     if not finding_ids:
         return []
     placeholders = ", ".join("?" for _ in finding_ids)
@@ -235,6 +246,7 @@ def _correlation_finding_ids(finding_ids: list[str], db: CaseDB) -> list[str]:
 
 @lru_cache(maxsize=1)
 def _load_event_id_hints() -> dict[int, dict[str, Any]]:
+    """Load the event_id to hints mapping from _schema/event_ids.yaml."""
     import yaml
 
     path = Path(__file__).parent.parent / "rulepacks" / "_schema" / "event_ids.yaml"
@@ -259,6 +271,7 @@ def _load_event_id_hints() -> dict[int, dict[str, Any]]:
 
 
 def _collect_event_ids_from_results(evidence_results: list[dict[str, Any]] | None) -> set[int]:
+    """Collect distinct event_id values from evidence result rows."""
     event_ids: set[int] = set()
     for result in evidence_results or []:
         for row in (result.get("sample_rows") or []) + (result.get("head_rows") or []) + (result.get("tail_rows") or []):
@@ -273,6 +286,7 @@ def _collect_event_ids_from_results(evidence_results: list[dict[str, Any]] | Non
 
 
 def _event_claim_gaps(body: str, evidence_results: list[dict[str, Any]] | None) -> list[str]:
+    """Check if the body uses disallowed wording for event IDs that require extra support."""
     hints = _load_event_id_hints()
     event_ids = _collect_event_ids_from_results(evidence_results)
     if not hints or not event_ids:
@@ -292,6 +306,7 @@ def _event_claim_gaps(body: str, evidence_results: list[dict[str, Any]] | None) 
 
 
 def _parse_section_run_payload(payload: Any) -> dict[str, Any]:
+    """Parse a section run payload from JSON string or dict."""
     if isinstance(payload, dict):
         return payload
     if not isinstance(payload, str) or not payload.strip():
@@ -304,6 +319,7 @@ def _parse_section_run_payload(payload: Any) -> dict[str, Any]:
 
 
 def _coverage_source_label(result: dict[str, Any], payload: dict[str, Any]) -> str:
+    """Derive a human-readable source label from a coverage result and its payload."""
     candidates = [
         str(result.get("keypoint") or "").strip(),
         str(result.get("query_id") or "").strip(),
@@ -319,6 +335,7 @@ def _coverage_source_label(result: dict[str, Any], payload: dict[str, Any]) -> s
 
 
 def _collect_section_coverage(db: CaseDB) -> dict[str, list[dict[str, Any]]]:
+    """Aggregate evidence coverage information per section from the database."""
     try:
         rows = fetch_records(
             db,
@@ -370,6 +387,7 @@ def _collect_section_coverage(db: CaseDB) -> dict[str, list[dict[str, Any]]]:
 
 
 def _coverage_table_markdown(rows: list[dict[str, Any]]) -> str:
+    """Render a list of coverage rows as a Markdown table."""
     if not rows:
         return ""
     header = "| Source | Queried | Rows | Used in answer |"
@@ -388,6 +406,7 @@ def _coverage_table_markdown(rows: list[dict[str, Any]]) -> str:
 
 
 def _append_coverage_table(body: str, coverage_rows: list[dict[str, Any]]) -> str:
+    """Append an Evidence Coverage table to the section body if coverage rows exist."""
     table_md = _coverage_table_markdown(coverage_rows)
     if not table_md:
         return body
@@ -401,6 +420,7 @@ def _append_coverage_table(body: str, coverage_rows: list[dict[str, Any]]) -> st
 
 
 def _coverage_summary_markdown(coverage_map: dict[str, list[dict[str, Any]]]) -> str:
+    """Render a section-aggregated coverage overview as a Markdown table."""
     rows: list[dict[str, Any]] = []
     for section_key, items in coverage_map.items():
         for item in items:
@@ -428,6 +448,7 @@ def _coverage_summary_markdown(coverage_map: dict[str, list[dict[str, Any]]]) ->
 
 
 def _replace_overview_evidence_scope(body: str, summary_md: str) -> str:
+    """Replace or insert the Evidence Scope section in the overview body with a coverage summary table."""
     text = str(body or "").rstrip()
     if not text or not summary_md:
         return text
@@ -454,37 +475,65 @@ def _replace_overview_evidence_scope(body: str, summary_md: str) -> str:
     return rendered
 
 
-def _quality_gate_section(
-    section_key: str,
-    title: str,
-    body: str,
-    gaps: list[str],
-    confidence: float,
-    evidence_results: list[dict[str, Any]] | None = None,
-) -> tuple[list[str], float]:
-    gated_gaps = list(gaps)
-    gated_confidence = confidence
+_OPEN_QUESTION_RE = re.compile(r"(?:^|[\s\(])(\?|？|TBD|TODO|FIXME|要確認|要調査|未確認|未調査|未特定|不明瞭|未解明|XXX|N\/A\?)")
+_CITATION_TOKENS_RE = re.compile(r"(?:証拠|証拠ID|finding[_\s]?id|evidence|根拠は|に基づく|according to|based on the)", re.IGNORECASE)
+_FINDING_ID_RE = re.compile(r"\b[a-z]+-[a-z0-9]+-[0-9]+-[a-z0-9-]+\b")
+_PURE_HEDGE_RE = re.compile(r"(?:may|might|could|possibly|perhaps|seem(?:s|ed)?|appears? to|思われる|可能性が|かもしれない)", re.IGNORECASE)
+_TIMESTAMP_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}([T\s]\d{2}:\d{2})?")
+_ENGLISH_PARAGRAPH_RE = re.compile(r"^[\x20-\x7e]{120,}$", re.MULTILINE)
+_JAPANESE_CHAR_RE = re.compile(r"[぀-ヿ一-鿿]")
+
+
+def _detect_body_language(text: str) -> str:
+    """Crude heuristic: count Japanese chars vs ASCII letters; return 'ja', 'en', or 'mixed'."""
+    ja_chars = len(_JAPANESE_CHAR_RE.findall(text))
+    en_chars = sum(1 for ch in text if "a" <= ch.lower() <= "z")
+    if ja_chars == 0 and en_chars > 50:
+        return "en"
+    if en_chars == 0 and ja_chars > 0:
+        return "ja"
+    if ja_chars > 0 and en_chars > 0:
+        # Compare structural balance — pure JA reports usually have ja_chars >> en_chars
+        return "ja" if ja_chars * 2 > en_chars else "en" if en_chars > ja_chars * 4 else "mixed"
+    return "unknown"
+
+
+@dataclass
+class _GateCtx:
+    section_key: str
+    title: str
+    evidence_results: list[dict[str, Any]] | None
+
+
+QualityCheck = Callable[[str, _GateCtx], tuple[str | None, float | None]]
+
+
+def _check_placeholder_entity(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
     if PLACEHOLDER_ENTITY_PATTERN.search(body):
-        note = "Placeholder entity values detected; additional review is required."
-        if note not in gated_gaps:
-            gated_gaps.append(note)
-        gated_confidence = min(gated_confidence, 0.5)
+        return "Placeholder entity values detected; additional review is required.", 0.5
+    return None, None
+
+
+def _check_template_marker(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
     if HTML_FILL_PATTERN.search(body):
-        note = "Template placeholder markers remain in the section body."
-        if note not in gated_gaps:
-            gated_gaps.append(note)
-        gated_confidence = min(gated_confidence, 0.3)
-    if not _title_matches_body_heading(title, body):
-        note = "Section heading does not match the expected section title; review for claim/title consistency."
-        if note not in gated_gaps:
-            gated_gaps.append(note)
-        gated_confidence = min(gated_confidence, 0.65)
-    if section_key == "2_timeline" and not _timeline_rows_are_chronological(body):
-        note = "Timeline ordering requires review; events are not strictly chronological."
-        if note not in gated_gaps:
-            gated_gaps.append(note)
-        gated_confidence = min(gated_confidence, 0.6)
-    if section_key == "5_recommendations":
+        return "Template placeholder markers remain in the section body.", 0.3
+    return None, None
+
+
+def _check_heading_mismatch(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+    if not _title_matches_body_heading(ctx.title, body):
+        return "Section heading does not match the expected section title; review for claim/title consistency.", 0.65
+    return None, None
+
+
+def _check_timeline_ordering(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+    if ctx.section_key == "2_timeline" and not _timeline_rows_are_chronological(body):
+        return "Timeline ordering requires review; events are not strictly chronological.", 0.6
+    return None, None
+
+
+def _check_recommendations_strength(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+    if ctx.section_key == "5_recommendations":
         lowered = body.lower()
         strength_markers = (
             "confirmed",
@@ -494,11 +543,12 @@ def _quality_gate_section(
             "consider containment after verification",
         )
         if not any(marker in lowered for marker in strength_markers):
-            note = "Recommendations should state evidence strength or verification-first wording."
-            if note not in gated_gaps:
-                gated_gaps.append(note)
-            gated_confidence = min(gated_confidence, 0.65)
-    source_verdicts = {str(result.get("source_verdict") or "").strip().lower() for result in evidence_results or [] if str(result.get("source_verdict") or "").strip()}
+            return "Recommendations should state evidence strength or verification-first wording.", 0.65
+    return None, None
+
+
+def _check_verdict_inflation(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+    source_verdicts = {str(result.get("source_verdict") or "").strip().lower() for result in ctx.evidence_results or [] if str(result.get("source_verdict") or "").strip()}
     if source_verdicts and "confirmed" not in source_verdicts:
         lowered = body.casefold()
         strong_markers = (
@@ -511,10 +561,11 @@ def _quality_gate_section(
             "確認された",
         )
         if any(marker in lowered for marker in strong_markers):
-            note = "Section language is stronger than the evidence verdicts support; rewrite with cautious wording."
-            if note not in gated_gaps:
-                gated_gaps.append(note)
-            gated_confidence = min(gated_confidence, 0.6)
+            return "Section language is stronger than the evidence verdicts support; rewrite with cautious wording.", 0.6
+    return None, None
+
+
+def _check_raw_evidence_dump(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
     raw_evidence_patterns = (
         "#### raw evidence",
         "### raw evidence",
@@ -527,14 +578,117 @@ def _quality_gate_section(
             token in lowered_body for token in ("| none |", "| null |", "| - |", ": none", ": null", ": -")
         )
         if raw_row_dump:
-            note = "Raw evidence rows should be moved to the appendix evidence export or reports/evidence JSON, not copied into the narrative body."
-            if note not in gated_gaps:
-                gated_gaps.append(note)
-            gated_confidence = min(gated_confidence, 0.55)
+            return "Raw evidence rows should be moved to the appendix evidence export or reports/evidence JSON, not copied into the narrative body.", 0.55
+    return None, None
+
+
+def _check_output_language(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+    from forensia.config import get_llm_settings
+
+    expected_lang = str(get_llm_settings().get("output_language", "ja")).lower()
+    body_for_lang = re.sub(r"`[^`]+`|```.*?```|\[[^\]]+\]\([^)]+\)|\|[^\n]+\|", " ", body, flags=re.DOTALL)
+    detected_lang = _detect_body_language(body_for_lang)
+    if expected_lang in {"ja", "japanese"} and detected_lang == "en":
+        return f"Section body appears to be in English but LLM_OUTPUT_LANGUAGE='{expected_lang}'. LLM ignored language constraint.", 0.4
+    elif expected_lang in {"en", "english"} and detected_lang == "ja":
+        return f"Section body appears to be in Japanese but LLM_OUTPUT_LANGUAGE='{expected_lang}'.", 0.4
+    return None, None
+
+
+def _check_open_questions(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+    question_hits = _OPEN_QUESTION_RE.findall(body)
+    if question_hits:
+        return f"Unresolved-question markers remain in body ({sorted(set(question_hits))[:3]}); investigate or remove before finalizing.", 0.55
+    return None, None
+
+
+def _check_empty_body(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+    stripped_body = re.sub(r"```.*?```|\|[^\n]+\||^[#\->\s]+$", "", body, flags=re.DOTALL | re.MULTILINE)
+    if len(stripped_body.strip()) < 80:
+        return "Section body has no substantive narrative (< 80 chars after stripping tables / headings).", 0.3
+    return None, None
+
+
+def _check_bullet_only(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+    non_bullet_lines = [ln for ln in body.splitlines() if ln.strip() and not ln.strip().startswith(("-", "*", "#", "|", ">"))]
+    if not non_bullet_lines and len([ln for ln in body.splitlines() if ln.strip().startswith(("-", "*"))]) >= 3:
+        return "Section has only bullet list, no narrative paragraph. Add a short prose summary.", 0.6
+    return None, None
+
+
+def _check_hedge_no_citation(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+    if _PURE_HEDGE_RE.search(body) and not _FINDING_ID_RE.search(body) and not _TIMESTAMP_RE.search(body):
+        return "Section uses hedge language (may/could/possibly) without any timestamp or finding_id citation.", 0.5
+    return None, None
+
+
+def _check_citation_token_no_finding_id(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+    if _CITATION_TOKENS_RE.search(body) and not _FINDING_ID_RE.search(body):
+        return "Body refers to 'evidence/finding/根拠' but no finding_id is cited.", 0.6
+    return None, None
+
+
+def _check_duplicate_paragraph(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", body) if len(p.strip()) > 40]
+    if len(paragraphs) != len(set(paragraphs)):
+        return "Section contains duplicate paragraphs (LLM likely looped).", 0.5
+    return None, None
+
+
+def _check_out_of_range_timestamp(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+    for match in _TIMESTAMP_RE.finditer(body):
+        ts = match.group(0)
+        try:
+            year = int(ts[:4])
+        except ValueError:
+            continue
+        if year > _date.today().year + 1 or year < 1990:
+            return f"Body contains out-of-range timestamp '{ts}' — likely fabricated or NTFS overflow.", 0.4
+    return None, None
+
+
+_QUALITY_CHECKS: tuple[QualityCheck, ...] = (
+    _check_placeholder_entity,
+    _check_template_marker,
+    _check_heading_mismatch,
+    _check_timeline_ordering,
+    _check_recommendations_strength,
+    _check_verdict_inflation,
+    _check_raw_evidence_dump,
+    _check_output_language,
+    _check_open_questions,
+    _check_empty_body,
+    _check_bullet_only,
+    _check_hedge_no_citation,
+    _check_citation_token_no_finding_id,
+    _check_duplicate_paragraph,
+    _check_out_of_range_timestamp,
+)
+
+
+def _quality_gate_section(
+    section_key: str,
+    title: str,
+    body: str,
+    gaps: list[str],
+    confidence: float,
+    evidence_results: list[dict[str, Any]] | None = None,
+) -> tuple[list[str], float]:
+    """Apply quality-gating checks to a section body, returning augmented gaps and adjusted confidence."""
+    ctx = _GateCtx(section_key=section_key, title=title, evidence_results=evidence_results)
+    gated_gaps = list(gaps)
+    gated_confidence = confidence
+    for check in _QUALITY_CHECKS:
+        note, cap = check(body, ctx)
+        if note and note not in gated_gaps:
+            gated_gaps.append(note)
+        if cap is not None:
+            gated_confidence = min(gated_confidence, cap)
     return gated_gaps, gated_confidence
 
 
 def _sort_markdown_table_by_first_column(body: str) -> str:
+    """Sort the rows of every Markdown table in the body by the first column's value."""
     lines = body.splitlines()
     sorted_lines: list[str] = []
     index = 0
@@ -559,6 +713,7 @@ def _sort_markdown_table_by_first_column(body: str) -> str:
 
 
 def _validate_body_evidence_ids(db: CaseDB, body: str) -> list[str]:
+    """Check that every evidence_id referenced in the body exists in the evtx_events or mft_entries tables."""
     evidence_ids = sorted(set(EVIDENCE_ID_PATTERN.findall(body)))
     if not evidence_ids:
         return []
@@ -578,6 +733,7 @@ def _validate_body_evidence_ids(db: CaseDB, body: str) -> list[str]:
 
 
 def _verify_block_output(db: CaseDB, body: str) -> tuple[list[str], float]:
+    """Verify a single block's output for gaps, confidence, missing evidence IDs, and template placeholders."""
     gaps = collect_gaps({"block": body})
     confidence = _section_confidence(body)
     missing_evidence_ids = _validate_body_evidence_ids(db, body)
@@ -603,6 +759,7 @@ def _summarize_rows(
     rows: list[dict[str, Any]],
     max_rows: int = 20,
 ) -> dict[str, Any]:
+    """Build a structured summary dict from a list of database rows, extracting evidence/finding/hypothesis IDs."""
     evidence_ids: list[str] = []
     finding_ids: list[str] = []
     hypothesis_ids: list[str] = []
@@ -1305,6 +1462,7 @@ def _resolve_evidence_results(
     *,
     keypoints: list[str] | None = None,
 ) -> list[dict[str, Any]]:
+    """Resolve named keypoints against the database and return structured evidence result dicts."""
     results: list[dict[str, Any]] = []
     seen_keypoints: set[str] = set()
     for keypoint in (keypoints or []):
@@ -1347,6 +1505,7 @@ def _resolve_evidence_results(
 
 
 def _load_keypoint_cards(case: Case, max_cards: int = 8, max_chars: int = 1200) -> list[dict[str, str]]:
+    """Load keypoint card markdown files from the case memory directory."""
     cards: list[dict[str, str]] = []
     for path in sorted(case.memory_dir.glob("keypoints/KP-*.md"))[:max_cards]:
         text = path.read_text(encoding="utf-8").strip()
@@ -1358,6 +1517,7 @@ def _load_keypoint_cards(case: Case, max_cards: int = 8, max_chars: int = 1200) 
 
 
 def _extract_claim_texts(body: str) -> list[str]:
+    """Extract distinct claim-paragraph texts from a section body, skipping headings and gap markers."""
     claims: list[str] = []
     seen: set[str] = set()
     for paragraph in re.split(r"\n\s*\n", body):
@@ -1377,6 +1537,7 @@ def _claim_text_key(text: str) -> str:
 
 
 def _collect_claim_provenance(evidence_results: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """Aggregate all evidence, finding, and hypothesis IDs referenced across a list of evidence result dicts."""
     evidence_ids: list[str] = []
     finding_ids: list[str] = []
     hypothesis_ids: list[str] = []
@@ -1414,48 +1575,36 @@ def _render_timestamp_with_timezone(timestamp_str: str, case: Case) -> str:
     return f"{timestamp_str} {tz}"
 
 
-def _build_report_brief(db: CaseDB, case: Case | None = None) -> dict[str, Any]:
-    findings = fetch_records(
+def _query_top_findings(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
+    return fetch_records(
         db,
         """
         SELECT finding_id, title, severity, confidence, summary
         FROM findings
         WHERE COALESCE(status, 'accepted') != 'suppressed'
         ORDER BY confidence DESC, created_at DESC
-        LIMIT 8
+        LIMIT ?
         """,
+        (limit,),
     )
-    active_hypotheses = fetch_records(
-        db,
-        """
-        SELECT hypothesis_id, description, status, verdict, summary
-        FROM hypotheses
-        WHERE status = 'active'
-        ORDER BY updated_at DESC, hypothesis_id
-        LIMIT 8
-        """,
-    )
-    confirmed_hypotheses = fetch_records(
+
+
+def _query_hypotheses_by_status(db: CaseDB, status: str, limit: int = 8) -> list[dict[str, Any]]:
+    return fetch_records(
         db,
         """
         SELECT hypothesis_id, description, status, verdict, summary, source_rule_ids, required_entities
         FROM hypotheses
-        WHERE status = 'confirmed'
+        WHERE status = ?
         ORDER BY updated_at DESC, hypothesis_id
-        LIMIT 8
+        LIMIT ?
         """,
+        (status, limit),
     )
-    refuted_hypotheses = fetch_records(
-        db,
-        """
-        SELECT hypothesis_id, description, status, verdict, summary, source_rule_ids, required_entities
-        FROM hypotheses
-        WHERE status = 'refuted'
-        ORDER BY updated_at DESC, hypothesis_id
-        LIMIT 8
-        """,
-    )
-    prior_sections = fetch_records(
+
+
+def _query_prior_sections(db: CaseDB) -> list[dict[str, Any]]:
+    return fetch_records(
         db,
         """
         SELECT section_key, title, LEFT(body, 400) AS body_excerpt, confidence, status
@@ -1464,23 +1613,59 @@ def _build_report_brief(db: CaseDB, case: Case | None = None) -> dict[str, Any]:
         ORDER BY section_key
         """,
     )
-    existing_claims = fetch_records(
+
+
+def _query_existing_claims(db: CaseDB, limit: int = 20) -> list[dict[str, Any]]:
+    return fetch_records(
         db,
         """
         SELECT section_key, claim_text, support_status
         FROM claims
         ORDER BY updated_at DESC, claim_id DESC
-        LIMIT 20
+        LIMIT ?
         """,
+        (limit,),
     )
-    deduped_claims: list[dict[str, Any]] = []
-    seen_claim_keys: set[str] = set()
-    for item in existing_claims:
+
+
+def _dedupe_claims(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw:
         key = _claim_text_key(str(item.get("claim_text") or ""))
-        if not key or key in seen_claim_keys:
+        if not key or key in seen:
             continue
-        seen_claim_keys.add(key)
-        deduped_claims.append(normalize_value(item))
+        seen.add(key)
+        deduped.append(normalize_value(item))
+    return deduped
+
+
+def _query_evtx_time_range(db: CaseDB, case: Case | None = None) -> dict[str, str]:
+    rows = fetch_records(
+        db,
+        "SELECT MIN(timestamp) AS first_event, MAX(timestamp) AS last_event FROM evtx_events",
+    )
+    time_range: dict[str, str] = {}
+    if rows:
+        first = str(rows[0].get("first_event") or "")
+        last = str(rows[0].get("last_event") or "")
+        if first or last:
+            time_range = {
+                "first_event": _render_timestamp_with_timezone(first, case) if first else "unknown",
+                "last_event": _render_timestamp_with_timezone(last, case) if last else "unknown",
+            }
+    return time_range
+
+
+def _build_report_brief(db: CaseDB, case: Case | None = None) -> dict[str, Any]:
+    """Assemble a structured brief of top findings, hypotheses, section excerpts, and coverage data for LLM context."""
+    findings = _query_top_findings(db)
+    active_hypotheses = _query_hypotheses_by_status(db, "active")
+    confirmed_hypotheses = _query_hypotheses_by_status(db, "confirmed")
+    refuted_hypotheses = _query_hypotheses_by_status(db, "refuted")
+    prior_sections = _query_prior_sections(db)
+    existing_claims = _query_existing_claims(db)
+    deduped_claims = _dedupe_claims(existing_claims)
     coverage_map = _collect_section_coverage(db)
     coverage_summary = {
         "sections": coverage_map,
@@ -1488,19 +1673,7 @@ def _build_report_brief(db: CaseDB, case: Case | None = None) -> dict[str, Any]:
         "total_sources": sum(len(items) for items in coverage_map.values()),
     }
     tz_str = getattr(case, 'source_timezone', 'UTC') if case else 'UTC'
-    time_range_rows = fetch_records(
-        db,
-        "SELECT MIN(timestamp) AS first_event, MAX(timestamp) AS last_event FROM evtx_events",
-    )
-    time_range = {}
-    if time_range_rows:
-        first = str(time_range_rows[0].get("first_event") or "")
-        last = str(time_range_rows[0].get("last_event") or "")
-        if first or last:
-            time_range = {
-                "first_event": _render_timestamp_with_timezone(first, case) if first else "unknown",
-                "last_event": _render_timestamp_with_timezone(last, case) if last else "unknown",
-            }
+    time_range = _query_evtx_time_range(db, case)
     return {
         "top_findings": [normalize_value(item) for item in findings],
         "active_hypotheses": [normalize_value(item) for item in active_hypotheses],
@@ -1524,6 +1697,7 @@ def _build_report_brief(db: CaseDB, case: Case | None = None) -> dict[str, Any]:
 
 
 def write_report_brief(case: Case, db: CaseDB) -> dict[str, Any]:
+    """Write the report brief to reports/report_brief.json and return the dict."""
     brief = _build_report_brief(db, case)
     overview_path = case.memory_dir / "overview.md"
     if overview_path.exists():
@@ -1542,6 +1716,7 @@ def _claim_support_status(
     finding_ids: list[str],
     hypothesis_ids: list[str],
 ) -> str:
+    """Determine whether a set of evidence/finding/hypothesis IDs are all present in their respective tables."""
     if not evidence_ids and not finding_ids and not hypothesis_ids:
         return "unsupported"
     if finding_ids:
@@ -1590,6 +1765,7 @@ def _upsert_claims(
     body: str,
     evidence_results: list[dict[str, Any]],
 ) -> list[str]:
+    """Extract claims from a section body, delete stale rows, and insert fresh claim records with provenance."""
     now = datetime.now(UTC).replace(tzinfo=None)
     claims = _extract_claim_texts(body)
     provenance = _collect_claim_provenance(evidence_results)
@@ -1675,6 +1851,7 @@ def _update_section_quality_only(
     confidence: float,
     gaps: list[str],
 ) -> None:
+    """Update confidence and gaps for a section without overwriting body or status history."""
     row = db.execute(
         "SELECT status FROM report_sections WHERE section_key = ?",
         (section_key,),
@@ -1703,6 +1880,7 @@ def _upsert_report_section(
     gaps: list[str],
     session_id: str | None = None,
 ) -> bool:
+    """Insert or update a report_sections row, skipping if the section is human_reviewed with existing content."""
     now = datetime.now(UTC).replace(tzinfo=None)
     existing = db.execute(
         "SELECT status, update_count, body FROM report_sections WHERE section_key = ?",
@@ -1753,6 +1931,7 @@ def _upsert_report_section(
 
 
 def mark_report_sections_ai_exhausted(db: CaseDB) -> None:
+    """Mark all report sections that have body content as ai_exhausted."""
     db.execute(
         """
         UPDATE report_sections
@@ -1763,6 +1942,7 @@ def mark_report_sections_ai_exhausted(db: CaseDB) -> None:
 
 
 def set_report_section_status(db: CaseDB, section_key: str, status: str) -> None:
+    """Set a report section's status after validating it is a supported value."""
     if status not in {"draft", "stable", "ai_exhausted", "human_reviewed"}:
         raise ValueError(f"unsupported report section status: {status}")
     db.execute(
@@ -1776,6 +1956,7 @@ def set_report_section_status(db: CaseDB, section_key: str, status: str) -> None
 
 
 def fetch_report_sections(db: CaseDB) -> list[dict[str, Any]]:
+    """Fetch all report section rows ordered by section_key."""
     return fetch_records(
         db,
         """
@@ -1787,6 +1968,7 @@ def fetch_report_sections(db: CaseDB) -> list[dict[str, Any]]:
 
 
 def load_report_sections_map(db: CaseDB) -> dict[str, str]:
+    """Load report sections as a dict mapping section_key to body."""
     return {
         str(row.get("section_key")): str(row.get("body") or "")
         for row in fetch_report_sections(db)
@@ -1794,6 +1976,7 @@ def load_report_sections_map(db: CaseDB) -> dict[str, str]:
 
 
 def build_report_markdown_from_db(db: CaseDB) -> str:
+    """Reassemble the full report Markdown from persisted report sections, injecting coverage tables."""
     sections = fetch_report_sections(db)
     coverage_map = _collect_section_coverage(db)
     overview_summary = _coverage_summary_markdown(coverage_map)
@@ -1862,6 +2045,7 @@ def _render_section_from_request(
     max_queries_per_section: int = 3,
     audit_callback: Callable[[list[dict[str, str]], str], None] | None = None,
 ) -> tuple[str, list[dict[str, Any]], list[str]]:
+    """Iterate block requests through the section agent and stitch them into a single section body with evidence results."""
     from forensia.ai.section_agent import run_section_block_agent
 
     memory = MemoryManager(request["case"])
@@ -1905,21 +2089,21 @@ def _render_section_from_request(
     return body, all_evidence_results, block_gaps
 
 
-def finalize_section(
-    db: CaseDB,
-    section_key: str,
-    title: str,
-    body: str,
-    evidence_results: list[dict[str, Any]] | None = None,
-    session_id: str | None = None,
-    extra_gaps: list[str] | None = None,
-) -> dict[str, Any]:
-    """UPSERT the section into DuckDB. Returns gap list and confidence."""
+def _preprocess_section_body(section_key: str, body: str) -> tuple[str, bool]:
     sanitized_body, removed_raw_evidence = _sanitize_raw_evidence_body(section_key, body)
     if sanitized_body != body:
         body = sanitized_body
     if section_key == "2_timeline":
         body = _sort_markdown_table_by_first_column(body)
+    return body, removed_raw_evidence
+
+
+def _collect_initial_gaps(
+    db: CaseDB,
+    section_key: str,
+    body: str,
+    extra_gaps: list[str] | None = None,
+) -> tuple[list[str], float]:
     candidate_gaps = collect_gaps({section_key: body})
     candidate_confidence = _section_confidence(body)
     for gap in extra_gaps or []:
@@ -1931,6 +2115,55 @@ def finalize_section(
             f"Referenced evidence_id values not found in database: {', '.join(missing_evidence_ids[:5])}"
         )
         candidate_confidence = min(candidate_confidence, 0.6)
+    return candidate_gaps, candidate_confidence
+
+
+def _run_post_upsert_gap_checks(
+    db: CaseDB,
+    section_key: str,
+    body: str,
+    evidence_results: list[dict[str, Any]] | None,
+    claim_statuses: list[str],
+    candidate_gaps: list[str],
+    candidate_confidence: float,
+) -> tuple[list[str], float, bool]:
+    needs_update = False
+    referenced_finding_ids = sorted(set(FINDING_ID_PATTERN.findall(body)))
+    correlation_ids = _correlation_finding_ids(referenced_finding_ids, db)
+    if correlation_ids and "confirmed" in body.casefold() and not EVIDENCE_ID_PATTERN.search(body):
+        note = "Correlation-rule findings are described as confirmed without direct evidence_id support; rewrite as hypothesis."
+        if note not in candidate_gaps:
+            candidate_gaps.append(note)
+        candidate_confidence = min(candidate_confidence, 0.55)
+        needs_update = True
+    if any(status in {"unsupported", "orphaned_reference", "needs_review"} for status in claim_statuses):
+        note = "One or more claims require support review due to unsupported, orphaned, or conflicting provenance."
+        if note not in candidate_gaps:
+            candidate_gaps.append(note)
+        candidate_confidence = min(candidate_confidence, 0.65)
+        needs_update = True
+    event_gaps = _event_claim_gaps(body, evidence_results)
+    if event_gaps:
+        for gap in event_gaps:
+            if gap not in candidate_gaps:
+                candidate_gaps.append(gap)
+        candidate_confidence = min(candidate_confidence, 0.7)
+        needs_update = True
+    return candidate_gaps, candidate_confidence, needs_update
+
+
+def finalize_section(
+    db: CaseDB,
+    section_key: str,
+    title: str,
+    body: str,
+    evidence_results: list[dict[str, Any]] | None = None,
+    session_id: str | None = None,
+    extra_gaps: list[str] | None = None,
+) -> dict[str, Any]:
+    """UPSERT the section into DuckDB. Returns gap list and confidence."""
+    body, removed_raw = _preprocess_section_body(section_key, body)
+    candidate_gaps, candidate_confidence = _collect_initial_gaps(db, section_key, body, extra_gaps)
     candidate_gaps, candidate_confidence = _quality_gate_section(
         section_key,
         title,
@@ -1939,7 +2172,7 @@ def finalize_section(
         candidate_confidence,
         evidence_results,
     )
-    if removed_raw_evidence:
+    if removed_raw:
         note = "Raw evidence rows were moved to reports/evidence JSON and replaced with normalized summaries in the section body."
         if note not in candidate_gaps:
             candidate_gaps.append(note)
@@ -1971,36 +2204,10 @@ def finalize_section(
             persisted_gaps = []
         return {"gaps": persisted_gaps, "confidence": persisted_confidence}
     claim_statuses = _upsert_claims(db, section_key, body, evidence_results or [])
-    referenced_finding_ids = sorted(set(FINDING_ID_PATTERN.findall(body)))
-    correlation_finding_ids = _correlation_finding_ids(referenced_finding_ids, db)
-    if correlation_finding_ids and "confirmed" in body.casefold() and not EVIDENCE_ID_PATTERN.search(body):
-        candidate_gaps.append(
-            "Correlation-rule findings are described as confirmed without direct evidence_id support; rewrite as hypothesis."
-        )
-        candidate_confidence = min(candidate_confidence, 0.55)
-        _update_section_quality_only(
-            db=db,
-            section_key=section_key,
-            confidence=candidate_confidence,
-            gaps=candidate_gaps,
-        )
-    if any(status in {"unsupported", "orphaned_reference", "needs_review"} for status in claim_statuses):
-        claim_gap = "One or more claims require support review due to unsupported, orphaned, or conflicting provenance."
-        if claim_gap not in candidate_gaps:
-            candidate_gaps.append(claim_gap)
-        candidate_confidence = min(candidate_confidence, 0.65)
-        _update_section_quality_only(
-            db=db,
-            section_key=section_key,
-            confidence=candidate_confidence,
-            gaps=candidate_gaps,
-        )
-    event_claim_gaps = _event_claim_gaps(body, evidence_results)
-    if event_claim_gaps:
-        for gap in event_claim_gaps:
-            if gap not in candidate_gaps:
-                candidate_gaps.append(gap)
-        candidate_confidence = min(candidate_confidence, 0.7)
+    candidate_gaps, candidate_confidence, needs_update = _run_post_upsert_gap_checks(
+        db, section_key, body, evidence_results, claim_statuses, candidate_gaps, candidate_confidence,
+    )
+    if needs_update:
         _update_section_quality_only(
             db=db,
             section_key=section_key,
@@ -2015,6 +2222,7 @@ def _collect_flat_evidence_rows(
     max_rows: int = 80,
     min_filled_cols: float = 0.5,
 ) -> list[dict[str, Any]]:
+    """Collect unique, non-sparse evidence rows from evidence results, filtering by minimum filled-column ratio."""
     seen: set[str] = set()
     flat: list[dict[str, Any]] = []
     for result in evidence_results:
@@ -2046,6 +2254,7 @@ def _collect_flat_evidence_rows(
 
 
 def _row_to_summary_line(row: dict[str, Any]) -> str:
+    """Convert a single evidence row dict into a compact one-line summary string."""
     if not row:
         return "no fields"
     preferred_fields = (
@@ -2104,6 +2313,7 @@ def _summarize_flat_evidence_rows(rows: list[dict[str, Any]], max_rows: int = 30
 
 
 def _sanitize_raw_evidence_body(section_key: str, body: str) -> tuple[str, bool]:
+    """Replace raw evidence tables under Raw Evidence headings with a redirection notice."""
     text = str(body or "").rstrip()
     if not text:
         return text, False
@@ -2138,6 +2348,7 @@ def _sanitize_raw_evidence_body(section_key: str, body: str) -> tuple[str, bool]
 
 
 def _dump_section_trace_json(case: Case, section_key: str, evidence_results: list[dict[str, Any]]) -> None:
+    """Write non-row evidence results to reports/debug/<section_key>_trace.json."""
     trace_rows = [normalize_value(result) for result in evidence_results if str(result.get("kind") or "rows") != "rows"]
     if not trace_rows:
         return
@@ -2148,6 +2359,7 @@ def _dump_section_trace_json(case: Case, section_key: str, evidence_results: lis
 
 
 def _dump_section_evidence_json(case: Case, section_key: str, rows: list[dict[str, Any]]) -> None:
+    """Write flat evidence rows to reports/evidence/<section_key>.json."""
     if not rows:
         return
     evidence_dir = case.reports_dir / "evidence"
@@ -2157,6 +2369,7 @@ def _dump_section_evidence_json(case: Case, section_key: str, rows: list[dict[st
 
 
 def _benchmark_block_id(block_heading: str) -> str:
+    """Derive a benchmark question ID (e.g. Q1) from the block heading's leading number."""
     match = re.match(r"\s*(\d+)", str(block_heading or ""))
     if match:
         return f"Q{match.group(1)}"
@@ -2164,6 +2377,7 @@ def _benchmark_block_id(block_heading: str) -> str:
 
 
 def _coerce_string_list(value: Any) -> list[str]:
+    """Normalize a value to a list of non-empty stripped strings."""
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     if value is None:
@@ -2198,6 +2412,7 @@ def _normalize_benchmark_answer(
     block_heading: str,
     status: str,
 ) -> dict[str, Any]:
+    """Normalize and validate a benchmark answer dict, coercing status to a valid verdict."""
     normalized_id = str(answer.get("id") or _benchmark_block_id(block_heading)).strip() or _benchmark_block_id(block_heading)
     normalized_status = str(answer.get("status") or status or "insufficient_evidence").strip().lower()
     from forensia.core.verdicts import assert_valid_verdict
@@ -2226,6 +2441,7 @@ def _benchmark_answers_path(case: Case) -> Path:
 
 
 def _load_benchmark_answers(case: Case) -> list[dict[str, Any]]:
+    """Load persisted benchmark answers from reports/benchmark/answers.json."""
     path = _benchmark_answers_path(case)
     if not path.exists():
         return []
@@ -2239,6 +2455,7 @@ def _load_benchmark_answers(case: Case) -> list[dict[str, Any]]:
 
 
 def _persist_benchmark_answer(case: Case, answer: dict[str, Any]) -> None:
+    """Persist a single benchmark answer to reports/benchmark/answers.json, deduplicating by ID."""
     path = _benchmark_answers_path(case)
     path.parent.mkdir(parents=True, exist_ok=True)
     answers = _load_benchmark_answers(case)
@@ -2276,6 +2493,7 @@ def _render_answer_block(items: list[Any]) -> list[str]:
 
 
 def _render_benchmark_answer_markdown(answer: dict[str, Any], block_heading: str) -> str:
+    """Render a single benchmark answer as a Markdown section with answer, missing reason, and queries."""
     answer_block = _render_answer_block(list(answer.get("answer") or []))
     missing_lines = [f"- {str(item).strip()}" for item in (answer.get("missing_reason") or []) if str(item).strip()]
     query_lines = [f"- {str(item).strip()}" for item in (answer.get("queries_run") or []) if str(item).strip()]
@@ -2313,6 +2531,7 @@ def fill_section(
     session_id: str | None = None,
     audit_callback: Callable[[list[dict[str, str]], str], None] | None = None,
 ) -> str:
+    """Prepare, render, and finalize a single report section, dispatching block agents and persisting evidence."""
     request = prepare_section_request(case, db, template_path, context_sections, report_brief=report_brief)
     body, evidence_results, block_gaps = _render_section_from_request(
         db=db,
@@ -2338,6 +2557,7 @@ def fill_section(
 
 
 def collect_gaps(filled_sections: dict[str, str]) -> list[str]:
+    """Collect unique gap markers from filled section texts by matching GAP_PATTERN."""
     gaps: list[str] = []
     seen: set[str] = set()
     for content in filled_sections.values():
@@ -2350,6 +2570,7 @@ def collect_gaps(filled_sections: dict[str, str]) -> list[str]:
 
 
 def write_report(case: Case, filled_sections: dict[str, str]) -> Path:
+    """Write the concatenated filled sections to reports/report.md in section-key order."""
     ordered = [filled_sections[key].strip() for key in sorted(filled_sections) if filled_sections[key].strip()]
     report_md = "\n\n".join(ordered).strip() + "\n"
     report_path = case.reports_dir / "report.md"
@@ -2358,6 +2579,7 @@ def write_report(case: Case, filled_sections: dict[str, str]) -> Path:
 
 
 def write_report_from_db(case: Case, db: CaseDB) -> Path:
+    """Read report sections from the database and write the full report to reports/report.md."""
     report_md = build_report_markdown_from_db(db)
     report_path = case.reports_dir / "report.md"
     report_path.write_text(report_md, encoding="utf-8")
@@ -2369,6 +2591,7 @@ def render_written_report(
     db: CaseDB,
     filled_sections: dict[str, str] | None = None,
 ) -> tuple[Path, Path]:
+    """Write report Markdown (from sections or DB) and generate the corresponding HTML report."""
     report_md = write_report(case, filled_sections) if filled_sections is not None else write_report_from_db(case, db)
     report_html = render_html_report(case, db)
     return report_md, report_html

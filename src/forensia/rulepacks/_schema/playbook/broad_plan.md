@@ -7,7 +7,7 @@
 - If uncovered_keypoints is non-empty, you MUST generate at least one hypothesis targeting them.
 - You MUST prefer hypotheses grounded in observed keypoints (findings with actual row data).
 - Each hypothesis MUST include required_entities, confirm_when, and refute_when.
-- confirm_when.co_observed_event_ids MUST contain ONLY valid finding_ids (format: 'windows-xxx-yyyy-xxxx-xxxx'), NOT keypoint names or free text.
+- confirm_when.co_observed_event_ids entries MUST be either integer event IDs (e.g. 4624, 7045) or finding_ids (format: 'windows-xxx-yyyy-xxxx-xxxx'). Integer event IDs are preferred. Do NOT include keypoint names, free text, or quoted-string numbers.
 </CRITICAL_RULES>
 
 Good examples:

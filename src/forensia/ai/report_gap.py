@@ -44,6 +44,7 @@ class GapHypothesisOutput(BaseModel):
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
+    """Convert a value to float, returning a default on None/invalid input."""
     if value is None:
         return default
     try:
@@ -57,6 +58,7 @@ def _normalize_text(value: str) -> str:
 
 
 def _guess_related_sections(text: str) -> list[str]:
+    """Guess which report sections a gap description relates to by keyword matching."""
     lowered = text.lower()
     section_map = {
         "1_overview": ["overview", "first evidence", "summary", "fec", "initial"],
@@ -74,6 +76,7 @@ def _build_report_status(
     current_section: str | None = None,
     focus_sections: list[str] | None = None,
 ) -> dict[str, Any]:
+    """Build a summary dict of all report sections with gaps, confidence, and focus markers."""
     sections = fetch_report_sections(db)
     items = []
     for row in sections:
@@ -114,6 +117,7 @@ def _overlay_report_status(
     current_section: str | None = None,
     focus_sections: list[str] | None = None,
 ) -> dict[str, Any]:
+    """Overlay current section and focus markers onto a base report status dict."""
     focus = set(focus_sections or [])
     items = []
     for row in base_status.get("items", []):
@@ -130,6 +134,7 @@ def _overlay_report_status(
 
 
 def _report_cycle_progress(previous: dict[str, int], current: dict[str, int]) -> bool:
+    """Check whether the report made progress (fewer gaps or more content) since the last cycle."""
     return (
         current.get("total_gaps", 0) < previous.get("total_gaps", 0)
         or current.get("total_body_chars", 0) > previous.get("total_body_chars", 0)
@@ -137,11 +142,13 @@ def _report_cycle_progress(previous: dict[str, int], current: dict[str, int]) ->
 
 
 def _gap_hypothesis_id(description: str) -> str:
+    """Generate a deterministic hypothesis ID from a gap description using SHA-1."""
     digest = hashlib.sha1(description.encode("utf-8")).hexdigest()[:10]
     return f"gap-{digest}"
 
 
 def _classify_gap_kind(description: str) -> str:
+    """Determine whether a gap requires external lookup, human decision, or internal DB check."""
     lowered = description.lower()
     if any(
         token in lowered
@@ -245,6 +252,7 @@ def _inject_gap_hypotheses(
     memory: MemoryManager | None = None,
     llm_output: dict[str, Any] | None = None,
 ) -> int:
+    """Convert unresolved report gaps into active hypotheses, skipping duplicates and non-DB gaps."""
     known_by_description = {_normalize_text(item.description) for item in _all_hypotheses(state)}
     resolved_by_description = {_normalize_text(item.description) for item in state.resolved_hypotheses}
     added = 0

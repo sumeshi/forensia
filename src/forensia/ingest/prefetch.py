@@ -18,6 +18,11 @@ def ingest_prefetch_file(
     source_sha: str | None = None,
     progress_callback: Callable[[str], None] | None = None,
 ) -> Path | None:
+    """Parse a Prefetch .pf file with prefetch2es, enrich with metadata, and write JSONL.
+
+    Returns None when no records are parsed (empty or invalid .pf file) so callers
+    can gracefully skip missing prefetch artifacts.
+    """
     prefetch_path = Path(prefetch_path)
     sha_prefix = (source_sha or "unknown")[:12]
     output_path = case.raw_dir / f"prefetch-{sha_prefix}.jsonl"

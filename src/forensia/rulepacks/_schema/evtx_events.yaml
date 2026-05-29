@@ -1,4 +1,34 @@
 table: evtx_events
+# 'core_columns' is what the planner LLM sees in the prompt — kept short on purpose.
+# 'columns' is the full set used by the SQL validator (allows derived columns).
+core_columns:
+  - event_id
+  - timestamp
+  - computer
+  - channel
+  - user_name
+  - target_user
+  - subject_user
+  - src_ip
+  - logon_type
+  - process_name
+  - command_line
+  - service_name
+  - raw_json
+column_descriptions:
+  event_id: "Windows event ID (int). Primary filter."
+  timestamp: "Event time (TIMESTAMP). Use BETWEEN for range queries."
+  computer: "Hostname where the event was recorded."
+  channel: "Log channel: 'Security', 'System', 'Application', 'Microsoft-Windows-PowerShell/Operational', etc."
+  user_name: "Generic account name. NULL for many events — fall back to subject_user/target_user."
+  target_user: "Account the action targets (for 4624/4720 etc)."
+  subject_user: "Account that triggered the action (for 4732/4648 etc)."
+  src_ip: "Source IP for network logon (event 4624 logon_type 3/10)."
+  logon_type: "Stored as string. '2' interactive, '3' network, '10' RDP."
+  process_name: "Executable of the actor process (4688)."
+  command_line: "Full command line (4688)."
+  service_name: "Service display name (7045)."
+  raw_json: "Raw event payload as JSON string. Use json_extract(raw_json, '$.Field') when a column is NULL."
 columns:
   - evidence_id
   - source_file

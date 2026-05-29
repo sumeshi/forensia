@@ -46,6 +46,12 @@ def load_rule_by_id(rule_id: str) -> Rule | None:
 
 
 def load_rules_from_dir(directory: str | Path, profile_path: str | Path | None = None) -> list[Rule]:
+    """Load Rule objects from YAML files, optionally filtered by a profile.
+
+    Profile filtering supports both rulepack directory scoping and explicit
+    rule_id allowlists. Files in _schema directories and allowlist-kind YAML
+    files are always skipped regardless of profile settings.
+    """
     directory = Path(directory)
     allowed_paths: set[str] | None = None
     allowed_rule_ids: set[str] | None = None

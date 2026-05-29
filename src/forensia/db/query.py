@@ -9,12 +9,14 @@ from forensia.db.database import CaseDB
 
 
 def fetch_records(db: CaseDB, query: str, params: Sequence[Any] | None = None) -> list[dict[str, Any]]:
+    """Execute a query and return results as a list of dicts (column name → value)."""
     result = db.execute(query, params)
     columns = [item[0] for item in result.description]
     return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
 
 
 def normalize_value(value: Any) -> Any:
+    """Normalize database values: JSON-parse stringified JSON, ISO-format datetimes, recurse into lists/dicts."""
     if value is None:
         return None
     if isinstance(value, datetime):

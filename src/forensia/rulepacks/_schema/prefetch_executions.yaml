@@ -1,4 +1,29 @@
 table: prefetch_executions
+core_columns:
+  - executable_name
+  - exec_count
+  - last_exec_time
+  - exec_times
+  - filenames
+column_descriptions:
+  executable_name: "Uppercase .exe filename, e.g. 'POWERSHELL.EXE'."
+  exec_count: "Total run count (int)."
+  last_exec_time: "Most recent execution time (TIMESTAMP)."
+  exec_times: "JSON array of up to 8 last run timestamps."
+  filenames: "JSON array of files loaded by the process; useful for DLL side-loading."
+columns:
+  - evidence_id
+  - source_file
+  - executable_name
+  - exec_count
+  - last_exec_time
+  - exec_times
+  - prefetch_hash
+  - filenames
+  - volumes
+  - raw_json
+  - tags
+  - severity
 notes:
-  general: "executable_name holds the .exe filename (e.g. 'POWERSHELL.EXE'). exec_count is the total run count; last_exec_time is the most recent execution timestamp. exec_times is a JSON array of up to 8 last run timestamps. filenames is a JSON array of files loaded by the process (useful for DLL side-loading detection)."
+  general: "executable_name holds the .exe filename (e.g. 'POWERSHELL.EXE'). exec_count is the total run count; last_exec_time is the most recent execution timestamp."
   no_host_column: "IMPORTANT: prefetch_executions has NO computer/hostname column — source_file is the .pf file path. To filter by host, JOIN with evtx_events ON abs(epoch_ms(prefetch_executions.last_exec_time) - epoch_ms(evtx_events.timestamp)) < 5000 AND evtx_events.computer = ?. Or query prefetch_executions without a host filter and correlate timestamps manually."

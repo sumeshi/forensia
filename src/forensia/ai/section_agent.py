@@ -9,6 +9,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import asyncio
+
 from forensia.ai.checker import summarize_query_result
 
 
@@ -122,6 +124,7 @@ class _RoutingRule:
 
 @lru_cache(maxsize=1)
 def _load_question_routing() -> list[_RoutingRule]:
+    """Load and cache question routing rules from _schema/question_routing.yaml."""
     import yaml
 
     routing_path = Path(__file__).resolve().parent.parent / "rulepacks" / "_schema" / "question_routing.yaml"
@@ -155,6 +158,11 @@ def _classify_block_status(
     actual_query_count: int,
     reusable_rows_present: bool,
 ) -> str:
+    """Map LLM verdict + query stats to a canonical status string.
+
+    Combines the LLM's semantic verdict with observed query outcomes to produce
+    one of the valid statuses used for block result tracking.
+    """
     if _is_valid_status(verdict):
         return verdict
     if actual_query_count <= 0:
@@ -183,6 +191,11 @@ def _prepend_status_badge(body: str, status: str) -> str:
 
 
 def _benchmark_report_brief(report_brief: dict[str, Any] | None) -> dict[str, Any]:
+    """Strip narrative-heavy fields from report_brief for benchmark mode.
+
+    Benchmark blocks must only receive factual inventories, not LLM-generated
+    narratives, to prevent answer leakage.
+    """
     brief = dict(report_brief or {})
     keys_to_keep = {"evidence_inventory", "table_inventory", "row_counts", "time_range", "time_window", "source_inventory"}
     if "evidence_inventory" in brief:
@@ -199,6 +212,7 @@ def _benchmark_report_brief(report_brief: dict[str, Any] | None) -> dict[str, An
 
 
 def _audit_bridge(audit_callback):
+    """Wrap an audit_callback to adapt (messages, output, parsed) -> (messages, output)."""
     if audit_callback is None:
         return None
 
@@ -218,6 +232,7 @@ def _store_section_run(
     payload: dict[str, Any],
     verdict: str | None = None,
 ) -> None:
+    """Persist one section-agent run step (plan, query, check, write) to section_runs."""
     if verdict is not None:
         normalized = {"sufficient": "block_supported", "refuted": "block_contradicted"}.get(verdict, verdict)
         from forensia.core.verdicts import assert_valid_verdict
@@ -247,6 +262,11 @@ def _store_section_run(
 
 
 def _load_prior_runs(db: CaseDB, section_key: str, block_heading: str) -> list[dict[str, Any]]:
+    """Load prior section-agent run history for a given (section, block).
+
+    JSON payloads are deserialized automatically. Results are ordered by
+    creation time to preserve iteration chronology.
+    """
     rows = db.execute(
         """
         SELECT iteration, phase, payload, verdict, created_at
@@ -277,6 +297,11 @@ def _load_prior_runs(db: CaseDB, section_key: str, block_heading: str) -> list[d
 
 
 def _load_cached_result(db: CaseDB, source_query: str) -> dict[str, Any] | None:
+    """Load a previously cached query result by source query text.
+
+    Returns None on cache miss, JSON parse failure, or non-dict payload.
+    Adds default kind/source_kind/source_ref fields missing from older cache entries.
+    """
     row = db.execute(
         "SELECT result_json FROM query_cache WHERE sql_hash = ?",
         (_cache_key(source_query),),
@@ -317,6 +342,7 @@ def _store_section_evidence(
     result: dict[str, Any],
     source_query: str,
 ) -> None:
+    """Persist evidence IDs referenced by a section block result."""
     evidence_ids = [str(item).strip() for item in (result.get("evidence_ids") or []) if str(item).strip()]
     rows = [
         (
@@ -348,6 +374,12 @@ def _store_section_facts(
     result: dict[str, Any],
     fact_updates: list[dict[str, Any]] | None = None,
 ) -> None:
+    """Persist facts verified by the LLM check phase with conflict resolution.
+
+    Higher-confidence values overwrite conflicting lower-confidence entries.
+    Only facts explicitly listed in fact_updates (from LLM check) are persisted;
+    raw sample_rows are never auto-promoted to facts.
+    """
     # Only persist facts explicitly verified by the LLM check phase.
     # Do NOT auto-promote raw sample_rows to "facts" — they are unverified data
     # and would pollute the fact store with high-confidence noise.
@@ -530,6 +562,7 @@ def _filter_template_catalog_by_section(
 
 
 def _findings_snapshot(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
+    """Fetch top findings ordered by confidence for use in section agent prompts."""
     return fetch_records(
         db,
         """
@@ -543,6 +576,11 @@ def _findings_snapshot(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
 
 
 def _load_reusable_section_facts(db: CaseDB, section_key: str, limit: int = 20) -> list[dict[str, Any]]:
+    """Load section facts reusable by sibling blocks within the same section family.
+
+    Matches by exact section_key, family prefix, and family substring to support
+    cross-block fact sharing during a single section render.
+    """
     family = _section_family(section_key)
     rows = db.execute(
         """
@@ -581,6 +619,7 @@ def _load_reusable_section_facts(db: CaseDB, section_key: str, limit: int = 20) 
 
 
 def _facts_as_result(reusable_facts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Wrap reusable facts into a result dict consumable by the section agent loop."""
     evidence_ids: list[str] = []
     seen: set[str] = set()
     for item in reusable_facts:
@@ -604,6 +643,7 @@ def _facts_as_result(reusable_facts: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _load_reusable_section_evidence(db: CaseDB, section_key: str, block_heading: str, limit: int = 30) -> list[dict[str, Any]]:
+    """Load prior section evidence records reusable by sibling blocks."""
     family = _section_family(section_key)
     rows = db.execute(
         """
@@ -632,6 +672,7 @@ def _load_reusable_section_evidence(db: CaseDB, section_key: str, block_heading:
 
 
 def _evidence_as_result(reusable_evidence: list[dict[str, Any]]) -> dict[str, Any]:
+    """Wrap reusable evidence links into a result dict consumable by the section agent."""
     evidence_ids: list[str] = []
     seen: set[str] = set()
     for item in reusable_evidence:
@@ -654,6 +695,10 @@ def _evidence_as_result(reusable_evidence: list[dict[str, Any]]) -> dict[str, An
 
 
 def _summarize_sql_result(sql: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize raw SQL query results into a structured dict for the section agent.
+
+    Delegates to summarize_query_result for evidence IDs, sample rows, and distinct counts.
+    """
     summary = summarize_query_result(rows, sample_size=10)
     return {
         "keypoint": "raw_sql",
@@ -673,6 +718,11 @@ def _summarize_sql_result(sql: str, rows: list[dict[str, Any]]) -> dict[str, Any
 
 
 def _execute_keypoint(case: Case, db: CaseDB, keypoint: str) -> tuple[str, dict[str, Any]]:
+    """Execute a single keypoint and cache the result.
+
+    Returns (source_query, result_dict). Uses query_cache to avoid re-resolving
+    the same keypoint within a single report refresh.
+    """
     from forensia.report.writer import _resolve_evidence_results
 
     source_query = str(keypoint or "").strip()
@@ -732,6 +782,10 @@ def _add_json_fallback(sql: str) -> str:
 
 
 def _execute_sql(db: CaseDB, sql: str) -> tuple[str, dict[str, Any]]:
+    """Execute SQL via validate+fetch and cache the summarized result.
+
+    Applies JSON fallback rewrites (via _add_json_fallback) before execution.
+    """
     sql = _add_json_fallback(sql)
     validated = validate_select_sql(sql)
     source_query = validated
@@ -745,6 +799,11 @@ def _execute_sql(db: CaseDB, sql: str) -> tuple[str, dict[str, Any]]:
 
 
 def _coerce_plan_action(plan: dict[str, Any], *, section_key: str, iteration: int) -> SectionPlanAction:
+    """Parse and normalize the LLM plan output into a typed SectionPlanAction.
+
+    Handles default action/keypoint assignment, template vs SQL vs keypoint routing,
+    and builds a PlannedQuery for template/sql actions.
+    """
     action = str(plan.get("action") or "").strip().lower() or "keypoint"
     purpose = str(plan.get("purpose") or "").strip() or f"report block {section_key} iteration {iteration}"
     enough_to_write = bool(plan.get("enough_to_write"))
@@ -1255,6 +1314,13 @@ def run_section_block_agent(
     benchmark_mode: bool = False,
     audit_callback=None,
 ) -> SectionBlockResult:
+    """Run the complete plan->query->check->write loop for one report section block.
+
+    Iterates up to max_queries_per_section times: LLM plans the next action
+    (keypoint/template/sql/facts/write), executes it, LLM checks sufficiency,
+    and either continues or finalizes with a written body. Falls back to evidence
+    chains when all queries return zero rows.
+    """
     max_queries = max(1, int(max_queries_per_section or 1))
     ctx = _prepare_block_context(
         case=case, db=db, section_key=section_key, title=title,
@@ -1576,6 +1642,11 @@ async def async_run_section_block_agent(
     benchmark_mode: bool = False,
     audit_callback=None,
 ) -> SectionBlockResult:
+    """Async version of run_section_block_agent using async LLM calls.
+
+    See run_section_block_agent for full documentation. This variant exists to
+    support parallel section rendering via asyncio.gather.
+    """
     max_queries = max(1, int(max_queries_per_section or 1))
     ctx = _prepare_block_context(
         case=case, db=db, section_key=section_key, title=title,

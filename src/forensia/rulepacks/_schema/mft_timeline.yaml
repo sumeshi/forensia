@@ -1,0 +1,22 @@
+table: mft_timeline
+core_columns:
+  - timestamp
+  - timestamp_type
+  - file_path
+  - description
+column_descriptions:
+  timestamp: "Event time (TIMESTAMP)."
+  timestamp_type: "Which $SI / $FN attribute: 'si_created', 'si_modified', 'si_accessed', 'fn_created', 'fn_modified', 'fn_accessed'."
+  file_path: "Full path under the volume."
+  description: "Free-text describing the event (created / modified / etc)."
+columns:
+  - timeline_id
+  - evidence_id
+  - record_number
+  - file_path
+  - timestamp
+  - timestamp_type
+  - description
+  - tags
+notes:
+  expansion: "Each mft_entries row expands into up to 8 mft_timeline rows (one per timestamp_type with a non-NULL value). Use mft_timeline (not mft_entries) when you want chronological evidence ordering."

@@ -102,6 +102,7 @@ class Case:
         return f"{tz} (DST observed for appropriate regions)"
 
     def ensure_report_templates(self, overwrite: bool = False) -> list[Path]:
+        """Export packaged report templates into the case directory."""
         self.report_template_dir.mkdir(parents=True, exist_ok=True)
         return export_packaged_report_templates(self.report_template_dir, overwrite=overwrite)
 
@@ -111,6 +112,8 @@ class Case:
         preserve_ai_logs: bool = True,
         drop_database: bool = True,
     ) -> None:
+        """Remove runtime outputs (raw, findings, reports, DB, memory, AI logs)
+        while optionally preserving memory, AI logs, and/or the database."""
         for directory in (self.raw_dir, self.findings_dir, self.reports_dir):
             if directory.exists():
                 shutil.rmtree(directory)
@@ -133,6 +136,7 @@ class Case:
 
     @classmethod
     def init(cls, path: str | Path) -> "Case":
+        """Create a new case directory with all required subdirectories and default files."""
         case = cls(Path(path).resolve())
         case.path.mkdir(parents=True, exist_ok=True)
         for directory in (
@@ -171,6 +175,7 @@ class Case:
 
     @classmethod
     def open(cls, path: str | Path) -> "Case":
+        """Open an existing case by verifying its manifest file exists."""
         case = cls(Path(path).resolve())
         if not case.manifest_path.exists():
             raise FileNotFoundError(f"Case manifest not found: {case.manifest_path}")

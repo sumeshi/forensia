@@ -5,6 +5,11 @@ from forensia.db.database import CaseDB
 
 
 def normalize_evtx(case: Case, db: CaseDB) -> int:
+    """Load EVTX JSONL files into the evtx_events database table.
+
+    Deletes existing rows for each source_file before insert so re-ingestion
+    replaces rather than duplicates data. Returns total rows inserted.
+    """
     inserted = 0
     for path in sorted({*case.raw_dir.glob("evtx.jsonl"), *case.raw_dir.glob("evtx-*.jsonl")}):
 

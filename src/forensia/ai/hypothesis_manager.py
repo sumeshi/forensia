@@ -56,6 +56,7 @@ def _clean_confirm_when(confirm_when: dict[str, Any] | None, db: CaseDB | None =
 
 
 def _recent_reasoning_rows(db: CaseDB, hypothesis_id: str, limit: int = 10) -> list[dict[str, Any]]:
+    """Fetch the most recent reasoning entries for a given hypothesis."""
     return fetch_records(
         db,
         """
@@ -70,6 +71,7 @@ def _recent_reasoning_rows(db: CaseDB, hypothesis_id: str, limit: int = 10) -> l
 
 
 def _render_hypothesis_memory(db: CaseDB | None, hypothesis: Hypothesis) -> str:
+    """Render a hypothesis as a Markdown memory block with status, verdict, and recent reasoning."""
     lines = [
         f"# Hypothesis {hypothesis.id}",
         "",
@@ -116,6 +118,7 @@ def _merge_string_lists(*values: list[str]) -> list[str]:
 
 
 def _next_hypothesis_id(db: CaseDB) -> str:
+    """Generate the next sequential hypothesis ID in H-NNN format."""
     row = db.execute(
         """
         SELECT COALESCE(MAX(CAST(regexp_extract(hypothesis_id, '^H-(\\d+)$', 1) AS INTEGER)), 0)
@@ -128,6 +131,7 @@ def _next_hypothesis_id(db: CaseDB) -> str:
 
 
 def _merge_hypothesis_fields(existing: Hypothesis, incoming: Hypothesis) -> Hypothesis:
+    """Merge fields from an incoming hypothesis into an existing one, preserving existing status and verdict."""
     source_rule_ids = _merge_string_lists(existing.source_rule_ids, incoming.source_rule_ids)
     required_entities = _merge_string_lists(existing.required_entities, incoming.required_entities)
     confirm_when = existing.confirm_when or incoming.confirm_when
@@ -193,6 +197,7 @@ def _semantic_hypothesis_similarity(left: str, right: str) -> float:
 
 
 def _hypothesis_similarity(left: str, right: str) -> float:
+    """Compute similarity between two hypothesis descriptions using token overlap and semantic triples."""
     left_tokens = _hypothesis_tokens(left)
     right_tokens = _hypothesis_tokens(right)
     if not left_tokens or not right_tokens:
@@ -209,6 +214,7 @@ def _find_hypothesis_by_description(
     hypotheses: list[Hypothesis],
     description: str,
 ) -> Hypothesis | None:
+    """Find a hypothesis in the list by exact normalized description match."""
     target = _normalize_hypothesis_description(description)
     if not target:
         return None
@@ -222,6 +228,7 @@ def _best_hypothesis_match(
     hypotheses: list[Hypothesis],
     description: str,
 ) -> tuple[Hypothesis | None, float]:
+    """Find the best fuzzy match for a description among the given hypotheses."""
     best_hypothesis: Hypothesis | None = None
     best_score = 0.0
     for hypothesis in hypotheses:
@@ -239,6 +246,7 @@ def _ask_same_hypothesis(
     base_url: str,
     model: str,
 ) -> bool:
+    """Ask the LLM whether two hypothesis descriptions refer to the same underlying claim."""
     system = (
         "<TASK>You judge whether two hypothesis descriptions refer to the same underlying hypothesis.</TASK>\n"
         "<OUTPUT_SCHEMA>{\"same_hypothesis\": true|false, \"reason\": \"short explanation\"}</OUTPUT_SCHEMA>\n"
@@ -264,6 +272,7 @@ def _ask_same_hypothesis(
 
 
 def _row_to_hypothesis(row: dict[str, Any]) -> Hypothesis:
+    """Convert a database result row into a Hypothesis object, parsing JSON fields."""
     verdict = row.get("verdict")
     source_rule_ids = row.get("source_rule_ids")
     required_entities = row.get("required_entities")
@@ -303,6 +312,7 @@ def _row_to_hypothesis(row: dict[str, Any]) -> Hypothesis:
 
 
 def _load_persisted_hypotheses(db: CaseDB) -> tuple[list[Hypothesis], list[Hypothesis]]:
+    """Load all hypotheses from the database, partitioned into active and resolved."""
     rows = fetch_records(
         db,
         """
@@ -329,6 +339,7 @@ def _upsert_hypothesis(
     session_id: str,
     resolved_session: str | None = None,
 ) -> None:
+    """Insert or update a hypothesis row, preserving original creation metadata on conflict."""
     from forensia.core.verdicts import assert_valid_verdict
     if hypothesis.verdict is not None:
         assert_valid_verdict(hypothesis.verdict, "hypothesis_verdict")
@@ -394,6 +405,9 @@ def _upsert_hypothesis(
     )
 
 
+MAX_ACTIVE_HYPOTHESES = 8
+
+
 def _merge_active_hypotheses(
     db: CaseDB,
     current: list[Hypothesis],
@@ -404,10 +418,12 @@ def _merge_active_hypotheses(
     base_url: str | None = None,
     model: str | None = None,
 ) -> list[Hypothesis]:
+    """Merge incoming hypotheses into the active set with dedup, aliasing, and an active cap."""
     resolved_base_url, resolved_model = resolve_llm_config(base_url, model)
     llm_enabled = bool(resolved_base_url and resolved_model)
     resolved_ids = {item.id for item in resolved}
     by_id = {item.id: item for item in current if item.id not in resolved_ids}
+    skipped_for_cap: list[str] = []
     alias_map: dict[str, str] = {}
     active_by_description = {_normalize_hypothesis_description(item.description): item for item in current if item.id not in resolved_ids}
     resolved_by_description = {_normalize_hypothesis_description(item.description): item for item in resolved}
@@ -456,6 +472,13 @@ def _merge_active_hypotheses(
             resolved_by_description[_normalize_hypothesis_description(merged.description)] = merged
             _upsert_hypothesis(db, merged, origin="resolved", session_id=session_id, resolved_session=session_id)
             continue
+        # Cap the active set. Updates to existing hypotheses already happened
+        # above (in the merge branches); only NEW additions are subject to the
+        # cap. Excess hypotheses are dropped (not persisted) so the planner
+        # prompt stays bounded across cycles.
+        if len(by_id) >= MAX_ACTIVE_HYPOTHESES:
+            skipped_for_cap.append(item.description or item.id)
+            continue
         assigned_id = incoming_id
         if not re.fullmatch(r"H-\d{3}", assigned_id):
             assigned_id = _next_hypothesis_id(db)
@@ -475,6 +498,12 @@ def _merge_active_hypotheses(
         by_id[assigned_id] = hypothesis
         active_by_description[_normalize_hypothesis_description(hypothesis.description)] = hypothesis
         _upsert_hypothesis(db, hypothesis, origin=origin, session_id=session_id)
+    if skipped_for_cap:
+        try:
+            from forensia.ai.investigator import _log
+            _log("CAP", f"active hypothesis cap reached ({MAX_ACTIVE_HYPOTHESES}); skipped {len(skipped_for_cap)} new: {skipped_for_cap[:3]}…")
+        except Exception:
+            pass
     return list(by_id.values())
 
 
@@ -486,6 +515,7 @@ def _resolve_hypothesis(
     summary: str,
     session_id: str,
 ) -> None:
+    """Mark a hypothesis as confirmed or refuted, generate follow-ups, and mark stale sections."""
     from forensia.ai.report_gap import _extract_entities_from_text, _gap_hypothesis_id, _normalize_text, _propose_confirm_when
     
     remaining: list[Hypothesis] = []

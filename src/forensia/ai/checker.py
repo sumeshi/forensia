@@ -42,6 +42,7 @@ class CheckResult:
 
 
 def _parse_new_hypotheses(items: Any) -> list[Hypothesis]:
+    """Parse LLM output into a list of Hypothesis objects, skipping invalid entries."""
     hypotheses: list[Hypothesis] = []
     if not isinstance(items, list):
         return hypotheses
@@ -61,6 +62,11 @@ def _parse_new_hypotheses(items: Any) -> list[Hypothesis]:
 
 
 def summarize_query_result(rows: list[dict[str, Any]], sample_size: int = 10) -> dict[str, Any]:
+    """Build a structured summary of SQL query rows for LLM consumption.
+
+    Extracts evidence IDs, head/tail sample rows, and distinct counts for key
+    columns (target_user, computer, src_ip, event_id).
+    """
     evidence_ids: list[str] = []
     seen: set[str] = set()
     for row in rows:
@@ -109,6 +115,7 @@ def _normalize_verdict(value: Any) -> str:
 
 
 def _collect_observed_evidence_ids(result_summary: dict[str, Any]) -> set[str]:
+    """Collect all evidence IDs from both evidence_ids list and sample_rows."""
     observed: set[str] = set()
     for evidence_id in result_summary.get("evidence_ids") or []:
         normalized = str(evidence_id).strip()
@@ -148,6 +155,12 @@ def _normalize_finding_updates(
     verdict: str,
     zero_evidence: bool,
 ) -> list[dict[str, Any]]:
+    """Normalize and guardrail LLM-proposed finding updates.
+
+    Only updates for allowed finding IDs are kept. Zero-evidence results cannot
+    increase confidence. Verdict constraints: confirmed -> positive delta only,
+    refuted -> negative delta + suppressed, inconclusive -> clamped small delta.
+    """
     normalized: list[dict[str, Any]] = []
     if not isinstance(items, list):
         return normalized
@@ -184,6 +197,7 @@ def _normalize_finding_updates(
 
 
 def _filter_evidence_references(items: Any, observed_evidence_ids: set[str]) -> list[dict[str, Any]]:
+    """Keep only evidence references whose IDs appear in the observed set."""
     filtered: list[dict[str, Any]] = []
     if not isinstance(items, list):
         return filtered
@@ -201,6 +215,12 @@ def _filter_evidence_references(items: Any, observed_evidence_ids: set[str]) -> 
 
 
 def _filter_memory_updates(updates: Any, observed_evidence_ids: set[str]) -> dict[str, Any]:
+    """Filter memory updates to only include valid entities and observed evidence.
+
+    Durable memory keys (facts, timeline, resolved_gaps) require non-empty
+    evidence_ids. Entity entries are validated against ENTITY_TYPE_ALIASES,
+    ENTITY_ROLES, and placeholder-value exclusion rules.
+    """
     if not isinstance(updates, dict):
         return {}
 
@@ -249,6 +269,11 @@ def _guardrail_check_payload(
     finding_candidates: list[dict[str, Any]],
     result_summary: dict[str, Any],
 ) -> dict[str, Any]:
+    """Apply safety guardrails to the raw LLM check response.
+
+    Forces inconclusive on zero-evidence confirmed/newlead. Filters finding_updates
+    to allowed IDs and enforces verdict-constrained delta signs.
+    """
     verdict = _normalize_verdict(parsed.get("verdict"))
     observed_evidence_ids = _collect_observed_evidence_ids(result_summary)
     zero_evidence = _has_zero_evidence(result_summary, observed_evidence_ids)
@@ -290,6 +315,7 @@ def _upsert_ai_review(
     notes: str,
     raw_response: dict[str, Any],
     ) -> None:
+    """Replace the ai_review record for a finding with a new one (delete + insert)."""
     db.execute("DELETE FROM ai_reviews WHERE finding_id = ?", (finding_id,))
     review_id = f"review-{finding_id}"
     db.execute(
@@ -321,6 +347,7 @@ def _record_hypothesis_assessment(
     report_text: str,
     raw_response: dict[str, Any],
 ) -> None:
+    """Record a hypothesis/query assessment as an ai_review entry."""
     finding_id = f"hypothesis:{hypothesis.id}" if hypothesis else f"query:{planned_query.query_id}"
     missing_checks = raw_response.get("missing_checks") or []
     notes = str(raw_response.get("notes") or "")
@@ -346,6 +373,10 @@ def _insert_investigation_finding(
     result_summary: dict[str, Any],
     report_text: str,
 ) -> str:
+    """Insert a new investigation finding for a newlead verdict.
+
+    Returns the generated finding_id.
+    """
     finding_id = f"{session_id}-{planned_query.query_id}-finding"
     language = str(get_llm_settings()["output_language"]).lower()
     prefix = "Investigation"
@@ -390,6 +421,12 @@ def apply_check_result(
     result_summary: dict[str, Any],
     check_result: CheckResult,
 ) -> tuple[int, bool]:
+    """Apply a CheckResult to the case DB: update findings, insert new-lead findings.
+
+    Returns (new_lead_count, progress_flag) where progress_flag is True if any
+    meaningful state change occurred (new leads, significant confidence delta,
+    new hypotheses).
+    """
     new_leads = 0
     significant_delta = False
     missing_checks = check_result.raw_response.get("missing_checks") or []
@@ -492,6 +529,13 @@ def check_query_result(
     fallback_info: dict[str, Any] | None = None,
     use_phased_check: bool = True,
 ) -> CheckResult:
+    """Run the full LLM-based query result check: verdict + memory + suspicious evidence.
+
+    Supports phased checking (separate LLM calls for verdict, memory, and suspicious
+    evidence) when use_phased_check=True, or a single combined call otherwise.
+    Applies guardrails via _guardrail_check_payload and persists results via
+    apply_check_result.
+    """
     overview_md = overview_md if overview_md is not None else memory.load_overview()
     memory_context_md = memory_context_md if memory_context_md is not None else memory.load_compact_context(
         memory.investigation_context_files(

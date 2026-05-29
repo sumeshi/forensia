@@ -28,6 +28,7 @@ from forensia.db.database import CaseDB
 
 
 def _snapshot_dir(case: Case) -> Path:
+    """Return the API snapshot directory (creates if missing)."""
     path = case.reports_dir / "api"
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -38,6 +39,7 @@ def _write_json(path: Path, payload: Any) -> None:
 
 
 def clear_api_snapshots(case: Case) -> None:
+    """Remove all cached API snapshot files for this case."""
     snapshot_dir = _snapshot_dir(case)
     for path in snapshot_dir.glob("*"):
         if path.is_file():
@@ -45,6 +47,7 @@ def clear_api_snapshots(case: Case) -> None:
 
 
 def write_progress_snapshot(case: Case, db: CaseDB) -> None:
+    """Write progress events snapshot to the cache directory."""
     snapshot_dir = _snapshot_dir(case)
     _write_json(
         snapshot_dir / "progress_events.json",
@@ -53,6 +56,7 @@ def write_progress_snapshot(case: Case, db: CaseDB) -> None:
 
 
 def write_full_api_snapshots(case: Case, db: CaseDB) -> None:
+    """Write all API DTO snapshots (case, stats, findings, hypotheses, sessions, etc.) to the cache directory."""
     snapshot_dir = _snapshot_dir(case)
     _write_json(snapshot_dir / "case.json", get_case_dto(case).model_dump(mode="json"))
     _write_json(snapshot_dir / "stats.json", get_case_stats_dto(db).model_dump(mode="json"))
@@ -109,11 +113,13 @@ def write_full_api_snapshots(case: Case, db: CaseDB) -> None:
 
 
 def write_api_snapshots(case: Case, db: CaseDB) -> None:
+    """Convenience: write both full API and progress snapshots."""
     write_full_api_snapshots(case, db)
     write_progress_snapshot(case, db)
 
 
 def load_snapshot(case: Case, name: str) -> Any | None:
+    """Load a previously cached API snapshot by filename; returns None if missing."""
     path = _snapshot_dir(case) / name
     if not path.exists():
         return None

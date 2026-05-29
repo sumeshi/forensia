@@ -249,7 +249,13 @@ Gap hypotheses generated from report writer output flow through `_inject_gap_hyp
 
 ### Planner
 
-`build_hypothesis_plan_messages` injects the schema_card (`allowed_columns` + `json_field_extractors`) into the prompt. The planner is asked to produce one SQL query per call. The prompt forbids referencing columns outside the declared schema.
+`build_hypothesis_plan_messages` injects schema cards for all known DB tables and a SQL cookbook into the prompt. The planner is asked to produce one query per call.
+
+- **Schema cards** (`<SCHEMA_CARDS>`): each table YAML in `rulepacks/_schema/*.yaml` exposes `core_columns` (the short list shown to the LLM, 5-13 columns), `column_descriptions` (one-line use hints), and `columns` (the full list, used only by the SQL validator). Surfaced tables: `evtx_events`, `mft_entries`, `mft_timeline`, `prefetch_executions`, `findings`.
+- **SQL cookbook** (`<SQL_COOKBOOK>`): six ready-to-adapt SELECT templates (event_id enumeration, time-window filter, GROUP BY summary, COALESCE for NULL columns, MFT path LIKE, Prefetch executable lookup). Weak local LLMs are expected to copy-and-edit rather than synthesize from scratch.
+- **Retry**: `_retry_query_once` retries SQL generation up to `_PLANNER_SQL_MAX_RETRIES = 3` times when `validate_select_sql` rejects the query; each retry message re-references the schema cards and cookbook.
+- **Fallback**: when the planner cannot produce valid SQL after retries, `_fallback_planned_query_from_hypothesis` synthesises a deterministic `SELECT … FROM evtx_events WHERE event_id IN (…) ORDER BY timestamp LIMIT 500` from `hypothesis.confirm_when.co_observed_event_ids`. This guarantees the check phase runs.
+- **Echo detection**: planners that return the input `hypothesis` unchanged are detected by `_hypothesis_actually_changed` (compares id, description, confirm_when, required_entities). Echoed hypotheses do not trigger a reload — the planner's query is used instead.
 
 ### Executor + fallback
 
@@ -269,15 +275,18 @@ The checker prompt explicitly prohibits rationale phrases like "direct causation
 
 ### Progress tracker
 
-`HypothesisProgressTracker` is a per-hypothesis dataclass that records `(query_fingerprint, verdict, row_count)` per query. After each check, it makes one of three deterministic decisions:
+`HypothesisProgressTracker` is a per-hypothesis dataclass that records `(query_fingerprint, verdict, row_count)` per query. After each check, it makes one of four deterministic decisions:
 
 | Method | Condition | Effect |
 |---|---|---|
-| `should_auto_confirm(rule_context, rows)` | All `confirm_when.co_observed_event_ids` present in rows | Force `verdict=confirmed` regardless of LLM output |
-| `should_auto_refute(threshold=3)` | 3 consecutive 0-row inconclusive | Force `verdict=refuted` |
+| `should_auto_confirm(rule_context, rows, hypothesis)` | ≥ 50% of `confirm_when.co_observed_event_ids` present in rows. Pulled from `rule_context` when available, else from the hypothesis itself so broad_plan-derived hypotheses can also auto-confirm. | Force `verdict=confirmed` regardless of LLM output |
+| `should_auto_refute(threshold=3)` | 3 consecutive 0-row inconclusive (and no partial confirm signal) | Force `verdict=refuted` |
 | `should_pivot(fp)` | Same query fingerprint seen ≥ 2 times | Notify planner to pivot (avoid LLM repeating the same query) |
+| `_investigate_one_hypothesis` short-circuit | First plan attempt produces no executable query (no SQL, no template, no fallback from `confirm_when`) | Force `verdict=refuted` immediately with reason `no executable evidence path` |
 
 Query fingerprints are computed by `investigator._query_fingerprint`. The current implementation parses the SQL with sqlglot into an AST, canonicalizes it, and hashes the canonical form together with extracted event_id / computer markers. This makes whitespace, alias, and ordering differences collapse to the same fingerprint. If sqlglot import fails the function falls back to a textual normalization so the loop still terminates.
+
+`_merge_active_hypotheses` enforces `MAX_ACTIVE_HYPOTHESES = 8`. Updates to existing hypotheses are not affected; only new additions past the cap are dropped (with a `[CAP]` log line) so the planner prompt size stays bounded across cycles.
 
 ### Resolver
 
@@ -496,6 +505,32 @@ Mixing these layers makes it harder to audit reasoning and harder to resume a ca
 
 These are workflow states, not evidence states.
 
+## Report quality gates
+
+After a section body is filled by the section agent, `_quality_gate_section` in `report/writer.py` runs a static checklist over the produced markdown. Each failing check appends a gap entry to the section and caps the section confidence at a fixed ceiling. The checks are intentionally generic so they apply to every section regardless of template.
+
+Current checks:
+
+| Check | Trigger | Confidence cap |
+|---|---|---|
+| Placeholder entity | `PLACEHOLDER_ENTITY_PATTERN` matches | 0.5 |
+| Template marker leak | `HTML_FILL_PATTERN` matches | 0.3 |
+| Heading / title mismatch | first `#`-heading in body diverges from `report_sections.title` | 0.65 |
+| Timeline ordering | section_key `2_timeline` with non-monotone date column | 0.6 |
+| Recommendations strength | section_key `5_recommendations` missing `confirmed` / `may indicate` / verification-first wording | 0.65 |
+| Verdict inflation | source verdicts have no `confirmed` but body uses strong language (`confirmed`, `compromised`, `侵害`, etc.) | 0.6 |
+| Raw evidence dump | section body contains a raw evidence subheading with NULL/None-heavy rows | 0.55 |
+| Output language drift | body characters disagree with `LLM_OUTPUT_LANGUAGE` (JA expected but EN body, or vice versa) | 0.4 |
+| Open-question markers | `?` / `？` / `TBD` / `要確認` / `未調査` / `XXX` in body | 0.55 |
+| Empty body | substantive text (after stripping tables / headings / quotes) shorter than 80 chars | 0.3 |
+| Bullet-only | only `-` / `*` lines, no narrative paragraph | 0.6 |
+| Hedge without citation | `may` / `could` / `思われる` etc. present but no timestamp and no finding_id | 0.5 |
+| Citation token without finding_id | body says `evidence` / `根拠` etc. but no `windows-…` finding_id is cited | 0.6 |
+| Duplicate paragraph | two paragraphs of length ≥ 40 with identical text | 0.5 |
+| Out-of-range timestamp | a parsed `YYYY-MM-DD` in body has year > today+1 or < 1990 (NTFS overflow / fabrication) | 0.4 |
+
+The gap notes feed back into `report_sections.gaps`, which the next investigation cycle treats as additional hypotheses. Adding a new gate should be a single function check with a new note string; do not introduce template-specific logic here.
+
 ## Report templates
 
 Report templates are contributor-defined section contracts, not durable report state.
@@ -641,22 +676,27 @@ When a rule should also seed the LLM-driven hypothesis loop, the rule declares t
 
 | File | Consumed by | Role |
 |---|---|---|
-| `evtx_events.yaml`, `prefetch_executions.yaml` | `prompts._load_schema_hints()` | Table column inventory (`columns`) and JSON extraction expressions (`json_field_extractors`). Injected into planner/checker prompts. |
+| `evtx_events.yaml`, `mft_entries.yaml`, `mft_timeline.yaml`, `prefetch_executions.yaml`, `findings.yaml` | `prompts._build_schema_guidance()` via `_load_schema_hints()` | DB-table schema cards. Each YAML carries `core_columns` (planner-facing subset), `column_descriptions` (per-column hint), `columns` (full list for the SQL validator), `json_field_extractors` (raw_json fallbacks). All five tables are surfaced together in the planner prompt as `<SCHEMA_CARDS>`. |
 | `event_ids.yaml`, `logon_types.yaml` | `prompts._dfir_playbook()` | Event ID and Logon Type narrative knowledge base. |
-| `app_catalog.yaml`, `artifact_inference.yaml` | `prompts._dfir_playbook()` | Prefetch/MFT/Registry/File → application inference catalog. |
-| `false_positive_rules.yaml` | Rule engine + `prompts._dfir_playbook()` | Known FP patterns; used both for finding filtering and for the FP reduction section of prompts. |
+| `app_catalog.yaml`, `artifact_inference.yaml` | `prompts._dfir_playbook()` | Prefetch/MFT/Registry/File → application inference catalog. Suppressed for planning-phase prompts (`broad_plan`, `hypothesis_plan`); included only for interpretation phases (`check`, `report_section`, `section_agent_check`). |
+| `false_positive_rules.yaml` | Rule engine + `prompts._dfir_playbook()` | Known FP patterns; used both for finding filtering and for the FP reduction section of prompts. Interpretation-phase only. |
 | `dfir_ioc_catalog.yaml` | `prompts._dfir_playbook()` | Supplementary IOC dictionary (antiforensic tools, cloud sync, mail, recycle bin). |
 | `question_routing.yaml` | `section_agent.py`, `prompts.build_section_agent_*` | Per question_type declarations: `expected_answer_shape` injected into block-agent prompt, `evidence_chain` consumed deterministically by `_load_evidence_chains()` / `_execute_evidence_chain()` when the primary query returns 0 rows. |
 | `verdict_taxonomy.yaml` | `core/verdicts.py` | Verdict whitelist and cross-layer mappings (see "Verdict values are enumerated"). |
 | `playbook/*.md` | `prompts._dfir_playbook(phase)` | Phase-specific playbook bodies (`broad_plan`, `hypothesis_plan`, `check`, `report_section`, `section_agent_plan`, `section_agent_check`). Includes `<CRITICAL_RULES>` / `<FORBIDDEN_PATTERNS>` / `<SCHEMA_CONSTRAINTS>` blocks. |
 
-Schema-hint columns (`columns`, `json_field_extractors`) are mandatory:
+DB-table schema YAMLs must declare:
 
 - `table`: table name (e.g. `evtx_events`)
-- `columns`: full column list — the planner is instructed to never reference columns outside this list
-- `json_field_extractors`: name → DuckDB JSON extraction expression — the planner is instructed to use these expressions for fields not in `columns`
+- `core_columns`: short list of the most useful columns. This is what the planner LLM sees in the schema card. Keep it ≤ 13 entries.
+- `column_descriptions`: dict mapping each `core_columns` entry to a one-line description. Skip entries are tolerated but discouraged.
+- `columns`: full column list — used silently by `validate_select_sql` to reject SELECT/WHERE on undeclared columns.
+- `json_field_extractors` (optional): name → DuckDB JSON extraction expression, surfaced when a column is NULL and the field actually lives inside `raw_json`.
+- `notes` (optional): free-form hints (timestomp guidance, no_host_column on prefetch, etc.) appended to the schema card.
 
-Adding a new investigable table means adding a `_schema/<table>.yaml` and updating the agent's allowlist; the YAML itself is consumed automatically by `prompts._load_schema_hints()`.
+The planner prompt also receives `<SQL_COOKBOOK>` — six ready-to-adapt SELECT templates defined inline in `prompts.py` (`_SQL_COOKBOOK`). Weak local LLMs are expected to copy-and-edit a cookbook entry rather than synthesize SQL from scratch.
+
+Adding a new investigable table means adding a `_schema/<table>.yaml` and updating `ALLOWED_TABLES` in `sql_schema.py`; the YAML is consumed automatically by `_load_schema_hints()`.
 
 `playbook/*.md` may contain `<!-- AUTO-FROM: <yaml-path> -->` … `<!-- /AUTO-FROM -->` markers. Content inside those markers is regenerated from the named YAML by `scripts/regenerate_playbook.py`. Do not hand-edit auto sections; edit the source YAML instead, then run the regenerator.
 
@@ -713,6 +753,15 @@ This is a post-generation presentation and triage control. It is not a pre-filte
 - Treat case-local `report_template/` as an overrideable input copied at case initialization.
 - Do not rely on case-local copies for profiles or rulepacks today; those are resolved from the package tree.
 
+## Test policy: no LLM path in pytest
+
+The test suite must finish in seconds, not minutes. To keep it that way:
+
+- **Do not write tests that go through the LLM call path**, even with `patch("...request_llm_json", ...)` mocks. Full investigation cycles (`investigate(...)`, `broad_plan_investigation`, `plan_hypothesis_query`, `run_section_block_agent`, `fill_section`, `async_refresh_report_sections`) involve too many side effects (DuckDB writes, memory I/O, file scans) to be cheap even with mocked LLM responses.
+- **Do not write tests that hit a real LLM server.** A previous `tests/test_benchmark_e2e_real_llm.py` (gated by `FORENSIA_LLM_BASE_URL`) was removed for this reason.
+- Cover those paths instead with: pure-function tests of helpers (`_slim_findings`, `_quality_gate_section`, `_render_benchmark_answer_markdown`, etc.), DB-only tests for persistence, and CLI/HTTP tests with the LLM modules un-imported.
+- If you genuinely need to verify investigation-loop behavior, do it manually with `forensia investigate ...` against a local model and inspect `ai_logs/`. Don't encode that as a pytest run.
+
 ## Maintenance scripts
 
 `scripts/` holds offline audits used to keep the declaration layer, code, and docs aligned. They are not part of the runtime; `forensia doctor` bundles them.
@@ -731,6 +780,37 @@ This is a post-generation presentation and triage control. It is not a pre-filte
 - `forensia serve` serves the built UI through FastAPI.
 - `web_ui/dist/` is a build artifact used for serving.
 - When DuckDB is unavailable due to a lock, the UI falls back to `reports/api/*.json` snapshots.
+
+### Cockpit composition
+
+The default cockpit page (`web_ui/src/App.svelte`) renders, top to bottom:
+
+1. `Header` — case name, current pipeline phase, LLM model, last update timestamp.
+2. `KpiBar` — Events / Findings / Hypotheses / Open Gaps. The Findings and Hypotheses tiles include a thin stacked breakdown bar (Findings → severity High/Medium/Low; Hypotheses → Active/Confirmed/Refuted/Inconclusive). Bars are computed from `caseStats` + the `severityBreakdown` / `verdictBreakdown` stores; no separate panels.
+3. `VolumeTimeline` — Chart.js mixed chart. Default view is day-resolution over the whole record range. A button-strip range picker (year → month → day) narrows the range; selecting a single day swaps the chart granularity to hour. Detected findings render as a line overlay on the events stacked bar.
+4. `ReportDraftProgress` — section-level fill status.
+5. `AttackCoverage` — ATT&CK tactic × technique matrix derived from `findings.attack`.
+6. `Cockpit` — `AiActivityPanel`, then a `HypothesisStream` panel with tab-switch between Active Hypotheses (sorted by `latestReasoningAt` desc) and Latest Reasoning stream, then `OpenGaps`.
+7. `TopRules` + `TopEntities` (two-column grid).
+8. `DetailsTabs` — findings / steps / sessions / activity / mft raw views.
+
+### Event Volume API contract
+
+`GET /api/event-volume` accepts `bucket=year|month|day|hour`, `source=all|detected`, optional `start` / `end` ISO timestamps. Resolution order in `web.py`:
+
+1. Exact snapshot file (`reports/api/event_volume_<bucket>_<source>.json`) for full-range queries.
+2. Live `CaseDB` query.
+3. Aggregation fallback (`aggregate_event_volume`) from a finer-grained snapshot when the DB is locked and no exact snapshot exists. This lets year/month views render from existing day/hour snapshots without requiring a fresh cycle.
+
+`list_event_volume_dto` filters out timestamps with year < 1980 (Windows epoch 1601 garbage) or year > today + 5 (NTFS FILETIME overflow such as 3220 / 30828). The same filter applies to in-memory `aggregate_event_volume`.
+
+### Server-side date sanity
+
+Anywhere the API or report writer accepts a timestamp from raw evidence, apply the 1980 ≤ year ≤ today + 5 sanity range. Report-writer's quality gate flags out-of-range dates in narrative bodies too (see "Report quality gates"). Do not assume MFT/EVTX timestamps are valid.
+
+### Frontend timestamp parsing
+
+`web_ui/src/lib/format.ts:parseServerTimestamp` exists because backend `datetime.isoformat()` on naive UTC datetimes produces strings without a `Z` suffix; JS `new Date()` would interpret these as local time and skew "X ago" displays. All UI code that compares server timestamps to `Date.now()` must go through `parseServerTimestamp`.
 
 ## README boundary
 

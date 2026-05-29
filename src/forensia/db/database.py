@@ -13,6 +13,7 @@ from forensia.db.schema import CORE_SCHEMA_SQL, TRACE_SCHEMA_SQL, TRACE_TABLES
 
 class CaseDB:
     def __init__(self, case: Case):
+        """Connect to the case DuckDB database, attach trace DB, and initialize schema."""
         self.case = case
         self.case.db_dir.mkdir(parents=True, exist_ok=True)
         self.conn = duckdb.connect(str(case.database_path))
@@ -20,6 +21,7 @@ class CaseDB:
         self.init_schema()
 
     def init_schema(self) -> None:
+        """Apply core and trace schema SQL, then run pending migrations."""
         self.conn.execute(CORE_SCHEMA_SQL)
         self.conn.execute(TRACE_SCHEMA_SQL)
         for table_name in sorted(TRACE_TABLES):
@@ -36,6 +38,7 @@ class CaseDB:
         self._apply_migration_once("investigation_steps_hypothesis_id", self._apply_investigation_steps_hypothesis_id)
 
     def _apply_migration_once(self, migration_key: str, callback: Callable[[], None]) -> None:
+        """Execute a migration callback only if it has not been applied before."""
         existing = self.conn.execute(
             "SELECT 1 FROM schema_migrations WHERE migration_key = ? LIMIT 1",
             (migration_key,),
@@ -49,6 +52,7 @@ class CaseDB:
         )
 
     def _apply_legacy_schema_backfill(self) -> None:
+        """Backfill legacy columns for evtx_events and migrate old status/verdict values."""
         self.conn.execute("ALTER TABLE findings ADD COLUMN IF NOT EXISTS attack JSON")
         self.conn.execute("ALTER TABLE report_sections ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'draft'")
         self.conn.execute("ALTER TABLE report_sections ADD COLUMN IF NOT EXISTS update_count INTEGER DEFAULT 0")
@@ -87,9 +91,11 @@ class CaseDB:
         self.conn.execute("UPDATE hypotheses SET verdict = 'newlead' WHERE verdict = ?", (legacy_verdict,))
 
     def _apply_investigation_steps_hypothesis_id(self) -> None:
+        """Add hypothesis_id column to the investigation_steps trace table."""
         self.conn.execute("ALTER TABLE trace.investigation_steps ADD COLUMN IF NOT EXISTS hypothesis_id VARCHAR")
 
     def _route_trace_write(self, query: str) -> str:
+        """Rewrite unqualified INSERT/UPDATE/DELETE to use the trace schema prefix."""
         stripped = query.lstrip()
         lowered = stripped.lower()
         if not lowered.startswith(("insert", "update", "delete")):
@@ -109,12 +115,14 @@ class CaseDB:
         return query
 
     def execute(self, query: str, params: Sequence[Any] | None = None) -> duckdb.DuckDBPyConnection:
+        """Execute a SQL query, routing trace writes automatically."""
         routed_query = self._route_trace_write(query)
         if params is None:
             return self.conn.execute(routed_query)
         return self.conn.execute(routed_query, params)
 
     def insert_many(self, query: str, rows: Iterable[Sequence[Any]]) -> None:
+        """Execute a parameterized INSERT for multiple rows using executemany."""
         rows = list(rows)
         if not rows:
             return

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
@@ -69,6 +70,7 @@ def _assemble_messages_with_budget(
 
 
 def _time_range_guidance() -> str:
+    """Return time-range constraint guidance if the case has one, otherwise empty string."""
     if _CASE_TIME_RANGE.get("earliest") and _CASE_TIME_RANGE.get("latest"):
         return (
             f"\n## Case Time Range\n"
@@ -259,7 +261,7 @@ def _render_logon_narrative(logon_types_data: dict) -> str:
     for lt, info in sorted(logon_types_data.items(), key=lambda x: x[1].get("priority", 99) if isinstance(x[1], dict) else 99):
         if isinstance(info, dict):
             parts.append(
-                f" - LogonType {lt}: {info.get('name', '')} \u2014 {info.get('description', '')} (priority {info.get('priority', '')})"
+                f" - LogonType {lt}: {info.get('name', '')} — {info.get('description', '')} (priority {info.get('priority', '')})"
             )
     return "\n".join(parts)
 
@@ -304,7 +306,7 @@ def _render_app_catalog_narrative(app_mappings: dict) -> str:
     if isinstance(app_mappings, dict):
         for exe, info in app_mappings.items():
             if isinstance(info, dict):
-                parts.append(f" - {exe}: {info.get('category', '?')} \u2014 {info.get('description', '')}")
+                parts.append(f" - {exe}: {info.get('category', '?')} — {info.get('description', '')}")
     return "\n".join(parts)
 
 
@@ -319,7 +321,7 @@ def _render_artifact_inference_narrative(artifact_data: dict) -> str:
                     app = entry.get("app_name", "")
                     category = entry.get("app_category", "")
                     notes = entry.get("notes", "")
-                    line_parts = [f" - {pattern} \u2192 {app} ({category})"]
+                    line_parts = [f" - {pattern} → {app} ({category})"]
                     if notes:
                         line_parts.append(f": {notes}")
                     parts.append("".join(line_parts))
@@ -416,6 +418,7 @@ def _dfir_playbook(phase: str) -> str:
 
 
 def _load_event_id_hints() -> dict[int, dict[str, Any]]:
+    """Load event ID hints from _schema/event_ids.yaml keyed by integer event ID."""
     import yaml
     from pathlib import Path
 
@@ -461,15 +464,73 @@ Mandatory missing_checks:
 """
 
 
+_RULE_INSTANCE_SUFFIX = re.compile(r"-(\d{4,})$")
+
+
+def _rule_pattern(finding_id: str) -> str:
+    """Collapse '...-0001' / '...-0042' suffix to '-*' so per-instance findings group."""
+    if not finding_id:
+        return ""
+    return _RULE_INSTANCE_SUFFIX.sub("-*", finding_id)
+
+
 def _slim_findings(items: list[dict[str, Any]], max_findings: int) -> list[dict[str, Any]]:
+    """Compact a list of findings for prompt injection.
+
+    Findings sharing the same rule pattern (e.g. windows-security-4648-...-0001..0015)
+    collapse into a single summary row with `count` and a sample. This avoids dumping
+    the same alert N times when one rule fires repeatedly.
+    """
     fields = ("finding_id", "title", "severity", "confidence", "status", "summary")
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    order: list[str] = []
+    for item in items:
+        pattern = _rule_pattern(str(item.get("finding_id") or ""))
+        key = pattern or str(item.get("finding_id") or "")
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append(item)
+
     slimmed: list[dict[str, Any]] = []
-    for item in items[:max_findings]:
-        slimmed.append({field: item.get(field) for field in fields})
+    for key in order:
+        bucket = grouped[key]
+        first = bucket[0]
+        row = {field: first.get(field) for field in fields}
+        if len(bucket) > 1:
+            row["finding_id"] = key
+            row["count"] = len(bucket)
+            row["sample_finding_id"] = first.get("finding_id")
+            last = bucket[-1]
+            if str(last.get("finding_id")) != str(first.get("finding_id")):
+                row["last_finding_id"] = last.get("finding_id")
+        slimmed.append(row)
+        if len(slimmed) >= max_findings:
+            break
     return slimmed
 
 
+def _slim_hypothesis_dump(hypothesis: Any) -> dict[str, Any]:
+    """Drop null / empty-collection fields when serializing a Hypothesis for prompts.
+
+    The full Pydantic dump includes a lot of None / [] / '' fields that cost tokens
+    without carrying signal for the planner LLM. This trims them.
+    """
+    if hypothesis is None:
+        return {}
+    raw = hypothesis.model_dump() if hasattr(hypothesis, "model_dump") else dict(hypothesis)
+    out: dict[str, Any] = {}
+    for key, value in raw.items():
+        if value is None:
+            continue
+        if isinstance(value, (list, dict, str)) and len(value) == 0:
+            continue
+        out[key] = value
+    return out
+
+
 def _truncate_context_sections(context_sections: dict[str, str], max_chars: int = 1500) -> dict[str, str]:
+    """Trim each section body to max_chars to fit within LLM token budget."""
     trimmed: dict[str, str] = {}
     for section_key, body in context_sections.items():
         text = str(body or "").strip()
@@ -479,28 +540,109 @@ def _truncate_context_sections(context_sections: dict[str, str], max_chars: int 
     return trimmed
 
 
-def _build_schema_guidance(table_name: str = "evtx_events") -> str:
-    """Build the schema_card section of planner prompts (PROMPT-6).
+_SQL_COOKBOOK = """
+<SQL_COOKBOOK>
+Copy and adapt these templates rather than inventing SQL from scratch.
 
-    Centralized so hypothesis-plan and section-plan prompts cannot drift.
+# 1. Enumerate occurrences of one or more event IDs
+SELECT event_id, timestamp, computer, user_name, target_user, raw_json
+FROM evtx_events
+WHERE event_id IN (4624, 4625)
+ORDER BY timestamp
+LIMIT 200;
+
+# 2. Filter by time window
+SELECT event_id, timestamp, computer
+FROM evtx_events
+WHERE event_id = 7045
+  AND timestamp BETWEEN '2015-03-22 00:00:00' AND '2015-03-25 23:59:59'
+ORDER BY timestamp;
+
+# 3. Per-user logon summary
+SELECT user_name, logon_type, COUNT(*) AS n, MIN(timestamp) AS first, MAX(timestamp) AS last
+FROM evtx_events
+WHERE event_id = 4624
+GROUP BY 1, 2
+ORDER BY n DESC;
+
+# 4. Fall back to raw_json when a column is NULL
+SELECT timestamp, COALESCE(user_name, json_extract(raw_json, '$.TargetUserName')) AS user
+FROM evtx_events
+WHERE event_id = 4720
+ORDER BY timestamp;
+
+# 5. Find file activity by path pattern (MFT)
+SELECT file_path, file_name, si_modified, is_deleted
+FROM mft_entries
+WHERE LOWER(file_path) LIKE '%/desktop/%'
+  AND extension IN ('docx', 'xlsx', 'pptx', 'doc', 'ppt', 'xls')
+ORDER BY si_modified DESC
+LIMIT 100;
+
+# 6. Recent application executions (Prefetch)
+SELECT executable_name, exec_count, last_exec_time
+FROM prefetch_executions
+WHERE LOWER(executable_name) IN ('eraser.exe', 'ccleaner.exe', 'ccsetup.exe', 'bleachbit.exe')
+ORDER BY last_exec_time DESC;
+</SQL_COOKBOOK>
+"""
+
+
+def _format_schema_card(table_hints: dict[str, Any]) -> str:
+    """Format a table's schema card (columns, descriptions, notes) for LLM prompt injection."""
+    table_name = table_hints.get("table", "?")
+    core = table_hints.get("core_columns") or []
+    descs = table_hints.get("column_descriptions") or {}
+    notes = table_hints.get("notes") or {}
+    full_cols = table_hints.get("columns") or []
+    lines = [f"## Table `{table_name}`"]
+    if core:
+        lines.append("Primary columns (use these first):")
+        for col in core:
+            desc = descs.get(col)
+            if desc:
+                lines.append(f"  - `{col}` — {desc}")
+            else:
+                lines.append(f"  - `{col}`")
+    elif full_cols:
+        lines.append(f"Columns: {full_cols}")
+    if notes:
+        for key, note in notes.items():
+            lines.append(f"  note ({key}): {note}")
+    return "\n".join(lines)
+
+
+def _build_schema_guidance(table_name: str = "evtx_events") -> str:
+    """Build the schema_card section of planner prompts.
+
+    Shows curated `core_columns` + descriptions for the LLM; the full
+    `columns` list is consumed silently by validate_select_sql elsewhere.
+    Surfaces ALL known tables (evtx_events, mft_entries, mft_timeline,
+    prefetch_executions, findings) so the planner can JOIN/UNION across them.
     """
     schema_hints = _load_schema_hints()
     if not schema_hints:
         return ""
-    table_hints = schema_hints.get(table_name, {})
-    cols = table_hints.get("columns", [])
-    extractors = table_hints.get("json_field_extractors", {})
-    parts: list[str] = []
-    if cols:
-        parts.append(
-            f"Schema guidance for {table_name} table — allowed_columns: {cols}. "
-            "Do NOT write column names outside this list in SELECT/WHERE clauses. "
-        )
+    primary = schema_hints.get(table_name, {})
+    if not primary:
+        return ""
+    # Only surface entries that look like real DB tables (have a column list).
+    db_tables = {name: h for name, h in schema_hints.items() if h.get("columns") or h.get("core_columns")}
+    extractors = primary.get("json_field_extractors", {})
+    blocks = ["<SCHEMA_CARDS>"]
+    # Primary table first, then any other known tables in stable order.
+    ordering = [table_name] + sorted(name for name in db_tables if name != table_name)
+    for name in ordering:
+        hints = db_tables.get(name)
+        if hints:
+            blocks.append(_format_schema_card(hints))
     if extractors:
-        parts.append(
-            f"For fields not in allowed_columns, use json_field_extractors: {extractors}. "
+        blocks.append(
+            "For fields missing from the column list, use these JSON extractors instead of guessing: "
+            + ", ".join(f"{k} → {v}" for k, v in extractors.items())
         )
-    return "".join(parts)
+    blocks.append("</SCHEMA_CARDS>")
+    return "\n".join(blocks) + "\n" + _SQL_COOKBOOK
 
 
 def _collect_event_ids(evidence_results: list[dict[str, Any]]) -> list[int]:
@@ -523,6 +665,7 @@ def _collect_event_ids(evidence_results: list[dict[str, Any]]) -> list[int]:
 
 
 def _build_event_id_guidance(evidence_results: list[dict[str, Any]]) -> str:
+    """Build per-event-ID claim guidance for the report writer based on observed evidence."""
     event_hints = _load_event_id_hints()
     if not event_hints:
         return ""
@@ -554,6 +697,7 @@ def _collect_source_verdicts(evidence_results: list[dict[str, Any]]) -> list[str
 
 
 def _format_evidence_coverage(report_brief: dict[str, Any] | None) -> str:
+    """Format evidence coverage summary per section for overview injection."""
     if not report_brief:
         return ""
     coverage = report_brief.get("evidence_coverage")
@@ -602,6 +746,11 @@ def build_broad_plan_messages(
     max_findings: int = 10,
     max_resolved: int = 20,
 ) -> list[dict[str, str]]:
+    """Build system+user messages for the broad-planning phase.
+
+    Injects DFIR playbook, time-range guidance, and example outputs. Sends
+    investigation state (findings, hypotheses, history) as user context."""
+
     findings = _slim_findings(findings_snapshot, max_findings)
     recent_resolved = resolved_hypotheses[-max_resolved:]
     slimmed_history = _slim_history(history, 10)
@@ -634,8 +783,8 @@ Output: {"read_more": ["memory/keypoints/KP-020.md"], "hypotheses": [{"id": "<as
         "hypothesis_quality: Must satisfy ALL: Falsifiable, Specific, Non-redundant, Evidence-grounded.\n"
         "hypothesis_output_schema: Each hypothesis MUST include required_entities, confirm_when, refute_when.\n"
         "prohibited_phrases: 'unknown', 'cannot confirm', 'insufficient evidence'.\n"
-        "confirm_when_rule: co_observed_event_ids must contain ONLY valid finding_ids (format: 'windows-xxx-yyyy-xxxx-xxxx'). "
-        "Do NOT include keypoint names or free text description — they will be dropped by validation.\n"
+        "confirm_when_rule: co_observed_event_ids entries must be either integer event IDs (e.g. 4624, 7045) OR finding_ids (format: 'windows-xxx-yyyy-xxxx-xxxx'). "
+        "Integer event IDs are preferred. Do NOT include keypoint names, free text, or quoted-string numbers — they will be dropped by validation.\n"
         "</RULES>\n"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
@@ -656,8 +805,8 @@ Output: {"read_more": ["memory/keypoints/KP-020.md"], "hypotheses": [{"id": "<as
         f"unresolved_findings: {findings}\n"
         f"observed_keypoints: {observed_keypoints or []}\n"
         f"uncovered_keypoints: {uncovered_keypoints or []}\n"
-        f"active_hypotheses: {[item.model_dump() for item in active_hypotheses]}\n"
-        f"resolved_hypotheses: {[item.model_dump() for item in recent_resolved]}\n"
+        f"active_hypotheses: {[_slim_hypothesis_dump(item) for item in active_hypotheses]}\n"
+        f"resolved_hypotheses: {[_slim_hypothesis_dump(item) for item in recent_resolved]}\n"
         f"recent_history: {slimmed_history}\n"
     )
     return [
@@ -677,6 +826,11 @@ def build_hypothesis_plan_messages(
     query_index: int = 1,
     max_queries: int = 5,
 ) -> list[dict[str, str]]:
+    """Build messages for hypothesis-specific query planning.
+
+    Includes schema guidance, convergence notes near the last allowed query,
+    and structured summaries of already-executed queries to avoid repeats."""
+
     executed_query_summaries = [
         {
             "query_id": item.get("query_id"),
@@ -722,18 +876,24 @@ Output: {"read_more": [], "hypothesis": {"id": "H-5", "description": "RDP used t
         f"{schema_guidance}"
         "<RULES>\n"
         "convergence: On last query, propose decisive test. Do not output exploratory queries.\n"
-        "use_templates: Prefer template_id+params; only use raw sql when no template fits.\n"
+        "query_required: MUST provide ONE of (a) template_id + params for a template in query_templates, OR (b) raw SELECT sql string. Never leave both blank — that aborts the investigation.\n"
+        "template_preference: Use template_id only when an entry in query_templates fits exactly. Otherwise emit raw SELECT sql against the allowed tables (evtx_events, mft_entries, mft_timeline, prefetch_executions, findings).\n"
+        "sql_rules: Read-only SELECT only. Use the schema_card columns. Reference WHERE timestamp within the case time range.\n"
         "</RULES>\n"
         f"{convergence_note}\n"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
         '  "read_more": [],\n'
         '  "hypothesis": {"id": "H-123", "description": "...", "required_entities": [], "confirm_when": {}, "refute_when": {}},\n'
-        '  "query": {"query_id": "Q-123", "hypothesis_id": "H-123", "purpose": "...", "template_id": "...", "params": {}},\n'
+        '  "query": {"query_id": "Q-123", "hypothesis_id": "H-123", "purpose": "...", "template_id": "..." | null, "params": {}, "sql": "SELECT ... | null"},\n'
         '  "needs_more": true|false,\n'
         '  "stop_reason": ""\n'
         "}\n"
         "</OUTPUT_SCHEMA>\n"
+        '<EXAMPLE verdict="raw_sql_fallback">\n'
+        'Input: hypothesis is about event_id 104 log clearing. No template_id covers it.\n'
+        'Output: {"read_more": [], "hypothesis": {"id": "H-002", "description": "..."}, "query": {"query_id": "Q-002-1", "hypothesis_id": "H-002", "purpose": "Enumerate all log-clear events", "template_id": null, "params": {}, "sql": "SELECT timestamp, computer, channel, raw_json FROM evtx_events WHERE event_id = 104 ORDER BY timestamp"}, "needs_more": false, "stop_reason": ""}\n'
+        '</EXAMPLE>\n'
         f"{EXAMPLE_HYPOTHESIS_PLAN}"
         "Output JSON only. "
         f"{_lang_instruction()} "
@@ -744,7 +904,7 @@ Output: {"read_more": [], "hypothesis": {"id": "H-5", "description": "RDP used t
         f"queries_remaining: {queries_remaining}\n"
         f"overview_md:\n{overview_md}\n\n"
         f"extra_context_md:\n{extra_context_md}\n\n"
-        f"hypothesis: {hypothesis.model_dump()}\n"
+        f"hypothesis: {_slim_hypothesis_dump(hypothesis)}\n"
         f"related_findings: {finding_candidates}\n"
         f"hypothesis_history: {hypothesis_history}\n"
         f"query_templates: {query_templates}\n"
@@ -753,8 +913,6 @@ Output: {"read_more": [], "hypothesis": {"id": "H-5", "description": "RDP used t
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
-
-
 
 
 def _check_strictness_note(query_index: int, max_queries: int) -> str:
@@ -928,7 +1086,7 @@ def build_check_messages(
         f"overview_md:\n{overview_md}\n\n"
         f"structured_memory_context:\n{memory_context_md}\n\n"
         f"planned_query: {planned_query.model_dump()}\n"
-        f"hypothesis: {hypothesis.model_dump() if hypothesis else None}\n"
+        f"hypothesis: {_slim_hypothesis_dump(hypothesis) if hypothesis else None}\n"
         f"finding_candidates: {finding_candidates}\n"
         f"result_summary: {result_summary}\n"
     )
@@ -945,6 +1103,11 @@ def build_check_verdict_messages(
     rule_context: RuleContext | None = None,
     fallback_info: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
+    """Build verdict-only check messages as the first phase of phased checking.
+
+    Narrowly focuses on verdict determination (confirmed/refuted/inconclusive/newlead)
+    without memory-update or suspicious-evidence extraction."""
+
     zero_evidence = int(result_summary.get("row_count") or 0) == 0
     rule_verdict_guidance = ""
     if rule_context:
@@ -969,7 +1132,7 @@ def build_check_verdict_messages(
     )
     user = (
         f"planned_query: {planned_query.model_dump()}\n"
-        f"hypothesis: {hypothesis.model_dump() if hypothesis else None}\n"
+        f"hypothesis: {_slim_hypothesis_dump(hypothesis) if hypothesis else None}\n"
         f"result_summary: {result_summary}\n"
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -981,6 +1144,8 @@ def build_check_memory_updates_messages(
     finding_candidates: list[dict[str, Any]],
     overview_md: str | None = None,
 ) -> list[dict[str, str]]:
+    """Build messages for durable memory extraction (facts, timeline, entities) after a verdict."""
+
     system = (
         "<TASK>You are a DFIR review analyst. Extract durable memory updates based on verdict.</TASK>\n"
         "<INPUT_SCHEMA>verdict, SQL result, finding candidates</INPUT_SCHEMA>\n"
@@ -1007,6 +1172,8 @@ def build_check_memory_updates_messages(
 def build_check_suspicious_evidence_messages(
     result_summary: dict[str, Any],
 ) -> list[dict[str, str]]:
+    """Build messages for suspicious-evidence identification and report-text generation."""
+
     system = (
         "<TASK>You are a DFIR review analyst. Identify suspicious evidence from SQL results.</TASK>\n"
         "<INPUT_SCHEMA>SQL result rows (sample_rows)</INPUT_SCHEMA>\n"
@@ -1028,6 +1195,8 @@ def build_column_selection_messages(
     section_key: str,
     template_body: str,
 ) -> list[dict[str, str]]:
+    """Build messages asking LLM to select analytically relevant columns from a query result set."""
+
     system = (
         "You are a DFIR analyst. "
         "Given a list of column names from query results and the report section context, "
@@ -1190,6 +1359,7 @@ Output: "## Process Execution\\n\\nOne suspicious process was observed: powershe
 
 
 def _load_question_routing_raw() -> dict[str, Any]:
+    """Load raw question-routing schema from _schema/question_routing.yaml."""
     import yaml
     from pathlib import Path
     routing_path = Path(__file__).resolve().parent.parent / "rulepacks" / "_schema" / "question_routing.yaml"
@@ -1233,6 +1403,11 @@ def build_benchmark_section_messages(
     verification_notes: list[str] | None = None,
     benchmark_id: str | None = None,
 ) -> list[dict[str, str]]:
+    """Build messages for benchmark appendix blocks with structured JSON output schema.
+
+    Injects question-routing expected answer shape and artifact-inference guidance.
+    Benchmark blocks output structured JSON instead of free-form Markdown."""
+
     raw_evidence_rows = raw_evidence_rows or []
     evidence_for_prompt = [result for result in evidence_results if str(result.get("kind") or "rows") == "rows"]
     if not evidence_for_prompt:
@@ -1336,6 +1511,11 @@ def build_section_agent_plan_messages(
     reusable_evidence: list[dict[str, Any]],
     memory_context_md: str = "",
 ) -> list[dict[str, str]]:
+    """Build messages for the section agent's plan phase — decide next evidence action.
+
+    Supports action types: sql, template, keypoint, facts, write. Includes
+    error-recovery logic to switch to keypoint after repeated SQL failures."""
+
     schema_guidance = _build_schema_guidance("evtx_events")
 
     EXAMPLE_SECTION_PLAN = '''
@@ -1418,6 +1598,11 @@ def build_section_agent_check_messages(
     reusable_evidence: list[dict[str, Any]],
     memory_context_md: str = "",
 ) -> list[dict[str, str]]:
+    """Build messages for the section agent's check phase — verify evidence sufficiency.
+
+    Injects contradiction-history context and status taxonomy
+    (answered/partial/not_found/not_searched/insufficient_evidence/wrong_query)."""
+
     contradicted_history = [run for run in prior_runs if run.get("verdict") in {"block_contradicted", "refuted"}]
     EXAMPLE_SECTION_CHECK = '''
 <EXAMPLE verdict="section_check">

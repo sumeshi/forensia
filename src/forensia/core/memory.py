@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 def _slugify(value: str) -> str:
+    """Convert a string to a lowercase, dash-separated filesystem-safe slug."""
     cleaned = sub(r"[^a-zA-Z0-9._-]+", "-", value.strip())
     return cleaned.strip("-").lower() or "unknown"
 
@@ -135,6 +136,7 @@ class MemoryManager:
         return int(get_llm_settings()["memory_max_bytes"])
 
     def load_overview(self) -> str:
+        """Load the overview file, returning a default placeholder if it does not exist."""
         if not self.overview_path.exists():
             return (
                 "# Investigation Overview\n\n"
@@ -146,6 +148,7 @@ class MemoryManager:
         return self.overview_path.read_text(encoding="utf-8")
 
     def load_context(self, files: list[str]) -> str:
+        """Read and concatenate the named memory files, preventing path traversal outside base_dir."""
         parts: list[str] = []
         for relative in files:
             path = (self.base_dir / relative).resolve()
@@ -158,6 +161,7 @@ class MemoryManager:
         return "\n\n".join(parts)
 
     def _markdown_files(self, directory: Path) -> list[str]:
+        """List relative paths of all .md files in a directory, sorted."""
         if not directory.exists():
             return []
         return [
@@ -167,6 +171,7 @@ class MemoryManager:
         ]
 
     def _scratch_key(self, hypothesis_id: str | None) -> str:
+        """Derive a scratch directory key from a hypothesis ID, defaulting to 'global'."""
         hyp_id = str(hypothesis_id or "").strip()
         if not hyp_id:
             return "global"
@@ -188,6 +193,7 @@ class MemoryManager:
         hypothesis_id: str | None = None,
         provisional: bool = False,
     ) -> str:
+        """Build a Markdown list item with optional hypothesis/evidence/provisional metadata."""
         body = str(text).strip()
         if not body:
             return ""
@@ -203,6 +209,7 @@ class MemoryManager:
         return f"- {body}"
 
     def _append_markdown_entry(self, path: Path, heading: str, line: str) -> bool:
+        """Append a line under a heading in a Markdown file, skipping if the line is already present."""
         path.parent.mkdir(parents=True, exist_ok=True)
         existing = path.read_text(encoding="utf-8").rstrip() if path.exists() else heading
         if not existing:
@@ -223,6 +230,7 @@ class MemoryManager:
         include_keypoints: bool = True,
         include_scratch: bool = True,
     ) -> list[str]:
+        """Assemble a deduplicated list of memory file paths for LLM context."""
         files: list[str] = []
         if include_overview:
             files.extend(["overview.md", "facts.md", "timeline.md", "tasks.md"])
@@ -256,6 +264,7 @@ class MemoryManager:
         include_keypoints: bool = True,
         include_scratch: bool = True,
     ) -> str:
+        """Load investigation context files respecting a byte budget via compact context."""
         return self.load_compact_context(
             self.investigation_context_files(
                 hypothesis_id,
@@ -269,6 +278,7 @@ class MemoryManager:
         )
 
     def load_compact_context(self, files: list[str], max_bytes: int | None = None) -> str:
+        """Load context from files but truncate from the front if the byte budget is exceeded."""
         budget = max_bytes if max_bytes is not None else self.max_bytes
         text = self.load_context(files)
         encoded = text.encode("utf-8")
@@ -284,6 +294,7 @@ class MemoryManager:
         self.overview_path.write_text(content, encoding="utf-8")
 
     def append_overview(self, content: str) -> bool:
+        """Append content to the overview file."""
         content = content.strip()
         if not content:
             return False
@@ -292,12 +303,14 @@ class MemoryManager:
         return True
 
     def upsert_entity(self, entity_type: str, name: str, content: str) -> None:
+        """Write entity content to the appropriate entity type subdirectory."""
         path = self._entity_path(entity_type, name)
         if path is None:
             return
         path.write_text(content, encoding="utf-8")
 
     def upsert_hypothesis(self, hyp_id: str, slug: str, content: str) -> None:
+        """Write hypothesis content, removing any stale legacy files with the same slug prefix."""
         stable_id = sub(r"[^a-zA-Z0-9._-]+", "-", str(hyp_id).strip()).strip("-") or "unknown"
         path = self.hypotheses_dir / f"{stable_id}.md"
         for legacy_path in self.hypotheses_dir.glob(f"{_slugify(hyp_id)}-*.md"):
@@ -306,6 +319,7 @@ class MemoryManager:
         path.write_text(content, encoding="utf-8")
 
     def upsert_keypoint(self, kp_id: str, content: str) -> None:
+        """Write a keypoint file, using an upper-case slug as filename."""
         path = self.keypoints_dir / f"{_slugify(kp_id).upper()}.md"
         path.write_text(content, encoding="utf-8")
 
@@ -316,6 +330,7 @@ class MemoryManager:
         hypothesis_id: str | None = None,
         provisional: bool = False,
     ) -> None:
+        """Record a fact in the facts file (or scratch if provisional), deduplicating by content hash."""
         body = str(text).strip()
         if not body:
             return
@@ -358,6 +373,7 @@ class MemoryManager:
         hypothesis_id: str | None = None,
         provisional: bool = False,
     ) -> None:
+        """Record a timestamped event in the timeline (or scratch if provisional)."""
         timestamp_text = str(timestamp).strip()
         description_text = str(description).strip()
         if not timestamp_text or not description_text:
@@ -382,6 +398,7 @@ class MemoryManager:
         hypothesis_id: str | None = None,
         provisional: bool = False,
     ) -> None:
+        """Append a task entry to the tasks file (or scratch if provisional), compacting when oversized."""
         task_text = str(text).strip()
         normalized_kind = str(kind).strip()
         if normalized_kind not in {"internal_db_check", "external_lookup", "human_decision"}:
@@ -398,6 +415,7 @@ class MemoryManager:
             self.compact_if_oversized(self.tasks_memory_path)
 
     def append_refuted_hypothesis(self, hypothesis_id: str, description: str, reason: str) -> None:
+        """Log a refuted hypothesis to the archive with its reasoning."""
         hyp_id = str(hypothesis_id).strip()
         description_text = str(description).strip()
         reason_text = str(reason).strip()
@@ -409,6 +427,7 @@ class MemoryManager:
         self._append_markdown_entry(self.refuted_hypotheses_path, "# Refuted Hypotheses", line)
 
     def append_resolved_gap(self, text: str, evidence_ids: list[str]) -> None:
+        """Record a resolved gap in the archive."""
         body = str(text).strip()
         if not body:
             return
@@ -417,6 +436,7 @@ class MemoryManager:
             self._append_markdown_entry(self.resolved_gaps_path, "# Resolved Gaps", line)
 
     def append_suspicious(self, rows: list[dict]) -> bool:
+        """Append rows of suspicious evidence, deduplicating by evidence_id, and compact when oversized."""
         if not rows:
             return False
         header = "| evidence_id | reason | confidence |\n|---|---|---|\n"
@@ -455,16 +475,19 @@ class MemoryManager:
         return detail_id
 
     def _write_fact_detail(self, detail_id: str, text: str, evidence_ids: list[str]) -> None:
+        """Write a detailed fact record with evidence references to the details directory."""
         lines = [f"# {detail_id}", "", text.strip()]
         if evidence_ids:
             lines.extend(["", "## Evidence", *[f"- {item}" for item in evidence_ids]])
         (self.details_dir / f"{detail_id}.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
     def _fact_hash(self, text: str, evidence_ids: list[str]) -> str:
+        """Generate a SHA-256 hash for deduplicating fact entries."""
         payload = "\n".join([text.strip(), *sorted(evidence_ids)])
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _parse_fact_detail(self, detail: list[str]) -> tuple[str, list[str]] | None:
+        """Parse a fact detail file back into (text, evidence_ids) tuple."""
         if len(detail) < 3:
             return None
         text_lines: list[str] = []
@@ -487,6 +510,7 @@ class MemoryManager:
         return existing_text, evidence_ids
 
     def _load_existing_fact_hashes(self) -> None:
+        """Pre-populate fact hashes from existing detail files on startup to prevent duplicates."""
         max_n = 0
         for path in sorted(self.details_dir.glob("fact-*.md")):
             try:
@@ -501,6 +525,7 @@ class MemoryManager:
         self._next_fact_id = max_n + 1
 
     def promote_hypothesis_scratch(self, hypothesis_id: str | None) -> list[str]:
+        """Move provisional scratch entries for a hypothesis into the confirmed memory files."""
         scratch_dir = self._hypothesis_scratch_dir(hypothesis_id)
         if not scratch_dir.exists():
             return []
@@ -525,6 +550,7 @@ class MemoryManager:
         return promoted
 
     def archive_hypothesis_scratch(self, hypothesis_id: str | None) -> list[str]:
+        """Move a hypothesis scratch directory into the archive for long-term retention."""
         scratch_dir = self._hypothesis_scratch_dir(hypothesis_id)
         if not scratch_dir.exists():
             return []
@@ -536,6 +562,7 @@ class MemoryManager:
         return [str(target_dir)]
 
     def _entity_path(self, entity_type: str, name: str) -> Path | None:
+        """Resolve the filesystem path for an entity by type and name, using alias resolution."""
         normalized_type = str(entity_type).strip().lower()
         normalized_name = str(name).strip()
         if not normalized_name:
@@ -558,6 +585,7 @@ class MemoryManager:
         return base / f"{_slugify(normalized_name)}.md"
 
     def _rotate_timeline(self, max_lines: int = 100, keep_lines: int = 80) -> None:
+        """Move older timeline entries to the archive when the timeline exceeds max_lines."""
         if not self.timeline_path.exists():
             return
         lines = self.timeline_path.read_text(encoding="utf-8").splitlines()
@@ -578,6 +606,7 @@ class MemoryManager:
         self.timeline_path.write_text(rebuilt.rstrip() + "\n", encoding="utf-8")
 
     def compact_overview_if_needed(self, base_url: str, model: str) -> bool:
+        """Compress the overview via LLM if it exceeds the byte budget."""
         if not self.overview_path.exists() or self.overview_path.stat().st_size <= self.max_bytes:
             return False
         current = self.overview_path.read_text(encoding="utf-8").strip()
@@ -603,6 +632,7 @@ class MemoryManager:
         return True
 
     def compact_oversized_with_llm(self, base_url: str, model: str) -> list[str]:
+        """Compress oversized hypothesis and entity markdown files via LLM."""
         changed_paths: list[str] = []
         for path in self._llm_compaction_targets():
             if not path.exists() or path.stat().st_size <= self.max_bytes:
@@ -637,6 +667,7 @@ class MemoryManager:
         return changed_paths
 
     def _llm_compaction_targets(self) -> list[Path]:
+        """Return the list of file paths eligible for LLM-based compaction."""
         targets: list[Path] = []
         for directory in (
             self.hypotheses_dir,
@@ -648,6 +679,7 @@ class MemoryManager:
         return targets
 
     def _ensure_markdown_heading(self, body: str, original: str) -> str:
+        """Ensure the compacted body retains the original markdown heading."""
         compacted = body.strip()
         if not compacted.startswith("# "):
             original_heading = next((line.strip() for line in original.splitlines() if line.strip().startswith("# ")), "")
@@ -665,6 +697,7 @@ class MemoryManager:
         model: str,
         error_message: str,
     ) -> str | None:
+        """Call the LLM to compact memory text, returning None on failure."""
         try:
             return _llm_call(
                 messages=[
@@ -685,6 +718,7 @@ class MemoryManager:
         data_lines: list[str],
         separator_lines: list[str] | None = None,
     ) -> bool:
+        """Trim data rows by removing the oldest 20% at a time until the file fits the byte budget."""
         keep_lines = data_lines
         separator_lines = separator_lines or []
         while keep_lines:
@@ -697,6 +731,7 @@ class MemoryManager:
         return True
 
     def _compact_tasks(self, path: Path) -> bool:
+        """Trim the tasks file by removing oldest entries until it fits the byte budget."""
         if not path.exists() or path.stat().st_size <= self.max_bytes:
             return False
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -711,6 +746,7 @@ class MemoryManager:
         return self._trim_rows_to_budget(path, prefix_lines, task_lines, separator_lines=[""])
 
     def _compact_suspicious(self, path: Path) -> bool:
+        """Trim the suspicious evidence table by removing oldest rows until it fits the byte budget."""
         if not path.exists() or path.stat().st_size <= self.max_bytes:
             return False
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -729,6 +765,7 @@ class MemoryManager:
         return self._trim_rows_to_budget(path, prefix_lines, data_lines)
 
     def compact_if_oversized(self, path: Path) -> bool:
+        """Dispatch compaction for a path if it exceeds the byte budget, returning True if trimmed."""
         if not path.exists() or path.stat().st_size <= self.max_bytes:
             return False
         if path in {
@@ -761,6 +798,7 @@ class EvidenceOnlyMemory:
         return self._inner.max_bytes
 
     def _evidence_files(self) -> list[str]:
+        """List evidence-only memory files (facts, entities, keypoints) excluding narrative context."""
         files: list[str] = ["facts.md"]
         files.extend(self._inner._markdown_files(self._inner.entities_dir))
         files.extend(self._inner._markdown_files(self._inner.keypoints_dir))
@@ -771,6 +809,7 @@ class EvidenceOnlyMemory:
         hypothesis_id: str | None = None,
         **kwargs: object,
     ) -> str:
+        """Load only evidence-based context, ignoring narrative files like hypotheses and scratch."""
         return self._inner.load_compact_context(self._evidence_files())
 
 

@@ -155,7 +155,7 @@ def _load_fp_reduction_guidance() -> str:
 
 
 def _fmt_table_notes(table_name: str) -> str:
-    """Format table notes from YAML into guidance paragraph."""
+    """Format table notes from YAML schema into a guidance paragraph for LLM prompts."""
     notes = _load_table_notes(table_name)
     if not notes:
         return ""

@@ -10,6 +10,7 @@ def _packaged_report_template_root():
 
 
 def _copy_traversable_tree(source, destination: Path, written: list[Path], overwrite: bool) -> None:
+    """Recursively copy a traversable resource tree to a filesystem destination."""
     destination.mkdir(parents=True, exist_ok=True)
     for child in source.iterdir():
         child_target = destination / child.name
@@ -29,6 +30,7 @@ def _copy_traversable_tree(source, destination: Path, written: list[Path], overw
 
 
 def export_packaged_report_templates(destination: str | Path, overwrite: bool = False) -> list[Path]:
+    """Export bundled report template files to the given directory."""
     target_root = Path(destination).resolve()
     target_root.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []

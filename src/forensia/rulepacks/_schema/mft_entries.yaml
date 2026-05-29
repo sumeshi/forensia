@@ -1,0 +1,45 @@
+table: mft_entries
+core_columns:
+  - file_name
+  - file_path
+  - extension
+  - is_deleted
+  - size
+  - si_created
+  - si_modified
+  - si_accessed
+  - fn_created
+column_descriptions:
+  file_name: "Base filename only, e.g. 'NTUSER.DAT'."
+  file_path: "Full path under the volume, e.g. 'C:/Users/alice/Documents/x.docx'. Use LIKE '%pattern%' for substring match."
+  extension: "Lowercase extension without dot, e.g. 'docx', 'exe', 'pf'."
+  is_deleted: "TRUE if the MFT entry is marked deleted."
+  size: "File size in bytes."
+  si_created: "$STANDARD_INFORMATION created (TIMESTAMP). Often manipulated by timestomp."
+  si_modified: "$STANDARD_INFORMATION modified time."
+  si_accessed: "$STANDARD_INFORMATION accessed time."
+  fn_created: "$FILE_NAME created — usually authoritative when timestomp is suspected."
+columns:
+  - evidence_id
+  - source_file
+  - record_number
+  - file_path
+  - file_name
+  - extension
+  - is_directory
+  - is_deleted
+  - size
+  - si_created
+  - si_modified
+  - si_accessed
+  - si_mft_modified
+  - fn_created
+  - fn_modified
+  - fn_accessed
+  - fn_mft_modified
+  - raw_json
+  - tags
+  - severity
+notes:
+  timestomp: "If si_* and fn_* timestamps disagree on the same record, treat fn_* as authoritative. A si_created later than fn_created is a timestomp indicator."
+  case_sensitive: "Paths are stored in their original case; use LOWER(file_path) when matching mixed-case patterns."

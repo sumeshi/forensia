@@ -34,12 +34,14 @@ def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def get_case_dto(case: Case) -> CaseDTO:
+    """Build a CaseDTO from the case manifest YAML."""
     manifest = yaml.safe_load(case.manifest_path.read_text(encoding="utf-8")) or {}
     paths = {str(key): str(value) for key, value in (manifest.get("paths") or {}).items()}
     return CaseDTO(case_name=case.path.name, paths=paths, manifest=manifest)
 
 
 def get_case_stats_dto(db: CaseDB) -> CaseStatsDTO:
+    """Aggregate case-wide statistics from multiple tables into a single DTO."""
     event_rows = db.execute(
         """
         SELECT
@@ -107,6 +109,7 @@ def list_findings_dto(
     limit: int = 100,
     offset: int = 0,
 ) -> list[FindingDTO]:
+    """Query findings with optional status/severity filters, ordered by recency and confidence."""
     clauses: list[str] = []
     params: list[Any] = []
     if status:
@@ -132,6 +135,7 @@ def list_findings_dto(
 
 
 def get_finding_dto(db: CaseDB, finding_id: str) -> FindingDTO | None:
+    """Return a single finding by ID, or None if not found."""
     rows = fetch_records(
         db,
         """
@@ -152,6 +156,7 @@ def list_hypothesis_reasoning_dto(
     hypothesis_id: str,
     limit: int = 20,
 ) -> list[HypothesisReasoningEntryDTO]:
+    """Return reasoning entries for a single hypothesis, most recent first."""
     rows = fetch_records(
         db,
         """
@@ -170,6 +175,7 @@ def list_hypothesis_reasoning_map_dto(
     db: CaseDB,
     limit_per_hypothesis: int = 20,
 ) -> dict[str, list[HypothesisReasoningEntryDTO]]:
+    """Return a dict mapping hypothesis_id to its most recent reasoning entries."""
     rows = fetch_records(
         db,
         """
@@ -202,6 +208,7 @@ def list_latest_hypothesis_reasoning_dto(
     since: str | None = None,
     limit: int = 100,
 ) -> list[HypothesisReasoningEntryDTO]:
+    """Return the most recent reasoning entries across all hypotheses, with optional cursor-based pagination."""
     params: list[Any] = []
     where = ""
     if since:
@@ -227,6 +234,7 @@ def list_latest_hypothesis_reasoning_dto(
 
 
 def list_hypotheses_dto(db: CaseDB) -> HypothesesResponseDTO:
+    """Query all hypotheses, partition into active/resolved, and attach latest reasoning for each."""
     latest_rows = fetch_records(
         db,
         """
@@ -314,6 +322,7 @@ def list_hypotheses_dto(db: CaseDB) -> HypothesesResponseDTO:
 
 
 def list_sessions_dto(db: CaseDB) -> list[SessionDTO]:
+    """Return all investigation sessions ordered by recency."""
     rows = fetch_records(
         db,
         """
@@ -326,6 +335,7 @@ def list_sessions_dto(db: CaseDB) -> list[SessionDTO]:
 
 
 def list_steps_dto(db: CaseDB, session_id: str) -> list[InvestigationStepDTO]:
+    """Return investigation steps for a given session."""
     rows = fetch_records(
         db,
         """
@@ -340,6 +350,7 @@ def list_steps_dto(db: CaseDB, session_id: str) -> list[InvestigationStepDTO]:
 
 
 def list_report_sections_dto(db: CaseDB) -> list[ReportSectionDTO]:
+    """Return all report sections with synthetic gap hypothesis IDs."""
     rows = fetch_records(
         db,
         """
@@ -367,6 +378,7 @@ def list_report_sections_dto(db: CaseDB) -> list[ReportSectionDTO]:
 
 
 def list_claims_dto(db: CaseDB, section_key: str | None = None) -> list[ClaimDTO]:
+    """Return claims with optional section_key filter."""
     params: tuple[Any, ...] | None = None
     where = ""
     if section_key:
@@ -399,6 +411,7 @@ def list_mft_timeline_dto(
     to_timestamp: str | None = None,
     limit: int = 200,
 ) -> list[MftTimelineDTO]:
+    """Return MFT timeline entries with optional timestamp range filtering."""
     clauses: list[str] = []
     params: list[Any] = []
     if from_timestamp:
@@ -431,6 +444,7 @@ def list_ai_reviews_dto(
     finding_id: str | None = None,
     hypothesis_id: str | None = None,
 ) -> list[AIReviewDTO]:
+    """Return AI reviews filtered by finding_id or hypothesis_id."""
     clauses: list[str] = []
     params: list[Any] = []
     if finding_id:
@@ -480,6 +494,7 @@ def aggregate_event_volume(
     start: str | None = None,
     end: str | None = None,
 ) -> list[EventVolumePointDTO]:
+    """Rebucket finer-grained event volume data into a coarser time bucket."""
     if target_bucket not in _VALID_BUCKETS:
         return list(items)
     grouped: dict[tuple[str, str], int] = {}
@@ -503,14 +518,10 @@ def aggregate_event_volume(
     return result
 
 
-def list_event_volume_dto(
-    db: CaseDB,
-    bucket: str = "day",
-    source: str = "all",
-    start: str | None = None,
-    end: str | None = None,
-) -> list[EventVolumePointDTO]:
-    bucket_expr = bucket if bucket in _VALID_BUCKETS else "day"
+def _build_range_filter(
+    start: str | None, end: str | None
+) -> tuple[str, list[Any]]:
+    """Build SQL range filter clause and parameters for volume queries."""
     range_clauses: list[str] = [
         f"EXTRACT(year FROM timestamp) BETWEEN {_VOLUME_MIN_YEAR} AND {_VOLUME_MAX_YEAR}",
     ]
@@ -521,81 +532,93 @@ def list_event_volume_dto(
     if end:
         range_clauses.append("timestamp < ?")
         range_params.append(end)
-    range_sql = " AND ".join(range_clauses)
+    return " AND ".join(range_clauses), range_params
 
-    if source == "detected":
-        rows = fetch_records(
-            db,
-            """
-            SELECT evidence, created_at
-            FROM findings
-            WHERE COALESCE(status, 'accepted') != 'suppressed'
-            ORDER BY created_at
-            """,
-        )
-        bucket_counts: dict[str, int] = {}
-        for row in rows:
-            evidence_items = normalize_value(row.get("evidence")) or []
-            if not isinstance(evidence_items, list):
-                evidence_items = []
-            timestamps: list[str] = []
-            for item in evidence_items:
-                if isinstance(item, dict):
-                    timestamp = item.get("timestamp")
-                    if isinstance(timestamp, str) and timestamp:
-                        timestamps.append(timestamp)
-            if not timestamps:
-                created_at = normalize_value(row.get("created_at"))
-                if isinstance(created_at, str) and created_at:
-                    timestamps.append(created_at)
-            for timestamp in timestamps:
-                if not timestamp[:4].isdigit():
-                    continue
-                year = int(timestamp[:4])
-                if year < _VOLUME_MIN_YEAR or year > _VOLUME_MAX_YEAR:
-                    continue
-                if start and timestamp < start:
-                    continue
-                if end and timestamp >= end:
-                    continue
-                key = _trunc_key(timestamp, bucket_expr)
-                bucket_counts[key] = bucket_counts.get(key, 0) + 1
-        return [
-            EventVolumePointDTO(bucket=bucket_key, series="detected", count=count)
-            for bucket_key, count in sorted(bucket_counts.items())
-        ]
 
-    rows: list[dict[str, Any]] = []
-    if source in {"evtx", "all"}:
-        rows.extend(
-            fetch_records(
-                db,
-                f"""
-                SELECT date_trunc('{bucket_expr}', timestamp) AS bucket, channel AS series, COUNT(*) AS count
-                FROM evtx_events
-                WHERE timestamp IS NOT NULL AND {range_sql}
-                GROUP BY 1, 2
-                ORDER BY 1, 2
-                """,
-                tuple(range_params) if range_params else None,
-            )
-        )
-    if source in {"mft", "all"}:
-        rows.extend(
-            fetch_records(
-                db,
-                f"""
-                SELECT date_trunc('{bucket_expr}', timestamp) AS bucket,
-                       CASE WHEN ? = 'all' THEN 'mft:' || timestamp_type ELSE timestamp_type END AS series,
-                       COUNT(*) AS count
-                FROM mft_timeline
-                WHERE timestamp IS NOT NULL AND {range_sql}
-                GROUP BY 1, 2
-                ORDER BY 1, 2
-                """,
-                tuple([source, *range_params]),
-            )
-        )
+def _detected_volume_points(
+    db: CaseDB, bucket: str, start: str | None, end: str | None
+) -> list[EventVolumePointDTO]:
+    """Compute event volume from findings JSON evidence timestamps."""
+    rows = fetch_records(
+        db,
+        """
+        SELECT evidence, created_at
+        FROM findings
+        WHERE COALESCE(status, 'accepted') != 'suppressed'
+        ORDER BY created_at
+        """,
+    )
+    bucket_counts: dict[str, int] = {}
+    for row in rows:
+        evidence_items = normalize_value(row.get("evidence")) or []
+        if not isinstance(evidence_items, list):
+            evidence_items = []
+        timestamps: list[str] = []
+        for item in evidence_items:
+            if isinstance(item, dict):
+                timestamp = item.get("timestamp")
+                if isinstance(timestamp, str) and timestamp:
+                    timestamps.append(timestamp)
+        if not timestamps:
+            created_at = normalize_value(row.get("created_at"))
+            if isinstance(created_at, str) and created_at:
+                timestamps.append(created_at)
+        for timestamp in timestamps:
+            if not timestamp[:4].isdigit():
+                continue
+            year = int(timestamp[:4])
+            if year < _VOLUME_MIN_YEAR or year > _VOLUME_MAX_YEAR:
+                continue
+            if start and timestamp < start:
+                continue
+            if end and timestamp >= end:
+                continue
+            key = _trunc_key(timestamp, bucket)
+            bucket_counts[key] = bucket_counts.get(key, 0) + 1
+    return [
+        EventVolumePointDTO(bucket=bucket_key, series="detected", count=count)
+        for bucket_key, count in sorted(bucket_counts.items())
+    ]
+
+
+def _evtx_volume_points(
+    db: CaseDB, bucket: str, range_sql: str, range_params: list[Any]
+) -> list[dict[str, Any]]:
+    """Query evtx_events volume grouped by bucket and channel."""
+    return fetch_records(
+        db,
+        f"""
+        SELECT date_trunc('{bucket}', timestamp) AS bucket, channel AS series, COUNT(*) AS count
+        FROM evtx_events
+        WHERE timestamp IS NOT NULL AND {range_sql}
+        GROUP BY 1, 2
+        ORDER BY 1, 2
+        """,
+        tuple(range_params) if range_params else None,
+    )
+
+
+def _mft_volume_points(
+    db: CaseDB, bucket: str, range_sql: str, range_params: list[Any], source: str
+) -> list[dict[str, Any]]:
+    """Query mft_timeline volume grouped by bucket and timestamp_type."""
+    return fetch_records(
+        db,
+        f"""
+        SELECT date_trunc('{bucket}', timestamp) AS bucket,
+               CASE WHEN ? = 'all' THEN 'mft:' || timestamp_type ELSE timestamp_type END AS series,
+               COUNT(*) AS count
+        FROM mft_timeline
+        WHERE timestamp IS NOT NULL AND {range_sql}
+        GROUP BY 1, 2
+        ORDER BY 1, 2
+        """,
+        tuple([source, *range_params]),
+    )
+
+
+def _normalize_volume_rows(rows: list[dict[str, Any]]) -> list[EventVolumePointDTO]:
+    """Normalize raw DB rows into EventVolumePointDTO list."""
     normalized = []
     for row in rows:
         item = _normalize_row(row)
@@ -608,7 +631,28 @@ def list_event_volume_dto(
     return normalized
 
 
+def list_event_volume_dto(
+    db: CaseDB,
+    bucket: str = "day",
+    source: str = "all",
+    start: str | None = None,
+    end: str | None = None,
+) -> list[EventVolumePointDTO]:
+    """Return event volume time-series data from evtx_events and/or mft_timeline, bucketed by time grain."""
+    bucket_expr = bucket if bucket in _VALID_BUCKETS else "day"
+    if source == "detected":
+        return _detected_volume_points(db, bucket_expr, start, end)
+    range_sql, range_params = _build_range_filter(start, end)
+    rows: list[dict[str, Any]] = []
+    if source in {"evtx", "all"}:
+        rows.extend(_evtx_volume_points(db, bucket_expr, range_sql, range_params))
+    if source in {"mft", "all"}:
+        rows.extend(_mft_volume_points(db, bucket_expr, range_sql, range_params, source))
+    return _normalize_volume_rows(rows)
+
+
 def list_entity_cards_dto(case: Case) -> list[EntityCardDTO]:
+    """Read entity card markdown files from the case memory directory."""
     result: list[EntityCardDTO] = []
     entities_dir = case.memory_dir / "entities"
     if not entities_dir.exists():
@@ -627,6 +671,7 @@ def list_entity_cards_dto(case: Case) -> list[EntityCardDTO]:
 
 
 def list_attack_coverage_dto(db: CaseDB) -> list[AttackCoverageRowDTO]:
+    """Aggregate MITRE ATT&CK coverage from all findings, grouped by tactic and technique."""
     rows = fetch_records(
         db,
         """

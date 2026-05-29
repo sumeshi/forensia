@@ -18,6 +18,12 @@ def ingest_evtx_file(
     source_sha: str | None = None,
     progress_callback: Callable[[str], None] | None = None,
 ) -> Path:
+    """Parse an EVTX file with evtx2es, enrich records with metadata, and write as JSONL.
+
+    Each record gets a unique evidence_id derived from channel and record_id, plus
+    source tracking and ingestion timestamp. The output filename encodes the channel
+    name and source hash for traceability.
+    """
     evtx_path = Path(evtx_path)
     ingested_at = datetime.now(UTC).isoformat()
 

@@ -24,6 +24,7 @@ class CaseTasks:
         self._load()
 
     def _load(self) -> None:
+        """Parse the tasks.md file into DONE, TODO, and DEFER sections."""
         if not self._path.exists():
             return
         current_section: str | None = None
@@ -52,6 +53,7 @@ class CaseTasks:
         self._defer_lines = self._clean_optional_section(section_lines["DEFER"])
 
     def _write(self) -> None:
+        """Write the in-memory state back to the tasks.md file."""
         done_section = (
             "\n".join(f"- [x] {e}" for e in self._done)
             if self._done
@@ -68,11 +70,13 @@ class CaseTasks:
         )
 
     def is_done(self, step: str) -> bool:
+        """Check whether a given pipeline step has already been completed."""
         if step in _ALWAYS_RUN:
             return False
         return any(e == step or e.startswith(f"{step} ") for e in self._done)
 
     def mark_done(self, step: str, note: str = "") -> None:
+        """Mark a pipeline step as completed, timestamping the entry."""
         ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
         entry = f"{step} ({ts})"
         if note:
@@ -88,6 +92,7 @@ class CaseTasks:
 
     @staticmethod
     def _trim_section_lines(lines: list[str]) -> list[str]:
+        """Remove leading and trailing blank lines from a section."""
         start = 0
         end = len(lines)
         while start < end and not lines[start].strip():
@@ -98,6 +103,7 @@ class CaseTasks:
 
     @classmethod
     def _clean_optional_section(cls, lines: list[str]) -> list[str]:
+        """Return an empty list if the section contains only a placeholder line."""
         trimmed = cls._trim_section_lines(lines)
         if len(trimmed) == 1 and trimmed[0].strip() == "_none yet_":
             return []

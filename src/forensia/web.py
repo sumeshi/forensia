@@ -65,6 +65,7 @@ def _repo_root() -> Path:
 
 
 def _resolve_spa_dir() -> Path | None:
+    """Locate the SPA build directory, checking common locations."""
     candidates = [
         _repo_root() / "web_ui" / "dist",
         Path(__file__).resolve().parent / "static",
@@ -76,6 +77,7 @@ def _resolve_spa_dir() -> Path | None:
 
 
 def _resolve_ui_origins() -> list[str]:
+    """Resolve allowed CORS origins from env or return development defaults."""
     raw = os.getenv("FORENSIA_UI_ORIGINS", "")
     if raw.strip():
         origins = [item.strip() for item in raw.split(",") if item.strip()]
@@ -84,36 +86,10 @@ def _resolve_ui_origins() -> list[str]:
     return ["http://127.0.0.1:5173", "http://localhost:5173"]
 
 
-def create_app(case: Case) -> FastAPI:
-    app = FastAPI(title=f"forensia {case.path.name}")
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=_resolve_ui_origins(),
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+# ── Domain route builders ────────────────────────────────────────────────
 
-    @app.exception_handler(duckdb.IOException)
-    async def duckdb_lock_handler(request: Request, exc: duckdb.IOException) -> JSONResponse:
-        return JSONResponse(
-            status_code=503,
-            content={"detail": "database locked by investigation process — retry after run completes"},
-        )
-    spa_dir = _resolve_spa_dir()
 
-    def cached(name: str):
-        return load_snapshot(case, name)
-
-    def cached_report_markdown() -> str | None:
-        snapshot = cached("report_sections.json")
-        if snapshot is None:
-            return None
-        ordered = [str(item.get("body") or "").strip() for item in snapshot if str(item.get("body") or "").strip()]
-        if not ordered:
-            return ""
-        return "\n\n".join(ordered).strip() + "\n"
-
+def _register_case_routes(app: FastAPI, case: Case, cached):
     @app.get("/api/case", response_model=CaseDTO)
     def api_case() -> CaseDTO:
         snapshot = cached("case.json")
@@ -129,6 +105,8 @@ def create_app(case: Case) -> FastAPI:
         with CaseDB(case) as db:
             return get_case_stats_dto(db)
 
+
+def _register_finding_routes(app: FastAPI, case: Case, cached):
     @app.get("/api/findings", response_model=list[FindingDTO])
     def api_findings(
         status: str | None = None,
@@ -161,6 +139,8 @@ def create_app(case: Case) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"finding not found: {finding_id}")
         return finding
 
+
+def _register_hypothesis_routes(app: FastAPI, case: Case, cached):
     @app.get("/api/hypotheses", response_model=HypothesesResponseDTO)
     def api_hypotheses() -> HypothesesResponseDTO:
         snapshot = cached("hypotheses.json")
@@ -197,6 +177,8 @@ def create_app(case: Case) -> FastAPI:
         with CaseDB(case) as db:
             return list_latest_hypothesis_reasoning_dto(db, since=since, limit=limit)
 
+
+def _register_session_routes(app: FastAPI, case: Case, cached):
     @app.get("/api/sessions", response_model=list[SessionDTO])
     def api_sessions() -> list[SessionDTO]:
         snapshot = cached("sessions.json")
@@ -212,6 +194,17 @@ def create_app(case: Case) -> FastAPI:
             return [InvestigationStepDTO.model_validate(item) for item in snapshot.get(session_id, [])]
         with CaseDB(case) as db:
             return list_steps_dto(db, session_id)
+
+
+def _register_report_routes(app: FastAPI, case: Case, cached):
+    def cached_report_markdown() -> str | None:
+        snapshot = cached("report_sections.json")
+        if snapshot is None:
+            return None
+        ordered = [str(item.get("body") or "").strip() for item in snapshot if str(item.get("body") or "").strip()]
+        if not ordered:
+            return ""
+        return "\n\n".join(ordered).strip() + "\n"
 
     @app.get("/api/report-sections", response_model=list[ReportSectionDTO])
     def api_report_sections() -> list[ReportSectionDTO]:
@@ -260,6 +253,8 @@ def create_app(case: Case) -> FastAPI:
         with CaseDB(case) as db:
             return list_claims_dto(db, section_key=section_key)
 
+
+def _register_evidence_routes(app: FastAPI, case: Case, cached, aggregate_event_volume_func):
     @app.get("/api/mft-timeline", response_model=list[MftTimelineDTO])
     def api_mft_timeline(
         from_timestamp: Annotated[str | None, Query(alias="from")] = None,
@@ -299,20 +294,15 @@ def create_app(case: Case) -> FastAPI:
         start: str | None = None,
         end: str | None = None,
     ) -> list[EventVolumePointDTO]:
-        # 1) Try exact snapshot match (only for full-range queries).
         if not start and not end:
             snapshot = cached(f"event_volume_{bucket}_{source}.json")
             if snapshot is not None:
                 return [EventVolumePointDTO.model_validate(item) for item in snapshot]
-
-        # 2) Try a live DB query.
         try:
             with CaseDB(case) as db:
                 return list_event_volume_dto(db, bucket=bucket, source=source, start=start, end=end)
         except Exception:
             pass
-
-        # 3) Fall back to aggregating from a finer-grained snapshot.
         for finer in ("hour", "day"):
             if finer == bucket:
                 continue
@@ -320,7 +310,7 @@ def create_app(case: Case) -> FastAPI:
             if src is None:
                 continue
             items = [EventVolumePointDTO.model_validate(item) for item in src]
-            return aggregate_event_volume(items, bucket, start=start, end=end)
+            return aggregate_event_volume_func(items, bucket, start=start, end=end)
         return []
 
     @app.get("/api/ai-reviews", response_model=list[AIReviewDTO])
@@ -336,11 +326,16 @@ def create_app(case: Case) -> FastAPI:
         with CaseDB(case) as db:
             return list_ai_reviews_dto(db, finding_id=finding_id, hypothesis_id=hypothesis_id)
 
+
+def _register_stream_routes(app: FastAPI, case: Case):
     @app.get("/api/stream")
     async def api_stream(
         after: Annotated[int, Query(ge=0)] = 0,
         once: bool = False,
     ) -> StreamingResponse:
+        def cached(name: str):
+            return load_snapshot(case, name)
+
         async def event_source() -> str:
             last_index = after
             while True:
@@ -369,6 +364,8 @@ def create_app(case: Case) -> FastAPI:
 
         return StreamingResponse(event_source(), media_type="text/event-stream")
 
+
+def _register_spa_routes(app: FastAPI, spa_dir: Path | None):
     if spa_dir is None:
         message = (
             "web_ui/dist not found."
@@ -385,7 +382,48 @@ def create_app(case: Case) -> FastAPI:
                 raise HTTPException(status_code=404)
             return HTMLResponse(message, status_code=503)
 
-        return app
+        return
 
     app.mount("/", StaticFiles(directory=str(spa_dir), html=True), name="spa")
+
+
+# ── Application factory ──────────────────────────────────────────────────
+
+
+def create_app(case: Case) -> FastAPI:
+    """Create a FastAPI application with all API routes and error handlers for the given case.
+
+    Routes fall back from cached snapshots to live database queries for performance.
+    """
+    app = FastAPI(title=f"forensia {case.path.name}")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_resolve_ui_origins(),
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @app.exception_handler(duckdb.IOException)
+    async def duckdb_lock_handler(request: Request, exc: duckdb.IOException) -> JSONResponse:
+        """Return 503 when DuckDB is locked by an ongoing investigation."""
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "database locked by investigation process — retry after run completes"},
+        )
+
+    spa_dir = _resolve_spa_dir()
+
+    def cached(name: str):
+        return load_snapshot(case, name)
+
+    _register_case_routes(app, case, cached)
+    _register_finding_routes(app, case, cached)
+    _register_hypothesis_routes(app, case, cached)
+    _register_session_routes(app, case, cached)
+    _register_report_routes(app, case, cached)
+    _register_evidence_routes(app, case, cached, aggregate_event_volume)
+    _register_stream_routes(app, case)
+    _register_spa_routes(app, spa_dir)
+
     return app

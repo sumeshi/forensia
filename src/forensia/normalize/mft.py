@@ -5,22 +5,35 @@ from pathlib import Path
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 
+_MFT_TIMESTAMP_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("si_created", "SI_CREATED"),
+    ("si_modified", "SI_MODIFIED"),
+    ("si_accessed", "SI_ACCESSED"),
+    ("si_mft_modified", "SI_MFT_MODIFIED"),
+    ("fn_created", "FN_CREATED"),
+    ("fn_modified", "FN_MODIFIED"),
+    ("fn_accessed", "FN_ACCESSED"),
+    ("fn_mft_modified", "FN_MFT_MODIFIED"),
+)
+
 
 def _duckdb_path_literal(path: Path) -> str:
     return path.as_posix().replace("'", "''")
 
 
-def normalize_mft(case: Case, db: CaseDB) -> tuple[int, int]:
-    paths = sorted({*case.raw_dir.glob("mft.jsonl"), *case.raw_dir.glob("mft-*.jsonl")})
-    if not paths:
-        return 0, 0
+def _build_timeline_union_sql() -> str:
+    cols = "evidence_id, record_number, file_path, file_name"
+    parts = [
+        f"SELECT {cols}, {col} AS timestamp, '{label}' AS timestamp_type\nFROM mft_stage"
+        for col, label in _MFT_TIMESTAMP_COLUMNS
+    ]
+    return "\n                UNION ALL\n".join(
+        f"                {p}" for p in parts
+    )
 
-    total_entries = 0
-    total_timeline = 0
-    for path in paths:
-        path_sql = _duckdb_path_literal(path)
-        db.execute(
-            f"""
+
+def _build_stage_table_sql(path_sql: str) -> str:
+    return f"""
             CREATE OR REPLACE TEMP TABLE mft_stage AS
             WITH raw AS (
                 SELECT json
@@ -70,10 +83,11 @@ def normalize_mft(case: Case, db: CaseDB) -> tuple[int, int]:
                 try_cast(nullif(json_extract_string(json, '$.attributes.FileName.data.mft_modified'), '') AS TIMESTAMP) AS fn_mft_modified,
                 json AS raw_json
             FROM raw
-            """
-        )
-        db.execute(
-            """
+    """
+
+
+def _build_timeline_stage_sql() -> str:
+    return f"""
             CREATE OR REPLACE TEMP TABLE mft_stage_timeline AS
             SELECT
                 coalesce(evidence_id, 'None') || '-' || lower(timestamp_type) AS timeline_id,
@@ -85,36 +99,14 @@ def normalize_mft(case: Case, db: CaseDB) -> tuple[int, int]:
                 timestamp_type || ' for ' || coalesce(file_path, file_name, 'unknown') AS description,
                 CAST('[]' AS JSON) AS tags
             FROM (
-                SELECT evidence_id, record_number, file_path, file_name, si_created AS timestamp, 'SI_CREATED' AS timestamp_type
-                FROM mft_stage
-                UNION ALL
-                SELECT evidence_id, record_number, file_path, file_name, si_modified AS timestamp, 'SI_MODIFIED' AS timestamp_type
-                FROM mft_stage
-                UNION ALL
-                SELECT evidence_id, record_number, file_path, file_name, si_accessed AS timestamp, 'SI_ACCESSED' AS timestamp_type
-                FROM mft_stage
-                UNION ALL
-                SELECT evidence_id, record_number, file_path, file_name, si_mft_modified AS timestamp, 'SI_MFT_MODIFIED' AS timestamp_type
-                FROM mft_stage
-                UNION ALL
-                SELECT evidence_id, record_number, file_path, file_name, fn_created AS timestamp, 'FN_CREATED' AS timestamp_type
-                FROM mft_stage
-                UNION ALL
-                SELECT evidence_id, record_number, file_path, file_name, fn_modified AS timestamp, 'FN_MODIFIED' AS timestamp_type
-                FROM mft_stage
-                UNION ALL
-                SELECT evidence_id, record_number, file_path, file_name, fn_accessed AS timestamp, 'FN_ACCESSED' AS timestamp_type
-                FROM mft_stage
-                UNION ALL
-                SELECT evidence_id, record_number, file_path, file_name, fn_mft_modified AS timestamp, 'FN_MFT_MODIFIED' AS timestamp_type
-                FROM mft_stage
+{_build_timeline_union_sql()}
             ) AS expanded
             WHERE timestamp IS NOT NULL
-            """
-        )
+    """
 
-        db.execute(
-            """
+
+def _delete_mft_entries_by_source_sql() -> str:
+    return """
             DELETE FROM mft_entries
             WHERE source_file = (
                 SELECT source_file
@@ -122,21 +114,22 @@ def normalize_mft(case: Case, db: CaseDB) -> tuple[int, int]:
                 WHERE source_file IS NOT NULL
                 LIMIT 1
             )
-            """
-        )
-        db.execute(
-            """
+    """
+
+
+def _delete_mft_timeline_by_evidence_sql() -> str:
+    return """
             DELETE FROM mft_timeline
             WHERE evidence_id IN (
                 SELECT DISTINCT evidence_id
                 FROM mft_stage
                 WHERE evidence_id IS NOT NULL AND evidence_id <> ''
             )
-            """
-        )
+    """
 
-        db.execute(
-            """
+
+def _insert_entries_sql() -> str:
+    return """
             INSERT INTO mft_entries (
                 evidence_id, source_file, record_number, file_path, file_name, extension,
                 is_directory, is_deleted, size, si_created, si_modified, si_accessed,
@@ -165,10 +158,11 @@ def normalize_mft(case: Case, db: CaseDB) -> tuple[int, int]:
                 CAST('[]' AS JSON),
                 NULL
             FROM mft_stage
-            """
-        )
-        db.execute(
-            """
+    """
+
+
+def _insert_timeline_sql() -> str:
+    return """
             INSERT INTO mft_timeline (
                 timeline_id, evidence_id, record_number, file_path, timestamp,
                 timestamp_type, description, tags
@@ -183,9 +177,23 @@ def normalize_mft(case: Case, db: CaseDB) -> tuple[int, int]:
                 description,
                 tags
             FROM mft_stage_timeline
-            """
-        )
+    """
 
+
+def normalize_mft(case: Case, db: CaseDB) -> tuple[int, int]:
+    paths = sorted({*case.raw_dir.glob("mft.jsonl"), *case.raw_dir.glob("mft-*.jsonl")})
+    if not paths:
+        return 0, 0
+    total_entries = 0
+    total_timeline = 0
+    for path in paths:
+        path_sql = _duckdb_path_literal(path)
+        db.execute(_build_stage_table_sql(path_sql))
+        db.execute(_build_timeline_stage_sql())
+        db.execute(_delete_mft_entries_by_source_sql())
+        db.execute(_delete_mft_timeline_by_evidence_sql())
+        db.execute(_insert_entries_sql())
+        db.execute(_insert_timeline_sql())
         total_entries += db.execute("SELECT COUNT(*) FROM mft_stage").fetchone()[0]
         total_timeline += db.execute("SELECT COUNT(*) FROM mft_stage_timeline").fetchone()[0]
     return total_entries, total_timeline

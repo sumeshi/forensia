@@ -126,6 +126,7 @@ class QueryTemplateSpec:
 
 
 def _sql_int(value: Any, default: int) -> int:
+    """Safely cast value to int, returning default on failure."""
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -133,11 +134,13 @@ def _sql_int(value: Any, default: int) -> int:
 
 
 def _sql_text(value: Any, default: str = "") -> str:
+    """Safely cast value to str, escaping single quotes for SQL injection safety."""
     text = str(value or default)
     return text.replace("'", "''")
 
 
 def _template_failed_logon_by_ip_window(params: dict[str, Any]) -> str:
+    """Build SQL for failed logons grouped by src_ip within a recent time window."""
     event_id = _sql_int(params.get("event_id"), 4625)
     hours = max(1, _sql_int(params.get("hours"), 24))
     threshold = max(1, _sql_int(params.get("threshold"), 5))
@@ -155,6 +158,7 @@ LIMIT 50
 
 
 def _template_logon_by_user_window(params: dict[str, Any]) -> str:
+    """Build SQL for recent successful logons for one user."""
     event_id = _sql_int(params.get("event_id"), 4624)
     hours = max(1, _sql_int(params.get("hours"), 24))
     user = _sql_text(params.get("user"))
@@ -172,6 +176,7 @@ LIMIT 100
 
 
 def _template_powershell_after_logon(params: dict[str, Any]) -> str:
+    """Build SQL for process/PowerShell execution within 15 minutes after a user logon."""
     user = _sql_text(params.get("user"))
     hours = max(1, _sql_int(params.get("hours"), 24))
     if not user:
@@ -200,6 +205,7 @@ LIMIT 100
 
 
 def _template_service_or_task_after_host_logon(params: dict[str, Any]) -> str:
+    """Build SQL for service install or scheduled task creation on one host within a recent window."""
     computer = _sql_text(params.get("computer"))
     hours = max(1, _sql_int(params.get("hours"), 24))
     if not computer:
@@ -254,6 +260,11 @@ def coerce_list(value: Any) -> list[Any]:
 
 
 def validate_select_sql(sql: str) -> str:
+    """Validate and normalize a read-only SQL statement.
+
+    Strips Markdown fences, enforces read-only (SELECT/WITH), checks for
+    forbidden keywords, and verifies all referenced table names are known.
+    """
     fence_match = _SQL_FENCE_RE.search(sql.strip())
     normalized = fence_match.group(1).strip() if fence_match else sql.strip().rstrip(";").strip()
     normalized = normalized.rstrip(";").strip()
@@ -289,6 +300,7 @@ def query_template_catalog() -> list[dict[str, Any]]:
 
 
 def render_query_template(template_id: str, params: dict[str, Any]) -> str:
+    """Render a named query template with validated params, returning validated SQL."""
     spec = QUERY_TEMPLATES.get(template_id)
     if spec is None:
         raise ValueError(f"Unknown query template: {template_id}")

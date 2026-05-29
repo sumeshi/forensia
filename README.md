@@ -121,11 +121,14 @@ flowchart LR
 3. **Execute**: SQL を DuckDB に発行。0 行だった場合に限り、rule 側の `fallback_search` 宣言（`keyword_in_raw_json` / `related_event_ids` / `artifact_table` の順次フェーズ）が **planner を介さず** 自動実行される。
 4. **Check**: checker LLM が `required_entities` の共起と時間順序で verdict を出す。「直接的な因果」「全過程の証明」といった逃げ口上は禁止語として明示。
 5. **Track**: `HypothesisProgressTracker` が以下を判定:
-    - `rule.confirm_when.co_observed_event_ids` を rows が全部満たす → **auto-confirmed**
+    - rule 由来 hyp は `rule.confirm_when.co_observed_event_ids` を、broad_plan 由来 hyp は `hypothesis.confirm_when.co_observed_event_ids` を rows が満たせば → **auto-confirmed**
     - 連続 3 回の 0-row inconclusive → **auto-refuted**
     - 同じ query fingerprint の重複 → planner に **pivot 指示**
+    - planner が SQL も template も出せず `confirm_when` も空のため fallback すら組めない hyp → 即 **auto-refuted** (`no executable evidence path`)
 6. **Resolve**: 仮説が confirmed/refuted になった瞬間に rule 宣言の `report_sections` を `stale` 化、`follow_up_questions` を新規仮説として注入。
 7. **Report**: section refresh は stale フラグの立った section を優先処理。生成した report の gap を次サイクルの仮説に戻す。
+
+アクティブ仮説数は `MAX_ACTIVE_HYPOTHESES = 8` で上限。`_merge_active_hypotheses` が新規追加分をこの値で打ち切り、既存仮説の update には影響しない。
 
 | 判定 | 意味 |
 |---|---|
@@ -148,7 +151,7 @@ flowchart LR
 
 | ファイル | 役割 |
 |---|---|
-| `evtx_events.yaml` / `prefetch_executions.yaml` | テーブルのスキーマカード (`columns` / `json_field_extractors`)。planner prompt に必ず injection される。存在しないカラム参照や JSON 抽出ミスを構造的に防ぐ。 |
+| `evtx_events.yaml` / `mft_entries.yaml` / `mft_timeline.yaml` / `prefetch_executions.yaml` / `findings.yaml` | DB テーブルのスキーマカード。各 YAML は (a) `core_columns` (planner プロンプトに見せる重要列の絞り込み、8〜13 列)、(b) `column_descriptions` (列の用途を 1 行で説明)、(c) `columns` (validator 用の全列リスト)、(d) `json_field_extractors` (NULL 列の raw_json フォールバック) を持つ。planner prompt にはこの 5 テーブル分を `<SCHEMA_CARDS>` ブロックで一括 injection。 |
 | `event_ids.yaml` / `logon_types.yaml` | Event ID と Logon Type の DFIR 解説。`_dfir_playbook(phase)` 経由で system prompt に展開。 |
 | `app_catalog.yaml` / `artifact_inference.yaml` | Prefetch / MFT / Registry / File 痕跡 → 推定アプリケーション の対応表 (約 28 エントリ)。Application Catalog として prompt 内に narrative 注入される。 |
 | `false_positive_rules.yaml` | 既知の FP パターン。検知結果の絞り込みと、prompt の FP Reduction セクションの両方で利用。 |
@@ -169,12 +172,25 @@ flowchart LR
 
 ### プロンプトの組み立て
 
-LLM への入力は固定文字列ではなく、フェーズと文脈に応じて 4 段階で組み立てている:
+LLM への入力は固定文字列ではなく、フェーズと文脈に応じて 5 段階で組み立てている:
 
-1. **DFIR プレイブック注入** — `_dfir_playbook(phase)` が `_schema/playbook/<phase>.md` を読み、Event ID / Logon Type / FP / Application Catalog / Query Planning Principles を narrative にまとめて system prompt 先頭に置く。
-2. **スキーマカード注入** — planner / checker に `_schema/evtx_events.yaml` の `columns` と `json_field_extractors` を渡す。
-3. **動的コンテキスト** — case の time_range、`uncovered_keypoints`、active/resolved hypotheses、recent history、observed_keypoints などを役割ごとの builder で挿入。
-4. **トークン予算ガード** — `_assemble_messages_with_budget()` が system を保護したまま user/dynamic 側のみ trim する。LLM 呼び出し総数は `LLMCallLogger` が記録し、`investigate(max_llm_calls=...)` の閾値を超えると `RuntimeError`。
+1. **DFIR プレイブック注入 (phase-aware)** — `_dfir_playbook(phase)` が `_schema/playbook/<phase>.md` を読む。planning 系 (`broad_plan`, `hypothesis_plan`) では Application Catalog / Artifact-to-Application Inference / FP Reduction を **意図的に省略** (これらは evidence 解釈用)。interpretation 系 (`check`, `report_section`, `section_agent_check`) では全部入り。
+2. **スキーマカード + SQL クックブック注入** — planner / checker に 5 テーブル分の `<SCHEMA_CARDS>` (core_columns + 説明) と `<SQL_COOKBOOK>` (event_id 列挙 / 時間範囲 / GROUP BY / COALESCE / MFT path / Prefetch の 6 パターン) を渡す。LLM が SQL を 1 から書かずに済むようにする。
+3. **動的コンテキスト** — case の time_range、`uncovered_keypoints`、active/resolved hypotheses、recent history、observed_keypoints を役割ごとの builder で挿入。hypothesis は `_slim_hypothesis_dump` で null/空フィールドを落として serialize、findings は `_slim_findings` が同一 rule pattern を `count` 付き 1 行に集約。
+4. **SQL リトライ + フォールバック** — planner が無効な SQL を返したら `_retry_query_once` が最大 3 回まで修正リクエスト。それでも組めなければ `_fallback_planned_query_from_hypothesis` が `hypothesis.confirm_when.co_observed_event_ids` から `SELECT … FROM evtx_events WHERE event_id IN (…) ORDER BY timestamp LIMIT 500` を deterministic に生成。check phase は必ず走る。
+5. **トークン予算ガード** — `_assemble_messages_with_budget()` が system を保護したまま user/dynamic 側のみ trim する。LLM 呼び出し総数は `LLMCallLogger` が記録し、`investigate(max_llm_calls=...)` の閾値を超えると `RuntimeError`。
+
+### レポート品質ゲート
+
+各 section の body 生成後に `_quality_gate_section` が静的チェックを走らせ、検出ごとに gap を追加し confidence を下げる。現状の検査項目:
+
+- Placeholder entity / template marker / heading mismatch / timeline 非時系列 / recommendations の証拠強度 / verdict 言語の inflation / 本文への raw evidence ダンプ
+- `LLM_OUTPUT_LANGUAGE` と本文の検出言語の乖離 (JA 期待で EN body 等)
+- 未解決マーカー (`?` / `TBD` / `要確認` / `未調査` 等)
+- 実質本文 80 字未満 / bullet のみで narrative なし / 重複段落
+- hedge 表現 (`may` / `could` / `思われる`) + finding_id / timestamp の引用なし
+- 「証拠 / 根拠」と書いてあるのに finding_id 引用なし
+- レンジ外 timestamp (将来年 / 1990 未満) — NTFS overflow 等の混入検出
 
 
 ## 長期記憶の構造
@@ -377,6 +393,16 @@ forensia templates-export ./my-templates
 ```bash
 forensia serve case001 --host 127.0.0.1 --port 8000
 ```
+
+UI 画面 (cockpit) の構成:
+
+- **Header / KPI バー**: ケース名、現在 phase、LLM モデル、Events / Findings / Hypotheses / Open Gaps の 4 KPI。Findings タイルには severity 内訳 (High/Medium/Low)、Hypotheses タイルには verdict 内訳 (Active/Confirmed/Refuted/Inconclusive) の細い積み棒が併記される。
+- **Event Volume**: 全期間を day 粒度で表示。年→月→日のボタン式ピッカーで範囲を絞り込み、日まで絞ると hour 粒度に切り替わる。EVTX channel 別の積み棒に detected (検知済 finding) の件数を折れ線で重ね描画。ノイズ timestamp (1601 / 3220 / 30828 等の Windows epoch / int64 overflow) は API 側で除外。
+- **Report Draft Progress**: 各 section の status (`draft` / `stable` / `ai_exhausted` / `human_reviewed`) と進捗。
+- **ATT&CK Coverage**: `findings.attack` を tactic × technique のマトリックスで集計。
+- **Cockpit (進行中の調査)**: AI Activity (今走っているクエリ・focus hypothesis) と、Active Hypotheses / Latest Reasoning をタブ切替で表示する Hypotheses パネル、Open Gaps を縦に並べる。
+- **Top Rules / Top Entities**: 発火ルール上位と、`memory/entities/` から検出された重要 entity (user / host / ip 等)。
+- **Details**: findings / steps / sessions / activity / mft の生データタブ。
 
 
 ## 注意事項

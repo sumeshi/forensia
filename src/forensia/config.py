@@ -12,6 +12,7 @@ def resolve_llm_config(
     base_url: str | None = None,
     model: str | None = None,
 ) -> tuple[str | None, str | None]:
+    """Resolve LLM endpoint and model from CLI args or environment variables."""
     resolved_endpoint = base_url or os.getenv("LLM_BASE_URL")
     resolved_model = model or os.getenv("LLM_MODEL")
     return resolved_endpoint, resolved_model

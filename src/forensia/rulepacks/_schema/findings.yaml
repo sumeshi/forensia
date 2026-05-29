@@ -1,0 +1,34 @@
+table: findings
+core_columns:
+  - finding_id
+  - rule_id
+  - title
+  - severity
+  - confidence
+  - status
+  - created_at
+column_descriptions:
+  finding_id: "Stable ID like 'windows-security-4624-logon-0001'."
+  rule_id: "Rule that produced this finding."
+  title: "One-line title — human-readable summary."
+  severity: "'high', 'medium', 'low'."
+  confidence: "0.0-1.0 (DOUBLE). Rule-declared default; may be lowered by AI review."
+  status: "'accepted' (default) or 'suppressed' (allowlist)."
+  created_at: "TIMESTAMP when the finding was generated."
+columns:
+  - finding_id
+  - rule_id
+  - title
+  - summary
+  - severity
+  - confidence
+  - status
+  - tags
+  - attack
+  - evidence
+  - ai_summary
+  - missing_checks
+  - created_at
+notes:
+  evidence_link: "evidence is a JSON array of {evidence_id, timestamp, computer, ...} pulled from the originating evtx_events / mft_entries row. Use json_extract to drill in."
+  attack_link: "attack is a JSON array of {tactic, technique_id, technique_name}. Use json_array_length and json_extract for filtering."

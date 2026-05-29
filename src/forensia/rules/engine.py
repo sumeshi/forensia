@@ -62,6 +62,12 @@ def _confidence_with_missing_fields(base_confidence: float, missing_fields: list
 
 
 def generate_findings(rule: Rule, rows: list[dict[str, Any]]) -> list[Finding]:
+    """Create Finding objects from rule query result rows by rendering title/summary templates.
+
+    Auto-detects missing required fields per row and reduces the finding's confidence
+    score proportionally (up to 0.45 penalty). Each finding ID is derived from rule_id
+    plus a zero-padded row index.
+    """
     findings = []
     for index, row in enumerate(rows, start=1):
         referenced_fields = rule.required_fields or [
@@ -119,6 +125,11 @@ def _value_matches(actual: Any, expected_values: Any) -> bool:
 
 
 def _is_suppressed(finding: Finding, allowlist_rules: list[dict[str, Any]]) -> bool:
+    """Check whether a finding matches a user-defined allowlist suppression rule.
+
+    A finding is suppressed when all field-value pairs in the allowlist rule's
+    'when' clause match the finding's first evidence row for the same rule_id.
+    """
     row = finding.evidence[0] if finding.evidence and isinstance(finding.evidence[0], dict) else {}
     for item in allowlist_rules:
         if str(item.get("rule_id") or "") != finding.rule_id:
@@ -132,6 +143,11 @@ def _is_suppressed(finding: Finding, allowlist_rules: list[dict[str, Any]]) -> b
 
 
 def _builtin_benign_match(finding: Finding, allowlist_data: dict[str, list[str]]) -> str | None:
+    """Return a description string if the finding matches built-in benign allowlists.
+
+    Checks service_name, process_name, and title/summary keywords in that order.
+    Returns a description of the first match (e.g. 'service_name=wuauserv') or None.
+    """
     row = finding.evidence[0] if finding.evidence and isinstance(finding.evidence[0], dict) else {}
     service_name = str(row.get("service_name") or "").strip().lower()
     process_name = str(row.get("process_name") or "").strip().lower()
@@ -150,6 +166,11 @@ def _builtin_benign_match(finding: Finding, allowlist_data: dict[str, list[str]]
 
 
 def _downgrade_builtin_benign_finding(finding: Finding, allowlist_data: dict[str, list[str]]) -> None:
+    """Downgrade severity and confidence for findings matching built-in benign allowlists.
+
+    Sets status to 'suppressed', caps confidence at 0.2, and reduces severity to 'low'.
+    Appends the matched rule detail to missing_checks for auditability.
+    """
     matched = _builtin_benign_match(finding, allowlist_data)
     if not matched:
         return
@@ -169,6 +190,12 @@ def clear_rule_findings(case: Case, db: CaseDB, rule_id: str) -> None:
 
 
 def save_findings(case: Case, db: CaseDB, findings: list[Finding]) -> None:
+    """Persist findings to individual JSON files and the findings database table.
+
+    Applies built-in benign allowlist downgrading and user-defined suppression
+    before writing. Each finding is written as a JSON file for easy inspection
+    and inserted as a row in the findings table for structured querying.
+    """
     now = datetime.now(UTC).replace(tzinfo=None)
     allowlist_rules = _load_allowlist(case)
     builtin_allowlist = _load_builtin_benign_allowlist()
@@ -217,6 +244,12 @@ def _escape_like_pattern(keyword: str) -> str:
 
 @lru_cache(maxsize=1)
 def _load_event_id_hints() -> dict[int, dict[str, Any]]:
+    """Load event_id schema YAML and return {event_id: hint_dict} mapping.
+
+    Cached with maxsize=1 to avoid re-parsing the schema file on repeated
+    calls from keyword fallback search. Returns empty dict when the schema
+    file is missing or contains invalid data.
+    """
     if not _EVENT_ID_SCHEMA_PATH.exists():
         return {}
     try:
@@ -238,6 +271,11 @@ def _load_event_id_hints() -> dict[int, dict[str, Any]]:
 
 
 def _extract_event_ids_from_sql(sql: str) -> list[int]:
+    """Extract integer event_id values from SQL WHERE clauses.
+
+    Supports both `event_id IN (4624, 4625)` and `event_id = 4624` syntax.
+    Returns a deduplicated list in order of first appearance in the SQL.
+    """
     raw = re.findall(r"event_id\s*(?:IN\s*\(([^)]+)\)|=\s*(\d+))", sql, re.IGNORECASE)
     event_ids: list[int] = []
     seen: set[int] = set()
@@ -260,6 +298,12 @@ def _extract_event_ids_from_sql(sql: str) -> list[int]:
 
 
 def _keywords_for_event_ids(event_ids: list[int]) -> tuple[list[str], list[int]]:
+    """Look up string-search keywords from the event_id schema for given event IDs.
+
+    Returns (keywords, matched_event_ids) where matched_event_ids is the subset
+    that had entries in the schema. Keywords are deduplicated by casefold to avoid
+    redundant LIKE clauses in the fallback query.
+    """
     hints = _load_event_id_hints()
     keywords: list[str] = []
     seen_keywords: set[str] = set()
@@ -282,6 +326,11 @@ def _keywords_for_event_ids(event_ids: list[int]) -> tuple[list[str], list[int]]
 
 
 def _execute_keyword_search(db: CaseDB, keywords: list[str]) -> list[dict[str, Any]]:
+    """Search evtx_events.raw_json with LIKE clauses for the given keywords.
+
+    Constructs an OR'd WHERE clause with proper escaping for SQL LIKE wildcards.
+    Capped at 100 rows to prevent runaway queries on large datasets.
+    """
     if not keywords:
         return []
     like_clauses = " OR ".join(

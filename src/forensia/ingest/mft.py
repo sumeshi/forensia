@@ -18,6 +18,11 @@ def ingest_mft_file(
     source_sha: str | None = None,
     progress_callback: Callable[[str], None] | None = None,
 ) -> Path:
+    """Parse an MFT file with mft2es, enrich records with metadata, and write as JSONL.
+
+    Uses timeline_mode=False to extract full MFT entry details (record header, attributes,
+    standard info, file name info) rather than flattened timeline events.
+    """
     mft_path = Path(mft_path)
     sha_prefix = (source_sha or "unknown")[:12]
     output_path = case.raw_dir / f"mft-{sha_prefix}.jsonl"

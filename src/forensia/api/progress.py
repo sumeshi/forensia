@@ -14,10 +14,12 @@ def _json(value: Any) -> str:
 
 
 def clear_progress_events(db: CaseDB) -> None:
+    """Remove all progress events from the database."""
     db.execute("DELETE FROM progress_events")
 
 
 def record_progress_event(db: CaseDB, payload: dict[str, Any]) -> int:
+    """Insert a progress event and enforce the event count cap (oldest are pruned)."""
     event_index = int(db.execute("SELECT COALESCE(MAX(event_index), 0) + 1 FROM progress_events").fetchone()[0])
     created_at = datetime.now(UTC).replace(tzinfo=None)
     db.execute(
@@ -51,6 +53,7 @@ def record_progress_event(db: CaseDB, payload: dict[str, Any]) -> int:
 
 
 def list_progress_events(db: CaseDB, after_index: int = 0, limit: int = 100) -> list[dict[str, Any]]:
+    """Return progress events after a given index, with parsed payload JSON."""
     result = db.execute(
         """
         SELECT event_index, stage, status, iteration, current_query, summary, payload, created_at

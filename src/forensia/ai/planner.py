@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -41,6 +42,7 @@ class HypothesisPlanResult:
 
 
 def _parse_hypotheses(items: Any) -> list[Hypothesis]:
+    """Parse raw LLM JSON output into validated Hypothesis objects, normalizing source_rule_ids."""
     hypotheses: list[Hypothesis] = []
     for item in coerce_list(items):
         if not isinstance(item, dict):
@@ -63,12 +65,16 @@ def _parse_hypotheses(items: Any) -> list[Hypothesis]:
 
 
 def _materialize_planned_query(payload: dict[str, Any]) -> PlannedQuery:
+    """Convert raw LLM query dict to PlannedQuery, rendering template or validating raw SQL."""
     planned_query = PlannedQuery.model_validate(payload)
     if planned_query.template_id:
         planned_query.sql = render_query_template(planned_query.template_id, planned_query.params)
     else:
         planned_query.sql = validate_select_sql(planned_query.sql)
     return planned_query
+
+
+_PLANNER_SQL_MAX_RETRIES = 3
 
 
 def _retry_query_once(
@@ -80,40 +86,62 @@ def _retry_query_once(
     status_callback: Callable[[str], None] | None = None,
     audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    query = parsed.get("query")
+    """Retry SQL generation up to _PLANNER_SQL_MAX_RETRIES times when the
+    planner returns a query that fails validation. Weak local LLMs often need
+    a couple of corrective turns before producing valid SELECT statements.
+    """
+    current = parsed
+    query = current.get("query")
     if not isinstance(query, dict):
-        return parsed
-    try:
-        _materialize_planned_query(query)
-        return parsed
-    except ValueError as exc:
-        if status_callback:
-            status_callback(f"Planner SQL rejected: {exc}. Requesting one retry.")
-        retry_messages = messages_builder(extra_context)
-        retry_messages.append(
-            {
-                "role": "user",
-                "content": (
-                    "The previous SQL was rejected by validate_select_sql(). "
-                    f"Error: {exc}. Return corrected JSON. "
-                    "If you cannot produce a valid SELECT query, set query to null."
-                ),
-            }
-        )
-        retried = request_llm_json(
-            messages=retry_messages,
-            model=model,
-            base_url=base_url,
-            status_callback=status_callback,
-            audit_callback=audit_callback,
-        )
-        retried["read_more"] = [str(item) for item in coerce_list(parsed.get("read_more"))]
-        retried_query = retried.get("query")
-        if isinstance(retried_query, dict):
-            for field in ("query_id", "hypothesis_id", "purpose"):
-                if field not in retried_query and field in query:
-                    retried_query[field] = query[field]
-        return retried
+        return current
+
+    base_fields = {field: query.get(field) for field in ("query_id", "hypothesis_id", "purpose")}
+
+    for attempt in range(1, _PLANNER_SQL_MAX_RETRIES + 1):
+        try:
+            _materialize_planned_query(query)
+            return current
+        except ValueError as exc:
+            if status_callback:
+                status_callback(
+                    f"Planner SQL rejected (attempt {attempt}/{_PLANNER_SQL_MAX_RETRIES}): {exc}."
+                )
+            retry_messages = messages_builder(extra_context)
+            retry_messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"Attempt {attempt}/{_PLANNER_SQL_MAX_RETRIES}: the previous query was rejected. "
+                        f"Error: {exc}. "
+                        "MUST return corrected JSON with query.sql set to a raw SELECT statement against "
+                        "evtx_events / mft_entries / mft_timeline / prefetch_executions / findings. "
+                        "Do NOT leave query.sql blank or null when no template_id fits — the investigation aborts otherwise. "
+                        "Refer to <SCHEMA_CARDS> for valid column names and <SQL_COOKBOOK> for ready-made patterns. "
+                        "Use simple `SELECT cols FROM table WHERE event_id = N` style if unsure."
+                    ),
+                }
+            )
+            retried = request_llm_json(
+                messages=retry_messages,
+                model=model,
+                base_url=base_url,
+                status_callback=status_callback,
+                audit_callback=audit_callback,
+            )
+            retried["read_more"] = [str(item) for item in coerce_list(current.get("read_more"))]
+            retried_query = retried.get("query")
+            if isinstance(retried_query, dict):
+                for field, value in base_fields.items():
+                    if field not in retried_query and value is not None:
+                        retried_query[field] = value
+                current = retried
+                query = retried_query
+                continue
+            # If retry didn't even return a query dict, give up early.
+            return retried
+    if status_callback:
+        status_callback(f"Planner SQL still invalid after {_PLANNER_SQL_MAX_RETRIES} retries; will fall back.")
+    return current
 
 
 def _request_with_optional_context(
@@ -125,6 +153,11 @@ def _request_with_optional_context(
     status_callback: Callable[[str], None] | None = None,
     audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
+    """Request LLM with optional read_more context expansion.
+
+    First call uses default context. If the response includes read_more paths,
+    loads those paths and re-queries the LLM with the expanded context.
+    """
     default_context = initial_context
     if default_context is None:
         load_investigation_context = getattr(memory, "load_investigation_context", None)
@@ -161,6 +194,46 @@ def _request_with_optional_context(
     return reparsed
 
 
+_KEYPOINT_NAME_RE = re.compile(r"[a-zA-Z0-9_]+")
+
+
+def _compute_uncovered_keypoints(
+    observed: list[str],
+    active: list[Hypothesis],
+    resolved: list[Hypothesis],
+) -> list[dict[str, str]]:
+    """Heuristic: a keypoint is 'covered' if its name (or any token of it) appears
+    in any active/resolved hypothesis's description or source_rule_ids.
+
+    Returns up to 5 uncovered keypoint dicts that broad_plan must address.
+    """
+    if not observed:
+        return []
+    haystack_parts: list[str] = []
+    for hyp in list(active) + list(resolved):
+        haystack_parts.append((hyp.description or "").lower())
+        for rid in getattr(hyp, "source_rule_ids", None) or []:
+            haystack_parts.append(str(rid).lower())
+    haystack = " ".join(haystack_parts)
+
+    uncovered: list[dict[str, str]] = []
+    for item in observed:
+        name = item.split(" (")[0].strip().lower() if " (" in item else item.strip().lower()
+        if not name:
+            continue
+        # cover if the keypoint name itself OR any of its underscore-separated tokens
+        # appears in the active/resolved hypothesis context
+        tokens = _KEYPOINT_NAME_RE.findall(name)
+        if name in haystack:
+            continue
+        if any(tok and len(tok) >= 4 and tok in haystack for tok in tokens):
+            continue
+        uncovered.append({"name": name})
+        if len(uncovered) >= 5:
+            break
+    return uncovered
+
+
 def broad_plan_investigation(
     state: SessionState,
     memory: MemoryManager,
@@ -173,7 +246,18 @@ def broad_plan_investigation(
     status_callback: Callable[[str], None] | None = None,
     audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
 ) -> BroadPlanResult:
+    """Run the broad plan phase: generate new hypotheses from findings and keypoints.
+
+    Computes uncovered keypoints, calls the LLM once (read_more is ignored;
+    the stop field controls termination), and returns parsed hypotheses."""
+
     overview_md = overview_md if overview_md is not None else memory.load_overview()
+
+    uncovered_keypoints = _compute_uncovered_keypoints(
+        observed_keypoints or [],
+        state.active_hypotheses,
+        state.resolved_hypotheses,
+    )
 
     def messages_builder(extra_context: str) -> list[dict[str, str]]:
         return build_broad_plan_messages(
@@ -182,6 +266,7 @@ def broad_plan_investigation(
             iteration=state.iteration,
             findings_snapshot=state.findings_snapshot,
             observed_keypoints=observed_keypoints,
+            uncovered_keypoints=uncovered_keypoints,
             active_hypotheses=state.active_hypotheses,
             resolved_hypotheses=state.resolved_hypotheses,
             history=[item.model_dump() for item in state.history],
@@ -206,6 +291,78 @@ def broad_plan_investigation(
     )
 
 
+def _resolve_planner_context(
+    memory: MemoryManager,
+    hypothesis: Hypothesis,
+    default_context_md: str | None,
+    initial_context: str | None = None,
+) -> str:
+    """Resolve investigation context for the planner when no default_context_md is provided."""
+    if default_context_md is None:
+        load_investigation_context = getattr(memory, "load_investigation_context", None)
+        if callable(load_investigation_context):
+            default_context_md = load_investigation_context(
+                hypothesis.id,
+                max_bytes=max(1024, memory.max_bytes // 3),
+                include_overview=False,
+            )
+        else:
+            default_context_md = memory.load_compact_context(
+                ["facts.md", "tasks.md"],
+                max_bytes=max(1024, memory.max_bytes // 3),
+            )
+    return default_context_md
+
+
+def _build_hypothesis_history(
+    state: SessionState,
+    hypothesis: Hypothesis,
+    db: CaseDB | None = None,
+    limit: int = 10,
+) -> tuple[list[dict[str, Any]], set[str]]:
+    """Build hypothesis history list and seen query IDs from state history and DB reasoning rows."""
+    hypothesis_history = [
+        item.model_dump()
+        for item in state.history
+        if item.hypothesis_id == hypothesis.id
+    ]
+    seen_query_ids = {
+        str(item.get("query_id"))
+        for item in hypothesis_history
+        if item.get("query_id")
+    }
+    if db is not None:
+        for row in _recent_reasoning_rows(db, hypothesis.id, limit=limit):
+            query_id = str(row.get("query_id") or "").strip()
+            if query_id and query_id in seen_query_ids:
+                continue
+            hypothesis_history.append(row)
+            if query_id:
+                seen_query_ids.add(query_id)
+    return hypothesis_history, seen_query_ids
+
+
+def _parse_planner_output(parsed: dict[str, Any]) -> tuple[Hypothesis | None, PlannedQuery | None]:
+    """Parse LLM planner output into optional Hypothesis and PlannedQuery."""
+    parsed_hypothesis = None
+    if isinstance(parsed.get("hypothesis"), dict):
+        try:
+            parsed_hypothesis = Hypothesis.model_validate(parsed["hypothesis"])
+        except Exception as exc:
+            logger.debug("hypothesis parse failed: %s", exc)
+            parsed_hypothesis = None
+
+    planned_query = None
+    if isinstance(parsed.get("query"), dict):
+        try:
+            planned_query = _materialize_planned_query(parsed["query"])
+        except Exception as exc:
+            logger.debug("hypothesis/query parse failed: %s", exc)
+            planned_query = None
+
+    return parsed_hypothesis, planned_query
+
+
 def plan_hypothesis_query(
     state: SessionState,
     hypothesis: Hypothesis,
@@ -221,39 +378,16 @@ def plan_hypothesis_query(
     query_index: int = 1,
     max_queries: int = 5,
 ) -> HypothesisPlanResult:
+    """Plan the next query for a single hypothesis.
+
+    Merges DB-persisted reasoning rows, calls the planner with read_more
+    context expansion, retries SQL validation up to 3 times, and returns
+    the parsed HypothesisPlanResult."""
+
     overview_md = overview_md if overview_md is not None else memory.load_overview()
-    if default_context_md is None:
-        load_investigation_context = getattr(memory, "load_investigation_context", None)
-        if callable(load_investigation_context):
-            default_context_md = load_investigation_context(
-                hypothesis.id,
-                max_bytes=max(1024, memory.max_bytes // 3),
-                include_overview=False,
-            )
-        else:
-            default_context_md = memory.load_compact_context(
-                ["facts.md", "tasks.md"],
-                max_bytes=max(1024, memory.max_bytes // 3),
-            )
+    default_context_md = _resolve_planner_context(memory, hypothesis, default_context_md, initial_context=None)
     extra_context_holder = {"value": ""}
-    hypothesis_history = [
-        item.model_dump()
-        for item in state.history
-        if item.hypothesis_id == hypothesis.id
-    ]
-    seen_query_ids = {
-        str(item.get("query_id"))
-        for item in hypothesis_history
-        if item.get("query_id")
-    }
-    if db is not None:
-        for row in _recent_reasoning_rows(db, hypothesis.id, limit=10):
-            query_id = str(row.get("query_id") or "").strip()
-            if query_id and query_id in seen_query_ids:
-                continue
-            hypothesis_history.append(row)
-            if query_id:
-                seen_query_ids.add(query_id)
+    hypothesis_history, seen_query_ids = _build_hypothesis_history(state, hypothesis, db, limit=10)
 
     def messages_builder(extra_context: str) -> list[dict[str, str]]:
         extra_context_holder["value"] = extra_context
@@ -288,21 +422,7 @@ def plan_hypothesis_query(
         audit_callback=audit_callback,
     )
 
-    parsed_hypothesis = None
-    if isinstance(parsed.get("hypothesis"), dict):
-        try:
-            parsed_hypothesis = Hypothesis.model_validate(parsed["hypothesis"])
-        except Exception as exc:
-            logger.debug("hypothesis parse failed: %s", exc)
-            parsed_hypothesis = None
-
-    planned_query = None
-    if isinstance(parsed.get("query"), dict):
-        try:
-            planned_query = _materialize_planned_query(parsed["query"])
-        except Exception as exc:
-            logger.debug("hypothesis/query parse failed: %s", exc)
-            planned_query = None
+    parsed_hypothesis, planned_query = _parse_planner_output(parsed)
 
     return HypothesisPlanResult(
         read_more=[str(item) for item in coerce_list(parsed.get("read_more"))],

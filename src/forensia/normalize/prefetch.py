@@ -5,6 +5,11 @@ from forensia.db.database import CaseDB
 
 
 def normalize_prefetch(case: Case, db: CaseDB) -> int:
+    """Load Prefetch JSONL files into the prefetch_executions database table.
+
+    Clears existing rows per source_file before insert for idempotent re-ingestion.
+    Returns total rows inserted.
+    """
     inserted = 0
     for path in sorted(case.raw_dir.glob("prefetch-*.jsonl")):
         source_file = db.execute(

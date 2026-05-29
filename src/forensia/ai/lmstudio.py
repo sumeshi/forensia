@@ -16,6 +16,7 @@ _HTTP_CLIENTS_LOCK = threading.Lock()
 
 
 def _close_http_clients() -> None:
+    """Close all cached HTTP clients (sync and async) at interpreter exit."""
     with _HTTP_CLIENTS_LOCK:
         sync_clients = list(_SYNC_CLIENTS.values())
         async_clients = list(_ASYNC_CLIENTS.values())
@@ -34,6 +35,7 @@ atexit.register(_close_http_clients)
 
 
 def _get_http_client() -> httpx.Client:
+    """Get or create a per-thread synchronous HTTP client."""
     thread_id = threading.get_ident()
     with _HTTP_CLIENTS_LOCK:
         client = _SYNC_CLIENTS.get(thread_id)
@@ -44,6 +46,7 @@ def _get_http_client() -> httpx.Client:
 
 
 async def _get_async_client() -> httpx.AsyncClient:
+    """Get or create a per-event-loop async HTTP client."""
     loop_id = id(asyncio.get_running_loop())
     with _HTTP_CLIENTS_LOCK:
         client = _ASYNC_CLIENTS.get(loop_id)
@@ -60,6 +63,7 @@ async def async_chat_completion(
     max_tokens: int | None = None,
     status_callback: Callable[[str], None] | None = None,
 ) -> str:
+    """Send a chat completion request to the LLM server (async). Returns the response text."""
     settings = get_llm_settings()
     resolved_max_tokens = max_tokens if max_tokens is not None else settings["max_tokens"]
 
@@ -93,6 +97,7 @@ def chat_completion(
     max_tokens: int | None = None,
     status_callback: Callable[[str], None] | None = None,
 ) -> str:
+    """Send a chat completion request to the LLM server (sync). Returns the response text."""
     settings = get_llm_settings()
     resolved_max_tokens = max_tokens if max_tokens is not None else settings["max_tokens"]
 

@@ -23,6 +23,7 @@ def _cheap_repair(text: str) -> str:
 
 
 def _extract_candidate(text: str) -> str:
+    """Strip markdown code fences and extract the first JSON object from a string."""
     stripped = text.strip()
     match = CODE_BLOCK_RE.search(stripped)
     if match:
@@ -42,6 +43,7 @@ def _request_json_repair(
     model: str,
     status_callback: Callable[[str], None] | None = None,
 ) -> str:
+    """Send malformed JSON to the LLM for repair; returns a corrected string."""
     if status_callback:
         status_callback("Malformed JSON returned by LLM. Requesting JSON repair.")
     messages = [
@@ -77,6 +79,7 @@ async def _async_request_json_repair(
     model: str,
     status_callback: Callable[[str], None] | None = None,
 ) -> str:
+    """Async variant of _request_json_repair for parallel LLM repair calls."""
     if status_callback:
         status_callback("Malformed JSON returned by LLM. Requesting JSON repair.")
     messages = [
@@ -111,6 +114,7 @@ def parse_llm_json(
     model: str,
     status_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
+    """Parse an LLM output string into a dict, with cheap repair and LLM-based repair fallback."""
     current_output = output
     current_error: Exception | None = None
     for repair_attempt in range(1, MAX_JSON_REPAIR_ATTEMPTS + 1):
@@ -141,6 +145,7 @@ async def async_parse_llm_json(
     model: str,
     status_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
+    """Async variant of parse_llm_json for parallel LLM JSON parsing."""
     current_output = output
     current_error: Exception | None = None
     for repair_attempt in range(1, MAX_JSON_REPAIR_ATTEMPTS + 1):
@@ -172,6 +177,7 @@ def request_llm_json(
     status_callback: Callable[[str], None] | None = None,
     audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
+    """Send a chat request and return parsed JSON, with retry across both completion and parsing failures."""
     last_error: Exception | None = None
     for completion_attempt in range(1, MAX_JSON_COMPLETION_ATTEMPTS + 1):
         if completion_attempt > 1 and status_callback:
@@ -212,6 +218,7 @@ async def async_request_llm_json(
     status_callback: Callable[[str], None] | None = None,
     audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
+    """Async variant of request_llm_json for parallel LLM requests."""
     last_error: Exception | None = None
     for completion_attempt in range(1, MAX_JSON_COMPLETION_ATTEMPTS + 1):
         if completion_attempt > 1 and status_callback:
