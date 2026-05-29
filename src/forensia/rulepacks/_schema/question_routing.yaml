@@ -21,6 +21,7 @@ question_types:
         query: "SELECT executable_name, exec_count, last_exec_time FROM prefetch_executions"
       - source: mft_entries
         query: "SELECT file_name, si_modified, file_path FROM mft_entries WHERE file_path LIKE '%/Prefetch/%' AND file_name LIKE '%.pf'"
+        condition: "when prefetch_executions empty"
 
   - name: email_ost
     keywords:
