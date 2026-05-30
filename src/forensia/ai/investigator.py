@@ -38,6 +38,7 @@ from forensia.ai.hypothesis_manager import (
     _upsert_hypothesis,
 )
 from forensia.ai.json_response import request_llm_json
+from forensia.ai.lmstudio import LLMServerUnavailableError, outage_wait_until_recovered
 from forensia.ai.planner import _compute_uncovered_keypoints, plan_hypothesis_query
 from forensia.ai.prompts import _slim_hypothesis_dump, build_gap_identifier_messages, build_hypothesis_drafter_messages, resolve_rule_context
 from forensia.ai.report_gap import (
@@ -96,6 +97,28 @@ class _Ctx:
     memory_plan: str = ""
     memory_check: str = ""
     current_hypothesis_id: str | None = None
+
+
+_MAX_OUTAGE_RETRIES_PER_CALL = 3
+
+
+async def _call_with_outage_recovery(
+    call_fn,
+    base_url: str,
+    model: str,
+    **kwargs,
+):
+    for attempt in range(1, _MAX_OUTAGE_RETRIES_PER_CALL + 1):
+        try:
+            if asyncio.iscoroutinefunction(call_fn):
+                return await call_fn(base_url=base_url, model=model, **kwargs)
+            else:
+                return await asyncio.to_thread(call_fn, base_url=base_url, model=model, **kwargs)
+        except LLMServerUnavailableError:
+            if attempt >= _MAX_OUTAGE_RETRIES_PER_CALL:
+                raise
+            await outage_wait_until_recovered(base_url, model)
+    raise LLMServerUnavailableError("Outage recovery failed")
 
 
 def _ctx_get_report_status(
@@ -828,9 +851,10 @@ async def _investigate_one_hypothesis(
     for query_index in range(1, limit + 1):
         state.focus_depth = query_index
         try:
-            hypothesis_plan = plan_hypothesis_query(
+            hypothesis_plan = await _call_with_outage_recovery(
+                plan_hypothesis_query, base_url=base_url, model=model,
                 state=state, hypothesis=hypothesis,
-                memory=memory, base_url=base_url, model=model, db=db,
+                memory=memory, db=db,
                 overview_md=ctx.memory_overview, default_context_md=ctx.memory_plan,
                 status_callback=llm_status_fn or (lambda msg: print(f"[yellow]{msg}[/yellow]")),
                 audit_callback=lambda msgs, out, parsed, hid=hypothesis.id, qi=query_index: llm_logger.write(
@@ -1320,8 +1344,9 @@ async def _run_broad_plan_step(
             uncovered_keypoints=uncovered_keypoints,
             active_hypotheses_slim=active_hypotheses_slim,
         )
-        gap_parsed = request_llm_json(
-            messages=gap_msgs, model=model, base_url=base_url,
+        gap_parsed = await _call_with_outage_recovery(
+            request_llm_json, base_url=base_url, model=model,
+            messages=gap_msgs,
             json_schema=gap_schema,
             status_callback=llm_status_fn,
             audit_callback=lambda msgs, out, parsed: llm_logger.write(
@@ -1341,8 +1366,9 @@ async def _run_broad_plan_step(
         drafted_hypotheses: list[Hypothesis] = []
         for gap in gap_areas:
             h_msgs, h_schema = build_hypothesis_drafter_messages(gap, available_rules)
-            h_parsed = request_llm_json(
-                messages=h_msgs, model=model, base_url=base_url,
+            h_parsed = await _call_with_outage_recovery(
+                request_llm_json, base_url=base_url, model=model,
+                messages=h_msgs,
                 json_schema=h_schema,
                 status_callback=llm_status_fn,
                 audit_callback=lambda msgs, out, parsed: llm_logger.write(
@@ -1391,6 +1417,8 @@ async def _run_broad_plan_step(
     except (httpx.ConnectError, httpx.TimeoutException) as exc:
         err_msg = f"[plan-broad] LLM server error: {exc}"
         print(f"[red]{err_msg}[/red]")
+        raise
+    except LLMServerUnavailableError:
         raise
     except Exception as exc:
         err_msg = f"[plan-broad] LLM failed: {exc}"
@@ -1453,9 +1481,10 @@ async def _run_cycle_body(
     )
 
     if not report_only:
-        broad_plan_stop = await _run_broad_plan_step(
+        broad_plan_stop = await _call_with_outage_recovery(
+            _run_broad_plan_step, base_url=base_url, model=model,
             state=state, db=db, session_id=session_id,
-            base_url=base_url, model=model, llm_logger=llm_logger,
+            llm_logger=llm_logger,
             plan_cycle=plan_cycle, observed_keypoints=observed_keypoints,
             emit_fn=_emit, llm_status_fn=llm_status,
         )

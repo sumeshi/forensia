@@ -14,6 +14,7 @@ from forensia.api.cache import (
 )
 from forensia.api.progress import clear_progress_events, record_progress_event
 from forensia.ai.investigator import investigate as investigate_loop
+from forensia.ai.lmstudio import LLMServerUnavailableError
 from forensia.config import get_llm_settings, resolve_llm_config
 from forensia.core.case import Case
 from forensia.core.case_tasks import CaseTasks
@@ -429,32 +430,36 @@ def _run_investigate_stage(
     _status(f"Stage 4/4: investigate with model={model}")
     push_progress(f"[investigate] starting - model={model}", stage="investigate", status="running")
     write_api_snapshots(case, db)
-    result = asyncio.run(
-        investigate_loop(
-            case=case,
-            db=db,
-            base_url=llm_base_url,
-            model=model,
-            template_root=template_root,
-            max_iter=max_iter,
-            max_queries_per_hypothesis=max_queries_per_hypothesis,
-            no_progress_limit=no_progress_limit,
-            profile=profile,
-            report_every_n_cycles=report_every_n_cycles,
-            report_max_queries_per_section=report_max_queries_per_section or get_llm_settings()["report_max_queries_per_section"],
-            max_llm_calls=max_llm_calls,
-            progress_callback=lambda payload: push_progress(
-                payload.get("summary"),
-                stage=payload.get("stage", "investigate"),
-                status=payload.get("status", "running"),
-                iteration=payload.get("iteration", 0),
-                current_query=payload.get("current_query"),
-                summary=payload.get("summary"),
-                hypotheses=payload.get("hypotheses", []),
-                report_sections=payload.get("report_sections", {}),
-            ),
+    try:
+        result = asyncio.run(
+            investigate_loop(
+                case=case,
+                db=db,
+                base_url=llm_base_url,
+                model=model,
+                template_root=template_root,
+                max_iter=max_iter,
+                max_queries_per_hypothesis=max_queries_per_hypothesis,
+                no_progress_limit=no_progress_limit,
+                profile=profile,
+                report_every_n_cycles=report_every_n_cycles,
+                report_max_queries_per_section=report_max_queries_per_section or get_llm_settings()["report_max_queries_per_section"],
+                max_llm_calls=max_llm_calls,
+                progress_callback=lambda payload: push_progress(
+                    payload.get("summary"),
+                    stage=payload.get("stage", "investigate"),
+                    status=payload.get("status", "running"),
+                    iteration=payload.get("iteration", 0),
+                    current_query=payload.get("current_query"),
+                    summary=payload.get("summary"),
+                    hypotheses=payload.get("hypotheses", []),
+                    report_sections=payload.get("report_sections", {}),
+                ),
+            )
         )
-    )
+    except LLMServerUnavailableError as exc:
+        _status(f"investigation aborted: LLM server unavailable ({exc})")
+        sys.exit(2)
     tasks.mark_done(
         "investigate",
         f"session={result['session_id']}, status={result['status']}, iterations={result['iteration']}",

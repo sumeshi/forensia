@@ -118,7 +118,9 @@ flowchart LR
 ローカル LLM の処理時間と精度を両立するため、以下の工夫を施しています。
 
 - **宣言層への知識集約**:Event ID 解説、Logon Type、検知ルール、フォールバック手順、レポートセクションのスタイル指示などは `src/forensia/rulepacks/_schema/` 配下の YAML / Markdown にまとめてあり、Python 側は generic に消費するだけです。新しい攻撃手法や調査観点は YAML 編集で追加できます。
-- **schema_card と SQL クックブック**:planner プロンプトには 5 テーブル分のカラム説明と 6 種の SELECT テンプレートを必ず注入し、LLM が SQL をゼロから合成しなくて済むようにしています。SQL バリデーション失敗時は `sql_composer` のみを最大 3 回リトライし、巨大プロンプト全体を送り直しません。
+- **schema_card と SQL クックブック**:planner プロンプトには 6 テーブル分(`evtx_events` / `mft_entries` / `mft_timeline` / `prefetch_executions` / `prefetch_timeline` / `findings`)のカラム説明と 6 種の SELECT テンプレートを必ず注入し、LLM が SQL をゼロから合成しなくて済むようにしています。schema_card は intent の `target_table` に応じて切り替え、`information_schema` から live スキーマを併記。SQL バリデーション失敗時は `sql_composer` のみを最大 3 回リトライし、巨大プロンプト全体を送り直しません。
+- **LLM サーバ障害への耐性**:`chat_completion` は HTTP 5xx / 接続エラー / タイムアウトを最大 3 回まで指数バックオフ(2 / 4 / 8 秒)でリトライします。リトライ枯渇後は `_run_broad_plan_step` が再 raise して投資調査全体を停止させ、空のレポート生成を抑止します。
+- **mid-investigation の UI 同期**:調査中は `progress_events.json` に加えて `hypotheses` / `findings` / `attack_coverage` / `report_sections` / `stats` 等の軽量スナップショットを 5 秒間隔で書き出し、webui が長時間調査の途中でも実状態を表示できるようにしています。
 - **記憶の圧縮と分離**:`overview.md` は閾値超過時に LLM で要約圧縮し、`facts.md` / `timeline.md` などは構造を保持。仮説検証中の暫定情報は `memory/scratch/H-NNN/` に隔離され、confirmed 時に共有記憶へ昇格、refuted 時は archive へ退避します。これによって未確証の暫定情報が他仮説の検証に汚染することを防ぎます。
 - **段落単位の汚染防止**:レポート生成では `paragraph_narrator` が 1 段落ずつ独立して書き、他セクションの本文や全 top-finding を見ません。ブロック間で共有するのは 120 字程度のサマリのみで、序文の使い回しや無関係な finding の流入を構造的に避けています。
 - **クエリの正規化フィンガープリント**:重複クエリ検出は sqlglot AST ベースで、空白や別名差を無視して「意味的に同じクエリを 2 回出した」を判定します。LLM が同じ問いを言い換えて繰り返すことによる無限ループを防ぎます。
@@ -135,6 +137,8 @@ pip install forensia
 ```dotenv
 LLM_BASE_URL="http://127.0.0.1:1234"
 LLM_MODEL="qwen/qwen3-8b"
+# For reasoning models (gemma-4-E*, qwen3-thinking), add budget for reasoning_content.
+LLM_REASONING_RESERVE_TOKENS=0
 ```
 
 アーティファクト (EVTX / MFT / Prefetch など) を `input/` に置き、次を実行します。

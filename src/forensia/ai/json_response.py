@@ -6,7 +6,8 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-from forensia.ai.lmstudio import chat_completion, async_chat_completion
+from forensia.ai.lmstudio import LLMServerUnavailableError, LLMOutputTruncatedError, chat_completion, async_chat_completion
+from forensia.config import get_llm_settings
 
 CODE_BLOCK_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 _TRAILING_COMMA_RE = re.compile(r",\s*([\]}])")
@@ -177,6 +178,7 @@ def request_llm_json(
     status_callback: Callable[[str], None] | None = None,
     audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
     json_schema: dict | None = None,
+    max_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Send a chat request and return parsed JSON, with retry across both completion and parsing failures."""
     last_error: Exception | None = None
@@ -187,13 +189,28 @@ def request_llm_json(
                 f"Retrying original LLM request ({completion_attempt}/{MAX_JSON_COMPLETION_ATTEMPTS})."
             )
         try:
-            output = chat_completion(
-                messages=messages,
-                model=model,
-                base_url=base_url,
-                status_callback=status_callback,
-                json_schema=json_schema,
-            )
+            first_max_tokens = max_tokens
+            for _ in range(2):
+                try:
+                    output = chat_completion(
+                        messages=messages,
+                        model=model,
+                        base_url=base_url,
+                        max_tokens=first_max_tokens,
+                        status_callback=status_callback,
+                        json_schema=json_schema,
+                    )
+                    break
+                except LLMOutputTruncatedError as exc:
+                    first_max_tokens = (first_max_tokens or get_llm_settings()["max_tokens"]) * 2
+                    if status_callback:
+                        status_callback(f"LLM output truncated, retrying with max_tokens={first_max_tokens}")
+            else:
+                raise LLMServerUnavailableError(f"LLM output truncated after 3 attempts (max_tokens={first_max_tokens})")
+            if not output or not output.strip():
+                raise LLMServerUnavailableError("LLM returned empty response")
+        except LLMServerUnavailableError:
+            raise
         except Exception as exc:
             if audit_callback:
                 audit_callback(messages, output="<HTTP_ERROR>", parsed={"error": str(exc)})
@@ -225,6 +242,7 @@ async def async_request_llm_json(
     status_callback: Callable[[str], None] | None = None,
     audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
     json_schema: dict | None = None,
+    max_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Async variant of request_llm_json for parallel LLM requests."""
     last_error: Exception | None = None
@@ -235,13 +253,28 @@ async def async_request_llm_json(
                 f"Retrying original LLM request ({completion_attempt}/{MAX_JSON_COMPLETION_ATTEMPTS})."
             )
         try:
-            output = await async_chat_completion(
-                messages=messages,
-                model=model,
-                base_url=base_url,
-                status_callback=status_callback,
-                json_schema=json_schema,
-            )
+            first_max_tokens = max_tokens
+            for _ in range(2):
+                try:
+                    output = await async_chat_completion(
+                        messages=messages,
+                        model=model,
+                        base_url=base_url,
+                        max_tokens=first_max_tokens,
+                        status_callback=status_callback,
+                        json_schema=json_schema,
+                    )
+                    break
+                except LLMOutputTruncatedError as exc:
+                    first_max_tokens = (first_max_tokens or get_llm_settings()["max_tokens"]) * 2
+                    if status_callback:
+                        status_callback(f"LLM output truncated, retrying with max_tokens={first_max_tokens}")
+            else:
+                raise LLMServerUnavailableError(f"LLM output truncated after 3 attempts (max_tokens={first_max_tokens})")
+            if not output or not output.strip():
+                raise LLMServerUnavailableError("LLM returned empty response")
+        except LLMServerUnavailableError:
+            raise
         except Exception as exc:
             if audit_callback:
                 audit_callback(messages, output="<HTTP_ERROR>", parsed={"error": str(exc)})

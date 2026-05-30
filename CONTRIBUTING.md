@@ -2,6 +2,80 @@
 
 このドキュメントは forensia の実装に手を入れる開発者向けの内部仕様書です。コードを変更しても保たれるべき不変条件、責務の境界、状態の所有関係をまとめています。ユーザ向けの概要は [README.md](README.md) を参照してください。
 
+## 仮説からレポートまでの分業ループ
+
+forensia は「賢い 1 体の調査員 LLM」ではなく、**1 文で目的を言える小さなロールを連続稼働させ、その出力を機械が裁定する**設計です。1 個の役割は読み取る context も出力するフィールドも狭く、決定論的に処理できるところはコード側で完結させます。これは `gemma3-4b` / `qwen3-8b` クラスのローカル LLM でも壊れにくいパイプラインを組むための必須要件です。
+
+調査は `plan_cycle` 単位で進み、1 サイクル内で「仮説の起案 → SQL 検証 → finding 抽出 → 仮説確定 → レポート充填 → 新しい gap を仮説に投入」を 1 周します。サイクルは「全仮説が解決し、broad_plan が `stop` を出し、レポート gap が空」になるか、`--max-iter` / `--no-progress-limit` / `--max-llm-calls` の上限に達するまで繰り返します。
+
+```mermaid
+flowchart TB
+    A["Artifacts (EVTX / MFT / Prefetch)"] -->|ingest + normalize| C[("Case State<br/>(case.duckdb)")]
+    C -->|rule engine<br/>(deterministic)| F[("Findings + KeyPoints")]
+
+    subgraph CYCLE["1 plan_cycle"]
+        direction TB
+
+        subgraph BP["broad_plan"]
+            direction TB
+            GI[/"gap_identifier<br/><i>観測 keypoint と未カバー領域から gap_areas を出す</i>"/]
+            HD[/"hypothesis_drafter<br/><i>1 gap_area につき 1 仮説を起案</i>"/]
+            GI --> HD
+        end
+        F --> BP
+
+        subgraph HL["per-hypothesis loop (max_queries_per_hypothesis)"]
+            direction TB
+            QI[/"query_intent_planner<br/><i>取りに行く列・期間・対象テーブルを JSON で宣言</i>"/]
+            SCK[/"sql_self_check<br/><i>intent の列が schema に存在するか検証</i>"/]
+            SC[/"sql_composer<br/><i>SELECT 文を組む or template_id を選ぶ</i>"/]
+            EX["executor (DuckDB)<br/><i>0 行なら rule.fallback_search を決定論的に発火</i>"]
+            VR[/"verdict_reviewer<br/><i>rows と仮説から confirmed/refuted/inconclusive を出す</i>"/]
+            FE[/"finding_extractor<br/><i>confirmed のときだけ structured finding を抽出</i>"/]
+            MU[/"memory_updater<br/><i>verdict 確定後の memory diff を提案</i>"/]
+            QI --> SCK --> SC --> EX --> VR
+            VR -->|confirmed| FE
+            VR --> MU
+        end
+        BP --> HL
+
+        TR["HypothesisProgressTracker<br/>(deterministic: auto-confirm / auto-refute / pivot)"]
+        HL --> TR
+        TR -->|active| HL
+        TR -->|resolved| RES["Resolver<br/>stale_sections + follow_up_questions"]
+
+        subgraph RW["report writer"]
+            direction TB
+            SAP[/"section_agent_plan<br/><i>次のアクション(query/facts/write)を選ぶ</i>"/]
+            SAC[/"section_agent_check<br/><i>集めた証拠が write 可能か判断</i>"/]
+            SO[/"section_outliner<br/><i>段落割り当てを JSON で決める</i>"/]
+            PN[/"paragraph_narrator<br/><i>1 段落の Markdown を書く</i>"/]
+            SAP --> SAC --> SO --> PN
+        end
+        RES --> RW
+        RW -->|新規 gap| BP
+    end
+
+    HL --> T[("Trace State<br/>(trace.duckdb)<br/>steps / reasoning / progress")]
+    RW --> RS[("report_sections + claims")]
+
+    C -. derive .-> M[("Structured Memory<br/>(memory/*.md)")]
+    T -. derive .-> M
+    M -. context .-> QI
+    M -. context .-> VR
+    M -. context .-> SAP
+```
+
+各ロールの責務と境界は次のルールで保ってください。
+
+- **1 ロール = 1 文で書ける目的**。`<TASK>You are a sql_composer. Write a DuckDB SQL query that satisfies the given intent.</TASK>` のように、ビルダー冒頭が複文になったら粒度が崩れているサイン。
+- **ルーティング・テンプレマッチング・整形は LLM に渡さない**。`validate_select_sql` / `HypothesisProgressTracker` / `_dedup_new_hypotheses` / `format_benchmark_answer` / `execute_fallback_search` はすべてコード側で決定論的に動きます。
+- **durable な結論はすべて DuckDB**。LLM の生出力は `ai_logs/<session_id>/` と `trace.investigation_steps` に audit ログとして残しますが、これは正本ではありません。findings / hypotheses / claims / report_sections は必ず DB に永続化し、memory Markdown はそれらからの projection に留めます。
+- **仮説単位の文脈隔離**。検証中の暫定 facts / timeline / tasks は `memory/scratch/<hypothesis_id>/` に閉じ込め、confirmed 時に共有記憶へ昇格、refuted 時に archive へ退避します。他仮説の暫定情報を流入させないこと。
+- **トークン予算と LLM 呼び出し総数は hard cap**。`_assemble_messages_with_budget` が system プロンプトを保護したまま user/dynamic 側のみ trim、`audit.LLMCallLogger` が `--max-llm-calls`(既定 200)を超えたら `RuntimeError` でループ終了。soft warning にしないこと。
+
+新しい AI 駆動の振る舞いを追加するときは「これを 1 文の `<TASK>` で書けるか」「コード側で表せないか」を先に問い、答えが No / Yes ならルール宣言ノブ(`confirm_when` / `fallback_search` / `follow_up_questions` 等)で表現できないかを確認してください。Python に rule_id や event_id のハードコード分岐を増やす前に、必ず宣言層 (`src/forensia/rulepacks/_schema/`) を検討すること。
+
 ## 開発環境
 
 ### Python
@@ -31,6 +105,7 @@ LLM_MEMORY_MAX_BYTES=16384
 | `LLM_THINKING_LANGUAGE` | 思考プロンプトの言語 |
 | `LLM_OUTPUT_LANGUAGE` | 人間向け出力の言語 |
 | `LLM_MEMORY_MAX_BYTES` | 記憶ファイルの圧縮トリガとなるしきい値 |
+| `LLM_REASONING_RESERVE_TOKENS` | 推論モデル向けの追加トークンバッファ (思考モデル用) |
 | `FORENSIA_API_BASE_URL` | UI 開発時の API ベース URL |
 | `FORENSIA_UI_ORIGINS` | FastAPI の CORS 許可リスト(カンマ区切り) |
 
