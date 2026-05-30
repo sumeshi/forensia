@@ -36,6 +36,7 @@ class CaseDB:
         )
         self._apply_migration_once("legacy_schema_backfill", self._apply_legacy_schema_backfill)
         self._apply_migration_once("investigation_steps_hypothesis_id", self._apply_investigation_steps_hypothesis_id)
+        self._apply_migration_once("hypotheses_target_keypoint_id", self._apply_hypotheses_target_keypoint_id)
 
     def _apply_migration_once(self, migration_key: str, callback: Callable[[], None]) -> None:
         """Execute a migration callback only if it has not been applied before."""
@@ -93,6 +94,10 @@ class CaseDB:
     def _apply_investigation_steps_hypothesis_id(self) -> None:
         """Add hypothesis_id column to the investigation_steps trace table."""
         self.conn.execute("ALTER TABLE trace.investigation_steps ADD COLUMN IF NOT EXISTS hypothesis_id VARCHAR")
+
+    def _apply_hypotheses_target_keypoint_id(self) -> None:
+        """Add target_keypoint_id column to the hypotheses table."""
+        self.conn.execute("ALTER TABLE hypotheses ADD COLUMN IF NOT EXISTS target_keypoint_id VARCHAR")
 
     def _route_trace_write(self, query: str) -> str:
         """Rewrite unqualified INSERT/UPDATE/DELETE to use the trace schema prefix."""

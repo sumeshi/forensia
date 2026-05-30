@@ -9,17 +9,17 @@
 
 <SCHEMA_CONSTRAINTS>
 - IMPORTANT: prefetch_executions has NO computer column — do NOT filter by host there.
-- IMPORTANT: user_name, target_user, subject_user columns may be NULL. When NULL, you MUST use json_extract(raw_json, '$.TargetUserName') or json_extract(raw_json, '$.SubjectUserName') or json_extract(raw_json, '$.TargetDomainName') as fallback.
+- IMPORTANT: user_name, target_user, subject_user columns may be NULL. When NULL, you MUST use json_extract_string(raw_json, '$.TargetUserName') or json_extract_string(raw_json, '$.SubjectUserName') or json_extract_string(raw_json, '$.TargetDomainName') as fallback.
 - IMPORTANT: Do NOT use datetime('now') — it refers to current system time, not the case time period. Use literal timestamps from the case time range instead.
 </SCHEMA_CONSTRAINTS>
 
 Common NULL fallback patterns:
-- user_name NULL → json_extract(raw_json, '$.TargetUserName') or '$.SubjectUserName'
-- src_ip NULL → json_extract(raw_json, '$.IpAddress')
-- logon_type NULL → CAST(json_extract(raw_json, '$.LogonType') AS INTEGER)
-- service_name NULL → json_extract(raw_json, '$.ServiceName')
-- process_name NULL → json_extract(raw_json, '$.ProcessName')
-- command_line NULL → json_extract(raw_json, '$.CommandLine')
+- user_name NULL → json_extract_string(raw_json, '$.TargetUserName') or '$.SubjectUserName'
+- src_ip NULL → json_extract_string(raw_json, '$.IpAddress')
+- logon_type NULL → CAST(json_extract_string(raw_json, '$.LogonType') AS INTEGER)
+- service_name NULL → json_extract_string(raw_json, '$.ServiceName')
+- process_name NULL → json_extract_string(raw_json, '$.ProcessName')
+- command_line NULL → json_extract_string(raw_json, '$.CommandLine')
 
 <!-- AUTO-FROM: event_ids.yaml -->
 - Event 4720 (Account created) | query columns: subject_user, target_user | may claim: new account was created; account creation was observed | DO NOT claim: attacker-created; backdoor; privilege escalation

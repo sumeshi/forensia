@@ -10,7 +10,7 @@
 
 <SCHEMA_CONSTRAINTS>
 - prefetch_executions has NO computer column — do NOT use computer in WHERE clause.
-- user_name/target_user/subject_user may be NULL — use json_extract(raw_json, '$.TargetUserName') as fallback.
+- user_name/target_user/subject_user may be NULL — use json_extract_string(raw_json, '$.TargetUserName') as fallback.
 - Do NOT use datetime('now') — case time may be from a different year.
 </SCHEMA_CONSTRAINTS>
 

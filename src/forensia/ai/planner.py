@@ -218,6 +218,9 @@ def _compute_uncovered_keypoints(
         haystack_parts.append((hyp.description or "").lower())
         for rid in getattr(hyp, "source_rule_ids", None) or []:
             haystack_parts.append(str(rid).lower())
+    for h in active:
+        if getattr(h, "target_keypoint_id", None):
+            haystack_parts.append(str(h.target_keypoint_id).lower())
     haystack = " ".join(haystack_parts)
 
     uncovered: list[dict[str, str]] = []

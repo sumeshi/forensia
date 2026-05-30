@@ -28,7 +28,7 @@ column_descriptions:
   process_name: "Executable of the actor process (4688)."
   command_line: "Full command line (4688)."
   service_name: "Service display name (7045)."
-  raw_json: "Raw event payload as JSON string. Use json_extract(raw_json, '$.Field') when a column is NULL."
+  raw_json: "Raw event payload as JSON string. Use json_extract_string(raw_json, '$.Field') when a column is NULL."
 columns:
   - evidence_id
   - source_file
@@ -86,13 +86,13 @@ notes:
   interactive_logon: "To identify the last logged-on user, query event_id = 4624 AND logon_type IN ('2','10'). Treat 4728/4732 and similar group-management events as account administration, NOT logon evidence."
   entity_normalization: "Treat account names ending with '$' as machine_account, not as user or source_ip. Keep source_ip, source_host, and source_account separate; never store a machine account in source_ip. Label newly_created_user only when account-creation evidence exists (for example 4720/4722) and the user was not already present earlier in the evidence window. Existing observed users should stay observed_user, suspicious_user, actor_candidate, or victim_user unless direct creation evidence says otherwise."
 json_field_extractors:
-  SubjectUserName: "json_extract(raw_json, '$.SubjectUserName')"
-  TargetUserName: "json_extract(raw_json, '$.TargetUserName')"
-  TargetDomainName: "json_extract(raw_json, '$.TargetDomainName')"
-  IpAddress: "json_extract(raw_json, '$.IpAddress')"
-  IpPort: "json_extract(raw_json, '$.IpPort')"
-  LogonType: "json_extract(raw_json, '$.LogonType')"
-  ProcessName: "json_extract(raw_json, '$.ProcessName')"
-  CommandLine: "json_extract(raw_json, '$.CommandLine')"
-  ServiceName: "json_extract(raw_json, '$.ServiceName')"
-  ServiceFileName: "json_extract(raw_json, '$.ServiceFileName')"
+  SubjectUserName: "json_extract_string(raw_json, '$.SubjectUserName')"
+  TargetUserName: "json_extract_string(raw_json, '$.TargetUserName')"
+  TargetDomainName: "json_extract_string(raw_json, '$.TargetDomainName')"
+  IpAddress: "json_extract_string(raw_json, '$.IpAddress')"
+  IpPort: "json_extract_string(raw_json, '$.IpPort')"
+  LogonType: "json_extract_string(raw_json, '$.LogonType')"
+  ProcessName: "json_extract_string(raw_json, '$.ProcessName')"
+  CommandLine: "json_extract_string(raw_json, '$.CommandLine')"
+  ServiceName: "json_extract_string(raw_json, '$.ServiceName')"
+  ServiceFileName: "json_extract_string(raw_json, '$.ServiceFileName')"

@@ -211,9 +211,7 @@ class PersistenceTests(unittest.TestCase):
 
             self.assertEqual("1_overview", request["section_key"])
             result_names = {item["keypoint"] for item in resolved}
-            self.assertIn("top_keypoints", result_names)
-            self.assertIn("overview_hosts", result_names)
-            self.assertIn("overview_event_range", result_names)
+            self.assertIn("overview_top_findings", result_names)
 
     def test_prepare_section_request_infers_ioc_keypoints_from_section_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -221,24 +219,19 @@ class PersistenceTests(unittest.TestCase):
             template_path = case.path / "report_template_custom" / "3_technical.md"
             template_path.parent.mkdir(parents=True, exist_ok=True)
             template_path.write_text(
-                (
-                    "# Technical\n"
-                ),
+                "# Technical\n",
                 encoding="utf-8",
             )
             with CaseDB(case) as db:
                 db.execute(
                     """
-                    INSERT INTO mft_entries (
-                        evidence_id, source_file, record_number, file_path, file_name, extension,
-                        is_directory, is_deleted, size, si_created, si_modified, si_accessed,
-                        si_mft_modified, fn_created, fn_modified, fn_accessed, fn_mft_modified,
-                        raw_json, tags, severity
+                    INSERT INTO evtx_events (
+                        evidence_id, source_file, channel, event_id, record_id, timestamp, computer,
+                        target_user, process_name, command_line, src_ip, severity
                     ) VALUES
-                        ('ev-pf', 'mft.csv', 1, 'Users/informant/AppData/Local/Temp/CHROME.EXE-D999B1BA.pf', 'CHROME.EXE-D999B1BA.pf', 'pf', false, false, 1, NULL, '2026-05-16 00:00:00', NULL, NULL, NULL, NULL, NULL, NULL, '{}', '[]', 'info'),
-                        ('ev-drive', 'mft.csv', 2, 'Users/informant/Downloads/googledrivesync.exe', 'googledrivesync.exe', 'exe', false, false, 1, NULL, '2026-05-16 00:01:00', NULL, NULL, NULL, NULL, NULL, NULL, '{}', '[]', 'info'),
-                        ('ev-ost', 'mft.csv', 3, 'Users/informant/AppData/Local/Microsoft/Outlook/iaman.informant@nist.gov.ost', 'iaman.informant@nist.gov.ost', 'ost', false, false, 1, '2026-05-16 00:02:00', '2026-05-16 00:02:00', NULL, NULL, NULL, NULL, NULL, NULL, '{}', '[]', 'info'),
-                        ('ev-lnk', 'mft.csv', 4, 'Users/informant/AppData/Roaming/Microsoft/Windows/Recent/[secret_project]_proposal.lnk', '[secret_project]_proposal.lnk', 'lnk', false, false, 1, '2026-05-16 00:03:00', '2026-05-16 00:03:00', NULL, NULL, '2026-05-16 00:03:00', NULL, NULL, NULL, '{}', '[]', 'info')
+                        ('ev-1', 'a.evtx', 'Security', 4688, 1, now(), 'host1', 'user1', 'powershell.exe', '-enc AQBkAC...', NULL, 'high'),
+                        ('ev-2', 'a.evtx', 'Security', 4624, 2, now(), 'host1', 'user1', NULL, NULL, '10.0.0.1', 'info'),
+                        ('ev-3', 'a.evtx', 'Security', 4624, 3, now(), 'host1', 'user2', NULL, NULL, '10.0.0.2', 'info')
                     """
                 )
                 prepare_section_request(case, db, template_path, {}, report_brief={})
@@ -246,15 +239,11 @@ class PersistenceTests(unittest.TestCase):
                 resolved = _resolve_evidence_results(case, db, keypoints=default_keypoints)
 
             results = {item["keypoint"]: item for item in resolved}
-            self.assertEqual("CHROME.EXE-D999B1BA.pf", results["mft_prefetch_filenames"]["sample_rows"][0]["file_name"])
-            self.assertTrue(
-                any(
-                    "googledrivesync.exe" in row["file_path"]
-                    for row in results["ioc_user_data_files"]["sample_rows"]
-                )
-            )
-            self.assertTrue(results["ioc_email_ost_files"]["sample_rows"][0]["file_path"].endswith(".ost"))
-            self.assertIn("secret_project", results["mft_recent_folder_lnk"]["sample_rows"][0]["file_name"])
+            self.assertIn("host_execution_activity", results)
+            self.assertIn("account_logon_patterns", results)
+            self.assertIn("ioc_source_ips", results)
+            self.assertEqual("powershell.exe", results["host_execution_activity"]["sample_rows"][0]["process_name"])
+            self.assertGreater(results["ioc_source_ips"]["row_count"], 0)
 
     def test_prepare_section_request_extracts_block_hints(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

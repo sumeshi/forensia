@@ -11,6 +11,7 @@ from typing import Any
 import asyncio
 
 from forensia.ai.checker import summarize_query_result
+from forensia.report.writer import _default_keypoints_for_section
 
 
 _CONFIDENCE_KEYWORD_MAP = {
@@ -788,7 +789,7 @@ def _execute_sql(db: CaseDB, sql: str) -> tuple[str, dict[str, Any]]:
     return source_query, result
 
 
-def _coerce_plan_action(plan: dict[str, Any], *, section_key: str, iteration: int) -> SectionPlanAction:
+def _coerce_plan_action(plan: dict[str, Any], *, section_key: str, iteration: int, db: CaseDB | None = None) -> SectionPlanAction | None:
     """Parse and normalize the LLM plan output into a typed SectionPlanAction.
 
     Handles default action/keypoint assignment, template vs SQL vs keypoint routing,
@@ -797,7 +798,24 @@ def _coerce_plan_action(plan: dict[str, Any], *, section_key: str, iteration: in
     action = str(plan.get("action") or "").strip().lower() or "keypoint"
     purpose = str(plan.get("purpose") or "").strip() or f"report block {section_key} iteration {iteration}"
     enough_to_write = bool(plan.get("enough_to_write"))
-    keypoint = str(plan.get("keypoint") or "").strip() or None
+    keypoint = (
+        str(plan.get("keypoint") or "").strip()
+        or str(plan.get("keypoint_id") or "").strip()
+        or str(plan.get("keypoint_name") or "").strip()
+        or str(plan.get("name") or "").strip()
+        or None
+    )
+    if action == "keypoint" and not keypoint:
+        if db is not None:
+            _store_section_run(
+                db,
+                section_key=section_key,
+                block_heading="",
+                iteration=iteration,
+                phase="plan_error",
+                payload={"error": "planner returned action=keypoint without keypoint name"},
+            )
+        return None
     planned_query: PlannedQuery | None = None
     template_id = str(plan.get("template_id") or "").strip() or None
     params = plan.get("params") if isinstance(plan.get("params"), dict) else {}
@@ -907,6 +925,7 @@ class _BlockContext:
     max_queries: int
     findings_snapshot: list[dict[str, Any]]
     prompt_report_brief: dict[str, Any]
+    evidence_keypoints: list[str] | None = None
     benchmark_id: str = ""
 
 
@@ -967,6 +986,7 @@ def _prepare_block_context(
         max_queries=max_queries,
         findings_snapshot=findings_snapshot,
         prompt_report_brief=prompt_report_brief,
+        evidence_keypoints=evidence_keypoints,
         benchmark_id=benchmark_id,
     )
 
@@ -994,6 +1014,7 @@ def _run_block_plan(
         reusable_facts=ctx.reusable_facts,
         reusable_evidence=ctx.reusable_evidence,
         memory_context_md=ctx.memory_context_md,
+        evidence_keypoints=ctx.evidence_keypoints,
     )
     try:
         plan = request_llm_json(
@@ -1020,7 +1041,7 @@ def _run_block_plan(
         phase="plan",
         payload=plan,
     )
-    return _coerce_plan_action(plan, section_key=ctx.section_key, iteration=iteration)
+    return _coerce_plan_action(plan, section_key=ctx.section_key, iteration=iteration, db=ctx.db)
 
 
 def _execute_block_plan(
@@ -1029,7 +1050,20 @@ def _execute_block_plan(
     iteration: int,
 ) -> tuple[str, dict[str, Any]] | None:
     if plan_action.action == "keypoint":
-        keypoint = plan_action.keypoint or ctx.block_heading
+        keypoint = plan_action.keypoint
+        if not keypoint:
+            if ctx.benchmark_mode:
+                _store_section_run(ctx.db, section_key=ctx.section_key, block_heading=ctx.block_heading,
+                                   iteration=iteration, phase="plan_error",
+                                   payload={"error": "benchmark_mode: no keypoint name and default not allowed"})
+                return None
+            defaults = _default_keypoints_for_section(ctx.section_key)
+            keypoint = defaults[0] if defaults else None
+        if not keypoint:
+            _store_section_run(ctx.db, section_key=ctx.section_key, block_heading=ctx.block_heading,
+                               iteration=iteration, phase="plan_error",
+                               payload={"error": "planner returned action=keypoint without keypoint name and no default available"})
+            return None
         source_query, result = _execute_keypoint(ctx.case, ctx.db, keypoint)
     elif plan_action.action in {"template", "sql"}:
         planned_query = plan_action.planned_query
@@ -1199,6 +1233,8 @@ def _format_benchmark_answer(
     status: str,
     case: Case,
     benchmark_id: str = "",
+    queries_run: list[str] | None = None,
+    evidence_rows: list[dict] | None = None,
 ) -> dict:
     """Pure code. Format benchmark answer from picked rows + expected_answer_shape."""
     from forensia.report.writer import _benchmark_block_id, _normalize_benchmark_answer, _persist_benchmark_answer, _render_benchmark_answer_markdown
@@ -1215,16 +1251,38 @@ def _format_benchmark_answer(
             answer_data.append(entry)
 
     resolved_id = benchmark_id.strip() if benchmark_id else _benchmark_block_id(block_heading)
+    # Validate via row indices
+    picked_row_indices = classification.get("picked_row_indices") or []
+    if isinstance(picked_row_indices, list):
+        valid_indices = [i for i in picked_row_indices if isinstance(i, (int, float)) and 0 <= int(i) < len(evidence_rows)]
+    else:
+        valid_indices = []
+    validated_rows = [evidence_rows[int(i)] for i in valid_indices] if evidence_rows else []
+    if not validated_rows and picked_row_indices:
+        status = "wrong_query"
+        classification["rationale"] = "no valid evidence rows (picked_row_indices out of range or empty)"
     normalized_answer = {
         "id": resolved_id,
         "section": section_key,
         "status": status,
         "rationale": classification.get("rationale", ""),
-        "answer": answer_data or classification.get("picked_row_ids", []),
+        "answer": answer_data or validated_rows,
     }
+
+    normalized_answer["queries_run"] = queries_run or []
 
     _persist_benchmark_answer(case, normalized_answer)
     return _render_benchmark_answer_markdown(normalized_answer, block_heading)
+
+
+def _flatten_sample_rows(collected_results: list[dict]) -> list[dict]:
+    flat: list[dict] = []
+    for r in collected_results:
+        source = r.get("keypoint") or r.get("source_kind") or ""
+        for row in r.get("sample_rows") or []:
+            if isinstance(row, dict):
+                flat.append({**row, "_source_keypoint": source})
+    return flat
 
 
 def _write_block_body(
@@ -1270,21 +1328,37 @@ def _write_block_body(
 
     if ctx.benchmark_mode:
         expected_shape = _resolve_benchmark_expected_shape(ctx.block_heading)
-        classify_messages = build_benchmark_classify_messages(
-            question=ctx.template_body or ctx.block_heading,
-            block_heading=ctx.block_heading,
-            evidence_rows=prompt_rows or [],
-            expected_shape=expected_shape,
-            time_range=ctx.case.time_range,
-        )
-        classification = request_llm_json(
-            messages=classify_messages,
-            model=ctx.model,
-            base_url=ctx.base_url,
-            audit_callback=ctx.audit,
-        )
-        picked_row_ids = [str(item) for item in (classification.get("picked_row_ids") or [])]
-        picked_rows = [r for r in (raw_rows or []) if str(r.get("evidence_id") or r.get("id") or "") in picked_row_ids]
+
+        # BUG-030: Skip classify when rows already match expected_shape
+        if (raw_rows
+            and expected_shape
+            and all(field in raw_rows[0] for field in expected_shape.get("fields") or [])):
+            # rows already match the expected shape — skip classify, use them directly
+            picked_rows = raw_rows
+            classification = {"status": "answered", "picked_row_indices": [], "rationale": "rows match expected_shape"}
+        else:
+            classify_messages = build_benchmark_classify_messages(
+                question=ctx.template_body or ctx.block_heading,
+                block_heading=ctx.block_heading,
+                evidence_rows=prompt_rows or [],
+                expected_shape=expected_shape,
+                time_range=ctx.case.time_range,
+            )
+            classification = request_llm_json(
+                messages=classify_messages,
+                model=ctx.model,
+                base_url=ctx.base_url,
+                audit_callback=ctx.audit,
+            )
+            # Handle picked_row_indices (int array) instead of picked_row_ids
+            picked_row_indices = classification.get("picked_row_indices") or []
+            if isinstance(picked_row_indices, list):
+                valid_indices = [i for i in picked_row_indices if isinstance(i, int) and 0 <= i < len(raw_rows or [])]
+            else:
+                valid_indices = []
+            picked_rows = [raw_rows[i] for i in valid_indices] if raw_rows else []
+
+        queries_run = [str(r.get("source_ref") or r.get("source_query") or "") for r in collected_results if r.get("source_ref") or r.get("source_query")]
         body = _format_benchmark_answer(
             classification=classification,
             picked_rows=picked_rows,
@@ -1294,14 +1368,25 @@ def _write_block_body(
             status=status_inner,
             case=ctx.case,
             benchmark_id=ctx.benchmark_id,
+            queries_run=queries_run,
+            evidence_rows=prompt_rows or [],
         )
-        messages = classify_messages
+        messages = classify_messages if not (raw_rows and expected_shape and all(field in raw_rows[0] for field in expected_shape.get("fields") or [])) else []
     else:
+        flat_evidence = _flatten_sample_rows(collected_results)
+        prior_section_keypoints = list(
+            {
+                str(r.get("keypoint") or r.get("source_kind") or "")
+                for r in collected_results
+                if r.get("keypoint") or r.get("source_kind")
+            }
+        )
         outline_messages = build_section_outline_messages(
             template_body=ctx.template_body,
-            relevant_evidence=collected_results,
+            relevant_evidence=flat_evidence,
             time_range=ctx.case.time_range,
             section_meta={"section": ctx.section_key, "title": ctx.title},
+            prior_section_keypoints=prior_section_keypoints,
         )
         outline = request_llm_json(
             messages=outline_messages,
@@ -1315,7 +1400,7 @@ def _write_block_body(
         narrate_messages = build_paragraph_narrate_messages(
             heading=ctx.block_heading,
             key_points=all_key_points,
-            evidence_rows=prompt_rows or collected_results,
+            evidence_rows=flat_evidence[:10],
             template_body=ctx.template_body,
         )
         body = _prepend_status_badge(

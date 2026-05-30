@@ -703,7 +703,7 @@ hypothesis=hypothesis,
         self.assertIn("source_verdict guidance", system)
         self.assertIn("avoid 'confirmed'", system)
 
-    def test_benchmark_classify_messages_request_picked_row_ids_only(self) -> None:
+    def test_benchmark_classify_messages_request_picked_row_indices_only(self) -> None:
         messages = build_benchmark_classify_messages(
             question="## 8. メールデータファイル",
             block_heading="8. メールデータファイル",
@@ -713,7 +713,7 @@ hypothesis=hypothesis,
         system = messages[0]["content"]
         user = messages[1]["content"]
         self.assertIn("benchmark_classifier", system)
-        self.assertIn("picked_row_ids", system)
+        self.assertIn("picked_row_indices", system)
         self.assertNotIn('"answer"', system)
         self.assertIn("ev-1", user)
         self.assertIn("application_name", user)

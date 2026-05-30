@@ -65,6 +65,11 @@ def load_rules_from_dir(directory: str | Path, profile_path: str | Path | None =
 
     rules: list[Rule] = []
     for path in sorted(directory.rglob("*.yaml")):
+        # Skip _schema/ entirely. It holds shared schema cards / DFIR knowledge
+        # (event_ids.yaml, app_catalog.yaml, question_routing.yaml, etc.) that
+        # are NOT rules and would fail Rule.model_validate.
+        if "_schema" in path.parts:
+            continue
         rel_path = str(path.relative_to(directory))
         rel_parent = str(path.parent.relative_to(directory))
         if allowed_paths is not None:

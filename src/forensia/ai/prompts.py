@@ -550,36 +550,36 @@ def _summarize_context_sections(context_sections: dict[str, str]) -> dict[str, s
 
 _SQL_COOKBOOK = """
 <SQL_COOKBOOK>
-Copy and adapt these templates rather than inventing SQL from scratch.
+These are reference SQL snippets to copy and adapt. They are NOT templates — do not put their headings into the `template_id` field. To use a real template, pick a `template_id` value from `template_catalog`.
 
-# 1. Enumerate occurrences of one or more event IDs
+-- Enumerate occurrences of one or more event IDs --
 SELECT event_id, timestamp, computer, user_name, target_user, raw_json
 FROM evtx_events
 WHERE event_id IN (4624, 4625)
 ORDER BY timestamp
 LIMIT 200;
 
-# 2. Filter by time window
+-- Filter by time window --
 SELECT event_id, timestamp, computer
 FROM evtx_events
 WHERE event_id = 7045
   AND timestamp BETWEEN '2015-03-22 00:00:00' AND '2015-03-25 23:59:59'
 ORDER BY timestamp;
 
-# 3. Per-user logon summary
+-- Per-user logon summary --
 SELECT user_name, logon_type, COUNT(*) AS n, MIN(timestamp) AS first, MAX(timestamp) AS last
 FROM evtx_events
 WHERE event_id = 4624
 GROUP BY 1, 2
 ORDER BY n DESC;
 
-# 4. Fall back to raw_json when a column is NULL
-SELECT timestamp, COALESCE(user_name, json_extract(raw_json, '$.TargetUserName')) AS user
+-- Fall back to raw_json when a column is NULL (use json_extract_string for VARCHAR-typed cols) --
+SELECT timestamp, COALESCE(user_name, json_extract_string(raw_json, '$.TargetUserName')) AS user
 FROM evtx_events
 WHERE event_id = 4720
 ORDER BY timestamp;
 
-# 5. Find file activity by path pattern (MFT)
+-- Find file activity by path pattern (MFT) --
 SELECT file_path, file_name, si_modified, is_deleted
 FROM mft_entries
 WHERE LOWER(file_path) LIKE '%/desktop/%'
@@ -587,7 +587,7 @@ WHERE LOWER(file_path) LIKE '%/desktop/%'
 ORDER BY si_modified DESC
 LIMIT 100;
 
-# 6. Recent application executions (Prefetch)
+-- Recent application executions (Prefetch) --
 SELECT executable_name, exec_count, last_exec_time
 FROM prefetch_executions
 WHERE LOWER(executable_name) IN ('eraser.exe', 'ccleaner.exe', 'ccsetup.exe', 'bleachbit.exe')
@@ -800,18 +800,23 @@ def build_sql_composer_messages(
         f"{_dfir_playbook('hypothesis_plan')}\n"
         "<TASK>You are a sql_composer. Write a DuckDB SQL query that satisfies the given intent. Output template_id or raw SQL.</TASK>\n"
         "<INPUT_SCHEMA>\n"
-        f"intent: {json.dumps(intent, ensure_ascii=False)}\n"
+        f"intent: {json.dumps(intent, ensure_ascii=False, default=str)}\n"
         f"table_schema: {table_schema_card}\n"
-        f"template_catalog: {json.dumps(template_catalog[:10], ensure_ascii=False)}\n"
+        f"template_catalog: {json.dumps(template_catalog[:10], ensure_ascii=False, default=str)}\n"
         "</INPUT_SCHEMA>\n"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
-        '  "template_id": "string | null — if a template matches",\n'
-        '  "sql": "string | null — raw SQL if no template matches",\n'
+        '  "template_id": "null OR an exact template_id string from template_catalog above (snake_case like q_failed_logon_by_ip_window). NEVER invent template_ids and NEVER use SQL_COOKBOOK headings as template_id.",\n'
+        '  "sql": "string | null — raw SELECT if no template_id matches. Use SQL_COOKBOOK snippets as reference style.",\n'
         '  "params": {"key": "value"},\n'
         '  "purpose": "string — why this query answers the hypothesis"\n'
         "}\n"
-        "</OUTPUT_SCHEMA>"
+        "</OUTPUT_SCHEMA>\n"
+        "<RULES>\n"
+        "Exactly ONE of template_id or sql MUST be non-null. The other MUST be null.\n"
+        "template_id MUST be an exact match to a template_catalog entry (use null otherwise).\n"
+        "When raw SQL is used: ensure all COALESCE arguments have the same data type. Use json_extract_string (returns VARCHAR) when COALESCE-ing with a VARCHAR column, never json_extract (returns JSON).\n"
+        "</RULES>"
     )
     user = json.dumps({"intent": intent}, ensure_ascii=False, default=str)
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -844,7 +849,7 @@ def build_verdict_review_messages(
     user = (
         f"hypothesis: {hypothesis.description if hasattr(hypothesis, 'description') else hypothesis}\n"
         f"query: {planned_query.sql if hasattr(planned_query, 'sql') else planned_query}\n"
-        f"result_summary: {json.dumps(result_summary, ensure_ascii=False)}\n"
+        f"result_summary: {json.dumps(result_summary, ensure_ascii=False, default=str)}\n"
         f"{strictness_note}"
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -1055,7 +1060,7 @@ def build_benchmark_classify_messages(
 ) -> list[dict[str, str]]:
     """role: benchmark_classifier.
     Goal: decide answer status and pick which evidence_rows answer the question.
-    Output: {status, picked_row_ids, rationale}
+    Output: {status, picked_row_indices, rationale}
     """
     system = (
         "<TASK>You are a benchmark_classifier. Decide the answer status and pick which evidence rows answer the question. "
@@ -1063,16 +1068,19 @@ def build_benchmark_classify_messages(
         "<OUTPUT_SCHEMA>\n"
         "{\n"
         '  "status": "answered | partial | not_found | not_searched | wrong_query",\n'
-        '  "picked_row_ids": ["list of evidence row identifiers"],\n'
+        '  "picked_row_indices": [0-based row indices into evidence_rows (e.g. [0, 2, 5]). Each value MUST be an integer between 0 and len(evidence_rows)-1],\n'
         '  "rationale": "string"\n'
         "}\n"
-        "</OUTPUT_SCHEMA>"
+        "</OUTPUT_SCHEMA>\n"
+        "<RULES>\n"
+        "Output picked_row_indices as integer array indices (0-based). Never invent identifiers or use placeholders like 'evidence_rows[0]'.\n"
+        "</RULES>"
     )
     user = (
         f"question: {question}\n"
         f"block_heading: {block_heading}\n"
         f"evidence_rows: {json.dumps(evidence_rows[:20], default=str, ensure_ascii=False)}\n"
-        f"expected_shape: {json.dumps(expected_shape or {}, ensure_ascii=False)}\n"
+        f"expected_shape: {json.dumps(expected_shape or {}, ensure_ascii=False, default=str)}\n"
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -1100,6 +1108,8 @@ def build_section_agent_plan_messages(
     reusable_evidence: list[dict[str, Any]],
     memory_context_md: str = "",
     time_range: dict[str, str] | None = None,
+    evidence_keypoints: list[str] | None = None,
+    prior_section_keypoints: list[str] | None = None,
 ) -> list[dict[str, str]]:
     """Build messages for the section agent's plan phase — decide next evidence action.
 
@@ -1120,6 +1130,12 @@ Input: block_heading='Service Creation', template_body='## Service Creation\\nFi
 Output: {"action": "template", "template_id": "service-creation", "params": {"computer": "HOST-A"}}
 </EXAMPLE>
 '''
+    EXAMPLE_SECTION_PLAN_KEYPOINT = '''
+<EXAMPLE verdict="section_plan_keypoint">
+Input: block_heading='端末識別情報' with template hint evidence_keypoints=[benchmark_hosts]. The keypoint_catalog includes {"name": "benchmark_hosts", "description": "Distinct hosts observed in evidence"}.
+Output: {"action": "keypoint", "keypoint": "benchmark_hosts", "purpose": "List hosts observed in evidence"}
+</EXAMPLE>
+'''
 
     schema_notes = _load_schema_notes()
     schema_notes_block = f"<SCHEMA_NOTES>\n{schema_notes}\n</SCHEMA_NOTES>\n" if schema_notes else ""
@@ -1136,6 +1152,7 @@ Output: {"action": "template", "template_id": "service-creation", "params": {"co
         "<OUTPUT_SCHEMA>\n"
         "{\n"
         '  "action": "sql|template|keypoint|facts|write",\n'
+        '  "keypoint": "exact keypoint name when action=keypoint, else null",\n'
         '  "sql": "SELECT ...", '
         '  "template_id": "template-name", '
         '  "params": {"key": "value"},\n'
@@ -1149,10 +1166,12 @@ Output: {"action": "template", "template_id": "service-creation", "params": {"co
         "error_recovery: If the prior runs show two consecutive zero-row OR query_error results, the next action must be keypoint (not sql/template). "
         "Immediately after a query_error, do NOT retry SQL — switch to keypoint or template action.\n"
         "stop_early: Set action=write when enough evidence exists.\n"
+        'If template_evidence_keypoints is non-empty and action=keypoint is appropriate, prefer those names verbatim.\n'
+        "Avoid re-using keypoints already used by other sections (listed in prior_section_keypoints_in_this_report). Choose different evidence for this section.\n"
         "</RULES>\n"
         f"{build_investigation_framework()}"
         f"{schema_guidance}"
-        f"{EXAMPLE_SECTION_PLAN}{EXAMPLE_SECTION_PLAN_TEMPLATE}"
+        f"{EXAMPLE_SECTION_PLAN}{EXAMPLE_SECTION_PLAN_TEMPLATE}{EXAMPLE_SECTION_PLAN_KEYPOINT}"
         "Output JSON only. "
         f"{_lang_instruction()} "
     )
@@ -1170,6 +1189,8 @@ Output: {"action": "template", "template_id": "service-creation", "params": {"co
         f"reusable_section_evidence: {reusable_evidence[:20]}\n\n"
         f"keypoint_catalog: {keypoint_catalog}\n\n"
         f"query_template_catalog: {query_template_catalog}\n\n"
+        f"template_evidence_keypoints: {evidence_keypoints or []}\n\n"
+        f"prior_section_keypoints_in_this_report: {prior_section_keypoints or []}\n\n"
         f"prior_runs: {_filter_prior_runs_by_heading(prior_runs, block_heading)}\n"
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -1227,6 +1248,7 @@ Output: {"verdict": "block_contradicted", "status": "not_found", "rationale": "N
         "block_contradicted: Evidence contradicts the template claim; explain contradiction.\n"
         "status rules: answered when evidence supports the block, partial when some evidence exists but not enough, not_found only after an appropriate search has been run and returned zero rows repeatedly, not_searched when the matching query/keypoint was never executed, wrong_query when the search hit the wrong artifact family, insufficient_evidence for other unresolved cases.\n"
         "Never use not_found unless the relevant search has actually run.\n"
+        "block_supported requires at least 2 DIFFERENT KINDS of evidence (different event_id families, different keypoint sources). If all evidence is the same type (e.g. all 4648 findings), verdict should be 'partial' or 'needs_more', not 'block_supported'.\n"
         "</RULES>\n"
     )
     if contradicted_history:
@@ -1254,31 +1276,42 @@ def build_section_outline_messages(
     relevant_evidence: list[dict],
     time_range: dict[str, str] | None = None,
     section_meta: dict | None = None,
+    prior_section_keypoints: list[str] | None = None,
 ) -> list[dict[str, str]]:
     """role: section_outliner.
     Goal: assign each evidence item to ONE paragraph; produce outline JSON.
     """
     system = (
-        f"{_dfir_playbook('report_section')}\n"
-        f"{_time_range_guidance(time_range)}"
-        "<TASK>You are a section_outliner. Assign evidence items to template paragraphs. Do NOT write narrative text.</TASK>\n"
-        "<INPUT_SCHEMA>\n"
-        f"template_body: {template_body}\n"
-        f"time_range: {time_range}\n"
-        "</INPUT_SCHEMA>\n"
+        "<TASK>You are a section_outliner. Decide what concrete claims this section should make based on the supplied evidence rows, and assign supporting evidence IDs to each claim. Do NOT write narrative prose — only output the outline JSON.</TASK>\n"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
-        '  "outline": [{"heading": "str", "key_points": ["str"], "evidence_ids": ["str"]}]\n'
+        '  "outline": [{\n'
+        '    "heading": "exact heading from template (verbatim)",\n'
+        '    "key_points": ["concrete claims, each grounded in 1-3 specific evidence rows. Each claim should name an actor/action/target/timestamp where possible. NO meta-statements like \'Summary of findings\' or \'List of activity\'"],\n'
+        '    "evidence_ids": ["actual evidence_id strings copied from the evidence_rows above (e.g. evtx-security-000000000122). NOT keypoint names. NOT finding_ids."]\n'
+        "  }]\n"
         "}\n"
-        "</OUTPUT_SCHEMA>"
+        "</OUTPUT_SCHEMA>\n"
+        "<RULES>\n"
+        "When 5+ evidence rows share the same pattern (same event_id, same finding_id prefix), summarize them as ONE key_point referencing 1-2 representative evidence_ids, not all of them.\n"
+        "Each key_point MUST be a falsifiable claim, not a topic label.\n"
+        "If the evidence is insufficient to make a substantive claim, return an empty outline list.\n"
+        "If prior_section_keypoints is non-empty, avoid re-using those same keypoints for this section — choose different evidence.\n"
+        "</RULES>\n"
+        "<EXAMPLE>\n"
+        'Input evidence rows: [{"evidence_id": "evtx-security-0001", "summary": "4648 logon WIN-D9->informant 2015-03-22 14:33:54"}, {"evidence_id": "evtx-security-0002", "summary": "4648 logon WIN-D9->informant 2015-03-22 14:34:28"}]\n'
+        'Output: {"outline": [{"heading": "Executive Summary", "key_points": ["Two explicit-credential logon attempts (4648) from WIN-D9RGPJQ68G8$ targeting informant were observed within 60 seconds on 2015-03-22"], "evidence_ids": ["evtx-security-0001"]}]}\n'
+        "</EXAMPLE>\n"
+        "Output JSON only. "
     )
     evidence_summary = "\n".join(
         f"- {e.get('evidence_id', '?')}: {e.get('summary', str(e)[:100])}"
         for e in (relevant_evidence or [])
     )
     user = (
-        f"section_meta: {json.dumps(section_meta, ensure_ascii=False)}\n"
+        f"section_meta: {json.dumps(section_meta, ensure_ascii=False, default=str)}\n"
         f"available_evidence:\n{evidence_summary or 'No evidence available.'}\n"
+        f"prior_section_keypoints: {prior_section_keypoints or []}\n"
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -1298,11 +1331,23 @@ def build_paragraph_narrate_messages(
         "<TASK>You are a section_narrator. Write one markdown paragraph for the given heading using the supplied evidence. "
         "Cite evidence_ids inline. Keep the paragraph factual and concise.</TASK>\n"
         f"Language: {language}\n"
-        "<OUTPUT_SCHEMA>Return a single markdown paragraph string.</OUTPUT_SCHEMA>"
+        "<OUTPUT_SCHEMA>Return a single markdown paragraph string.</OUTPUT_SCHEMA>\n"
+        "<RULES>\n"
+        "Citation count: cite AT MOST 2-3 representative evidence_ids per paragraph. If many similar findings exist (same event_id pattern), state the count and cite 1-2 examples.\n"
+        "Citation format: cite raw `evidence_id` strings only (e.g. evtx-security-000000000122). Do NOT cite `finding_id` (e.g. windows-security-4648-logon-explicit-creds-0001) — those are finding labels, not evidence references. If the input shows a finding_id without an evidence_id, OMIT the citation entirely instead of using the finding_id.\n"
+        "No KP-NNNN identifiers.\n"
+        "No meta-statements: write what was observed, not what was reviewed. Avoid 'investigation covered', 'scope included', 'comprehensive review of' style phrasing.\n"
+        "</RULES>\n"
+        "<EXAMPLE_GOOD>\n"
+        "Eight explicit-credential logon attempts (4648) targeting informant, admin11, and temporary were observed from INFORMANT-PC$ between 14:33 and 15:55 on 2015-03-22 (evtx-security-000000000122, evtx-security-000000000152). All attempts succeeded and produced no subsequent 4624 from the same src_ip, suggesting localhost credential injection rather than network-reused access.\n"
+        "</EXAMPLE_GOOD>\n"
+        "<EXAMPLE_BAD>\n"
+        "The investigation revealed multiple high-severity findings related to logon attempts using explicit credentials (windows-security-4648-logon-explicit-creds-0001, ..., 0011).\n"
+        "</EXAMPLE_BAD>"
     )
     user = (
         f"Heading: {heading}\n"
-        f"Key points: {json.dumps(key_points, ensure_ascii=False)}\n"
+        f"Key points: {json.dumps(key_points, ensure_ascii=False, default=str)}\n"
         f"Template body context: {template_body[:500]}\n"
         f"Evidence rows: {json.dumps(evidence_rows[:10], default=str, ensure_ascii=False)}\n"
     )
@@ -1319,17 +1364,27 @@ def build_gap_identifier_messages(
     Goal: identify which uncovered_keypoints lack active hypothesis coverage.
     """
     system = (
-        "<TASK>You are a gap_identifier. Identify which uncovered keypoints lack active hypothesis coverage.</TASK>\n"
+        "<TASK>You are a gap_identifier. From available_keypoints, pick the ones that lack active hypothesis coverage.</TASK>\n"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
-        '  "gap_areas": [{"keypoint_id": "str", "why_uncovered": "str", "required_entities": ["str"]}]\n'
+        '  "gap_areas": [{"keypoint_id": "EXACT name from available_keypoints", "why_uncovered": "str", "required_entities": ["snake_case column names"]}]\n'
         "}\n"
-        "</OUTPUT_SCHEMA>"
+        "</OUTPUT_SCHEMA>\n"
+        "<RULES>\n"
+        "keypoint_id MUST be exact substring match of an entry in available_keypoints. Inventing names will make the agent fail to resolve them.\n"
+        "required_entities MUST be snake_case DB column identifiers (e.g. src_ip, target_user, computer, logon_type). NEVER natural language phrases.\n"
+        "If active hypotheses already cover all available keypoints, return an empty gap_areas list.\n"
+        "</RULES>\n"
+        "<EXAMPLE>\n"
+        "Input observed_keypoints=[{name: \"overview_hosts\"}], uncovered_keypoints=[{name: \"account_bruteforce_clusters\"}], active_hypotheses=[].\n"
+        "Output: {\"gap_areas\": [{\"keypoint_id\": \"account_bruteforce_clusters\", \"why_uncovered\": \"no hypothesis targets 4625 clusters yet\", \"required_entities\": [\"src_ip\", \"target_user\"]}]}\n"
+        "</EXAMPLE>"
     )
     user = (
-        f"observed_keypoints: {json.dumps(observed_keypoints[:10], ensure_ascii=False)}\n"
-        f"uncovered_keypoints: {json.dumps(uncovered_keypoints[:10], ensure_ascii=False)}\n"
-        f"active_hypotheses: {json.dumps(active_hypotheses_slim, ensure_ascii=False)}\n"
+        f"available_keypoints: {json.dumps([{'name': kp.get('name'), 'description': kp.get('description', '')[:80]} for kp in (observed_keypoints + uncovered_keypoints)[:30]], ensure_ascii=False, default=str)}\n"
+        f"observed_keypoints: {json.dumps(observed_keypoints[:10], ensure_ascii=False, default=str)}\n"
+        f"uncovered_keypoints: {json.dumps(uncovered_keypoints[:10], ensure_ascii=False, default=str)}\n"
+        f"active_hypotheses: {json.dumps(active_hypotheses_slim, ensure_ascii=False, default=str)}\n"
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -1343,15 +1398,38 @@ def build_hypothesis_drafter_messages(
     Goal: draft ONE hypothesis targeting the given gap_area.
     """
     system = (
-        "<TASK>You are a hypothesis_drafter. Draft ONE hypothesis targeting the given gap_area.</TASK>\n"
+        "<TASK>You are a hypothesis_drafter. Draft ONE falsifiable hypothesis targeting the given gap_area.</TASK>\n"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
-        '  "hypothesis": {"description": "str", "required_entities": ["str"], "source_rule_ids": ["str"], "confirm_when": "str"}\n'
+        '  "hypothesis": {\n'
+        '    "description": "str (one investigative claim that can be confirmed or refuted by SQL evidence)",\n'
+        '    "required_entities": ["snake_case column names such as src_ip, target_user, computer, logon_type, process_name, file_path"],\n'
+        '    "source_rule_ids": ["rule_id from available_rules if any aligns, else empty list"],\n'
+        '    "confirm_when": {"co_observed_event_ids": [int, ...], "same_host": bool, "within_minutes": int},\n'
+        '    "refute_when": {"zero_rows": true}\n'
+        "  }\n"
         "}\n"
-        "</OUTPUT_SCHEMA>"
+        "</OUTPUT_SCHEMA>\n"
+        "<RULES>\n"
+        "confirm_when MUST be a JSON object (not a string). Use co_observed_event_ids as a list of integer Windows event IDs (e.g. [4624, 4625, 4768]).\n"
+        "required_entities MUST be column-like identifiers (snake_case), not natural language phrases. Example: src_ip, target_user, computer.\n"
+        "Output JSON only.\n"
+        "</RULES>\n"
+        "<EXAMPLE>\n"
+        'Input gap_area: {"keypoint_id": "account_bruteforce_clusters", "required_entities": ["src_ip", "target_user"]}\n'
+        'Output: {"hypothesis": {"description": "Repeated 4625 failures from a single src_ip targeting one or more users indicate brute-force attempts that may have been followed by a successful 4624 logon.", "required_entities": ["src_ip", "target_user", "computer"], "source_rule_ids": ["windows-security-4625-failed-logon"], "confirm_when": {"co_observed_event_ids": [4625, 4624], "same_host": true, "within_minutes": 30}, "refute_when": {"zero_rows": true}}}\n'
+        "</EXAMPLE>\n"
+        "<EXAMPLE_GOOD>\n"
+        'Input: gap_area={"keypoint_id": "host_execution_activity", "required_entities": ["computer", "process_name"]}\n'
+        'Output: {"hypothesis": {"description": "Unauthorized execution of LOLBAS binaries (powershell.exe, mshta.exe) on informant-PC indicates initial code execution.", "required_entities": ["computer", "process_name", "command_line"], "source_rule_ids": ["windows-security-4688-suspicious-tools"], "confirm_when": {"co_observed_event_ids": [4688, 4624], "same_host": true, "within_minutes": 5}, "refute_when": {"zero_rows": true}}}\n'
+        "</EXAMPLE_GOOD>\n"
+        "<EXAMPLE_BAD>\n"
+        'Output: {"hypothesis": {"description": "...", "required_entities": ["user_identity", "computer_name", "logon_type", "credential_usage"]}}\n'
+        "Reason: required_entities must be snake_case column-like names (target_user, computer, logon_type), not natural language. NEVER use natural language for required_entities.\n"
+        "</EXAMPLE_BAD>\n"
     )
     user = (
-        f"gap_area: {json.dumps(gap_area, ensure_ascii=False)}\n"
-        f"available_rules: {json.dumps(available_rules[:5], ensure_ascii=False)}\n"
+        f"gap_area: {json.dumps(gap_area, ensure_ascii=False, default=str)}\n"
+        f"available_rules: {json.dumps(available_rules[:5], ensure_ascii=False, default=str)}\n"
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]

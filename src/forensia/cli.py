@@ -516,10 +516,10 @@ def investigate(
         case = _open_case_or_die(case_dir)
 
     if rerun:
-        _status("Resetting case tables for rerun")
+        _status("Resetting case tables for rerun (preserving raw/ for re-normalize)")
         with CaseDB(case) as db:
             _reset_case_tables(db)
-        case.clear_runtime_outputs(preserve_memory=True, preserve_ai_logs=True, drop_database=False)
+        case.clear_runtime_outputs(preserve_memory=True, preserve_ai_logs=True, drop_database=False, preserve_raw=True)
         case = Case.init(case_dir)
         clear_api_snapshots(case)
         _status(f"Re-initialized case at {case.path}")
@@ -534,11 +534,22 @@ def investigate(
         tasks = CaseTasks.for_case(case)
         template_root = _resolve_template_dir(case, template_dir) if (llm_base_url and model) else None
 
+        # Determine if we need to (re)build evidence tables.
+        # - `input_dir` given: full ingest from input_dir, then normalize + analyze
+        # - `rerun` with raw/ already populated: skip ingest, just re-run normalize + analyze
+        raw_has_files = any(case.raw_dir.iterdir()) if case.raw_dir.exists() else False
+        needs_normalize_from_raw = rerun and input_dir is None and raw_has_files
+
         if input_dir is not None and not report_only:
             profile_path = _resolve_profile_path(profile)
             ingest_counts = _run_ingest_stage(case, db, tasks, input_dir, push_progress)
             normalized_this_run = _run_normalize_stage(case, db, tasks, rerun, ingest_counts, push_progress)
             _run_analyze_stage(case, db, tasks, profile, profile_path, rerun, normalized_this_run, push_progress)
+        elif needs_normalize_from_raw and not report_only:
+            profile_path = _resolve_profile_path(profile)
+            _status("Re-normalizing from existing raw/ (no input_dir provided)")
+            normalized_this_run = _run_normalize_stage(case, db, tasks, True, {}, push_progress)
+            _run_analyze_stage(case, db, tasks, profile, profile_path, True, normalized_this_run, push_progress)
 
         if not report_only:
             _run_investigate_stage(

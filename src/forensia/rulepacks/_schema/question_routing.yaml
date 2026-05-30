@@ -69,7 +69,7 @@ question_types:
       - source: mft_entries
         query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE file_path LIKE '%/Desktop/%' AND (file_name LIKE '%~%.%' OR file_name LIKE '%(%.%')"
       - source: mft_entries
-        query: "SELECT file_name, json_extract(raw_json, '$.fn_filename') AS original_name, si_modified FROM mft_entries WHERE json_extract(raw_json, '$.fn_filename') IS NOT NULL AND json_extract(raw_json, '$.fn_filename') != file_name"
+        query: "SELECT file_name, json_extract_string(raw_json, '$.fn_filename') AS original_name, si_modified FROM mft_entries WHERE json_extract_string(raw_json, '$.fn_filename') IS NOT NULL AND json_extract_string(raw_json, '$.fn_filename') != file_name"
 
   - name: browser_usage
     keywords:
@@ -183,7 +183,7 @@ question_types:
       - source: evtx_events
         query: "SELECT DISTINCT computer FROM evtx_events WHERE computer IS NOT NULL"
       - source: mft_entries
-        query: "SELECT DISTINCT json_extract(raw_json, '$.computer') AS host FROM mft_entries WHERE json_extract(raw_json, '$.computer') IS NOT NULL"
+        query: "SELECT DISTINCT json_extract_string(raw_json, '$.computer') AS host FROM mft_entries WHERE json_extract_string(raw_json, '$.computer') IS NOT NULL"
 
   - name: host_logons
     keywords:

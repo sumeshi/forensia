@@ -110,6 +110,17 @@ async def _render_section_blocks(
     focus_sections: list[str] | None,
 ) -> tuple[dict[str, Any], str]:
     section_key = request["section_key"]
+    is_stale = request.get("is_stale", False)
+    blocks = request.get("block_requests") or []
+    all_benchmark = all(str(b.get("mode") or "").strip().casefold() == "benchmark" for b in blocks)
+    if all_benchmark and not is_stale:
+        existing = db.execute(
+            "SELECT body FROM report_sections WHERE section_key = ? AND stale = FALSE AND length(body) > 100",
+            [section_key],
+        ).fetchone()
+        if existing:
+            _log_report(f"{section_key} — benchmark already answered, skipping")
+            return request, existing[0]
     _log_report(f"{section_key} — writing")
     if progress_callback:
         progress_callback(
@@ -168,8 +179,11 @@ async def _render_section_blocks(
             except Exception as exc:
                 _log_report(f"{section_key} — block failed: {exc}")
                 raise
-            rendered_blocks.append(block_result.body)
+            block_body = block_result.body
             heading = str(block.get("heading") or "").strip()
+            if heading and not block_body.lstrip().startswith(f"## {heading}"):
+                block_body = f"## {heading}\n\n{block_body}"
+            rendered_blocks.append(block_body)
             if heading:
                 block_outline.append({
                     "heading": heading,

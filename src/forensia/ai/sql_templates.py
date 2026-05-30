@@ -285,6 +285,33 @@ def validate_select_sql(sql: str) -> str:
     )
     if unknown_tables:
         raise ValueError(f"Unknown table(s) referenced: {', '.join(unknown_tables)}")
+    try:
+        import sqlglot
+        tree = sqlglot.parse_one(normalized)
+        for coalesce_node in tree.find_all(sqlglot.exp.Coalesce):
+            arg_types = set()
+            has_cast = False
+            has_column = False
+            all_args = []
+            if coalesce_node.this is not None:
+                all_args.append(coalesce_node.this)
+            all_args.extend(coalesce_node.expressions or [])
+            for arg in all_args:
+                if isinstance(arg, sqlglot.exp.Column):
+                    has_column = True
+                elif isinstance(arg, sqlglot.exp.Cast):
+                    has_cast = True
+                elif isinstance(arg, sqlglot.exp.Literal):
+                    arg_types.add("string_literal" if arg.is_string else "number_literal")
+                else:
+                    arg_types.add(type(arg).__name__)
+            if len(arg_types) > 1 and not has_column and not has_cast:
+                raise ValueError(
+                    f"COALESCE has mixed literal types: {arg_types}. "
+                    "All COALESCE arguments must be the same type. Use explicit CAST if needed."
+                )
+    except ImportError:
+        pass
     return normalized
 
 

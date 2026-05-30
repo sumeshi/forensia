@@ -111,10 +111,20 @@ class Case:
         preserve_memory: bool = True,
         preserve_ai_logs: bool = True,
         drop_database: bool = True,
+        preserve_raw: bool = False,
     ) -> None:
         """Remove runtime outputs (raw, findings, reports, DB, memory, AI logs)
-        while optionally preserving memory, AI logs, and/or the database."""
-        for directory in (self.raw_dir, self.findings_dir, self.reports_dir):
+        while optionally preserving memory, AI logs, raw evidence, and/or the database.
+
+        ``preserve_raw=True`` keeps the ingested JSONL under ``raw/``. This is the
+        right choice for ``--rerun`` (re-run AI investigation without losing the
+        already-ingested evidence). ``preserve_raw=False`` (default) wipes raw and
+        requires a fresh ingest from ``input_dir``.
+        """
+        cleared = (self.findings_dir, self.reports_dir)
+        if not preserve_raw:
+            cleared = (self.raw_dir, *cleared)
+        for directory in cleared:
             if directory.exists():
                 shutil.rmtree(directory)
             directory.mkdir(parents=True, exist_ok=True)

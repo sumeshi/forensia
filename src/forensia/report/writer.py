@@ -151,21 +151,26 @@ def _section_family(section_key: str) -> str:
     return parts[1] if len(parts) == 2 else parts[0]
 
 
-def _default_keypoints_for_section(section_key: str) -> list[str]:
-    """Return the default keypoint names to resolve as evidence for a given section key."""
-    family = _section_family(section_key)
-    prefixes = SECTION_KEYPOINT_PREFIXES.get(family, ())
-    names: list[str] = []
-    seen: set[str] = set()
-    for keypoint in SECTION_EXTRA_KEYPOINTS.get(family, ()):
-        if keypoint not in seen:
-            seen.add(keypoint)
-            names.append(keypoint)
-    for keypoint in REPORT_KEYPOINTS:
-        if any(keypoint.startswith(prefix) for prefix in prefixes) and keypoint not in seen:
-            seen.add(keypoint)
-            names.append(keypoint)
-    return names
+def _default_keypoints_for_section(section_key: str, benchmark_mode: bool = False) -> tuple[str, ...]:
+    """Return default keypoint names to seed a section's evidence collection.
+
+    All returned names MUST exist in REPORT_KEYPOINTS — otherwise the planner's
+    keypoint_catalog ends up empty and the section silently writes "not_searched".
+    Each family's set is intentionally heterogeneous so different sections do
+    not all surface the same finding list.
+    """
+    if benchmark_mode:
+        return ()
+    family = section_key.split("_", 1)[0] if "_" in section_key else section_key
+    mapping = {
+        "1": ("overview_top_findings", "overview_hosts", "overview_event_range"),
+        "2": ("timeline_high_signal_events", "timeline_system_events", "timeline_log_clearing"),
+        "3": ("host_execution_activity", "host_persistence_activity", "account_logon_patterns", "ioc_source_ips"),
+        "4": ("gaps_event_coverage", "gaps_channel_coverage", "gaps_log_integrity_events"),
+        "5": ("recommendations_findings", "recommendations_recent_reviews"),
+        "6": ("appendix_findings_catalog", "appendix_claims_needing_review"),
+    }
+    return mapping.get(family, ("overview_top_findings",))
 
 
 def _section_confidence(body: str) -> float:
@@ -644,6 +649,12 @@ def _check_bullet_only(body: str, ctx: _GateCtx) -> tuple[str | None, float | No
     return None, None
 
 
+def _check_kp_citation(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+    if re.search(r"KP-\d{4}", body):
+        return "Body contains KP-NNNN identifiers that should not appear as evidence citations.", 0.65
+    return None, None
+
+
 def _check_hedge_no_citation(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
     if _PURE_HEDGE_RE.search(body) and not _FINDING_ID_RE.search(body) and not _TIMESTAMP_RE.search(body):
         return "Section uses hedge language (may/could/possibly) without any timestamp or finding_id citation.", 0.5
@@ -711,6 +722,7 @@ _QUALITY_CHECKS: tuple[QualityCheck, ...] = (
     _check_duplicate_paragraph,
     _check_out_of_range_timestamp,
     _check_overused_evidence_id,
+    _check_kp_citation,
 )
 
 
@@ -1460,6 +1472,9 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
 }
 
 REPORT_KEYPOINT_ALIASES = {
+    "top_findings": "overview_top_findings",
+    "network_connections": "ioc_source_ips",
+    "evidence_gaps": "gaps_event_coverage",
     "overview_window": "overview_event_range",
     "overview_findings": "overview_top_findings",
     "timeline_events": "timeline_high_signal_events",
@@ -2125,8 +2140,10 @@ def _render_section_from_request(
             audit_callback=audit_callback,
         )
         block_body = block_result.body
-        rendered_blocks.append(block_body)
         heading = str(block.get("heading") or "").strip()
+        if heading and not block_body.lstrip().startswith(f"## {heading}"):
+            block_body = f"## {heading}\n\n{block_body}"
+        rendered_blocks.append(block_body)
         if heading:
             block_outline.append({
                 "heading": heading,
@@ -2273,6 +2290,13 @@ def finalize_section(
             confidence=candidate_confidence,
             gaps=candidate_gaps,
         )
+    if updated and evidence_results:
+        is_benchmark = any(
+            str(r.get("mode") or "").strip().casefold() == "benchmark"
+            for r in (evidence_results if isinstance(evidence_results, list) else [])
+        )
+        if is_benchmark and candidate_confidence and candidate_confidence >= 0.8:
+            db.execute("UPDATE report_sections SET stale = FALSE WHERE section_key = ?", [section_key])
     return {"gaps": candidate_gaps, "confidence": candidate_confidence}
 
 

@@ -398,9 +398,9 @@ def _insert_investigation_finding(
             "accepted",
             json.dumps(["investigation", planned_query.query_id], ensure_ascii=False),
             json.dumps([], ensure_ascii=False),
-            json.dumps(evidence, ensure_ascii=False),
+            json.dumps(evidence, ensure_ascii=False, default=str),
             report_text,
-            json.dumps(missing_checks, ensure_ascii=False),
+            json.dumps(missing_checks, ensure_ascii=False, default=str),
             now,
         ),
     )

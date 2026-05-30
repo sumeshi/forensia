@@ -148,6 +148,7 @@ def _merge_hypothesis_fields(existing: Hypothesis, incoming: Hypothesis) -> Hypo
         refute_when=existing.refute_when or incoming.refute_when,
         fallback_phase=existing.fallback_phase or incoming.fallback_phase,
         fallback_source_rule_id=existing.fallback_source_rule_id or incoming.fallback_source_rule_id,
+        target_keypoint_id=existing.target_keypoint_id or incoming.target_keypoint_id,
     )
 
 
@@ -281,6 +282,7 @@ def _row_to_hypothesis(row: dict[str, Any]) -> Hypothesis:
         source_rule_ids=[str(item) for item in source_rule_ids if item],
         required_entities=[str(item) for item in required_entities if item],
         confirm_when=confirm_when if isinstance(confirm_when, dict) else None,
+        target_keypoint_id=row.get("target_keypoint_id"),
     )
 
 
@@ -289,7 +291,7 @@ def _load_persisted_hypotheses(db: CaseDB) -> tuple[list[Hypothesis], list[Hypot
     rows = fetch_records(
         db,
         """
-        SELECT hypothesis_id, description, status, verdict, summary, source_rule_ids, required_entities, confirm_when
+        SELECT hypothesis_id, description, status, verdict, summary, source_rule_ids, required_entities, confirm_when, target_keypoint_id
         FROM hypotheses
         ORDER BY created_at, hypothesis_id
         """,
@@ -344,8 +346,8 @@ def _upsert_hypothesis(
         INSERT INTO hypotheses (
             hypothesis_id, description, status, verdict, summary, origin,
             created_session, resolved_session, created_at, updated_at, source_rule_ids,
-            required_entities, confirm_when
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            required_entities, confirm_when, target_keypoint_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (hypothesis_id) DO UPDATE SET
             description = excluded.description,
             status = excluded.status,
@@ -358,7 +360,8 @@ def _upsert_hypothesis(
             updated_at = excluded.updated_at,
             source_rule_ids = excluded.source_rule_ids,
             required_entities = excluded.required_entities,
-            confirm_when = excluded.confirm_when
+            confirm_when = excluded.confirm_when,
+            target_keypoint_id = COALESCE(excluded.target_keypoint_id, hypotheses.target_keypoint_id)
         """,
         (
             hypothesis.id,
@@ -374,6 +377,7 @@ def _upsert_hypothesis(
             json.dumps(hypothesis.source_rule_ids, ensure_ascii=False),
             json.dumps(hypothesis.required_entities, ensure_ascii=False),
             json.dumps(clean_confirm_when, ensure_ascii=False) if clean_confirm_when else None,
+            hypothesis.target_keypoint_id,
         ),
     )
 
@@ -449,6 +453,7 @@ def _merge_active_hypotheses(
             source_rule_ids=_merge_string_lists(item.source_rule_ids),
             required_entities=_merge_string_lists(item.required_entities),
             confirm_when=_clean_confirm_when(item.confirm_when),
+            target_keypoint_id=item.target_keypoint_id,
         )
         by_id[assigned_id] = hypothesis
         active_by_description[_normalize_hypothesis_description(hypothesis.description)] = hypothesis
@@ -489,6 +494,7 @@ def _resolve_hypothesis(
                 source_rule_ids=item.source_rule_ids,
                 required_entities=item.required_entities,
                 confirm_when=item.confirm_when,
+                target_keypoint_id=item.target_keypoint_id,
             )
             state.resolved_hypotheses.append(resolved)
             _upsert_hypothesis(

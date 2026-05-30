@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import signal
@@ -8,6 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+import re
 from re import sub
 from typing import Any
 from uuid import uuid4
@@ -1176,20 +1178,69 @@ def _dedup_new_hypotheses(new_hypotheses: list[Hypothesis], active_hypotheses: l
     return accepted
 
 
+@functools.lru_cache(maxsize=1)
+def _known_db_columns() -> frozenset[str]:
+    """Whitelist of valid DB column names sourced from rulepacks/_schema/*.yaml.
+
+    Used to reject natural-language `required_entities` (e.g. 'user_identity',
+    'computer_name') that pass the snake_case regex but are not real columns.
+    """
+    from forensia.ai.prompts import _load_schema_hints
+    cols: set[str] = set()
+    for hint in _load_schema_hints().values():
+        for col in (hint.get("columns") or []) + (hint.get("core_columns") or []):
+            cols.add(str(col).strip())
+    # Augment with synonyms that drafter commonly emits and we accept as aliases
+    cols.update({"src_ip", "dst_ip", "target_user", "subject_user", "logon_type", "process_name", "file_path", "computer", "event_id", "timestamp", "command_line", "service_name"})
+    return frozenset(c for c in cols if c)
+
+
+def _filter_valid_entities(raw: list[Any]) -> list[str]:
+    """Keep only entries that are real DB columns from the rulepack schema cards.
+
+    Drops natural-language phrases formatted as snake_case (e.g. 'user_identity',
+    'computer_name', 'credential_usage') that the bare snake_case regex would
+    otherwise accept.
+    """
+    known = _known_db_columns()
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        name = str(item or "").strip().lower()
+        if name and name in known and name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
 def _parse_hypothesis_from_drafter(parsed: dict[str, Any]) -> Hypothesis | None:
     """Parse drafter LLM output into a Hypothesis object.
 
-    The drafter returns ``{"hypothesis": {"description": "...", "required_entities": [...], "source_rule_ids": [...], "confirm_when": ...}}``.
-    Assigns a placeholder id that ``_merge_active_hypotheses`` will replace.
+    The drafter returns ``{"hypothesis": {"description": "...", "required_entities": [...], "source_rule_ids": [...], "confirm_when": {...}, "refute_when": {...}}}``.
+    Tolerates LLMs that return ``confirm_when`` / ``refute_when`` as strings by
+    coercing to the schema's dict shape. Assigns a placeholder id that
+    ``_merge_active_hypotheses`` will replace.
     """
     hyp_raw = parsed.get("hypothesis")
     if not isinstance(hyp_raw, dict):
         return None
+    hyp_raw = dict(hyp_raw)
     hyp_raw.setdefault("id", "draft")
     hyp_raw.setdefault("source_rule_ids", [])
+    # Coerce string confirm_when/refute_when (LLM drift) into the dict shape Pydantic expects.
+    for key in ("confirm_when", "refute_when"):
+        val = hyp_raw.get(key)
+        if isinstance(val, str):
+            hyp_raw[key] = {"_llm_note": val} if val.strip() else None
+    entities = _filter_valid_entities(hyp_raw.get("required_entities") or [])
+    if not entities:
+        _log("PLAN", f"drafter output dropped: invalid required_entities {hyp_raw.get('required_entities')}")
+        return None
+    hyp_raw["required_entities"] = entities
     try:
         return Hypothesis.model_validate(hyp_raw)
-    except Exception:
+    except Exception as exc:
+        _log("PLAN", f"drafter output dropped (validation failed): {str(exc).splitlines()[0][:160]}")
         return None
 
 
@@ -1230,6 +1281,10 @@ async def _run_broad_plan_step(
             ),
         )
         gap_areas = gap_parsed.get("gap_areas", [])
+        valid_gap_areas = [g for g in gap_areas if g.get("keypoint_id") in REPORT_KEYPOINTS]
+        if len(valid_gap_areas) < len(gap_areas):
+            _log("PLAN", f"gap_identifier invented {len(gap_areas) - len(valid_gap_areas)} non-existent keypoint names, dropped")
+        gap_areas = valid_gap_areas
 
         # 2) hypothesis_drafter — draft one hypothesis per gap area
         rule_cache = _get_rule_cache()
@@ -1247,6 +1302,9 @@ async def _run_broad_plan_step(
             )
             hyp = _parse_hypothesis_from_drafter(h_parsed)
             if hyp:
+                kpid = gap.get("keypoint_id", "")
+                if kpid:
+                    hyp.target_keypoint_id = kpid
                 drafted_hypotheses.append(hyp)
 
         # 3) dedup + merge

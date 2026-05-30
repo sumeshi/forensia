@@ -58,6 +58,7 @@ class Hypothesis(BaseModel):
     summary: str = ""
     source_rule_ids: list[str] = Field(default_factory=list)
     required_entities: list[str] = Field(default_factory=list)
+    target_keypoint_id: str | None = None
     confirm_when: dict[str, Any] | None = None
     refute_when: dict[str, Any] | None = None
     fallback_phase: str | None = None
