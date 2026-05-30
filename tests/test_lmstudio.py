@@ -4,8 +4,14 @@ from copy import deepcopy
 from unittest.mock import patch
 
 import httpx
+import pytest
 
 from forensia.ai import lmstudio
+
+
+@pytest.fixture(autouse=True)
+def _reset_schema_mode_cache() -> None:
+    lmstudio._SCHEMA_MODE_CACHE.clear()
 
 
 class _FakeClient:
@@ -55,6 +61,36 @@ def test_chat_completion_retries_llama_strict_schema_failure_with_compatible_sch
     assert "strict" not in client.requests[1]["response_format"]["json_schema"]
     assert any("compatible json_schema" in message for message in messages)
     assert all("grammar violation" not in message.lower() for message in messages)
+
+
+def test_chat_completion_skips_strict_after_server_rejected_it_once() -> None:
+    """Once a base_url has rejected strict, subsequent calls must not waste a round-trip retrying it."""
+    client = _FakeClient(
+        [
+            _response(500, text="Failed to parse input: grammar rejected"),
+            _response(200, content='{"ok": true}'),
+            _response(200, content='{"ok": true}'),
+        ]
+    )
+    schema = {"title": "TestOutput", "type": "object", "properties": {"ok": {"type": "boolean"}}}
+
+    with patch.object(lmstudio, "_get_http_client", return_value=client):
+        lmstudio.chat_completion(
+            [{"role": "user", "content": "first"}],
+            model="local-model",
+            base_url="http://llama.test",
+            json_schema=schema,
+        )
+        lmstudio.chat_completion(
+            [{"role": "user", "content": "second"}],
+            model="local-model",
+            base_url="http://llama.test",
+            json_schema=schema,
+        )
+
+    assert len(client.requests) == 3
+    assert "strict" not in client.requests[2]["response_format"]["json_schema"]
+    assert client.requests[2]["response_format"]["json_schema"].get("schema") == schema
 
 
 def test_chat_completion_removes_schema_only_after_compatible_schema_is_rejected() -> None:

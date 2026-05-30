@@ -29,6 +29,19 @@ _ASYNC_CLIENTS: dict[int, httpx.AsyncClient] = {}
 _SYNC_CLIENTS: dict[int, httpx.Client] = {}
 _HTTP_CLIENTS_LOCK = threading.Lock()
 
+_SCHEMA_MODE_CACHE: dict[str, str] = {}
+_SCHEMA_MODE_RANK = {"strict": 2, "compatible": 1, "none": 0}
+
+
+def _initial_schema_mode(base_url: str) -> str:
+    return _SCHEMA_MODE_CACHE.get(base_url, "strict")
+
+
+def _remember_schema_mode(base_url: str, mode: str) -> None:
+    current = _SCHEMA_MODE_CACHE.get(base_url, "strict")
+    if _SCHEMA_MODE_RANK[mode] < _SCHEMA_MODE_RANK[current]:
+        _SCHEMA_MODE_CACHE[base_url] = mode
+
 
 def _schema_response_format(json_schema: dict, *, strict: bool) -> dict[str, Any]:
     """Build llama-server/OpenAI-compatible JSON schema response_format."""
@@ -51,12 +64,14 @@ def _downgrade_schema_mode(
     status_callback: Callable[[str], None] | None,
     *,
     status_code: int,
+    base_url: str,
 ) -> str | None:
     """Downgrade response_format only as far as required for server compatibility."""
     if not json_schema or schema_mode == "none":
         return None
     if schema_mode == "strict":
         body["response_format"] = _schema_response_format(json_schema, strict=False)
+        _remember_schema_mode(base_url, "compatible")
         if status_callback:
             status_callback(
                 f"LLM server rejected strict json_schema ({status_code}); "
@@ -64,6 +79,7 @@ def _downgrade_schema_mode(
             )
         return "compatible"
     body.pop("response_format", None)
+    _remember_schema_mode(base_url, "none")
     if status_callback:
         status_callback(
             f"LLM server rejected json_schema ({status_code}); "
@@ -134,8 +150,11 @@ async def async_chat_completion(
     }
     schema_mode = "none"
     if json_schema:
-        body["response_format"] = _schema_response_format(json_schema, strict=True)
-        schema_mode = "strict"
+        schema_mode = _initial_schema_mode(base_url)
+        if schema_mode == "strict":
+            body["response_format"] = _schema_response_format(json_schema, strict=True)
+        elif schema_mode == "compatible":
+            body["response_format"] = _schema_response_format(json_schema, strict=False)
 
     for attempt in range(1, _LLM_HTTP_RETRY_MAX + 1):
         try:
@@ -149,6 +168,7 @@ async def async_chat_completion(
                         schema_mode,
                         status_callback,
                         status_code=response.status_code,
+                        base_url=base_url,
                     )
                     if next_schema_mode is not None:
                         schema_mode = next_schema_mode
@@ -167,6 +187,7 @@ async def async_chat_completion(
                     schema_mode,
                     status_callback,
                     status_code=response.status_code,
+                    base_url=base_url,
                 )
                 if next_schema_mode is not None:
                     schema_mode = next_schema_mode
@@ -218,8 +239,11 @@ def chat_completion(
     }
     schema_mode = "none"
     if json_schema:
-        body["response_format"] = _schema_response_format(json_schema, strict=True)
-        schema_mode = "strict"
+        schema_mode = _initial_schema_mode(base_url)
+        if schema_mode == "strict":
+            body["response_format"] = _schema_response_format(json_schema, strict=True)
+        elif schema_mode == "compatible":
+            body["response_format"] = _schema_response_format(json_schema, strict=False)
 
     for attempt in range(1, _LLM_HTTP_RETRY_MAX + 1):
         try:
@@ -232,6 +256,7 @@ def chat_completion(
                         schema_mode,
                         status_callback,
                         status_code=response.status_code,
+                        base_url=base_url,
                     )
                     if next_schema_mode is not None:
                         schema_mode = next_schema_mode
@@ -250,6 +275,7 @@ def chat_completion(
                     schema_mode,
                     status_callback,
                     status_code=response.status_code,
+                    base_url=base_url,
                 )
                 if next_schema_mode is not None:
                     schema_mode = next_schema_mode
