@@ -227,8 +227,8 @@ UI 画面 (cockpit) は次で構成されます。
 - **Event Volume**: 全期間を day 粒度で表示し、年→月→日のピッカーで絞り込みます。日まで絞ると hour 粒度に切り替わります。EVTX channel 別の積み棒に検知件数を折れ線で重ねます。
 - **Report Draft Progress**: 各セクションの状態 (`draft` / `stable` / `ai_exhausted` / `human_reviewed`) と進捗。
 - **ATT&CK Coverage**: `findings.attack` を tactic × technique のマトリックスで集計。
-- **Cockpit**: 現在実行中のクエリ / focus 仮説、Active Hypotheses / Latest Reasoning タブ、Open Gaps。
-- **Top Rules / Top Entities**: 発火ルール上位と、`memory/entities/` から検出された重要 entity。
+- **Cockpit**: 現在実行中のクエリ / focus 仮説、Active / Resolved Hypotheses / Latest Reasoning タブ、Open Gaps。
+- **Top Rules / Top Entities**: 発火ルール上位と、`memory/entities/` から検出された重要 entity。Entity は kind ごとにグルーピングされ、各カードの role / notes 行を2行プレビューします。
 - **Details**: findings / steps / sessions / activity / mft の生データタブ。
 
 ## 注意事項

@@ -7,6 +7,7 @@
     id: string;
     description: string;
     summary: string;
+    verdict?: string | null;
     latestReasoning: HypothesisReasoningEntryDTO[];
     reasoningCount: number;
     latestIteration: number | null;
@@ -14,9 +15,10 @@
   };
 
   export let activeHypotheses: HypothesisThread[] = [];
+  export let resolvedHypotheses: HypothesisThread[] = [];
   export let latestReasoningItems: HypothesisReasoningEntryDTO[] = [];
 
-  let tab: "active" | "reasoning" = "active";
+  let tab: "active" | "resolved" | "reasoning" = "active";
 </script>
 
 <section class="panel min-w-0 p-4">
@@ -31,6 +33,13 @@
         Active ({activeHypotheses.length})
       </button>
       <button
+        class={`rounded-full px-3 py-1 text-xs ${tab === "resolved" ? "bg-mocha-mauve text-mocha-base" : "text-mocha-subtext0"}`}
+        type="button"
+        on:click={() => (tab = "resolved")}
+      >
+        Resolved ({resolvedHypotheses.length})
+      </button>
+      <button
         class={`rounded-full px-3 py-1 text-xs ${tab === "reasoning" ? "bg-mocha-mauve text-mocha-base" : "text-mocha-subtext0"}`}
         type="button"
         on:click={() => (tab = "reasoning")}
@@ -42,6 +51,8 @@
 
   {#if tab === "active"}
     <ActiveHypotheses items={activeHypotheses} embedded />
+  {:else if tab === "resolved"}
+    <ActiveHypotheses items={resolvedHypotheses} embedded emptyMessage="No resolved hypotheses yet." />
   {:else}
     <LatestReasoning items={latestReasoningItems} embedded />
   {/if}

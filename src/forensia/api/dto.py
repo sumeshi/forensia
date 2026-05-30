@@ -166,6 +166,7 @@ class EntityCardDTO(DTOModel):
     kind: str
     name: str
     mention_count: int | None = None
+    summary: str | None = None
 
 
 class AttackCoverageRowDTO(DTOModel):

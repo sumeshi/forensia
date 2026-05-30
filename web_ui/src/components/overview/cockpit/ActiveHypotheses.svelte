@@ -13,6 +13,7 @@
     id: string;
     description: string;
     summary: string;
+    verdict?: string | null;
     latestReasoning: HypothesisReasoningEntryDTO[];
     reasoningCount: number;
     latestIteration: number | null;
@@ -21,6 +22,7 @@
 
   export let items: HypothesisThread[] = [];
   export let embedded = false;
+  export let emptyMessage = "No active hypotheses.";
 
   let openId = "";
   let loadingId = "";
@@ -81,7 +83,7 @@
   {/if}
 
   {#if items.length === 0}
-    <p class="text-sm text-mocha-subtext1">No active hypotheses.</p>
+    <p class="text-sm text-mocha-subtext1">{emptyMessage}</p>
   {:else}
     <div class="max-h-[420px] space-y-2 overflow-y-auto pr-1">
       {#each items as item}
@@ -100,6 +102,12 @@
                 <span class="rounded-full border border-mocha-surface1 bg-mocha-base px-2 py-0.5 text-[10px] font-semibold tracking-[0.12em] text-mocha-mauve">
                   {item.id}
                 </span>
+                {#if item.verdict}
+                  <span class="flex items-center gap-1 rounded-full border border-mocha-surface1 bg-mocha-base px-2 py-0.5 text-[10px] font-semibold tracking-[0.12em] text-mocha-subtext0">
+                    <span class={`h-1.5 w-1.5 rounded-full ${reasoningToneClass(item.verdict)}`}></span>
+                    {formatVerdict(item.verdict)}
+                  </span>
+                {/if}
                 <p class="min-w-0 flex-1 truncate text-sm font-medium text-mocha-text">{item.description}</p>
               </div>
 

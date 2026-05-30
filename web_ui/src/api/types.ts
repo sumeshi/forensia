@@ -145,6 +145,7 @@ export type EntityCardDTO = {
   kind: string;
   name: string;
   mention_count: number | null;
+  summary?: string | null;
 };
 
 export type AttackCoverageRowDTO = {

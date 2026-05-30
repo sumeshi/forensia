@@ -21,12 +21,14 @@ from forensia.api.dto import (
 )
 from forensia.api.service import (
     _build_range_filter,
+    _entity_card_summary,
     _normalize_volume_rows,
     _trunc_key,
     aggregate_event_volume,
     get_case_dto,
     get_case_stats_dto,
     list_attack_coverage_dto,
+    list_entity_cards_dto,
     list_event_volume_dto,
     list_findings_dto,
     list_hypotheses_dto,
@@ -601,3 +603,58 @@ class TestListReportSectionsDto(unittest.TestCase):
         db.execute.side_effect = RuntimeError("db error")
         with self.assertRaises(RuntimeError):
             list_report_sections_dto(db)
+
+
+class TestEntityCardSummary(unittest.TestCase):
+    """Entity cards drive the Top Entities UI tile; the summary is what makes the panel useful at a glance."""
+
+    def _write(self, body: str) -> Path:
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8")
+        tmp.write(body)
+        tmp.close()
+        return Path(tmp.name)
+
+    def test_extracts_role_and_notes_from_investigator_template(self):
+        path = self._write(
+            "# user: alice\n"
+            "\n"
+            "- type: user\n"
+            "- name: alice\n"
+            "- role: attacker\n"
+            "- notes: created malicious scheduled task at 03:14 UTC\n"
+        )
+        self.assertEqual(
+            _entity_card_summary(path),
+            "role: attacker · created malicious scheduled task at 03:14 UTC",
+        )
+
+    def test_falls_back_to_body_when_role_and_notes_missing(self):
+        path = self._write("# host: WIN10\n\nSeen on 4624 logon spike\nSecondary line\n")
+        self.assertEqual(_entity_card_summary(path), "Seen on 4624 logon spike · Secondary line")
+
+    def test_returns_none_for_card_with_only_heading(self):
+        path = self._write("# user: alice\n\n- type: user\n- name: alice\n")
+        self.assertIsNone(_entity_card_summary(path))
+
+
+class TestListEntityCardsDto(unittest.TestCase):
+    def test_returns_cards_with_summary_extracted_from_markdown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            case_path = Path(tmp)
+            entities = case_path / "memory" / "entities" / "user"
+            entities.mkdir(parents=True)
+            (entities / "alice.md").write_text(
+                "# user: alice\n\n- type: user\n- name: alice\n- role: victim\n- notes: lost session token\n",
+                encoding="utf-8",
+            )
+            case = Case(path=case_path)
+            result = list_entity_cards_dto(case)
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0].kind, "user")
+            self.assertEqual(result[0].name, "alice")
+            self.assertEqual(result[0].summary, "role: victim · lost session token")
+
+    def test_returns_empty_when_entities_dir_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            case = Case(path=Path(tmp))
+            self.assertEqual(list_entity_cards_dto(case), [])

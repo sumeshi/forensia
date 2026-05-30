@@ -51,6 +51,21 @@ export const activeHypothesesView = derived([hypotheses], ([$hypotheses]) =>
     id: item.hypothesis_id,
     description: item.description,
     status: item.status,
+    verdict: item.verdict ?? null,
+    summary: item.summary || "No summary",
+    latestReasoning: item.latest_reasoning ?? [],
+    reasoningCount: item.reasoning_count ?? 0,
+    latestIteration: item.latest_iteration ?? null,
+    latestReasoningAt: item.latest_reasoning_at ?? null
+  }))
+);
+
+export const resolvedHypothesesView = derived([hypotheses], ([$hypotheses]) =>
+  $hypotheses.resolved.map((item) => ({
+    id: item.hypothesis_id,
+    description: item.description,
+    status: item.status,
+    verdict: item.verdict ?? null,
     summary: item.summary || "No summary",
     latestReasoning: item.latest_reasoning ?? [],
     reasoningCount: item.reasoning_count ?? 0,

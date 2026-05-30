@@ -16,6 +16,7 @@
   import { currentTask, runningQuery } from "./lib/derived/ai_activity";
   import {
     activeHypothesesView,
+    resolvedHypothesesView,
     openGapsView,
     verdictBreakdown,
     severityBreakdown,
@@ -131,6 +132,7 @@
     aiTask={$currentTask}
     runningQuery={$runningQuery}
     activeHypotheses={$activeHypothesesView}
+    resolvedHypotheses={$resolvedHypothesesView}
     openGaps={$openGapsView}
     latestReasoningItems={$latestReasoning}
   />

@@ -666,8 +666,51 @@ def list_entity_cards_dto(case: Case) -> list[EntityCardDTO]:
                 kind=kind,
                 name=path.stem,
                 mention_count=None,
+                summary=_entity_card_summary(path),
             ))
     return result
+
+
+def _entity_card_summary(path: Path, max_lines: int = 3, max_chars: int = 240) -> str | None:
+    """Extract a short human-readable preview from an entity card markdown file.
+
+    The investigator writes cards as a `- role: ...` / `- notes: ...` bullet list under an H1.
+    We prefer `role` + `notes` when present; otherwise fall back to the first non-empty body lines.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    role: str | None = None
+    notes: str | None = None
+    fallback: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        lower = line.lstrip("- ").lower()
+        if role is None and lower.startswith("role:"):
+            role = line.lstrip("- ").split(":", 1)[1].strip()
+            continue
+        if notes is None and lower.startswith("notes:"):
+            notes = line.lstrip("- ").split(":", 1)[1].strip()
+            continue
+        if lower.startswith(("type:", "name:")):
+            continue
+        fallback.append(line.lstrip("- ").strip())
+    parts: list[str] = []
+    if role:
+        parts.append(f"role: {role}")
+    if notes:
+        parts.append(notes)
+    if not parts:
+        parts = fallback[:max_lines]
+    if not parts:
+        return None
+    summary = " · ".join(parts[:max_lines])
+    if len(summary) > max_chars:
+        summary = summary[: max_chars - 1].rstrip() + "…"
+    return summary
 
 
 def list_attack_coverage_dto(db: CaseDB) -> list[AttackCoverageRowDTO]:
