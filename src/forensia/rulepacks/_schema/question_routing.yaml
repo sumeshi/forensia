@@ -1,15 +1,15 @@
 question_types:
   - name: prefetch_recent
+    answer_spec: application_execution_history
     keywords:
       - prefetch
-      - 実行履歴
       - application execution
       - application history
-      - 起動履歴
+      - execution history
     keypoints:
-      - benchmark_prefetch_recent
-      - benchmark_artifact_processes
-      - benchmark_exec_processes
+      - timeline_prefetch_history
+      - mft_prefetch_filenames
+      - host_execution_activity
     expected_answer_shape:
       format: list
       fields: [executable_name, exec_count, last_exec_time]
@@ -23,20 +23,44 @@ question_types:
         query: "SELECT file_name, si_modified, file_path FROM mft_entries WHERE file_path LIKE '%/Prefetch/%' AND file_name LIKE '%.pf'"
         # condition: "when prefetch_executions empty" — fallthrough on empty is handled by code
 
+  - name: email_application
+    answer_spec: email_application_usage
+    keywords:
+      - e-mail application
+      - email application
+      - mail application
+      - mail client
+      - e-mail communication
+      - email communication
+    keypoints:
+      - structured_email_artifacts
+      - mft_outlook_artifacts
+      - ioc_email_ost_files
+      - mft_user_app_activity
+    expected_answer_shape:
+      format: name_with_version
+      fields: [application_name, version, data_files]
+      style: versioned_list
+      note: "Identify the mail client application from mail data files and application artifacts."
+    evidence_chain:
+      - source: mft_entries
+        query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE file_name LIKE '%.ost' OR file_name LIKE '%.pst' OR file_path LIKE '%/Outlook/%'"
+
   - name: email_ost
+    answer_spec: email_data_files
     keywords:
       - ost
       - pst
       - mail
       - email
       - outlook
-      - メール
-      - メールデータ
+      - email data
+      - mail data
     keypoints:
       - structured_email_artifacts
-      - benchmark_ost_file
-      - benchmark_exec_related_mft
-      - benchmark_artifact_paths
+      - mft_outlook_artifacts
+      - ioc_email_ost_files
+      - mft_user_app_activity
     expected_answer_shape:
       format: name_with_version
       fields: [application_name, version, data_files]
@@ -50,17 +74,17 @@ question_types:
         query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE file_path LIKE '%/Outlook/%'"
 
   - name: desktop_rename
+    answer_spec: desktop_rename_candidates
     keywords:
       - desktop
       - recent
       - rename
       - file name
-      - ファイル名変更
-      - desktop 上
+      - file rename
     keypoints:
       - structured_desktop_rename_candidates
-      - benchmark_recent_lnk
-      - benchmark_reco_desktop_paths
+      - mft_recent_folder_lnk
+      - mft_user_desktop_artifacts
     expected_answer_shape:
       format: pair_list
       fields: [original_name, new_name, timestamp]
@@ -74,17 +98,18 @@ question_types:
         query: "SELECT file_name, json_extract_string(raw_json, '$.fn_filename') AS original_name, si_modified FROM mft_entries WHERE json_extract_string(raw_json, '$.fn_filename') IS NOT NULL AND json_extract_string(raw_json, '$.fn_filename') != file_name"
 
   - name: browser_usage
+    answer_spec: browser_usage
     keywords:
       - browser
       - chrome
       - edge
       - firefox
       - web
-      - ブラウザ
+      - web browser
     keypoints:
       - structured_browser_artifacts
-      - benchmark_exec_processes
-      - benchmark_reco_desktop_paths
+      - host_execution_activity
+      - mft_user_app_activity
     expected_answer_shape:
       format: name_with_version
       fields: [application_name, version]
@@ -98,19 +123,20 @@ question_types:
         query: "SELECT executable_name, exec_count, last_exec_time FROM prefetch_executions WHERE LOWER(executable_name) IN ('chrome.exe', 'iexplore.exe', 'firefox.exe', 'msedge.exe')"
 
   - name: logon_history
+    answer_spec: daily_session_activity
     keywords:
       - logon
       - logoff
       - shutdown
       - startup
-      - 起動
-      - 終了
-      - ログオン
-      - ログオフ
+      - session activity
     keypoints:
-      - benchmark_logon_window
+      - session_activity_events
       - structured_daily_session_activity
-      - benchmark_timeline_events
+      - system_shutdown_events
+      - system_startup_events
+      - interactive_logon_events
+      - logoff_events
     expected_answer_shape:
       format: daily_table
       fields: [date, startup, logons, logoff, shutdown]
@@ -122,17 +148,18 @@ question_types:
         query: "SELECT event_id, timestamp, computer, user_name, logon_type FROM evtx_events WHERE event_id IN (6005, 6006, 6008, 4624, 4634, 4647, 4776) ORDER BY timestamp"
 
   - name: cloud_activity
+    answer_spec: cloud_service_traces
     keywords:
       - cloud
       - drive
       - icloud
       - onedrive
       - dropbox
-      - クラウド
+      - cloud service
     keypoints:
       - structured_cloud_artifacts
-      - benchmark_exec_processes
-      - benchmark_reco_desktop_paths
+      - host_execution_activity
+      - mft_cloud_sync_artifacts
     expected_answer_shape:
       format: enumerated_services
       fields: [service_name, exe_found, paths_found, config_found]
@@ -148,17 +175,17 @@ question_types:
         query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE file_name IN ('sync_config.db', 'snapshot.db', 'config.dbx')"
 
   - name: antiforensics
+    answer_spec: antiforensic_activity
     keywords:
       - wipe
       - delete
       - clean
       - log clear
-      - 削除
-      - ログ消去
+      - log clearing
     keypoints:
       - structured_antiforensics
-      - benchmark_reco_system_events
-      - benchmark_timeline_events
+      - timeline_system_events
+      - system_shutdown_events
     expected_answer_shape:
       format: full_scan
       fields: [tool_name, evidence_type, found, details]
@@ -174,13 +201,14 @@ question_types:
         query: "SELECT file_name, file_path, is_deleted FROM mft_entries WHERE is_deleted = 1 AND file_name IN ('sync_config.db', 'snapshot.db')"
 
   - name: host_identity
+    answer_spec: host_identity
     keywords:
-      - 端末識別
-      - ホスト名
       - computer name
       - host name
+      - host identity
+      - endpoint identity
     keypoints:
-      - benchmark_hosts
+      - overview_hosts
     expected_answer_shape:
       format: list
       fields: [host_id]
@@ -192,12 +220,15 @@ question_types:
         query: "SELECT DISTINCT json_extract_string(raw_json, '$.computer') AS host FROM mft_entries WHERE json_extract_string(raw_json, '$.computer') IS NOT NULL"
 
   - name: host_logons
+    answer_spec: last_human_logon
     keywords:
-      - 最終ログオン
       - last logon
       - logon user
+      - last logged-on user
+      - last user to log on
     keypoints:
-      - benchmark_host_logons
+      - session_activity_events
+      - interactive_logon_events
     expected_answer_shape:
       format: list
       fields: [logon_time, computer, user_name, logon_type, process_name, src_ip, evidence_id]
@@ -209,24 +240,30 @@ question_types:
 
   - name: accounts_summary
     keywords:
-      - アカウント一覧
       - account list
+      - account summary
     keypoints:
-      - benchmark_accounts_summary
+      - account_all_logon_summary
+      - account_observed_users
     evidence_chain:
       - source: evtx_events
         query: "SELECT DISTINCT target_user FROM evtx_events WHERE event_id IN (4624, 4720) AND target_user IS NOT NULL"
 
   - name: investigation_window
+    answer_spec: last_shutdown_event
     keywords:
-      - シャットダウン
       - shutdown
+      - last shutdown
+      - last recorded shutdown
+      - shutdown time
+      - recorded shutdown
       - startup
-      - 起動
+      - final shutdown
     keypoints:
       - structured_last_shutdown
-      - benchmark_window
-      - benchmark_timeline_events
+      - overview_event_range
+      - system_shutdown_events
+      - system_startup_events
     expected_answer_shape:
       format: list
       fields: [shutdown_time, event_id, computer, evidence_id]

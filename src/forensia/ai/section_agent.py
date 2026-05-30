@@ -131,6 +131,7 @@ class _RoutingRule:
     name: str
     keywords: tuple[str, ...]
     keypoints: tuple[str, ...]
+    answer_spec: str = ""
 
 
 @lru_cache(maxsize=1)
@@ -149,17 +150,37 @@ def _load_question_routing() -> list[_RoutingRule]:
         name = str(entry.get("name") or "").strip()
         keywords = tuple(str(item).strip().casefold() for item in entry.get("keywords") or [] if str(item).strip())
         keypoints = tuple(str(item).strip() for item in entry.get("keypoints") or [] if str(item).strip())
+        answer_spec = str(entry.get("answer_spec") or "").strip()
         if name and keypoints:
-            rules.append(_RoutingRule(name=name, keywords=keywords, keypoints=keypoints))
+            rules.append(_RoutingRule(name=name, keywords=keywords, keypoints=keypoints, answer_spec=answer_spec))
     return rules
 
 
-def _question_routing_keypoints(block_heading: str, template_body: str) -> list[str]:
+def _question_routing_rule(block_heading: str, template_body: str) -> _RoutingRule | None:
     text = f"{block_heading}\n{template_body}".casefold()
+    best_rule: _RoutingRule | None = None
+    best_score = 0
     for rule in _load_question_routing():
-        if any(keyword in text for keyword in rule.keywords):
-            return list(rule.keypoints)
+        matched = [keyword for keyword in rule.keywords if keyword in text]
+        if not matched:
+            continue
+        score = len(matched) * 100 + max(len(keyword) for keyword in matched)
+        if score > best_score:
+            best_score = score
+            best_rule = rule
+    return best_rule
+
+
+def _question_routing_keypoints(block_heading: str, template_body: str) -> list[str]:
+    rule = _question_routing_rule(block_heading, template_body)
+    if rule is not None:
+        return list(rule.keypoints)
     return []
+
+
+def _question_routing_answer_spec(block_heading: str, template_body: str) -> str:
+    rule = _question_routing_rule(block_heading, template_body)
+    return rule.answer_spec if rule is not None else ""
 
 
 def _classify_block_status(
@@ -517,7 +538,7 @@ def _keypoint_catalog(
             return filtered
         return [{"name": keypoint, "description": description} for keypoint, (description, _) in sorted(REPORT_KEYPOINTS.items())[:10]]
 
-    preferred = _default_keypoints_for_section(section_key)
+    preferred = _default_keypoints_for_section(section_key, block_heading=block_heading or "")
     catalog: list[dict[str, str]] = []
     seen: set[str] = set()
     for keypoint in preferred:
@@ -930,6 +951,7 @@ class _BlockContext:
     benchmark_id: str = ""
     answer_id: str = ""
     answer_spec: str = ""
+    question: str = ""
 
 
 def _prepare_block_context(
@@ -949,9 +971,12 @@ def _prepare_block_context(
     benchmark_id: str = "",
     answer_id: str = "",
     answer_spec: str = "",
+    question: str = "",
     audit_callback=None,
     report_brief: dict[str, Any] | None = None,
 ) -> _BlockContext:
+    routing_text = f"{question}\n{template_body}".strip() if question else template_body
+    resolved_answer_spec = answer_spec or _question_routing_answer_spec(block_heading, routing_text)
     memory_context_md = ""
     if memory is not None:
         memory_context_md = memory.load_investigation_context(
@@ -997,7 +1022,8 @@ def _prepare_block_context(
         evidence_keypoints=evidence_keypoints,
         benchmark_id=benchmark_id,
         answer_id=answer_id,
-        answer_spec=answer_spec,
+        answer_spec=resolved_answer_spec,
+        question=question,
     )
 
 
@@ -1069,7 +1095,7 @@ def _execute_block_plan(
                                    iteration=iteration, phase="plan_error",
                                    payload={"error": "benchmark_mode: no keypoint name and default not allowed"})
                 return None
-            defaults = _default_keypoints_for_section(ctx.section_key)
+            defaults = _default_keypoints_for_section(ctx.section_key, block_heading=ctx.block_heading)
             keypoint = defaults[0] if defaults else None
         if not keypoint:
             _store_section_run(ctx.db, section_key=ctx.section_key, block_heading=ctx.block_heading,
@@ -1751,6 +1777,7 @@ def run_section_block_agent(
     benchmark_id: str = "",
     answer_id: str = "",
     answer_spec: str = "",
+    question: str = "",
     audit_callback=None,
 ) -> SectionBlockResult:
     """Run the complete plan->query->check->write loop for one report section block.
@@ -1767,10 +1794,45 @@ def run_section_block_agent(
         base_url=base_url, model=model, memory=memory,
         max_queries=max_queries, evidence_keypoints=evidence_keypoints,
         benchmark_mode=benchmark_mode, benchmark_id=benchmark_id,
-        answer_id=answer_id, answer_spec=answer_spec,
+        answer_id=answer_id, answer_spec=answer_spec, question=question,
         audit_callback=audit_callback, report_brief=report_brief,
     )
     try:
+        if ctx.benchmark_mode and ctx.answer_spec:
+            from forensia.report.writer import _render_structured_answer_markdown, build_structured_answer
+
+            structured_answer = build_structured_answer(
+                ctx.case,
+                ctx.db,
+                answer_spec=ctx.answer_spec,
+                answer_id=ctx.answer_id or ctx.benchmark_id or ctx.answer_spec,
+                section_key=ctx.section_key,
+                block_heading=ctx.block_heading,
+            )
+            if structured_answer is not None:
+                body = _render_structured_answer_markdown(structured_answer, ctx.block_heading)
+                if audit_callback:
+                    audit_callback([], body)
+                _store_section_run(
+                    ctx.db,
+                    section_key=ctx.section_key,
+                    block_heading=ctx.block_heading,
+                    iteration=1,
+                    phase="write",
+                    payload={
+                        "structured": True,
+                        "answer_id": structured_answer.get("id"),
+                        "answer_spec": ctx.answer_spec,
+                        "status": structured_answer.get("status"),
+                    },
+                )
+                return SectionBlockResult(
+                    body=body,
+                    evidence_results=[],
+                    iterations=1,
+                    status=str(structured_answer.get("status") or "insufficient_evidence"),
+                )
+
         collected_results: list[dict[str, Any]] = []
         if ctx.reusable_facts:
             collected_results.append(_facts_as_result(ctx.reusable_facts))
@@ -1783,7 +1845,7 @@ def run_section_block_agent(
         actual_query_count = 0
         actual_query_row_counts: list[int] = []
         template_catalog = ctx.template_catalog
-        seed_keypoints = _default_keypoints_for_section(ctx.section_key)[:2] if not ctx.benchmark_mode else list(ctx.evidence_keypoints or [])[:3]
+        seed_keypoints = _default_keypoints_for_section(ctx.section_key, block_heading=ctx.block_heading)[:2] if not ctx.benchmark_mode else list(ctx.evidence_keypoints or [])[:3]
         executed_seed_keypoints: set[str] = set()
         for seed_index, kp in enumerate(seed_keypoints, start=0):
             if kp in _known_keypoints(ctx.keypoint_catalog):
@@ -1897,6 +1959,7 @@ async def async_run_section_block_agent(
     benchmark_id: str = "",
     answer_id: str = "",
     answer_spec: str = "",
+    question: str = "",
     audit_callback=None,
 ) -> SectionBlockResult:
     """Async wrapper around run_section_block_agent using asyncio.to_thread."""
@@ -1909,5 +1972,6 @@ async def async_run_section_block_agent(
         memory=memory, max_queries_per_section=max_queries_per_section,
         evidence_keypoints=evidence_keypoints, benchmark_mode=benchmark_mode,
         benchmark_id=benchmark_id, answer_id=answer_id, answer_spec=answer_spec,
+        question=question,
         audit_callback=audit_callback,
     )

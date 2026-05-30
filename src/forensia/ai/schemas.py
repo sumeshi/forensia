@@ -203,7 +203,6 @@ SQL_SELF_CHECK_SCHEMA: dict[str, Any] = {
             },
         },
         "time_column": {"type": "string"},
-        "ready_to_compose": {"type": "boolean"},
         "blockers": {"type": "string"},
     },
 }

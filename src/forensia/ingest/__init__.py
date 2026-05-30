@@ -59,7 +59,21 @@ def ingest_all(
             unit="file",
             disable=not sys.stderr.isatty(),
         )
+
+        # Filter per-file callbacks so the tqdm bar isn't drowned in routine
+        # "Parsing X" / "Wrote JSONL" lines. Warnings still surface via the
+        # parent progress_callback (which the CLI prints). Routine per-file
+        # messages are dropped entirely when the bar is active on a TTY.
+        def adapter_callback(message: str) -> None:
+            if progress_callback is None:
+                return
+            is_noisy = message.startswith(("Parsing ", "Parsed ", "Wrote JSONL"))
+            if is_noisy and sys.stderr.isatty():
+                return
+            progress_callback(message)
+
         for path, adapter in iterator:
+            iterator.set_postfix_str(f"{adapter.name}:{path.name}"[:60], refresh=False)
             sha256 = _sha256_file(path)
             if not force:
                 existing = db.execute(
@@ -72,7 +86,7 @@ def ingest_all(
                         progress_callback(f"Skipping already ingested {adapter.name.upper()}: {path}")
                     continue
 
-            result = adapter.ingest(case, path, source_sha=sha256, progress_callback=progress_callback)
+            result = adapter.ingest(case, path, source_sha=sha256, progress_callback=adapter_callback)
             if result.raw_path is None:
                 counts["skipped_files"] += 1
                 if progress_callback:

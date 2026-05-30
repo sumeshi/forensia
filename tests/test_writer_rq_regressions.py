@@ -6,6 +6,7 @@ import unittest
 from datetime import UTC, datetime
 
 from forensia.core.case import Case
+from forensia.ai.section_agent import _question_routing_answer_spec, run_section_block_agent
 from forensia.db.database import CaseDB
 from forensia.report.writer import (
     _GateCtx,
@@ -18,6 +19,11 @@ from forensia.report.writer import (
 
 
 class WriterRQRegressionTests(unittest.TestCase):
+    def test_question_routing_resolves_specific_shutdown_and_logon_specs(self) -> None:
+        self.assertEqual("last_shutdown_event", _question_routing_answer_spec("Last recorded shutdown time", ""))
+        self.assertEqual("last_human_logon", _question_routing_answer_spec("Last logged-on user", ""))
+        self.assertEqual("daily_session_activity", _question_routing_answer_spec("Startup, shutdown, logon, and logoff history", ""))
+
     def test_missing_reason_string_renders_as_one_bullet(self) -> None:
         markdown = _render_structured_answer_markdown(
             {
@@ -106,7 +112,7 @@ class WriterRQRegressionTests(unittest.TestCase):
                     answer_spec="last_human_logon",
                     answer_id="Q8",
                     section_key="6_appendix",
-                    block_heading="2. 最終ログオンユーザー",
+                    block_heading="2. Last logged-on user",
                 )
 
             self.assertIsNotNone(answer)
@@ -136,12 +142,40 @@ class WriterRQRegressionTests(unittest.TestCase):
                     answer_spec="last_shutdown_event",
                     answer_id="Q9",
                     section_key="6_appendix",
-                    block_heading="3. 最終シャットダウン時刻",
+                    block_heading="3. Last shutdown time",
                 )
 
             self.assertIsNotNone(answer)
             self.assertEqual(6006, answer["answer"][0]["event_id"])
             self.assertIn("2015-03-22T14:38:16", answer["answer"][0]["shutdown_time"])
+
+    def test_question_marker_structured_block_bypasses_llm_plan_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer) VALUES (?, ?, ?, ?)",
+                    ("evtx-system-000000000001", 6006, datetime(2015, 3, 22, 14, 38, 16), "informant-PC"),
+                )
+                result = run_section_block_agent(
+                    case=case,
+                    db=db,
+                    section_key="6_appendix",
+                    title="Appendix",
+                    block_heading="Last shutdown time",
+                    template_body="<!-- question -->",
+                    context_sections={},
+                    current_section_outline=[],
+                    report_brief={},
+                    base_url="http://127.0.0.1:1",
+                    model="unused",
+                    benchmark_mode=True,
+                    answer_id="Q9",
+                )
+
+            self.assertEqual("answered", result.status)
+            self.assertIn("2015-03-22T14:38:16", result.body)
+            self.assertTrue((case.reports_dir / "structured" / "Q9.csv").exists())
 
     def test_structured_benchmark_antiforensics_excludes_plain_eventlog_shutdown(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -161,7 +195,7 @@ class WriterRQRegressionTests(unittest.TestCase):
                     answer_spec="antiforensic_activity",
                     answer_id="Q45",
                     section_key="6_appendix",
-                    block_heading="12. アンチフォレンジック活動",
+                    block_heading="12. Antiforensic activity",
                 )
 
             self.assertIsNotNone(answer)
@@ -198,12 +232,49 @@ class WriterRQRegressionTests(unittest.TestCase):
                     answer_spec="application_execution_history",
                     answer_id="Q12",
                     section_key="6_appendix",
-                    block_heading="4. アプリケーション実行履歴",
+                    block_heading="4. Application execution history",
                 )
 
             self.assertIsNotNone(answer)
             self.assertEqual("partial", answer["status"])
             self.assertEqual(["WINWORD.EXE"], [row["executable_name"] for row in answer["answer"]])
+
+    def test_structured_desktop_rename_uses_recent_lnk_alias_pairs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO mft_entries (evidence_id, file_path, file_name, si_created, fn_created) VALUES (?, ?, ?, ?, ?)",
+                    (
+                        "mft-000000000001-00",
+                        "Users/informant/AppData/Roaming/Microsoft/Windows/Recent/pricing decision.lnk",
+                        "pricing decision.lnk",
+                        datetime(2015, 3, 23, 20, 26, 54),
+                        datetime(2015, 3, 23, 20, 26, 54),
+                    ),
+                )
+                db.execute(
+                    "INSERT INTO mft_entries (evidence_id, file_path, file_name, si_created, fn_created) VALUES (?, ?, ?, ?, ?)",
+                    (
+                        "mft-000000000002-00",
+                        "Users/informant/AppData/Roaming/Microsoft/Windows/Recent/(secret_project)_pricing_decision.xlsx.lnk",
+                        "(secret_project)_pricing_decision.xlsx.lnk",
+                        datetime(2015, 3, 23, 20, 26, 53),
+                        datetime(2015, 3, 23, 20, 26, 53),
+                    ),
+                )
+                answer = build_structured_answer(
+                    case,
+                    db,
+                    answer_spec="desktop_rename_candidates",
+                    answer_id="Q24",
+                    section_key="6_appendix",
+                    block_heading="Desktop file renames",
+                )
+
+            self.assertEqual("partial", answer["status"])
+            self.assertEqual("pricing decision", answer["answer"][0]["original_name"])
+            self.assertEqual("(secret_project)_pricing_decision.xlsx", answer["answer"][0]["new_name"])
 
     def test_citation_gate_accepts_evtx_and_mft_evidence_ids(self) -> None:
         ctx = _GateCtx(section_key="test", title="test", evidence_results=None, db=None)

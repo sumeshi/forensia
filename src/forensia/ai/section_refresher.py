@@ -112,14 +112,18 @@ async def _render_section_blocks(
     section_key = request["section_key"]
     is_stale = request.get("is_stale", False)
     blocks = request.get("block_requests") or []
-    all_benchmark = all(str(b.get("mode") or "").strip().casefold() == "benchmark" for b in blocks)
-    if all_benchmark and not is_stale:
+    all_structured = bool(blocks) and all(
+        str(b.get("mode") or "").strip().casefold() in {"benchmark", "structured"}
+        or bool(b.get("answer_spec") or b.get("question"))
+        for b in blocks
+    )
+    if all_structured and not is_stale:
         existing = db.execute(
             "SELECT body FROM report_sections WHERE section_key = ? AND stale = FALSE AND length(body) > 100",
             [section_key],
         ).fetchone()
         if existing:
-            _log_report(f"{section_key} — benchmark already answered, skipping")
+            _log_report(f"{section_key} — structured answers already written, skipping")
             return request, existing[0]
     _log_report(f"{section_key} — writing")
     if progress_callback:
@@ -147,7 +151,7 @@ async def _render_section_blocks(
         for block in request.get("block_requests") or []:
             try:
                 block_mode = str(block.get("mode") or "").strip().casefold()
-                is_structured_mode = block_mode in {"benchmark", "structured"}
+                is_structured_mode = block_mode in {"benchmark", "structured"} or bool(block.get("answer_spec") or block.get("question"))
                 block_result = await async_run_section_block_agent(
                     case=request["case"],
                     db=db,
@@ -160,13 +164,14 @@ async def _render_section_blocks(
                     report_brief=request.get("report_brief") or {},
                     base_url=base_url,
                     model=model,
-                    memory=memory_for_section(memory, benchmark_mode=is_structured_mode),
+                    memory=memory_for_section(memory, structured_mode=is_structured_mode),
                     max_queries_per_section=max_queries_per_section,
                     evidence_keypoints=list(block.get("evidence_keypoints") or []),
                     benchmark_mode=is_structured_mode,
                     benchmark_id=str(block.get("benchmark_id") or block.get("answer_id") or ""),
                     answer_id=str(block.get("answer_id") or block.get("benchmark_id") or ""),
                     answer_spec=str(block.get("answer_spec") or ""),
+                    question=str(block.get("question") or ""),
                     audit_callback=lambda messages, body, section=request["section_key"], heading=block.get("heading", ""): llm_logger.write(
                         iteration=iteration,
                         phase="report-section-block",

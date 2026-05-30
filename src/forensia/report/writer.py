@@ -18,10 +18,6 @@ from forensia.db.query import fetch_records, normalize_value
 from forensia.report.html import render_html_report
 
 
-def _coalesce_varchar(expr1: str, expr2: str) -> str:
-    return f"COALESCE(CAST({expr1} AS VARCHAR), CAST({expr2} AS VARCHAR))"
-
-
 def _sql_like_any(column: str, *patterns: str) -> str:
     lowered = f"LOWER(COALESCE({column}, ''))"
     return "(" + " OR ".join(f"{lowered} LIKE '{pattern.lower()}'" for pattern in patterns) + ")"
@@ -58,6 +54,7 @@ BLOCK_HINT_PATTERN = re.compile(
     r"<!--\s*(?P<name>evidence_keypoints|mode|benchmark_id|answer_id|answer_spec)\s*:\s*(?P<value>.*?)\s*-->",
     re.IGNORECASE,
 )
+QUESTION_HINT_PATTERN = re.compile(r"<!--\s*question(?:\s*:\s*(?P<value>.*?))?\s*-->", re.IGNORECASE)
 RAW_EVIDENCE_HEADING_PATTERN = re.compile(r"^#{2,6}\s*Raw Evidence\s*$", re.IGNORECASE)
 EvidenceResolver = Callable[[CaseDB], list[dict[str, Any]]]
 
@@ -99,6 +96,7 @@ def _parse_block_hints(block_body: str) -> dict[str, Any]:
         "benchmark_id": "",
         "answer_id": "",
         "answer_spec": "",
+        "question": "",
     }
     seen_keypoints: set[str] = set()
     for match in BLOCK_HINT_PATTERN.finditer(block_body):
@@ -122,6 +120,11 @@ def _parse_block_hints(block_body: str) -> dict[str, Any]:
             hints["answer_id"] = value.strip()
         elif name == "answer_spec":
             hints["answer_spec"] = value.strip()
+    question_match = QUESTION_HINT_PATTERN.search(block_body)
+    if question_match:
+        hints["question"] = str(question_match.group("value") or "").strip()
+        if not hints["mode"]:
+            hints["mode"] = "structured"
     return hints
 
 
@@ -188,7 +191,11 @@ def _section_family(section_key: str) -> str:
     return parts[1] if len(parts) == 2 else parts[0]
 
 
-def _default_keypoints_for_section(section_key: str, benchmark_mode: bool = False) -> tuple[str, ...]:
+def _default_keypoints_for_section(
+    section_key: str,
+    benchmark_mode: bool = False,
+    block_heading: str = "",
+) -> tuple[str, ...]:
     """Return default keypoint names to seed a section's evidence collection.
 
     All returned names MUST exist in REPORT_KEYPOINTS — otherwise the planner's
@@ -198,6 +205,24 @@ def _default_keypoints_for_section(section_key: str, benchmark_mode: bool = Fals
     """
     if benchmark_mode:
         return ()
+
+    # Block-heading-level overrides take precedence over family defaults.
+    # Keys are lowercase partial matches against block_heading.
+    _heading_overrides: dict[str, tuple[str, ...]] = {
+        "network": ("evtx_network_connections", "ioc_source_ips", "evtx_firewall_events"),
+        "lateral": ("account_logon_patterns", "account_explicit_credentials", "ioc_source_ips"),
+        "evidence gap": ("unresolved_hypotheses_summary", "report_sections_with_gaps", "gaps_event_coverage"),
+        "gap": ("unresolved_hypotheses_summary", "gaps_event_coverage", "gaps_channel_coverage"),
+        "execution": ("host_execution_activity", "persistence_lolbas_execution", "persistence_service_installs"),
+        "persistence": ("host_persistence_activity", "persistence_service_installs", "persistence_scheduled_tasks"),
+        "authentication": ("account_logon_patterns", "account_bruteforce_clusters", "account_explicit_credentials"),
+    }
+    if block_heading:
+        heading_lower = block_heading.lower()
+        for keyword, keypoints in _heading_overrides.items():
+            if keyword in heading_lower:
+                return keypoints
+
     family = section_key.split("_", 1)[0] if "_" in section_key else section_key
     mapping = {
         "1": ("overview_top_findings", "overview_hosts", "overview_event_range"),
@@ -1604,8 +1629,8 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             f"""
             SELECT file_name, file_path, si_modified FROM mft_entries
             WHERE (
-                {_sql_like_any("file_name", "%resign%", "%resignation%", "%retire%", "%退職%")}
-                OR {_path_like_any("file_path", "resign", "resignation", "retire", "退職")}
+                {_sql_like_any("file_name", "%resign%", "%resignation%", "%retire%")}
+                OR {_path_like_any("file_path", "resign", "resignation", "retire")}
             )
             """,
         ),
@@ -1630,6 +1655,142 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             FROM evtx_events
             WHERE event_id IN (1102, 104, 1100)
             ORDER BY timestamp DESC LIMIT 50
+        """),
+    ),
+    "system_shutdown_events": (
+        "System shutdown events (event 1074/6006/6008).",
+        lambda db: _report_keypoint_rows(db, """
+            SELECT timestamp, event_id, computer, message, evidence_id
+            FROM evtx_events
+            WHERE event_id IN (1074, 6006, 6008)
+            ORDER BY timestamp DESC
+            LIMIT 50
+        """),
+    ),
+    "system_startup_events": (
+        "System startup events (event 6005).",
+        lambda db: _report_keypoint_rows(db, """
+            SELECT timestamp, event_id, computer, evidence_id
+            FROM evtx_events
+            WHERE event_id = 6005
+            ORDER BY timestamp
+            LIMIT 50
+        """),
+    ),
+    "interactive_logon_events": (
+        "Interactive and remote-interactive logon events (4624 logon_type=2/10).",
+        lambda db: _report_keypoint_rows(db, """
+            SELECT timestamp, computer, target_user, logon_type, src_ip, evidence_id
+            FROM evtx_events
+            WHERE event_id = 4624 AND logon_type IN ('2', '10')
+            ORDER BY timestamp
+            LIMIT 80
+        """),
+    ),
+    "logoff_events": (
+        "Logoff and session-disconnect events (4634/4647).",
+        lambda db: _report_keypoint_rows(db, """
+            SELECT timestamp, computer, target_user, evidence_id
+            FROM evtx_events
+            WHERE event_id IN (4634, 4647)
+            ORDER BY timestamp
+            LIMIT 80
+        """),
+    ),
+    "mft_user_desktop_artifacts": (
+        "Files found under any user Desktop path in MFT.",
+        lambda db: _report_keypoint_rows(
+            db,
+            f"""
+            SELECT file_name, file_path, si_created, si_modified, fn_modified, is_deleted, evidence_id
+            FROM mft_entries
+            WHERE {_path_like_any("file_path", "desktop")}
+            ORDER BY COALESCE(si_modified, fn_modified, si_created) DESC
+            LIMIT 80
+            """,
+        ),
+    ),
+    "mft_office_recent_artifacts": (
+        "Office recent file paths from MFT.",
+        lambda db: _report_keypoint_rows(
+            db,
+            f"""
+            SELECT file_name, file_path, si_created, si_modified, evidence_id
+            FROM mft_entries
+            WHERE {_path_like_any("file_path", "office", "office/recent")}
+            ORDER BY COALESCE(si_modified, si_created) DESC
+            LIMIT 40
+            """,
+        ),
+    ),
+    "mft_outlook_artifacts": (
+        "Outlook OST/PST and directory paths from MFT.",
+        lambda db: _report_keypoint_rows(
+            db,
+            f"""
+            SELECT file_name, file_path, si_created, si_modified, evidence_id
+            FROM mft_entries
+            WHERE extension IN ('ost', 'pst') OR {_path_like_any("file_path", "outlook")}
+            ORDER BY COALESCE(si_modified, si_created) DESC
+            LIMIT 40
+            """,
+        ),
+    ),
+    "mft_cloud_sync_artifacts": (
+        "Cloud sync client artifacts from MFT (Google Drive, OneDrive, Dropbox, iCloud).",
+        lambda db: _report_keypoint_rows(
+            db,
+            f"""
+            SELECT file_name, file_path, is_deleted, evidence_id
+            FROM mft_entries
+            WHERE (
+                {_path_like_any("file_path", "google/drive", "apple computer", "onedrive", "dropbox", "icloud")}
+                OR {_sql_like_any("file_name", "%googledrivesync.exe%", "%icloudsetup.exe%", "%onedrive.exe%", "%dropbox.exe%", "%sync_config.db%", "%snapshot.db%", "%config.dbx%")}
+            )
+            ORDER BY COALESCE(si_modified, si_created) DESC
+            LIMIT 40
+            """,
+        ),
+    ),
+    "evtx_network_connections": (
+        "Network-related EVTX events (firewall, filtering platform, DHCP).",
+        lambda db: _report_keypoint_rows(db, """
+            SELECT timestamp, computer, event_id, src_ip, process_name, message, evidence_id
+            FROM evtx_events
+            WHERE event_id IN (5152, 5154, 5156, 5157, 5158, 5031, 5140, 5145)
+               OR channel LIKE '%dhcp%' OR channel LIKE '%dns%'
+            ORDER BY timestamp
+            LIMIT 80
+        """),
+    ),
+    "evtx_firewall_events": (
+        "Windows Firewall allowed/blocked connection events.",
+        lambda db: _report_keypoint_rows(db, """
+            SELECT timestamp, computer, src_ip, process_name, event_id, evidence_id
+            FROM evtx_events
+            WHERE event_id IN (5156, 5157)
+            ORDER BY timestamp
+            LIMIT 80
+        """),
+    ),
+    "unresolved_hypotheses_summary": (
+        "Open or unresolved hypotheses from the investigation.",
+        lambda db: _report_keypoint_rows(db, """
+            SELECT hypothesis_id, description, status, verdict, summary, updated_at
+            FROM hypotheses
+            WHERE COALESCE(verdict, status) NOT IN ('confirmed', 'refuted', 'rejected')
+            ORDER BY updated_at DESC NULLS LAST
+            LIMIT 30
+        """),
+    ),
+    "report_sections_with_gaps": (
+        "Report sections that have outstanding gaps or low confidence.",
+        lambda db: _report_keypoint_rows(db, """
+            SELECT section_key, title, confidence, gaps, status
+            FROM report_sections
+            WHERE confidence < 0.7 OR gaps IS NOT NULL
+            ORDER BY confidence
+            LIMIT 20
         """),
     ),
 }
@@ -2278,6 +2439,7 @@ def prepare_section_request(
             "benchmark_id": "",
             "answer_id": "",
             "answer_spec": "",
+            "question": "",
         }]
     block_requests = [
         {
@@ -2288,6 +2450,7 @@ def prepare_section_request(
             "benchmark_id": str(block.get("benchmark_id") or ""),
             "answer_id": str(block.get("answer_id") or block.get("benchmark_id") or ""),
             "answer_spec": str(block.get("answer_spec") or ""),
+            "question": str(block.get("question") or ""),
         }
         for block in blocks
     ]
@@ -2331,7 +2494,7 @@ def _render_section_from_request(
     all_evidence_results: list[dict[str, Any]] = []
     for block in request.get("block_requests") or []:
         block_mode = str(block.get("mode") or "").strip().casefold()
-        is_structured_mode = block_mode in {"benchmark", "structured"}
+        is_structured_mode = block_mode in {"benchmark", "structured"} or bool(block.get("answer_spec") or block.get("question"))
         block_result = run_section_block_agent(
             case=request["case"],
             db=db,
@@ -2344,13 +2507,14 @@ def _render_section_from_request(
             report_brief=request.get("report_brief") or {},
             base_url=base_url,
             model=model,
-            memory=memory_for_section(memory, benchmark_mode=is_structured_mode),
+            memory=memory_for_section(memory, structured_mode=is_structured_mode),
             max_queries_per_section=max_queries_per_section,
             evidence_keypoints=list(block.get("evidence_keypoints") or []),
             benchmark_mode=is_structured_mode,
             benchmark_id=str(block.get("benchmark_id") or block.get("answer_id") or ""),
             answer_id=str(block.get("answer_id") or block.get("benchmark_id") or ""),
             answer_spec=str(block.get("answer_spec") or ""),
+            question=str(block.get("question") or ""),
             audit_callback=audit_callback,
         )
         block_body = block_result.body
@@ -3401,6 +3565,76 @@ def _build_email_data_files(case: Case, db: CaseDB, answer_id: str, section_key:
     )
 
 
+def _recent_lnk_base_name(file_name: Any) -> str:
+    text = _text(file_name)
+    if text.lower().endswith(".lnk"):
+        text = text[:-4]
+    return text.strip()
+
+
+def _recent_lnk_tokens(file_name: Any) -> set[str]:
+    base = _recent_lnk_base_name(file_name).lower()
+    base = re.sub(r"\.[a-z0-9]{1,8}$", "", base)
+    tokens = {token for token in re.split(r"[^a-z0-9]+", base) if len(token) >= 3}
+    return tokens - {"lnk", "desktop", "templates", "drive"}
+
+
+def _row_time_text(row: dict[str, Any]) -> str:
+    for key in ("fn_created", "si_created", "fn_modified", "si_modified"):
+        value = _text(row.get(key))
+        if value:
+            return value
+    return ""
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    text = _text(value)
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+def _infer_recent_lnk_rename_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Infer rename candidates from near-time Windows Recent LNK alias pairs."""
+    candidates: list[dict[str, Any]] = []
+    for left_index, left in enumerate(rows):
+        left_tokens = _recent_lnk_tokens(left.get("file_name"))
+        left_time = _parse_iso_datetime(_row_time_text(left))
+        if not left_tokens or left_time is None:
+            continue
+        for right in rows[left_index + 1:]:
+            right_tokens = _recent_lnk_tokens(right.get("file_name"))
+            right_time = _parse_iso_datetime(_row_time_text(right))
+            if not right_tokens or right_time is None:
+                continue
+            delta_s = abs((right_time - left_time).total_seconds())
+            if delta_s > 120:
+                continue
+            shared = left_tokens & right_tokens
+            if not shared:
+                continue
+            shorter, longer = (left, right)
+            shorter_tokens, longer_tokens = left_tokens, right_tokens
+            if len(_recent_lnk_base_name(left.get("file_name"))) > len(_recent_lnk_base_name(right.get("file_name"))):
+                shorter, longer = right, left
+                shorter_tokens, longer_tokens = right_tokens, left_tokens
+            if not shorter_tokens <= longer_tokens:
+                continue
+            candidates.append({
+                "original_name": _recent_lnk_base_name(shorter.get("file_name")),
+                "new_name": _recent_lnk_base_name(longer.get("file_name")),
+                "timestamp": max(_row_time_text(left), _row_time_text(right)),
+                "basis": "Windows Recent LNK files created/modified within 120 seconds with overlapping filename tokens",
+                "source_paths": [_text(shorter.get("file_path")), _text(longer.get("file_path"))],
+                "evidence_ids": [_text(shorter.get("evidence_id")), _text(longer.get("evidence_id"))],
+            })
+    deduped = _dedupe_dict_rows(candidates, ("original_name", "new_name", "timestamp"))
+    return sorted(deduped, key=lambda row: str(row.get("timestamp") or ""), reverse=True)[:50]
+
+
 def _build_desktop_rename_candidates(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
     rows = _structured_rows(
         db,
@@ -3423,14 +3657,41 @@ def _build_desktop_rename_candidates(case: Case, db: CaseDB, answer_id: str, sec
         LIMIT 100
         """,
     )
+    queries_run = ["structured:desktop_rename_candidates:mft_filename_pairs"]
+    if not rows:
+        recent_rows = _structured_rows(
+            db,
+            """
+            SELECT
+                file_name,
+                file_path,
+                si_created,
+                si_modified,
+                fn_created,
+                fn_modified,
+                evidence_id
+            FROM mft_entries
+            WHERE (
+                LOWER(COALESCE(file_path, '')) LIKE '%/windows/recent/%'
+                OR LOWER(COALESCE(file_path, '')) LIKE '%\\windows\\recent\\%'
+            )
+              AND LOWER(COALESCE(file_name, '')) LIKE '%.lnk'
+            ORDER BY COALESCE(fn_created, si_created, fn_modified, si_modified) NULLS LAST, file_name
+            LIMIT 500
+            """,
+        )
+        rows = _infer_recent_lnk_rename_candidates(recent_rows)
+        queries_run.append("structured:desktop_rename_candidates:recent_lnk_temporal_alias_pairs")
     return _structured_answer(
         case,
         answer_id=answer_id,
         section_key=section_key,
         block_heading=block_heading,
         rows=rows,
-        columns=["original_name", "new_name", "file_path", "si_modified", "fn_modified", "evidence_id"],
-        queries_run=["structured:desktop_rename_candidates:mft_filename_pairs"],
+        columns=["original_name", "new_name", "timestamp", "basis", "source_paths", "evidence_ids"],
+        queries_run=queries_run,
+        status="partial" if rows else "not_found",
+        missing_reason=[] if not rows else ["MFT filename-pair evidence was not available; returned Recent LNK temporal alias candidates."],
     )
 
 
@@ -3525,11 +3786,9 @@ def _build_resignation_file_timestamps(case: Case, db: CaseDB, answer_id: str, s
         WHERE LOWER(COALESCE(file_name, '')) LIKE '%resign%'
            OR LOWER(COALESCE(file_name, '')) LIKE '%resignation%'
            OR LOWER(COALESCE(file_name, '')) LIKE '%retire%'
-           OR LOWER(COALESCE(file_name, '')) LIKE '%退職%'
            OR LOWER(COALESCE(file_path, '')) LIKE '%resign%'
            OR LOWER(COALESCE(file_path, '')) LIKE '%resignation%'
            OR LOWER(COALESCE(file_path, '')) LIKE '%retire%'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%退職%'
         ORDER BY COALESCE(fn_modified, si_modified, fn_created, si_created) DESC NULLS LAST, file_path
         LIMIT 100
         """,

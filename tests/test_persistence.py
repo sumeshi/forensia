@@ -253,11 +253,12 @@ class PersistenceTests(unittest.TestCase):
             template_path.write_text(
                 (
                     "# Appendix\n\n"
-                    "## 8. メールデータファイル\n"
+                    "## 8. E-mail data files\n"
+                    "<!-- question: Where is the e-mail file located? -->\n"
                     "<!-- mode: structured -->\n"
                     "<!-- answer_id: Q20 -->\n"
                     "<!-- answer_spec: email_data_files -->\n"
-                    "<!-- evidence_keypoints: benchmark_ost_file, benchmark_prefetch_recent -->\n"
+                    "<!-- evidence_keypoints: ioc_email_ost_files, timeline_prefetch_history -->\n"
                     "<!-- fill -->\n"
                 ),
                 encoding="utf-8",
@@ -269,7 +270,29 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual("structured", block["mode"])
             self.assertEqual("Q20", block["answer_id"])
             self.assertEqual("email_data_files", block["answer_spec"])
-            self.assertEqual(["benchmark_ost_file", "benchmark_prefetch_recent"], block["evidence_keypoints"])
+            self.assertEqual("Where is the e-mail file located?", block["question"])
+            self.assertEqual(["ioc_email_ost_files", "timeline_prefetch_history"], block["evidence_keypoints"])
+
+    def test_question_marker_enables_structured_mode_without_explicit_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            template_path = case.path / "report_template_custom" / "6_appendix.md"
+            template_path.parent.mkdir(parents=True, exist_ok=True)
+            template_path.write_text(
+                (
+                    "# Appendix\n\n"
+                    "## Last shutdown\n"
+                    "<!-- question -->\n"
+                    "<!-- fill -->\n"
+                ),
+                encoding="utf-8",
+            )
+            with CaseDB(case) as db:
+                request = prepare_section_request(case, db, template_path, {}, report_brief={})
+
+            block = request["block_requests"][0]
+            self.assertEqual("structured", block["mode"])
+            self.assertEqual("", block["answer_spec"])
 
     def test_quality_gate_flags_placeholder_entities_and_non_chronological_timeline(self) -> None:
         body = (
@@ -520,7 +543,7 @@ class PersistenceTests(unittest.TestCase):
                     section_key="6_appendix",
                     title="Appendix",
                     body=(
-                        "## 8. メールデータファイル\n\n"
+                        "## 8. E-mail data files\n\n"
                         "#### Raw Evidence\n\n"
                         "| timestamp | process_name | message |\n"
                         "|---|---|---|\n"

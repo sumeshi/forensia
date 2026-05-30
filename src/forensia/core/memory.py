@@ -785,7 +785,7 @@ class MemoryManager:
 class EvidenceOnlyMemory:
     """Wraps MemoryManager exposing only evidence-based context.
 
-    Used in benchmark mode to prevent narrative contamination from
+    Used for structured-answer blocks to prevent narrative contamination from
     hypotheses, scratch, archive, or investigation overview.
     Only facts, keypoints, entities, and suspicious evidence are loaded.
     """
@@ -816,7 +816,10 @@ class EvidenceOnlyMemory:
 def memory_for_section(
     memory: MemoryManager,
     *,
-    benchmark_mode: bool = False,
+    structured_mode: bool = False,
+    benchmark_mode: bool | None = None,
 ) -> MemoryManager | EvidenceOnlyMemory:
-    """Wrap memory in EvidenceOnlyMemory for benchmark mode blocks."""
-    return EvidenceOnlyMemory(memory) if benchmark_mode else memory
+    """Wrap memory in EvidenceOnlyMemory for structured-answer blocks."""
+    if benchmark_mode is not None:
+        structured_mode = benchmark_mode
+    return EvidenceOnlyMemory(memory) if structured_mode else memory

@@ -1036,7 +1036,7 @@ def build_report_section_messages(
 ) -> list[dict[str, str]]:
     """Build messages for report section writing with evidence and template context."""
 
-    placeholder = "【調査不足: 理由】" if _output_language().startswith("ja") else "[INSUFFICIENT EVIDENCE: reason]"
+    placeholder = "[INSUFFICIENT EVIDENCE: reason]"
     cov = _section_coverage_block(report_brief or {})
     if cov and str(section_meta.get("section") or "").strip() == "1_overview":
         cov = f"Use the following evidence coverage summary as the canonical Evidence Scope. Do not invent sources that are not listed.\n{cov}\n"
@@ -1196,8 +1196,8 @@ Output: {"action": "template", "template_id": "service-creation", "params": {"co
 '''
     EXAMPLE_SECTION_PLAN_KEYPOINT = '''
 <EXAMPLE verdict="section_plan_keypoint">
-Input: block_heading='端末識別情報' with template hint evidence_keypoints=[benchmark_hosts]. The keypoint_catalog includes {"name": "benchmark_hosts", "description": "Distinct hosts observed in evidence"}.
-Output: {"action": "keypoint", "keypoint": "benchmark_hosts", "purpose": "List hosts observed in evidence"}
+Input: block_heading='Endpoint identity' with template hint evidence_keypoints=[overview_hosts]. The keypoint_catalog includes {"name": "overview_hosts", "description": "Distinct hosts observed in evidence"}.
+Output: {"action": "keypoint", "keypoint": "overview_hosts", "purpose": "List hosts observed in evidence"}
 </EXAMPLE>
 '''
 

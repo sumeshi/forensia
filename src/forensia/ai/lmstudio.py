@@ -4,37 +4,12 @@ import atexit
 from collections.abc import Callable
 from typing import Any
 import asyncio
-import json
 import threading
 import time
-from pathlib import Path
 
 import os
 
 import httpx
-
-
-def _dump_failing_request(url: str, body: dict, status: int, response_text: str) -> None:
-    """TEMP DIAGNOSTIC (remove after BUG investigation): persist a 5xx-triggering request for replay."""
-    try:
-        out = Path("/tmp/forensia-failing-prompt.json")
-        existing_count = 0
-        if out.exists():
-            try:
-                existing_count = int(json.loads(out.read_text(encoding="utf-8")).get("seq", 0))
-            except Exception:
-                pass
-        payload = {
-            "seq": existing_count + 1,
-            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "url": url,
-            "status": status,
-            "response_text": response_text[:4000],
-            "body": body,
-        }
-        out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        pass
 
 from forensia.config import get_llm_settings
 
@@ -53,6 +28,48 @@ _HTTP_TIMEOUT = httpx.Timeout(connect=5.0, read=300.0, write=30.0, pool=30.0)
 _ASYNC_CLIENTS: dict[int, httpx.AsyncClient] = {}
 _SYNC_CLIENTS: dict[int, httpx.Client] = {}
 _HTTP_CLIENTS_LOCK = threading.Lock()
+
+
+def _schema_response_format(json_schema: dict, *, strict: bool) -> dict[str, Any]:
+    """Build llama-server/OpenAI-compatible JSON schema response_format."""
+    schema_payload: dict[str, Any] = {
+        "name": json_schema.get("title", "Output"),
+        "schema": json_schema,
+    }
+    if strict:
+        schema_payload["strict"] = True
+    return {
+        "type": "json_schema",
+        "json_schema": schema_payload,
+    }
+
+
+def _downgrade_schema_mode(
+    body: dict[str, Any],
+    json_schema: dict | None,
+    schema_mode: str,
+    status_callback: Callable[[str], None] | None,
+    *,
+    status_code: int,
+) -> str | None:
+    """Downgrade response_format only as far as required for server compatibility."""
+    if not json_schema or schema_mode == "none":
+        return None
+    if schema_mode == "strict":
+        body["response_format"] = _schema_response_format(json_schema, strict=False)
+        if status_callback:
+            status_callback(
+                f"LLM server rejected strict json_schema ({status_code}); "
+                "retrying with compatible json_schema"
+            )
+        return "compatible"
+    body.pop("response_format", None)
+    if status_callback:
+        status_callback(
+            f"LLM server rejected json_schema ({status_code}); "
+            "retrying without response_format constraint"
+        )
+    return "none"
 
 
 def _close_http_clients() -> None:
@@ -115,23 +132,27 @@ async def async_chat_completion(
         "temperature": 0,
         "max_tokens": resolved_max_tokens,
     }
+    schema_mode = "none"
     if json_schema:
-        body["response_format"] = {
-            "type": "json_schema",
-            "json_schema": {"name": json_schema.get("title", "Output"), "strict": True, "schema": json_schema},
-        }
+        body["response_format"] = _schema_response_format(json_schema, strict=True)
+        schema_mode = "strict"
 
     for attempt in range(1, _LLM_HTTP_RETRY_MAX + 1):
         try:
             client = await _get_async_client()
             response = await client.post(url, json=body)
             if response.status_code >= 500:
-                _dump_failing_request(url, body, response.status_code, response.text)
                 if json_schema and "Failed to parse input" in response.text:
-                    body.pop("response_format", None)
-                    if status_callback:
-                        status_callback("LLM grammar violation (500) — retrying without json_schema constraint")
-                    continue
+                    next_schema_mode = _downgrade_schema_mode(
+                        body,
+                        json_schema,
+                        schema_mode,
+                        status_callback,
+                        status_code=response.status_code,
+                    )
+                    if next_schema_mode is not None:
+                        schema_mode = next_schema_mode
+                        continue
                 if attempt == _LLM_HTTP_RETRY_MAX:
                     raise LLMServerUnavailableError(f"LLM server returned {response.status_code} after {_LLM_HTTP_RETRY_MAX} retries")
                 wait = _LLM_HTTP_RETRY_BACKOFF[attempt - 1]
@@ -139,9 +160,19 @@ async def async_chat_completion(
                     status_callback(f"LLM server {response.status_code} — retry {attempt}/{_LLM_HTTP_RETRY_MAX}")
                 await asyncio.sleep(wait)
                 continue
-            if response.status_code == 400 and json_schema:
-                body.pop("response_format", None)
-                response = await client.post(url, json=body)
+            while response.status_code == 400 and json_schema:
+                next_schema_mode = _downgrade_schema_mode(
+                    body,
+                    json_schema,
+                    schema_mode,
+                    status_callback,
+                    status_code=response.status_code,
+                )
+                if next_schema_mode is not None:
+                    schema_mode = next_schema_mode
+                    response = await client.post(url, json=body)
+                    continue
+                break
             response.raise_for_status()
         except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as exc:
             if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
@@ -185,22 +216,26 @@ def chat_completion(
         "temperature": 0,
         "max_tokens": resolved_max_tokens,
     }
+    schema_mode = "none"
     if json_schema:
-        body["response_format"] = {
-            "type": "json_schema",
-            "json_schema": {"name": json_schema.get("title", "Output"), "strict": True, "schema": json_schema},
-        }
+        body["response_format"] = _schema_response_format(json_schema, strict=True)
+        schema_mode = "strict"
 
     for attempt in range(1, _LLM_HTTP_RETRY_MAX + 1):
         try:
             response = _get_http_client().post(url, json=body)
             if response.status_code >= 500:
-                _dump_failing_request(url, body, response.status_code, response.text)
                 if json_schema and "Failed to parse input" in response.text:
-                    body.pop("response_format", None)
-                    if status_callback:
-                        status_callback("LLM grammar violation (500) — retrying without json_schema constraint")
-                    continue
+                    next_schema_mode = _downgrade_schema_mode(
+                        body,
+                        json_schema,
+                        schema_mode,
+                        status_callback,
+                        status_code=response.status_code,
+                    )
+                    if next_schema_mode is not None:
+                        schema_mode = next_schema_mode
+                        continue
                 if attempt == _LLM_HTTP_RETRY_MAX:
                     raise LLMServerUnavailableError(f"LLM server returned {response.status_code} after {_LLM_HTTP_RETRY_MAX} retries")
                 wait = _LLM_HTTP_RETRY_BACKOFF[attempt - 1]
@@ -208,9 +243,19 @@ def chat_completion(
                     status_callback(f"LLM server {response.status_code} — retry {attempt}/{_LLM_HTTP_RETRY_MAX}")
                 time.sleep(wait)
                 continue
-            if response.status_code == 400 and json_schema:
-                body.pop("response_format", None)
-                response = _get_http_client().post(url, json=body)
+            while response.status_code == 400 and json_schema:
+                next_schema_mode = _downgrade_schema_mode(
+                    body,
+                    json_schema,
+                    schema_mode,
+                    status_callback,
+                    status_code=response.status_code,
+                )
+                if next_schema_mode is not None:
+                    schema_mode = next_schema_mode
+                    response = _get_http_client().post(url, json=body)
+                    continue
+                break
             response.raise_for_status()
         except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as exc:
             if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
