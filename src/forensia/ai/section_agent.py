@@ -1,16 +1,31 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-import asyncio
-
 from forensia.ai.checker import summarize_query_result
+from forensia.ai.json_response import async_request_llm_json, request_llm_json
+from forensia.ai.prompts import (
+    build_benchmark_classify_messages,
+    build_paragraph_narrate_messages,
+    build_report_section_messages,
+    build_section_agent_check_messages,
+    build_section_agent_plan_messages,
+    build_section_outline_messages,
+)
+from forensia.ai.sql_templates import query_template_catalog, render_query_template, validate_select_sql
+from forensia.core.case import Case
+from forensia.core.memory import MemoryManager
+from forensia.core.session import PlannedQuery
+from forensia.db.database import CaseDB
+from forensia.db.query import fetch_records
 from forensia.report.writer import _default_keypoints_for_section
 
 
@@ -48,22 +63,6 @@ def _coerce_confidence(value: Any, default: float = 0.5) -> float:
         return max(0.0, min(1.0, float(text)))
     except ValueError:
         return default
-from forensia.ai.json_response import request_llm_json, async_request_llm_json
-from forensia.ai.lmstudio import chat_completion, async_chat_completion
-from forensia.ai.prompts import (
-    build_benchmark_classify_messages,
-    build_paragraph_narrate_messages,
-    build_report_section_messages,
-    build_section_agent_check_messages,
-    build_section_agent_plan_messages,
-    build_section_outline_messages,
-)
-from forensia.ai.sql_templates import query_template_catalog, render_query_template, validate_select_sql
-from forensia.core.case import Case
-from forensia.core.memory import MemoryManager
-from forensia.core.session import PlannedQuery
-from forensia.db.database import CaseDB
-from forensia.db.query import fetch_records
 
 
 @dataclass(slots=True)
@@ -103,6 +102,17 @@ def _safe_rows(rows: list[dict[str, Any]], *, limit: int = 20) -> list[dict[str,
             continue
         safe.append({key: value for key, value in row.items() if key != "source_query"})
     return safe
+
+
+def _known_keypoints(catalog: list[dict]) -> set[str]:
+    return {kp.get("name") or "" for kp in (catalog or [])}
+
+
+def _split_keypoint_names(value: str | None) -> list[str]:
+    """Split planner keypoint output while preserving each exact catalog name."""
+    if not value:
+        return []
+    return [item.strip() for item in re.split(r"[，,;]\s*", str(value)) if item.strip()]
 
 
 def _is_valid_status(status: str) -> bool:
@@ -874,18 +884,9 @@ def _execute_evidence_chain(db: CaseDB, block_heading: str, template_body: str) 
             chain_name = name
             break
     if chain_name is None:
-        keyword_map = {
-            "prefetch": "prefetch_recent", "execution": "prefetch_recent",
-            "email": "email_ost", "mail": "email_ost", "outlook": "email_ost", "ost": "email_ost",
-            "rename": "desktop_rename", "desktop": "desktop_rename",
-            "browser": "browser_usage", "chrome": "browser_usage", "web": "browser_usage",
-            "logon": "logon_history", "logoff": "logon_history", "shutdown": "logon_history", "startup": "logon_history",
-            "cloud": "cloud_activity", "drive": "cloud_activity",
-            "antiforensic": "antiforensics", "wipe": "antiforensics", "delete": "antiforensics", "clean": "antiforensics",
-        }
-        for keyword, cid in keyword_map.items():
-            if keyword in text:
-                chain_name = cid
+        for rule in _load_question_routing():
+            if any(keyword in text for keyword in rule.keywords):
+                chain_name = rule.name
                 break
     if chain_name is None or chain_name not in chains:
         return []
@@ -927,6 +928,8 @@ class _BlockContext:
     prompt_report_brief: dict[str, Any]
     evidence_keypoints: list[str] | None = None
     benchmark_id: str = ""
+    answer_id: str = ""
+    answer_spec: str = ""
 
 
 def _prepare_block_context(
@@ -944,8 +947,10 @@ def _prepare_block_context(
     evidence_keypoints: list[str] | None,
     benchmark_mode: bool,
     benchmark_id: str = "",
-    audit_callback,
-    report_brief: dict[str, Any] | None,
+    answer_id: str = "",
+    answer_spec: str = "",
+    audit_callback=None,
+    report_brief: dict[str, Any] | None = None,
 ) -> _BlockContext:
     memory_context_md = ""
     if memory is not None:
@@ -965,6 +970,9 @@ def _prepare_block_context(
     template_catalog = _filter_template_catalog_by_section([], section_key, [])
     reusable_facts = _load_reusable_section_facts(db, section_key)
     reusable_evidence = _load_reusable_section_evidence(db, section_key)
+    if benchmark_mode:
+        reusable_facts = []
+        reusable_evidence = []
     audit = _audit_bridge(audit_callback)
     prompt_report_brief = _benchmark_report_brief(report_brief) if benchmark_mode else (report_brief or {})
     return _BlockContext(
@@ -988,6 +996,8 @@ def _prepare_block_context(
         prompt_report_brief=prompt_report_brief,
         evidence_keypoints=evidence_keypoints,
         benchmark_id=benchmark_id,
+        answer_id=answer_id,
+        answer_spec=answer_spec,
     )
 
 
@@ -1066,7 +1076,27 @@ def _execute_block_plan(
                                iteration=iteration, phase="plan_error",
                                payload={"error": "planner returned action=keypoint without keypoint name and no default available"})
             return None
-        source_query, result = _execute_keypoint(ctx.case, ctx.db, keypoint)
+        kp_parts = _split_keypoint_names(keypoint)
+        source_query = None
+        result = None
+        for kp in kp_parts:
+            sq, res = _execute_keypoint(ctx.case, ctx.db, kp)
+            if result is None:
+                source_query, result = sq, res
+            else:
+                for eid in (res.get("evidence_ids") or []):
+                    sid = str(eid).strip()
+                    if sid and sid not in {str(e).strip() for e in (result.get("evidence_ids") or [])}:
+                        result.setdefault("evidence_ids", []).append(sid)
+                if res.get("sample_rows"):
+                    result.setdefault("sample_rows", []).extend(res["sample_rows"])
+                if res.get("row_count"):
+                    result["row_count"] = (result.get("row_count") or 0) + int(res["row_count"])
+        if result is None:
+            _store_section_run(ctx.db, section_key=ctx.section_key, block_heading=ctx.block_heading,
+                               iteration=iteration, phase="query_error",
+                               payload={"error": "all keypoint parts returned None"})
+            return None
     elif plan_action.action in {"template", "sql"}:
         planned_query = plan_action.planned_query
         if planned_query is None or not planned_query.sql:
@@ -1208,14 +1238,17 @@ def _try_evidence_chain_fallback(
     collected_results: list[dict[str, Any]],
     actual_query_count: int,
     actual_query_row_counts: list[int],
+    *,
+    force: bool = False,
 ) -> int:
-    if actual_query_count > 0:
+    if not force and actual_query_count > 0 and any(c > 0 for c in actual_query_row_counts):
         return actual_query_count
     chain_rows = _execute_evidence_chain(ctx.db, ctx.block_heading, ctx.template_body)
     if chain_rows:
         chain_result = _summarize_sql_result("evidence_chain_fallback", chain_rows)
         chain_result["source_kind"] = "evidence_chain"
         collected_results.append(chain_result)
+        actual_query_row_counts.append(int(chain_result.get("row_count") or len(chain_rows)))
         return actual_query_count + 1
     return actual_query_count
 
@@ -1261,32 +1294,265 @@ def _format_benchmark_answer(
         for row in picked_rows:
             entry = {}
             for field in fields:
-                entry[field] = row.get(field, row.get(f"normalized_{field}", ""))
-            answer_data.append(entry)
+                value = row.get(field, row.get(f"normalized_{field}", ""))
+                if value is not None and str(value).strip():
+                    entry[field] = value
+            if entry:
+                answer_data.append(entry)
 
     resolved_id = benchmark_id.strip() if benchmark_id else _benchmark_block_id(block_heading)
+    normalized_status = str(classification.get("status") or status or "insufficient_evidence").strip().lower()
+    if not _is_valid_status(normalized_status):
+        normalized_status = status if _is_valid_status(status) else "insufficient_evidence"
     # Validate via row indices
     picked_row_indices = classification.get("picked_row_indices") or []
     if isinstance(picked_row_indices, list):
-        valid_indices = [i for i in picked_row_indices if isinstance(i, (int, float)) and 0 <= int(i) < len(evidence_rows)]
+        valid_indices = [i for i in picked_row_indices if isinstance(i, (int, float)) and evidence_rows and 0 <= int(i) < len(evidence_rows)]
     else:
         valid_indices = []
     validated_rows = [evidence_rows[int(i)] for i in valid_indices] if evidence_rows else []
     if not validated_rows and picked_row_indices:
-        status = "wrong_query"
+        normalized_status = "wrong_query"
         classification["rationale"] = "no valid evidence rows (picked_row_indices out of range or empty)"
     normalized_answer = {
         "id": resolved_id,
         "section": section_key,
-        "status": status,
-        "rationale": classification.get("rationale", ""),
+        "status": normalized_status,
         "answer": answer_data or validated_rows,
+        "missing_reason": [str(classification.get("rationale") or "").strip()] if classification.get("rationale") else [],
+        "queries_run": queries_run or [],
     }
 
-    normalized_answer["queries_run"] = queries_run or []
+    answer_items = list(normalized_answer.get("answer") or [])
+    if answer_items:
+        filtered = []
+        for item in answer_items:
+            if isinstance(item, dict):
+                values = [str(v).strip() for v in item.values() if v is not None]
+                if any(values):
+                    filtered.append(item)
+            elif isinstance(item, str) and item.strip():
+                filtered.append(item)
+        normalized_answer["answer"] = filtered
+
+    if normalized_answer["status"] in {"answered", "partial"} and not normalized_answer.get("answer"):
+        normalized_answer["status"] = "wrong_query"
+        reason = str(classification.get("rationale") or "answer was empty after filtering").strip()
+        normalized_answer["missing_reason"] = [reason]
+
+    normalized_answer = _normalize_benchmark_answer(
+        normalized_answer,
+        section_key=section_key,
+        block_heading=block_heading,
+        status=normalized_answer["status"],
+    )
 
     _persist_benchmark_answer(case, normalized_answer)
     return _render_benchmark_answer_markdown(normalized_answer, block_heading)
+
+
+def _row_text(row: dict[str, Any]) -> str:
+    return " ".join(str(value) for value in row.values() if value is not None).casefold()
+
+
+def _row_value(row: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = row.get(key)
+        if value is not None and str(value).strip():
+            return value
+    summary = str(row.get("summary") or "")
+    for key in keys:
+        match = re.search(rf"\b{re.escape(key)}=([^\s|]+)", summary, re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _all_values_empty(item: dict[str, Any]) -> bool:
+    return not any(str(value).strip() for value in item.values() if value is not None)
+
+
+def _extract_daily_table(raw_rows: list[dict[str, Any]], fields: list[str]) -> list[dict[str, Any]]:
+    by_date: dict[str, dict[str, int]] = {}
+    for row in raw_rows:
+        date_value = _row_value(row, "date")
+        timestamp = _row_value(row, "timestamp")
+        if not date_value and timestamp:
+            date_value = str(timestamp)[:10]
+        event_id = str(_row_value(row, "event_id") or "").strip()
+        if not date_value or not event_id:
+            continue
+        bucket = by_date.setdefault(str(date_value), {"startup": 0, "logons": 0, "logoff": 0, "shutdown": 0})
+        count = int(row.get("n") or row.get("count") or 1)
+        if event_id in {"6005", "4608"}:
+            bucket["startup"] += count
+        elif event_id == "4624":
+            bucket["logons"] += count
+        elif event_id in {"4634", "4647"}:
+            bucket["logoff"] += count
+        elif event_id in {"6006", "6008", "1074", "13"}:
+            bucket["shutdown"] += count
+    return [
+        {field: (date_value if field == "date" else values.get(field, "")) for field in fields}
+        for date_value, values in sorted(by_date.items())
+    ]
+
+
+def _extract_known_list(raw_rows: list[dict[str, Any]], fields: list[str]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in raw_rows:
+        item: dict[str, Any] = {}
+        if fields == ["host_id"]:
+            host = _row_value(row, "host_id", "computer", "host")
+            if host:
+                item["host_id"] = host
+        elif "executable_name" in fields:
+            exe = _row_value(row, "executable_name", "file_name", "process_name")
+            if exe:
+                item["executable_name"] = exe
+            for field in fields:
+                if field not in item:
+                    value = _row_value(row, field)
+                    if value:
+                        item[field] = value
+        if item and not _all_values_empty(item):
+            out.append(item)
+    return out
+
+
+def _extract_name_with_version(raw_rows: list[dict[str, Any]], fields: list[str]) -> list[dict[str, Any]]:
+    detected: dict[str, dict[str, Any]] = {}
+    app_markers = {
+        "Microsoft Outlook": ("outlook", ".ost", ".pst"),
+        "Google Chrome": ("chrome.exe", "google/chrome", "google\\chrome"),
+        "Microsoft Internet Explorer": ("iexplore.exe", "internet explorer"),
+        "Mozilla Firefox": ("firefox.exe", "mozilla/firefox", "mozilla\\firefox"),
+        "Microsoft Edge": ("msedge.exe", "microsoft/edge", "microsoft\\edge"),
+    }
+    for row in raw_rows:
+        text = _row_text(row)
+        for app_name, markers in app_markers.items():
+            if any(marker in text for marker in markers):
+                item = detected.setdefault(app_name, {field: "" for field in fields})
+                if "application_name" in fields:
+                    item["application_name"] = app_name
+                if "data_files" in fields:
+                    data_file = _row_value(row, "file_path", "file_name", "summary")
+                    if data_file:
+                        existing = str(item.get("data_files") or "")
+                        item["data_files"] = data_file if not existing else f"{existing}; {data_file}"
+                if "version" in fields and not item.get("version"):
+                    match = re.search(r"(\d+(?:\.\d+){1,4})", text)
+                    if match:
+                        item["version"] = match.group(1)
+    return [item for item in detected.values() if not _all_values_empty(item)]
+
+
+def _extract_enumerated_services(raw_rows: list[dict[str, Any]], fields: list[str]) -> list[dict[str, Any]]:
+    services = {
+        "Google Drive": ("googledrive", "google drive", "googledrivesync"),
+        "iCloud": ("icloud",),
+        "OneDrive": ("onedrive",),
+        "Dropbox": ("dropbox",),
+    }
+    rows: list[dict[str, Any]] = []
+    for service_name, markers in services.items():
+        matches = [row for row in raw_rows if any(marker in _row_text(row) for marker in markers)]
+        if not matches:
+            continue
+        item = {field: "" for field in fields}
+        if "service_name" in fields:
+            item["service_name"] = service_name
+        if "exe_found" in fields:
+            item["exe_found"] = "yes" if any(".exe" in _row_text(row) or ".pf" in _row_text(row) for row in matches) else "no"
+        if "paths_found" in fields:
+            item["paths_found"] = "; ".join(str(_row_value(row, "file_path", "summary") or "") for row in matches[:3]).strip("; ")
+        if "config_found" in fields:
+            item["config_found"] = "yes" if any(marker in _row_text(row) for row in matches for marker in ("config", ".db", "snapshot")) else "no"
+        rows.append(item)
+    return [item for item in rows if not _all_values_empty(item)]
+
+
+def _extract_pair_list(raw_rows: list[dict[str, Any]], fields: list[str]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in raw_rows:
+        original = _row_value(row, "original_name", "fn_filename")
+        new = _row_value(row, "new_name", "file_name")
+        if original and new and str(original) != str(new):
+            rows.append({
+                field: {
+                    "original_name": original,
+                    "new_name": new,
+                    "timestamp": _row_value(row, "timestamp", "si_modified", "fn_modified") or "",
+                }.get(field, "")
+                for field in fields
+            })
+    return rows
+
+
+def _extract_full_scan(raw_rows: list[dict[str, Any]], fields: list[str]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in raw_rows:
+        text = _row_text(row)
+        if not any(marker in text for marker in ("eraser", "ccleaner", "sdelete", "bleachbit", "log cleared", "event_id=104", "event_id=1102", "event_id=1100")):
+            continue
+        item = {field: "" for field in fields}
+        if "tool_name" in fields:
+            for tool in ("Eraser", "CCleaner", "SDelete", "BleachBit"):
+                if tool.casefold() in text:
+                    item["tool_name"] = tool
+                    break
+            if not item.get("tool_name") and any(marker in text for marker in ("104", "1102", "1100")):
+                item["tool_name"] = "Windows Event Log"
+        if "evidence_type" in fields:
+            item["evidence_type"] = "event" if "event_id" in text else "file"
+        if "found" in fields:
+            item["found"] = "yes"
+        if "details" in fields:
+            item["details"] = str(_row_value(row, "summary", "file_path", "message") or row)
+        rows.append(item)
+    return [item for item in rows if not _all_values_empty(item)]
+
+
+def _extract_answer_by_shape(
+    raw_rows: list[dict],
+    expected_shape: dict | None,
+    shape_format: str,
+) -> list[dict]:
+    if not raw_rows or not expected_shape:
+        return raw_rows or []
+
+    fields = expected_shape.get("fields", [])
+    if not fields:
+        return raw_rows
+
+    shape_format = str(shape_format or expected_shape.get("format") or "")
+    if shape_format == "daily_table":
+        return _extract_daily_table(raw_rows, fields)
+    if shape_format == "list":
+        list_rows = _extract_known_list(raw_rows, fields)
+        if list_rows:
+            return list_rows
+    if shape_format == "name_with_version":
+        return _extract_name_with_version(raw_rows, fields)
+    if shape_format == "enumerated_services":
+        return _extract_enumerated_services(raw_rows, fields)
+    if shape_format == "pair_list":
+        return _extract_pair_list(raw_rows, fields)
+    if shape_format == "full_scan":
+        return _extract_full_scan(raw_rows, fields)
+
+    result: list[dict[str, Any]] = []
+    for row in raw_rows:
+        item = {}
+        for f in fields:
+            val = row.get(f, row.get(f.lower(), row.get(f.upper(), "")))
+            if val is not None and str(val).strip():
+                item[f] = val
+        if item and not _all_values_empty(item):
+            result.append(item)
+
+    return result
 
 
 def _flatten_sample_rows(collected_results: list[dict]) -> list[dict]:
@@ -1311,12 +1577,10 @@ def _write_block_body(
     audit_callback=None,
 ) -> tuple[str, str]:
     from forensia.report.writer import (
-        _benchmark_block_id,
         _collect_flat_evidence_rows,
-        _persist_benchmark_answer,
-        _render_benchmark_answer_markdown,
+        _render_structured_answer_markdown,
         _summarize_flat_evidence_rows,
-        _normalize_benchmark_answer,
+        build_structured_answer,
     )
 
     verification_notes: list[str] = []
@@ -1341,52 +1605,73 @@ def _write_block_body(
     prompt_rows = _summarize_flat_evidence_rows(raw_rows) if raw_rows else None
 
     if ctx.benchmark_mode:
-        expected_shape = _resolve_benchmark_expected_shape(ctx.block_heading)
-
-        # BUG-030: Skip classify when rows already match expected_shape
-        if (raw_rows
-            and expected_shape
-            and all(field in raw_rows[0] for field in expected_shape.get("fields") or [])):
-            # rows already match the expected shape — skip classify, use them directly
-            picked_rows = raw_rows
-            classification = {"status": "answered", "picked_row_indices": [], "rationale": "rows match expected_shape"}
-        else:
-            classify_messages, classify_schema = build_benchmark_classify_messages(
-                question=ctx.template_body or ctx.block_heading,
-                block_heading=ctx.block_heading,
-                evidence_rows=prompt_rows or [],
-                expected_shape=expected_shape,
-                time_range=ctx.case.time_range,
-            )
-            classification = request_llm_json(
-                messages=classify_messages,
-                model=ctx.model,
-                base_url=ctx.base_url,
-                json_schema=classify_schema,
-                audit_callback=ctx.audit,
-            )
-            # Handle picked_row_indices (int array) instead of picked_row_ids
-            picked_row_indices = classification.get("picked_row_indices") or []
-            if isinstance(picked_row_indices, list):
-                valid_indices = [i for i in picked_row_indices if isinstance(i, int) and 0 <= i < len(raw_rows or [])]
-            else:
-                valid_indices = []
-            picked_rows = [raw_rows[i] for i in valid_indices] if raw_rows else []
-
-        queries_run = [str(r.get("source_ref") or r.get("source_query") or "") for r in collected_results if r.get("source_ref") or r.get("source_query")]
-        body = _format_benchmark_answer(
-            classification=classification,
-            picked_rows=picked_rows,
-            expected_shape=expected_shape,
+        structured_answer = build_structured_answer(
+            ctx.case,
+            ctx.db,
+            answer_spec=ctx.answer_spec,
+            answer_id=ctx.answer_id or ctx.benchmark_id,
             section_key=ctx.section_key,
             block_heading=ctx.block_heading,
-            status=status_inner,
-            case=ctx.case,
-            benchmark_id=ctx.benchmark_id,
-            queries_run=queries_run,
-            evidence_rows=prompt_rows or [],
         )
-        messages = classify_messages if not (raw_rows and expected_shape and all(field in raw_rows[0] for field in expected_shape.get("fields") or [])) else []
+        if structured_answer is not None:
+            status_inner = str(structured_answer.get("status") or status_inner)
+            body = _render_structured_answer_markdown(structured_answer, ctx.block_heading)
+            messages = []
+        else:
+            expected_shape = _resolve_benchmark_expected_shape(ctx.block_heading)
+
+            extracted_rows = (
+                _extract_answer_by_shape(raw_rows, expected_shape, expected_shape.get("format", ""))
+                if raw_rows and expected_shape
+                else []
+            )
+
+            # BUG-030: Skip classify when rows already match expected_shape
+            if (
+                extracted_rows
+                and expected_shape
+                and all(field in extracted_rows[0] for field in expected_shape.get("fields") or [])
+            ):
+                # rows already match the expected shape — skip classify, use them directly
+                picked_rows = extracted_rows
+                classification = {"status": "answered", "picked_row_indices": [], "rationale": "rows match expected_shape"}
+            else:
+                classify_messages, classify_schema = build_benchmark_classify_messages(
+                    question=ctx.template_body or ctx.block_heading,
+                    block_heading=ctx.block_heading,
+                    evidence_rows=prompt_rows or [],
+                    expected_shape=expected_shape,
+                    time_range=ctx.case.time_range,
+                )
+                classification = request_llm_json(
+                    messages=classify_messages,
+                    model=ctx.model,
+                    base_url=ctx.base_url,
+                    json_schema=classify_schema,
+                    audit_callback=ctx.audit,
+                )
+                # Handle picked_row_indices (int array) instead of picked_row_ids
+                picked_row_indices = classification.get("picked_row_indices") or []
+                if isinstance(picked_row_indices, list):
+                    valid_indices = [i for i in picked_row_indices if isinstance(i, int) and 0 <= i < len(raw_rows or [])]
+                else:
+                    valid_indices = []
+                picked_rows = [raw_rows[i] for i in valid_indices] if raw_rows else []
+
+            queries_run = [str(r.get("source_ref") or r.get("source_query") or "") for r in collected_results if r.get("source_ref") or r.get("source_query")]
+            body = _format_benchmark_answer(
+                classification=classification,
+                picked_rows=picked_rows,
+                expected_shape=expected_shape,
+                section_key=ctx.section_key,
+                block_heading=ctx.block_heading,
+                status=status_inner,
+                case=ctx.case,
+                benchmark_id=ctx.benchmark_id,
+                queries_run=queries_run,
+                evidence_rows=prompt_rows or [],
+            )
+            messages = classify_messages if not (extracted_rows and expected_shape and all(field in extracted_rows[0] for field in expected_shape.get("fields") or [])) else []
     else:
         if status_inner in {"not_searched", "not_found"}:
             body = f"**Status:** {status_inner}\n\n*Block skipped: {status_inner}*"
@@ -1423,8 +1708,12 @@ def _write_block_body(
                 evidence_rows=flat_evidence[:10],
                 template_body=ctx.template_body,
             )
+            narrate_parsed = request_llm_json(
+                messages=narrate_messages, model=ctx.model, base_url=ctx.base_url,
+                json_schema=narrate_schema, audit_callback=ctx.audit,
+            )
             body = _prepend_status_badge(
-                chat_completion(messages=narrate_messages, model=ctx.model, base_url=ctx.base_url, json_schema=narrate_schema).strip(),
+                str(narrate_parsed.get("body", narrate_parsed.get("content", ""))).strip(),
                 status_inner,
             )
             messages = narrate_messages
@@ -1460,6 +1749,8 @@ def run_section_block_agent(
     evidence_keypoints: list[str] | None = None,
     benchmark_mode: bool = False,
     benchmark_id: str = "",
+    answer_id: str = "",
+    answer_spec: str = "",
     audit_callback=None,
 ) -> SectionBlockResult:
     """Run the complete plan->query->check->write loop for one report section block.
@@ -1476,6 +1767,7 @@ def run_section_block_agent(
         base_url=base_url, model=model, memory=memory,
         max_queries=max_queries, evidence_keypoints=evidence_keypoints,
         benchmark_mode=benchmark_mode, benchmark_id=benchmark_id,
+        answer_id=answer_id, answer_spec=answer_spec,
         audit_callback=audit_callback, report_brief=report_brief,
     )
     try:
@@ -1491,6 +1783,46 @@ def run_section_block_agent(
         actual_query_count = 0
         actual_query_row_counts: list[int] = []
         template_catalog = ctx.template_catalog
+        seed_keypoints = _default_keypoints_for_section(ctx.section_key)[:2] if not ctx.benchmark_mode else list(ctx.evidence_keypoints or [])[:3]
+        executed_seed_keypoints: set[str] = set()
+        for seed_index, kp in enumerate(seed_keypoints, start=0):
+            if kp in _known_keypoints(ctx.keypoint_catalog):
+                try:
+                    source_query, result = _execute_keypoint(ctx.case, ctx.db, kp)
+                    collected_results.append(result)
+                    executed_seed_keypoints.add(kp)
+                    _store_section_run(
+                        ctx.db,
+                        section_key=ctx.section_key,
+                        block_heading=ctx.block_heading,
+                        iteration=seed_index,
+                        phase="query",
+                        payload={
+                            "seed": True,
+                            "source_kind": str(result.get("source_kind") or "unknown"),
+                            "source_ref": str(result.get("source_ref") or source_query),
+                            "result": result,
+                        },
+                    )
+                    if str(result.get("kind") or "rows") == "rows":
+                        actual_query_count += 1
+                        actual_query_row_counts.append(int(result.get("row_count") or 0))
+                        _store_section_evidence(
+                            ctx.db,
+                            section_key=ctx.section_key,
+                            block_heading=ctx.block_heading,
+                            result=result,
+                            source_query=source_query,
+                        )
+                except Exception:
+                    _store_section_run(
+                        ctx.db,
+                        section_key=ctx.section_key,
+                        block_heading=ctx.block_heading,
+                        iteration=seed_index,
+                        phase="query_error",
+                        payload={"seed": True, "keypoint": kp},
+                    )
         for iteration in range(1, ctx.max_queries + 1):
             prior_runs = _load_prior_runs(db, section_key, block_heading)
             template_catalog = _filter_template_catalog_by_section(template_catalog, section_key, collected_results)
@@ -1500,6 +1832,10 @@ def run_section_block_agent(
             )
             if plan_action is None or plan_action.action == "write":
                 break
+            if plan_action.action == "keypoint":
+                planned_keypoints = set(_split_keypoint_names(plan_action.keypoint))
+                if planned_keypoints and planned_keypoints.issubset(executed_seed_keypoints):
+                    continue
             outcome = _execute_block_plan(ctx, plan_action, iteration)
             if outcome is None:
                 continue
@@ -1517,7 +1853,14 @@ def run_section_block_agent(
             verdict, rationale, missing_questions, status = check_result
             if verdict in {"block_supported", "block_contradicted"}:
                 break
-        actual_query_count = _try_evidence_chain_fallback(ctx, collected_results, actual_query_count, actual_query_row_counts)
+        force_chain = ctx.benchmark_mode and status in {"wrong_query", "insufficient_evidence", "not_searched"}
+        actual_query_count = _try_evidence_chain_fallback(
+            ctx,
+            collected_results,
+            actual_query_count,
+            actual_query_row_counts,
+            force=force_chain,
+        )
         body, final_status = _write_block_body(
             ctx, collected_results,
             status, verdict, rationale, missing_questions,
@@ -1552,6 +1895,8 @@ async def async_run_section_block_agent(
     evidence_keypoints: list[str] | None = None,
     benchmark_mode: bool = False,
     benchmark_id: str = "",
+    answer_id: str = "",
+    answer_spec: str = "",
     audit_callback=None,
 ) -> SectionBlockResult:
     """Async wrapper around run_section_block_agent using asyncio.to_thread."""
@@ -1563,6 +1908,6 @@ async def async_run_section_block_agent(
         report_brief=report_brief, base_url=base_url, model=model,
         memory=memory, max_queries_per_section=max_queries_per_section,
         evidence_keypoints=evidence_keypoints, benchmark_mode=benchmark_mode,
-        benchmark_id=benchmark_id, audit_callback=audit_callback,
+        benchmark_id=benchmark_id, answer_id=answer_id, answer_spec=answer_spec,
+        audit_callback=audit_callback,
     )
-

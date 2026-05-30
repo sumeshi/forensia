@@ -1394,6 +1394,8 @@ def build_paragraph_narrate_messages(
     template_body: str,
     language: str = "en",
 ) -> tuple[list[dict[str, str]], dict]:
+    settings = get_llm_settings()
+    language = str(settings.get("output_language", language))
     """role: section_narrator.
     Goal: write ONE markdown paragraph for the given heading using the evidence.
     NO access to other sections, NO full report_brief, NO findings list.

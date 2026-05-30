@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 from functools import lru_cache
 import hashlib
@@ -21,6 +22,24 @@ def _coalesce_varchar(expr1: str, expr2: str) -> str:
     return f"COALESCE(CAST({expr1} AS VARCHAR), CAST({expr2} AS VARCHAR))"
 
 
+def _sql_like_any(column: str, *patterns: str) -> str:
+    lowered = f"LOWER(COALESCE({column}, ''))"
+    return "(" + " OR ".join(f"{lowered} LIKE '{pattern.lower()}'" for pattern in patterns) + ")"
+
+
+def _path_like_any(column: str, *segments: str) -> str:
+    patterns = []
+    for segment in segments:
+        normalized = str(segment or "").strip().strip("/\\").lower().replace("\\", "/")
+        parts = [part for part in normalized.split("/") if part]
+        if not parts:
+            continue
+        slash_pattern = "%/" + "/".join(parts) + "/%"
+        backslash_pattern = "%\\" + "\\".join(parts) + "\\%"
+        patterns.extend((slash_pattern, backslash_pattern))
+    return _sql_like_any(column, *patterns)
+
+
 @dataclass(frozen=True)
 class TemplateMeta:
     behaviors: tuple[str, ...] = ()
@@ -31,11 +50,14 @@ GAP_PATTERN = re.compile(
     re.IGNORECASE,
 )
 PLACEHOLDER_ENTITY_PATTERN = re.compile(r"(?<![\w/.-])(none|n/?a|null)(?![\w/.-])", re.IGNORECASE)
-EVIDENCE_ID_PATTERN = re.compile(r"\bev-[A-Za-z0-9._:-]+\b")
+EVIDENCE_ID_PATTERN = re.compile(r"\b(?:evtx-[a-zA-Z][a-zA-Z0-9.-]*-\d{12}|mft-\d{12,15}-\d{2,4}|prefetch-[a-zA-Z][a-zA-Z0-9._-]+-[a-f0-9]{5,32})\b")
 HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.*)$")
 FINDING_ID_PATTERN = re.compile(r"\b[A-Za-z][A-Za-z0-9-]*-\d{4}\b")
 HTML_FILL_PATTERN = re.compile(r"<!--\s*fill(?:[^>]*)-->", re.IGNORECASE)
-BLOCK_HINT_PATTERN = re.compile(r"<!--\s*(?P<name>evidence_keypoints|mode|benchmark_id)\s*:\s*(?P<value>.*?)\s*-->", re.IGNORECASE)
+BLOCK_HINT_PATTERN = re.compile(
+    r"<!--\s*(?P<name>evidence_keypoints|mode|benchmark_id|answer_id|answer_spec)\s*:\s*(?P<value>.*?)\s*-->",
+    re.IGNORECASE,
+)
 RAW_EVIDENCE_HEADING_PATTERN = re.compile(r"^#{2,6}\s*Raw Evidence\s*$", re.IGNORECASE)
 EvidenceResolver = Callable[[CaseDB], list[dict[str, Any]]]
 
@@ -71,7 +93,13 @@ def _parse_template(template_path: str) -> tuple[str, TemplateMeta]:
 
 def _parse_block_hints(block_body: str) -> dict[str, Any]:
     """Extract hint annotations (evidence_keypoints, mode) from a block's HTML comment markers."""
-    hints: dict[str, Any] = {"evidence_keypoints": [], "mode": "", "benchmark_id": ""}
+    hints: dict[str, Any] = {
+        "evidence_keypoints": [],
+        "mode": "",
+        "benchmark_id": "",
+        "answer_id": "",
+        "answer_spec": "",
+    }
     seen_keypoints: set[str] = set()
     for match in BLOCK_HINT_PATTERN.finditer(block_body):
         name = str(match.group("name") or "").strip().lower()
@@ -89,6 +117,11 @@ def _parse_block_hints(block_body: str) -> dict[str, Any]:
             hints["mode"] = value.casefold()
         elif name == "benchmark_id":
             hints["benchmark_id"] = value.strip()
+            hints["answer_id"] = value.strip()
+        elif name == "answer_id":
+            hints["answer_id"] = value.strip()
+        elif name == "answer_spec":
+            hints["answer_spec"] = value.strip()
     return hints
 
 
@@ -660,15 +693,22 @@ def _check_kp_citation(body: str, ctx: _GateCtx) -> tuple[str | None, float | No
 
 
 def _check_hedge_no_citation(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
-    if _PURE_HEDGE_RE.search(body) and not _FINDING_ID_RE.search(body) and not _TIMESTAMP_RE.search(body):
-        return "Section uses hedge language (may/could/possibly) without any timestamp or finding_id citation.", 0.5
+    if (
+        _PURE_HEDGE_RE.search(body)
+        and not EVIDENCE_ID_PATTERN.search(body)
+        and not _FINDING_ID_RE.search(body)
+        and not _TIMESTAMP_RE.search(body)
+    ):
+        return "Section uses hedge language (may/could/possibly) without any timestamp, evidence_id, or finding_id citation.", 0.5
     return None, None
 
 
 def _check_citation_token_no_finding_id(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
-    if _CITATION_TOKENS_RE.search(body) and not _FINDING_ID_RE.search(body):
-        return "Body refers to 'evidence/finding/根拠' but no finding_id is cited.", 0.6
-    return None, None
+    if EVIDENCE_ID_PATTERN.search(body) or FINDING_ID_PATTERN.search(body):
+        return None, None
+    if not _CITATION_TOKENS_RE.search(body):
+        return None, None
+    return "Body references evidence/finding language without evidence_id or finding_id citation.", 0.75
 
 
 def _check_duplicate_paragraph(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
@@ -709,6 +749,26 @@ def _check_overused_evidence_id(body: str, ctx: _GateCtx) -> tuple[str | None, f
     return None, None
 
 
+def _check_json_object_leak(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+    if re.search(r'^\s*\{.*"body"\s*:', body, re.DOTALL):
+        return "Section body contains JSON object leak (raw LLM response not parsed correctly).", 0.3
+    return None, None
+
+
+_SEVERE_GATE_SUBSTRINGS = [
+    "JSON object leak",
+    "Section block failed",
+    "answered_empty_answer",
+    "unknown report template keypoint",
+]
+
+
+def _check_failure_spam(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+    if "Section block failed" in body or "Block skipped" in body:
+        return "Section contains failure markers.", 0.15
+    return None, None
+
+
 _QUALITY_CHECKS: tuple[QualityCheck, ...] = (
     _check_placeholder_entity,
     _check_template_marker,
@@ -727,6 +787,8 @@ _QUALITY_CHECKS: tuple[QualityCheck, ...] = (
     _check_out_of_range_timestamp,
     _check_overused_evidence_id,
     _check_kp_citation,
+    _check_json_object_leak,
+    _check_failure_spam,
 )
 
 
@@ -750,6 +812,9 @@ def _quality_gate_section(
             gated_gaps.append(note)
         if cap is not None:
             gated_confidence = min(gated_confidence, cap)
+    for gap in gated_gaps:
+        if any(severe in gap for severe in _SEVERE_GATE_SUBSTRINGS):
+            gated_confidence = min(gated_confidence, 0.2)
     return gated_gaps, gated_confidence
 
 
@@ -1486,6 +1551,87 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             """,
         ),
     ),
+    "structured_last_shutdown": (
+        "Last shutdown/startup event from System event log (event 1074/6006/6008/6013).",
+        lambda db: _report_keypoint_rows(db, """
+            SELECT timestamp, event_id, computer, message
+            FROM evtx_events
+            WHERE event_id IN (1074, 6006, 6008, 6013)
+            ORDER BY timestamp DESC LIMIT 1
+        """),
+    ),
+    "structured_daily_session_activity": (
+        "Daily user activity: logon/logoff/shutdown counts per date.",
+        lambda db: _report_keypoint_rows(db, """
+            SELECT DATE(timestamp) AS date, event_id, COUNT(*) AS n
+            FROM evtx_events
+            WHERE event_id IN (4624, 4634, 4647, 6005, 6006)
+            GROUP BY 1, 2 ORDER BY 1
+        """),
+    ),
+    "structured_browser_artifacts": (
+        "Browser executable names from prefetch/mft.",
+        lambda db: _report_keypoint_rows(db, """
+            SELECT DISTINCT executable_name FROM prefetch_executions
+            WHERE LOWER(executable_name) IN ('chrome.exe','firefox.exe','msedge.exe','iexplore.exe','brave.exe','opera.exe')
+        """),
+    ),
+    "structured_email_artifacts": (
+        "OST/PST file paths from MFT entries (email client artifacts).",
+        lambda db: _report_keypoint_rows(
+            db,
+            f"""
+            SELECT file_name, file_path, si_modified FROM mft_entries
+            WHERE file_name ILIKE '%.ost' OR file_name ILIKE '%.pst' OR {_path_like_any("file_path", "outlook")}
+            """,
+        ),
+    ),
+    "structured_desktop_rename_candidates": (
+        "Files on Desktop with si_modified < fn_modified (rename indicator).",
+        lambda db: _report_keypoint_rows(
+            db,
+            f"""
+            SELECT file_name, file_path, si_modified, fn_modified
+            FROM mft_entries
+            WHERE {_path_like_any("file_path", "desktop")} AND si_modified < fn_modified
+            """,
+        ),
+    ),
+    "structured_resignation_files": (
+        "Files matching resignation keywords.",
+        lambda db: _report_keypoint_rows(
+            db,
+            f"""
+            SELECT file_name, file_path, si_modified FROM mft_entries
+            WHERE (
+                {_sql_like_any("file_name", "%resign%", "%resignation%", "%retire%", "%退職%")}
+                OR {_path_like_any("file_path", "resign", "resignation", "retire", "退職")}
+            )
+            """,
+        ),
+    ),
+    "structured_cloud_artifacts": (
+        "Cloud sync artifacts from MFT (Google Drive, OneDrive, Dropbox, iCloud).",
+        lambda db: _report_keypoint_rows(
+            db,
+            f"""
+            SELECT file_name, file_path, is_deleted FROM mft_entries
+            WHERE (
+                {_path_like_any("file_path", "google/drive", "apple computer", "onedrive", "dropbox", "icloud")}
+                OR {_sql_like_any("file_name", "%googledrivesync.exe%", "%icloudsetup.exe%", "%onedrive.exe%", "%dropbox.exe%", "%sync_config.db%", "%snapshot.db%", "%config.dbx%")}
+            )
+            """,
+        ),
+    ),
+    "structured_antiforensics": (
+        "Anti-forensic activity on the last day: log clearing, tool execution, prefetch deletion.",
+        lambda db: _report_keypoint_rows(db, """
+            SELECT timestamp, event_id, computer, target_user, message
+            FROM evtx_events
+            WHERE event_id IN (1102, 104, 1100)
+            ORDER BY timestamp DESC LIMIT 50
+        """),
+    ),
 }
 
 REPORT_KEYPOINT_ALIASES = {
@@ -1535,6 +1681,14 @@ REPORT_KEYPOINT_ALIASES = {
     "benchmark_recent_lnk": "mft_recent_folder_lnk",
     "benchmark_reco_system_events": "timeline_system_events",
     "benchmark_reco_desktop_paths": "ioc_user_data_files",
+    "benchmark_last_shutdown": "structured_last_shutdown",
+    "benchmark_daily_logon_shutdown": "structured_daily_session_activity",
+    "benchmark_browser_artifacts": "structured_browser_artifacts",
+    "benchmark_email_ost_paths": "structured_email_artifacts",
+    "benchmark_desktop_rename_candidates": "structured_desktop_rename_candidates",
+    "benchmark_resignation_file": "structured_resignation_files",
+    "benchmark_cloud_artifacts": "structured_cloud_artifacts",
+    "benchmark_antiforensics_last_day": "structured_antiforensics",
 }
 
 
@@ -1598,8 +1752,29 @@ def _load_keypoint_cards(case: Case, max_cards: int = 8, max_chars: int = 1200) 
 
 
 
+_SCAFFOLD_PATTERNS = [
+    re.compile(r"\*\*Status:\*\*.*"),
+    re.compile(r"\*\*ID:\*\*.*"),
+    re.compile(r"### Answer"),
+    re.compile(r"### Missing Reason"),
+    re.compile(r"### Queries Run"),
+    re.compile(r"\*Block skipped:\*.*"),
+    re.compile(r"\*Section block failed:\*.*"),
+    re.compile(r"^\|[-| ]+\|$"),
+]
+
+
 def _extract_claim_texts(body: str) -> list[str]:
     """Extract distinct claim-paragraph texts from a section body, skipping headings and gap markers."""
+    lines = body.splitlines()
+    filtered_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not any(p.match(stripped) for p in _SCAFFOLD_PATTERNS):
+            filtered_lines.append(line)
+        else:
+            filtered_lines.append("")
+    body = "\n".join(filtered_lines)
     claims: list[str] = []
     seen: set[str] = set()
     for paragraph in re.split(r"\n\s*\n", body):
@@ -2095,7 +2270,15 @@ def prepare_section_request(
     title = _title_from_template_body(template_body, section_key)
     template_preamble, blocks = _split_template_body(template_body)
     if not blocks:
-        blocks = [{"heading": "", "template_body": template_body, "evidence_keypoints": [], "mode": "", "benchmark_id": ""}]
+        blocks = [{
+            "heading": "",
+            "template_body": template_body,
+            "evidence_keypoints": [],
+            "mode": "",
+            "benchmark_id": "",
+            "answer_id": "",
+            "answer_spec": "",
+        }]
     block_requests = [
         {
             "heading": block["heading"],
@@ -2103,6 +2286,8 @@ def prepare_section_request(
             "evidence_keypoints": list(block.get("evidence_keypoints") or []),
             "mode": str(block.get("mode") or ""),
             "benchmark_id": str(block.get("benchmark_id") or ""),
+            "answer_id": str(block.get("answer_id") or block.get("benchmark_id") or ""),
+            "answer_spec": str(block.get("answer_spec") or ""),
         }
         for block in blocks
     ]
@@ -2145,7 +2330,8 @@ def _render_section_from_request(
     block_outline: list[dict] = []
     all_evidence_results: list[dict[str, Any]] = []
     for block in request.get("block_requests") or []:
-        is_benchmark_mode = str(block.get("mode") or "").strip().casefold() == "benchmark"
+        block_mode = str(block.get("mode") or "").strip().casefold()
+        is_structured_mode = block_mode in {"benchmark", "structured"}
         block_result = run_section_block_agent(
             case=request["case"],
             db=db,
@@ -2153,15 +2339,18 @@ def _render_section_from_request(
             title=str(request["title"]),
             block_heading=str(block.get("heading") or ""),
             template_body=str(block.get("template_body") or ""),
-            context_sections={} if is_benchmark_mode else (request.get("context_sections") or {}),
-            current_section_outline=[] if is_benchmark_mode else block_outline,
+            context_sections={} if is_structured_mode else (request.get("context_sections") or {}),
+            current_section_outline=[] if is_structured_mode else block_outline,
             report_brief=request.get("report_brief") or {},
             base_url=base_url,
             model=model,
-            memory=memory_for_section(memory, benchmark_mode=is_benchmark_mode),
+            memory=memory_for_section(memory, benchmark_mode=is_structured_mode),
             max_queries_per_section=max_queries_per_section,
             evidence_keypoints=list(block.get("evidence_keypoints") or []),
-            benchmark_mode=is_benchmark_mode,
+            benchmark_mode=is_structured_mode,
+            benchmark_id=str(block.get("benchmark_id") or block.get("answer_id") or ""),
+            answer_id=str(block.get("answer_id") or block.get("benchmark_id") or ""),
+            answer_spec=str(block.get("answer_spec") or ""),
             audit_callback=audit_callback,
         )
         block_body = block_result.body
@@ -2513,6 +2702,21 @@ def _coerce_answer_items(value: Any) -> list[Any]:
     return [text] if text else []
 
 
+def _answer_columns(items: list[Any], preferred: Any = None) -> list[str]:
+    """Return a stable column order for structured answer rows."""
+    columns = _coerce_string_list(preferred)
+    seen = set(columns)
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        for key in item.keys():
+            key_text = str(key)
+            if key_text not in seen:
+                seen.add(key_text)
+                columns.append(key_text)
+    return columns
+
+
 def _normalize_benchmark_answer(
     answer: dict[str, Any],
     *,
@@ -2520,7 +2724,7 @@ def _normalize_benchmark_answer(
     block_heading: str,
     status: str,
 ) -> dict[str, Any]:
-    """Normalize and validate a benchmark answer dict, coercing status to a valid verdict."""
+    """Normalize and validate a structured answer dict, coercing status to a valid verdict."""
     normalized_id = str(answer.get("id") or _benchmark_block_id(block_heading)).strip() or _benchmark_block_id(block_heading)
     normalized_status = str(answer.get("status") or status or "insufficient_evidence").strip().lower()
     from forensia.core.verdicts import assert_valid_verdict
@@ -2535,22 +2739,30 @@ def _normalize_benchmark_answer(
     normalized_answer = _coerce_answer_items(answer.get("answer"))
     normalized_missing = _coerce_string_list(answer.get("missing_reason"))
     normalized_queries = _coerce_string_list(answer.get("queries_run"))
-    return {
+    normalized_columns = _answer_columns(normalized_answer, answer.get("columns"))
+    normalized: dict[str, Any] = {
         "id": normalized_id,
         "status": normalized_status,
         "answer": normalized_answer,
         "missing_reason": normalized_missing,
         "queries_run": normalized_queries,
     }
+    if normalized_columns:
+        normalized["columns"] = normalized_columns
+    for key in ("source", "csv_path", "json_path"):
+        value = str(answer.get(key) or "").strip()
+        if value:
+            normalized[key] = value
+    return normalized
 
 
-def _benchmark_answers_path(case: Case) -> Path:
-    return case.reports_dir / "benchmark" / "answers.json"
+def _structured_answers_path(case: Case) -> Path:
+    return case.reports_dir / "structured" / "answers.json"
 
 
-def _load_benchmark_answers(case: Case) -> list[dict[str, Any]]:
-    """Load persisted benchmark answers from reports/benchmark/answers.json."""
-    path = _benchmark_answers_path(case)
+def _load_structured_answers(case: Case) -> list[dict[str, Any]]:
+    """Load persisted structured answers from reports/structured/answers.json."""
+    path = _structured_answers_path(case)
     if not path.exists():
         return []
     try:
@@ -2562,32 +2774,66 @@ def _load_benchmark_answers(case: Case) -> list[dict[str, Any]]:
     return [item for item in parsed if isinstance(item, dict)]
 
 
-def _persist_benchmark_answer(case: Case, answer: dict[str, Any]) -> None:
-    """Persist a single benchmark answer to reports/benchmark/answers.json, deduplicating by ID."""
-    path = _benchmark_answers_path(case)
+def _safe_answer_filename(answer_id: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(answer_id or "answer")).strip("._")
+    return safe or "answer"
+
+
+def _write_structured_answer_csv(case: Case, answer: dict[str, Any]) -> str:
+    """Write the structured answer rows for one report/evaluation question as CSV."""
+    items = [item for item in answer.get("answer") or [] if isinstance(item, dict)]
+    columns = _answer_columns(items, answer.get("columns"))
+    if not columns:
+        return ""
+    path = case.reports_dir / "structured" / f"{_safe_answer_filename(str(answer.get('id') or 'answer'))}.csv"
     path.parent.mkdir(parents=True, exist_ok=True)
-    answers = _load_benchmark_answers(case)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
+        writer.writeheader()
+        for item in items:
+            row = {}
+            for key in columns:
+                value = item.get(key, "")
+                if isinstance(value, (list, tuple)):
+                    row[key] = "; ".join(str(part) for part in value if str(part).strip())
+                elif isinstance(value, dict):
+                    row[key] = json.dumps(value, ensure_ascii=False, default=str, sort_keys=True)
+                else:
+                    row[key] = "" if value is None else str(value)
+            writer.writerow(row)
+    return f"structured/{path.name}"
+
+
+def _persist_structured_answer(case: Case, answer: dict[str, Any]) -> None:
+    """Persist a single structured answer to reports/structured/answers.json, deduplicating by ID."""
+    path = _structured_answers_path(case)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    answer["json_path"] = "structured/answers.json"
+    csv_path = _write_structured_answer_csv(case, answer)
+    if csv_path:
+        answer["csv_path"] = csv_path
+    answers = _load_structured_answers(case)
     answers = [item for item in answers if str(item.get("id") or "") != str(answer.get("id") or "")]
     answers.append(answer)
     answers.sort(key=lambda item: str(item.get("id") or ""))
     path.write_text(json.dumps(answers, ensure_ascii=False, default=str, indent=2), encoding="utf-8")
 
 
-def _render_answer_block(items: list[Any]) -> list[str]:
+def _render_answer_block(items: list[Any], columns: Any = None) -> list[str]:
     """Render answer items as a Markdown table when every item is a dict; otherwise bullets."""
     if not items:
         return ["- no answer"]
     dicts = [item for item in items if isinstance(item, dict)]
     if dicts and len(dicts) == len(items):
-        keys: list[str] = []
-        for item in dicts:
-            for key in item.keys():
-                if key not in keys:
-                    keys.append(key)
+        keys = _answer_columns(dicts, columns)
         if not keys:
             return ["- no answer"]
 
         def cell(value: Any) -> str:
+            if isinstance(value, (list, tuple)):
+                value = "; ".join(str(part) for part in value if str(part).strip())
+            elif isinstance(value, dict):
+                value = json.dumps(value, ensure_ascii=False, default=str, sort_keys=True)
             return str(value if value is not None else "").replace("|", "\\|").replace("\n", " ").strip()
 
         header = "| " + " | ".join(keys) + " |"
@@ -2600,11 +2846,16 @@ def _render_answer_block(items: list[Any]) -> list[str]:
     return [f"- {str(item).strip()}" for item in items if not isinstance(item, dict) and str(item).strip()]
 
 
-def _render_benchmark_answer_markdown(answer: dict[str, Any], block_heading: str) -> str:
-    """Render a single benchmark answer as a Markdown section with answer, missing reason, and queries."""
-    answer_block = _render_answer_block(list(answer.get("answer") or []))
-    missing_lines = [f"- {str(item).strip()}" for item in (answer.get("missing_reason") or []) if str(item).strip()]
-    query_lines = [f"- {str(item).strip()}" for item in (answer.get("queries_run") or []) if str(item).strip()]
+def _render_structured_answer_markdown(answer: dict[str, Any], block_heading: str) -> str:
+    """Render a single structured answer as Markdown using persisted data rows."""
+    answer_block = _render_answer_block(list(answer.get("answer") or []), answer.get("columns"))
+    missing_lines = [f"- {item}" for item in _coerce_string_list(answer.get("missing_reason"))]
+    query_lines = [f"- {item}" for item in _coerce_string_list(answer.get("queries_run"))]
+    data_lines = [f"- JSON: {answer.get('json_path')}"] if answer.get("json_path") else []
+    if answer.get("csv_path"):
+        data_lines.append(f"- CSV: {answer.get('csv_path')}")
+    if not data_lines:
+        data_lines = ["- none"]
     if not missing_lines:
         missing_lines = ["- none"]
     if not query_lines:
@@ -2623,8 +2874,771 @@ def _render_benchmark_answer_markdown(answer: dict[str, Any], block_heading: str
         "",
         "### Queries Run",
         *query_lines,
+        "",
+        "### Structured Data",
+        *data_lines,
     ]
     return "\n".join(lines).strip() + "\n"
+
+
+def _benchmark_answers_path(case: Case) -> Path:
+    """Compatibility path for older callers; new structured answers use reports/structured."""
+    return _structured_answers_path(case)
+
+
+def _load_benchmark_answers(case: Case) -> list[dict[str, Any]]:
+    """Compatibility wrapper for older tests/callers."""
+    return _load_structured_answers(case)
+
+
+def _persist_benchmark_answer(case: Case, answer: dict[str, Any]) -> None:
+    """Compatibility wrapper; prefer _persist_structured_answer."""
+    _persist_structured_answer(case, answer)
+
+
+def _render_benchmark_answer_markdown(answer: dict[str, Any], block_heading: str) -> str:
+    """Compatibility wrapper; prefer _render_structured_answer_markdown."""
+    return _render_structured_answer_markdown(answer, block_heading)
+
+
+def _structured_rows(db: CaseDB, query: str) -> list[dict[str, Any]]:
+    return [normalize_value(row) for row in _report_keypoint_rows(db, query)]
+
+
+def _text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _lower_blob(row: dict[str, Any]) -> str:
+    return " ".join(_text(value).casefold() for value in row.values() if value is not None)
+
+
+def _dedupe_dict_rows(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> list[dict[str, Any]]:
+    seen: set[tuple[str, ...]] = set()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        fingerprint = tuple(_text(row.get(key)).casefold() for key in keys)
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        out.append(row)
+    return out
+
+
+def _structured_answer(
+    case: Case,
+    *,
+    answer_id: str,
+    section_key: str,
+    block_heading: str,
+    rows: list[dict[str, Any]],
+    columns: list[str],
+    queries_run: list[str],
+    status: str | None = None,
+    missing_reason: list[str] | None = None,
+    source: str = "deterministic_sql",
+) -> dict[str, Any]:
+    resolved_status = status or ("answered" if rows else "not_found")
+    answer = _normalize_benchmark_answer(
+        {
+            "id": answer_id,
+            "status": resolved_status,
+            "answer": rows,
+            "columns": columns,
+            "missing_reason": missing_reason or ([] if rows else ["No matching structured database rows were found."]),
+            "queries_run": queries_run,
+            "source": source,
+        },
+        section_key=section_key,
+        block_heading=block_heading,
+        status=resolved_status,
+    )
+    _persist_structured_answer(case, answer)
+    return answer
+
+
+def _prefetch_executable_from_filename(file_name: Any) -> str:
+    name = _text(file_name)
+    if not name:
+        return ""
+    upper = name.upper()
+    if upper.endswith(".PF"):
+        name = name[:-3]
+    return re.sub(r"-[A-Fa-f0-9]{8}$", "", name)
+
+
+def _human_user_predicate(column: str = "target_user") -> str:
+    return f"""
+        {column} IS NOT NULL
+        AND TRIM({column}) <> ''
+        AND {column} NOT LIKE '%$'
+        AND UPPER({column}) NOT IN ('SYSTEM', 'LOCAL SERVICE', 'NETWORK SERVICE', 'ANONYMOUS LOGON')
+        AND UPPER({column}) NOT LIKE 'DWM-%'
+        AND UPPER({column}) NOT LIKE 'UMFD-%'
+    """
+
+
+def _build_host_identity(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+    rows = _structured_rows(
+        db,
+        """
+        SELECT
+            computer AS host_id,
+            COUNT(*) AS evidence_count,
+            MIN(timestamp) AS first_seen,
+            MAX(timestamp) AS last_seen
+        FROM evtx_events
+        WHERE computer IS NOT NULL AND TRIM(computer) <> ''
+        GROUP BY computer
+        ORDER BY evidence_count DESC, host_id
+        """,
+    )
+    rows = _dedupe_dict_rows(rows, ("host_id",))
+    return _structured_answer(
+        case,
+        answer_id=answer_id,
+        section_key=section_key,
+        block_heading=block_heading,
+        rows=rows,
+        columns=["host_id", "evidence_count", "first_seen", "last_seen"],
+        queries_run=["structured:host_identity:evtx_distinct_hosts"],
+    )
+
+
+def _build_last_human_logon(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+    interactive_rows = _structured_rows(
+        db,
+        f"""
+        SELECT
+            timestamp AS logon_time,
+            computer,
+            target_user AS user_name,
+            logon_type,
+            process_name,
+            src_ip,
+            evidence_id
+        FROM evtx_events
+        WHERE event_id = 4624
+          AND {_human_user_predicate("target_user")}
+          AND CAST(COALESCE(logon_type, '') AS VARCHAR) IN ('2', '7', '10', '11')
+        ORDER BY timestamp DESC
+        LIMIT 1
+        """,
+    )
+    if interactive_rows:
+        rows = interactive_rows
+        status = "answered"
+        missing: list[str] = []
+        label = "structured:last_human_logon:last_interactive_user_logon"
+    else:
+        rows = _structured_rows(
+            db,
+            f"""
+            SELECT
+                timestamp AS logon_time,
+                computer,
+                target_user AS user_name,
+                logon_type,
+                process_name,
+                src_ip,
+                evidence_id
+            FROM evtx_events
+            WHERE event_id = 4624
+              AND {_human_user_predicate("target_user")}
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+        )
+        status = "partial" if rows else "not_found"
+        missing = [] if rows else ["No human-user 4624 logon events were found."]
+        if rows:
+            missing = ["No interactive logon type was found; returned the latest human-user 4624 logon event."]
+        label = "structured:last_human_logon:last_human_user_logon_fallback"
+    return _structured_answer(
+        case,
+        answer_id=answer_id,
+        section_key=section_key,
+        block_heading=block_heading,
+        rows=rows,
+        columns=["logon_time", "computer", "user_name", "logon_type", "process_name", "src_ip", "evidence_id"],
+        queries_run=[label],
+        status=status,
+        missing_reason=missing,
+    )
+
+
+def _build_last_shutdown_event(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+    rows = _structured_rows(
+        db,
+        """
+        SELECT
+            timestamp AS shutdown_time,
+            event_id,
+            computer,
+            evidence_id,
+            message
+        FROM evtx_events
+        WHERE event_id IN (1074, 6006, 6008)
+        ORDER BY timestamp DESC
+        LIMIT 1
+        """,
+    )
+    return _structured_answer(
+        case,
+        answer_id=answer_id,
+        section_key=section_key,
+        block_heading=block_heading,
+        rows=rows,
+        columns=["shutdown_time", "event_id", "computer", "evidence_id", "message"],
+        queries_run=["structured:last_shutdown_event:1074_6006_6008"],
+    )
+
+
+def _build_application_execution_history(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+    rows = _structured_rows(
+        db,
+        """
+        SELECT
+            executable_name,
+            exec_count,
+            last_exec_time,
+            evidence_id,
+            source_file
+        FROM prefetch_executions
+        WHERE executable_name IS NOT NULL AND TRIM(executable_name) <> ''
+        ORDER BY last_exec_time DESC NULLS LAST, executable_name
+        LIMIT 200
+        """,
+    )
+    if rows:
+        return _structured_answer(
+            case,
+            answer_id=answer_id,
+            section_key=section_key,
+            block_heading=block_heading,
+            rows=rows,
+            columns=["executable_name", "exec_count", "last_exec_time", "evidence_id", "source_file"],
+            queries_run=["structured:application_execution_history:prefetch_executions"],
+        )
+
+    mft_rows = _structured_rows(
+        db,
+        """
+        SELECT
+            file_name,
+            file_path,
+            si_modified AS artifact_time,
+            evidence_id
+        FROM mft_entries
+        WHERE LOWER(COALESCE(extension, '')) = 'pf'
+           OR LOWER(COALESCE(file_name, '')) LIKE '%.pf'
+        ORDER BY si_modified DESC NULLS LAST, file_name
+        LIMIT 200
+        """,
+    )
+    rows = [
+        {
+            "executable_name": _prefetch_executable_from_filename(row.get("file_name")),
+            "exec_count": "",
+            "last_exec_time": "",
+            "artifact_time": row.get("artifact_time"),
+            "artifact_path": row.get("file_path"),
+            "evidence_id": row.get("evidence_id"),
+        }
+        for row in mft_rows
+    ]
+    rows = [row for row in rows if _text(row.get("executable_name"))]
+    return _structured_answer(
+        case,
+        answer_id=answer_id,
+        section_key=section_key,
+        block_heading=block_heading,
+        rows=rows,
+        columns=["executable_name", "exec_count", "last_exec_time", "artifact_time", "artifact_path", "evidence_id"],
+        queries_run=["structured:application_execution_history:mft_prefetch_file_fallback"],
+        status="partial" if rows else "not_found",
+        missing_reason=[] if not rows else ["prefetch_executions was empty; returned MFT Prefetch files without execution counts."],
+    )
+
+
+def _build_daily_session_activity(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+    rows = _structured_rows(
+        db,
+        """
+        SELECT
+            CAST(CAST(timestamp AS DATE) AS VARCHAR) AS date,
+            SUM(CASE WHEN event_id IN (6005, 4608) THEN 1 ELSE 0 END) AS startup,
+            SUM(CASE WHEN event_id = 4624 THEN 1 ELSE 0 END) AS logons,
+            SUM(CASE WHEN event_id IN (4634, 4647) THEN 1 ELSE 0 END) AS logoff,
+            SUM(CASE WHEN event_id IN (1074, 6006, 6008) THEN 1 ELSE 0 END) AS shutdown
+        FROM evtx_events
+        WHERE timestamp IS NOT NULL
+          AND event_id IN (4608, 4624, 4634, 4647, 6005, 6006, 6008, 1074)
+        GROUP BY CAST(timestamp AS DATE)
+        ORDER BY CAST(timestamp AS DATE)
+        """,
+    )
+    return _structured_answer(
+        case,
+        answer_id=answer_id,
+        section_key=section_key,
+        block_heading=block_heading,
+        rows=rows,
+        columns=["date", "startup", "logons", "logoff", "shutdown"],
+        queries_run=["structured:daily_session_activity:startup_logon_logoff_shutdown"],
+    )
+
+
+_BROWSER_MARKERS: dict[str, tuple[str, ...]] = {
+    "Google Chrome": ("chrome.exe", "google/chrome", "google\\chrome"),
+    "Microsoft Internet Explorer": ("iexplore.exe", "internet explorer"),
+    "Mozilla Firefox": ("firefox.exe", "mozilla/firefox", "mozilla\\firefox"),
+    "Microsoft Edge": ("msedge.exe", "microsoft/edge", "microsoft\\edge"),
+    "Brave": ("brave.exe", "bravesoftware"),
+    "Opera": ("opera.exe",),
+}
+
+
+def _browser_name_for_row(row: dict[str, Any]) -> str:
+    text = _lower_blob(row).replace("\\", "/")
+    for name, markers in _BROWSER_MARKERS.items():
+        if any(marker.replace("\\", "/") in text for marker in markers):
+            return name
+    return ""
+
+
+def _build_browser_usage(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+    prefetch_rows = _structured_rows(
+        db,
+        """
+        SELECT
+            executable_name,
+            exec_count,
+            last_exec_time,
+            evidence_id,
+            source_file
+        FROM prefetch_executions
+        WHERE LOWER(COALESCE(executable_name, '')) IN (
+            'chrome.exe', 'firefox.exe', 'msedge.exe', 'iexplore.exe', 'brave.exe', 'opera.exe'
+        )
+        ORDER BY last_exec_time DESC NULLS LAST, executable_name
+        """,
+    )
+    mft_rows = _structured_rows(
+        db,
+        """
+        SELECT
+            file_name,
+            file_path,
+            si_modified AS artifact_time,
+            evidence_id
+        FROM mft_entries
+        WHERE LOWER(COALESCE(file_name, '')) IN (
+            'chrome.exe', 'firefox.exe', 'msedge.exe', 'iexplore.exe', 'brave.exe', 'opera.exe'
+        )
+           OR LOWER(COALESCE(file_path, '')) LIKE '%google/chrome%'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%google\\chrome%'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%internet explorer%'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%mozilla/firefox%'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%mozilla\\firefox%'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%microsoft/edge%'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%microsoft\\edge%'
+        ORDER BY si_modified DESC NULLS LAST, file_name
+        LIMIT 100
+        """,
+    )
+    grouped: dict[str, dict[str, Any]] = {}
+
+    def group_for(browser_name: str) -> dict[str, Any]:
+        return grouped.setdefault(browser_name, {
+            "browser_name": browser_name,
+            "prefetch_records": 0,
+            "total_exec_count": 0,
+            "last_exec_time": "",
+            "mft_artifacts": 0,
+            "first_artifact_time": "",
+            "last_artifact_time": "",
+            "sample_paths": [],
+            "evidence_ids": [],
+        })
+
+    def append_unique(values: list[Any], value: Any, limit: int) -> None:
+        text = _text(value)
+        if text and text not in values and len(values) < limit:
+            values.append(text)
+
+    def max_text_time(left: Any, right: Any) -> str:
+        left_text = _text(left)
+        right_text = _text(right)
+        return max(left_text, right_text) if left_text and right_text else (left_text or right_text)
+
+    def min_text_time(left: Any, right: Any) -> str:
+        left_text = _text(left)
+        right_text = _text(right)
+        return min(left_text, right_text) if left_text and right_text else (left_text or right_text)
+
+    for row in prefetch_rows:
+        browser_name = _browser_name_for_row(row)
+        if not browser_name:
+            continue
+        item = group_for(browser_name)
+        item["prefetch_records"] = int(item.get("prefetch_records") or 0) + 1
+        try:
+            item["total_exec_count"] = int(item.get("total_exec_count") or 0) + int(row.get("exec_count") or 0)
+        except (TypeError, ValueError):
+            pass
+        item["last_exec_time"] = max_text_time(item.get("last_exec_time"), row.get("last_exec_time"))
+        append_unique(item["sample_paths"], row.get("source_file") or row.get("executable_name"), 10)
+        append_unique(item["evidence_ids"], row.get("evidence_id"), 20)
+    for row in mft_rows:
+        browser_name = _browser_name_for_row(row)
+        if not browser_name:
+            continue
+        item = group_for(browser_name)
+        item["mft_artifacts"] = int(item.get("mft_artifacts") or 0) + 1
+        item["first_artifact_time"] = min_text_time(item.get("first_artifact_time"), row.get("artifact_time"))
+        item["last_artifact_time"] = max_text_time(item.get("last_artifact_time"), row.get("artifact_time"))
+        append_unique(item["sample_paths"], row.get("file_path") or row.get("file_name"), 10)
+        append_unique(item["evidence_ids"], row.get("evidence_id"), 20)
+    rows = sorted(grouped.values(), key=lambda item: str(item.get("browser_name") or ""))
+    return _structured_answer(
+        case,
+        answer_id=answer_id,
+        section_key=section_key,
+        block_heading=block_heading,
+        rows=rows,
+        columns=["browser_name", "prefetch_records", "total_exec_count", "last_exec_time", "mft_artifacts", "first_artifact_time", "last_artifact_time", "sample_paths", "evidence_ids"],
+        queries_run=["structured:browser_usage:browser_prefetch", "structured:browser_usage:browser_mft_artifacts"],
+    )
+
+
+def _mail_application_name(row: dict[str, Any]) -> str:
+    text = _lower_blob(row)
+    if "outlook" in text or ".ost" in text or ".pst" in text:
+        return "Microsoft Outlook"
+    if "thunderbird" in text:
+        return "Mozilla Thunderbird"
+    return ""
+
+
+def _build_email_application_usage(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+    rows_raw = _structured_rows(
+        db,
+        """
+        SELECT
+            file_name,
+            file_path,
+            extension,
+            si_modified AS artifact_time,
+            evidence_id
+        FROM mft_entries
+        WHERE LOWER(COALESCE(file_name, '')) LIKE '%.ost'
+           OR LOWER(COALESCE(file_name, '')) LIKE '%.pst'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%/outlook/%'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%\\outlook\\%'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%thunderbird%'
+        ORDER BY si_modified DESC NULLS LAST, file_path
+        LIMIT 100
+        """,
+    )
+    rows: list[dict[str, Any]] = []
+    for row in rows_raw:
+        app = _mail_application_name(row)
+        if not app:
+            continue
+        rows.append({
+            "application_name": app,
+            "version": "",
+            "evidence_type": "mft",
+            "artifact_path": row.get("file_path"),
+            "artifact_time": row.get("artifact_time"),
+            "evidence_id": row.get("evidence_id"),
+        })
+    rows = _dedupe_dict_rows(rows, ("application_name", "artifact_path", "evidence_id"))
+    return _structured_answer(
+        case,
+        answer_id=answer_id,
+        section_key=section_key,
+        block_heading=block_heading,
+        rows=rows,
+        columns=["application_name", "version", "evidence_type", "artifact_path", "artifact_time", "evidence_id"],
+        queries_run=["structured:email_application_usage:mail_application_artifacts"],
+    )
+
+
+def _build_email_data_files(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+    rows = _structured_rows(
+        db,
+        """
+        SELECT
+            file_name,
+            file_path,
+            extension,
+            si_created,
+            si_modified,
+            si_accessed,
+            fn_created,
+            fn_modified,
+            fn_accessed,
+            evidence_id
+        FROM mft_entries
+        WHERE LOWER(COALESCE(extension, '')) IN ('ost', 'pst', 'mbox')
+           OR LOWER(COALESCE(file_name, '')) LIKE '%.ost'
+           OR LOWER(COALESCE(file_name, '')) LIKE '%.pst'
+           OR LOWER(COALESCE(file_name, '')) LIKE '%.mbox'
+        ORDER BY COALESCE(fn_modified, si_modified, fn_created, si_created) DESC NULLS LAST, file_path
+        LIMIT 100
+        """,
+    )
+    return _structured_answer(
+        case,
+        answer_id=answer_id,
+        section_key=section_key,
+        block_heading=block_heading,
+        rows=rows,
+        columns=["file_name", "file_path", "extension", "si_created", "si_modified", "si_accessed", "fn_created", "fn_modified", "fn_accessed", "evidence_id"],
+        queries_run=["structured:email_data_files:mft"],
+    )
+
+
+def _build_desktop_rename_candidates(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+    rows = _structured_rows(
+        db,
+        """
+        SELECT
+            json_extract_string(raw_json, '$.fn_filename') AS original_name,
+            file_name AS new_name,
+            file_path,
+            si_modified,
+            fn_modified,
+            evidence_id
+        FROM mft_entries
+        WHERE (
+            LOWER(COALESCE(file_path, '')) LIKE '%/desktop/%'
+            OR LOWER(COALESCE(file_path, '')) LIKE '%\\desktop\\%'
+        )
+          AND json_extract_string(raw_json, '$.fn_filename') IS NOT NULL
+          AND json_extract_string(raw_json, '$.fn_filename') != file_name
+        ORDER BY COALESCE(fn_modified, si_modified) DESC NULLS LAST, file_path
+        LIMIT 100
+        """,
+    )
+    return _structured_answer(
+        case,
+        answer_id=answer_id,
+        section_key=section_key,
+        block_heading=block_heading,
+        rows=rows,
+        columns=["original_name", "new_name", "file_path", "si_modified", "fn_modified", "evidence_id"],
+        queries_run=["structured:desktop_rename_candidates:mft_filename_pairs"],
+    )
+
+
+_CLOUD_MARKERS: dict[str, tuple[str, ...]] = {
+    "Google Drive": ("googledrive", "google drive", "google/drive", "google\\drive"),
+    "iCloud": ("icloud", "apple computer"),
+    "OneDrive": ("onedrive",),
+    "Dropbox": ("dropbox", "config.dbx"),
+}
+
+
+def _build_cloud_service_traces(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+    mft_rows = _structured_rows(
+        db,
+        """
+        SELECT
+            file_name,
+            file_path,
+            is_deleted,
+            si_modified AS artifact_time,
+            evidence_id
+        FROM mft_entries
+        WHERE LOWER(COALESCE(file_path, '')) LIKE '%google/drive%'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%google\\drive%'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%apple computer%'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%icloud%'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%onedrive%'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%dropbox%'
+           OR LOWER(COALESCE(file_name, '')) IN ('googledrivesync.exe', 'icloudsetup.exe', 'onedrive.exe', 'dropbox.exe', 'sync_config.db', 'snapshot.db', 'config.dbx')
+        ORDER BY si_modified DESC NULLS LAST, file_path
+        LIMIT 200
+        """,
+    )
+    prefetch_rows = _structured_rows(
+        db,
+        """
+        SELECT
+            executable_name,
+            exec_count,
+            last_exec_time,
+            evidence_id,
+            source_file
+        FROM prefetch_executions
+        WHERE LOWER(COALESCE(executable_name, '')) IN ('googledrivesync.exe', 'icloudsetup.exe', 'onedrive.exe', 'dropbox.exe')
+        ORDER BY last_exec_time DESC NULLS LAST, executable_name
+        """,
+    )
+    rows: list[dict[str, Any]] = []
+    for service_name, markers in _CLOUD_MARKERS.items():
+        service_mft = [row for row in mft_rows if any(marker in _lower_blob(row).replace("\\", "/") for marker in markers)]
+        service_prefetch = [row for row in prefetch_rows if any(marker in _lower_blob(row).replace("\\", "/") for marker in markers)]
+        if not service_mft and not service_prefetch:
+            continue
+        paths = [_text(row.get("file_path")) for row in service_mft if _text(row.get("file_path"))]
+        paths.extend(_text(row.get("source_file")) for row in service_prefetch if _text(row.get("source_file")))
+        evidence_ids = [_text(row.get("evidence_id")) for row in [*service_mft, *service_prefetch] if _text(row.get("evidence_id"))]
+        rows.append({
+            "service_name": service_name,
+            "exe_found": "yes" if service_prefetch or any(".exe" in _lower_blob(row) or ".pf" in _lower_blob(row) for row in service_mft) else "no",
+            "paths_found": paths[:20],
+            "config_found": "yes" if any(marker in _lower_blob(row) for row in service_mft for marker in ("config", ".db", "snapshot")) else "no",
+            "evidence_ids": evidence_ids[:20],
+        })
+    return _structured_answer(
+        case,
+        answer_id=answer_id,
+        section_key=section_key,
+        block_heading=block_heading,
+        rows=rows,
+        columns=["service_name", "exe_found", "paths_found", "config_found", "evidence_ids"],
+        queries_run=["structured:cloud_service_traces:mft_artifacts", "structured:cloud_service_traces:prefetch"],
+    )
+
+
+def _build_resignation_file_timestamps(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+    rows = _structured_rows(
+        db,
+        """
+        SELECT
+            file_name,
+            file_path,
+            extension,
+            is_deleted,
+            si_created,
+            si_modified,
+            si_accessed,
+            fn_created,
+            fn_modified,
+            fn_accessed,
+            evidence_id
+        FROM mft_entries
+        WHERE LOWER(COALESCE(file_name, '')) LIKE '%resign%'
+           OR LOWER(COALESCE(file_name, '')) LIKE '%resignation%'
+           OR LOWER(COALESCE(file_name, '')) LIKE '%retire%'
+           OR LOWER(COALESCE(file_name, '')) LIKE '%退職%'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%resign%'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%resignation%'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%retire%'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%退職%'
+        ORDER BY COALESCE(fn_modified, si_modified, fn_created, si_created) DESC NULLS LAST, file_path
+        LIMIT 100
+        """,
+    )
+    return _structured_answer(
+        case,
+        answer_id=answer_id,
+        section_key=section_key,
+        block_heading=block_heading,
+        rows=rows,
+        columns=["file_name", "file_path", "extension", "is_deleted", "si_created", "si_modified", "si_accessed", "fn_created", "fn_modified", "fn_accessed", "evidence_id"],
+        queries_run=["structured:resignation_file_timestamps:mft"],
+    )
+
+
+def _build_antiforensic_activity(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+    event_rows = _structured_rows(
+        db,
+        """
+        SELECT
+            'event_log' AS evidence_type,
+            timestamp,
+            event_id,
+            channel,
+            computer,
+            target_user,
+            evidence_id,
+            message
+        FROM evtx_events
+        WHERE event_id = 1102
+           OR (event_id = 104 AND LOWER(COALESCE(channel, '')) LIKE '%eventlog%')
+        ORDER BY timestamp DESC NULLS LAST
+        LIMIT 100
+        """,
+    )
+    tool_rows = _structured_rows(
+        db,
+        """
+        SELECT
+            'tool_or_cleanup_artifact' AS evidence_type,
+            file_name,
+            file_path,
+            is_deleted,
+            si_created,
+            si_modified,
+            evidence_id
+        FROM mft_entries
+        WHERE LOWER(COALESCE(file_name, '')) LIKE 'eraser%.exe'
+           OR LOWER(COALESCE(file_name, '')) LIKE 'ccleaner%.exe'
+           OR LOWER(COALESCE(file_name, '')) LIKE 'ccsetup%.exe'
+           OR LOWER(COALESCE(file_name, '')) LIKE 'bleachbit%.exe'
+           OR LOWER(COALESCE(file_name, '')) LIKE 'sdelete%.exe'
+           OR LOWER(COALESCE(file_name, '')) LIKE 'cipher.exe'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%eraser%'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%ccleaner%'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%bleachbit%'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%sdelete%'
+        ORDER BY COALESCE(si_modified, si_created) DESC NULLS LAST, file_path
+        LIMIT 100
+        """,
+    )
+    rows = event_rows + tool_rows
+    return _structured_answer(
+        case,
+        answer_id=answer_id,
+        section_key=section_key,
+        block_heading=block_heading,
+        rows=rows,
+        columns=["evidence_type", "timestamp", "event_id", "channel", "computer", "target_user", "file_name", "file_path", "is_deleted", "si_created", "si_modified", "evidence_id", "message"],
+        queries_run=["structured:antiforensic_activity:event_log_clear_events", "structured:antiforensic_activity:tool_artifacts"],
+    )
+
+
+StructuredAnswerBuilder = Callable[[Case, CaseDB, str, str, str], dict[str, Any]]
+
+_STRUCTURED_ANSWER_BUILDERS: dict[str, StructuredAnswerBuilder] = {
+    "host_identity": _build_host_identity,
+    "last_human_logon": _build_last_human_logon,
+    "last_shutdown_event": _build_last_shutdown_event,
+    "application_execution_history": _build_application_execution_history,
+    "daily_session_activity": _build_daily_session_activity,
+    "browser_usage": _build_browser_usage,
+    "email_application_usage": _build_email_application_usage,
+    "email_data_files": _build_email_data_files,
+    "desktop_rename_candidates": _build_desktop_rename_candidates,
+    "cloud_service_traces": _build_cloud_service_traces,
+    "resignation_file_timestamps": _build_resignation_file_timestamps,
+    "antiforensic_activity": _build_antiforensic_activity,
+}
+
+
+def build_structured_answer(
+    case: Case,
+    db: CaseDB,
+    *,
+    answer_spec: str,
+    answer_id: str,
+    section_key: str,
+    block_heading: str,
+) -> dict[str, Any] | None:
+    """Build, persist, and return deterministic structured answer data for a semantic spec."""
+    normalized_spec = str(answer_spec or "").strip().casefold().replace("-", "_")
+    if not normalized_spec:
+        return None
+    builder = _STRUCTURED_ANSWER_BUILDERS.get(normalized_spec)
+    if builder is None:
+        return None
+    resolved_id = str(answer_id or normalized_spec).strip() or normalized_spec
+    return builder(case, db, resolved_id, section_key, block_heading)
 
 
 def fill_section(

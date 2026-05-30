@@ -254,7 +254,9 @@ class PersistenceTests(unittest.TestCase):
                 (
                     "# Appendix\n\n"
                     "## 8. メールデータファイル\n"
-                    "<!-- mode: benchmark -->\n"
+                    "<!-- mode: structured -->\n"
+                    "<!-- answer_id: Q20 -->\n"
+                    "<!-- answer_spec: email_data_files -->\n"
                     "<!-- evidence_keypoints: benchmark_ost_file, benchmark_prefetch_recent -->\n"
                     "<!-- fill -->\n"
                 ),
@@ -264,7 +266,9 @@ class PersistenceTests(unittest.TestCase):
                 request = prepare_section_request(case, db, template_path, {}, report_brief={})
 
             block = request["block_requests"][0]
-            self.assertEqual("benchmark", block["mode"])
+            self.assertEqual("structured", block["mode"])
+            self.assertEqual("Q20", block["answer_id"])
+            self.assertEqual("email_data_files", block["answer_spec"])
             self.assertEqual(["benchmark_ost_file", "benchmark_prefetch_recent"], block["evidence_keypoints"])
 
     def test_quality_gate_flags_placeholder_entities_and_non_chronological_timeline(self) -> None:
@@ -1024,4 +1028,3 @@ class PersistenceTests(unittest.TestCase):
 
             self.assertNotEqual(0, result.exit_code)
             self.assertIn("Available profiles", result.output)
-

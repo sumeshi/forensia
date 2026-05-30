@@ -212,6 +212,7 @@ PARAGRAPH_NARRATE_SCHEMA: dict[str, Any] = {
     "title": "ParagraphNarrate",
     "type": "object",
     "additionalProperties": False,
+    "required": ["body"],
     "properties": {
         "body": {"type": "string", "minLength": 50},
     },

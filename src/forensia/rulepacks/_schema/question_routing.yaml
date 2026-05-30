@@ -33,6 +33,7 @@ question_types:
       - メール
       - メールデータ
     keypoints:
+      - structured_email_artifacts
       - benchmark_ost_file
       - benchmark_exec_related_mft
       - benchmark_artifact_paths
@@ -57,6 +58,7 @@ question_types:
       - ファイル名変更
       - desktop 上
     keypoints:
+      - structured_desktop_rename_candidates
       - benchmark_recent_lnk
       - benchmark_reco_desktop_paths
     expected_answer_shape:
@@ -80,8 +82,9 @@ question_types:
       - web
       - ブラウザ
     keypoints:
-      - benchmark_reco_desktop_paths
+      - structured_browser_artifacts
       - benchmark_exec_processes
+      - benchmark_reco_desktop_paths
     expected_answer_shape:
       format: name_with_version
       fields: [application_name, version]
@@ -105,8 +108,9 @@ question_types:
       - ログオン
       - ログオフ
     keypoints:
-      - benchmark_timeline_events
       - benchmark_logon_window
+      - structured_daily_session_activity
+      - benchmark_timeline_events
     expected_answer_shape:
       format: daily_table
       fields: [date, startup, logons, logoff, shutdown]
@@ -126,8 +130,9 @@ question_types:
       - dropbox
       - クラウド
     keypoints:
-      - benchmark_reco_desktop_paths
+      - structured_cloud_artifacts
       - benchmark_exec_processes
+      - benchmark_reco_desktop_paths
     expected_answer_shape:
       format: enumerated_services
       fields: [service_name, exe_found, paths_found, config_found]
@@ -151,8 +156,9 @@ question_types:
       - 削除
       - ログ消去
     keypoints:
-      - benchmark_timeline_events
+      - structured_antiforensics
       - benchmark_reco_system_events
+      - benchmark_timeline_events
     expected_answer_shape:
       format: full_scan
       fields: [tool_name, evidence_type, found, details]
@@ -193,12 +199,13 @@ question_types:
     keypoints:
       - benchmark_host_logons
     expected_answer_shape:
-      format: daily_table
-      fields: [date, startup, logons, logoff, shutdown]
+      format: list
+      fields: [logon_time, computer, user_name, logon_type, process_name, src_ip, evidence_id]
       style: table
+      note: "Return the latest human-user logon event. Do not return daily aggregate counts."
     evidence_chain:
       - source: evtx_events
-        query: "SELECT DATE(timestamp) AS date, target_user, event_id, COUNT(*) AS n FROM evtx_events WHERE event_id IN (4624, 4634, 4647, 6005, 6006) GROUP BY 1, 2, 3"
+        query: "SELECT timestamp AS logon_time, computer, target_user AS user_name, logon_type, process_name, src_ip, evidence_id FROM evtx_events WHERE event_id = 4624 ORDER BY timestamp DESC LIMIT 20"
 
   - name: accounts_summary
     keywords:
@@ -217,8 +224,14 @@ question_types:
       - startup
       - 起動
     keypoints:
+      - structured_last_shutdown
       - benchmark_window
       - benchmark_timeline_events
+    expected_answer_shape:
+      format: list
+      fields: [shutdown_time, event_id, computer, evidence_id]
+      style: table
+      note: "Return the latest shutdown-relevant event only; do not use the overall last event timestamp."
     evidence_chain:
       - source: evtx_events
         query: "SELECT timestamp, event_id, computer FROM evtx_events WHERE event_id IN (1074, 6005, 6006, 6008, 6013, 7001, 7002) ORDER BY timestamp"
