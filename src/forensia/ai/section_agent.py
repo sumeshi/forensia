@@ -753,11 +753,11 @@ def _add_json_fallback(sql: str) -> str:
     select_clause = select_match.group(1)
 
     nullable_cols = {
-        "user_name": "COALESCE(user_name, json_extract(raw_json, '$.TargetUserName'), json_extract(raw_json, '$.SubjectUserName')) AS user_name",
-        "target_user": "COALESCE(target_user, json_extract(raw_json, '$.TargetUserName'), json_extract(raw_json, '$.SubjectUserName')) AS target_user",
-        "subject_user": "COALESCE(subject_user, json_extract(raw_json, '$.SubjectUserName')) AS subject_user",
-        "src_ip": "COALESCE(src_ip, json_extract(raw_json, '$.IpAddress')) AS src_ip",
-        "logon_type": "COALESCE(logon_type, CAST(json_extract(raw_json, '$.LogonType') AS INTEGER)) AS logon_type",
+        "user_name": "COALESCE(user_name, json_extract_string(raw_json, '$.TargetUserName'), json_extract_string(raw_json, '$.SubjectUserName')) AS user_name",
+        "target_user": "COALESCE(target_user, json_extract_string(raw_json, '$.TargetUserName'), json_extract_string(raw_json, '$.SubjectUserName')) AS target_user",
+        "subject_user": "COALESCE(subject_user, json_extract_string(raw_json, '$.SubjectUserName')) AS subject_user",
+        "src_ip": "COALESCE(src_ip, json_extract_string(raw_json, '$.IpAddress')) AS src_ip",
+        "logon_type": "COALESCE(CAST(logon_type AS VARCHAR), CAST(json_extract_string(raw_json, '$.LogonType') AS VARCHAR)) AS logon_type",
     }
 
     new_select = select_clause
@@ -999,7 +999,7 @@ def _run_block_plan(
     context_sections: dict[str, str],
     current_section_outline: list[dict],
 ) -> SectionPlanAction | None:
-    plan_messages = build_section_agent_plan_messages(
+    plan_messages, plan_schema = build_section_agent_plan_messages(
         section_key=ctx.section_key,
         section_title=ctx.title,
         block_heading=ctx.block_heading,
@@ -1015,12 +1015,14 @@ def _run_block_plan(
         reusable_evidence=ctx.reusable_evidence,
         memory_context_md=ctx.memory_context_md,
         evidence_keypoints=ctx.evidence_keypoints,
+        db=ctx.db,
     )
     try:
         plan = request_llm_json(
             messages=plan_messages,
             model=ctx.model,
             base_url=ctx.base_url,
+            json_schema=plan_schema,
             audit_callback=ctx.audit,
         )
     except Exception as exc:
@@ -1077,7 +1079,18 @@ def _execute_block_plan(
                 payload={"error": "No SQL in planned_query"},
             )
             return None
-        source_query, result = _execute_sql(ctx.db, planned_query.sql)
+        try:
+            source_query, result = _execute_sql(ctx.db, planned_query.sql)
+        except Exception as exc:
+            _store_section_run(
+                ctx.db,
+                section_key=ctx.section_key,
+                block_heading=ctx.block_heading,
+                iteration=iteration,
+                phase="query_error",
+                payload={"error": str(exc), "sql": planned_query.sql},
+            )
+            return None
     else:
         return None
     _store_section_run(
@@ -1128,7 +1141,7 @@ def _run_block_check(
     actual_query_row_counts: list[int],
     source_query: str,
 ) -> tuple[str, str, list[Any], str] | None:
-    check_messages = build_section_agent_check_messages(
+    check_messages, check_schema = build_section_agent_check_messages(
         section_key=ctx.section_key,
         section_title=ctx.title,
         block_heading=ctx.block_heading,
@@ -1145,6 +1158,7 @@ def _run_block_check(
             messages=check_messages,
             model=ctx.model,
             base_url=ctx.base_url,
+            json_schema=check_schema,
             audit_callback=ctx.audit,
         )
     except Exception as exc:
@@ -1337,7 +1351,7 @@ def _write_block_body(
             picked_rows = raw_rows
             classification = {"status": "answered", "picked_row_indices": [], "rationale": "rows match expected_shape"}
         else:
-            classify_messages = build_benchmark_classify_messages(
+            classify_messages, classify_schema = build_benchmark_classify_messages(
                 question=ctx.template_body or ctx.block_heading,
                 block_heading=ctx.block_heading,
                 evidence_rows=prompt_rows or [],
@@ -1348,6 +1362,7 @@ def _write_block_body(
                 messages=classify_messages,
                 model=ctx.model,
                 base_url=ctx.base_url,
+                json_schema=classify_schema,
                 audit_callback=ctx.audit,
             )
             # Handle picked_row_indices (int array) instead of picked_row_ids
@@ -1385,7 +1400,7 @@ def _write_block_body(
                     if r.get("keypoint") or r.get("source_kind")
                 }
             )
-            outline_messages = build_section_outline_messages(
+            outline_messages, outline_schema = build_section_outline_messages(
                 template_body=ctx.template_body,
                 relevant_evidence=flat_evidence,
                 time_range=ctx.case.time_range,
@@ -1396,19 +1411,20 @@ def _write_block_body(
                 messages=outline_messages,
                 model=ctx.model,
                 base_url=ctx.base_url,
+                json_schema=outline_schema,
                 audit_callback=ctx.audit,
             )
             all_key_points: list[str] = []
             for item in outline.get("outline") or []:
                 all_key_points.extend(item.get("key_points") or [])
-            narrate_messages = build_paragraph_narrate_messages(
+            narrate_messages, narrate_schema = build_paragraph_narrate_messages(
                 heading=ctx.block_heading,
                 key_points=all_key_points,
                 evidence_rows=flat_evidence[:10],
                 template_body=ctx.template_body,
             )
             body = _prepend_status_badge(
-                chat_completion(messages=narrate_messages, model=ctx.model, base_url=ctx.base_url).strip(),
+                chat_completion(messages=narrate_messages, model=ctx.model, base_url=ctx.base_url, json_schema=narrate_schema).strip(),
                 status_inner,
             )
             messages = narrate_messages

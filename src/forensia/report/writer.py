@@ -17,6 +17,10 @@ from forensia.db.query import fetch_records, normalize_value
 from forensia.report.html import render_html_report
 
 
+def _coalesce_varchar(expr1: str, expr2: str) -> str:
+    return f"COALESCE(CAST({expr1} AS VARCHAR), CAST({expr2} AS VARCHAR))"
+
+
 @dataclass(frozen=True)
 class TemplateMeta:
     behaviors: tuple[str, ...] = ()
@@ -138,8 +142,8 @@ SECTION_KEYPOINT_PREFIXES: dict[str, tuple[str, ...]] = {
 
 SECTION_EXTRA_KEYPOINTS: dict[str, tuple[str, ...]] = {
     "overview": ("top_keypoints", "session_activity_events"),
-    "timeline": ("top_keypoints", "gaps_log_integrity_events"),
-    "technical": ("top_keypoints", "overview_hosts", "session_activity_events", "host_user_profile_paths", "timeline_prefetch_history", "host_execution_activity", "mft_prefetch_filenames", "mft_user_app_activity", "mft_recent_folder_lnk", "ioc_user_data_files"),
+    "timeline": ("top_keypoints", "gaps_log_integrity_events", "timeline_prefetch_full_history"),
+    "technical": ("top_keypoints", "overview_hosts", "session_activity_events", "host_user_profile_paths", "timeline_prefetch_history", "timeline_prefetch_full_history", "host_execution_activity", "mft_prefetch_filenames", "mft_user_app_activity", "mft_recent_folder_lnk", "ioc_user_data_files"),
     "gaps": ("top_keypoints",),
     "recommendations": ("top_keypoints", "timeline_system_events", "timeline_prefetch_history", "ioc_user_data_files"),
     "appendix": ("top_keypoints",),
@@ -1335,6 +1339,19 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             FROM prefetch_executions
             ORDER BY last_exec_time
             LIMIT 80
+            """,
+        ),
+    ),
+    "timeline_prefetch_full_history": (
+        "All execution timestamps recorded across Prefetch files (up to 8 per file).",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            SELECT executable_name, exec_time, exec_index, prefetch_hash, evidence_id
+            FROM prefetch_timeline
+            WHERE exec_time IS NOT NULL
+            ORDER BY exec_time DESC
+            LIMIT 200
             """,
         ),
     ),

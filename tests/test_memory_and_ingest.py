@@ -719,7 +719,7 @@ class MemoryAndIngestTests(unittest.TestCase):
                 suffix = Path(source_path).suffix.lower()
                 output = case_obj.raw_dir / f"{(source_sha or 'x')[:12]}{suffix or '.jsonl'}"
                 output.write_text("{}", encoding="utf-8")
-                return output
+                return output, None
 
             with patch("forensia.ingest.evtx.ingest_evtx_file", side_effect=fake_ingest), patch(
                 "forensia.ingest.mft.ingest_mft_file",
@@ -750,9 +750,9 @@ class MemoryAndIngestTests(unittest.TestCase):
             (input_dir / "APP.EXE-12345678.pf").write_text("prefetch", encoding="utf-8")
 
             def fake_ingest(case_obj: Case, source_path: str | Path, source_sha: str | None = None, progress_callback=None):
-                output = case_obj.raw_dir / f"prefetch-{(source_sha or 'x')[:12]}.jsonl"
+                output = case_obj.raw_dir / f"prefetch-entries-{(source_sha or 'x')[:12]}.jsonl"
                 output.write_text("{}", encoding="utf-8")
-                return output
+                return output, None
 
             with patch("forensia.ingest.prefetch.ingest_prefetch_file", side_effect=fake_ingest):
                 counts = ingest_all(case, input_dir)
@@ -783,10 +783,11 @@ class MemoryAndIngestTests(unittest.TestCase):
             with CaseDB(case) as db, patch("forensia.normalize.evtx.normalize_evtx", return_value=0), patch(
                 "forensia.normalize.mft.normalize_mft",
                 return_value=(0, 0),
-            ), patch("forensia.normalize.prefetch.normalize_prefetch", return_value=3):
+            ), patch("forensia.normalize.prefetch.normalize_prefetch", return_value=(3, 0)):
                 counts = normalize_all(case, db)
 
             self.assertEqual(3, counts["prefetch_executions"])
+            self.assertEqual(0, counts["prefetch_timeline"])
             self.assertEqual(0, counts["evtx_rows"])
             self.assertEqual(0, counts["mft_entries"])
 
@@ -847,19 +848,17 @@ class MemoryAndIngestTests(unittest.TestCase):
                 "source_file": "sample/cfreds/MFT_C",
                 "evidence_id": "mft-000000000042-00",
             }
-            (case.raw_dir / "mft-test.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+            (case.raw_dir / "mft-entries-test.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
 
             with CaseDB(case) as db:
                 entries, timeline = normalize_mft(case, db)
                 entry = db.execute(
                     "SELECT record_number, file_name, extension, is_directory, is_deleted FROM mft_entries"
                 ).fetchone()
-                timeline_count = db.execute("SELECT COUNT(*) FROM mft_timeline").fetchone()[0]
 
             self.assertEqual(1, entries)
-            self.assertEqual(8, timeline)
+            self.assertEqual(0, timeline)
             self.assertEqual((42, "example.txt", "txt", False, False), entry)
-            self.assertEqual(8, timeline_count)
 
     def test_cli_add_and_run_surface_prefetch_counts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

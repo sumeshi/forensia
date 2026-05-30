@@ -5,11 +5,27 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from forensia.ai.schemas import (
+    FINDING_EXTRACTOR_SCHEMA,
+    MEMORY_UPDATER_SCHEMA,
+    PARAGRAPH_NARRATE_SCHEMA,
+    SQL_SELF_CHECK_SCHEMA,
+    SECTION_AGENT_CHECK_SCHEMA,
+    SECTION_AGENT_PLAN_SCHEMA,
+    SECTION_OUTLINE_SCHEMA,
+    VERDICT_REVIEW_SCHEMA,
+    benchmark_classify_schema,
+    gap_identifier_schema,
+    hypothesis_drafter_schema,
+)
+from forensia.ai.sql_schema import _build_live_schema_guidance, build_investigation_framework, _load_app_catalog
 from forensia.config import get_llm_settings
 from forensia.core.session import Hypothesis
-from forensia.ai.sql_schema import build_investigation_framework, _load_app_catalog
+
+if TYPE_CHECKING:
+    from forensia.db.database import CaseDB
 
 def _estimate_message_tokens(text: str) -> int:
     """Rough token estimation: ~4 chars per token for English+JSON."""
@@ -49,7 +65,7 @@ def _trim_dynamic_content(
 
 
 def _assemble_messages_with_budget(
-    builder_func: Callable[..., list[dict[str, str]]],
+    builder_func: Callable[..., list[dict[str, str]] | tuple[list[dict[str, str]], dict]],
     *args,
     max_tokens: int = 28000,
     **kwargs,
@@ -59,7 +75,11 @@ def _assemble_messages_with_budget(
     Preserves system prompt (playbook) while trimming user/dynamic content.
     Usage: messages = _assemble_messages_with_budget(build_broad_plan_messages, ..., max_tokens=28000)
     """
-    messages = builder_func(*args, **kwargs)
+    result = builder_func(*args, **kwargs)
+    if isinstance(result, tuple):
+        messages = result[0]
+    else:
+        messages = result
     return _trim_dynamic_content(messages, max_total_tokens=max_tokens)
 
 
@@ -620,25 +640,16 @@ def _format_schema_card(table_hints: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _build_schema_guidance(table_name: str = "evtx_events") -> str:
-    """Build the schema_card section of planner prompts.
-
-    Shows curated `core_columns` + descriptions for the LLM; the full
-    `columns` list is consumed silently by validate_select_sql elsewhere.
-    Surfaces ALL known tables (evtx_events, mft_entries, mft_timeline,
-    prefetch_executions, findings) so the planner can JOIN/UNION across them.
-    """
+def _build_schema_guidance(table_name: str = "evtx_events", db: CaseDB | None = None) -> str:
     schema_hints = _load_schema_hints()
     if not schema_hints:
         return ""
     primary = schema_hints.get(table_name, {})
     if not primary:
         return ""
-    # Only surface entries that look like real DB tables (have a column list).
     db_tables = {name: h for name, h in schema_hints.items() if h.get("columns") or h.get("core_columns")}
     extractors = primary.get("json_field_extractors", {})
     blocks = ["<SCHEMA_CARDS>"]
-    # Primary table first, then any other known tables in stable order.
     ordering = [table_name] + sorted(name for name in db_tables if name != table_name)
     for name in ordering:
         hints = db_tables.get(name)
@@ -650,6 +661,9 @@ def _build_schema_guidance(table_name: str = "evtx_events") -> str:
             + ", ".join(f"{k} → {v}" for k, v in extractors.items())
         )
     blocks.append("</SCHEMA_CARDS>")
+    live = _build_live_schema_guidance(db)
+    if live:
+        blocks.append(live)
     return "\n".join(blocks) + "\n" + _SQL_COOKBOOK
 
 
@@ -813,7 +827,7 @@ def build_sql_composer_messages(
         "</INPUT_SCHEMA>\n"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
-        '  "template_id": "null OR an exact template_id string from template_catalog above (snake_case like q_failed_logon_by_ip_window). NEVER invent template_ids and NEVER use SQL_COOKBOOK headings as template_id.",\n'
+        '  "template_id": "string OR null. MUST be either (a) JSON null, or (b) an exact template_id from template_catalog. NEVER the literal string \\"null\\".",\n'
         '  "sql": "string | null — raw SELECT if no template_id matches. Use SQL_COOKBOOK snippets as reference style.",\n'
         '  "params": {"key": "value"},\n'
         '  "purpose": "string — why this query answers the hypothesis"\n'
@@ -823,6 +837,9 @@ def build_sql_composer_messages(
         "Exactly ONE of template_id or sql MUST be non-null. The other MUST be null.\n"
         "template_id MUST be an exact match to a template_catalog entry (use null otherwise).\n"
         "When raw SQL is used: ensure all COALESCE arguments have the same data type. Use json_extract_string (returns VARCHAR) when COALESCE-ing with a VARCHAR column, never json_extract (returns JSON).\n"
+        "Never put a VARCHAR-returning function (json_extract_string) and an INTEGER column in the same COALESCE without explicit CAST. "
+        "Use: COALESCE(CAST(json_extract_string(json, '$.x') AS BIGINT), int_col) for integer unification, "
+        "or COALESCE(CAST(json_extract_string(json, '$.x') AS VARCHAR), CAST(int_col AS VARCHAR)) for string unification.\n"
         "If EXECUTION_ERROR is present, you MUST change the query — at minimum change the table list, the WHERE clause, or eliminate the failing JOIN. Never repeat the same SQL that caused an execution error.\n"
         "If prior_check_feedback names specific missing event_ids or evidence types, the new SQL MUST include those event_ids or evidence types. Never ignore prior check feedback.\n"
         "</RULES>"
@@ -831,6 +848,38 @@ def build_sql_composer_messages(
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+def build_sql_self_check_messages(
+    intent: dict[str, Any],
+    schema_card: str,
+) -> tuple[list[dict[str, str]], dict]:
+    system = (
+        "<TASK>You are a SQL schema validator. Check whether the intent can be expressed as valid SQL against the given schema.</TASK>\n"
+        "<OUTPUT_SCHEMA>\n"
+        "{\n"
+        '  "target_table_exists": true,\n'
+        '  "required_columns_present": ["col1", "col2"],\n'
+        '  "missing_columns": [],\n'
+        '  "join_keys": [{"left_table": "...", "left_col": "...", "right_table": "...", "right_col": "..."}],\n'
+        '  "time_column": "timestamp | si_modified | exec_time | ...",\n'
+        '  "ready_to_compose": true,\n'
+        '  "blockers": "string — empty if ready_to_compose=true, else what is missing"\n'
+        "}\n"
+        "</OUTPUT_SCHEMA>\n"
+        "<RULES>\n"
+        "Check that all columns referenced in the intent exist in the schema card.\n"
+        "If JOIN is needed, verify the join key columns exist in both tables.\n"
+        "If ready_to_compose is false, describe what's blocking in the blockers field.\n"
+        "</RULES>\n"
+    )
+    user = (
+        f"intent: {json.dumps(intent, ensure_ascii=False, default=str)}\n"
+        f"schema_card:\n{schema_card}\n"
+    )
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ], SQL_SELF_CHECK_SCHEMA
+
 
 def build_verdict_review_messages(
     hypothesis,
@@ -838,7 +887,7 @@ def build_verdict_review_messages(
     result_summary: dict,
     time_range: dict[str, str] | None = None,
     strictness_note: str = "",
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], dict]:
     """role: verdict_reviewer.
     Goal: classify the SQL result vs hypothesis as confirmed/refuted/inconclusive.
     Output JSON: {verdict, rationale, confidence}
@@ -865,13 +914,13 @@ def build_verdict_review_messages(
         f"result_summary: {json.dumps(result_summary, ensure_ascii=False, default=str)}\n"
         f"{strictness_note}"
     )
-    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}], VERDICT_REVIEW_SCHEMA
 
 
 def build_finding_extractor_messages(
     hypothesis, result_rows: list[dict], verdict: str, rationale: str,
     time_range: dict[str, str] | None = None,
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], dict]:
     """role: finding_extractor.
     Goal: extract finding entries IFF verdict == confirmed.
     Called only when verdict is confirmed.
@@ -890,13 +939,13 @@ def build_finding_extractor_messages(
         f"rationale: {rationale}\n"
         f"result_rows: {json.dumps(result_rows[:10], default=str, ensure_ascii=False)}\n"
     )
-    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}], FINDING_EXTRACTOR_SCHEMA
 
 
 def build_memory_updater_messages(
     hypothesis, verdict: str, rationale: str,
     time_range: dict[str, str] | None = None,
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], dict]:
     """role: memory_updater.
     Goal: propose durable memory writes (facts.md additions).
     """
@@ -913,7 +962,7 @@ def build_memory_updater_messages(
         f"verdict: {verdict}\n"
         f"rationale: {rationale}\n"
     )
-    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}], MEMORY_UPDATER_SCHEMA
 
 
 def _rows_to_markdown_table(rows: list[dict[str, Any]], max_rows: int = 30) -> str:
@@ -1070,11 +1119,12 @@ def build_benchmark_classify_messages(
     evidence_rows: list[dict],
     expected_shape: dict | None,
     time_range: dict[str, str] | None = None,
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], dict]:
     """role: benchmark_classifier.
     Goal: decide answer status and pick which evidence_rows answer the question.
     Output: {status, picked_row_indices, rationale}
     """
+    schema = benchmark_classify_schema(len(evidence_rows))
     system = (
         "<TASK>You are a benchmark_classifier. Decide the answer status and pick which evidence rows answer the question. "
         "Do NOT write narrative.</TASK>\n"
@@ -1095,7 +1145,7 @@ def build_benchmark_classify_messages(
         f"evidence_rows: {json.dumps(evidence_rows[:20], default=str, ensure_ascii=False)}\n"
         f"expected_shape: {json.dumps(expected_shape or {}, ensure_ascii=False, default=str)}\n"
     )
-    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}], schema
 
 
 def _filter_prior_runs_by_heading(prior_runs: list[dict[str, Any]], block_heading: str, limit: int = 6) -> list[dict[str, Any]]:
@@ -1123,13 +1173,14 @@ def build_section_agent_plan_messages(
     time_range: dict[str, str] | None = None,
     evidence_keypoints: list[str] | None = None,
     prior_section_keypoints: list[str] | None = None,
-) -> list[dict[str, str]]:
+    db: CaseDB | None = None,
+) -> tuple[list[dict[str, str]], dict]:
     """Build messages for the section agent's plan phase — decide next evidence action.
 
     Supports action types: sql, template, keypoint, facts, write. Includes
     error-recovery logic to switch to keypoint after repeated SQL failures."""
 
-    schema_guidance = _build_schema_guidance("evtx_events")
+    schema_guidance = _build_schema_guidance("evtx_events", db=db)
 
     EXAMPLE_SECTION_PLAN = '''
 <EXAMPLE verdict="section_plan">
@@ -1182,7 +1233,7 @@ Output: {"action": "keypoint", "keypoint": "benchmark_hosts", "purpose": "List h
         'If template_evidence_keypoints is non-empty and action=keypoint is appropriate, prefer those names verbatim.\n'
         "Avoid re-using keypoints already used by other sections (listed in prior_section_keypoints_in_this_report). Choose different evidence for this section.\n"
         "</RULES>\n"
-        f"{build_investigation_framework()}"
+        f"{build_investigation_framework(db)}"
         f"{schema_guidance}"
         f"{EXAMPLE_SECTION_PLAN}{EXAMPLE_SECTION_PLAN_TEMPLATE}{EXAMPLE_SECTION_PLAN_KEYPOINT}"
         "Output JSON only. "
@@ -1206,7 +1257,7 @@ Output: {"action": "keypoint", "keypoint": "benchmark_hosts", "purpose": "List h
         f"prior_section_keypoints_in_this_report: {prior_section_keypoints or []}\n\n"
         f"prior_runs: {_filter_prior_runs_by_heading(prior_runs, block_heading)}\n"
     )
-    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}], SECTION_AGENT_PLAN_SCHEMA
 
 
 def build_section_agent_check_messages(
@@ -1222,7 +1273,7 @@ def build_section_agent_check_messages(
     reusable_evidence: list[dict[str, Any]],
     memory_context_md: str = "",
     time_range: dict[str, str] | None = None,
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], dict]:
     """Build messages for the section agent's check phase — verify evidence sufficiency.
 
     Injects contradiction-history context and status taxonomy
@@ -1281,7 +1332,7 @@ Output: {"verdict": "block_contradicted", "status": "not_found", "rationale": "N
     if contradicted_history:
         user += f"contradicted_attempts_previous_iterations: {contradicted_history}\n\n"
     user += f"prior_runs: {_filter_prior_runs_by_heading(prior_runs, block_heading)}\n"
-    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}], SECTION_AGENT_CHECK_SCHEMA
 
 
 def _format_evidence_row(e: dict[str, Any]) -> str:
@@ -1299,7 +1350,7 @@ def build_section_outline_messages(
     time_range: dict[str, str] | None = None,
     section_meta: dict | None = None,
     prior_section_keypoints: list[str] | None = None,
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], dict]:
     """role: section_outliner.
     Goal: assign each evidence item to ONE paragraph; produce outline JSON.
     """
@@ -1333,7 +1384,7 @@ def build_section_outline_messages(
         f"available_evidence:\n{evidence_summary or 'No evidence available.'}\n"
         f"prior_section_keypoints: {prior_section_keypoints or []}\n"
     )
-    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}], SECTION_OUTLINE_SCHEMA
 
 
 def build_paragraph_narrate_messages(
@@ -1342,7 +1393,7 @@ def build_paragraph_narrate_messages(
     evidence_rows: list[dict],
     template_body: str,
     language: str = "en",
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], dict]:
     """role: section_narrator.
     Goal: write ONE markdown paragraph for the given heading using the evidence.
     NO access to other sections, NO full report_brief, NO findings list.
@@ -1373,7 +1424,7 @@ def build_paragraph_narrate_messages(
         f"Template body context: {template_body[:500]}\n"
         f"Evidence rows: {json.dumps(evidence_rows[:10], default=str, ensure_ascii=False)}\n"
     )
-    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}], PARAGRAPH_NARRATE_SCHEMA
 
 
 def build_gap_identifier_messages(
@@ -1381,10 +1432,18 @@ def build_gap_identifier_messages(
     uncovered_keypoints: list[dict],
     active_hypotheses_slim: list[dict],
     time_range: dict[str, str] | None = None,
-) -> list[dict[str, str]]:
+    status_callback: Callable[[str], None] | None = None,
+) -> tuple[list[dict[str, str]], dict]:
     """role: gap_identifier.
     Goal: identify which uncovered_keypoints lack active hypothesis coverage.
     """
+    slim_observed = [{"keypoint": kp.get("keypoint") or kp.get("name", ""), "row_count": kp.get("row_count", 0)} for kp in (observed_keypoints or [])]
+    available_keypoint_names = [
+        kp.get("name", "")
+        for kp in (observed_keypoints + uncovered_keypoints)[:30]
+        if kp.get("name")
+    ]
+    schema = gap_identifier_schema(available_keypoint_names)
     system = (
         "<TASK>You are a gap_identifier. From available_keypoints, pick the ones that lack active hypothesis coverage.</TASK>\n"
         "<OUTPUT_SCHEMA>\n"
@@ -1404,21 +1463,27 @@ def build_gap_identifier_messages(
     )
     user = (
         f"available_keypoints: {json.dumps([{'name': kp.get('name'), 'description': kp.get('description', '')[:80]} for kp in (observed_keypoints + uncovered_keypoints)[:30]], ensure_ascii=False, default=str)}\n"
-        f"observed_keypoints: {json.dumps(observed_keypoints[:10], ensure_ascii=False, default=str)}\n"
+        f"observed_keypoints: {json.dumps(slim_observed[:10], ensure_ascii=False, default=str)}\n"
         f"uncovered_keypoints: {json.dumps(uncovered_keypoints[:10], ensure_ascii=False, default=str)}\n"
         f"active_hypotheses: {json.dumps(active_hypotheses_slim, ensure_ascii=False, default=str)}\n"
     )
-    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    total_chars = sum(len(m["content"]) for m in messages)
+    if status_callback:
+        status_callback(f"[gap_identifier] prompt size: {total_chars} chars / ~{total_chars // 4} tokens")
+    return messages, schema
 
 
 def build_hypothesis_drafter_messages(
     gap_area: dict,
     available_rules: list[dict],
     time_range: dict[str, str] | None = None,
-) -> list[dict[str, str]]:
+    status_callback: Callable[[str], None] | None = None,
+) -> tuple[list[dict[str, str]], dict]:
     """role: hypothesis_drafter.
     Goal: draft ONE hypothesis targeting the given gap_area.
     """
+    schema = hypothesis_drafter_schema()
     system = (
         "<TASK>You are a hypothesis_drafter. Draft ONE falsifiable hypothesis targeting the given gap_area.</TASK>\n"
         "<OUTPUT_SCHEMA>\n"
@@ -1471,4 +1536,8 @@ def build_hypothesis_drafter_messages(
         f"gap_area: {json.dumps(gap_area, ensure_ascii=False, default=str)}\n"
         f"available_rules: {json.dumps(available_rules[:5], ensure_ascii=False, default=str)}\n"
     )
-    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    total_chars = sum(len(m["content"]) for m in messages)
+    if status_callback:
+        status_callback(f"[hypothesis_drafter] prompt size: {total_chars} chars / ~{total_chars // 4} tokens")
+    return messages, schema

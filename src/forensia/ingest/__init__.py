@@ -76,7 +76,7 @@ def ingest_all(
             if result.raw_path is None:
                 counts["skipped_files"] += 1
                 if progress_callback:
-                    progress_callback(f"Skipping unreadable {adapter.name.upper()}: {path}")
+                    progress_callback(f"WARNING: {adapter.name} produced no records: {path}")
                 continue
             counts[f"{adapter.name}_files"] += 1
 

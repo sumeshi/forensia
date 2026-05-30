@@ -13,6 +13,7 @@ from forensia.ai.prompts import (
     _trim_dynamic_content,
     build_query_intent_messages,
     build_sql_composer_messages,
+    build_sql_self_check_messages,
 )
 from forensia.ai.sql_templates import (
     coerce_list,
@@ -31,10 +32,13 @@ _PLANNER_SQL_MAX_RETRIES = 3
 
 
 def _materialize_planned_query(payload: dict[str, Any]) -> PlannedQuery:
-    """Convert raw LLM query dict to PlannedQuery, rendering template or validating raw SQL."""
     planned_query = PlannedQuery.model_validate(payload)
-    if planned_query.template_id:
-        planned_query.sql = render_query_template(planned_query.template_id, planned_query.params)
+    tid = planned_query.template_id
+    if isinstance(tid, str) and tid.strip().lower() in {"", "null", "none"}:
+        planned_query.template_id = None
+        tid = None
+    if tid:
+        planned_query.sql = render_query_template(tid, planned_query.params)
     else:
         planned_query.sql = validate_select_sql(planned_query.sql)
     return planned_query
@@ -339,7 +343,7 @@ def plan_hypothesis_query(
     default_context_md = _resolve_planner_context(memory, hypothesis, default_context_md, initial_context=None)
     extra_context_holder = {"value": ""}
     hypothesis_history, seen_query_ids = _build_hypothesis_history(state, hypothesis, db, limit=10)
-    schema_card = _build_schema_guidance("evtx_events")
+    schema_card = _build_schema_guidance("evtx_events", db=db)
 
     prior_check_feedback = ""
     if db is not None and hypothesis.id:
@@ -386,10 +390,34 @@ def plan_hypothesis_query(
         audit_callback=audit_callback,
     )
 
+    target_table = str(intent_response.get("target_table") or "evtx_events").strip()
+    composer_schema_card = _build_schema_guidance(target_table, db=db)
+
+    self_check_messages, self_check_schema = build_sql_self_check_messages(
+        intent_response, composer_schema_card
+    )
+    self_check = request_llm_json(
+        messages=self_check_messages, model=model, base_url=base_url,
+        json_schema=self_check_schema,
+        status_callback=status_callback,
+        audit_callback=audit_callback,
+    )
+    if not self_check.get("ready_to_compose", False):
+        if status_callback:
+            status_callback(f"SQL self-check blocked: {self_check.get('blockers', '')}. Retrying intent...")
+        intent_response = _request_with_optional_context(
+            memory=memory,
+            messages_builder=intent_messages_builder,
+            base_url=base_url, model=model,
+            initial_context=default_context_md + f"\n\n<SCHEMA_SELFCHECK_BLOCKERS>\n{self_check.get('blockers', '')}\n</SCHEMA_SELFCHECK_BLOCKERS>\n",
+            status_callback=status_callback,
+            audit_callback=audit_callback,
+        )
+
     # Phase 2: SQL Composition (HOW to write the query)
     composer_messages = build_sql_composer_messages(
         intent=intent_response,
-        table_schema_card=schema_card,
+        table_schema_card=composer_schema_card,
         template_catalog=query_template_catalog(),
         time_range={},
         prior_check_feedback=prior_check_feedback,

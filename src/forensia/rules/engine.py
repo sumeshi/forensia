@@ -13,7 +13,7 @@ import yaml
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
-from forensia.rules.models import Finding, Rule
+from forensia.rules.models import Finding, FindingTemplate, Rule
 
 _MISSING_TEXT_VALUES = {"", "-", "n/a", "na", "none", "null", "unknown"}
 _BUILTIN_ALLOWLIST_PATH = Path(__file__).resolve().parent.parent / "rulepacks" / "_schema" / "suppression" / "allowlist_services.yaml"
@@ -84,7 +84,7 @@ def generate_findings(rule: Rule, rows: list[dict[str, Any]]) -> list[Finding]:
                 severity=rule.severity,
                 confidence=_confidence_with_missing_fields(rule.confidence, missing_fields),
                 tags=rule.tags,
-                attack=rule.attack,
+                attack=[item.model_dump() for item in (rule.attack or [])],
                 evidence=[row],
                 missing_checks=(
                     [f"Missing key fields for this finding: {', '.join(missing_fields)}"]
@@ -221,7 +221,7 @@ def save_findings(case: Case, db: CaseDB, findings: list[Finding]) -> None:
                 finding.confidence,
                 finding.status,
                 json.dumps(finding.tags, ensure_ascii=False),
-                json.dumps(finding.attack, ensure_ascii=False),
+                json.dumps([a.model_dump() for a in finding.attack], ensure_ascii=False),
                 json.dumps(finding.evidence, ensure_ascii=False, default=str),
                 finding.ai_summary,
                 json.dumps(finding.missing_checks, ensure_ascii=False),
@@ -388,7 +388,7 @@ def execute_fallback_search(db: CaseDB, fallback: dict[str, Any]) -> list[dict[s
             for kw in valid_keywords
         )
         sql = f"SELECT * FROM evtx_events WHERE {like_clauses} LIMIT 100"
-        return run_rule(db, Rule(id="fallback-keyword", title="", query=sql))
+        return run_rule(db, Rule(id="fallback-keyword", title="", query=sql, finding=FindingTemplate(title="", summary="")))
     if phase == "related_event_ids":
         event_ids = fallback.get("event_ids") or []
         if not event_ids:
@@ -406,7 +406,7 @@ def execute_fallback_search(db: CaseDB, fallback: dict[str, Any]) -> list[dict[s
             return []
         event_list = ",".join(str(eid) for eid in valid_event_ids)
         sql = f"SELECT * FROM evtx_events WHERE event_id IN ({event_list}) LIMIT 100"
-        return run_rule(db, Rule(id="fallback-correlation", title="", query=sql))
+        return run_rule(db, Rule(id="fallback-correlation", title="", query=sql, finding=FindingTemplate(title="", summary="")))
     if phase == "artifact_table":
         table = fallback.get("table")
         if not table:
@@ -418,7 +418,7 @@ def execute_fallback_search(db: CaseDB, fallback: dict[str, Any]) -> list[dict[s
             logging.warning(f"Invalid fallback table '{table}'; allowed: {_ALLOWED_FALLBACK_TABLES}")
             return []
         sql = f"SELECT * FROM {table_name} LIMIT 100"
-        return run_rule(db, Rule(id="fallback-artifact", title="", query=sql))
+        return run_rule(db, Rule(id="fallback-artifact", title="", query=sql, finding=FindingTemplate(title="", summary="")))
     if phase and phase not in FALLBACK_PHASES:
         import logging
         logging.warning(f"Unknown fallback phase '{phase}'; valid phases: {FALLBACK_PHASES}")

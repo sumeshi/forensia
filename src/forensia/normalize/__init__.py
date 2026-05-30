@@ -11,6 +11,7 @@ def normalize_all(case: Case, db: CaseDB) -> dict[str, int]:
         "mft_entries": 0,
         "mft_timeline_rows": 0,
         "prefetch_executions": 0,
+        "prefetch_timeline": 0,
     }
     for adapter in get_artifact_adapters():
         result = adapter.normalize(case, db)
@@ -21,4 +22,5 @@ def normalize_all(case: Case, db: CaseDB) -> dict[str, int]:
             counts["mft_timeline_rows"] = result.aux_rows
         elif result.source_kind == "prefetch":
             counts["prefetch_executions"] = result.rows
+            counts["prefetch_timeline"] = result.aux_rows
     return counts

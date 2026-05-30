@@ -15,7 +15,7 @@ class NormalizePrefetchTests(unittest.TestCase):
     def test_normalize_prefetch_basic(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
-            prefetch_path = case.raw_dir / "prefetch-001.jsonl"
+            prefetch_path = case.raw_dir / "prefetch-entries-001.jsonl"
             source_file = "disk-image-1/PREFETCH/CALC.EXE-ABCD1234.pf"
             evidence_id = "pf-000000000001-01"
 
@@ -52,7 +52,7 @@ class NormalizePrefetchTests(unittest.TestCase):
             )
 
             with CaseDB(case) as db:
-                inserted = normalize_prefetch(case, db)
+                inserted, _ = normalize_prefetch(case, db)
                 row = db.execute(
                     """
                     SELECT
@@ -80,23 +80,23 @@ class NormalizePrefetchTests(unittest.TestCase):
     def test_empty_jsonl_returns_zero(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
-            prefetch_path = case.raw_dir / "prefetch-001.jsonl"
+            prefetch_path = case.raw_dir / "prefetch-entries-001.jsonl"
             prefetch_path.write_text("", encoding="utf-8")
             with CaseDB(case) as db:
-                inserted = normalize_prefetch(case, db)
+                inserted, _ = normalize_prefetch(case, db)
             self.assertEqual(0, inserted)
 
     def test_no_prefetch_files_returns_zero(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
             with CaseDB(case) as db:
-                inserted = normalize_prefetch(case, db)
+                inserted, _ = normalize_prefetch(case, db)
             self.assertEqual(0, inserted)
 
     def test_malformed_json_line_skipped_gracefully(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
-            prefetch_path = case.raw_dir / "prefetch-001.jsonl"
+            prefetch_path = case.raw_dir / "prefetch-entries-001.jsonl"
             prefetch_path.write_text(
                 "not valid json\n"
                 + json.dumps(
@@ -115,7 +115,7 @@ class NormalizePrefetchTests(unittest.TestCase):
             )
             try:
                 with CaseDB(case) as db:
-                    inserted = normalize_prefetch(case, db)
+                    inserted, _ = normalize_prefetch(case, db)
                 self.assertEqual(1, inserted)
                 rows = db.execute(
                     "SELECT evidence_id FROM prefetch_executions"
@@ -130,7 +130,7 @@ class NormalizePrefetchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
             for i in range(1, 4):
-                p = case.raw_dir / f"prefetch-{i:04d}.jsonl"
+                p = case.raw_dir / f"prefetch-entries-{i:04d}.jsonl"
                 p.write_text(
                     json.dumps(
                         {
@@ -147,7 +147,7 @@ class NormalizePrefetchTests(unittest.TestCase):
                     encoding="utf-8",
                 )
             with CaseDB(case) as db:
-                inserted = normalize_prefetch(case, db)
+                inserted, _ = normalize_prefetch(case, db)
                 names = db.execute(
                     "SELECT executable_name FROM prefetch_executions ORDER BY executable_name"
                 ).fetchall()
@@ -159,7 +159,7 @@ class NormalizePrefetchTests(unittest.TestCase):
     def test_reingest_same_source_file_clears_old_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
-            prefetch_path = case.raw_dir / "prefetch-001.jsonl"
+            prefetch_path = case.raw_dir / "prefetch-entries-001.jsonl"
             source_file = "disk-image-1/PREFETCH/REDO.EXE-0000.pf"
 
             prefetch_path.write_text(
@@ -191,7 +191,7 @@ class NormalizePrefetchTests(unittest.TestCase):
             )
 
             with CaseDB(case) as db:
-                inserted = normalize_prefetch(case, db)
+                inserted, _ = normalize_prefetch(case, db)
                 rows = db.execute(
                     "SELECT evidence_id, exec_count FROM prefetch_executions ORDER BY evidence_id"
                 ).fetchall()
@@ -216,7 +216,7 @@ class NormalizePrefetchTests(unittest.TestCase):
             )
 
             with CaseDB(case) as db:
-                inserted = normalize_prefetch(case, db)
+                inserted, _ = normalize_prefetch(case, db)
                 rows = db.execute(
                     "SELECT evidence_id, exec_count FROM prefetch_executions"
                 ).fetchall()

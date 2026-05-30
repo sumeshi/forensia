@@ -176,6 +176,7 @@ def request_llm_json(
     model: str,
     status_callback: Callable[[str], None] | None = None,
     audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
+    json_schema: dict | None = None,
 ) -> dict[str, Any]:
     """Send a chat request and return parsed JSON, with retry across both completion and parsing failures."""
     last_error: Exception | None = None
@@ -185,12 +186,18 @@ def request_llm_json(
                 f"Malformed JSON persisted after {MAX_JSON_REPAIR_ATTEMPTS} repair attempts. "
                 f"Retrying original LLM request ({completion_attempt}/{MAX_JSON_COMPLETION_ATTEMPTS})."
             )
-        output = chat_completion(
-            messages=messages,
-            model=model,
-            base_url=base_url,
-            status_callback=status_callback,
-        )
+        try:
+            output = chat_completion(
+                messages=messages,
+                model=model,
+                base_url=base_url,
+                status_callback=status_callback,
+                json_schema=json_schema,
+            )
+        except Exception as exc:
+            if audit_callback:
+                audit_callback(messages, output="<HTTP_ERROR>", parsed={"error": str(exc)})
+            raise
         try:
             parsed = parse_llm_json(
                 output,
@@ -217,6 +224,7 @@ async def async_request_llm_json(
     model: str,
     status_callback: Callable[[str], None] | None = None,
     audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
+    json_schema: dict | None = None,
 ) -> dict[str, Any]:
     """Async variant of request_llm_json for parallel LLM requests."""
     last_error: Exception | None = None
@@ -226,12 +234,18 @@ async def async_request_llm_json(
                 f"Malformed JSON persisted after {MAX_JSON_REPAIR_ATTEMPTS} repair attempts. "
                 f"Retrying original LLM request ({completion_attempt}/{MAX_JSON_COMPLETION_ATTEMPTS})."
             )
-        output = await async_chat_completion(
-            messages=messages,
-            model=model,
-            base_url=base_url,
-            status_callback=status_callback,
-        )
+        try:
+            output = await async_chat_completion(
+                messages=messages,
+                model=model,
+                base_url=base_url,
+                status_callback=status_callback,
+                json_schema=json_schema,
+            )
+        except Exception as exc:
+            if audit_callback:
+                audit_callback(messages, output="<HTTP_ERROR>", parsed={"error": str(exc)})
+            raise
         try:
             parsed = await async_parse_llm_json(
                 output,

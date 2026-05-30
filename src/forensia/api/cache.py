@@ -26,6 +26,8 @@ from forensia.report.writer import write_report_brief
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 
+VOLATILE_SNAPSHOT_INTERVAL_S = 5.0
+
 
 def _snapshot_dir(case: Case) -> Path:
     """Return the API snapshot directory (creates if missing)."""
@@ -53,6 +55,43 @@ def write_progress_snapshot(case: Case, db: CaseDB) -> None:
         snapshot_dir / "progress_events.json",
         list_progress_events(db, after_index=0, limit=1000),
     )
+
+
+def write_volatile_api_snapshots(case: Case, db: CaseDB) -> None:
+    """Write only the API snapshots that change mid-investigation (skip heavy ones)."""
+    from forensia.api.service import (
+        list_hypotheses_dto, list_findings_dto, list_report_sections_dto,
+        list_attack_coverage_dto, get_case_stats_dto,
+    )
+    snap_dir = _snapshot_dir(case)
+    snap_dir.mkdir(parents=True, exist_ok=True)
+
+    data = {}
+    try:
+        data["hypotheses"] = list_hypotheses_dto(db).model_dump()
+    except Exception:
+        pass
+    try:
+        stats = get_case_stats_dto(db)
+        data["stats"] = stats.model_dump()
+    except Exception:
+        pass
+    try:
+        findings = list_findings_dto(db, severity="low", limit=500)
+        data["findings"] = [f.model_dump() for f in findings]
+    except Exception:
+        pass
+    try:
+        data["attack_coverage"] = [a.model_dump() for a in list_attack_coverage_dto(db)]
+    except Exception:
+        pass
+    try:
+        data["report_sections"] = [r.model_dump() for r in list_report_sections_dto(db)]
+    except Exception:
+        pass
+
+    for name, payload in data.items():
+        _write_json(snap_dir / f"{name}.json", payload)
 
 
 def write_full_api_snapshots(case: Case, db: CaseDB) -> None:

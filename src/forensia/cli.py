@@ -1,5 +1,6 @@
 import asyncio
 import sys
+import time
 
 from pathlib import Path
 
@@ -7,7 +8,10 @@ import typer
 from rich import print
 import uvicorn
 
-from forensia.api.cache import clear_api_snapshots, write_api_snapshots, write_progress_snapshot
+from forensia.api.cache import (
+    VOLATILE_SNAPSHOT_INTERVAL_S, clear_api_snapshots, write_api_snapshots,
+    write_progress_snapshot, write_volatile_api_snapshots,
+)
 from forensia.api.progress import clear_progress_events, record_progress_event
 from forensia.ai.investigator import investigate as investigate_loop
 from forensia.config import get_llm_settings, resolve_llm_config
@@ -166,6 +170,13 @@ def _progress_pusher(db: CaseDB, initial_state: dict) -> Callable[..., None]:
         payload = {**state, "counts": _count_records(db)}
         record_progress_event(db, payload)
         write_progress_snapshot(db.case, db)
+        now = time.monotonic()
+        if now - state.get("_last_volatile_at", 0.0) > VOLATILE_SNAPSHOT_INTERVAL_S:
+            try:
+                write_volatile_api_snapshots(db.case, db)
+            except Exception as exc:
+                _status(f"volatile snapshot skipped: {exc}")
+            state["_last_volatile_at"] = now
 
     return push
 

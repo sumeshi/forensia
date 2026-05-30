@@ -90,8 +90,8 @@ class PlannerRetryTests(unittest.TestCase):
             "SELECT * FROM hypotheses",
             "SELECT * FROM report_sections",
             "SELECT * FROM claims",
-            "SELECT * FROM hypothesis_reasoning",
-            "SELECT * FROM ingested_files",
+            "SELECT * FROM prefetch_executions",
+            "SELECT * FROM mft_entries",
         ):
             self.assertEqual(sql, validate_select_sql(sql))
 
@@ -120,6 +120,10 @@ class PlannerRetryTests(unittest.TestCase):
                 "filters_required": ["event_id = 4625"],
                 "time_window": "case time range",
                 "expected_row_shape": "event_id, timestamp, src_ip",
+            },
+            {
+                "ready_to_compose": True,
+                "blockers": "",
             },
             {
                 "template_id": "q_failed_logon_by_ip_window",
@@ -154,6 +158,10 @@ hypothesis=hypothesis,
                 "expected_row_shape": "cols",
             },
             {
+                "ready_to_compose": True,
+                "blockers": "",
+            },
+            {
                 "template_id": None,
                 "sql": "SELECT * FROM nope",
                 "params": {},
@@ -176,7 +184,7 @@ hypothesis=hypothesis,
                 model="test-model",
             )
 
-        self.assertEqual(3, mock_request.call_count)
+        self.assertEqual(4, mock_request.call_count)
         self.assertIsNotNone(result.query)
         self.assertEqual("SELECT * FROM findings", result.query.sql)
 
@@ -191,6 +199,10 @@ hypothesis=hypothesis,
                 "filters_required": [],
                 "time_window": "All",
                 "expected_row_shape": "cols",
+            },
+            {
+                "ready_to_compose": True,
+                "blockers": "",
             },
             {"template_id": "missing-template", "sql": "", "params": {}, "purpose": "broken"},
             {"template_id": "missing-template", "sql": "", "params": {}, "purpose": "broken"},
@@ -216,6 +228,7 @@ hypothesis=hypothesis,
         hypothesis = Hypothesis(id="H1", description="test hypothesis")
         responses = [
             {"read_more": [], "intent": "test", "target_table": "evtx_events"},
+            {"ready_to_compose": True, "blockers": ""},
             {"sql": "SELECT 1", "purpose": "test"},
         ]
 
@@ -261,6 +274,7 @@ hypothesis=hypothesis,
         hypothesis = Hypothesis(id="H1", description="test hypothesis")
         responses = [
             {"read_more": [], "intent": "test", "target_table": "evtx_events"},
+            {"ready_to_compose": True, "blockers": ""},
             {"sql": "SELECT 1", "purpose": "test"},
         ]
 
@@ -300,8 +314,8 @@ hypothesis=hypothesis,
 
     def test_investigation_framework_lists_missing_columns(self) -> None:
         framework = build_investigation_framework()
-        self.assertIn("investigation_steps columns: step_id, session_id, hypothesis_id, iteration, phase", framework)
-        self.assertIn("ingested_files columns: sha256, path, source_kind, size, ingested_at.", framework)
+        self.assertIn("evtx_events columns: evidence_id, source_file, channel, event_id, record_id, timestamp", framework)
+        self.assertIn("hypotheses columns: hypothesis_id, description, status, verdict, summary, origin", framework)
         self.assertIn("event_id = 4624 AND logon_type IN ('2','10')", framework)
         self.assertIn("4728/4732", framework)
 
@@ -316,6 +330,10 @@ hypothesis=hypothesis,
                 "filters_required": [],
                 "time_window": "All",
                 "expected_row_shape": "cols",
+            },
+            {
+                "ready_to_compose": True,
+                "blockers": "",
             },
             {"template_id": None, "sql": "SELECT * FROM nope", "params": {}, "purpose": "test"},
             {"template_id": None, "sql": "DELETE FROM findings", "params": {}, "purpose": "retry1"},
@@ -704,7 +722,7 @@ hypothesis=hypothesis,
         self.assertIn("avoid 'confirmed'", system)
 
     def test_benchmark_classify_messages_request_picked_row_indices_only(self) -> None:
-        messages = build_benchmark_classify_messages(
+        messages, _ = build_benchmark_classify_messages(
             question="## 8. メールデータファイル",
             block_heading="8. メールデータファイル",
             evidence_rows=[{"evidence_id": "ev-1", "file_path": "C:/Users/Alice/file.ost"}],

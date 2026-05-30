@@ -15,6 +15,7 @@ from re import sub
 from typing import Any
 from uuid import uuid4
 
+import httpx
 import yaml
 from rich import print
 try:
@@ -1313,14 +1314,15 @@ async def _run_broad_plan_step(
         # 1) gap_identifier — identify which keypoints lack hypothesis coverage
         observed_kp_strs = observed_keypoint_labels or _observed_keypoints_from_findings(state.findings_snapshot)
         uncovered_keypoints = _compute_uncovered_keypoints(observed_kp_strs, state.active_hypotheses, state.resolved_hypotheses)
-        active_hypotheses_slim = [_slim_hypothesis_dump(h) for h in state.active_hypotheses]
-        gap_msgs = build_gap_identifier_messages(
+        active_hypotheses_slim = [{"id": h.id, "description": h.description, "verdict": h.verdict} for h in state.active_hypotheses[:10]]
+        gap_msgs, gap_schema = build_gap_identifier_messages(
             observed_keypoints=observed_keypoints,
             uncovered_keypoints=uncovered_keypoints,
             active_hypotheses_slim=active_hypotheses_slim,
         )
         gap_parsed = request_llm_json(
             messages=gap_msgs, model=model, base_url=base_url,
+            json_schema=gap_schema,
             status_callback=llm_status_fn,
             audit_callback=lambda msgs, out, parsed: llm_logger.write(
                 iteration=plan_cycle, phase="plan-broad-gap", input_messages=msgs,
@@ -1338,9 +1340,10 @@ async def _run_broad_plan_step(
         available_rules = [rule.model_dump() for rule in rule_cache.values()]
         drafted_hypotheses: list[Hypothesis] = []
         for gap in gap_areas:
-            h_msgs = build_hypothesis_drafter_messages(gap, available_rules)
+            h_msgs, h_schema = build_hypothesis_drafter_messages(gap, available_rules)
             h_parsed = request_llm_json(
                 messages=h_msgs, model=model, base_url=base_url,
+                json_schema=h_schema,
                 status_callback=llm_status_fn,
                 audit_callback=lambda msgs, out, parsed: llm_logger.write(
                     iteration=plan_cycle, phase="plan-broad-draft", input_messages=msgs,
@@ -1377,6 +1380,18 @@ async def _run_broad_plan_step(
         if emit_fn:
             emit_fn("investigate/plan", f"[plan] new_hypotheses={len(drafted_hypotheses)} active={len(state.active_hypotheses)}", iteration=plan_cycle)
         return stop_flag
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code >= 500:
+            raise
+        err_msg = f"[plan-broad] LLM failed: {exc}"
+        print(f"[red]{err_msg}[/red]")
+        if emit_fn:
+            emit_fn("investigate/plan", err_msg, iteration=plan_cycle)
+        return False
+    except (httpx.ConnectError, httpx.TimeoutException) as exc:
+        err_msg = f"[plan-broad] LLM server error: {exc}"
+        print(f"[red]{err_msg}[/red]")
+        raise
     except Exception as exc:
         err_msg = f"[plan-broad] LLM failed: {exc}"
         print(f"[red]{err_msg}[/red]")

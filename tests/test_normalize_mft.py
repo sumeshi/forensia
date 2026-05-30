@@ -15,7 +15,7 @@ class NormalizeMftTests(unittest.TestCase):
     def test_normalize_mft_uses_duckdb_projection_and_preserves_behavior(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
-            mft_path = case.raw_dir / "mft.jsonl"
+            mft_path = case.raw_dir / "mft-entries-001.jsonl"
             source_file = "disk-image-1/$MFT"
             evidence_id = "mft-000000000001-01"
 
@@ -72,16 +72,9 @@ class NormalizeMftTests(unittest.TestCase):
                     FROM mft_entries
                     """
                 ).fetchone()
-                timeline = db.execute(
-                    """
-                    SELECT timeline_id, timestamp_type, description, timestamp
-                    FROM mft_timeline
-                    ORDER BY timestamp_type
-                    """
-                ).fetchall()
 
             self.assertEqual(1, entries)
-            self.assertEqual(4, timeline_rows)
+            self.assertEqual(0, timeline_rows)
             self.assertEqual(evidence_id, entry[0])
             self.assertEqual(source_file, entry[1])
             self.assertEqual(1, entry[2])
@@ -99,35 +92,6 @@ class NormalizeMftTests(unittest.TestCase):
             self.assertIsNone(entry[14])
             self.assertEqual(datetime(2024, 1, 4, 1, 2, 3), entry[15])
             self.assertIsNone(entry[16])
-            self.assertEqual(
-                [
-                    (
-                        f"{evidence_id}-fn_accessed",
-                        "FN_ACCESSED",
-                        "FN_ACCESSED for /Windows/System32/calc.exe",
-                        datetime(2024, 1, 4, 1, 2, 3),
-                    ),
-                    (
-                        f"{evidence_id}-fn_created",
-                        "FN_CREATED",
-                        "FN_CREATED for /Windows/System32/calc.exe",
-                        datetime(2024, 1, 3, 1, 2, 3),
-                    ),
-                    (
-                        f"{evidence_id}-si_created",
-                        "SI_CREATED",
-                        "SI_CREATED for /Windows/System32/calc.exe",
-                        datetime(2024, 1, 2, 3, 4, 5),
-                    ),
-                    (
-                        f"{evidence_id}-si_mft_modified",
-                        "SI_MFT_MODIFIED",
-                        "SI_MFT_MODIFIED for /Windows/System32/calc.exe",
-                        datetime(2024, 1, 2, 4, 5, 6),
-                    ),
-                ],
-                timeline,
-            )
 
             mft_path.write_text(
                 json.dumps(
@@ -161,34 +125,15 @@ class NormalizeMftTests(unittest.TestCase):
                     "SELECT COUNT(*), COUNT(DISTINCT file_path) FROM mft_entries WHERE source_file = ?",
                     (source_file,),
                 ).fetchone()
-                timeline = db.execute(
-                    """
-                    SELECT timeline_id, timestamp_type, description
-                    FROM mft_timeline
-                    WHERE evidence_id = ?
-                    ORDER BY timestamp_type
-                    """,
-                    (evidence_id,),
-                ).fetchall()
 
             self.assertEqual(1, entries)
-            self.assertEqual(1, timeline_rows)
+            self.assertEqual(0, timeline_rows)
             self.assertEqual((1, 1), counts)
-            self.assertEqual(
-                [
-                    (
-                        f"{evidence_id}-fn_created",
-                        "FN_CREATED",
-                        "FN_CREATED for /Windows/System32/notepad.exe",
-                    )
-                ],
-                timeline,
-            )
 
     def test_empty_jsonl_returns_zero_zero(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
-            mft_path = case.raw_dir / "mft.jsonl"
+            mft_path = case.raw_dir / "mft-entries-001.jsonl"
             mft_path.write_text("", encoding="utf-8")
             with CaseDB(case) as db:
                 entries, timeline = normalize_mft(case, db)
@@ -197,7 +142,7 @@ class NormalizeMftTests(unittest.TestCase):
     def test_malformed_json_line_skipped_gracefully(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
-            mft_path = case.raw_dir / "mft.jsonl"
+            mft_path = case.raw_dir / "mft-entries-001.jsonl"
             mft_path.write_text(
                 "not valid json\n"
                 + json.dumps(
@@ -223,14 +168,14 @@ class NormalizeMftTests(unittest.TestCase):
                 with CaseDB(case) as db:
                     entries, timeline = normalize_mft(case, db)
                 self.assertEqual(1, entries)
-                self.assertEqual(1, timeline)
+                self.assertEqual(0, timeline)
             except Exception:
                 self.skipTest("DuckDB read_ndjson_objects does not skip malformed lines without ignore_errors")
 
     def test_mft_record_missing_optional_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
-            mft_path = case.raw_dir / "mft.jsonl"
+            mft_path = case.raw_dir / "mft-entries-minimal.jsonl"
             mft_path.write_text(
                 json.dumps(
                     {
@@ -276,7 +221,7 @@ class NormalizeMftTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
             for i in range(1, 3):
-                p = case.raw_dir / f"mft-{i:04d}.jsonl"
+                p = case.raw_dir / f"mft-entries-{i:04d}.jsonl"
                 p.write_text(
                     json.dumps(
                         {
@@ -303,7 +248,7 @@ class NormalizeMftTests(unittest.TestCase):
                     "SELECT file_path FROM mft_entries ORDER BY file_path"
                 ).fetchall()
             self.assertEqual(2, entries)
-            self.assertEqual(2, timeline)
+            self.assertEqual(0, timeline)
             self.assertEqual([("/file1.txt",), ("/file2.txt",)], paths)
 
     def test_no_mft_files_returns_zero_zero(self) -> None:

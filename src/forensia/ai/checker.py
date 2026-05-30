@@ -533,7 +533,7 @@ def check_query_result(
     rule_context = resolve_rule_context(hypothesis)
 
     # Step 1: verdict_reviewer — classify result against hypothesis
-    verdict_messages = build_verdict_review_messages(
+    verdict_messages, verdict_schema = build_verdict_review_messages(
         hypothesis=hypothesis,
         planned_query=planned_query,
         result_summary=result_summary,
@@ -543,6 +543,7 @@ def check_query_result(
         messages=verdict_messages,
         model=model,
         base_url=base_url,
+        json_schema=verdict_schema,
         status_callback=status_callback,
     )
     verdict = _normalize_verdict(verdict_parsed.get("verdict"))
@@ -550,7 +551,7 @@ def check_query_result(
     # Step 2: finding_extractor — extract structured findings (only for confirmed)
     extracted_findings: list[dict[str, Any]] = []
     if verdict == "confirmed":
-        finding_messages = build_finding_extractor_messages(
+        finding_messages, finding_schema = build_finding_extractor_messages(
             hypothesis=hypothesis,
             result_rows=result_summary.get("sample_rows") or [],
             verdict=verdict,
@@ -560,12 +561,13 @@ def check_query_result(
             messages=finding_messages,
             model=model,
             base_url=base_url,
+            json_schema=finding_schema,
             status_callback=status_callback,
         )
         extracted_findings = finding_parsed.get("findings") or []
 
     # Step 3: memory_updater — propose durable memory writes
-    memory_messages = build_memory_updater_messages(
+    memory_messages, memory_schema = build_memory_updater_messages(
         hypothesis=hypothesis,
         verdict=verdict,
         rationale=verdict_parsed.get("rationale", ""),
@@ -574,6 +576,7 @@ def check_query_result(
         messages=memory_messages,
         model=model,
         base_url=base_url,
+        json_schema=memory_schema,
         status_callback=status_callback,
     )
 

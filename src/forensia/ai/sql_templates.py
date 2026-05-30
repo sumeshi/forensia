@@ -5,9 +5,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from forensia.ai.sql_schema import ALLOWED_TABLES
+from forensia.ai.sql_schema import _LEGACY_ALLOWED_TABLES
 
-ALLOWED_IDENTIFIER_REFERENCES = ALLOWED_TABLES | {
+ALLOWED_IDENTIFIER_REFERENCES = _LEGACY_ALLOWED_TABLES | {
     "evidence_id",
     "source_file",
     "channel",

@@ -82,8 +82,10 @@ CREATE TABLE IF NOT EXISTS mft_timeline (
     evidence_id VARCHAR,
     record_number BIGINT,
     file_path VARCHAR,
+    file_name VARCHAR,
     timestamp TIMESTAMP,
     timestamp_type VARCHAR,
+    source_file VARCHAR,
     description VARCHAR,
     tags JSON
 );
@@ -247,6 +249,17 @@ CREATE TABLE IF NOT EXISTS prefetch_executions (
     raw_json JSON,
     tags JSON,
     severity VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS prefetch_timeline (
+    timeline_id VARCHAR,
+    evidence_id VARCHAR,
+    executable_name VARCHAR,
+    prefetch_hash VARCHAR,
+    exec_time TIMESTAMP,
+    exec_index INTEGER,
+    source_file VARCHAR,
+    tags JSON
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS findings_by_id ON findings(finding_id);

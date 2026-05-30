@@ -79,9 +79,10 @@ class MftArtifactAdapter:
     ) -> IngestResult:
         from forensia.ingest.mft import ingest_mft_file
 
+        entries_path, _timeline_path = ingest_mft_file(case, path, source_sha=source_sha, progress_callback=progress_callback)
         return IngestResult(
             source_kind=self.name,
-            raw_path=ingest_mft_file(case, path, source_sha=source_sha, progress_callback=progress_callback),
+            raw_path=entries_path,
         )
 
     def normalize(self, case: Case, db: CaseDB) -> NormalizeResult:
@@ -106,15 +107,17 @@ class PrefetchArtifactAdapter:
     ) -> IngestResult:
         from forensia.ingest.prefetch import ingest_prefetch_file
 
+        entries_path, _timeline_path = ingest_prefetch_file(case, path, source_sha=source_sha, progress_callback=progress_callback)
         return IngestResult(
             source_kind=self.name,
-            raw_path=ingest_prefetch_file(case, path, source_sha=source_sha, progress_callback=progress_callback),
+            raw_path=entries_path,
         )
 
     def normalize(self, case: Case, db: CaseDB) -> NormalizeResult:
         from forensia.normalize.prefetch import normalize_prefetch
 
-        return NormalizeResult(source_kind=self.name, rows=normalize_prefetch(case, db), aux_rows=0)
+        entries, timeline_rows = normalize_prefetch(case, db)
+        return NormalizeResult(source_kind=self.name, rows=entries, aux_rows=timeline_rows)
 
 
 def get_artifact_adapters() -> tuple[ArtifactAdapter, ...]:

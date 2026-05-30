@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class FindingTemplate(BaseModel):
@@ -23,6 +23,12 @@ class HypothesisDeclaration(BaseModel):
     report_sections: list[str] = Field(default_factory=list)
 
 
+class AttackEntry(BaseModel):
+    tactic: str = ""
+    technique_id: str = ""
+    technique_name: str = ""
+
+
 class CorrelateEvent(BaseModel):
     event_ids: list[int]
     rationale: str
@@ -39,10 +45,24 @@ class Rule(BaseModel):
     query: str
     finding: FindingTemplate
     tags: list[str] = Field(default_factory=list)
-    attack: list[str] = Field(default_factory=list)
+    attack: list[AttackEntry] = Field(default_factory=list)
     hypotheses: list[HypothesisDeclaration] = Field(default_factory=list)
     correlate_with: list[CorrelateEvent] = Field(default_factory=list)
     fallback_search: list[dict[str, Any]] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_attack(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            raw = data.get("attack")
+            if isinstance(raw, list) and raw and isinstance(raw[0], str):
+                data["attack"] = [
+                    {"tactic": "", "technique_id": s, "technique_name": ""}
+                    if s.startswith("T")
+                    else {"tactic": s, "technique_id": "", "technique_name": ""}
+                    for s in raw
+                ]
+        return data
 
 
 class Finding(BaseModel):
@@ -54,7 +74,7 @@ class Finding(BaseModel):
     confidence: float
     status: str = "new"
     tags: list[str] = Field(default_factory=list)
-    attack: list[str] = Field(default_factory=list)
+    attack: list[AttackEntry] = Field(default_factory=list)
     evidence: list[dict[str, Any]] = Field(default_factory=list)
     ai_summary: str | None = None
     missing_checks: list[str] = Field(default_factory=list)

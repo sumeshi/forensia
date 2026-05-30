@@ -2,32 +2,40 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
 
-ALLOWED_TABLES = {
-    "evtx_events",
-    "mft_entries",
-    "mft_timeline",
-    "prefetch_executions",
-    "findings",
-    "hypotheses",
-    "report_sections",
+if TYPE_CHECKING:
+    from forensia.db.database import CaseDB
+
+_LEGACY_ALLOWED_TABLES = {
+    "evtx_events", "mft_entries", "mft_timeline", "prefetch_executions",
+    "prefetch_timeline", "findings", "hypotheses", "report_sections",
     "claims",
-    "ai_reviews",
-    "investigation_sessions",
-    "investigation_steps",
-    "hypothesis_reasoning",
-    "progress_events",
-    "ingested_files",
-    "section_facts",
-    "section_evidence",
-    "query_cache",
-    "section_runs",
-    "section_run_coverage",
 }
 
-TABLE_COLUMN_REFERENCE: dict[str, tuple[str, ...]] = {
+
+def get_allowed_tables(db: CaseDB | None = None) -> set[str]:
+    if db is None:
+        return _LEGACY_ALLOWED_TABLES
+    try:
+        rows = db.execute("""
+            SELECT table_name FROM information_schema.tables
+            WHERE table_schema = 'main'
+        """).fetchall()
+        all_tables = {str(r[0]) for r in rows}
+        allowed = set()
+        for t in all_tables:
+            if t.startswith(("evtx_", "mft_", "prefetch_", "findings", "hypotheses", "report_", "claims", "section_")):
+                allowed.add(t)
+        if allowed:
+            return allowed
+    except Exception:
+        pass
+    return _LEGACY_ALLOWED_TABLES
+
+TABLE_COLUMN_REFERENCE: dict[str, tuple[str, ...]] = {  # fallback only — live schema overrides when db is available
     "evtx_events": (
         "evidence_id", "source_file", "channel", "event_id", "record_id", "timestamp", "computer",
         "user_name", "target_user", "subject_user", "src_ip", "logon_type", "process_name",
@@ -40,8 +48,8 @@ TABLE_COLUMN_REFERENCE: dict[str, tuple[str, ...]] = {
         "raw_json", "tags", "severity",
     ),
     "mft_timeline": (
-        "timeline_id", "evidence_id", "record_number", "file_path", "timestamp", "timestamp_type",
-        "description", "tags",
+        "timeline_id", "evidence_id", "record_number", "file_path", "file_name", "timestamp", "timestamp_type",
+        "source_file", "description", "tags",
     ),
     "findings": (
         "finding_id", "rule_id", "title", "summary", "severity", "confidence", "status", "tags",
@@ -76,6 +84,10 @@ TABLE_COLUMN_REFERENCE: dict[str, tuple[str, ...]] = {
         "last_exec_time", "exec_times", "prefetch_hash", "filenames", "volumes",
         "raw_json", "tags", "severity",
     ),
+    "prefetch_timeline": (
+        "timeline_id", "evidence_id", "executable_name", "prefetch_hash",
+        "exec_time", "exec_index", "source_file", "tags",
+    ),
     "ingested_files": ("sha256", "path", "source_kind", "size", "ingested_at"),
     "section_facts": (
         "fact_id", "fact_type", "fact_key", "fact_value", "evidence_ids",
@@ -92,6 +104,40 @@ TABLE_COLUMN_REFERENCE: dict[str, tuple[str, ...]] = {
         "section_key", "block_heading", "source_query", "evidence_table", "row_count", "used_in_answer", "queried", "created_at",
     ),
 }
+
+
+def load_live_schema(db: CaseDB) -> dict[str, tuple[str, ...]]:
+    rows = db.execute("""
+        SELECT table_name, column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'main'
+        ORDER BY table_name, ordinal_position
+    """).fetchall()
+    result: dict[str, list[str]] = {}
+    for tbl, col in rows:
+        result.setdefault(str(tbl), []).append(str(col))
+    return {k: tuple(v) for k, v in result.items()}
+
+
+def _build_live_schema_guidance(db: CaseDB | None = None) -> str:
+    if db is None:
+        return ""
+    try:
+        live = load_live_schema(db)
+    except Exception:
+        return ""
+
+    allowed = get_allowed_tables(db)
+
+    parts: list[str] = []
+    for table_name in sorted(live):
+        if table_name not in allowed:
+            continue
+        cols = live[table_name]
+        parts.append(f"  {table_name} columns: {', '.join(cols)}")
+    if not parts:
+        return ""
+    return "tables:\n" + "\n".join(parts)
 
 
 # PROMPT-4: Load domain knowledge from YAML schema files
@@ -165,7 +211,7 @@ def _fmt_table_notes(table_name: str) -> str:
     return "\n".join(lines)
 
 
-def build_investigation_framework() -> str:
+def build_investigation_framework(db: CaseDB | None = None) -> str:
     """Build investigation framework from schema declarations.
     
     PROMPT-4: Framework is built from YAML schema, not Python literals.
@@ -192,10 +238,20 @@ def build_investigation_framework() -> str:
     for exe, cat in app_catalog.get("mappings", {}).items():
         app_lines.append(f"  {exe}={cat.get('category', '?')}.")
 
-    table_lines = [
-        f"{table_name} columns: {', '.join(TABLE_COLUMN_REFERENCE[table_name])}."
-        for table_name in sorted(ALLOWED_TABLES)
-    ]
+    live_guidance = _build_live_schema_guidance(db)
+
+    if live_guidance:
+        table_section = live_guidance + "\n"
+    else:
+        allowed = get_allowed_tables(db)
+        table_lines = [
+            f"  {table_name} columns: {', '.join(TABLE_COLUMN_REFERENCE[table_name])}."
+            for table_name in sorted(allowed)
+        ]
+        table_section = (
+            f"Available tables: {', '.join(sorted(allowed))}.\n"
+            + "\n".join(table_lines) + "\n"
+        )
 
     return (
         "Investigation framework — apply every iteration:\n"
@@ -217,7 +273,6 @@ def build_investigation_framework() -> str:
         "  query_cache stores prior read-only query results by SQL hash.\n"
         "  section_runs stores the plan/query/check/write history for each report block.\n"
         "  Prefer reusing section_facts before issuing new SQL when the fact already answers the block question.\n\n"
-        f"Available tables: {', '.join(sorted(ALLOWED_TABLES))}.\n"
-        + "\n".join(table_lines)
-        + "\nOnly propose SELECT or WITH-prefixed read-only SQL compatible with DuckDB.\n"
+        + table_section
+        + "Only propose SELECT or WITH-prefixed read-only SQL compatible with DuckDB.\n"
     )
