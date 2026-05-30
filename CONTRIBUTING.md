@@ -72,7 +72,7 @@ flowchart TB
 - **ルーティング・テンプレマッチング・整形は LLM に渡さない**。`validate_select_sql` / `HypothesisProgressTracker` / `_dedup_new_hypotheses` / `format_benchmark_answer` / `execute_fallback_search` はすべてコード側で決定論的に動きます。
 - **durable な結論はすべて DuckDB**。LLM の生出力は `ai_logs/<session_id>/` と `trace.investigation_steps` に audit ログとして残しますが、これは正本ではありません。findings / hypotheses / claims / report_sections は必ず DB に永続化し、memory Markdown はそれらからの projection に留めます。
 - **仮説単位の文脈隔離**。検証中の暫定 facts / timeline / tasks は `memory/scratch/<hypothesis_id>/` に閉じ込め、confirmed 時に共有記憶へ昇格、refuted 時に archive へ退避します。他仮説の暫定情報を流入させないこと。
-- **トークン予算と LLM 呼び出し総数は hard cap**。`_assemble_messages_with_budget` が system プロンプトを保護したまま user/dynamic 側のみ trim、`audit.LLMCallLogger` が `--max-llm-calls`(既定 200)を超えたら `RuntimeError` でループ終了。soft warning にしないこと。
+- **トークン予算は hard cap、LLM 呼び出し総数は opt-in cap**。`_assemble_messages_with_budget` が system プロンプトを保護したまま user/dynamic 側のみ trim。`audit.LLMCallLogger` の総数 cap は `--max-llm-calls`(既定 `0` = 無制限。ローカル LLM 前提のため)。クラウド API に切り替えるときは明示的に `--max-llm-calls 500` 等を渡してコスト暴走を防ぐこと。指定されたら超過時に soft warning ではなく `RuntimeError` でループ終了。
 
 新しい AI 駆動の振る舞いを追加するときは「これを 1 文の `<TASK>` で書けるか」「コード側で表せないか」を先に問い、答えが No / Yes ならルール宣言ノブ(`confirm_when` / `fallback_search` / `follow_up_questions` 等)で表現できないかを確認してください。Python に rule_id や event_id のハードコード分岐を増やす前に、必ず宣言層 (`src/forensia/rulepacks/_schema/`) を検討すること。
 
@@ -273,7 +273,7 @@ taxonomy ファイルは層間マッピング (`hypothesis_to_section`、`sectio
 
 ### LLM 呼び出し総数は hard cap
 
-`audit.LLMCallLogger` がすべての呼び出しを記録し、`investigator.investigate(max_llm_calls=...)`(CLI: `--max-llm-calls`、既定 200)を超えると `RuntimeError`。soft warning ではなく、ループが終了します。phase 別の集計は `LLMCallLogger.count_by_phase()` で取れます。
+`audit.LLMCallLogger` がすべての呼び出しを記録します。`investigator.investigate(max_llm_calls=...)`(CLI: `--max-llm-calls`)は **opt-in の hard cap** で、既定値は `0`(無制限)。ローカル LLM ではコスト懸念がないため既定では無効です。クラウド API 利用時は明示的に正の値を指定すること(超過で `RuntimeError`、soft warning ではなくループ終了)。phase 別の集計は `LLMCallLogger.count_by_phase()` で取れます。
 
 プロンプト組み立てには別途トークン予算ガードがあります。`_assemble_messages_with_budget()` は system メッセージを保護したまま、user / dynamic 側の content を先に trim します。これを迂回して system に直接連結しないこと。
 
@@ -848,7 +848,7 @@ API やレポート writer が raw 証拠からタイムスタンプを受け取
 | フラグ | 既定 | いつ気にするか |
 |---|---|---|
 | `--max-iter` | `20` | 長く回したいときだけ増やす |
-| `--max-llm-calls` | `200` | `investigate` あたりの LLM 呼び出し総数 hard cap。超過で `RuntimeError`。 |
+| `--max-llm-calls` | `0` (無制限) | `investigate` あたりの LLM 呼び出し総数 opt-in hard cap。`0` は無効化。クラウド API 利用時にコスト暴走防止で明示的に指定。 |
 | `--max-queries-per-hypothesis` | `5` | 1 仮説あたりの探索深さ。tracker が auto-confirm / refute / pivot で先に解決することはある。 |
 | `--no-progress-limit` | `3` | 低信号サイクルを許容したいときに緩める |
 | `--report-every-n-cycles` | `1` | レポート再充填コストが高すぎるときに増やす。間が空くと `stale` の優先順位効果が薄れる。 |

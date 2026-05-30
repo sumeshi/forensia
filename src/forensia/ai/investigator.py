@@ -1647,11 +1647,11 @@ async def investigate(
     signal.signal(signal.SIGINT, lambda signum, frame: setattr(ctx, "interrupted", True))
 
     def _check_llm_budget() -> None:
-        if llm_logger.total_calls >= max_llm_calls:
+        if max_llm_calls > 0 and llm_logger.total_calls >= max_llm_calls:
             raise RuntimeError(
                 f"LLM call budget exceeded: {llm_logger.total_calls} calls >= {max_llm_calls} max. "
                 f"Per-phase: {llm_logger.count_by_phase()}. "
-                "Increase --max-llm-calls or investigate the cause of excessive calls."
+                "Increase --max-llm-calls (or pass 0 for unlimited) or investigate the cause of excessive calls."
             )
 
     try:

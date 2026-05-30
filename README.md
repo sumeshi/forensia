@@ -124,7 +124,7 @@ flowchart LR
 - **記憶の圧縮と分離**:`overview.md` は閾値超過時に LLM で要約圧縮し、`facts.md` / `timeline.md` などは構造を保持。仮説検証中の暫定情報は `memory/scratch/H-NNN/` に隔離され、confirmed 時に共有記憶へ昇格、refuted 時は archive へ退避します。これによって未確証の暫定情報が他仮説の検証に汚染することを防ぎます。
 - **段落単位の汚染防止**:レポート生成では `paragraph_narrator` が 1 段落ずつ独立して書き、他セクションの本文や全 top-finding を見ません。ブロック間で共有するのは 120 字程度のサマリのみで、序文の使い回しや無関係な finding の流入を構造的に避けています。
 - **クエリの正規化フィンガープリント**:重複クエリ検出は sqlglot AST ベースで、空白や別名差を無視して「意味的に同じクエリを 2 回出した」を判定します。LLM が同じ問いを言い換えて繰り返すことによる無限ループを防ぎます。
-- **LLM 呼び出し総数の硬上限**:`investigate(max_llm_calls=200)` を超えると `RuntimeError` で停止します。phase 別の集計は `ai_logs/` から確認できます。
+- **LLM 呼び出し総数の硬上限(opt-in)**:`--max-llm-calls N` を超えると `RuntimeError` で停止します。クラウド API への暴走防止用の安全弁で、ローカル LLM 前提の既定値は `0`(無制限)。phase 別の集計は `ai_logs/` から確認できます。
 
 ## クイックスタート
 

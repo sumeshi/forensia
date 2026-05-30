@@ -514,7 +514,7 @@ def investigate(
         "--report-max-queries-per-section",
         help="Max iterative agent queries per report block. 0 = use LLM_REPORT_MAX_QUERIES_PER_SECTION env (default 3)",
     ),
-    max_llm_calls: int = typer.Option(200, "--max-llm-calls", help="Hard cap on total LLM calls per investigation session."),
+    max_llm_calls: int = typer.Option(0, "--max-llm-calls", help="Hard cap on total LLM calls per investigation session. 0 = unlimited (default for local LLM)."),
 ) -> None:
     """Run full investigation pipeline: ingest, normalize, analyze, investigate, and report."""
     llm_base_url, model = resolve_llm_config(llm_base_url, model)
