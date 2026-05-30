@@ -749,6 +749,7 @@ def build_query_intent_messages(
     time_range: dict[str, str] | None = None,
     schema_context: str = "",
     extra_context_md: str = "",
+    prior_check_feedback: str = "",
 ) -> list[dict[str, str]]:
     """Build messages for the query_intent_planner phase.
     
@@ -774,13 +775,18 @@ def build_query_intent_messages(
         '  "time_window": "string describing time bounds",\n'
         '  "expected_row_shape": "string describing expected columns"\n'
         "}\n"
-        "</OUTPUT_SCHEMA>"
+        "</OUTPUT_SCHEMA>\n"
+        "<RULES>\n"
+        "If EXECUTION_ERROR is present, you MUST change the query — at minimum change the table list, the WHERE clause, or eliminate the failing JOIN. Never repeat the same SQL that caused an execution error.\n"
+        "If prior_check_feedback names specific missing event_ids or evidence types, the new SQL MUST include those event_ids or evidence types. Never ignore prior check feedback.\n"
+        "</RULES>"
     )
     user = (
         f"hypothesis.description: {hypothesis.description}\n"
         f"hypothesis.required_entities: {getattr(hypothesis, 'required_entities', [])}\n"
         f"active_hypotheses: {[h.model_dump() if hasattr(h, 'model_dump') else dict(h) for h in active_hypotheses]}\n"
         f"extra_context:\n{extra_context_md}\n"
+        f"prior_check_feedback:\n{prior_check_feedback or '(no prior checks)'}\n"
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -790,6 +796,7 @@ def build_sql_composer_messages(
     table_schema_card: str = "",
     template_catalog: list[dict] | None = None,
     time_range: dict[str, str] | None = None,
+    prior_check_feedback: str = "",
 ) -> list[dict[str, str]]:
     """Build messages for the sql_composer phase.
     
@@ -816,9 +823,11 @@ def build_sql_composer_messages(
         "Exactly ONE of template_id or sql MUST be non-null. The other MUST be null.\n"
         "template_id MUST be an exact match to a template_catalog entry (use null otherwise).\n"
         "When raw SQL is used: ensure all COALESCE arguments have the same data type. Use json_extract_string (returns VARCHAR) when COALESCE-ing with a VARCHAR column, never json_extract (returns JSON).\n"
+        "If EXECUTION_ERROR is present, you MUST change the query — at minimum change the table list, the WHERE clause, or eliminate the failing JOIN. Never repeat the same SQL that caused an execution error.\n"
+        "If prior_check_feedback names specific missing event_ids or evidence types, the new SQL MUST include those event_ids or evidence types. Never ignore prior check feedback.\n"
         "</RULES>"
     )
-    user = json.dumps({"intent": intent}, ensure_ascii=False, default=str)
+    user = json.dumps({"intent": intent, "prior_check_feedback": prior_check_feedback or "(no prior checks)"}, ensure_ascii=False, default=str)
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
@@ -842,9 +851,13 @@ def build_verdict_review_messages(
         "{\n"
         '  "verdict": "confirmed | refuted | inconclusive",\n'
         '  "rationale": "string — concise reason (< 200 chars)",\n'
-        '  "confidence": 0.0-1.0\n'
+        '  "confidence": 0.0-1.0,\n'
+        '  "missing_questions": ["specific event_id, table, or evidence type that would resolve the hypothesis (required when verdict=inconclusive, MUST be non-empty in that case)"]\n'
         "}\n"
-        "</OUTPUT_SCHEMA>"
+        "</OUTPUT_SCHEMA>\n"
+        "<RULES>\n"
+        "When verdict=inconclusive, missing_questions MUST contain at least 1 specific item naming the missing evidence (e.g. 'event_id 4663', 'mft_entries WHERE file_path LIKE %.docx%', 'browser executable in prefetch_executions'). Do NOT leave it empty.\n"
+        "</RULES>"
     )
     user = (
         f"hypothesis: {hypothesis.description if hasattr(hypothesis, 'description') else hypothesis}\n"
@@ -1271,6 +1284,15 @@ Output: {"verdict": "block_contradicted", "status": "not_found", "rationale": "N
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+def _format_evidence_row(e: dict[str, Any]) -> str:
+    evid = e.get("evidence_id") or e.get("id") or "?"
+    if "summary" in e:
+        return f"- {evid}: {e['summary'][:300]}"
+    keys = [k for k in ("event_id", "timestamp", "computer", "target_user", "src_ip", "process_name", "file_path", "file_name") if k in e]
+    parts = ", ".join(f"{k}={e[k]}" for k in keys[:8])
+    return f"- {evid}: {parts}"
+
+
 def build_section_outline_messages(
     template_body: str,
     relevant_evidence: list[dict],
@@ -1297,6 +1319,7 @@ def build_section_outline_messages(
         "Each key_point MUST be a falsifiable claim, not a topic label.\n"
         "If the evidence is insufficient to make a substantive claim, return an empty outline list.\n"
         "If prior_section_keypoints is non-empty, avoid re-using those same keypoints for this section — choose different evidence.\n"
+        "If evidence_id is '?' (unknown), do NOT include it in evidence_ids array — only reference evidence with real identifiers.\n"
         "</RULES>\n"
         "<EXAMPLE>\n"
         'Input evidence rows: [{"evidence_id": "evtx-security-0001", "summary": "4648 logon WIN-D9->informant 2015-03-22 14:33:54"}, {"evidence_id": "evtx-security-0002", "summary": "4648 logon WIN-D9->informant 2015-03-22 14:34:28"}]\n'
@@ -1304,10 +1327,7 @@ def build_section_outline_messages(
         "</EXAMPLE>\n"
         "Output JSON only. "
     )
-    evidence_summary = "\n".join(
-        f"- {e.get('evidence_id', '?')}: {e.get('summary', str(e)[:100])}"
-        for e in (relevant_evidence or [])
-    )
+    evidence_summary = "\n".join(_format_evidence_row(e) for e in (relevant_evidence or [])[:30])
     user = (
         f"section_meta: {json.dumps(section_meta, ensure_ascii=False, default=str)}\n"
         f"available_evidence:\n{evidence_summary or 'No evidence available.'}\n"
@@ -1337,6 +1357,8 @@ def build_paragraph_narrate_messages(
         "Citation format: cite raw `evidence_id` strings only (e.g. evtx-security-000000000122). Do NOT cite `finding_id` (e.g. windows-security-4648-logon-explicit-creds-0001) — those are finding labels, not evidence references. If the input shows a finding_id without an evidence_id, OMIT the citation entirely instead of using the finding_id.\n"
         "No KP-NNNN identifiers.\n"
         "No meta-statements: write what was observed, not what was reviewed. Avoid 'investigation covered', 'scope included', 'comprehensive review of' style phrasing.\n"
+        "Do NOT write `## {heading}` in your output — the heading is prepended by the renderer. Only write paragraph content below the heading.\n"
+        "If the status is not_searched or not_found, this function should not be called. If you see such a status, output nothing.\n"
         "</RULES>\n"
         "<EXAMPLE_GOOD>\n"
         "Eight explicit-credential logon attempts (4648) targeting informant, admin11, and temporary were observed from INFORMANT-PC$ between 14:33 and 15:55 on 2015-03-22 (evtx-security-000000000122, evtx-security-000000000152). All attempts succeeded and produced no subsequent 4624 from the same src_ip, suggesting localhost credential injection rather than network-reused access.\n"
@@ -1413,6 +1435,19 @@ def build_hypothesis_drafter_messages(
         "<RULES>\n"
         "confirm_when MUST be a JSON object (not a string). Use co_observed_event_ids as a list of integer Windows event IDs (e.g. [4624, 4625, 4768]).\n"
         "required_entities MUST be column-like identifiers (snake_case), not natural language phrases. Example: src_ip, target_user, computer.\n"
+        "confirm_when.co_observed_event_ids MUST be event IDs commonly logged by DEFAULT Windows audit policy. Avoid event IDs that require non-default auditing such as:\n"
+        "  - 4663 (Object Access) — requires explicit SACL / Object Access auditing\n"
+        "  - 5140/5145 (file share access) — requires File Share auditing\n"
+        "  - 4658 / 4660 — Object Access subcategory\n"
+        "If the hypothesis fundamentally needs these IDs, state in the description that it is only testable when corresponding audit policy is enabled.\n"
+        "event_id semantics:\n"
+        "  - 4624/4625 = logon success/failure\n"
+        "  - 4648 = explicit credential logon attempt\n"
+        "  - 4688 = process creation (NOT 'browser activity' — for browser look at mft_entries / prefetch_executions)\n"
+        "  - 4697 / 7045 = service installation\n"
+        "  - 4698 = scheduled task creation\n"
+        "  - 1102 / 104 = log clearing\n"
+        "For browser usage, file activity, or process artifact analysis, prefer mft_entries + prefetch_executions tables over event IDs.\n"
         "Output JSON only.\n"
         "</RULES>\n"
         "<EXAMPLE>\n"
@@ -1426,6 +1461,10 @@ def build_hypothesis_drafter_messages(
         "<EXAMPLE_BAD>\n"
         'Output: {"hypothesis": {"description": "...", "required_entities": ["user_identity", "computer_name", "logon_type", "credential_usage"]}}\n'
         "Reason: required_entities must be snake_case column-like names (target_user, computer, logon_type), not natural language. NEVER use natural language for required_entities.\n"
+        "</EXAMPLE_BAD>\n"
+        "<EXAMPLE_BAD>\n"
+        'Output: {"hypothesis": {"description": "Logon (4624) followed by file access (4663) or browser activity (4688)...", "confirm_when": {"co_observed_event_ids": [4624, 4663, 4688]}}}\n'
+        "Reason: 4663 requires Object Access auditing (rarely enabled), and 4688 is process creation not \"browser activity\". Better: split into two hypotheses — one tested via 4624 + mft_entries WHERE file_path LIKE patterns, another via 4624 + prefetch_executions filtered to browser executable names.\n"
         "</EXAMPLE_BAD>\n"
     )
     user = (

@@ -181,7 +181,8 @@ async def _render_section_blocks(
                 raise
             block_body = block_result.body
             heading = str(block.get("heading") or "").strip()
-            if heading and not block_body.lstrip().startswith(f"## {heading}"):
+            from forensia.report.writer import _body_starts_with_heading
+            if heading and not _body_starts_with_heading(block_body, heading):
                 block_body = f"## {heading}\n\n{block_body}"
             rendered_blocks.append(block_body)
             if heading:

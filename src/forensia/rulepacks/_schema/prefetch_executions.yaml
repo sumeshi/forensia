@@ -25,5 +25,5 @@ columns:
   - tags
   - severity
 notes:
-  general: "executable_name holds the .exe filename (e.g. 'POWERSHELL.EXE'). exec_count is the total run count; last_exec_time is the most recent execution timestamp."
-  no_host_column: "IMPORTANT: prefetch_executions has NO computer/hostname column — source_file is the .pf file path. To filter by host, JOIN with evtx_events ON abs(epoch_ms(prefetch_executions.last_exec_time) - epoch_ms(evtx_events.timestamp)) < 5000 AND evtx_events.computer = ?. Or query prefetch_executions without a host filter and correlate timestamps manually."
+  no_host_column: "prefetch_executions is a single-host artifact and does NOT have a computer/host column. When joining with evtx_events or mft_entries, do NOT use prefetch_executions.computer."
+  join_pattern: "If you need to correlate prefetch with evtx_events by host, filter evtx_events to the host first (WHERE computer = '...') and then JOIN prefetch by time only (e.g. p.last_exec_time BETWEEN e.timestamp - INTERVAL 15 MINUTE AND e.timestamp + INTERVAL 15 MINUTE)."

@@ -116,3 +116,4 @@ class SessionState(BaseModel):
     resolved_hypotheses: list[Hypothesis] = Field(default_factory=list)
     findings_snapshot: list[dict[str, Any]] = Field(default_factory=list)
     history: list[HistoryEntry] = Field(default_factory=list)
+    last_execution_error: dict[str, Any] | None = None

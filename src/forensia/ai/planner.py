@@ -341,6 +341,28 @@ def plan_hypothesis_query(
     hypothesis_history, seen_query_ids = _build_hypothesis_history(state, hypothesis, db, limit=10)
     schema_card = _build_schema_guidance("evtx_events")
 
+    prior_check_feedback = ""
+    if db is not None and hypothesis.id:
+        recent_checks = db.execute("""
+            SELECT body FROM hypothesis_reasoning
+            WHERE hypothesis_id = ? AND phase = 'check'
+            ORDER BY created_at DESC LIMIT 2
+        """, (hypothesis.id,)).fetchall()
+        if recent_checks:
+            prior_check_feedback = "\n".join(f"- {row[0][:300]}" for row in recent_checks)
+
+    execution_error_block = ""
+    if state.last_execution_error:
+        execution_error_block = (
+            f"\n<EXECUTION_ERROR>\n"
+            f"The previous SQL failed at execute time. Do NOT repeat the same SQL.\n"
+            f"query_id: {state.last_execution_error['query_id']}\n"
+            f"failing_sql: {state.last_execution_error['sql']}\n"
+            f"error: {state.last_execution_error['error']}\n"
+            f"</EXECUTION_ERROR>\n"
+        )
+        state.last_execution_error = None
+
     # Phase 1: Query Intent Planning (WHAT data to fetch)
     def intent_messages_builder(extra_context: str) -> list[dict[str, str]]:
         extra_context_holder["value"] = extra_context
@@ -350,7 +372,8 @@ def plan_hypothesis_query(
             active_hypotheses=state.active_hypotheses,
             time_range={},
             schema_context=schema_card,
-            extra_context_md=extra_context,
+            extra_context_md=extra_context + execution_error_block,
+            prior_check_feedback=prior_check_feedback,
         )
 
     intent_response = _request_with_optional_context(
@@ -369,7 +392,10 @@ def plan_hypothesis_query(
         table_schema_card=schema_card,
         template_catalog=query_template_catalog(),
         time_range={},
+        prior_check_feedback=prior_check_feedback,
     )
+    if execution_error_block:
+        composer_messages.append({"role": "user", "content": execution_error_block.strip()})
     composer_messages = _trim_dynamic_content(composer_messages)
 
     composer_response = _retry_sql_composer(

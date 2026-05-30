@@ -2102,6 +2102,14 @@ def prepare_section_request(
     }
 
 
+def _body_starts_with_heading(body: str, heading: str) -> bool:
+    text = body.lstrip()
+    if text.startswith("**Status:**"):
+        nl = text.find("\n")
+        text = text[nl:].lstrip() if nl != -1 else ""
+    return text.startswith(f"## {heading}")
+
+
 def _render_section_from_request(
     *,
     db: CaseDB,
@@ -2141,7 +2149,7 @@ def _render_section_from_request(
         )
         block_body = block_result.body
         heading = str(block.get("heading") or "").strip()
-        if heading and not block_body.lstrip().startswith(f"## {heading}"):
+        if heading and not _body_starts_with_heading(block_body, heading):
             block_body = f"## {heading}\n\n{block_body}"
         rendered_blocks.append(block_body)
         if heading:

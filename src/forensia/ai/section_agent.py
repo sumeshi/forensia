@@ -1373,41 +1373,45 @@ def _write_block_body(
         )
         messages = classify_messages if not (raw_rows and expected_shape and all(field in raw_rows[0] for field in expected_shape.get("fields") or [])) else []
     else:
-        flat_evidence = _flatten_sample_rows(collected_results)
-        prior_section_keypoints = list(
-            {
-                str(r.get("keypoint") or r.get("source_kind") or "")
-                for r in collected_results
-                if r.get("keypoint") or r.get("source_kind")
-            }
-        )
-        outline_messages = build_section_outline_messages(
-            template_body=ctx.template_body,
-            relevant_evidence=flat_evidence,
-            time_range=ctx.case.time_range,
-            section_meta={"section": ctx.section_key, "title": ctx.title},
-            prior_section_keypoints=prior_section_keypoints,
-        )
-        outline = request_llm_json(
-            messages=outline_messages,
-            model=ctx.model,
-            base_url=ctx.base_url,
-            audit_callback=ctx.audit,
-        )
-        all_key_points: list[str] = []
-        for item in outline.get("outline") or []:
-            all_key_points.extend(item.get("key_points") or [])
-        narrate_messages = build_paragraph_narrate_messages(
-            heading=ctx.block_heading,
-            key_points=all_key_points,
-            evidence_rows=flat_evidence[:10],
-            template_body=ctx.template_body,
-        )
-        body = _prepend_status_badge(
-            chat_completion(messages=narrate_messages, model=ctx.model, base_url=ctx.base_url).strip(),
-            status_inner,
-        )
-        messages = narrate_messages
+        if status_inner in {"not_searched", "not_found"}:
+            body = f"**Status:** {status_inner}\n\n*Block skipped: {status_inner}*"
+            messages = []
+        else:
+            flat_evidence = _flatten_sample_rows(collected_results)
+            prior_section_keypoints = list(
+                {
+                    str(r.get("keypoint") or r.get("source_kind") or "")
+                    for r in collected_results
+                    if r.get("keypoint") or r.get("source_kind")
+                }
+            )
+            outline_messages = build_section_outline_messages(
+                template_body=ctx.template_body,
+                relevant_evidence=flat_evidence,
+                time_range=ctx.case.time_range,
+                section_meta={"section": ctx.section_key, "title": ctx.title},
+                prior_section_keypoints=prior_section_keypoints,
+            )
+            outline = request_llm_json(
+                messages=outline_messages,
+                model=ctx.model,
+                base_url=ctx.base_url,
+                audit_callback=ctx.audit,
+            )
+            all_key_points: list[str] = []
+            for item in outline.get("outline") or []:
+                all_key_points.extend(item.get("key_points") or [])
+            narrate_messages = build_paragraph_narrate_messages(
+                heading=ctx.block_heading,
+                key_points=all_key_points,
+                evidence_rows=flat_evidence[:10],
+                template_body=ctx.template_body,
+            )
+            body = _prepend_status_badge(
+                chat_completion(messages=narrate_messages, model=ctx.model, base_url=ctx.base_url).strip(),
+                status_inner,
+            )
+            messages = narrate_messages
 
     if audit_callback:
         audit_callback(messages, body)
@@ -1458,52 +1462,60 @@ def run_section_block_agent(
         benchmark_mode=benchmark_mode, benchmark_id=benchmark_id,
         audit_callback=audit_callback, report_brief=report_brief,
     )
-    collected_results: list[dict[str, Any]] = []
-    if ctx.reusable_facts:
-        collected_results.append(_facts_as_result(ctx.reusable_facts))
-    if ctx.reusable_evidence:
-        collected_results.append(_evidence_as_result(ctx.reusable_evidence))
-    verdict = "block_needs_more"
-    rationale = ""
-    missing_questions: list[Any] = []
-    status = "insufficient_evidence"
-    actual_query_count = 0
-    actual_query_row_counts: list[int] = []
-    template_catalog = ctx.template_catalog
-    for iteration in range(1, ctx.max_queries + 1):
-        prior_runs = _load_prior_runs(db, section_key, block_heading)
-        template_catalog = _filter_template_catalog_by_section(template_catalog, section_key, collected_results)
-        plan_action = _run_block_plan(
-            ctx, iteration, prior_runs, template_catalog,
-            context_sections, current_section_outline,
+    try:
+        collected_results: list[dict[str, Any]] = []
+        if ctx.reusable_facts:
+            collected_results.append(_facts_as_result(ctx.reusable_facts))
+        if ctx.reusable_evidence:
+            collected_results.append(_evidence_as_result(ctx.reusable_evidence))
+        verdict = "block_needs_more"
+        rationale = ""
+        missing_questions: list[Any] = []
+        status = "insufficient_evidence"
+        actual_query_count = 0
+        actual_query_row_counts: list[int] = []
+        template_catalog = ctx.template_catalog
+        for iteration in range(1, ctx.max_queries + 1):
+            prior_runs = _load_prior_runs(db, section_key, block_heading)
+            template_catalog = _filter_template_catalog_by_section(template_catalog, section_key, collected_results)
+            plan_action = _run_block_plan(
+                ctx, iteration, prior_runs, template_catalog,
+                context_sections, current_section_outline,
+            )
+            if plan_action is None or plan_action.action == "write":
+                break
+            outcome = _execute_block_plan(ctx, plan_action, iteration)
+            if outcome is None:
+                continue
+            source_query, result = outcome
+            collected_results.append(result)
+            if str(result.get("kind") or "rows") == "rows":
+                actual_query_count += 1
+                actual_query_row_counts.append(int(result.get("row_count") or 0))
+            check_result = _run_block_check(
+                ctx, iteration, result, collected_results, prior_runs,
+                actual_query_count, actual_query_row_counts, source_query,
+            )
+            if check_result is None:
+                break
+            verdict, rationale, missing_questions, status = check_result
+            if verdict in {"block_supported", "block_contradicted"}:
+                break
+        actual_query_count = _try_evidence_chain_fallback(ctx, collected_results, actual_query_count, actual_query_row_counts)
+        body, final_status = _write_block_body(
+            ctx, collected_results,
+            status, verdict, rationale, missing_questions,
+            actual_query_count, actual_query_row_counts,
+            audit_callback=audit_callback,
         )
-        if plan_action is None or plan_action.action == "write":
-            break
-        outcome = _execute_block_plan(ctx, plan_action, iteration)
-        if outcome is None:
-            continue
-        source_query, result = outcome
-        collected_results.append(result)
-        if str(result.get("kind") or "rows") == "rows":
-            actual_query_count += 1
-            actual_query_row_counts.append(int(result.get("row_count") or 0))
-        check_result = _run_block_check(
-            ctx, iteration, result, collected_results, prior_runs,
-            actual_query_count, actual_query_row_counts, source_query,
+        return SectionBlockResult(body=body, evidence_results=collected_results, iterations=max(len(collected_results), 1), status=final_status)
+    except Exception as exc:
+        return SectionBlockResult(
+            body=f"**Status:** error\n\n*Section block failed: {str(exc)[:200]}*",
+            evidence_results=[],
+            iterations=0,
+            status="error",
         )
-        if check_result is None:
-            break
-        verdict, rationale, missing_questions, status = check_result
-        if verdict in {"block_supported", "block_contradicted"}:
-            break
-    actual_query_count = _try_evidence_chain_fallback(ctx, collected_results, actual_query_count, actual_query_row_counts)
-    body, final_status = _write_block_body(
-        ctx, collected_results,
-        status, verdict, rationale, missing_questions,
-        actual_query_count, actual_query_row_counts,
-        audit_callback=audit_callback,
-    )
-    return SectionBlockResult(body=body, evidence_results=collected_results, iterations=max(len(collected_results), 1), status=final_status)
 
 
 async def async_run_section_block_agent(

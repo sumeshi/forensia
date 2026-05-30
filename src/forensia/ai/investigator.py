@@ -5,6 +5,7 @@ import functools
 import hashlib
 import json
 import signal
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -229,6 +230,8 @@ class HypothesisProgressTracker:
     
     zero_row_inconclusive_count: int = 0
     query_fingerprints: list[str] = field(default_factory=list)
+    _last_missing_signature: str = ""
+    consecutive_same_missing: int = 0
     
     def record(self, query_fingerprint: str, verdict: str, row_count: int) -> None:
         """Record a query execution result."""
@@ -238,13 +241,33 @@ class HypothesisProgressTracker:
         else:
             self.zero_row_inconclusive_count = 0
     
+    def register_check(self, verdict: str, row_count: int, missing_signature: str = "") -> None:
+        """Track consecutive same-missing checks for auto-refute detection."""
+        if verdict == "inconclusive" and missing_signature:
+            if missing_signature == self._last_missing_signature:
+                self.consecutive_same_missing += 1
+            else:
+                self.consecutive_same_missing = 1
+            self._last_missing_signature = missing_signature
+        elif verdict != "inconclusive":
+            self.consecutive_same_missing = 0
+            self._last_missing_signature = ""
+    
+    def should_auto_refute_due_to_unobserved_events(self, threshold: int = 3) -> bool:
+        """Return True after threshold consecutive same-missing inconclusive results."""
+        return self.consecutive_same_missing >= threshold
+    
     def should_auto_refute(self, consecutive_threshold: int = 3) -> bool:
         """Return True after consecutive_threshold consecutive 0-row inconclusive results."""
         return self.zero_row_inconclusive_count >= consecutive_threshold
     
-    def should_pivot(self, current_fingerprint: str) -> bool:
-        """Detect if query fingerprint is duplicated (same event_id/host/time bucket)."""
-        return self.query_fingerprints.count(current_fingerprint) >= 2
+    def should_pivot(self, threshold: int = 2) -> bool:
+        """Detect if any query fingerprint appears >= threshold times."""
+        fp_counts = Counter(self.query_fingerprints)
+        most_common = fp_counts.most_common(1)
+        if most_common and most_common[0][1] >= threshold:
+            return True
+        return False
     
     @staticmethod
     def _extract_observed_event_ids(rows: list[dict[str, Any]]) -> set[int]:
@@ -843,6 +866,7 @@ async def _investigate_one_hypothesis(
                     iteration=plan_cycle, report_kw={"focus_sections": focus_sections},
                     current_query=planned_query.query_id, hypothesis_id=hypothesis.id,
                     reasoning_entry_id=reasoning_entry_id)
+        query_fp = _query_fingerprint(planned_query.sql)
         try:
             rows = fetch_records(db, planned_query.sql)
             _log("EXEC", f"{hypothesis.id} {planned_query.query_id} — {len(rows)} rows")
@@ -888,13 +912,19 @@ async def _investigate_one_hypothesis(
                     fallback_info = fb_info or {"phase": "keyword_in_raw_json", "source_rule_id": "event_id_schema"}
                     fallback_info["query_sql"] = planned_query.sql
         except Exception as exc:
-            err_msg = f"SQL execution error — {planned_query.query_id}: {exc}"
-            print(f"[red]{err_msg}[/red]")
+            err_msg = str(exc)
+            tracker.record(query_fp, verdict="exec_error", row_count=0)
+            print(f"[red]SQL execution error — {planned_query.query_id}: {err_msg}[/red]")
             if emit_fn:
-                emit_fn("investigate/do", f"[do] {err_msg}", iteration=plan_cycle, hypothesis_id=hypothesis.id)
+                emit_fn("investigate/do", f"[do] SQL execution error — {planned_query.query_id}: {err_msg}", iteration=plan_cycle, hypothesis_id=hypothesis.id)
             _append_hypothesis_reasoning(db=db, hypothesis_id=hypothesis.id, session_id=session_id,
-                                         iteration=plan_cycle, phase="do", body=err_msg,
+                                         iteration=plan_cycle, phase="do", body=f"SQL execution error: {err_msg}",
                                          query_id=planned_query.query_id)
+            state.last_execution_error = {
+                "query_id": planned_query.query_id,
+                "sql": planned_query.sql,
+                "error": err_msg[:500],
+            }
             continue
         result_summary = summarize_query_result(rows)
         _save_step(db=db, session_id=session_id, iteration=plan_cycle, phase="do",
@@ -994,7 +1024,17 @@ async def _investigate_one_hypothesis(
         row_count = int(result_summary.get("row_count") or 0)
         query_fp = _query_fingerprint(planned_query.sql)
         tracker.record(query_fp, check_result.verdict, row_count)
-        if tracker.should_pivot(query_fp):
+        def _rationale_signature(rationale: str) -> str:
+            eids = sorted(set(re.findall(r"\b(?:event\s*id\s*)?(\d{3,5})\b", rationale.lower())))
+            keywords = sorted(set(re.findall(r"\b(missing|requires|correlation|not\s+present|absent)\b", rationale.lower())))
+            return "eid:" + ",".join(eids) + "|kw:" + ",".join(keywords)
+        missing_checks_raw = check_result.raw_response.get("missing_questions") or check_result.raw_response.get("missing_checks") or []
+        missing_signature = (
+            "|".join(sorted(str(q).lower().strip() for q in missing_checks_raw if q))
+            or _rationale_signature(str(check_result.report_text or check_result.raw_response.get("rationale", "")))
+        )
+        tracker.register_check(check_result.verdict, row_count, missing_signature)
+        if tracker.should_pivot():
             _log("PIVOT", f"{hypothesis.id} — duplicate query fingerprint detected, auto-exhausted")
             break
         rule_context = resolve_rule_context(hypothesis)
@@ -1003,6 +1043,13 @@ async def _investigate_one_hypothesis(
             _log("RESOLVE", f"{hypothesis.id} — auto-refuted after 3+ consecutive 0-row inconclusive")
             _resolve_hypothesis(db=db, state=state, hypothesis_id=hypothesis.id, verdict="refuted",
                                 summary="Auto-refuted: repeated 0-row inconclusive results indicate the hypothesis cannot be verified with available evidence.",
+                                session_id=session_id)
+            cycle_progress = True
+            break
+        if tracker.should_auto_refute_due_to_unobserved_events():
+            _log("RESOLVE", f"{hypothesis.id} — auto-refuted after {tracker.consecutive_same_missing}+ consecutive same-missing checks")
+            _resolve_hypothesis(db=db, state=state, hypothesis_id=hypothesis.id, verdict="refuted",
+                                summary="hypothesis requires evidence not present in current dataset (3+ consecutive same-missing check)",
                                 session_id=session_id)
             cycle_progress = True
             break
