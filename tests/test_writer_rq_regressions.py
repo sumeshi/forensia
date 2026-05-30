@@ -15,6 +15,7 @@ from forensia.report.writer import (
     _check_hedge_no_citation,
     _render_structured_answer_markdown,
     _resolve_evidence_results,
+    _validate_body_evidence_ids,
 )
 
 
@@ -38,6 +39,24 @@ class WriterRQRegressionTests(unittest.TestCase):
         section = markdown.split("### Missing Reason", 1)[1].split("### Queries Run", 1)[0]
         bullets = [line.strip() for line in section.splitlines() if line.strip().startswith("-")]
         self.assertEqual(["- single reason string"], bullets)
+
+    def test_structured_markdown_previews_large_tables(self) -> None:
+        markdown = _render_structured_answer_markdown(
+            {
+                "id": "Q-BIG",
+                "status": "answered",
+                "answer": [{"value": index, "paths": [f"path-{sub}" for sub in range(8)]} for index in range(30)],
+                "missing_reason": [],
+                "queries_run": ["structured:test"],
+                "json_path": "structured/answers.json",
+                "csv_path": "structured/Q-BIG.csv",
+            },
+            "Large Answer",
+        )
+
+        self.assertIn("Showing 25 of 30 rows", markdown)
+        self.assertIn("... (+3 more)", markdown)
+        self.assertNotIn("| 29 |", markdown)
 
     def test_benchmark_keypoint_sql_executes_on_minimal_schema(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -202,6 +221,40 @@ class WriterRQRegressionTests(unittest.TestCase):
             event_ids = {row.get("event_id") for row in answer["answer"]}
             self.assertEqual({1102}, event_ids)
 
+    def test_structured_benchmark_antiforensics_filters_installed_noise_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO mft_entries (evidence_id, file_path, file_name, si_modified) VALUES (?, ?, ?, ?)",
+                    (
+                        "mft-000000000001-00",
+                        "Program Files/CCleaner/Lang/lang-1041.dll",
+                        "lang-1041.dll",
+                        datetime(2015, 3, 13, 13, 54, 32),
+                    ),
+                )
+                db.execute(
+                    "INSERT INTO mft_entries (evidence_id, file_path, file_name, si_modified) VALUES (?, ?, ?, ?)",
+                    (
+                        "mft-000000000002-00",
+                        "Windows/Prefetch/CCLEANER64.EXE-779BD542.pf",
+                        "CCLEANER64.EXE-779BD542.pf",
+                        datetime(2015, 3, 25, 15, 15, 50),
+                    ),
+                )
+                answer = build_structured_answer(
+                    case,
+                    db,
+                    answer_spec="antiforensic_activity",
+                    answer_id="Q45",
+                    section_key="6_appendix",
+                    block_heading="12. Antiforensic activity",
+                )
+
+            evidence_ids = {row.get("evidence_id") for row in answer["answer"]}
+            self.assertEqual({"mft-000000000002-00"}, evidence_ids)
+
     def test_structured_benchmark_prefetch_fallback_excludes_non_pf_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -292,3 +345,18 @@ class WriterRQRegressionTests(unittest.TestCase):
         body = "The evidence suggests an incident, but the narrative does not name a concrete citation."
         msg, score = _check_citation_token_no_finding_id(body, ctx)
         self.assertIsNotNone(msg)
+
+    def test_prefetch_evidence_ids_validate_against_prefetch_tables(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO prefetch_executions (evidence_id, executable_name) VALUES (?, ?)",
+                    ("prefetch-winword-exe-cecba770", "WINWORD.EXE"),
+                )
+                missing = _validate_body_evidence_ids(
+                    db,
+                    "WINWORD execution is supported by prefetch-winword-exe-cecba770.",
+                )
+
+            self.assertEqual([], missing)

@@ -211,7 +211,7 @@ def _default_keypoints_for_section(
     _heading_overrides: dict[str, tuple[str, ...]] = {
         "network": ("evtx_network_connections", "ioc_source_ips", "evtx_firewall_events"),
         "lateral": ("account_logon_patterns", "account_explicit_credentials", "ioc_source_ips"),
-        "evidence gap": ("unresolved_hypotheses_summary", "report_sections_with_gaps", "gaps_event_coverage"),
+        "evidence gap": ("gaps_event_coverage", "gaps_channel_coverage", "unresolved_hypotheses_summary"),
         "gap": ("unresolved_hypotheses_summary", "gaps_event_coverage", "gaps_channel_coverage"),
         "execution": ("host_execution_activity", "persistence_lolbas_execution", "persistence_service_installs"),
         "persistence": ("host_persistence_activity", "persistence_service_installs", "persistence_scheduled_tasks"),
@@ -869,7 +869,7 @@ def _sort_markdown_table_by_first_column(body: str) -> str:
 
 
 def _validate_body_evidence_ids(db: CaseDB, body: str) -> list[str]:
-    """Check that every evidence_id referenced in the body exists in the evtx_events or mft_entries tables."""
+    """Check that every evidence_id referenced in the body exists in evidence tables."""
     evidence_ids = sorted(set(EVIDENCE_ID_PATTERN.findall(body)))
     if not evidence_ids:
         return []
@@ -881,8 +881,12 @@ def _validate_body_evidence_ids(db: CaseDB, body: str) -> list[str]:
             SELECT evidence_id FROM evtx_events WHERE evidence_id IN ({placeholders})
             UNION
             SELECT evidence_id FROM mft_entries WHERE evidence_id IN ({placeholders})
+            UNION
+            SELECT evidence_id FROM prefetch_executions WHERE evidence_id IN ({placeholders})
+            UNION
+            SELECT evidence_id FROM prefetch_timeline WHERE evidence_id IN ({placeholders})
             """,
-            tuple(evidence_ids + evidence_ids),
+            tuple(evidence_ids * 4),
         ).fetchall()
     }
     return [evidence_id for evidence_id in evidence_ids if evidence_id not in found]
@@ -2153,8 +2157,12 @@ def _claim_support_status(
                 SELECT evidence_id FROM evtx_events WHERE evidence_id IN ({placeholders})
                 UNION
                 SELECT evidence_id FROM mft_entries WHERE evidence_id IN ({placeholders})
+                UNION
+                SELECT evidence_id FROM prefetch_executions WHERE evidence_id IN ({placeholders})
+                UNION
+                SELECT evidence_id FROM prefetch_timeline WHERE evidence_id IN ({placeholders})
                 """,
-                tuple(evidence_ids + evidence_ids),
+                tuple(evidence_ids * 4),
             ).fetchall()
         }
         if any(evidence_id not in found_evidence_ids for evidence_id in evidence_ids):
@@ -2983,7 +2991,28 @@ def _persist_structured_answer(case: Case, answer: dict[str, Any]) -> None:
     path.write_text(json.dumps(answers, ensure_ascii=False, default=str, indent=2), encoding="utf-8")
 
 
-def _render_answer_block(items: list[Any], columns: Any = None) -> list[str]:
+STRUCTURED_MARKDOWN_MAX_ROWS = 25
+STRUCTURED_MARKDOWN_MAX_LIST_ITEMS = 5
+STRUCTURED_MARKDOWN_MAX_CELL_CHARS = 240
+
+
+def _render_answer_cell(value: Any) -> str:
+    """Render one structured-answer preview cell without dumping huge lists into HTML."""
+    if isinstance(value, (list, tuple)):
+        parts = [str(part).strip() for part in value if str(part).strip()]
+        extra = max(len(parts) - STRUCTURED_MARKDOWN_MAX_LIST_ITEMS, 0)
+        value = "; ".join(parts[:STRUCTURED_MARKDOWN_MAX_LIST_ITEMS])
+        if extra:
+            value = f"{value}; ... (+{extra} more)" if value else f"... (+{extra} more)"
+    elif isinstance(value, dict):
+        value = json.dumps(value, ensure_ascii=False, default=str, sort_keys=True)
+    text = str(value if value is not None else "").replace("|", "\\|").replace("\n", " ").strip()
+    if len(text) > STRUCTURED_MARKDOWN_MAX_CELL_CHARS:
+        return text[: STRUCTURED_MARKDOWN_MAX_CELL_CHARS - 15].rstrip() + " ... [truncated]"
+    return text
+
+
+def _render_answer_block(items: list[Any], columns: Any = None, *, max_rows: int = STRUCTURED_MARKDOWN_MAX_ROWS) -> list[str]:
     """Render answer items as a Markdown table when every item is a dict; otherwise bullets."""
     if not items:
         return ["- no answer"]
@@ -2993,20 +3022,17 @@ def _render_answer_block(items: list[Any], columns: Any = None) -> list[str]:
         if not keys:
             return ["- no answer"]
 
-        def cell(value: Any) -> str:
-            if isinstance(value, (list, tuple)):
-                value = "; ".join(str(part) for part in value if str(part).strip())
-            elif isinstance(value, dict):
-                value = json.dumps(value, ensure_ascii=False, default=str, sort_keys=True)
-            return str(value if value is not None else "").replace("|", "\\|").replace("\n", " ").strip()
-
         header = "| " + " | ".join(keys) + " |"
         divider = "| " + " | ".join(["---"] * len(keys)) + " |"
+        preview = dicts[:max_rows] if max_rows > 0 else dicts
         body_rows = [
-            "| " + " | ".join(cell(item.get(key)) for key in keys) + " |"
-            for item in dicts
+            "| " + " | ".join(_render_answer_cell(item.get(key)) for key in keys) + " |"
+            for item in preview
         ]
-        return [header, divider, *body_rows]
+        lines = [header, divider, *body_rows]
+        if len(dicts) > len(preview):
+            lines.extend(["", f"_Showing {len(preview)} of {len(dicts)} rows. Full data is available in the structured JSON/CSV export._"])
+        return lines
     return [f"- {str(item).strip()}" for item in items if not isinstance(item, dict) and str(item).strip()]
 
 
@@ -3824,6 +3850,23 @@ def _build_antiforensic_activity(case: Case, db: CaseDB, answer_id: str, section
         LIMIT 100
         """,
     )
+    prefetch_rows = _structured_rows(
+        db,
+        """
+        SELECT
+            'tool_execution' AS evidence_type,
+            last_exec_time AS timestamp,
+            executable_name AS file_name,
+            source_file AS file_path,
+            evidence_id
+        FROM prefetch_executions
+        WHERE LOWER(COALESCE(executable_name, '')) IN (
+            'eraser.exe', 'ccleaner.exe', 'ccleaner64.exe', 'bleachbit.exe', 'sdelete.exe', 'cipher.exe'
+        )
+        ORDER BY last_exec_time DESC NULLS LAST, executable_name
+        LIMIT 50
+        """,
+    )
     tool_rows = _structured_rows(
         db,
         """
@@ -3842,15 +3885,17 @@ def _build_antiforensic_activity(case: Case, db: CaseDB, answer_id: str, section
            OR LOWER(COALESCE(file_name, '')) LIKE 'bleachbit%.exe'
            OR LOWER(COALESCE(file_name, '')) LIKE 'sdelete%.exe'
            OR LOWER(COALESCE(file_name, '')) LIKE 'cipher.exe'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%eraser%'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%ccleaner%'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%bleachbit%'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%sdelete%'
+           OR LOWER(COALESCE(file_name, '')) LIKE 'eraser%.lnk'
+           OR LOWER(COALESCE(file_name, '')) LIKE 'ccleaner%.lnk'
+           OR LOWER(COALESCE(file_name, '')) LIKE '%eraser%.pf'
+           OR LOWER(COALESCE(file_name, '')) LIKE '%ccleaner%.pf'
+           OR LOWER(COALESCE(file_name, '')) = 'task list.ersy'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%/eraser 6/logs/%'
         ORDER BY COALESCE(si_modified, si_created) DESC NULLS LAST, file_path
         LIMIT 100
         """,
     )
-    rows = event_rows + tool_rows
+    rows = event_rows + prefetch_rows + tool_rows
     return _structured_answer(
         case,
         answer_id=answer_id,
@@ -3858,7 +3903,7 @@ def _build_antiforensic_activity(case: Case, db: CaseDB, answer_id: str, section
         block_heading=block_heading,
         rows=rows,
         columns=["evidence_type", "timestamp", "event_id", "channel", "computer", "target_user", "file_name", "file_path", "is_deleted", "si_created", "si_modified", "evidence_id", "message"],
-        queries_run=["structured:antiforensic_activity:event_log_clear_events", "structured:antiforensic_activity:tool_artifacts"],
+        queries_run=["structured:antiforensic_activity:event_log_clear_events", "structured:antiforensic_activity:prefetch_tool_execution", "structured:antiforensic_activity:tool_artifacts"],
     )
 
 

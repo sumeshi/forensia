@@ -30,7 +30,11 @@ query: |
           subject_user,
           channel
       FROM evtx_events
-      WHERE event_id IN (1102, 104)
+      WHERE event_id = 1102
+         OR (
+            event_id = 104
+            AND LOWER(COALESCE(json_extract_string(raw_json, '$.winlog.provider.name'), '')) = 'microsoft-windows-eventlog'
+         )
   )
   SELECT
       l.src_ip,

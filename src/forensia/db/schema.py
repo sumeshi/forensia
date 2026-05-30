@@ -220,7 +220,8 @@ SELECT
     ) AS evidence_table,
     COALESCE(CAST(json_extract_string(payload, '$.result.row_count') AS INTEGER), 0) AS row_count,
     CASE
-        WHEN COALESCE(json_extract_string(payload, '$.result.kind'), 'rows') = 'rows' THEN 'Yes'
+        WHEN COALESCE(json_extract_string(payload, '$.result.kind'), 'rows') = 'rows'
+         AND COALESCE(CAST(json_extract_string(payload, '$.result.row_count') AS INTEGER), 0) > 0 THEN 'Yes'
         ELSE 'No'
     END AS used_in_answer,
     'Yes' AS queried,

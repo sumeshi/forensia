@@ -460,7 +460,10 @@ def _load_event_id_hints() -> dict[int, dict[str, Any]]:
 
 def _lang_instruction() -> str:
     output = str(get_llm_settings()["output_language"])
-    return f"All string values must be written in {output}. JSON keys and enum values (verdict, status, entity_type) remain in English."
+    return (
+        f"Write every natural-language sentence in {output}. "
+        "Keep evidence IDs, file paths, SQL, JSON keys, and enum values (verdict, status, entity_type) unchanged."
+    )
 
 
 def _output_language() -> str:

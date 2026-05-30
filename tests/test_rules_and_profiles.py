@@ -481,6 +481,46 @@ class RuleExecutionTests(unittest.TestCase):
             self.assertEqual({"ADMIN$", "C$"}, {row["share_name"] for row in rows})
             self.assertEqual({"share-1", "share-2"}, {row["evidence_id"] for row in rows})
 
+    def test_system_104_log_cleared_requires_eventlog_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO evtx_events (
+                        evidence_id, source_file, channel, event_id, record_id, timestamp,
+                        computer, raw_json
+                    ) VALUES (?, 'diagnosis.evtx', ?, 104, 1, ?, ?, ?)
+                    """,
+                    (
+                        "diagnosis-104",
+                        "Microsoft-Windows-Diagnosis-Scripted/Operational",
+                        "2026-05-16 01:00:00",
+                        "host1",
+                        '{"winlog":{"provider":{"name":"Microsoft-Windows-Diagnosis-Scripted"}}}',
+                    ),
+                )
+                db.execute(
+                    """
+                    INSERT INTO evtx_events (
+                        evidence_id, source_file, channel, event_id, record_id, timestamp,
+                        computer, raw_json
+                    ) VALUES (?, 'system.evtx', ?, 104, 2, ?, ?, ?)
+                    """,
+                    (
+                        "eventlog-104",
+                        "System",
+                        "2026-05-16 01:05:00",
+                        "host1",
+                        '{"winlog":{"provider":{"name":"Microsoft-Windows-Eventlog"}}}',
+                    ),
+                )
+
+                rows = self._run_rule_query(db, "system_104_log_cleared.yaml")
+
+            self.assertEqual(1, len(rows))
+            self.assertEqual("eventlog-104", rows[0]["evidence_id"])
+
     def test_generate_findings_degrades_confidence_when_key_fields_are_missing(self) -> None:
         rule = Rule.model_validate(
             {

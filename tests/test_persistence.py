@@ -514,7 +514,8 @@ class PersistenceTests(unittest.TestCase):
                     INSERT INTO section_runs (run_id, section_key, block_heading, iteration, phase, payload, verdict, created_at)
                     VALUES
                         ('run-1', '1_overview', 'Evidence Scope', 1, 'query', '{"source_kind":"keypoint","source_ref":"benchmark_ost_file","result":{"keypoint":"benchmark_ost_file","source_ref":"benchmark_ost_file","source_kind":"keypoint","kind":"rows","row_count":2}}', NULL, now()),
-                        ('run-2', '2_timeline', 'Timeline', 1, 'query', '{"source_kind":"keypoint","source_ref":"benchmark_timeline_events","result":{"keypoint":"benchmark_timeline_events","source_ref":"benchmark_timeline_events","source_kind":"keypoint","kind":"rows","row_count":5}}', NULL, now())
+                        ('run-2', '2_timeline', 'Timeline', 1, 'query', '{"source_kind":"keypoint","source_ref":"benchmark_timeline_events","result":{"keypoint":"benchmark_timeline_events","source_ref":"benchmark_timeline_events","source_kind":"keypoint","kind":"rows","row_count":5}}', NULL, now()),
+                        ('run-3', '2_timeline', 'Timeline', 1, 'query', '{"source_kind":"keypoint","source_ref":"empty_timeline_events","result":{"keypoint":"empty_timeline_events","source_ref":"empty_timeline_events","source_kind":"keypoint","kind":"rows","row_count":0}}', NULL, now())
                     """
                 )
                 coverage_rows = db.execute(
@@ -526,9 +527,11 @@ class PersistenceTests(unittest.TestCase):
                 ).fetchall()
                 markdown = build_report_markdown_from_db(db)
 
-            self.assertEqual(2, len(coverage_rows))
+            self.assertEqual(3, len(coverage_rows))
             self.assertEqual("benchmark_ost_file", coverage_rows[0][1])
             self.assertEqual("Yes", coverage_rows[0][4])
+            zero_row = next(row for row in coverage_rows if row[1] == "empty_timeline_events")
+            self.assertEqual("No", zero_row[4])
             self.assertIn("#### Coverage Summary", markdown)
             self.assertIn("benchmark_ost_file", markdown)
             self.assertIn("#### Evidence Coverage", markdown)
