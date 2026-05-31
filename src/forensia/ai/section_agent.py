@@ -1591,6 +1591,210 @@ def _flatten_sample_rows(collected_results: list[dict]) -> list[dict]:
     return flat
 
 
+def _is_effectively_empty_body(body: str) -> bool:
+    """Return True when narration produced no useful prose beyond a status marker."""
+    text = str(body or "").strip()
+    if not text:
+        return True
+    text = re.sub(r"^\*\*Status:\*\*\s*[A-Za-z_]+\s*", "", text).strip()
+    text = re.sub(r"^#+\s+.+$", "", text, flags=re.MULTILINE).strip()
+    text = re.sub(r"\*Block skipped:[^*]+\*", "", text, flags=re.IGNORECASE).strip()
+    return len(text) < 40
+
+
+def _report_language() -> str:
+    try:
+        from forensia.config import get_llm_settings
+
+        return str(get_llm_settings().get("output_language", "ja")).strip().lower()
+    except Exception:
+        return "ja"
+
+
+def _compact_narrative_value(value: Any, *, max_chars: int = 90) -> str:
+    text = str(value if value is not None else "").replace("\n", " ").strip()
+    if text in {"", "-", "None", "null"}:
+        return ""
+    if len(text) > max_chars:
+        return text[: max_chars - 3].rstrip() + "..."
+    return text
+
+
+def _row_narrative(row: dict[str, Any]) -> str:
+    preferred_keys = (
+        "timestamp",
+        "event_id",
+        "computer",
+        "target_user",
+        "subject_user",
+        "src_ip",
+        "logon_type",
+        "process_name",
+        "command_line",
+        "service_name",
+        "executable_name",
+        "file_name",
+        "file_path",
+        "finding_id",
+        "title",
+        "severity",
+        "count",
+        "event_count",
+    )
+    parts: list[str] = []
+    seen: set[str] = set()
+    for key in preferred_keys:
+        if key not in row:
+            continue
+        value = _compact_narrative_value(row.get(key))
+        if not value:
+            continue
+        seen.add(key)
+        parts.append(f"{key}={value}")
+        if len(parts) >= 5:
+            break
+    if len(parts) < 3:
+        for key, raw_value in row.items():
+            if key in seen or str(key).startswith("_"):
+                continue
+            value = _compact_narrative_value(raw_value)
+            if not value:
+                continue
+            parts.append(f"{key}={value}")
+            if len(parts) >= 5:
+                break
+    return ", ".join(parts)
+
+
+def _result_source_label(result: dict[str, Any]) -> str:
+    for key in ("keypoint", "source_kind", "source_ref", "description"):
+        value = _compact_narrative_value(result.get(key), max_chars=64)
+        if value:
+            if value.lower().startswith("select "):
+                return "raw_sql"
+            return value
+    return "unknown_source"
+
+
+def _result_count_summary(collected_results: list[dict[str, Any]]) -> tuple[int, list[str], list[str]]:
+    total_rows = 0
+    positive: list[str] = []
+    zero: list[str] = []
+    for result in collected_results:
+        if str(result.get("kind") or "rows") != "rows":
+            continue
+        label = _result_source_label(result)
+        try:
+            count = int(result.get("row_count") or 0)
+        except (TypeError, ValueError):
+            count = 0
+        total_rows += max(count, 0)
+        target = positive if count > 0 else zero
+        item = f"{label}={count}"
+        if item not in target:
+            target.append(item)
+    return total_rows, positive, zero
+
+
+def _representative_ids(collected_results: list[dict[str, Any]], flat_rows: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
+    evidence_ids: list[str] = []
+    finding_ids: list[str] = []
+    seen_evidence: set[str] = set()
+    seen_findings: set[str] = set()
+
+    def add_evidence(value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text not in seen_evidence:
+            seen_evidence.add(text)
+            evidence_ids.append(text)
+
+    def add_finding(value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text not in seen_findings:
+            seen_findings.add(text)
+            finding_ids.append(text)
+
+    for result in collected_results:
+        for evidence_id in result.get("evidence_ids") or []:
+            add_evidence(evidence_id)
+        for finding_id in result.get("finding_ids") or []:
+            add_finding(finding_id)
+    for row in flat_rows:
+        add_evidence(row.get("evidence_id"))
+        add_finding(row.get("finding_id"))
+    return evidence_ids[:3], finding_ids[:3]
+
+
+def _fallback_narrative_body(
+    *,
+    heading: str,
+    status: str,
+    collected_results: list[dict[str, Any]],
+    flat_evidence: list[dict[str, Any]],
+    actual_query_count: int,
+    actual_query_row_counts: list[int],
+) -> str:
+    """Build a deterministic paragraph when the LLM narrator returns an empty body."""
+    language = _report_language()
+    is_ja = language in {"ja", "jp", "japanese"}
+    total_rows, positive_sources, zero_sources = _result_count_summary(collected_results)
+    evidence_ids, finding_ids = _representative_ids(collected_results, flat_evidence)
+    examples = [_row_narrative(row) for row in flat_evidence if isinstance(row, dict)]
+    examples = [item for item in examples if item][:3]
+    status_line = f"**Status:** {status}"
+
+    if status in {"not_found", "not_searched"} or (actual_query_count > 0 and not any(actual_query_row_counts)):
+        searched = ", ".join(zero_sources or positive_sources or ["no recorded source"])
+        if is_ja:
+            paragraph = (
+                f"{heading}について、関連検索（{searched}）を実行しましたが、該当する行は得られていません。"
+                "この項目は現時点では証拠不足として扱い、結論本文には採用しません。"
+            )
+        else:
+            paragraph = (
+                f"For {heading}, the relevant searches ({searched}) returned no matching rows. "
+                "This item remains unsupported and should not be promoted into the incident narrative."
+            )
+        return f"{status_line}\n\n{paragraph}"
+
+    sources = ", ".join(positive_sources[:5]) if positive_sources else "available evidence"
+    ref_text = ""
+    if evidence_ids:
+        ref_text = ", ".join(evidence_ids)
+        if is_ja:
+            ref_text = f"代表証拠ID: {ref_text}。"
+        else:
+            ref_text = f"Representative evidence IDs: {ref_text}."
+    elif finding_ids:
+        ref_text = ", ".join(finding_ids)
+        if is_ja:
+            ref_text = f"代表 finding_id: {ref_text}。"
+        else:
+            ref_text = f"Representative finding IDs: {ref_text}."
+    example_text = " / ".join(examples)
+    if is_ja:
+        paragraph = (
+            f"{heading}について、{sources} から合計 {total_rows} 件の関連行が得られました。"
+        )
+        if example_text:
+            paragraph += f"代表行は {example_text} です。"
+        if status == "partial":
+            paragraph += "ただし、テンプレートが求める全条件を満たすには追加の相関確認が必要です。"
+        if ref_text:
+            paragraph += ref_text
+    else:
+        paragraph = (
+            f"For {heading}, the collected sources returned {total_rows} related rows across {sources}. "
+        )
+        if example_text:
+            paragraph += f"Representative rows include {example_text}. "
+        if status == "partial":
+            paragraph += "Additional correlation is still needed before treating the block as fully answered. "
+        if ref_text:
+            paragraph += ref_text
+    return f"{status_line}\n\n{paragraph.strip()}"
+
+
 def _write_block_body(
     ctx: _BlockContext,
     collected_results: list[dict[str, Any]],
@@ -1700,7 +1904,15 @@ def _write_block_body(
             messages = classify_messages if not (extracted_rows and expected_shape and all(field in extracted_rows[0] for field in expected_shape.get("fields") or [])) else []
     else:
         if status_inner in {"not_searched", "not_found"}:
-            body = f"**Status:** {status_inner}\n\n*Block skipped: {status_inner}*"
+            flat_evidence = _flatten_sample_rows(collected_results)
+            body = _fallback_narrative_body(
+                heading=ctx.block_heading,
+                status=status_inner,
+                collected_results=collected_results,
+                flat_evidence=flat_evidence,
+                actual_query_count=actual_query_count,
+                actual_query_row_counts=actual_query_row_counts,
+            )
             messages = []
         else:
             flat_evidence = _flatten_sample_rows(collected_results)
@@ -1742,6 +1954,15 @@ def _write_block_body(
                 str(narrate_parsed.get("body", narrate_parsed.get("content", ""))).strip(),
                 status_inner,
             )
+            if _is_effectively_empty_body(body):
+                body = _fallback_narrative_body(
+                    heading=ctx.block_heading,
+                    status=status_inner,
+                    collected_results=collected_results,
+                    flat_evidence=flat_evidence,
+                    actual_query_count=actual_query_count,
+                    actual_query_row_counts=actual_query_row_counts,
+                )
             messages = narrate_messages
 
     if audit_callback:

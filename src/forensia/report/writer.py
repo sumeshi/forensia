@@ -209,6 +209,7 @@ def _default_keypoints_for_section(
     # Block-heading-level overrides take precedence over family defaults.
     # Keys are lowercase partial matches against block_heading.
     _heading_overrides: dict[str, tuple[str, ...]] = {
+        "log integrity": ("timeline_log_clearing", "gaps_log_integrity_events", "timeline_system_events"),
         "network": ("evtx_network_connections", "ioc_source_ips", "evtx_firewall_events"),
         "lateral": ("account_logon_patterns", "account_explicit_credentials", "ioc_source_ips"),
         "evidence gap": ("gaps_event_coverage", "gaps_channel_coverage", "unresolved_hypotheses_summary"),
@@ -636,6 +637,13 @@ def _check_recommendations_strength(body: str, ctx: _GateCtx) -> tuple[str | Non
             "may indicate",
             "additional verification",
             "consider containment after verification",
+            "追加の相関確認",
+            "追加確認",
+            "検証後",
+            "証拠不足",
+            "根拠",
+            "中程度",
+            "高信頼",
         )
         if not any(marker in lowered for marker in strength_markers):
             return "Recommendations should state evidence strength or verification-first wording.", 0.65
@@ -1053,9 +1061,13 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         lambda db: _report_keypoint_rows(
             db,
             """
-            SELECT timestamp, computer, target_user, src_ip, evidence_id
+            SELECT timestamp, computer, event_id, channel, target_user, src_ip, evidence_id
             FROM evtx_events
-            WHERE event_id IN (1102, 104)
+            WHERE event_id = 1102
+               OR (
+                  event_id = 104
+                  AND LOWER(COALESCE(json_extract_string(raw_json, '$.winlog.provider.name'), '')) = 'microsoft-windows-eventlog'
+               )
             ORDER BY timestamp
             """,
         ),
@@ -1334,7 +1346,11 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             """
             SELECT event_id, COUNT(*) AS count
             FROM evtx_events
-            WHERE event_id IN (1102,104,4719)
+            WHERE event_id IN (1102,4719)
+               OR (
+                  event_id = 104
+                  AND LOWER(COALESCE(json_extract_string(raw_json, '$.winlog.provider.name'), '')) = 'microsoft-windows-eventlog'
+               )
             GROUP BY event_id
             """,
         ),
@@ -2483,6 +2499,12 @@ def _body_starts_with_heading(body: str, heading: str) -> bool:
     return text.startswith(f"## {heading}")
 
 
+def _assemble_section_body(template_preamble: str, rendered_blocks: list[str]) -> str:
+    """Join a section preamble and rendered blocks consistently across sync/async paths."""
+    parts = [str(template_preamble or "").strip(), *[item.strip() for item in rendered_blocks if item.strip()]]
+    return "\n\n".join(part for part in parts if part).strip()
+
+
 def _render_section_from_request(
     *,
     db: CaseDB,
@@ -2541,8 +2563,7 @@ def _render_section_from_request(
             label = f"{heading}: {gap}" if heading else gap
             if label not in block_gaps:
                 block_gaps.append(label)
-    parts = [str(request.get("template_preamble") or "").strip(), *[item.strip() for item in rendered_blocks if item.strip()]]
-    body = "\n\n".join(part for part in parts if part).strip()
+    body = _assemble_section_body(str(request.get("template_preamble") or ""), rendered_blocks)
     return body, all_evidence_results, block_gaps
 
 

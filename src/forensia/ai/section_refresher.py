@@ -15,6 +15,8 @@ from forensia.core.case import Case
 from forensia.core.memory import MemoryManager, memory_for_section
 from forensia.db.database import CaseDB
 from forensia.report.writer import (
+    _assemble_section_body,
+    _body_starts_with_heading,
     _collect_flat_evidence_rows,
     _dump_section_evidence_json,
     _verify_block_output,
@@ -189,7 +191,6 @@ async def _render_section_blocks(
                 raise
             block_body = block_result.body
             heading = str(block.get("heading") or "").strip()
-            from forensia.report.writer import _body_starts_with_heading
             if heading and not _body_starts_with_heading(block_body, heading):
                 block_body = f"## {heading}\n\n{block_body}"
             rendered_blocks.append(block_body)
@@ -205,7 +206,7 @@ async def _render_section_blocks(
                 if label not in block_gaps:
                     block_gaps.append(label)
 
-        body = "\n\n".join(rendered_blocks).strip()
+        body = _assemble_section_body(str(request.get("template_preamble") or ""), rendered_blocks)
         request["block_gaps"] = block_gaps
         request["evidence_results"] = all_evidence_results
         return request, body

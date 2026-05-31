@@ -1,15 +1,25 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from datetime import UTC, datetime
+from unittest.mock import patch
 
 from forensia.core.case import Case
-from forensia.ai.section_agent import _question_routing_answer_spec, run_section_block_agent
+from forensia.ai.section_agent import (
+    _fallback_narrative_body,
+    _is_effectively_empty_body,
+    _question_routing_answer_spec,
+    run_section_block_agent,
+)
+from forensia.config import clear_llm_settings_cache
 from forensia.db.database import CaseDB
 from forensia.report.writer import (
     _GateCtx,
+    _assemble_section_body,
+    _check_recommendations_strength,
     build_structured_answer,
     _check_citation_token_no_finding_id,
     _check_hedge_no_citation,
@@ -20,6 +30,85 @@ from forensia.report.writer import (
 
 
 class WriterRQRegressionTests(unittest.TestCase):
+    def test_status_only_narration_gets_deterministic_fallback(self) -> None:
+        self.assertTrue(_is_effectively_empty_body("**Status:** answered"))
+        with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "en"}):
+            clear_llm_settings_cache()
+            body = _fallback_narrative_body(
+                heading="Executive Summary",
+                status="partial",
+                collected_results=[
+                    {
+                        "kind": "rows",
+                        "keypoint": "raw_sql",
+                        "row_count": 2,
+                        "evidence_ids": ["evtx-security-000000000122"],
+                        "sample_rows": [
+                            {
+                                "timestamp": "2015-03-22T14:34:28",
+                                "event_id": 4624,
+                                "computer": "informant-PC",
+                                "target_user": "informant",
+                                "evidence_id": "evtx-security-000000000122",
+                            }
+                        ],
+                    }
+                ],
+                flat_evidence=[
+                    {
+                        "timestamp": "2015-03-22T14:34:28",
+                        "event_id": 4624,
+                        "computer": "informant-PC",
+                        "target_user": "informant",
+                        "evidence_id": "evtx-security-000000000122",
+                    }
+                ],
+                actual_query_count=1,
+                actual_query_row_counts=[2],
+            )
+            clear_llm_settings_cache()
+
+        self.assertIn("**Status:** partial", body)
+        self.assertIn("evtx-security-000000000122", body)
+        self.assertGreater(len(body), 120)
+
+    def test_not_found_fallback_does_not_emit_block_skipped_marker(self) -> None:
+        with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "en"}):
+            clear_llm_settings_cache()
+            body = _fallback_narrative_body(
+                heading="Network Activity",
+                status="not_found",
+                collected_results=[
+                    {"kind": "rows", "keypoint": "evtx_network_connections", "row_count": 0, "sample_rows": []}
+                ],
+                flat_evidence=[],
+                actual_query_count=1,
+                actual_query_row_counts=[0],
+            )
+            clear_llm_settings_cache()
+
+        self.assertIn("returned no matching rows", body)
+        self.assertNotIn("Block skipped", body)
+
+    def test_assemble_section_body_preserves_template_preamble(self) -> None:
+        body = _assemble_section_body("# Investigation Overview", ["## Executive Summary\n\nBody"])
+        self.assertTrue(body.startswith("# Investigation Overview\n\n## Executive Summary"))
+
+    def test_recommendation_strength_accepts_japanese_verification_wording(self) -> None:
+        ctx = _GateCtx(
+            section_key="5_recommendations",
+            title="Recommendations",
+            evidence_results=[],
+            db=None,
+            behaviors=("require_recommendations_strength",),
+        )
+        note, cap = _check_recommendations_strength(
+            "追加の相関確認を行い、根拠が揃った後に封じ込めを判断する。",
+            ctx,
+        )
+        self.assertIsNone(note)
+        self.assertIsNone(cap)
+
     def test_question_routing_resolves_specific_shutdown_and_logon_specs(self) -> None:
         self.assertEqual("last_shutdown_event", _question_routing_answer_spec("Last recorded shutdown time", ""))
         self.assertEqual("last_human_logon", _question_routing_answer_spec("Last logged-on user", ""))
@@ -360,3 +449,47 @@ class WriterRQRegressionTests(unittest.TestCase):
                 )
 
             self.assertEqual([], missing)
+
+    def test_log_integrity_keypoints_ignore_non_eventlog_104(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, channel, raw_json)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "evtx-diagnosis-000000000004",
+                        104,
+                        datetime(2015, 3, 24, 15, 21, 37),
+                        "informant-PC",
+                        "Microsoft-Windows-Diagnosis-Scripted/Operational",
+                        '{"winlog":{"provider":{"name":"Microsoft-Windows-Diagnosis-Scripted"}}}',
+                    ),
+                )
+                db.execute(
+                    """
+                    INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, channel, raw_json)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "evtx-eventlog-000000000104",
+                        104,
+                        datetime(2015, 3, 24, 15, 22, 37),
+                        "informant-PC",
+                        "System",
+                        '{"winlog":{"provider":{"name":"Microsoft-Windows-Eventlog"}}}',
+                    ),
+                )
+                results = _resolve_evidence_results(
+                    case,
+                    db,
+                    keypoints=["timeline_log_clearing", "gaps_log_integrity_events"],
+                )
+
+            timeline = next(result for result in results if result["keypoint"] == "timeline_log_clearing")
+            gaps = next(result for result in results if result["keypoint"] == "gaps_log_integrity_events")
+            self.assertEqual(["evtx-eventlog-000000000104"], timeline["evidence_ids"])
+            self.assertEqual(1, timeline["row_count"])
+            self.assertEqual([{"event_id": 104, "count": 1}], gaps["sample_rows"])
