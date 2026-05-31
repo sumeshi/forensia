@@ -632,3 +632,1531 @@ events:
     keywords_for_string_search:
       - service install
       - service created
+  12:
+    title: OS started (Kernel-General Event 12)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 12 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "12"
+      - started
+      - kernel-general
+  13:
+    title: Kernel shutdown initiated
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 13 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "13"
+      - kernel
+      - shutdown
+  23:
+    title: RDP shell start and session logoff (LocalSessionManager Events 22/23)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 23 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "23"
+      - shell
+      - start
+  39:
+    title: Session disconnected (RDP)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 39 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "39"
+      - session
+      - disconnected
+  40:
+    title: Session disconnected with reason (RDP)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 40 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "40"
+      - session
+      - disconnected
+  41:
+    title: Unexpected reboot (System Event 41)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 41 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "41"
+      - unexpected
+      - reboot
+  100:
+    title: Task Scheduler events (comprehensive)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 100 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "100"
+      - task
+      - scheduler
+  101:
+    title: Task started and failed immediately
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 101 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "101"
+      - task
+      - started
+  102:
+    title: Task completed/failed (TaskScheduler events 102/103)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 102 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "102"
+      - task
+      - completed
+  103:
+    title: Task completed/failed (TaskScheduler events 102/103)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 103 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "103"
+      - task
+      - completed
+  106:
+    title: Scheduled task registered (TaskScheduler Event 106)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 106 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "106"
+      - scheduled
+      - task
+  107:
+    title: Task Scheduler events (comprehensive)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 107 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "107"
+      - task
+      - scheduler
+  108:
+    title: Task Scheduler events (comprehensive)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 108 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "108"
+      - task
+      - scheduler
+  110:
+    title: Task Scheduler events (comprehensive)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 110 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "110"
+      - task
+      - scheduler
+  111:
+    title: Task Scheduler events (comprehensive)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 111 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "111"
+      - task
+      - scheduler
+  118:
+    title: Task Scheduler events (comprehensive)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 118 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "118"
+      - task
+      - scheduler
+  119:
+    title: Task Scheduler events (comprehensive)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 119 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "119"
+      - task
+      - scheduler
+  129:
+    title: Task Scheduler events (comprehensive)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 129 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "129"
+      - task
+      - scheduler
+  140:
+    title: Task Scheduler events (comprehensive)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 140 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "140"
+      - task
+      - scheduler
+  141:
+    title: Scheduled task deleted (TaskScheduler Event 141)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 141 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "141"
+      - scheduled
+      - task
+  142:
+    title: Task Scheduler events (comprehensive)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 142 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "142"
+      - task
+      - scheduler
+  200:
+    title: Task action started
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 200 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "200"
+      - task
+      - action
+  201:
+    title: Task Scheduler events (comprehensive)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 201 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "201"
+      - task
+      - scheduler
+  203:
+    title: Task Scheduler events (comprehensive)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 203 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "203"
+      - task
+      - scheduler
+  261:
+    title: RDP-Tcp connection received
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 261 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "261"
+      - rdp-tcp
+      - connection
+  403:
+    title: PowerShell engine stop (Event 403)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 403 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "403"
+      - powershell
+      - engine
+  551:
+    title: SMB session authentication failed
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 551 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "551"
+      - session
+      - authentication
+  1000:
+    title: Application error/crash
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 1000 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "1000"
+      - application
+      - error
+  1001:
+    title: Application error/crash
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 1001 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "1001"
+      - application
+      - error
+  1002:
+    title: Application error/crash
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 1002 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "1002"
+      - application
+      - error
+  1006:
+    title: SMB server errors (connection refused, access denied, etc.)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 1006 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "1006"
+      - server
+      - errors
+  1009:
+    title: SMB server errors (connection refused, access denied, etc.)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 1009 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "1009"
+      - server
+      - errors
+  1016:
+    title: SMB server errors (connection refused, access denied, etc.)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 1016 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "1016"
+      - server
+      - errors
+  1020:
+    title: SMB server errors (connection refused, access denied, etc.)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 1020 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "1020"
+      - server
+      - errors
+  1024:
+    title: RDP client connection events
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 1024 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "1024"
+      - client
+      - connection
+  1026:
+    title: RDP client connection events
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 1026 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "1026"
+      - client
+      - connection
+  1074:
+    title: Initiated shutdown or restart (System Event 1074)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 1074 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "1074"
+      - initiated
+      - shutdown
+  1101:
+    title: Audit events dropped due to transport failure
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 1101 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "1101"
+      - audit
+      - events
+  1104:
+    title: Security log full (Event 1104)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 1104 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "1104"
+      - full
+  1105:
+    title: Security log auto-archived (Event 1105)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 1105 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "1105"
+      - auto-archived
+  1116:
+    title: Windows Defender malware detected (Event 1116)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 1116 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "1116"
+      - defender
+      - malware
+  1117:
+    title: Windows Defender action taken (Event 1117)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 1117 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "1117"
+      - defender
+      - action
+  1146:
+    title: Remote Desktop Services session initialized
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 1146 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "1146"
+      - remote
+      - desktop
+  1147:
+    title: Remote Desktop Services session connected
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 1147 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "1147"
+      - remote
+      - desktop
+  1148:
+    title: Remote Desktop Services session connection failed
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 1148 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "1148"
+      - remote
+      - desktop
+  1149:
+    title: RDP user authentication success (RemoteConnectionManager Event 1149)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 1149 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "1149"
+      - user
+      - authentication
+  4020:
+    title: NTLM outgoing authentication
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4020 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4020"
+      - ntlm
+      - outgoing
+  4021:
+    title: NTLM outgoing authentication
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4021 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4021"
+      - ntlm
+      - outgoing
+  4022:
+    title: NTLM incoming authentication attempted
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4022 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4022"
+      - ntlm
+      - incoming
+  4023:
+    title: NTLM client authentication events
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4023 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4023"
+      - ntlm
+      - client
+  4030:
+    title: NTLM client authentication events
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4030 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4030"
+      - ntlm
+      - client
+  4031:
+    title: NTLM forwarded authentication
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4031 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4031"
+      - ntlm
+      - forwarded
+  4106:
+    title: PowerShell script block completed (Event 4106)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4106 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4106"
+      - powershell
+      - script
+  4616:
+    title: System time changed by non-service account (Event 4616)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4616 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4616"
+      - time
+      - changed
+  4663:
+    title: OST file access followed by browser launch within 15 minutes
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4663 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4663"
+      - file
+      - access
+  4674:
+    title: Privileged object operation attempted (Event 4674)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4674 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4674"
+      - privileged
+      - object
+  4688:
+    title: OST file access followed by browser launch within 15 minutes
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4688 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4688"
+      - file
+      - access
+  4689:
+    title: Process exited (Event 4689)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4689 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4689"
+      - process
+      - exited
+  4699:
+    title: Scheduled task deleted (Event 4699)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4699 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4699"
+      - scheduled
+      - task
+  4719:
+    title: System audit policy changed (Event 4719)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4719 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4719"
+      - audit
+      - policy
+  4728:
+    title: Security group membership changes (Add, Remove, Modify, Delete)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4728 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4728"
+      - group
+      - membership
+  4729:
+    title: Security group membership changes (Add, Remove, Modify, Delete)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4729 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4729"
+      - group
+      - membership
+  4730:
+    title: Security group membership changes (Add, Remove, Modify, Delete)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4730 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4730"
+      - group
+      - membership
+  4731:
+    title: Security-enabled local group created
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4731 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4731"
+      - security-enabled
+      - local
+  4734:
+    title: Security group membership changes (Add, Remove, Modify, Delete)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4734 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4734"
+      - group
+      - membership
+  4735:
+    title: Security group membership changes (Add, Remove, Modify, Delete)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4735 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4735"
+      - group
+      - membership
+  4737:
+    title: Security group membership changes (Add, Remove, Modify, Delete)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4737 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4737"
+      - group
+      - membership
+  4739:
+    title: Domain policy changed (Event 4739)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4739 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4739"
+      - domain
+      - policy
+  4756:
+    title: User added to universal security group (Event 4756)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4756 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4756"
+      - user
+      - added
+  4764:
+    title: Security-enabled group type changed
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4764 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4764"
+      - security-enabled
+      - group
+  4770:
+    title: Kerberos service ticket renewed
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4770 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4770"
+      - kerberos
+      - service
+  4771:
+    title: Kerberos pre-authentication failed
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 4771 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "4771"
+      - kerberos
+      - pre-authentication
+  5001:
+    title: Defender disabled followed by suspicious execution within 60 minutes
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 5001 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "5001"
+      - defender
+      - disabled
+  5007:
+    title: Windows Defender configuration change (Event 5007)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 5007 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "5007"
+      - defender
+      - configuration
+  5136:
+    title: Directory service object modified
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 5136 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "5136"
+      - directory
+      - service
+  5137:
+    title: Directory service object changes (created, moved, deleted)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 5137 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "5137"
+      - directory
+      - service
+  5139:
+    title: Directory service object changes (created, moved, deleted)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 5139 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "5139"
+      - directory
+      - service
+  5141:
+    title: Directory service object changes (created, moved, deleted)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 5141 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "5141"
+      - directory
+      - service
+  5142:
+    title: Network share object added
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 5142 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "5142"
+      - network
+      - share
+  5143:
+    title: Network share object modified
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 5143 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "5143"
+      - network
+      - share
+  5144:
+    title: Network share object deleted
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 5144 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "5144"
+      - network
+      - share
+  5145:
+    title: Detailed file share access
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 5145 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "5145"
+      - detailed
+      - file
+  5168:
+    title: SMB SPN check failed
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 5168 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "5168"
+      - check
+      - failed
+  5857:
+    title: WMI activity (operation started/failed)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 5857 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "5857"
+      - activity
+      - operation
+  5858:
+    title: WMI activity (operation started/failed)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 5858 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "5858"
+      - activity
+      - operation
+  6005:
+    title: Event Log service start/stop
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 6005 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "6005"
+      - service
+      - start
+  6006:
+    title: Event Log service start/stop
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 6006 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "6006"
+      - service
+      - start
+  6008:
+    title: Unexpected shutdown record (System Event 6008)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 6008 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "6008"
+      - unexpected
+      - shutdown
+  6009:
+    title: System uptime logged
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 6009 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "6009"
+      - uptime
+      - logged
+  6013:
+    title: System uptime logged
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 6013 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "6013"
+      - uptime
+      - logged
+  9009:
+    title: Desktop Window Manager ended (RDP disconnect)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 9009 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "9009"
+      - desktop
+      - window
+  30800:
+    title: SMB client detailed events (connectivity)
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 30800 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "30800"
+      - client
+      - detailed
+  30803:
+    title: SMB client connection/disconnection events
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 30803 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "30803"
+      - client
+      - connection
+  30804:
+    title: SMB client connection/disconnection events
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 30804 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "30804"
+      - client
+      - connection
+  30805:
+    title: SMB client connection/disconnection events
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 30805 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "30805"
+      - client
+      - connection
+  30806:
+    title: SMB client connection/disconnection events
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 30806 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "30806"
+      - client
+      - connection
+  30807:
+    title: SMB client connection/disconnection events
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 30807 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "30807"
+      - client
+      - connection
+  30809:
+    title: SMB client connection timed out
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 30809 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "30809"
+      - client
+      - connection
+  31001:
+    title: Security context initialization failed
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 31001 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "31001"
+      - context
+      - initialization
+  31010:
+    title: SMB client connection failed
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 31010 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "31010"
+      - client
+      - connection
+  32000:
+    title: SMBv1 negotiation events
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 32000 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "32000"
+      - smbv1
+      - negotiation
+  32002:
+    title: SMBv1 negotiation events
+    required_fields:
+      - computer
+      - timestamp
+    allowed_claims:
+      - event 32002 was observed
+      - the referenced Windows event was present in the evidence
+    disallowed_without_extra:
+      - attacker action (needs corroborating evidence)
+      - compromise (needs supporting process, account, or file evidence)
+    keywords_for_string_search:
+      - "32002"
+      - smbv1
+      - negotiation

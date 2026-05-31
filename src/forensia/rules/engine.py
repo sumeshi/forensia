@@ -111,6 +111,7 @@ def _load_builtin_benign_allowlist() -> dict[str, list[str]]:
         return {"service_names": [], "process_names": [], "title_keywords": []}
     data = yaml.safe_load(_BUILTIN_ALLOWLIST_PATH.read_text(encoding="utf-8")) or {}
     return {
+        "rule_ids": [str(item).strip() for item in data.get("rule_ids") or [] if str(item).strip()],
         "service_names": [str(item).strip().lower() for item in data.get("service_names") or [] if str(item).strip()],
         "process_names": [str(item).strip().lower() for item in data.get("process_names") or [] if str(item).strip()],
         "title_keywords": [str(item).strip().lower() for item in data.get("title_keywords") or [] if str(item).strip()],
@@ -149,6 +150,9 @@ def _builtin_benign_match(finding: Finding, allowlist_data: dict[str, list[str]]
     Returns a description of the first match (e.g. 'service_name=wuauserv') or None.
     """
     row = finding.evidence[0] if finding.evidence and isinstance(finding.evidence[0], dict) else {}
+    scoped_rule_ids = set(allowlist_data.get("rule_ids") or [])
+    if scoped_rule_ids and finding.rule_id not in scoped_rule_ids:
+        return None
     service_name = str(row.get("service_name") or "").strip().lower()
     process_name = str(row.get("process_name") or "").strip().lower()
     title = str(finding.title or "").strip().lower()

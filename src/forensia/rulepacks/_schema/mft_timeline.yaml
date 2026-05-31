@@ -14,8 +14,10 @@ columns:
   - evidence_id
   - record_number
   - file_path
+  - file_name
   - timestamp
   - timestamp_type
+  - source_file
   - description
   - tags
 notes:

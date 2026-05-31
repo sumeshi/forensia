@@ -1,4 +1,4 @@
-id: windows-ntlm-4023-forwarded-auth
+id: windows-ntlm-4031-forwarded-auth
 title: NTLM forwarded authentication
 severity: high
 confidence: 0.75

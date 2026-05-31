@@ -2,6 +2,11 @@ kind: allowlist_services
 
 # Built-in benign service names (substring match, case-insensitive).
 # Used by save_findings() to auto-suppress low-value service installation findings.
+rule_ids:
+  - windows-security-4697-service-install
+  - windows-system-7040-service-starttype-change
+  - windows-system-7045-service-installed
+
 service_names:
   # Google
   - gupdate

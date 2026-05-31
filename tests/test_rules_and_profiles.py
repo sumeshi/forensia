@@ -238,6 +238,31 @@ class AllowlistTests(unittest.TestCase):
             self.assertLessEqual(float(row[2]), 0.2)
             self.assertIn("built-in benign allowlist", row[3])
 
+    def test_builtin_benign_allowlist_does_not_suppress_suspicious_process_rule(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            finding = Finding(
+                finding_id="windows-security-4688-suspicious-tools-0001",
+                rule_id="windows-security-4688-suspicious-tools",
+                title="LOLBAS-style tool execution: msiexec.exe @ host1",
+                summary="alice executed msiexec.exe with suspicious arguments",
+                severity="medium",
+                confidence=0.55,
+                evidence=[{"process_name": "msiexec.exe"}],
+            )
+
+            with CaseDB(case) as db:
+                save_findings(case, db, [finding])
+                row = db.execute(
+                    "SELECT status, severity, confidence FROM findings WHERE finding_id = ?",
+                    (finding.finding_id,),
+                ).fetchone()
+
+            self.assertIsNotNone(row)
+            self.assertEqual("new", row[0])
+            self.assertEqual("medium", row[1])
+            self.assertEqual(0.55, float(row[2]))
+
 
 class NormalizeEvtxTests(unittest.TestCase):
     def test_normalize_evtx_maps_winlog_user_name(self) -> None:

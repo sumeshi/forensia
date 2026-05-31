@@ -245,6 +245,7 @@ def _load_dfir_yamls() -> dict[str, Any]:
         "app_catalog": _load_yaml("app_catalog.yaml"),
         "fp_rules": _load_yaml("false_positive_rules.yaml"),
         "artifact_inference": _load_yaml("artifact_inference.yaml"),
+        "dfir_ioc_catalog": _load_yaml("dfir_ioc_catalog.yaml"),
     }
 
 
@@ -342,6 +343,48 @@ def _render_artifact_inference_narrative(artifact_data: dict) -> str:
     return "\n".join(parts)
 
 
+def _render_ioc_catalog_narrative(ioc_data: dict) -> str:
+    parts: list[str] = []
+    if not isinstance(ioc_data, dict):
+        return ""
+
+    tools = ioc_data.get("antiforensic_tools") or []
+    if isinstance(tools, list) and tools:
+        parts.append("## Antiforensic Tools")
+        for item in tools:
+            if not isinstance(item, dict):
+                continue
+            names = ", ".join(str(v) for v in item.get("exe_patterns") or [] if str(v).strip())
+            prefetch = ", ".join(str(v) for v in item.get("prefetch_names") or [] if str(v).strip())
+            line = f" - {item.get('name', '?')}: exe_patterns=[{names}]"
+            if prefetch:
+                line += f"; prefetch=[{prefetch}]"
+            parts.append(line)
+
+    for section, label, key in (
+        ("cloud_sync_artifacts", "Cloud Sync Artifacts", "service"),
+        ("email_artifacts", "Email Artifacts", "client"),
+        ("browser_artifacts", "Browser Artifacts", "name"),
+        ("lolbins", "LOLBins", "name"),
+    ):
+        entries = ioc_data.get(section) or []
+        if not isinstance(entries, list) or not entries:
+            continue
+        parts.append(f"## {label}")
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            patterns = item.get("exe_patterns") or []
+            suspicious_args = item.get("suspicious_args") or []
+            details = []
+            if patterns:
+                details.append("exe=" + ", ".join(str(v) for v in patterns))
+            if suspicious_args:
+                details.append("args=" + ", ".join(str(v) for v in suspicious_args))
+            parts.append(f" - {item.get(key, '?')}: {'; '.join(details)}")
+    return "\n".join(parts)
+
+
 @lru_cache(maxsize=8)
 def _dfir_playbook(phase: str) -> str:
     """Generate DFIR investigator playbook narrative for the given phase.
@@ -362,6 +405,7 @@ def _dfir_playbook(phase: str) -> str:
     extractors = yamls["evtx_events"].get("json_field_extractors", {}) if isinstance(yamls["evtx_events"], dict) else {}
     app_mappings = yamls["app_catalog"].get("mappings", {}) if isinstance(yamls["app_catalog"], dict) else {}
     artifact_data = yamls["artifact_inference"] if isinstance(yamls["artifact_inference"], dict) else {}
+    ioc_data = yamls["dfir_ioc_catalog"] if isinstance(yamls["dfir_ioc_catalog"], dict) else {}
 
     event_narrative = _render_event_narrative(events_data)
     logon_narrative = _render_logon_narrative(logon_types_data)
@@ -371,6 +415,7 @@ def _dfir_playbook(phase: str) -> str:
     extractor_narrative = _render_extractor_narrative(extractors)
     app_narrative = _render_app_catalog_narrative(app_mappings)
     artifact_narrative = _render_artifact_inference_narrative(artifact_data)
+    ioc_narrative = _render_ioc_catalog_narrative(ioc_data)
 
     # Phase-aware sections. Planning phases (broad_plan / hypothesis_plan) don't
     # need evidence-interpretation references; cutting them saves ~25% of the
@@ -380,6 +425,7 @@ def _dfir_playbook(phase: str) -> str:
     include_fp = phase in interpretation_phases
     include_app_catalog = phase not in planning_phases  # planners don't interpret process names
     include_artifact_inference = phase in interpretation_phases
+    include_ioc_catalog = phase in (interpretation_phases | {"section_agent_plan"})
 
     sections = [
         "<DFIR_PLAYBOOK>",
@@ -418,6 +464,12 @@ def _dfir_playbook(phase: str) -> str:
             "## Artifact-to-Application Inference",
             artifact_narrative or "No artifact inference data available.",
         ])
+    if include_ioc_catalog:
+        sections.extend([
+            "",
+            "## IOC Catalog",
+            ioc_narrative or "No IOC catalog available.",
+        ])
     base_playbook = "\n".join(sections) + "\n"
     # Phase-specific playbook loaded from external MD file
     playbook_dir = Path(__file__).parent.parent / "rulepacks" / "_schema" / "playbook"
@@ -428,6 +480,12 @@ def _dfir_playbook(phase: str) -> str:
             phase_narrative = phase_file.read_text(encoding="utf-8")
         except Exception:
             pass
+    phase_narrative = re.sub(
+        r"\n?<!-- AUTO-FROM: (?:event_ids|app_catalog)\.yaml -->.*?<!-- END-AUTO -->\n?",
+        "\n",
+        phase_narrative,
+        flags=re.DOTALL,
+    )
     return base_playbook + phase_narrative
 
 

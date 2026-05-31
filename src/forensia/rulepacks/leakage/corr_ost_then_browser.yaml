@@ -3,7 +3,6 @@ title: OST file access followed by browser launch within 15 minutes
 severity: high
 confidence: 0.65
 required_fields:
-- src_ip
 - computer
 - target_user
 - ost_time

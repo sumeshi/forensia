@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from forensia.ai.checker import check_query_result
 from forensia.ai.checker import _parse_new_hypotheses
-from forensia.ai.investigator import _query_fingerprint
+from forensia.ai.investigator import HypothesisProgressTracker, _query_fingerprint
 from forensia.ai.section_agent import _benchmark_report_brief
 from forensia.ai.planner import (
     _request_with_optional_context,
@@ -84,6 +84,49 @@ class PlannerRetryTests(unittest.TestCase):
         system = messages[0]["content"]
         self.assertIn("[INSUFFICIENT EVIDENCE: reason]", system)
         self.assertNotIn("【調査不足: 理由】", system)
+
+    def test_report_section_prompt_includes_ioc_catalog(self) -> None:
+        messages = build_report_section_messages(
+            section_meta={"section": "3_technical"},
+            evidence_results=[],
+            context_sections={},
+            template_body="# Section",
+            report_brief={},
+        )
+        system = messages[0]["content"]
+        self.assertIn("## IOC Catalog", system)
+        self.assertIn("Eraser", system)
+        self.assertIn("LOLBins", system)
+
+    def test_auto_confirm_requires_all_co_observed_event_ids(self) -> None:
+        tracker = HypothesisProgressTracker()
+        hypothesis = Hypothesis(
+            id="H-confirm",
+            description="RDP followed by PowerShell",
+            confirm_when={"co_observed_event_ids": [4624, 4104]},
+        )
+
+        self.assertFalse(
+            tracker.should_auto_confirm(
+                None,
+                [{"event_id": 4624}],
+                hypothesis,
+            )
+        )
+        self.assertTrue(
+            tracker.has_partial_confirm_signal(
+                None,
+                [{"event_id": 4624}],
+                hypothesis,
+            )
+        )
+        self.assertTrue(
+            tracker.should_auto_confirm(
+                None,
+                [{"event_id": 4624}, {"event_id": 4104}],
+                hypothesis,
+            )
+        )
 
     def test_validate_select_sql_allows_investigation_state_tables(self) -> None:
         for sql in (

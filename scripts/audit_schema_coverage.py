@@ -17,7 +17,7 @@ except ImportError:
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_DIR = REPO_ROOT / "src" / "forensia" / "rulepacks" / "_schema"
-RULES_DIR = REPO_ROOT / "src" / "forensia" / "rulepacks" / "windows"
+RULES_DIR = REPO_ROOT / "src" / "forensia" / "rulepacks"
 TEMPLATES_DIR = REPO_ROOT / "src" / "forensia" / "report" / "templates"
 
 
@@ -65,7 +65,9 @@ def _extract_event_ids_from_sql(sql: str) -> set[int]:
 def _collect_rule_event_ids(rules_dir: Path) -> set[int]:
     """Extract all event_id values from rule YAML query fields using sqlglot."""
     event_ids: set[int] = set()
-    for yaml_path in sorted(rules_dir.glob("*.yaml")):
+    for yaml_path in sorted(rules_dir.rglob("*.yaml")):
+        if "_schema" in yaml_path.parts:
+            continue
         data = _load_yaml(yaml_path)
         if not data:
             continue

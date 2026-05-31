@@ -328,7 +328,7 @@ class HypothesisProgressTracker:
         return out
 
     def should_auto_confirm(self, rule_context: Any, rows: list[dict[str, Any]], hypothesis: Any = None) -> bool:
-        """Return True if >= 50% of co_observed_event_ids are present in query results.
+        """Return True if all co_observed_event_ids are present in query results.
 
         Accepts confirm_when from rule_context OR from the hypothesis itself so
         broad_plan-derived hypotheses (no source_rule_ids) can also auto-confirm.
@@ -337,8 +337,7 @@ class HypothesisProgressTracker:
         if not required_set:
             return False
         observed_event_ids = self._extract_observed_event_ids(rows)
-        overlap = len(required_set & observed_event_ids)
-        return overlap / len(required_set) >= 0.5
+        return required_set.issubset(observed_event_ids)
 
     def has_partial_confirm_signal(self, rule_context: Any, rows: list[dict[str, Any]], hypothesis: Any = None) -> bool:
         """Return True when some, but not all, confirm_when event IDs are present."""
