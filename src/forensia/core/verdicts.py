@@ -54,3 +54,11 @@ def section_to_benchmark(verdict: str) -> str | None:
 
 def benchmark_to_claim(verdict: str) -> str | None:
     return map_verdict(verdict, "benchmark_to_claim")
+
+
+def section_to_structured(verdict: str) -> str | None:
+    return map_verdict(verdict, "section_to_structured")
+
+
+def structured_to_claim(verdict: str) -> str | None:
+    return map_verdict(verdict, "structured_to_claim")

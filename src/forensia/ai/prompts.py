@@ -19,6 +19,7 @@ from forensia.ai.schemas import (
     benchmark_classify_schema,
     gap_identifier_schema,
     hypothesis_drafter_schema,
+    structured_classify_schema,
 )
 from forensia.ai.sql_schema import _build_live_schema_guidance, build_investigation_framework, _load_app_catalog
 from forensia.config import get_llm_settings
@@ -1234,6 +1235,42 @@ def build_benchmark_classify_messages(
     return [{"role": "system", "content": system}, {"role": "user", "content": user}], schema
 
 
+def build_structured_classify_messages(
+    question: str,
+    block_heading: str,
+    evidence_rows: list[dict],
+    expected_shape: dict | None,
+    time_range: dict[str, str] | None = None,
+) -> tuple[list[dict[str, str]], dict]:
+    """role: structured_classifier.
+    Goal: decide answer status and pick which evidence_rows answer a reusable QuestionSpec.
+    Output: {status, picked_row_indices, rationale}
+    """
+    schema = structured_classify_schema(len(evidence_rows))
+    system = (
+        "<TASK>You are a structured_classifier. Decide the answer status and pick which evidence rows answer the question. "
+        "Do NOT write narrative.</TASK>\n"
+        "<OUTPUT_SCHEMA>\n"
+        "{\n"
+        '  "status": "answered | partial | not_found | not_searched | wrong_query",\n'
+        '  "picked_row_indices": [0-based row indices into evidence_rows (e.g. [0, 2, 5]). Each value MUST be an integer between 0 and len(evidence_rows)-1],\n'
+        '  "rationale": "string"\n'
+        "}\n"
+        "</OUTPUT_SCHEMA>\n"
+        "<RULES>\n"
+        "Output picked_row_indices as integer array indices (0-based). Never invent identifiers or use placeholders like 'evidence_rows[0]'.\n"
+        "Use expected_shape only as a contract for judging completeness; do not create rows or values that are not in evidence_rows.\n"
+        "</RULES>"
+    )
+    user = (
+        f"question: {question}\n"
+        f"block_heading: {block_heading}\n"
+        f"evidence_rows: {json.dumps(evidence_rows[:20], default=str, ensure_ascii=False)}\n"
+        f"expected_shape: {json.dumps(expected_shape or {}, ensure_ascii=False, default=str)}\n"
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}], schema
+
+
 def _filter_prior_runs_by_heading(prior_runs: list[dict[str, Any]], block_heading: str, limit: int = 6) -> list[dict[str, Any]]:
     """Filter prior runs by block_heading match."""
     heading_matches = [run for run in prior_runs if str(run.get("block_heading") or "") == str(block_heading)]
@@ -1259,6 +1296,7 @@ def build_section_agent_plan_messages(
     time_range: dict[str, str] | None = None,
     evidence_keypoints: list[str] | None = None,
     prior_section_keypoints: list[str] | None = None,
+    question_spec: dict[str, Any] | None = None,
     db: CaseDB | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
     """Build messages for the section agent's plan phase — decide next evidence action.
@@ -1311,6 +1349,7 @@ Output: {"action": "keypoint", "keypoint": "overview_hosts", "purpose": "List ho
         "</OUTPUT_SCHEMA>\n"
         "<RULES>\n"
         "facts_first: Reuse reusable_section_facts if they already answer the block question.\n"
+        "question_spec_first: If semantic_question_spec is present, satisfy that contract before following wording quirks in the template.\n"
         "keypoint_preferred: Use keypoint when it matches the block topic.\n"
         "template_preferred: Use template_id+params instead of raw sql.\n"
         "error_recovery: If the prior runs show two consecutive zero-row OR query_error results, the next action must be keypoint (not sql/template). "
@@ -1340,6 +1379,7 @@ Output: {"action": "keypoint", "keypoint": "overview_hosts", "purpose": "List ho
         f"keypoint_catalog: {keypoint_catalog}\n\n"
         f"query_template_catalog: {query_template_catalog}\n\n"
         f"template_evidence_keypoints: {evidence_keypoints or []}\n\n"
+        f"semantic_question_spec: {question_spec or {}}\n\n"
         f"prior_section_keypoints_in_this_report: {prior_section_keypoints or []}\n\n"
         f"prior_runs: {_filter_prior_runs_by_heading(prior_runs, block_heading)}\n"
     )
@@ -1359,6 +1399,7 @@ def build_section_agent_check_messages(
     reusable_evidence: list[dict[str, Any]],
     memory_context_md: str = "",
     time_range: dict[str, str] | None = None,
+    question_spec: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
     """Build messages for the section agent's check phase — verify evidence sufficiency.
 
@@ -1394,6 +1435,7 @@ Output: {"verdict": "block_contradicted", "status": "not_found", "rationale": "N
         "</OUTPUT_SCHEMA>\n"
         "<RULES>\n"
         "block_supported: Evidence answers the block question; ready to write.\n"
+        "If semantic_question_spec is present, judge sufficiency against its required_fields, required_sources, render_columns, and status_rules.\n"
         "block_needs_more: More evidence needed; another query may help.\n"
         "block_contradicted: Evidence contradicts the template claim; explain contradiction.\n"
         "status rules: answered when evidence supports the block, partial when some evidence exists but not enough, not_found only after an appropriate search has been run and returned zero rows repeatedly, not_searched when the matching query/keypoint was never executed, wrong_query when the search hit the wrong artifact family, insufficient_evidence for other unresolved cases.\n"
@@ -1409,6 +1451,7 @@ Output: {"verdict": "block_contradicted", "status": "not_found", "rationale": "N
         f"section_title: {section_title}\n"
         f"block_heading: {block_heading}\n\n"
         f"template_block:\n{template_body}\n\n"
+        f"semantic_question_spec: {question_spec or {}}\n\n"
         f"structured_memory_context:\n{memory_context_md}\n\n"
         f"reusable_section_facts: {reusable_facts[:12]}\n\n"
         f"reusable_section_evidence: {reusable_evidence[:20]}\n\n"

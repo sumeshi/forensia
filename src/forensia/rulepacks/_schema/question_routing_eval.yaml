@@ -1,0 +1,79 @@
+schema_version: 1
+description: >
+  Mutation corpus for semantic question routing. These cases intentionally use
+  mixed language, alternate headings, and short prompt-like wording so template
+  changes do not silently break QuestionSpec resolution.
+
+cases:
+  - heading: "Last recorded shutdown time"
+    body: ""
+    answer_spec: last_shutdown_event
+    min_confidence: 0.4
+  - heading: "Most recent shutdown"
+    body: "When did the endpoint last shut down?"
+    answer_spec: last_shutdown_event
+    min_confidence: 0.4
+  - heading: "最後のシャットダウン時刻"
+    body: ""
+    answer_spec: last_shutdown_event
+    min_confidence: 0.4
+  - heading: "Last logged-on user"
+    body: "Return the latest human user logon, not aggregate counts."
+    answer_spec: last_human_logon
+    min_confidence: 0.4
+  - heading: "最終ログオンユーザー"
+    body: "直近ログオンしたユーザーを示す。"
+    answer_spec: last_human_logon
+    min_confidence: 0.4
+  - heading: "Startup, shutdown, logon, and logoff history"
+    body: "Group session activity by date."
+    answer_spec: daily_session_activity
+    min_confidence: 0.4
+  - heading: "セッション履歴"
+    body: "起動、ログオン、ログオフ、シャットダウンを日別にまとめる。"
+    answer_spec: daily_session_activity
+    min_confidence: 0.4
+  - heading: "Computer name"
+    body: "List host identity observed in evidence."
+    answer_spec: host_identity
+    min_confidence: 0.4
+  - heading: "端末名"
+    body: "証拠に現れるホスト名を列挙する。"
+    answer_spec: host_identity
+    min_confidence: 0.4
+  - heading: "Evidence Scope"
+    body: "Show the case time range and event window."
+    answer_spec: case_event_window
+    min_confidence: 0.4
+  - heading: "Application execution history"
+    body: "Use Prefetch or Prefetch file fallback."
+    answer_spec: application_execution_history
+    min_confidence: 0.4
+  - heading: "実行履歴"
+    body: "プリフェッチからアプリケーション実行を確認する。"
+    answer_spec: application_execution_history
+    min_confidence: 0.4
+  - heading: "Mail data files"
+    body: "Where are OST/PST files located?"
+    answer_spec: email_data_files
+    min_confidence: 0.4
+  - heading: "メールデータ"
+    body: "OSTファイルまたはPSTファイルの場所を答える。"
+    answer_spec: email_data_files
+    min_confidence: 0.4
+  - heading: "Browser usage"
+    body: "Identify observed web browsers."
+    answer_spec: browser_usage
+    min_confidence: 0.4
+  - heading: "クラウドサービス"
+    body: "同期サービスの痕跡を列挙する。"
+    answer_spec: cloud_service_traces
+    min_confidence: 0.4
+  - heading: "Antiforensic activity"
+    body: "Scan for cleanup tools and log clearing."
+    answer_spec: antiforensic_activity
+    min_confidence: 0.4
+  - heading: "証拠隠滅"
+    body: "ログ削除やクリーナーツールの痕跡を確認する。"
+    answer_spec: antiforensic_activity
+    min_confidence: 0.4

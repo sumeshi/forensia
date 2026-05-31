@@ -115,6 +115,22 @@ class ReportSectionDTO(DTOModel):
     is_highlighted: bool = False
 
 
+class SectionQuestionDTO(DTOModel):
+    question_id: str
+    section_key: str
+    block_heading: str | None = None
+    question_text: str | None = None
+    question_type: str | None = None
+    answer_spec: str | None = None
+    intent: str | None = None
+    confidence: float | None = None
+    matched_rule: str | None = None
+    required_evidence: Any = None
+    status: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
 class ClaimDTO(DTOModel):
     claim_id: str
     section_key: str

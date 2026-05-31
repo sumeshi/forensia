@@ -1,15 +1,32 @@
+schema_version: 2
+description: >
+  Semantic QuestionSpec registry for reusable report questions. Report templates
+  may change wording, order, or language; section_agent resolves each block to
+  one of these stable contracts before gathering evidence.
+
 question_types:
   - name: prefetch_recent
     answer_spec: application_execution_history
+    intent: "List observed application execution history from Prefetch, with MFT Prefetch fallback when parsed Prefetch rows are unavailable."
     keywords:
       - prefetch
       - application execution
       - application history
       - execution history
+      - executed applications
+      - アプリケーション実行
+      - 実行履歴
+      - プリフェッチ
     keypoints:
       - timeline_prefetch_history
       - mft_prefetch_filenames
       - host_execution_activity
+    required_fields: [executable_name]
+    render_columns: [executable_name, exec_count, last_exec_time, artifact_time, artifact_path, evidence_id, source_file]
+    status_rules:
+      min_rows_for_answer: 1
+      empty_status: not_found
+      empty_reason: "No Prefetch execution rows or Prefetch file artifacts were found."
     expected_answer_shape:
       format: list
       fields: [executable_name, exec_count, last_exec_time]
@@ -25,6 +42,7 @@ question_types:
 
   - name: email_application
     answer_spec: email_application_usage
+    intent: "Identify mail client applications from mail data files and application artifacts."
     keywords:
       - e-mail application
       - email application
@@ -32,11 +50,19 @@ question_types:
       - mail client
       - e-mail communication
       - email communication
+      - メールアプリ
+      - メールクライアント
+      - 電子メールアプリケーション
     keypoints:
       - structured_email_artifacts
       - mft_outlook_artifacts
       - ioc_email_ost_files
       - mft_user_app_activity
+    required_fields: [application_name]
+    render_columns: [application_name, version, evidence_type, artifact_path, artifact_time, evidence_id]
+    status_rules:
+      min_rows_for_answer: 1
+      empty_status: not_found
     expected_answer_shape:
       format: name_with_version
       fields: [application_name, version, data_files]
@@ -48,6 +74,7 @@ question_types:
 
   - name: email_ost
     answer_spec: email_data_files
+    intent: "List observed mail data files such as OST/PST/MBOX and their filesystem timestamps."
     keywords:
       - ost
       - pst
@@ -56,11 +83,20 @@ question_types:
       - outlook
       - email data
       - mail data
+      - メールデータ
+      - メールファイル
+      - ostファイル
+      - pstファイル
     keypoints:
       - structured_email_artifacts
       - mft_outlook_artifacts
       - ioc_email_ost_files
       - mft_user_app_activity
+    required_fields: [file_path]
+    render_columns: [file_name, file_path, extension, si_created, si_modified, si_accessed, fn_created, fn_modified, fn_accessed, evidence_id]
+    status_rules:
+      min_rows_for_answer: 1
+      empty_status: not_found
     expected_answer_shape:
       format: name_with_version
       fields: [application_name, version, data_files]
@@ -75,16 +111,25 @@ question_types:
 
   - name: desktop_rename
     answer_spec: desktop_rename_candidates
+    intent: "Identify likely desktop or Recent-file rename pairs with timestamps and evidence basis."
     keywords:
       - desktop
       - recent
       - rename
       - file name
       - file rename
+      - リネーム
+      - 名前変更
+      - デスクトップファイル
     keypoints:
       - structured_desktop_rename_candidates
       - mft_recent_folder_lnk
       - mft_user_desktop_artifacts
+    required_fields: [original_name, new_name]
+    render_columns: [original_name, new_name, timestamp, basis, source_paths, evidence_ids]
+    status_rules:
+      min_rows_for_answer: 1
+      empty_status: not_found
     expected_answer_shape:
       format: pair_list
       fields: [original_name, new_name, timestamp]
@@ -99,6 +144,7 @@ question_types:
 
   - name: browser_usage
     answer_spec: browser_usage
+    intent: "Identify browser applications observed through Prefetch and filesystem artifacts."
     keywords:
       - browser
       - chrome
@@ -106,10 +152,17 @@ question_types:
       - firefox
       - web
       - web browser
+      - ブラウザ
+      - Webブラウザ
     keypoints:
       - structured_browser_artifacts
       - host_execution_activity
       - mft_user_app_activity
+    required_fields: [browser_name]
+    render_columns: [browser_name, prefetch_records, total_exec_count, last_exec_time, mft_artifacts, first_artifact_time, last_artifact_time, sample_paths, evidence_ids]
+    status_rules:
+      min_rows_for_answer: 1
+      empty_status: not_found
     expected_answer_shape:
       format: name_with_version
       fields: [application_name, version]
@@ -124,12 +177,20 @@ question_types:
 
   - name: logon_history
     answer_spec: daily_session_activity
+    intent: "Summarize startup, shutdown, logon, and logoff activity by calendar date."
     keywords:
       - logon
       - logoff
       - shutdown
       - startup
       - session activity
+      - ログオン履歴
+      - シャットダウン履歴
+      - 起動履歴
+      - セッション履歴
+      - 日別
+      - 起動
+      - ログオフ
     keypoints:
       - session_activity_events
       - structured_daily_session_activity
@@ -137,6 +198,11 @@ question_types:
       - system_startup_events
       - interactive_logon_events
       - logoff_events
+    required_fields: [date]
+    render_columns: [date, startup, logons, logoff, shutdown]
+    status_rules:
+      min_rows_for_answer: 1
+      empty_status: not_found
     expected_answer_shape:
       format: daily_table
       fields: [date, startup, logons, logoff, shutdown]
@@ -149,6 +215,7 @@ question_types:
 
   - name: cloud_activity
     answer_spec: cloud_service_traces
+    intent: "Enumerate cloud sync services and whether executable, path, or configuration artifacts were observed."
     keywords:
       - cloud
       - drive
@@ -156,10 +223,18 @@ question_types:
       - onedrive
       - dropbox
       - cloud service
+      - クラウド
+      - クラウドサービス
+      - 同期サービス
     keypoints:
       - structured_cloud_artifacts
       - host_execution_activity
       - mft_cloud_sync_artifacts
+    required_fields: [service_name]
+    render_columns: [service_name, exe_found, paths_found, config_found, evidence_ids]
+    status_rules:
+      min_rows_for_answer: 1
+      empty_status: not_found
     expected_answer_shape:
       format: enumerated_services
       fields: [service_name, exe_found, paths_found, config_found]
@@ -176,16 +251,27 @@ question_types:
 
   - name: antiforensics
     answer_spec: antiforensic_activity
+    intent: "Scan for anti-forensic activity, event log clearing, and known cleanup tool artifacts."
     keywords:
       - wipe
       - delete
       - clean
       - log clear
       - log clearing
+      - anti-forensic
+      - antiforensic
+      - 証拠隠滅
+      - ログ削除
+      - ログ消去
     keypoints:
       - structured_antiforensics
       - timeline_system_events
       - system_shutdown_events
+    required_fields: [evidence_type]
+    render_columns: [evidence_type, timestamp, event_id, channel, computer, target_user, file_name, file_path, is_deleted, si_created, si_modified, evidence_id, message]
+    status_rules:
+      min_rows_for_answer: 1
+      empty_status: not_found
     expected_answer_shape:
       format: full_scan
       fields: [tool_name, evidence_type, found, details]
@@ -202,13 +288,23 @@ question_types:
 
   - name: host_identity
     answer_spec: host_identity
+    intent: "List observed host or computer identities in the evidence."
     keywords:
       - computer name
       - host name
       - host identity
       - endpoint identity
+      - computer
+      - コンピュータ名
+      - ホスト名
+      - 端末名
     keypoints:
       - overview_hosts
+    required_fields: [host_id]
+    render_columns: [host_id, evidence_count, first_seen, last_seen]
+    status_rules:
+      min_rows_for_answer: 1
+      empty_status: not_found
     expected_answer_shape:
       format: list
       fields: [host_id]
@@ -219,16 +315,56 @@ question_types:
       - source: mft_entries
         query: "SELECT DISTINCT json_extract_string(raw_json, '$.computer') AS host FROM mft_entries WHERE json_extract_string(raw_json, '$.computer') IS NOT NULL"
 
+  - name: case_event_window
+    answer_spec: case_event_window
+    intent: "Return the earliest and latest observed event timestamps for the case."
+    keywords:
+      - event window
+      - evidence window
+      - time range
+      - case time range
+      - investigation window
+      - 調査期間
+      - 証拠期間
+      - イベント期間
+    keypoints:
+      - overview_event_range
+    required_fields: [first_event, last_event]
+    render_columns: [first_event, last_event, event_count]
+    status_rules:
+      min_rows_for_answer: 1
+      empty_status: not_found
+    expected_answer_shape:
+      format: single_row
+      fields: [first_event, last_event, event_count]
+      style: table
+      note: "Report the case evidence time range from event timestamps."
+    evidence_chain:
+      - source: evtx_events
+        query: "SELECT MIN(timestamp) AS first_event, MAX(timestamp) AS last_event, COUNT(*) AS event_count FROM evtx_events"
+
   - name: host_logons
     answer_spec: last_human_logon
+    intent: "Return the latest human-user logon event, preferring interactive logon types when present."
     keywords:
       - last logon
       - logon user
       - last logged-on user
       - last user to log on
+      - latest logon
+      - most recent logon
+      - 最後にログオン
+      - 最終ログオン
+      - 直近ログオン
+      - ログオンしたユーザー
     keypoints:
       - session_activity_events
       - interactive_logon_events
+    required_fields: [logon_time, user_name]
+    render_columns: [logon_time, computer, user_name, logon_type, process_name, src_ip, evidence_id]
+    status_rules:
+      min_rows_for_answer: 1
+      empty_status: not_found
     expected_answer_shape:
       format: list
       fields: [logon_time, computer, user_name, logon_type, process_name, src_ip, evidence_id]
@@ -251,6 +387,7 @@ question_types:
 
   - name: investigation_window
     answer_spec: last_shutdown_event
+    intent: "Return the latest shutdown-relevant event, not the overall last event in the case."
     keywords:
       - shutdown
       - last shutdown
@@ -259,11 +396,22 @@ question_types:
       - recorded shutdown
       - startup
       - final shutdown
+      - latest shutdown
+      - most recent shutdown
+      - 最後のシャットダウン
+      - 最終シャットダウン
+      - 直近シャットダウン
+      - シャットダウン時刻
     keypoints:
       - structured_last_shutdown
       - overview_event_range
       - system_shutdown_events
       - system_startup_events
+    required_fields: [shutdown_time, event_id]
+    render_columns: [shutdown_time, event_id, computer, evidence_id, message]
+    status_rules:
+      min_rows_for_answer: 1
+      empty_status: not_found
     expected_answer_shape:
       format: list
       fields: [shutdown_time, event_id, computer, evidence_id]

@@ -71,8 +71,14 @@ def _reset_case_tables(db: CaseDB) -> None:
         "mft_entries",
         "mft_timeline",
         "prefetch_executions",
+        "prefetch_timeline",
         "findings",
         "claims",
+        "section_facts",
+        "section_evidence",
+        "query_cache",
+        "section_runs",
+        "section_questions",
         "ai_reviews",
         "investigation_sessions",
         "investigation_steps",
@@ -626,8 +632,8 @@ def doctor() -> None:
         from forensia.core.verdicts import valid_verdicts
         h_count = len(valid_verdicts("hypothesis_verdict"))
         s_count = len(valid_verdicts("section_verdict"))
-        b_count = len(valid_verdicts("benchmark_status"))
-        print(f"  ✓ {h_count} hypothesis, {s_count} section, {b_count} benchmark verdicts defined")
+        q_count = len(valid_verdicts("structured_status"))
+        print(f"  ✓ {h_count} hypothesis, {s_count} section, {q_count} structured-question verdicts defined")
 
         import ast, os
         enforcement_files = []

@@ -17,6 +17,16 @@ section_verdict:
     - block_contradicted
   description: "Verdict from section agent check phase"
 
+structured_status:
+  values:
+    - answered
+    - partial
+    - not_found
+    - not_searched
+    - insufficient_evidence
+    - wrong_query
+  description: "Status for individual semantic/structured question answers"
+
 benchmark_status:
   values:
     - answered
@@ -25,7 +35,7 @@ benchmark_status:
     - not_searched
     - insufficient_evidence
     - wrong_query
-  description: "Status for individual benchmark question answers"
+  description: "Backward-compatible alias for structured_status"
 
 claim_status:
   values:
@@ -40,6 +50,17 @@ mapping:
     refuted: block_contradicted
     inconclusive: block_needs_more
     newlead: block_needs_more
+  section_to_structured:
+    block_supported: answered
+    block_needs_more: insufficient_evidence
+    block_contradicted: not_found
+  structured_to_claim:
+    answered: accepted
+    partial: pending
+    not_found: suppressed
+    not_searched: pending
+    insufficient_evidence: pending
+    wrong_query: pending
   section_to_benchmark:
     block_supported: answered
     block_needs_more: insufficient_evidence

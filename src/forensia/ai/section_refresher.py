@@ -19,8 +19,11 @@ from forensia.report.writer import (
     _body_starts_with_heading,
     _collect_flat_evidence_rows,
     _dump_section_evidence_json,
+    _dump_section_questions_json,
+    _dump_section_trace_json,
     _verify_block_output,
     collect_gaps,
+    ensure_universal_question_probes,
     finalize_section,
     load_report_sections_map,
     prepare_section_request,
@@ -228,6 +231,8 @@ def _persist_section_result(
     section_key = request["section_key"]
     flat_rows = _collect_flat_evidence_rows(request.get("evidence_results") or [])
     _dump_section_evidence_json(case, section_key, flat_rows)
+    _dump_section_trace_json(case, section_key, request.get("evidence_results") or [])
+    _dump_section_questions_json(case, db, section_key)
     finalize_section(
         db=db,
         section_key=section_key,
@@ -274,6 +279,7 @@ async def async_refresh_report_sections(
     async_run_section_block_agent, then finalizes (stores body, evidence, gaps).
     """
     prior_filled = load_report_sections_map(db)
+    ensure_universal_question_probes(case, db)
     report_brief = write_report_brief(case, db)
     memory = MemoryManager(case)
     requests = _collect_section_requests(case, db, template_paths, prior_filled, report_brief)

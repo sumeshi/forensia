@@ -585,7 +585,7 @@ class MemoryAndIngestTests(unittest.TestCase):
             mock_progress.assert_called_once()
             mock_full.assert_not_called()
 
-    def test_reset_case_tables_clears_ingested_files_claims_and_hypothesis_reasoning(self) -> None:
+    def test_reset_case_tables_clears_derived_report_and_ingest_tables(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -605,6 +605,50 @@ class MemoryAndIngestTests(unittest.TestCase):
                 )
                 db.execute(
                     """
+                    INSERT INTO prefetch_timeline (
+                        timeline_id, evidence_id, executable_name, prefetch_hash, exec_time, exec_index, source_file, tags
+                    ) VALUES ('PT-1', 'prefetch-tool-abc123', 'tool.exe', 'abc123', now(), 0, 'TOOL.EXE.pf', '[]')
+                    """
+                )
+                db.execute(
+                    """
+                    INSERT INTO section_facts (
+                        fact_id, fact_type, fact_key, fact_value, evidence_ids, source_query,
+                        source_section, confidence, created_at, updated_at
+                    ) VALUES ('SF-1', 'universal_question', 'host_identity', '{}', '[]', 'structured:host_identity', '1_overview', 0.9, now(), now())
+                    """
+                )
+                db.execute(
+                    """
+                    INSERT INTO section_evidence (
+                        section_key, block_heading, evidence_id, role, source_query, created_at
+                    ) VALUES ('1_overview', 'Scope', 'evtx-security-000000000001', 'supporting', 'overview_hosts', now())
+                    """
+                )
+                db.execute(
+                    """
+                    INSERT INTO query_cache (sql_hash, sql_text, result_json, executed_at)
+                    VALUES ('hash-1', 'SELECT 1', '[{"x":1}]', now())
+                    """
+                )
+                db.execute(
+                    """
+                    INSERT INTO section_runs (run_id, section_key, block_heading, iteration, phase, payload, verdict, created_at)
+                    VALUES ('SR-1', '1_overview', 'Scope', 1, 'query', '{}', 'sufficient', now())
+                    """
+                )
+                db.execute(
+                    """
+                    INSERT INTO section_questions (
+                        question_id, section_key, block_heading, question_text, question_type,
+                        answer_spec, intent, confidence, matched_rule, required_evidence,
+                        status, created_at, updated_at
+                    ) VALUES ('SQ-1', '1_overview', 'Scope', 'question', 'host_identity',
+                              'host_identity', 'List hosts', 1.0, 'host_identity', '{}', 'resolved', now(), now())
+                    """
+                )
+                db.execute(
+                    """
                     INSERT INTO hypothesis_reasoning (
                         entry_id, hypothesis_id, session_id, iteration, phase, verdict, query_id, body, created_at
                     ) VALUES ('HR-1', 'H-1', 'S-1', 1, 'check', 'confirmed', 'Q-1', 'body', now())
@@ -615,6 +659,12 @@ class MemoryAndIngestTests(unittest.TestCase):
 
                 self.assertEqual(0, db.execute("SELECT COUNT(*) FROM ingested_files").fetchone()[0])
                 self.assertEqual(0, db.execute("SELECT COUNT(*) FROM claims").fetchone()[0])
+                self.assertEqual(0, db.execute("SELECT COUNT(*) FROM prefetch_timeline").fetchone()[0])
+                self.assertEqual(0, db.execute("SELECT COUNT(*) FROM section_facts").fetchone()[0])
+                self.assertEqual(0, db.execute("SELECT COUNT(*) FROM section_evidence").fetchone()[0])
+                self.assertEqual(0, db.execute("SELECT COUNT(*) FROM query_cache").fetchone()[0])
+                self.assertEqual(0, db.execute("SELECT COUNT(*) FROM section_runs").fetchone()[0])
+                self.assertEqual(0, db.execute("SELECT COUNT(*) FROM section_questions").fetchone()[0])
                 self.assertEqual(0, db.execute("SELECT COUNT(*) FROM hypothesis_reasoning").fetchone()[0])
 
     def test_run_renders_report_once_via_render_written_report(self) -> None:

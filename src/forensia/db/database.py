@@ -37,6 +37,7 @@ class CaseDB:
         self._apply_migration_once("legacy_schema_backfill", self._apply_legacy_schema_backfill)
         self._apply_migration_once("investigation_steps_hypothesis_id", self._apply_investigation_steps_hypothesis_id)
         self._apply_migration_once("hypotheses_target_keypoint_id", self._apply_hypotheses_target_keypoint_id)
+        self._apply_migration_once("section_questions", self._apply_section_questions)
 
     def _apply_migration_once(self, migration_key: str, callback: Callable[[], None]) -> None:
         """Execute a migration callback only if it has not been applied before."""
@@ -98,6 +99,30 @@ class CaseDB:
     def _apply_hypotheses_target_keypoint_id(self) -> None:
         """Add target_keypoint_id column to the hypotheses table."""
         self.conn.execute("ALTER TABLE hypotheses ADD COLUMN IF NOT EXISTS target_keypoint_id VARCHAR")
+
+    def _apply_section_questions(self) -> None:
+        """Create semantic question registry table for report blocks."""
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS section_questions (
+                question_id VARCHAR PRIMARY KEY,
+                section_key VARCHAR,
+                block_heading VARCHAR,
+                question_text VARCHAR,
+                question_type VARCHAR,
+                answer_spec VARCHAR,
+                intent VARCHAR,
+                confidence DOUBLE,
+                matched_rule VARCHAR,
+                required_evidence JSON,
+                status VARCHAR,
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP
+            )
+            """
+        )
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_section_questions_section ON section_questions(section_key, block_heading)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_section_questions_spec ON section_questions(answer_spec)")
 
     def _route_trace_write(self, query: str) -> str:
         """Rewrite unqualified INSERT/UPDATE/DELETE to use the trace schema prefix."""

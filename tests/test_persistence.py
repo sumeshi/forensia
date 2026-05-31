@@ -43,6 +43,7 @@ from forensia.report.writer import (
     _section_confidence,
     collect_gaps,
     build_report_markdown_from_db,
+    ensure_universal_question_probes,
     finalize_section,
     prepare_section_request,
 )
@@ -272,6 +273,40 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual("email_data_files", block["answer_spec"])
             self.assertEqual("Where is the e-mail file located?", block["question"])
             self.assertEqual(["ioc_email_ost_files", "timeline_prefetch_history"], block["evidence_keypoints"])
+
+    def test_universal_question_probes_are_explicit_and_store_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            template_path = case.path / "report_template_custom" / "1_overview.md"
+            template_path.parent.mkdir(parents=True, exist_ok=True)
+            template_path.write_text("# Overview\n\n## Evidence Scope\n<!-- fill -->\n", encoding="utf-8")
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
+                    ("evtx-security-000000000001", 4624, datetime(2015, 3, 22, 14, 34, 28), "informant-PC", "informant", "2"),
+                )
+                prepare_section_request(case, db, template_path, {}, report_brief={})
+                initial_probe_count = db.execute(
+                    "SELECT COUNT(*) FROM section_questions WHERE section_key = '__case_probe__'"
+                ).fetchone()[0]
+                ensure_universal_question_probes(case, db)
+                probe_count = db.execute(
+                    "SELECT COUNT(*) FROM section_questions WHERE section_key = '__case_probe__' AND status = 'case_probe'"
+                ).fetchone()[0]
+                fact = db.execute(
+                    """
+                    SELECT fact_value, evidence_ids
+                    FROM section_facts
+                    WHERE source_section = '__case_probe__'
+                      AND fact_key = 'last_human_logon'
+                    """
+                ).fetchone()
+
+            self.assertEqual(0, initial_probe_count)
+            self.assertGreaterEqual(probe_count, 5)
+            self.assertIsNotNone(fact)
+            self.assertIn("informant", str(fact[0]))
+            self.assertIn("evtx-security-000000000001", str(fact[1]))
 
     def test_question_marker_enables_structured_mode_without_explicit_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

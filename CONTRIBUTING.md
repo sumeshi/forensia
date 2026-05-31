@@ -69,7 +69,7 @@ flowchart TB
 各ロールの責務と境界は次のルールで保ってください。
 
 - **1 ロール = 1 文で書ける目的**。`<TASK>You are a sql_composer. Write a DuckDB SQL query that satisfies the given intent.</TASK>` のように、ビルダー冒頭が複文になったら粒度が崩れているサイン。
-- **ルーティング・テンプレマッチング・整形は LLM に渡さない**。`validate_select_sql` / `HypothesisProgressTracker` / `_dedup_new_hypotheses` / `_format_benchmark_answer` / `execute_fallback_search` はすべてコード側で決定論的に動きます。
+- **ルーティング・テンプレマッチング・整形は LLM に渡さない**。`validate_select_sql` / `HypothesisProgressTracker` / `_dedup_new_hypotheses` / `_format_structured_answer` / `execute_fallback_search` はすべてコード側で決定論的に動きます。
 - **durable な結論はすべて DuckDB**。LLM の生出力は `ai_logs/<session_id>/` と `trace.investigation_steps` に audit ログとして残しますが、これは正本ではありません。findings / hypotheses / claims / report_sections は必ず DB に永続化し、memory Markdown はそれらからの projection に留めます。
 - **仮説単位の文脈隔離**。検証中の暫定 facts / timeline / tasks は `memory/scratch/<hypothesis_id>/` に閉じ込め、confirmed 時に共有記憶へ昇格、refuted 時に archive へ退避します。他仮説の暫定情報を流入させないこと。
 - **トークン予算は hard cap、LLM 呼び出し総数は opt-in cap**。`_assemble_messages_with_budget` が system プロンプトを保護したまま user/dynamic 側のみ trim。`audit.LLMCallLogger` の総数 cap は `--max-llm-calls`(既定 `0` = 無制限。ローカル LLM 前提のため)。クラウド API に切り替えるときは明示的に `--max-llm-calls 500` 等を渡してコスト暴走を防ぐこと。指定されたら超過時に soft warning ではなく `RuntimeError` でループ終了。
@@ -203,6 +203,9 @@ case001/
     report.html
     report.md
     api/
+    debug/
+    evidence/
+    structured/
 ```
 
 | パス | 責務 |
@@ -213,7 +216,7 @@ case001/
 | `allowlist.yaml` | rule_id ベースの suppression 設定 |
 | `memory/` | LLM 向けの再生成可能な作業文脈 |
 | `ai_logs/` | LLM リクエスト / レスポンスの監査ログ |
-| `reports/` | レポート出力と API スナップショット |
+| `reports/` | レポート出力、API スナップショット、debug trace、evidence export、structured answer export |
 
 ## 状態の 3 層分離
 
@@ -263,11 +266,11 @@ verdict 文字列は許可リストです。許可値は `src/forensia/rulepacks
 |---|---|
 | `hypothesis_verdict` | `hypothesis_manager.py:_upsert_hypothesis()` + `Hypothesis.verdict` field validator |
 | `section_verdict` | `section_agent.py:_store_section_run()`(`sufficient`/`refuted` 等のエイリアスは normalize map で吸収) |
-| `benchmark_status` | `report/writer.py:_normalize_benchmark_answer()` |
+| `structured_status` | `report/writer.py:_normalize_structured_answer()`(`_normalize_benchmark_answer` は互換 wrapper) |
 
 `HistoryEntry.verdict` にも Pydantic `@field_validator`。新しい verdict 値を増やすなら `verdict_taxonomy.yaml` を編集すること。validator を Python から回避するのはバグ扱い。
 
-taxonomy ファイルは層間マッピング (`hypothesis_to_section`、`section_to_benchmark`、`benchmark_to_claim`) も宣言しているので、層間変換が必要なら `map_verdict()` を呼び、独自テーブルを作らないこと。
+taxonomy ファイルは層間マッピング (`hypothesis_to_section`、`section_to_benchmark`、`benchmark_to_claim`) も宣言しているので、層間変換が必要なら `map_verdict()` を呼び、独自テーブルを作らないこと。古い `benchmark_*` domain は評価テンプレート互換のため残すが、新規コードは `structured_*` を優先する。
 
 ### LLM 呼び出し総数は hard cap
 
@@ -314,7 +317,7 @@ broad_plan → for each active hypothesis: plan → exec(+fallback) → check �
 | section_agent | `build_section_agent_check_messages` | 集めた証拠が write 可能か判断 |
 | section_write | `build_section_outline_messages` | 段落割り当てを JSON で決める |
 | section_write | `build_paragraph_narrate_messages` | 1 段落の Markdown を書く |
-| benchmark | `build_benchmark_classify_messages` | status と採用 row を選ぶ(整形は code 側) |
+| structured | `build_structured_classify_messages` | status と採用 row を選ぶ(整形は code 側) |
 
 LLM が「ルーティング」「テンプレマッチング」「決定論的フォーマット整形」を兼ねないよう、ビルダーの粒度を保ってください。新ロールを足すときは `<TASK>` を 1 文で書けるか確認すること。
 
@@ -477,9 +480,9 @@ durable state を壊さずに文脈を小さく保つことが目的です。
 
 仮説起源の memory write には必ず `hypothesis_id` を持たせること。`hypothesis_id` を落とすヘルパは共有記憶に無条件書き込みしてしまい、このライフサイクルを壊します。
 
-### benchmark 向けの限定ビュー (`EvidenceOnlyMemory`)
+### structured / benchmark 向けの限定ビュー (`EvidenceOnlyMemory`)
 
-benchmark / appendix ブロックが仮説ループで作られた narrative memory(`H-NNN.md`、ラテラルムーブメント要約など)を見ると、既に形成された結論にブロック回答が引き寄せられます。`core.memory.EvidenceOnlyMemory` は wrapper として `facts` / `keypoints` / `entities` のみを露出し、それ以外を隠します。
+structured / benchmark / appendix ブロックが仮説ループで作られた narrative memory(`H-NNN.md`、ラテラルムーブメント要約など)を見ると、既に形成された結論にブロック回答が引き寄せられます。`core.memory.EvidenceOnlyMemory` は wrapper として `facts` / `keypoints` / `entities` のみを露出し、それ以外を隠します。
 
 切り替えは `core.memory.memory_for_section(memory, structured_mode=...)` の 1 箇所で行います。`section_refresher.py` / `report/writer.py` の section 充填経路は **必ず** このヘルパ経由で呼ぶこと。`grep EvidenceOnlyMemory(` で出るのはヘルパ本体のみであるべきです。
 
@@ -511,6 +514,7 @@ benchmark / appendix ブロックが仮説ループで作られた narrative mem
 | `section_evidence` | セクション本文で使った evidence_id の索引 |
 | `query_cache` | planner / section agent の再利用可能な query 結果 |
 | `section_runs` | section block agent の実行履歴 |
+| `section_questions` | 各 report block / case-wide probe が解決された QuestionSpec と必要証拠契約 |
 | `ingested_files` | 取り込み済みファイルの hash 帳簿 |
 
 ### `trace.duckdb`(Trace State)
@@ -617,7 +621,7 @@ gap notes は `report_sections.gaps` に積まれ、次サイクルでは追加�
 
 `behaviors` を増やしたいときは writer.py 側の `_GateCtx.behaviors` 判定を 1 箇所だけ伸ばし、section_key にハードコードしないこと。
 
-現行 writer が frontmatter から読む契約フィールドは `behaviors` だけです。`section` / `title` / `prompt` / `evidence_queries` を置いても durable key や evidence access には使われません。section title は本文見出しから抽出され、block ごとの要求は `##` heading と HTML comment hints(`evidence_keypoints` / `mode` / `benchmark_id` / `answer_id` / `answer_spec` / `question`)で表現します。
+現行 writer が frontmatter から読む契約フィールドは `behaviors` だけです。`section` / `title` / `prompt` / `evidence_queries` を置いても durable key や evidence access には使われません。section title は本文見出しから抽出され、block ごとの要求は `##` heading と HTML comment hints(`evidence_keypoints` / `mode` / `answer_id` / `answer_spec` / `question`、旧評価テンプレート互換の `benchmark_id`)で表現します。
 
 ### Section の同一性と順序
 
@@ -634,7 +638,7 @@ section key は **stable な識別子** として扱うこと。ファイル名�
 
 - レポート構造
 - セクション固有の執筆要求(`##` block と comment hints)
-- block ごとの keypoint / structured answer / benchmark hints
+- block ごとの keypoint / structured answer hints
 - 証拠不十分時のプレースホルダ
 
 宣言しない:
@@ -653,6 +657,8 @@ section key は **stable な識別子** として扱うこと。ファイル名�
 - claims は本文から抽出して `claims` に書き込み。
 - claim の provenance は本文中の finding_id / hypothesis_id / evidence_id と検証結果から計算する。
 - gap は明示的な insufficient-evidence マーカー、section agent の extra gaps、quality gate、claim/evidence validation から集約され、次サイクルの仮説候補になる。
+- block が `question` / `answer_spec` / `mode: structured` を持つ場合、`question_registry.py` が `question_routing.yaml` の QuestionSpec に解決し、結果を `section_questions` に保存する。case-wide probe は `section_key='__case_probe__'` として保存する。
+- structured answer は `reports/structured/answers.json` と CSV に永続化し、section ごとの解決結果は `reports/debug/<section>_questions.json` に dump する。
 
 ### 内蔵テンプレートと評価用テンプレートの分離
 
@@ -685,7 +691,8 @@ LLM が出した SQL は読み取り専用の証拠アクセスとして扱い�
 | `app_catalog.yaml` / `artifact_inference.yaml` | `prompts._dfir_playbook()` | Prefetch / MFT / Registry / File → アプリ推定。planning 系では意図的に省略、interpretation 系のみに注入。 |
 | `false_positive_rules.yaml` | rule engine + `prompts._dfir_playbook()` | 既知 FP。interpretation 系プロンプトのみで参照。 |
 | `dfir_ioc_catalog.yaml` | `prompts._dfir_playbook()` | アンチフォレンジック / クラウド同期 / メール / Recycle Bin 等の補助 IOC 辞書。 |
-| `question_routing.yaml` | `section_agent.py` + `prompts.build_section_agent_*` + `prompts.build_benchmark_classify_messages` | question_type ごとの `expected_answer_shape`(コード側 `_format_benchmark_answer` が消費)と `evidence_chain`(primary 0-row 時に `_execute_evidence_chain` が決定論的に試行)。 |
+| `question_routing.yaml` | `question_registry.py` + `section_agent.py` + `prompts.build_section_agent_*` + `prompts.build_structured_classify_messages` | QuestionSpec の正本。question_type / answer_spec ごとの `expected_answer_shape`(コード側 `_format_structured_answer` が消費)、`evidence_chain`(primary 0-row 時に `_execute_evidence_chain` が決定論的に試行)、required/render fields、status rules を宣言する。 |
+| `question_routing_eval.yaml` | `scripts/audit_schema_coverage.py --strict` | QuestionSpec ルーティングの mutation corpus。見出し・本文・言語が変わっても安定した `answer_spec` に解決されるかを監査する。 |
 | `verdict_taxonomy.yaml` | `core/verdicts.py` | verdict 値の whitelist と層間マッピング。 |
 | `playbook/*.md` | `prompts._dfir_playbook(phase)` | フェーズ別 (`broad_plan` / `hypothesis_plan` / `check` / `report_section` / `section_agent_plan` / `section_agent_check`) のプレイブック本文。`<CRITICAL_RULES>` / `<FORBIDDEN_PATTERNS>` / `<SCHEMA_CONSTRAINTS>` 等のタグ付き。 |
 
@@ -794,7 +801,7 @@ DB テーブル schema YAML は次を宣言すること。
 
 - **実 LLM 呼び出しを伴うテストを書かない**。`investigate(...)` の完全サイクルや実サーバ依存の section refresh は副作用(DuckDB 書き込み、memory I/O、ファイル走査)が多すぎて軽くなりません。`run_section_block_agent` などを通す場合は、structured answer / deterministic builder / mocked JSON response に閉じ、実 LLM と長いファイル走査を起こさないこと。
 - **実 LLM サーバを叩くテストを書かない**。過去にあった `tests/test_benchmark_e2e_real_llm.py`(`FORENSIA_LLM_BASE_URL` で gate)は同じ理由で削除済み。
-- 代わりに次でカバーする:純粋関数ヘルパのユニットテスト(`_slim_findings`、`_quality_gate_section`、`_render_benchmark_answer_markdown` 等)、永続化の DB-only テスト、LLM モジュールを import しない CLI / HTTP テスト。
+- 代わりに次でカバーする:純粋関数ヘルパのユニットテスト(`_slim_findings`、`_quality_gate_section`、`_render_structured_answer_markdown` 等)、永続化の DB-only テスト、LLM モジュールを import しない CLI / HTTP テスト。
 - 調査ループの挙動を本気で見たいときは、ローカルモデル相手に `forensia investigate ...` を回し、`ai_logs/` を目で確認する。pytest にしない。
 
 ## 補助スクリプトと `forensia doctor`
@@ -803,7 +810,7 @@ DB テーブル schema YAML は次を宣言すること。
 
 | スクリプト | 用途 |
 |---|---|
-| `scripts/audit_schema_coverage.py` | 全ルール YAML の `query` SQL を sqlglot で AST 解析し、参照される `event_id` 値(`=` と `IN`)を抽出。`event_ids.yaml` / `question_routing.yaml` のカバレッジを照合。 |
+| `scripts/audit_schema_coverage.py` | 全ルール YAML の `query` SQL を sqlglot で AST 解析し、参照される `event_id` 値(`=` と `IN`)を抽出。`event_ids.yaml` / `question_routing.yaml` / `question_routing_eval.yaml` のカバレッジと QuestionSpec contract を照合。 |
 | `scripts/regenerate_playbook.py` | `_schema/playbook/*.md` の `<!-- AUTO-FROM: ... -->` セクションをソース YAML から再生成。`--check` で drift 検出(exit 1)、引数なしで書き込み。 |
 | `scripts/cycle_summary.py <case_dir>` | `progress_events.json` を解析し、cycle ごとの仮説 delta と benchmark 進捗を Markdown 表化。デバッグ補助。 |
 | `forensia doctor` | CLI コマンド。schema coverage / playbook drift check / verdict taxonomy AST スキャン / pytest を順に実行し、全部 pass のときだけ exit 0。 |
@@ -868,6 +875,8 @@ API やレポート writer が raw 証拠からタイムスタンプを受け取
 - 出力ディレクトリを初期化してやり直すには `--rerun`。`raw/` は保持され、`input_dir` 省略時は既存 raw から re-normalize する。
 - `report` は render のみ。
 - `report --write` は section 再充填してから render。
+
+`--rerun` が呼ぶ `_reset_case_tables()` は、証拠由来の正規化テーブルだけでなく、派生 workflow state も消す必要があります。少なくとも `findings` / `hypotheses` / `report_sections` / `claims` / `section_facts` / `section_evidence` / `section_runs` / `section_questions` / `query_cache` / trace tables / `ingested_files` / `prefetch_timeline` を対象に含めること。新しい mutable table を追加したら `_reset_case_tables()` と `tests/test_memory_and_ingest.py` の reset テストを同時に更新してください。
 
 ## README との境界
 

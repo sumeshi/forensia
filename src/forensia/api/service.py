@@ -22,6 +22,7 @@ from forensia.api.dto import (
     InvestigationStepDTO,
     MftTimelineDTO,
     ReportSectionDTO,
+    SectionQuestionDTO,
     SessionDTO,
 )
 from forensia.core.case import Case
@@ -375,6 +376,28 @@ def list_report_sections_dto(db: CaseDB) -> list[ReportSectionDTO]:
         normalized["gap_count"] = len(gaps)
         items.append(ReportSectionDTO.model_validate(normalized))
     return items
+
+
+def list_section_questions_dto(db: CaseDB, section_key: str | None = None) -> list[SectionQuestionDTO]:
+    """Return resolved QuestionSpec rows for report sections and case-wide probes."""
+    params: tuple[Any, ...] | None = None
+    where = ""
+    if section_key:
+        where = "WHERE section_key = ?"
+        params = (section_key,)
+    rows = fetch_records(
+        db,
+        f"""
+        SELECT question_id, section_key, block_heading, question_text, question_type,
+               answer_spec, intent, confidence, matched_rule, required_evidence,
+               status, created_at, updated_at
+        FROM section_questions
+        {where}
+        ORDER BY section_key, block_heading, question_id
+        """,
+        params,
+    )
+    return [SectionQuestionDTO.model_validate(_normalize_row(row)) for row in rows]
 
 
 def list_claims_dto(db: CaseDB, section_key: str | None = None) -> list[ClaimDTO]:

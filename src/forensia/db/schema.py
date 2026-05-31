@@ -198,6 +198,25 @@ CREATE TABLE IF NOT EXISTS section_runs (
 
 CREATE INDEX IF NOT EXISTS idx_section_runs_section ON section_runs(section_key, block_heading, created_at);
 
+CREATE TABLE IF NOT EXISTS section_questions (
+    question_id VARCHAR PRIMARY KEY,
+    section_key VARCHAR,
+    block_heading VARCHAR,
+    question_text VARCHAR,
+    question_type VARCHAR,
+    answer_spec VARCHAR,
+    intent VARCHAR,
+    confidence DOUBLE,
+    matched_rule VARCHAR,
+    required_evidence JSON,
+    status VARCHAR,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_section_questions_section ON section_questions(section_key, block_heading);
+CREATE INDEX IF NOT EXISTS idx_section_questions_spec ON section_questions(answer_spec);
+
 CREATE OR REPLACE VIEW section_run_coverage AS
 SELECT
     section_key,

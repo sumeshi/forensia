@@ -15,6 +15,11 @@ from forensia.core.case import Case
 from forensia.core.memory import MemoryManager, memory_for_section
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records, normalize_value
+from forensia.ai.question_registry import (
+    evaluate_question_spec_status,
+    project_rows_for_question_spec,
+    question_spec_for_answer_spec,
+)
 from forensia.report.html import render_html_report
 
 
@@ -2848,6 +2853,29 @@ def _dump_section_trace_json(case: Case, section_key: str, evidence_results: lis
     out_path.write_text(json.dumps(trace_rows, ensure_ascii=False, default=str, indent=2), encoding="utf-8")
 
 
+def _dump_section_questions_json(case: Case, db: CaseDB, section_key: str) -> None:
+    """Write resolved QuestionSpec rows to reports/debug/<section_key>_questions.json."""
+    rows = fetch_records(
+        db,
+        """
+        SELECT question_id, section_key, block_heading, question_text, question_type,
+               answer_spec, intent, confidence, matched_rule, required_evidence,
+               status, created_at, updated_at
+        FROM section_questions
+        WHERE section_key = ?
+        ORDER BY block_heading, question_id
+        """,
+        (section_key,),
+    )
+    if not rows:
+        return
+    debug_dir = case.reports_dir / "debug"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    out_path = debug_dir / f"{section_key}_questions.json"
+    normalized = [normalize_value(row) for row in rows]
+    out_path.write_text(json.dumps(normalized, ensure_ascii=False, default=str, indent=2), encoding="utf-8")
+
+
 def _dump_section_evidence_json(case: Case, section_key: str, rows: list[dict[str, Any]]) -> None:
     """Write flat evidence rows to reports/evidence/<section_key>.json."""
     if not rows:
@@ -2858,12 +2886,17 @@ def _dump_section_evidence_json(case: Case, section_key: str, rows: list[dict[st
     out_path.write_text(json.dumps(rows, ensure_ascii=False, default=str, indent=2), encoding="utf-8")
 
 
-def _benchmark_block_id(block_heading: str) -> str:
-    """Derive a benchmark question ID (e.g. Q1) from the block heading's leading number."""
+def _structured_block_id(block_heading: str) -> str:
+    """Derive a stable structured question ID (e.g. Q1) from the block heading's leading number."""
     match = re.match(r"\s*(\d+)", str(block_heading or ""))
     if match:
         return f"Q{match.group(1)}"
     return "Q0"
+
+
+def _benchmark_block_id(block_heading: str) -> str:
+    """Compatibility wrapper for older benchmark terminology."""
+    return _structured_block_id(block_heading)
 
 
 def _coerce_string_list(value: Any) -> list[str]:
@@ -2918,15 +2951,15 @@ def _normalize_benchmark_answer(
     status: str,
 ) -> dict[str, Any]:
     """Normalize and validate a structured answer dict, coercing status to a valid verdict."""
-    normalized_id = str(answer.get("id") or _benchmark_block_id(block_heading)).strip() or _benchmark_block_id(block_heading)
+    normalized_id = str(answer.get("id") or _structured_block_id(block_heading)).strip() or _structured_block_id(block_heading)
     normalized_status = str(answer.get("status") or status or "insufficient_evidence").strip().lower()
     from forensia.core.verdicts import assert_valid_verdict
     try:
-        assert_valid_verdict(normalized_status, "benchmark_status")
+        assert_valid_verdict(normalized_status, "structured_status")
     except ValueError:
         normalized_status = status or "insufficient_evidence"
         try:
-            assert_valid_verdict(normalized_status, "benchmark_status")
+            assert_valid_verdict(normalized_status, "structured_status")
         except ValueError:
             normalized_status = "insufficient_evidence"
     normalized_answer = _coerce_answer_items(answer.get("answer"))
@@ -2947,6 +2980,22 @@ def _normalize_benchmark_answer(
         if value:
             normalized[key] = value
     return normalized
+
+
+def _normalize_structured_answer(
+    answer: dict[str, Any],
+    *,
+    section_key: str,
+    block_heading: str,
+    status: str,
+) -> dict[str, Any]:
+    """Neutral name for structured question answers; kept compatible with older benchmark naming."""
+    return _normalize_benchmark_answer(
+        answer,
+        section_key=section_key,
+        block_heading=block_heading,
+        status=status,
+    )
 
 
 def _structured_answers_path(case: Case) -> Path:
@@ -3074,7 +3123,7 @@ def _render_structured_answer_markdown(answer: dict[str, Any], block_heading: st
     lines = [
         f"## {block_heading}",
         "",
-        f"**ID:** {str(answer.get('id') or _benchmark_block_id(block_heading))}",
+        f"**ID:** {str(answer.get('id') or _structured_block_id(block_heading))}",
         f"**Status:** {str(answer.get('status') or 'insufficient_evidence')}",
         "",
         "### Answer",
@@ -3150,7 +3199,7 @@ def _structured_answer(
     source: str = "deterministic_sql",
 ) -> dict[str, Any]:
     resolved_status = status or ("answered" if rows else "not_found")
-    answer = _normalize_benchmark_answer(
+    answer = _normalize_structured_answer(
         {
             "id": answer_id,
             "status": resolved_status,
@@ -3928,6 +3977,61 @@ def _build_antiforensic_activity(case: Case, db: CaseDB, answer_id: str, section
     )
 
 
+def _build_generic_question_spec_answer(
+    case: Case,
+    db: CaseDB,
+    *,
+    answer_spec: str,
+    answer_id: str,
+    section_key: str,
+    block_heading: str,
+) -> dict[str, Any] | None:
+    """Execute a YAML-declared QuestionSpec when no Python builder is needed."""
+    spec = question_spec_for_answer_spec(answer_spec)
+    if spec is None or not spec.evidence_chain:
+        return None
+
+    rows: list[dict[str, Any]] = []
+    queries_run: list[str] = []
+    errors: list[str] = []
+    for index, entry in enumerate(spec.evidence_chain, start=1):
+        query = str(entry.get("query") or "").strip()
+        if not query:
+            continue
+        source = str(entry.get("source") or f"query_{index}").strip()
+        label = f"structured:{spec.semantic_id}:{source}"
+        queries_run.append(label)
+        try:
+            source_rows = _structured_rows(db, query)
+        except Exception as exc:
+            errors.append(f"{source}: {str(exc)[:120]}")
+            continue
+        for row in source_rows:
+            rows.append({**row, "_question_source": source})
+
+    rows = project_rows_for_question_spec(spec, rows)
+    status, reasons = evaluate_question_spec_status(spec, rows, queries_run=queries_run)
+    if errors:
+        reasons.extend(errors)
+        if status == "answered":
+            status = "partial"
+    columns = list(spec.render_columns)
+    if not columns and rows:
+        columns = [str(key) for key in rows[0].keys() if not str(key).startswith("_")]
+    return _structured_answer(
+        case,
+        answer_id=answer_id,
+        section_key=section_key,
+        block_heading=block_heading,
+        rows=rows,
+        columns=columns,
+        queries_run=queries_run,
+        status=status,
+        missing_reason=reasons,
+        source="question_spec",
+    )
+
+
 StructuredAnswerBuilder = Callable[[Case, CaseDB, str, str, str], dict[str, Any]]
 
 _STRUCTURED_ANSWER_BUILDERS: dict[str, StructuredAnswerBuilder] = {
@@ -3961,9 +4065,182 @@ def build_structured_answer(
         return None
     builder = _STRUCTURED_ANSWER_BUILDERS.get(normalized_spec)
     if builder is None:
-        return None
+        return _build_generic_question_spec_answer(
+            case,
+            db,
+            answer_spec=normalized_spec,
+            answer_id=str(answer_id or normalized_spec).strip() or normalized_spec,
+            section_key=section_key,
+            block_heading=block_heading,
+        )
     resolved_id = str(answer_id or normalized_spec).strip() or normalized_spec
-    return builder(case, db, resolved_id, section_key, block_heading)
+    answer = builder(case, db, resolved_id, section_key, block_heading)
+    spec = question_spec_for_answer_spec(normalized_spec)
+    if spec is not None:
+        status, reasons = evaluate_question_spec_status(
+            spec,
+            [item for item in answer.get("answer") or [] if isinstance(item, dict)],
+            queries_run=_coerce_string_list(answer.get("queries_run")),
+            fallback_status=str(answer.get("status") or ""),
+        )
+        if status != answer.get("status") or reasons:
+            answer["status"] = status
+            missing = _coerce_string_list(answer.get("missing_reason"))
+            for reason in reasons:
+                if reason and reason not in missing:
+                    missing.append(reason)
+            answer["missing_reason"] = missing
+            _persist_structured_answer(case, answer)
+    return answer
+
+
+UNIVERSAL_QUESTION_SPECS: tuple[str, ...] = (
+    "host_identity",
+    "last_human_logon",
+    "last_shutdown_event",
+    "application_execution_history",
+    "daily_session_activity",
+    "browser_usage",
+    "email_data_files",
+    "cloud_service_traces",
+    "antiforensic_activity",
+)
+
+
+def _collect_answer_evidence_ids(value: Any) -> list[str]:
+    """Extract evidence_id/evidence_ids from a structured answer payload."""
+    found: list[str] = []
+
+    def visit(item: Any) -> None:
+        if isinstance(item, dict):
+            single = item.get("evidence_id")
+            if single is not None:
+                text = str(single).strip()
+                if text:
+                    found.append(text)
+            many = item.get("evidence_ids")
+            if isinstance(many, (list, tuple, set)):
+                for part in many:
+                    text = str(part).strip()
+                    if text:
+                        found.append(text)
+            elif many is not None:
+                text = str(many).strip()
+                if text:
+                    found.append(text)
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, (list, tuple, set)):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    return list(dict.fromkeys(found))
+
+
+def ensure_universal_question_probes(case: Case, db: CaseDB) -> None:
+    """Populate durable case-wide structured facts independent of report templates."""
+    try:
+        existing = db.execute(
+            """
+            SELECT COUNT(*)
+            FROM section_questions
+            WHERE section_key = '__case_probe__'
+              AND status = 'case_probe'
+            """
+        ).fetchone()
+        if existing is not None and int(existing[0] or 0) >= len(UNIVERSAL_QUESTION_SPECS):
+            return
+    except Exception:
+        return
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    for answer_spec in UNIVERSAL_QUESTION_SPECS:
+        spec = question_spec_for_answer_spec(answer_spec)
+        if spec is None:
+            continue
+        try:
+            answer = build_structured_answer(
+                case,
+                db,
+                answer_spec=answer_spec,
+                answer_id=f"probe_{answer_spec}",
+                section_key="__case_probe__",
+                block_heading=spec.intent or spec.name,
+            )
+        except Exception:
+            answer = None
+        question_id = hashlib.sha1(f"__case_probe__\n{answer_spec}".encode("utf-8")).hexdigest()[:20]
+        required_evidence = {
+            "required_fields": list(spec.required_fields),
+            "required_sources": list(spec.required_sources),
+            "keypoints": list(spec.keypoints),
+            "render_columns": list(spec.render_columns),
+            "status_rules": spec.status_rules,
+        }
+        db.execute(
+            """
+            INSERT INTO section_questions (
+                question_id, section_key, block_heading, question_text, question_type,
+                answer_spec, intent, confidence, matched_rule, required_evidence,
+                status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (question_id) DO UPDATE SET
+                confidence = excluded.confidence,
+                required_evidence = excluded.required_evidence,
+                status = excluded.status,
+                updated_at = excluded.updated_at
+            """,
+            (
+                question_id,
+                "__case_probe__",
+                spec.intent or spec.name,
+                spec.intent or spec.name,
+                spec.name,
+                spec.answer_spec,
+                spec.intent,
+                1.0,
+                spec.name,
+                json.dumps(required_evidence, ensure_ascii=False, default=str),
+                "case_probe",
+                now,
+                now,
+            ),
+        )
+        if answer is not None:
+            evidence_ids = _collect_answer_evidence_ids(answer.get("answer"))
+            fact_value = {
+                "status": answer.get("status"),
+                "answer": answer.get("answer"),
+                "columns": answer.get("columns"),
+                "evidence_ids": evidence_ids,
+            }
+            fact_id = hashlib.sha1(f"universal_question:{answer_spec}".encode("utf-8")).hexdigest()[:20]
+            db.execute(
+                """
+                INSERT INTO section_facts (
+                    fact_id, fact_type, fact_key, fact_value, evidence_ids,
+                    source_query, source_section, confidence, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (fact_id) DO UPDATE SET
+                    fact_value = excluded.fact_value,
+                    evidence_ids = excluded.evidence_ids,
+                    confidence = excluded.confidence,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    fact_id,
+                    "universal_question",
+                    answer_spec,
+                    json.dumps(fact_value, ensure_ascii=False, default=str),
+                    json.dumps(evidence_ids, ensure_ascii=False),
+                    f"structured:{answer_spec}",
+                    "__case_probe__",
+                    0.9 if answer.get("status") == "answered" else 0.5,
+                    now,
+                    now,
+                ),
+            )
 
 
 def fill_section(
@@ -3979,6 +4256,7 @@ def fill_section(
     audit_callback: Callable[[list[dict[str, str]], str], None] | None = None,
 ) -> str:
     """Prepare, render, and finalize a single report section, dispatching block agents and persisting evidence."""
+    ensure_universal_question_probes(case, db)
     request = prepare_section_request(case, db, template_path, context_sections, report_brief=report_brief)
     body, evidence_results, block_gaps = _render_section_from_request(
         db=db,
@@ -3991,6 +4269,7 @@ def fill_section(
     flat_rows = _collect_flat_evidence_rows(evidence_results)
     _dump_section_evidence_json(case, request["section_key"], flat_rows)
     _dump_section_trace_json(case, request["section_key"], evidence_results)
+    _dump_section_questions_json(case, db, request["section_key"])
     finalize_section(
         db=db,
         section_key=request["section_key"],

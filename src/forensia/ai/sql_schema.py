@@ -100,6 +100,10 @@ TABLE_COLUMN_REFERENCE: dict[str, tuple[str, ...]] = {  # fallback only — live
     "section_runs": (
         "run_id", "section_key", "block_heading", "iteration", "phase", "payload", "verdict", "created_at",
     ),
+    "section_questions": (
+        "question_id", "section_key", "block_heading", "question_text", "question_type", "answer_spec",
+        "intent", "confidence", "matched_rule", "required_evidence", "status", "created_at", "updated_at",
+    ),
     "section_run_coverage": (
         "section_key", "block_heading", "source_query", "evidence_table", "row_count", "used_in_answer", "queried", "created_at",
     ),
@@ -272,6 +276,7 @@ def build_investigation_framework(db: CaseDB | None = None) -> str:
         "  section_evidence links report sections/blocks to evidence_id values already judged relevant.\n"
         "  query_cache stores prior read-only query results by SQL hash.\n"
         "  section_runs stores the plan/query/check/write history for each report block.\n"
+        "  section_questions stores the semantic QuestionSpec resolved for each report block.\n"
         "  Prefer reusing section_facts before issuing new SQL when the fact already answers the block question.\n\n"
         + table_section
         + "Only propose SELECT or WITH-prefixed read-only SQL compatible with DuckDB.\n"

@@ -155,6 +155,7 @@ class TestWriteApiSnapshots(unittest.TestCase):
                 list_latest_hypothesis_reasoning_dto=DEFAULT,
                 list_steps_dto=DEFAULT,
                 list_report_sections_dto=DEFAULT,
+                list_section_questions_dto=DEFAULT,
                 list_claims_dto=DEFAULT,
                 list_mft_timeline_dto=DEFAULT,
                 list_event_volume_dto=DEFAULT,
@@ -177,6 +178,7 @@ class TestWriteApiSnapshots(unittest.TestCase):
                 mocks["list_latest_hypothesis_reasoning_dto"].return_value = _mock_dto_list(1)
                 mocks["list_steps_dto"].return_value = _mock_dto_list(1)
                 mocks["list_report_sections_dto"].return_value = _mock_dto_list(1)
+                mocks["list_section_questions_dto"].return_value = _mock_dto_list(1)
                 mocks["list_claims_dto"].return_value = _mock_dto_list(1)
                 mocks["list_mft_timeline_dto"].return_value = _mock_dto_list(1)
                 mocks["list_event_volume_dto"].return_value = _mock_dto_list(1)
@@ -199,6 +201,7 @@ class TestWriteApiSnapshots(unittest.TestCase):
                 "hypotheses_reasoning_latest.json",
                 "session_steps.json",
                 "report_sections.json",
+                "section_questions.json",
                 "claims.json",
                 "mft_timeline.json",
                 "entities.json",
@@ -232,6 +235,7 @@ class TestWriteApiSnapshots(unittest.TestCase):
                 list_latest_hypothesis_reasoning_dto=DEFAULT,
                 list_steps_dto=DEFAULT,
                 list_report_sections_dto=DEFAULT,
+                list_section_questions_dto=DEFAULT,
                 list_claims_dto=DEFAULT,
                 list_mft_timeline_dto=DEFAULT,
                 list_event_volume_dto=DEFAULT,
@@ -252,6 +256,7 @@ class TestWriteApiSnapshots(unittest.TestCase):
                 mocks["list_latest_hypothesis_reasoning_dto"].return_value = []
                 mocks["list_steps_dto"].return_value = []
                 mocks["list_report_sections_dto"].return_value = []
+                mocks["list_section_questions_dto"].return_value = []
                 mocks["list_claims_dto"].return_value = []
                 mocks["list_mft_timeline_dto"].return_value = []
                 mocks["list_event_volume_dto"].return_value = []
@@ -281,6 +286,7 @@ class TestWriteApiSnapshots(unittest.TestCase):
                 list_latest_hypothesis_reasoning_dto=DEFAULT,
                 list_steps_dto=DEFAULT,
                 list_report_sections_dto=DEFAULT,
+                list_section_questions_dto=DEFAULT,
                 list_claims_dto=DEFAULT,
                 list_mft_timeline_dto=DEFAULT,
                 list_event_volume_dto=DEFAULT,
@@ -301,6 +307,7 @@ class TestWriteApiSnapshots(unittest.TestCase):
                 mocks["list_latest_hypothesis_reasoning_dto"].return_value = []
                 mocks["list_steps_dto"].return_value = []
                 mocks["list_report_sections_dto"].return_value = []
+                mocks["list_section_questions_dto"].return_value = []
                 mocks["list_claims_dto"].return_value = []
                 mocks["list_mft_timeline_dto"].return_value = []
                 mocks["list_event_volume_dto"].return_value = []

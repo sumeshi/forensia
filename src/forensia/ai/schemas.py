@@ -246,3 +246,9 @@ def benchmark_classify_schema(n_rows: int) -> dict[str, Any]:
             "rationale": {"type": "string"},
         },
     }
+
+
+def structured_classify_schema(n_rows: int) -> dict[str, Any]:
+    schema = benchmark_classify_schema(n_rows)
+    schema["title"] = "StructuredClassifier"
+    return schema

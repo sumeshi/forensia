@@ -18,6 +18,7 @@ from forensia.api.dto import (
     HypothesisReasoningEntryDTO,
     HypothesesResponseDTO,
     ReportSectionDTO,
+    SectionQuestionDTO,
 )
 from forensia.api.service import (
     _build_range_filter,
@@ -34,6 +35,7 @@ from forensia.api.service import (
     list_hypotheses_dto,
     list_hypothesis_reasoning_dto,
     list_report_sections_dto,
+    list_section_questions_dto,
 )
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
@@ -603,6 +605,46 @@ class TestListReportSectionsDto(unittest.TestCase):
         db.execute.side_effect = RuntimeError("db error")
         with self.assertRaises(RuntimeError):
             list_report_sections_dto(db)
+
+
+class TestListSectionQuestionsDto(unittest.TestCase):
+    def test_returns_section_questions(self):
+        db = MagicMock(spec=CaseDB)
+        db.execute.return_value = _make_mock_result(
+            [
+                "question_id", "section_key", "block_heading", "question_text", "question_type",
+                "answer_spec", "intent", "confidence", "matched_rule", "required_evidence",
+                "status", "created_at", "updated_at",
+            ],
+            [
+                (
+                    "q1", "6_appendix", "Last shutdown", "When was shutdown?",
+                    "investigation_window", "last_shutdown_event", "Return latest shutdown",
+                    0.9, "investigation_window", '{"required_fields":["shutdown_time"]}',
+                    "answered", "2024-01-01T00:00:00", "2024-01-01T00:01:00",
+                )
+            ],
+        )
+        result = list_section_questions_dto(db)
+        self.assertEqual(len(result), 1)
+        self.assertIsInstance(result[0], SectionQuestionDTO)
+        self.assertEqual(result[0].answer_spec, "last_shutdown_event")
+        self.assertEqual(result[0].required_evidence["required_fields"], ["shutdown_time"])
+
+    def test_applies_section_filter(self):
+        db = MagicMock(spec=CaseDB)
+        db.execute.return_value = _make_mock_result(
+            [
+                "question_id", "section_key", "block_heading", "question_text", "question_type",
+                "answer_spec", "intent", "confidence", "matched_rule", "required_evidence",
+                "status", "created_at", "updated_at",
+            ],
+            [],
+        )
+        self.assertEqual(list_section_questions_dto(db, section_key="6_appendix"), [])
+        actual_sql = db.execute.call_args[0][0]
+        self.assertIn("WHERE section_key = ?", actual_sql)
+        self.assertEqual(db.execute.call_args[0][1], ("6_appendix",))
 
 
 class TestEntityCardSummary(unittest.TestCase):

@@ -10,6 +10,7 @@ from .dto import (
     MftTimelineDTO,
     ProgressEventDTO,
     ReportSectionDTO,
+    SectionQuestionDTO,
     SessionDTO,
 )
 from .cache import clear_api_snapshots, load_snapshot, write_api_snapshots
@@ -27,6 +28,7 @@ __all__ = [
     "MftTimelineDTO",
     "ProgressEventDTO",
     "ReportSectionDTO",
+    "SectionQuestionDTO",
     "SessionDTO",
     "clear_api_snapshots",
     "clear_progress_events",

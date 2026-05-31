@@ -18,6 +18,7 @@ from forensia.ai.prompts import (
     _truncate_context_sections,
     build_benchmark_classify_messages,
     build_report_section_messages,
+    build_structured_classify_messages,
 )
 from forensia.ai.sql_schema import build_investigation_framework
 from forensia.ai.sql_templates import _template_failed_logon_by_ip_window, coerce_list
@@ -778,6 +779,17 @@ hypothesis=hypothesis,
         self.assertNotIn('"answer"', system)
         self.assertIn("ev-1", user)
         self.assertIn("application_name", user)
+
+    def test_structured_classify_messages_use_neutral_role(self) -> None:
+        messages, schema = build_structured_classify_messages(
+            question="When was the last shutdown?",
+            block_heading="Last shutdown",
+            evidence_rows=[{"evidence_id": "ev-1", "shutdown_time": "2015-03-22T14:38:16"}],
+            expected_shape={"format": "list", "fields": ["shutdown_time", "evidence_id"]},
+        )
+        self.assertIn("structured_classifier", messages[0]["content"])
+        self.assertNotIn("benchmark_classifier", messages[0]["content"])
+        self.assertEqual("StructuredClassifier", schema["title"])
 
     def test_query_fingerprint_normalizes_equivalent_ast_forms(self) -> None:
         left = _query_fingerprint(

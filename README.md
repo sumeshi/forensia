@@ -57,7 +57,7 @@ AI を「賢い調査員」として扱わない。
 
 検知結果から仮説の生成、検証方針の提案、結果の確認、レポート作成などあらゆるタスクをひとくちサイズに分割して何度も推論を重ねつつ処理します。役割は `gap_identifier` / `hypothesis_drafter` / `query_intent_planner` / `sql_composer` / `verdict_reviewer` / `finding_extractor` / `section_outliner` / `paragraph_narrator` のように細かく分割し、それぞれが 1 文で目的を言える粒度に絞っています。
 
-決定論的に決まる処理(SQL の妥当性検証、仮説の同一性判定、ベンチマーク回答の表組み、フォールバック SQL の生成、重複クエリ検出)は LLM に渡さず、必ずコード側で処理します。LLM を「ルーティング」「リトライ」「フォーマット整形」に使わないことで、出力の予測可能性と監査性を保ちます。
+決定論的に決まる処理(SQL の妥当性検証、仮説の同一性判定、構造化質問のルーティングと表組み、フォールバック SQL の生成、重複クエリ検出)は LLM に渡さず、必ずコード側で処理します。LLM を「ルーティング」「リトライ」「フォーマット整形」に使わないことで、出力の予測可能性と監査性を保ちます。
 
 
 ### 3. **時間は湯水のごとく使う**
@@ -123,6 +123,7 @@ flowchart LR
 - **mid-investigation の UI 同期**:調査中は `progress_events.json` に加えて `hypotheses` / `findings` / `attack_coverage` / `report_sections` / `stats` 等の軽量スナップショットを 5 秒間隔で書き出し、webui が長時間調査の途中でも実状態を表示できるようにしています。
 - **記憶の圧縮と分離**:`overview.md` は閾値超過時に LLM で要約圧縮し、`facts.md` / `timeline.md` などは構造を保持。仮説検証中の暫定情報は `memory/scratch/H-NNN/` に隔離され、confirmed 時に共有記憶へ昇格、refuted 時は archive へ退避します。これによって未確証の暫定情報が他仮説の検証に汚染することを防ぎます。
 - **段落単位の汚染防止**:レポート生成では `paragraph_narrator` が 1 段落ずつ独立して書き、他セクションの本文や全 top-finding を見ません。ブロック間で共有するのは 120 字程度のサマリのみで、序文の使い回しや無関係な finding の流入を構造的に避けています。
+- **QuestionSpec による構造化質問**:テンプレートの見出しやコメントは `question_routing.yaml` の安定した `answer_spec` に解決されます。シャットダウン時刻、最終ログオン、メールデータファイル、クラウド同期痕跡などの定型質問は LLM に自由回答させず、決定論的 SQL / builder / CSV/JSON export で処理します。
 - **クエリの正規化フィンガープリント**:重複クエリ検出は sqlglot AST ベースで、空白や別名差を無視して「意味的に同じクエリを 2 回出した」を判定します。LLM が同じ問いを言い換えて繰り返すことによる無限ループを防ぎます。
 - **LLM 呼び出し総数の硬上限(opt-in)**:`--max-llm-calls N` を超えると `RuntimeError` で停止します。クラウド API への暴走防止用の安全弁で、ローカル LLM 前提の既定値は `0`(無制限)。phase 別の集計は `ai_logs/` から確認できます。
 
@@ -169,7 +170,7 @@ forensia investigate case001 ./input --profile windows-basic --max-iter 50
 forensia investigate case001 ./input --template-dir ./my-templates
 ```
 
-出力先を初期化してやり直す場合は `--rerun` を指定します。
+出力先を初期化してやり直す場合は `--rerun` を指定します。既存の `raw/` は保持しつつ、正規化テーブル、仮説、レポート本文、section agent の履歴、構造化質問の解決結果などの派生状態を消して再構築します。
 
 ```bash
 forensia investigate case001 ./input --profile windows-basic --rerun
@@ -207,6 +208,8 @@ forensia report case001 --write
 forensia report case001 --write --template-dir ./my-templates
 ```
 
+構造化質問の回答は Markdown 本文に加えて `reports/structured/answers.json` と個別 CSV に保存されます。どのテンプレートブロックがどの QuestionSpec に解決されたかは `reports/debug/<section>_questions.json` と `reports/api/section_questions.json` で確認できます。
+
 同梱テンプレートを任意の場所に書き出すには:
 
 ```bash
@@ -239,7 +242,7 @@ UI 画面 (cockpit) は次で構成されます。
 
 ## ベンチマーク
 
-このツールは `./templates/` にあるベンチマーク専用テンプレートを使用して、DFIR 推論精度を評価できます。
+このツールは `./templates/` にあるベンチマーク専用テンプレートを使用して、DFIR 推論精度を評価できます。ベンチマーク用の Scored Question も通常のレポートテンプレートと同じ QuestionSpec / structured answer 経路で処理されます。
 
     forensia investigate benchmark-output ./sample/DESKTOP-001 --profile windows-basic --template-dir ./templates
     forensia report benchmark-output

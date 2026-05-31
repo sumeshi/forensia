@@ -6,6 +6,8 @@ from pathlib import Path
 from scripts.audit_schema_coverage import (
     _extract_event_ids_from_sql,
     _collect_rule_event_ids,
+    _audit_question_routing_eval,
+    _audit_question_specs,
 )
 
 
@@ -37,6 +39,12 @@ class AuditCoverageTests(unittest.TestCase):
         self.assertIn(7036, ids, "System 7036 (service) should be found")
         self.assertGreater(len(ids), 50, "Should extract 50+ event IDs from rules")
 
+    def test_question_specs_have_valid_contracts(self) -> None:
+        self.assertEqual([], _audit_question_specs())
+
+    def test_question_routing_mutation_corpus_passes(self) -> None:
+        self.assertEqual([], _audit_question_routing_eval())
+
 
 class VerdictEnforcementTests(unittest.TestCase):
     def test_hypothesis_rejects_invalid_verdict(self) -> None:
@@ -65,6 +73,7 @@ class VerdictEnforcementTests(unittest.TestCase):
         from forensia.core.verdicts import assert_valid_verdict
         assert_valid_verdict("confirmed", "hypothesis_verdict")  # no error
         assert_valid_verdict("block_supported", "section_verdict")  # no error
+        assert_valid_verdict("answered", "structured_status")  # no error
         assert_valid_verdict("answered", "benchmark_status")  # no error
 
     def test_store_section_run_rejects_invalid(self) -> None:

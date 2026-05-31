@@ -7,18 +7,22 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
 from forensia.ai.checker import summarize_query_result
 from forensia.ai.json_response import async_request_llm_json, request_llm_json
 from forensia.ai.prompts import (
-    build_benchmark_classify_messages,
     build_paragraph_narrate_messages,
     build_report_section_messages,
     build_section_agent_check_messages,
     build_section_agent_plan_messages,
     build_section_outline_messages,
+    build_structured_classify_messages,
+)
+from forensia.ai.question_registry import (
+    QuestionSpec,
+    load_question_specs,
+    resolve_question_spec,
 )
 from forensia.ai.sql_templates import query_template_catalog, render_query_template, validate_select_sql
 from forensia.core.case import Case
@@ -126,49 +130,15 @@ def _is_valid_status(status: str) -> bool:
     }
 
 
-@dataclass(slots=True)
-class _RoutingRule:
-    name: str
-    keywords: tuple[str, ...]
-    keypoints: tuple[str, ...]
-    answer_spec: str = ""
-
-
 @lru_cache(maxsize=1)
-def _load_question_routing() -> list[_RoutingRule]:
-    """Load and cache question routing rules from _schema/question_routing.yaml."""
-    import yaml
-
-    routing_path = Path(__file__).resolve().parent.parent / "rulepacks" / "_schema" / "question_routing.yaml"
-    if not routing_path.exists():
-        return []
-    data = yaml.safe_load(routing_path.read_text(encoding="utf-8")) or {}
-    rules: list[_RoutingRule] = []
-    for entry in data.get("question_types", []) if isinstance(data, dict) else []:
-        if not isinstance(entry, dict):
-            continue
-        name = str(entry.get("name") or "").strip()
-        keywords = tuple(str(item).strip().casefold() for item in entry.get("keywords") or [] if str(item).strip())
-        keypoints = tuple(str(item).strip() for item in entry.get("keypoints") or [] if str(item).strip())
-        answer_spec = str(entry.get("answer_spec") or "").strip()
-        if name and keypoints:
-            rules.append(_RoutingRule(name=name, keywords=keywords, keypoints=keypoints, answer_spec=answer_spec))
-    return rules
+def _load_question_routing() -> list[QuestionSpec]:
+    """Compatibility wrapper around the semantic QuestionSpec registry."""
+    return list(load_question_specs())
 
 
-def _question_routing_rule(block_heading: str, template_body: str) -> _RoutingRule | None:
-    text = f"{block_heading}\n{template_body}".casefold()
-    best_rule: _RoutingRule | None = None
-    best_score = 0
-    for rule in _load_question_routing():
-        matched = [keyword for keyword in rule.keywords if keyword in text]
-        if not matched:
-            continue
-        score = len(matched) * 100 + max(len(keyword) for keyword in matched)
-        if score > best_score:
-            best_score = score
-            best_rule = rule
-    return best_rule
+def _question_routing_rule(block_heading: str, template_body: str) -> QuestionSpec | None:
+    spec, _confidence = resolve_question_spec(block_heading=block_heading, template_body=template_body)
+    return spec
 
 
 def _question_routing_keypoints(block_heading: str, template_body: str) -> list[str]:
@@ -243,6 +213,11 @@ def _benchmark_report_brief(report_brief: dict[str, Any] | None) -> dict[str, An
     return brief
 
 
+def _structured_report_brief(report_brief: dict[str, Any] | None) -> dict[str, Any]:
+    """Neutral alias for structured question blocks."""
+    return _benchmark_report_brief(report_brief)
+
+
 def _audit_bridge(audit_callback):
     """Wrap an audit_callback to adapt (messages, output, parsed) -> (messages, output)."""
     if audit_callback is None:
@@ -291,6 +266,69 @@ def _store_section_run(
             _now(),
         ),
     )
+
+
+def _store_section_question(
+    db: CaseDB,
+    *,
+    section_key: str,
+    block_heading: str,
+    question_text: str,
+    spec: QuestionSpec | None,
+    confidence: float,
+    status: str = "resolved",
+) -> None:
+    """Persist the semantic question contract resolved for a report block."""
+    normalized_text = str(question_text or block_heading or "").strip()
+    if spec is None and not normalized_text:
+        return
+    question_id = hashlib.sha1(
+        f"{section_key}\n{block_heading}\n{normalized_text}\n{spec.semantic_id if spec else ''}".encode("utf-8")
+    ).hexdigest()[:20]
+    required_evidence = {
+        "required_fields": list(spec.required_fields) if spec else [],
+        "required_sources": list(spec.required_sources) if spec else [],
+        "keypoints": list(spec.keypoints) if spec else [],
+        "render_columns": list(spec.render_columns) if spec else [],
+        "status_rules": spec.status_rules if spec else {},
+    }
+    try:
+        db.execute(
+            """
+            INSERT INTO section_questions (
+                question_id, section_key, block_heading, question_text, question_type,
+                answer_spec, intent, confidence, matched_rule, required_evidence,
+                status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (question_id) DO UPDATE SET
+                question_text = excluded.question_text,
+                question_type = excluded.question_type,
+                answer_spec = excluded.answer_spec,
+                intent = excluded.intent,
+                confidence = excluded.confidence,
+                matched_rule = excluded.matched_rule,
+                required_evidence = excluded.required_evidence,
+                status = excluded.status,
+                updated_at = excluded.updated_at
+            """,
+            (
+                question_id,
+                section_key,
+                block_heading,
+                normalized_text,
+                spec.name if spec else "",
+                spec.answer_spec if spec else "",
+                spec.intent if spec else "",
+                float(confidence or 0.0),
+                spec.name if spec else "",
+                json.dumps(required_evidence, ensure_ascii=False, default=str),
+                status if spec is not None else "unresolved",
+                _now(),
+                _now(),
+            ),
+        )
+    except Exception:
+        return
 
 
 def _load_prior_runs(db: CaseDB, section_key: str, block_heading: str) -> list[dict[str, Any]]:
@@ -613,7 +651,7 @@ def _load_reusable_section_facts(db: CaseDB, section_key: str, limit: int = 20) 
         """
         SELECT fact_type, fact_key, fact_value, evidence_ids, source_section, confidence, updated_at
         FROM section_facts
-        WHERE source_section = ?
+        WHERE source_section = ? OR source_section = '__case_probe__'
         ORDER BY updated_at DESC, confidence DESC
         LIMIT ?
         """,
@@ -871,23 +909,10 @@ def _coerce_plan_action(plan: dict[str, Any], *, section_key: str, iteration: in
 
 def _load_evidence_chains() -> dict[str, list[dict[str, str]]]:
     """Load evidence_chain definitions from question_routing.yaml."""
-    import yaml
-    from pathlib import Path
-
-    routing_path = Path(__file__).resolve().parent.parent / "rulepacks" / "_schema" / "question_routing.yaml"
-    if not routing_path.exists():
-        return {}
-    try:
-        data = yaml.safe_load(routing_path.read_text(encoding="utf-8")) or {}
-    except Exception:
-        return {}
     chains: dict[str, list[dict[str, str]]] = {}
-    for qtype in data.get("question_types", []):
-        if isinstance(qtype, dict):
-            name = str(qtype.get("name", "")).strip()
-            chain = qtype.get("evidence_chain", [])
-            if name and isinstance(chain, list):
-                chains[name] = chain
+    for spec in load_question_specs():
+        if spec.evidence_chain:
+            chains[spec.name] = [dict(item) for item in spec.evidence_chain]
     return chains
 
 
@@ -898,17 +923,8 @@ def _execute_evidence_chain(db: CaseDB, block_heading: str, template_body: str) 
     chains = _load_evidence_chains()
     if not chains:
         return []
-    text = f"{block_heading}\n{template_body}".casefold()
-    chain_name = None
-    for name in chains:
-        if name.replace("_", " ").casefold() in text:
-            chain_name = name
-            break
-    if chain_name is None:
-        for rule in _load_question_routing():
-            if any(keyword in text for keyword in rule.keywords):
-                chain_name = rule.name
-                break
+    spec, _confidence = resolve_question_spec(block_heading=block_heading, template_body=template_body)
+    chain_name = spec.name if spec is not None else None
     if chain_name is None or chain_name not in chains:
         return []
     chain = chains[chain_name]
@@ -947,6 +963,8 @@ class _BlockContext:
     max_queries: int
     findings_snapshot: list[dict[str, Any]]
     prompt_report_brief: dict[str, Any]
+    question_spec: QuestionSpec | None = None
+    question_confidence: float = 0.0
     evidence_keypoints: list[str] | None = None
     benchmark_id: str = ""
     answer_id: str = ""
@@ -976,7 +994,21 @@ def _prepare_block_context(
     report_brief: dict[str, Any] | None = None,
 ) -> _BlockContext:
     routing_text = f"{question}\n{template_body}".strip() if question else template_body
-    resolved_answer_spec = answer_spec or _question_routing_answer_spec(block_heading, routing_text)
+    question_spec, question_confidence = resolve_question_spec(
+        block_heading=block_heading,
+        template_body=routing_text,
+        question=question,
+        answer_spec=answer_spec,
+    )
+    resolved_answer_spec = answer_spec or (question_spec.answer_spec if question_spec is not None else "")
+    _store_section_question(
+        db,
+        section_key=section_key,
+        block_heading=block_heading,
+        question_text=question or block_heading or template_body[:200],
+        spec=question_spec,
+        confidence=question_confidence,
+    )
     memory_context_md = ""
     if memory is not None:
         memory_context_md = memory.load_investigation_context(
@@ -999,7 +1031,7 @@ def _prepare_block_context(
         reusable_facts = []
         reusable_evidence = []
     audit = _audit_bridge(audit_callback)
-    prompt_report_brief = _benchmark_report_brief(report_brief) if benchmark_mode else (report_brief or {})
+    prompt_report_brief = _structured_report_brief(report_brief) if benchmark_mode else (report_brief or {})
     return _BlockContext(
         case=case,
         db=db,
@@ -1019,6 +1051,8 @@ def _prepare_block_context(
         max_queries=max_queries,
         findings_snapshot=findings_snapshot,
         prompt_report_brief=prompt_report_brief,
+        question_spec=question_spec,
+        question_confidence=question_confidence,
         evidence_keypoints=evidence_keypoints,
         benchmark_id=benchmark_id,
         answer_id=answer_id,
@@ -1051,6 +1085,7 @@ def _run_block_plan(
         reusable_evidence=ctx.reusable_evidence,
         memory_context_md=ctx.memory_context_md,
         evidence_keypoints=ctx.evidence_keypoints,
+        question_spec=ctx.question_spec.to_prompt_dict() if ctx.question_spec is not None else None,
         db=ctx.db,
     )
     try:
@@ -1208,6 +1243,7 @@ def _run_block_check(
         reusable_facts=ctx.reusable_facts,
         reusable_evidence=ctx.reusable_evidence,
         memory_context_md=ctx.memory_context_md,
+        question_spec=ctx.question_spec.to_prompt_dict() if ctx.question_spec is not None else None,
     )
     try:
         check = request_llm_json(
@@ -1279,25 +1315,18 @@ def _try_evidence_chain_fallback(
     return actual_query_count
 
 
-def _resolve_benchmark_expected_shape(block_heading: str) -> dict | None:
+def _resolve_structured_expected_shape(block_heading: str) -> dict | None:
     """Resolve expected_answer_shape from question_routing.yaml by block_heading keywords."""
-    import yaml
-    from pathlib import Path
-    routing_path = Path(__file__).resolve().parent.parent / "rulepacks" / "_schema" / "question_routing.yaml"
-    try:
-        raw = yaml.safe_load(routing_path.read_text(encoding="utf-8"))
-        if not isinstance(raw, dict):
-            return None
-        block_cf = block_heading.casefold()
-        for qtype in raw.get("question_types", []):
-            if isinstance(qtype, dict) and any(kw in block_cf for kw in qtype.get("keywords", [])):
-                return qtype.get("expected_answer_shape")
-    except Exception:
-        pass
-    return None
+    spec, _confidence = resolve_question_spec(block_heading=block_heading)
+    return spec.expected_answer_shape if spec is not None else None
 
 
-def _format_benchmark_answer(
+def _resolve_benchmark_expected_shape(block_heading: str) -> dict | None:
+    """Compatibility wrapper for older benchmark terminology."""
+    return _resolve_structured_expected_shape(block_heading)
+
+
+def _format_structured_answer(
     classification: dict,
     picked_rows: list[dict],
     expected_shape: dict | None,
@@ -1308,9 +1337,9 @@ def _format_benchmark_answer(
     benchmark_id: str = "",
     queries_run: list[str] | None = None,
     evidence_rows: list[dict] | None = None,
-) -> dict:
-    """Pure code. Format benchmark answer from picked rows + expected_answer_shape."""
-    from forensia.report.writer import _benchmark_block_id, _normalize_benchmark_answer, _persist_benchmark_answer, _render_benchmark_answer_markdown
+) -> str:
+    """Pure code. Format a structured answer from picked rows + expected_answer_shape."""
+    from forensia.report.writer import _normalize_structured_answer, _persist_structured_answer, _render_structured_answer_markdown, _structured_block_id
 
     shape = expected_shape or {}
     fields = shape.get("fields", [])
@@ -1326,7 +1355,7 @@ def _format_benchmark_answer(
             if entry:
                 answer_data.append(entry)
 
-    resolved_id = benchmark_id.strip() if benchmark_id else _benchmark_block_id(block_heading)
+    resolved_id = benchmark_id.strip() if benchmark_id else _structured_block_id(block_heading)
     normalized_status = str(classification.get("status") or status or "insufficient_evidence").strip().lower()
     if not _is_valid_status(normalized_status):
         normalized_status = status if _is_valid_status(status) else "insufficient_evidence"
@@ -1366,15 +1395,42 @@ def _format_benchmark_answer(
         reason = str(classification.get("rationale") or "answer was empty after filtering").strip()
         normalized_answer["missing_reason"] = [reason]
 
-    normalized_answer = _normalize_benchmark_answer(
+    normalized_answer = _normalize_structured_answer(
         normalized_answer,
         section_key=section_key,
         block_heading=block_heading,
         status=normalized_answer["status"],
     )
 
-    _persist_benchmark_answer(case, normalized_answer)
-    return _render_benchmark_answer_markdown(normalized_answer, block_heading)
+    _persist_structured_answer(case, normalized_answer)
+    return _render_structured_answer_markdown(normalized_answer, block_heading)
+
+
+def _format_benchmark_answer(
+    classification: dict,
+    picked_rows: list[dict],
+    expected_shape: dict | None,
+    section_key: str,
+    block_heading: str,
+    status: str,
+    case: Case,
+    benchmark_id: str = "",
+    queries_run: list[str] | None = None,
+    evidence_rows: list[dict] | None = None,
+) -> str:
+    """Compatibility wrapper for older tests/callers."""
+    return _format_structured_answer(
+        classification=classification,
+        picked_rows=picked_rows,
+        expected_shape=expected_shape,
+        section_key=section_key,
+        block_heading=block_heading,
+        status=status,
+        case=case,
+        benchmark_id=benchmark_id,
+        queries_run=queries_run,
+        evidence_rows=evidence_rows,
+    )
 
 
 def _row_text(row: dict[str, Any]) -> str:
@@ -1848,7 +1904,7 @@ def _write_block_body(
             body = _render_structured_answer_markdown(structured_answer, ctx.block_heading)
             messages = []
         else:
-            expected_shape = _resolve_benchmark_expected_shape(ctx.block_heading)
+            expected_shape = _resolve_structured_expected_shape(ctx.block_heading)
 
             extracted_rows = (
                 _extract_answer_by_shape(raw_rows, expected_shape, expected_shape.get("format", ""))
@@ -1866,7 +1922,7 @@ def _write_block_body(
                 picked_rows = extracted_rows
                 classification = {"status": "answered", "picked_row_indices": [], "rationale": "rows match expected_shape"}
             else:
-                classify_messages, classify_schema = build_benchmark_classify_messages(
+                classify_messages, classify_schema = build_structured_classify_messages(
                     question=ctx.template_body or ctx.block_heading,
                     block_heading=ctx.block_heading,
                     evidence_rows=prompt_rows or [],
@@ -1889,7 +1945,7 @@ def _write_block_body(
                 picked_rows = [raw_rows[i] for i in valid_indices] if raw_rows else []
 
             queries_run = [str(r.get("source_ref") or r.get("source_query") or "") for r in collected_results if r.get("source_ref") or r.get("source_query")]
-            body = _format_benchmark_answer(
+            body = _format_structured_answer(
                 classification=classification,
                 picked_rows=picked_rows,
                 expected_shape=expected_shape,

@@ -14,6 +14,7 @@ from forensia.ai.section_agent import (
     _question_routing_answer_spec,
     run_section_block_agent,
 )
+from forensia.ai.question_registry import resolve_question_spec
 from forensia.config import clear_llm_settings_cache
 from forensia.db.database import CaseDB
 from forensia.report.writer import (
@@ -23,6 +24,7 @@ from forensia.report.writer import (
     build_structured_answer,
     _check_citation_token_no_finding_id,
     _check_hedge_no_citation,
+    _dump_section_questions_json,
     _render_structured_answer_markdown,
     _resolve_evidence_results,
     _validate_body_evidence_ids,
@@ -113,6 +115,21 @@ class WriterRQRegressionTests(unittest.TestCase):
         self.assertEqual("last_shutdown_event", _question_routing_answer_spec("Last recorded shutdown time", ""))
         self.assertEqual("last_human_logon", _question_routing_answer_spec("Last logged-on user", ""))
         self.assertEqual("daily_session_activity", _question_routing_answer_spec("Startup, shutdown, logon, and logoff history", ""))
+
+    def test_question_spec_registry_resolves_template_variants(self) -> None:
+        samples = [
+            ("Last recorded shutdown time", "", "last_shutdown_event"),
+            ("Most recent shutdown", "When did the endpoint last shut down?", "last_shutdown_event"),
+            ("最後のシャットダウン時刻", "", "last_shutdown_event"),
+            ("Last user", "Who was the last logged-on user?", "last_human_logon"),
+            ("最終ログオンユーザー", "", "last_human_logon"),
+            ("Evidence Scope", "case time range and event window", "case_event_window"),
+        ]
+        for heading, body, expected in samples:
+            spec, confidence = resolve_question_spec(block_heading=heading, template_body=body)
+            self.assertIsNotNone(spec, heading)
+            self.assertEqual(expected, spec.answer_spec)
+            self.assertGreater(confidence, 0.0)
 
     def test_missing_reason_string_renders_as_one_bullet(self) -> None:
         markdown = _render_structured_answer_markdown(
@@ -284,6 +301,68 @@ class WriterRQRegressionTests(unittest.TestCase):
             self.assertEqual("answered", result.status)
             self.assertIn("2015-03-22T14:38:16", result.body)
             self.assertTrue((case.reports_dir / "structured" / "Q9.csv").exists())
+
+    def test_section_question_resolution_is_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer) VALUES (?, ?, ?, ?)",
+                    ("evtx-system-000000000001", 6006, datetime(2015, 3, 22, 14, 38, 16), "informant-PC"),
+                )
+                run_section_block_agent(
+                    case=case,
+                    db=db,
+                    section_key="6_appendix",
+                    title="Appendix",
+                    block_heading="Most recent shutdown",
+                    template_body="<!-- question -->",
+                    context_sections={},
+                    current_section_outline=[],
+                    report_brief={},
+                    base_url="http://127.0.0.1:1",
+                    model="unused",
+                    benchmark_mode=True,
+                    answer_id="Q9",
+                )
+                row = db.execute(
+                    """
+                    SELECT answer_spec, question_type, status
+                    FROM section_questions
+                    WHERE section_key = '6_appendix'
+                      AND block_heading = 'Most recent shutdown'
+                    LIMIT 1
+                    """
+                ).fetchone()
+                _dump_section_questions_json(case, db, "6_appendix")
+
+            self.assertIsNotNone(row)
+            self.assertEqual(("last_shutdown_event", "investigation_window", "resolved"), tuple(row))
+            debug_path = case.reports_dir / "debug" / "6_appendix_questions.json"
+            self.assertTrue(debug_path.exists())
+            self.assertIn("last_shutdown_event", debug_path.read_text(encoding="utf-8"))
+
+    def test_generic_question_spec_builder_executes_yaml_evidence_chain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer) VALUES (?, ?, ?, ?)",
+                    ("evtx-security-000000000001", 4624, datetime(2015, 3, 22, 14, 34, 28), "informant-PC"),
+                )
+                answer = build_structured_answer(
+                    case,
+                    db,
+                    answer_spec="case_event_window",
+                    answer_id="Q-window",
+                    section_key="1_overview",
+                    block_heading="Case time range",
+                )
+
+            self.assertIsNotNone(answer)
+            self.assertEqual("answered", answer["status"])
+            self.assertEqual(["first_event", "last_event", "event_count"], answer["columns"])
+            self.assertEqual(1, answer["answer"][0]["event_count"])
 
     def test_structured_benchmark_antiforensics_excludes_plain_eventlog_shutdown(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
