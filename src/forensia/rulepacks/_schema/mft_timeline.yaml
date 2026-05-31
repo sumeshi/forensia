@@ -20,3 +20,4 @@ columns:
   - tags
 notes:
   expansion: "Each mft_entries row expands into up to 8 mft_timeline rows (one per timestamp_type with a non-NULL value). Use mft_timeline (not mft_entries) when you want chronological evidence ordering."
+  no_host_column: "mft_timeline rows describe NTFS metadata of a single volume and have NO `computer` / `host` / `user_name` column. Do NOT JOIN with evtx_events on host or user; correlate via timestamp windows or file_path string match instead."

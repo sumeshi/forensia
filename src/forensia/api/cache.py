@@ -62,6 +62,8 @@ def write_volatile_api_snapshots(case: Case, db: CaseDB) -> None:
     from forensia.api.service import (
         list_hypotheses_dto, list_findings_dto, list_report_sections_dto,
         list_attack_coverage_dto, get_case_stats_dto,
+        list_hypothesis_reasoning_map_dto, list_latest_hypothesis_reasoning_dto,
+        list_entity_cards_dto,
     )
     snap_dir = _snapshot_dir(case)
     snap_dir.mkdir(parents=True, exist_ok=True)
@@ -87,6 +89,23 @@ def write_volatile_api_snapshots(case: Case, db: CaseDB) -> None:
         pass
     try:
         data["report_sections"] = [r.model_dump() for r in list_report_sections_dto(db)]
+    except Exception:
+        pass
+    try:
+        data["hypothesis_reasoning"] = {
+            hypothesis_id: [entry.model_dump() for entry in entries]
+            for hypothesis_id, entries in list_hypothesis_reasoning_map_dto(db, limit_per_hypothesis=20).items()
+        }
+    except Exception:
+        pass
+    try:
+        data["hypotheses_reasoning_latest"] = [
+            entry.model_dump() for entry in list_latest_hypothesis_reasoning_dto(db, limit=200)
+        ]
+    except Exception:
+        pass
+    try:
+        data["entities"] = [item.model_dump() for item in list_entity_cards_dto(case)]
     except Exception:
         pass
 

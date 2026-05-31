@@ -822,6 +822,7 @@ def build_sql_composer_messages(
     """
     system = (
         f"{_dfir_playbook('hypothesis_plan')}\n"
+        f"{_time_range_guidance(time_range)}"
         "<TASK>You are a sql_composer. Write a DuckDB SQL query that satisfies the given intent. Output template_id or raw SQL.</TASK>\n"
         "<INPUT_SCHEMA>\n"
         f"intent: {json.dumps(intent, ensure_ascii=False, default=str)}\n"
@@ -839,6 +840,13 @@ def build_sql_composer_messages(
         "<RULES>\n"
         "Exactly ONE of template_id or sql MUST be non-null. The other MUST be null.\n"
         "template_id MUST be an exact match to a template_catalog entry (use null otherwise).\n"
+        "Target dialect is DuckDB. Do NOT use SQLite syntax (datetime('now', ...), strftime via SQLite quirks) or MySQL/Postgres syntax (DATE_SUB, INTERVAL ... MINUTE keyword form, NOW()). "
+        "For relative time windows on historical evidence, anchor to a literal TIMESTAMP within the case time range, not the current system clock: "
+        "`WHERE ts BETWEEN TIMESTAMP '2024-01-15 10:00:00' AND TIMESTAMP '2024-01-15 10:15:00'`. "
+        "For interval arithmetic use `ts + INTERVAL 15 MINUTE` or `ts - INTERVAL '15' MINUTE` (DuckDB form), never `DATE_SUB(...)`.\n"
+        "Only `evtx_events` carries `computer` / `user_name` columns. `mft_entries`, `mft_timeline`, `prefetch_executions`, and `prefetch_timeline` are single-host filesystem/prefetch artifacts with NO host column. "
+        "Do NOT write `JOIN mft_entries m ON e.computer = m.computer` or any host/user equality JOIN across evtx and mft/prefetch — it fails at bind time. "
+        "When the intent calls for 'correlate evtx with mft/prefetch', either (a) issue two separate SELECTs and let the verdict step merge them, or (b) JOIN by `file_path` string match against `process_name` / `command_line` / `message`, optionally narrowed by a timestamp BETWEEN window. Only columns listed under each table's SCHEMA_CARD block exist; never invent columns from the table alias.\n"
         "When raw SQL is used: ensure all COALESCE arguments have the same data type. Use json_extract_string (returns VARCHAR) when COALESCE-ing with a VARCHAR column, never json_extract (returns JSON).\n"
         "Never put a VARCHAR-returning function (json_extract_string) and an INTEGER column in the same COALESCE without explicit CAST. "
         "Use: COALESCE(CAST(json_extract_string(json, '$.x') AS BIGINT), int_col) for integer unification, "
@@ -950,15 +958,32 @@ def build_memory_updater_messages(
     time_range: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
     """role: memory_updater.
-    Goal: propose durable memory writes (facts.md additions).
+    Goal: propose durable memory writes (facts, timeline anchors, entity cards, etc.).
     """
     system = (
-        "<TASK>You are a memory_updater. Propose durable fact updates based on the investigation result.</TASK>\n"
+        "<TASK>You are a memory_updater. Propose durable memory writes based on the investigation result.</TASK>\n"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
-        '  "memory_updates": [{"path": "facts.md | timeline.md | entities/*.md", "content": "string"}]\n'
+        '  "memory_updates": {\n'
+        '    "facts": [{"text": "string", "evidence_ids": ["evtx-...", "mft-..."]}],\n'
+        '    "timeline": [{"timestamp": "ISO 8601", "description": "string", "evidence_ids": ["..."]}],\n'
+        '    "tasks": [{"text": "string", "kind": "followup | verification | gap"}],\n'
+        '    "overview": ["short single-line summary"],\n'
+        '    "refuted_hypotheses": [{"hypothesis_id": "H-001", "description": "...", "reason": "..."}],\n'
+        '    "resolved_gaps": [{"text": "string", "evidence_ids": ["..."]}],\n'
+        '    "entities": [{"entity_type": "user | host | ip | process | service | file | registry | group | machine_account", "name": "string — the entity identifier", "role": "attacker | victim | actor_candidate | observed_user | suspicious_user | newly_created_user | machine_account | unknown", "notes": "1-2 sentences explaining why this entity matters in the case"}]\n'
+        '  },\n'
+        '  "new_hypotheses": [{"description": "...", "required_entities": ["..."]}]\n'
         "}\n"
-        "</OUTPUT_SCHEMA>"
+        "</OUTPUT_SCHEMA>\n"
+        "<RULES>\n"
+        "Omit any sub-key whose array would be empty — never emit empty arrays. Every fact/timeline/resolved_gap entry MUST cite at least one evidence_id observed in the SQL result; entries without evidence_ids are dropped.\n"
+        "ALWAYS register an `entities` entry for every distinct user, host, IP, process, or service that the verdict rationale attributes a role to — this is what populates the Top Entities panel. Use the entity_type / role enums above; freeform values are dropped.\n"
+        "Examples (entity shapes only):\n"
+        '  {"entity_type": "user", "name": "alice", "role": "victim", "notes": "Lost session token after 4624 logon from 10.0.0.5 at 03:14 UTC."}\n'
+        '  {"entity_type": "host", "name": "WIN10-DC01", "role": "actor_candidate", "notes": "Source of repeated 4625 failures then a successful 4624 logon within 5 minutes."}\n'
+        '  {"entity_type": "ip", "name": "10.0.0.5", "role": "attacker", "notes": "Originating IP for 30+ failed Kerberos pre-auth attempts (4771)."}\n'
+        "</RULES>"
     )
     user = (
         f"hypothesis: {hypothesis.description if hasattr(hypothesis, 'description') else hypothesis}\n"

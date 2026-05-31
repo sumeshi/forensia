@@ -862,6 +862,7 @@ async def _investigate_one_hypothesis(
                     output=parsed, model=model, base_url=base_url, suffix=f"{hid}-{qi:02d}",
                 ),
                 query_index=query_index,
+                time_range=case.time_range,
             )
         except Exception as exc:
             err_msg = f"[plan-hypothesis] LLM failed for {hypothesis.id}: {exc}"

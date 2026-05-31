@@ -17,4 +17,5 @@ columns:
   - tags
 notes:
   windowed_query: "Use this table for time-range queries against Prefetch. prefetch_executions only exposes the LATEST execution per binary; prefetch_timeline exposes all 8."
+  no_host_column: "prefetch_timeline is a single-host artifact and has NO `computer` / `host` / `user_name` column. Do NOT JOIN with evtx_events on host or user."
   join_pattern: "If correlating with evtx_events by host, filter evtx_events to the host first (WHERE computer = '...') and JOIN prefetch_timeline by exec_time window only — prefetch artifacts are single-host."

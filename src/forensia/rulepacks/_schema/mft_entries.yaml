@@ -43,3 +43,4 @@ columns:
 notes:
   timestomp: "If si_* and fn_* timestamps disagree on the same record, treat fn_* as authoritative. A si_created later than fn_created is a timestomp indicator."
   case_sensitive: "Paths are stored in their original case; use LOWER(file_path) when matching mixed-case patterns."
+  no_host_column: "mft_entries holds per-volume NTFS records — it has NO `computer` / `host` / `user_name` column. Do NOT JOIN with evtx_events on host or user; the only sensible bridge to evtx is matching file_path against evtx_events.message / command_line / process_name as a string."

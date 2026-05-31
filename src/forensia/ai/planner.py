@@ -329,6 +329,7 @@ def plan_hypothesis_query(
     status_callback: Callable[[str], None] | None = None,
     audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
     query_index: int = 1,
+    time_range: dict[str, str] | None = None,
 ) -> HypothesisPlanResult:
     """Plan the next query for a single hypothesis.
 
@@ -374,7 +375,7 @@ def plan_hypothesis_query(
             hypothesis=hypothesis,
             recent_history=hypothesis_history,
             active_hypotheses=state.active_hypotheses,
-            time_range={},
+            time_range=time_range or {},
             schema_context=schema_card,
             extra_context_md=extra_context + execution_error_block,
             prior_check_feedback=prior_check_feedback,
@@ -419,7 +420,7 @@ def plan_hypothesis_query(
         intent=intent_response,
         table_schema_card=composer_schema_card,
         template_catalog=query_template_catalog(),
-        time_range={},
+        time_range=time_range or {},
         prior_check_feedback=prior_check_feedback,
     )
     if execution_error_block:

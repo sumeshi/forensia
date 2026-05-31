@@ -108,18 +108,18 @@ export const verdictBreakdown = derived([hypotheses], ([$hypotheses]) => {
 });
 
 export const topRules = derived([findings], ([$findings]) => {
-  const counts = new Map<string, { accepted: number; suppressed: number; title: string }>();
+  const counts = new Map<string, { accepted: number; title: string }>();
   for (const f of $findings) {
+    if (f.status === "suppressed") continue;
     const key = f.rule_id ?? "unknown";
-    const row = counts.get(key) ?? { accepted: 0, suppressed: 0, title: f.title };
-    if (f.status === "suppressed") row.suppressed++;
-    else row.accepted++;
+    const row = counts.get(key) ?? { accepted: 0, title: f.title };
+    row.accepted++;
     row.title = f.title;
     counts.set(key, row);
   }
   return Array.from(counts.entries())
     .map(([ruleId, stats]) => ({ ruleId, ...stats }))
-    .sort((a, b) => (b.accepted + b.suppressed) - (a.accepted + a.suppressed))
+    .sort((a, b) => b.accepted - a.accepted)
     .slice(0, 8);
 });
 

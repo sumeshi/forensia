@@ -62,9 +62,19 @@ MEMORY_UPDATER_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "facts": {"type": "array", "items": {"type": "object"}},
-        "entity_updates": {"type": "array", "items": {"type": "object"}},
-        "evidence_ids": {"type": "array", "items": {"type": "string"}},
+        "memory_updates": {
+            "type": "object",
+            "properties": {
+                "facts": {"type": "array", "items": {"type": "object"}},
+                "timeline": {"type": "array", "items": {"type": "object"}},
+                "tasks": {"type": "array", "items": {"type": "object"}},
+                "overview": {"type": "array", "items": {"type": "string"}},
+                "refuted_hypotheses": {"type": "array", "items": {"type": "object"}},
+                "resolved_gaps": {"type": "array", "items": {"type": "object"}},
+                "entities": {"type": "array", "items": {"type": "object"}},
+            },
+        },
+        "new_hypotheses": {"type": "array", "items": {"type": "object"}},
     },
 }
 
