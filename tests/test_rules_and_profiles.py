@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 
+import pytest
 import yaml
 
 from forensia.core.case import Case
@@ -47,6 +49,31 @@ class RuleProfileTests(unittest.TestCase):
         self.assertIn("leakage-mft-cloud-sync-artifact", rule_ids)
         self.assertIn("leakage-mft-archive-staging-file", rule_ids)
         self.assertGreater(len(rules), 62)
+
+    def test_short_form_attack_emits_deprecation_warning(self) -> None:
+        data = {
+            "id": "test-rule",
+            "title": "Test Rule",
+            "query": "SELECT 1",
+            "finding": {"title": "Test", "summary": "Test"},
+            "attack": ["T1078"],
+        }
+        with pytest.warns(DeprecationWarning, match=r"rule test-rule: attack uses short-form"):
+            Rule.model_validate(data)
+
+    def test_full_form_attack_no_warning(self) -> None:
+        data = {
+            "id": "test-rule",
+            "title": "Test Rule",
+            "query": "SELECT 1",
+            "finding": {"title": "Test", "summary": "Test"},
+            "attack": [{"tactic": "initial-access", "technique_id": "T1078", "technique_name": "Valid Accounts"}],
+        }
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            Rule.model_validate(data)
+            deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            self.assertEqual(0, len(deprecation_warnings))
 
     def test_major_windows_rules_define_required_fields(self) -> None:
         expected = {
@@ -535,7 +562,7 @@ class RuleExecutionTests(unittest.TestCase):
                     "summary": "Source IP: {src_ip}",
                 },
                 "tags": ["windows"],
-                "attack": ["T1078"],
+                "attack": [{"tactic": "initial-access", "technique_id": "T1078", "technique_name": "Valid Accounts"}],
             }
         )
 

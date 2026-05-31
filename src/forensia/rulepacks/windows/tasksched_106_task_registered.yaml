@@ -3,38 +3,36 @@ title: Scheduled task registered (TaskScheduler Event 106)
 severity: high
 confidence: 0.7
 tags:
-  - windows
-  - persistence
-  - scheduled-task
+- windows
+- persistence
+- scheduled-task
 attack:
-  - T1053.005
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      subject_user,
-      channel,
-      message
-  FROM evtx_events
-  WHERE event_id = 106
-    AND LOWER(COALESCE(channel, '')) LIKE '%taskscheduler%'
+- tactic: execution
+  technique_id: T1053.005
+  technique_name: Scheduled Task
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    subject_user,\n    channel,\n    message\nFROM evtx_events\nWHERE event_id = 106\n  AND LOWER(COALESCE(channel, '')) LIKE '%taskscheduler%'\n"
 finding:
-  title: "Task registered: {computer} ({subject_user})"
-  summary: "A TaskScheduler Operational task registration event (106) was observed on {computer} at {timestamp}. Actor: {subject_user}. Message: {message}. Review together with 4698 for complementary task creation evidence."
+  title: 'Task registered: {computer} ({subject_user})'
+  summary: 'A TaskScheduler Operational task registration event (106) was observed on {computer} at {timestamp}. Actor: {subject_user}. Message: {message}. Review together with 4698 for complementary task creation evidence.'
 hypotheses:
-  - id: persistence_via_task_registration
-    segment: persistence
-    description: "Task registered on {computer} by {subject_user} may be a persistence mechanism via scheduled task"
-    required_entities: [computer, subject_user]
-    confirm_when:
-      co_observed_event_ids: [106, 4698]
-      same_host: true
-      within_minutes: 5
-    refute_when:
-      zero_rows: true
-    follow_up_questions:
-      - "What action does the registered task on {computer} perform?"
-      - "What trigger conditions are configured for the task on {computer}?"
-      - "Was the task registered after a network logon to {computer}?"
-    report_sections: [3_technical, 4_gaps]
+- id: persistence_via_task_registration
+  segment: persistence
+  description: Task registered on {computer} by {subject_user} may be a persistence mechanism via scheduled task
+  required_entities:
+  - computer
+  - subject_user
+  confirm_when:
+    co_observed_event_ids:
+    - 106
+    - 4698
+    same_host: true
+    within_minutes: 5
+  refute_when:
+    zero_rows: true
+  follow_up_questions:
+  - What action does the registered task on {computer} perform?
+  - What trigger conditions are configured for the task on {computer}?
+  - Was the task registered after a network logon to {computer}?
+  report_sections:
+  - 3_technical
+  - 4_gaps

@@ -3,44 +3,41 @@ title: RDP then PowerShell execution
 severity: high
 confidence: 0.85
 tags:
-  - windows
-  - correlation
-  - powershell
+- windows
+- correlation
+- powershell
 attack:
-  - T1021.001
-  - T1059.001
-query: |
-  SELECT
-      l.evidence_id,
-      l.timestamp AS logon_time,
-      l.computer,
-      l.target_user,
-      l.src_ip,
-      p.timestamp AS powershell_time,
-      p.command_line
-  FROM evtx_events l
-  JOIN evtx_events p
-    ON l.computer = p.computer
-   AND p.timestamp BETWEEN l.timestamp AND l.timestamp + INTERVAL 30 MINUTE
-  WHERE l.event_id = 4624
-    AND l.logon_type = '10'
-    AND lower(coalesce(p.process_name, '')) LIKE '%powershell%'
+- tactic: lateral-movement
+  technique_id: T1021.001
+  technique_name: Remote Desktop Protocol
+- tactic: execution
+  technique_id: T1059.001
+  technique_name: PowerShell
+query: "SELECT\n    l.evidence_id,\n    l.timestamp AS logon_time,\n    l.computer,\n    l.target_user,\n    l.src_ip,\n    p.timestamp AS powershell_time,\n    p.command_line\nFROM evtx_events l\nJOIN evtx_events p\n  ON l.computer = p.computer\n AND p.timestamp BETWEEN l.timestamp AND l.timestamp + INTERVAL 30 MINUTE\nWHERE l.event_id = 4624\n  AND l.logon_type = '10'\n  AND lower(coalesce(p.process_name, '')) LIKE '%powershell%'\n"
 finding:
-  title: "PowerShell execution after RDP logon: {target_user}@{computer}"
-  summary: "PowerShell execution was observed at {powershell_time} after an RDP logon at {logon_time}. Source IP: {src_ip}. PowerShell shortly after RDP is a classic lateral movement pattern; review script content (4104) and subsequent network connections."
+  title: 'PowerShell execution after RDP logon: {target_user}@{computer}'
+  summary: 'PowerShell execution was observed at {powershell_time} after an RDP logon at {logon_time}. Source IP: {src_ip}. PowerShell shortly after RDP is a classic lateral movement pattern; review script content (4104) and subsequent network connections.'
 hypotheses:
-  - id: lateral_movement_via_rdp_ps
-    segment: lateral-movement
-    description: "PowerShell execution after RDP logon to {computer} from {src_ip} indicates lateral movement with interactive access"
-    required_entities: [src_ip, computer, target_user, command_line]
-    confirm_when:
-      co_observed_event_ids: [4624, 4104]
-      same_host: true
-      within_minutes: 30
-    refute_when:
-      zero_rows: true
-    follow_up_questions:
-      - "What was the source host of the RDP connection from {src_ip}?"
-      - "Were additional lateral movements attempted on other hosts?"
-      - "Did the PowerShell script download or execute additional payloads?"
-    report_sections: [3_technical, 4_gaps]
+- id: lateral_movement_via_rdp_ps
+  segment: lateral-movement
+  description: PowerShell execution after RDP logon to {computer} from {src_ip} indicates lateral movement with interactive access
+  required_entities:
+  - src_ip
+  - computer
+  - target_user
+  - command_line
+  confirm_when:
+    co_observed_event_ids:
+    - 4624
+    - 4104
+    same_host: true
+    within_minutes: 30
+  refute_when:
+    zero_rows: true
+  follow_up_questions:
+  - What was the source host of the RDP connection from {src_ip}?
+  - Were additional lateral movements attempted on other hosts?
+  - Did the PowerShell script download or execute additional payloads?
+  report_sections:
+  - 3_technical
+  - 4_gaps

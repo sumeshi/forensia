@@ -3,28 +3,19 @@ title: WFP allowed connection (logged)
 severity: low
 confidence: 0.4
 required_fields:
-  - computer
-  - src_ip
-  - dst_ip
-  - dst_port
+- computer
+- src_ip
+- dst_ip
+- dst_port
 tags:
-  - windows
-  - network
-  - connection
+- windows
+- network
+- connection
 attack:
-  - T1040
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      src_ip,
-      dst_ip,
-      dst_port,
-      protocol,
-      message
-  FROM evtx_events
-  WHERE event_id = 5156
+- tactic: discovery
+  technique_id: T1040
+  technique_name: Network Sniffing
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    src_ip,\n    dst_ip,\n    dst_port,\n    protocol,\n    message\nFROM evtx_events\nWHERE event_id = 5156\n"
 finding:
-  title: "WFP allowed connection on {computer}"
-  summary: "A connection was allowed by Windows Filtering Platform on {computer} at {timestamp}. {src_ip}:{dst_port} -> {dst_ip}. Details: {message}."
+  title: WFP allowed connection on {computer}
+  summary: 'A connection was allowed by Windows Filtering Platform on {computer} at {timestamp}. {src_ip}:{dst_port} -> {dst_ip}. Details: {message}.'

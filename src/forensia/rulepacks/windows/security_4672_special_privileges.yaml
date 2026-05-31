@@ -3,23 +3,17 @@ title: Special privileges assigned at logon (Event 4672)
 severity: medium
 confidence: 0.5
 tags:
-  - windows
-  - privilege
-  - logon
+- windows
+- privilege
+- logon
 attack:
-  - T1078
-  - T1068
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_user,
-      subject_user
-  FROM evtx_events
-  WHERE event_id = 4672
-    AND COALESCE(subject_user, target_user) NOT LIKE '%$'
-    AND COALESCE(subject_user, target_user) NOT IN ('SYSTEM', 'LOCAL SERVICE', 'NETWORK SERVICE')
+- tactic: privilege-escalation
+  technique_id: T1078
+  technique_name: Valid Accounts
+- tactic: privilege-escalation
+  technique_id: T1068
+  technique_name: Exploitation for Privilege Escalation
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    subject_user\nFROM evtx_events\nWHERE event_id = 4672\n  AND COALESCE(subject_user, target_user) NOT LIKE '%$'\n  AND COALESCE(subject_user, target_user) NOT IN ('SYSTEM', 'LOCAL SERVICE', 'NETWORK SERVICE')\n"
 finding:
-  title: "Special privileges assigned: {subject_user} @ {computer}"
-  summary: "Special privileges such as SeDebugPrivilege were assigned to {subject_user} on {computer} at {timestamp}. Correlate with 4624 to identify administrative logons."
+  title: 'Special privileges assigned: {subject_user} @ {computer}'
+  summary: Special privileges such as SeDebugPrivilege were assigned to {subject_user} on {computer} at {timestamp}. Correlate with 4624 to identify administrative logons.

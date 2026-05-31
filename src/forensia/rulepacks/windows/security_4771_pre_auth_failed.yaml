@@ -3,23 +3,14 @@ title: Kerberos pre-authentication failures (Event 4771)
 severity: medium
 confidence: 0.6
 tags:
-  - windows
-  - kerberos
-  - brute-force
+- windows
+- kerberos
+- brute-force
 attack:
-  - T1110
-query: |
-  SELECT
-      target_user,
-      DATE_TRUNC('hour', timestamp) AS hour_bucket,
-      COUNT(*) AS fail_count,
-      MIN(timestamp) AS first_seen,
-      MAX(timestamp) AS last_seen
-  FROM evtx_events
-  WHERE event_id = 4771
-    AND COALESCE(target_user, '') NOT IN ('', '-')
-  GROUP BY target_user, DATE_TRUNC('hour', timestamp)
-  HAVING COUNT(*) >= 5
+- tactic: credential-access
+  technique_id: T1110
+  technique_name: Brute Force
+query: "SELECT\n    target_user,\n    DATE_TRUNC('hour', timestamp) AS hour_bucket,\n    COUNT(*) AS fail_count,\n    MIN(timestamp) AS first_seen,\n    MAX(timestamp) AS last_seen\nFROM evtx_events\nWHERE event_id = 4771\n  AND COALESCE(target_user, '') NOT IN ('', '-')\nGROUP BY target_user, DATE_TRUNC('hour', timestamp)\nHAVING COUNT(*) >= 5\n"
 finding:
-  title: "Repeated Kerberos pre-authentication failures: {target_user}"
-  summary: "{fail_count} Kerberos pre-authentication failures (4771) for {target_user} were observed in the {hour_bucket} window between {first_seen} and {last_seen}. This may indicate password spraying or brute-force activity."
+  title: 'Repeated Kerberos pre-authentication failures: {target_user}'
+  summary: '{fail_count} Kerberos pre-authentication failures (4771) for {target_user} were observed in the {hour_bucket} window between {first_seen} and {last_seen}. This may indicate password spraying or brute-force activity.'

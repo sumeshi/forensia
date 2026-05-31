@@ -3,63 +3,41 @@ title: Network logon followed by scheduled task creation within 15 minutes
 severity: critical
 confidence: 0.85
 tags:
-  - windows
-  - lateral-movement
-  - persistence
-  - correlation
+- windows
+- lateral-movement
+- persistence
+- correlation
 attack:
-  - T1053.005
-  - T1021.002
-query: |
-  WITH net_logons AS (
-      SELECT
-          evidence_id,
-          timestamp AS logon_time,
-          computer,
-          src_ip,
-          target_user
-      FROM evtx_events
-      WHERE event_id = 4624
-        AND logon_type = '3'
-        AND target_user NOT LIKE '%$'
-  ),
-  task_creates AS (
-      SELECT
-          evidence_id,
-          timestamp AS task_time,
-          computer,
-          subject_user,
-          message
-      FROM evtx_events
-      WHERE event_id = 4698
-  )
-  SELECT
-      l.src_ip,
-      l.computer,
-      l.target_user,
-      l.logon_time,
-      t.task_time,
-      t.subject_user
-  FROM net_logons l
-  JOIN task_creates t
-    ON l.computer = t.computer
-   AND t.task_time BETWEEN l.logon_time AND l.logon_time + INTERVAL 15 MINUTE
+- tactic: execution
+  technique_id: T1053.005
+  technique_name: Scheduled Task
+- tactic: lateral-movement
+  technique_id: T1021.002
+  technique_name: SMB/Windows Admin Shares
+query: "WITH net_logons AS (\n    SELECT\n        evidence_id,\n        timestamp AS logon_time,\n        computer,\n        src_ip,\n        target_user\n    FROM evtx_events\n    WHERE event_id = 4624\n      AND logon_type = '3'\n      AND target_user NOT LIKE '%$'\n),\ntask_creates AS (\n    SELECT\n        evidence_id,\n        timestamp AS task_time,\n        computer,\n        subject_user,\n        message\n    FROM evtx_events\n    WHERE event_id = 4698\n)\nSELECT\n    l.src_ip,\n    l.computer,\n    l.target_user,\n    l.logon_time,\n    t.task_time,\n    t.subject_user\nFROM net_logons l\nJOIN task_creates t\n  ON l.computer = t.computer\n AND t.task_time BETWEEN l.logon_time AND l.logon_time + INTERVAL 15 MINUTE\n"
 finding:
-  title: "Scheduled task creation after network logon: {src_ip} -> {computer}"
-  summary: "After a network logon from {src_ip} to {computer} at {logon_time}, a scheduled task was created at {task_time}. This is a typical pattern for remote persistence."
+  title: 'Scheduled task creation after network logon: {src_ip} -> {computer}'
+  summary: After a network logon from {src_ip} to {computer} at {logon_time}, a scheduled task was created at {task_time}. This is a typical pattern for remote persistence.
 hypotheses:
-  - id: remote_persistence_via_task
-    segment: lateral-movement
-    description: "Network logon from {src_ip} to {computer} followed by task creation indicates remote persistence via scheduled task"
-    required_entities: [src_ip, computer, target_user]
-    confirm_when:
-      co_observed_event_ids: [4624, 4698]
-      same_host: true
-      within_minutes: 15
-    refute_when:
-      zero_rows: true
-    follow_up_questions:
-      - "What command does the created task on {computer} execute?"
-      - "Was the task triggered and what was the outcome on {computer}?"
-      - "Is {src_ip} associated with other lateral movement patterns?"
-    report_sections: [3_technical, 4_gaps]
+- id: remote_persistence_via_task
+  segment: lateral-movement
+  description: Network logon from {src_ip} to {computer} followed by task creation indicates remote persistence via scheduled task
+  required_entities:
+  - src_ip
+  - computer
+  - target_user
+  confirm_when:
+    co_observed_event_ids:
+    - 4624
+    - 4698
+    same_host: true
+    within_minutes: 15
+  refute_when:
+    zero_rows: true
+  follow_up_questions:
+  - What command does the created task on {computer} execute?
+  - Was the task triggered and what was the outcome on {computer}?
+  - Is {src_ip} associated with other lateral movement patterns?
+  report_sections:
+  - 3_technical
+  - 4_gaps

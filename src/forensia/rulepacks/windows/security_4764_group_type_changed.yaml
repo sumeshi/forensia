@@ -3,25 +3,18 @@ title: Security-enabled group type changed
 severity: medium
 confidence: 0.7
 required_fields:
-  - subject_user
-  - target_group
-  - computer
+- subject_user
+- target_group
+- computer
 tags:
-  - windows
-  - account-management
-  - defense-evasion
+- windows
+- account-management
+- defense-evasion
 attack:
-  - T1078
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_group,
-      subject_user,
-      message
-  FROM evtx_events
-  WHERE event_id = 4764
+- tactic: privilege-escalation
+  technique_id: T1078
+  technique_name: Valid Accounts
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_group,\n    subject_user,\n    message\nFROM evtx_events\nWHERE event_id = 4764\n"
 finding:
-  title: "Group type changed: {target_group} @ {computer}"
-  summary: "{subject_user} changed the type of group '{target_group}' on {computer} at {timestamp}. Attackers may change group types to evade security controls."
+  title: 'Group type changed: {target_group} @ {computer}'
+  summary: '{subject_user} changed the type of group ''{target_group}'' on {computer} at {timestamp}. Attackers may change group types to evade security controls.'

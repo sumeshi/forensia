@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -56,6 +57,13 @@ class Rule(BaseModel):
         if isinstance(data, dict):
             raw = data.get("attack")
             if isinstance(raw, list) and raw and isinstance(raw[0], str):
+                rule_id = data.get("id", "unknown")
+                warnings.warn(
+                    f"rule {rule_id}: attack uses short-form ['{', '.join(raw)}'], "
+                    f"tactic will be empty — use full-form [{{tactic, technique_id, technique_name}}] instead",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
                 data["attack"] = [
                     {"tactic": "", "technique_id": s, "technique_name": ""}
                     if s.startswith("T")

@@ -3,24 +3,18 @@ title: Service start type changed (System Event 7040)
 severity: medium
 confidence: 0.6
 required_fields:
-  - computer
-  - service_name
-  - message
+- computer
+- service_name
+- message
 tags:
-  - windows
-  - service
-  - defense-evasion
+- windows
+- service
+- defense-evasion
 attack:
-  - T1562.001
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      service_name,
-      message
-  FROM evtx_events
-  WHERE event_id = 7040
+- tactic: defense-evasion
+  technique_id: T1562.001
+  technique_name: Disable or Modify Tools
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    service_name,\n    message\nFROM evtx_events\nWHERE event_id = 7040\n"
 finding:
-  title: "Service start type changed: {service_name} @ {computer}"
-  summary: "Service '{service_name}' start type was changed on {computer} at {timestamp}. Details: {message}. Attackers may change service start type to disable security tools or enable persistence."
+  title: 'Service start type changed: {service_name} @ {computer}'
+  summary: 'Service ''{service_name}'' start type was changed on {computer} at {timestamp}. Details: {message}. Attackers may change service start type to disable security tools or enable persistence.'

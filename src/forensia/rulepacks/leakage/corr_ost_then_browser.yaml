@@ -3,85 +3,69 @@ title: OST file access followed by browser launch within 15 minutes
 severity: high
 confidence: 0.65
 required_fields:
-  - src_ip
+- src_ip
+- computer
+- target_user
+- ost_time
+- browser_time
+- process_name
+tags:
+- leakage
+- correlation
+- email
+- insider-threat
+attack:
+- tactic: collection
+  technique_id: T1114
+  technique_name: Email Collection
+- tactic: exfiltration
+  technique_id: T1567
+  technique_name: Exfiltration Over Web Service
+- tactic: execution
+  technique_id: T1059
+  technique_name: Command and Scripting Interpreter
+query: "WITH ost_access AS (\n    SELECT\n        evidence_id,\n        timestamp AS ost_time,\n        computer,\n        target_user,\n        file_path\n    FROM evtx_events\n    WHERE event_id = 4663\n      AND LOWER(file_path) LIKE '%.ost'\n),\nbrowser_process AS (\n    SELECT\n        evidence_id,\n        timestamp AS browser_time,\n        computer,\n        target_user,\n        process_name,\n        command_line\n    FROM evtx_events\n    WHERE event_id = 4688\n      AND LOWER(process_name) IN ('chrome.exe', 'msedge.exe', 'firefox.exe', 'brave.exe', 'opera.exe')\n)\nSELECT\n    o.ost_time,\n    o.computer,\n    o.target_user,\n    o.file_path,\n    b.browser_time,\n    b.process_name,\n    b.command_line\nFROM ost_access o\nJOIN browser_process b\n  ON o.computer = b.computer\n AND o.target_user = b.target_user\n AND b.browser_time BETWEEN o.ost_time AND o.ost_time + INTERVAL 15 MINUTE\n"
+finding:
+  title: OST file access followed by browser launch on {computer}
+  summary: OST file '{file_path}' was accessed by {target_user} at {ost_time}, followed by browser '{process_name}' launch at {browser_time}. This correlation may indicate email-to-personal-account data forwarding.
+hypotheses:
+- id: leakage-ost-to-browser-forwarding
+  segment: exfiltration
+  description: OST file access followed by browser launch at {browser_time} on {computer} by {target_user} may indicate email data exfiltration via webmail
+  required_entities:
   - computer
   - target_user
-  - ost_time
-  - browser_time
   - process_name
-tags:
-  - leakage
-  - correlation
-  - email
-  - insider-threat
-attack:
-  - T1114
-  - T1567
-  - T1059
-query: |
-  WITH ost_access AS (
-      SELECT
-          evidence_id,
-          timestamp AS ost_time,
-          computer,
-          target_user,
-          file_path
-      FROM evtx_events
-      WHERE event_id = 4663
-        AND LOWER(file_path) LIKE '%.ost'
-  ),
-  browser_process AS (
-      SELECT
-          evidence_id,
-          timestamp AS browser_time,
-          computer,
-          target_user,
-          process_name,
-          command_line
-      FROM evtx_events
-      WHERE event_id = 4688
-        AND LOWER(process_name) IN ('chrome.exe', 'msedge.exe', 'firefox.exe', 'brave.exe', 'opera.exe')
-  )
-  SELECT
-      o.ost_time,
-      o.computer,
-      o.target_user,
-      o.file_path,
-      b.browser_time,
-      b.process_name,
-      b.command_line
-  FROM ost_access o
-  JOIN browser_process b
-    ON o.computer = b.computer
-   AND o.target_user = b.target_user
-   AND b.browser_time BETWEEN o.ost_time AND o.ost_time + INTERVAL 15 MINUTE
-finding:
-  title: "OST file access followed by browser launch on {computer}"
-  summary: "OST file '{file_path}' was accessed by {target_user} at {ost_time}, followed by browser '{process_name}' launch at {browser_time}. This correlation may indicate email-to-personal-account data forwarding."
-hypotheses:
-  - id: leakage-ost-to-browser-forwarding
-    segment: exfiltration
-    description: "OST file access followed by browser launch at {browser_time} on {computer} by {target_user} may indicate email data exfiltration via webmail"
-    required_entities: [computer, target_user, process_name, file_path]
-    confirm_when:
-      co_observed_event_ids: [4663, 4688]
-      same_host: true
-      within_minutes: 15
-    refute_when:
-      zero_rows: true
-    follow_up_questions:
-      - "What webmail service was accessed in the browser session?"
-      - "Were large email attachments sent or forwarding rules created?"
-      - "Is there evidence of cloud upload (Google Drive, OneDrive) after the browser launch?"
-    report_sections:
-      - 3_technical
-      - 5_recommendations
+  - file_path
+  confirm_when:
+    co_observed_event_ids:
+    - 4663
+    - 4688
+    same_host: true
+    within_minutes: 15
+  refute_when:
+    zero_rows: true
+  follow_up_questions:
+  - What webmail service was accessed in the browser session?
+  - Were large email attachments sent or forwarding rules created?
+  - Is there evidence of cloud upload (Google Drive, OneDrive) after the browser launch?
+  report_sections:
+  - 3_technical
+  - 5_recommendations
 correlate_with:
-  - event_ids: [4688]
-    rationale: "Additional process execution to identify upload or archive tools"
-  - event_ids: [4624]
-    rationale: "Logon context to verify user identity and session timing"
+- event_ids:
+  - 4688
+  rationale: Additional process execution to identify upload or archive tools
+- event_ids:
+  - 4624
+  rationale: Logon context to verify user identity and session timing
 fallback_search:
-  - phase: keyword_in_raw_json
-    keywords: [".ost", "chrome.exe", "msedge.exe", "firefox.exe", "forward", "mail"]
-    rationale: "OST-to-browser activity sequence may be reconstructed from event data or process command lines"
+- phase: keyword_in_raw_json
+  keywords:
+  - .ost
+  - chrome.exe
+  - msedge.exe
+  - firefox.exe
+  - forward
+  - mail
+  rationale: OST-to-browser activity sequence may be reconstructed from event data or process command lines

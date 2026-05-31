@@ -3,24 +3,17 @@ title: NTLM outgoing authentication
 severity: medium
 confidence: 0.6
 required_fields:
-  - computer
-  - target_server
+- computer
+- target_server
 tags:
-  - windows
-  - ntlm
-  - lateral-movement
+- windows
+- ntlm
+- lateral-movement
 attack:
-  - T1071
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_server,
-      message
-  FROM evtx_events
-  WHERE event_id IN (4020, 4021)
-    AND LOWER(COALESCE(channel, '')) LIKE '%ntlm%'
+- tactic: command-and-control
+  technique_id: T1071
+  technique_name: Application Layer Protocol
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_server,\n    message\nFROM evtx_events\nWHERE event_id IN (4020, 4021)\n  AND LOWER(COALESCE(channel, '')) LIKE '%ntlm%'\n"
 finding:
-  title: "NTLM outgoing auth on {computer}"
-  summary: "Outgoing NTLM authentication from {computer} at {timestamp}. Target: {target_server}. May indicate lateral movement attempts using NTLM."
+  title: NTLM outgoing auth on {computer}
+  summary: 'Outgoing NTLM authentication from {computer} at {timestamp}. Target: {target_server}. May indicate lateral movement attempts using NTLM.'

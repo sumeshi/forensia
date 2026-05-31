@@ -3,37 +3,14 @@ title: Service state change for security or backup software (System Event 7036)
 severity: low
 confidence: 0.3
 tags:
-  - windows
-  - service
-  - defense-evasion
+- windows
+- service
+- defense-evasion
 attack:
-  - T1562.001
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      service_name,
-      message
-  FROM evtx_events
-  WHERE event_id = 7036
-    AND (
-      LOWER(COALESCE(service_name, '')) LIKE '%defender%'
-      OR LOWER(COALESCE(service_name, '')) LIKE '%sentinel%'
-      OR LOWER(COALESCE(service_name, '')) LIKE '%crowd%'
-      OR LOWER(COALESCE(service_name, '')) LIKE '%carbon%'
-      OR LOWER(COALESCE(service_name, '')) LIKE '%backup%'
-      OR LOWER(COALESCE(service_name, '')) LIKE '%veeam%'
-      OR LOWER(COALESCE(service_name, '')) LIKE '%sophos%'
-      OR LOWER(COALESCE(service_name, '')) LIKE '%symantec%'
-      OR LOWER(COALESCE(service_name, '')) LIKE '%trend%'
-      OR LOWER(COALESCE(service_name, '')) LIKE '%kaspersky%'
-      OR LOWER(COALESCE(service_name, '')) LIKE '%mcafee%'
-      OR LOWER(COALESCE(service_name, '')) LIKE '%avast%'
-      OR LOWER(COALESCE(service_name, '')) LIKE '%avira%'
-      OR LOWER(COALESCE(message, '')) LIKE '%running%'
-      OR LOWER(COALESCE(message, '')) LIKE '%stopped%'
-    )
+- tactic: defense-evasion
+  technique_id: T1562.001
+  technique_name: Disable or Modify Tools
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    service_name,\n    message\nFROM evtx_events\nWHERE event_id = 7036\n  AND (\n    LOWER(COALESCE(service_name, '')) LIKE '%defender%'\n    OR LOWER(COALESCE(service_name, '')) LIKE '%sentinel%'\n    OR LOWER(COALESCE(service_name, '')) LIKE '%crowd%'\n    OR LOWER(COALESCE(service_name, '')) LIKE '%carbon%'\n    OR LOWER(COALESCE(service_name, '')) LIKE '%backup%'\n    OR LOWER(COALESCE(service_name, '')) LIKE '%veeam%'\n    OR LOWER(COALESCE(service_name, '')) LIKE '%sophos%'\n    OR LOWER(COALESCE(service_name, '')) LIKE '%symantec%'\n    OR LOWER(COALESCE(service_name, '')) LIKE '%trend%'\n    OR LOWER(COALESCE(service_name, '')) LIKE '%kaspersky%'\n    OR LOWER(COALESCE(service_name, '')) LIKE '%mcafee%'\n    OR LOWER(COALESCE(service_name, '')) LIKE '%avast%'\n    OR LOWER(COALESCE(service_name, '')) LIKE '%avira%'\n    OR LOWER(COALESCE(message, '')) LIKE '%running%'\n    OR LOWER(COALESCE(message, '')) LIKE '%stopped%'\n  )\n"
 finding:
-  title: "Important service state transition: {service_name} @ {computer}"
-  summary: "A service state transition (7036) for '{service_name}' was observed on {computer} at {timestamp}. Details: {message}. Check whether EDR, AV, or backup services were stopped or restarted."
+  title: 'Important service state transition: {service_name} @ {computer}'
+  summary: 'A service state transition (7036) for ''{service_name}'' was observed on {computer} at {timestamp}. Details: {message}. Check whether EDR, AV, or backup services were stopped or restarted.'

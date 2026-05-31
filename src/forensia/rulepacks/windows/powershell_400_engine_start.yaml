@@ -3,22 +3,14 @@ title: PowerShell engine start (Event 400)
 severity: low
 confidence: 0.3
 tags:
-  - windows
-  - powershell
-  - execution
+- windows
+- powershell
+- execution
 attack:
-  - T1059.001
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_user,
-      channel,
-      message
-  FROM evtx_events
-  WHERE event_id = 400
-    AND LOWER(COALESCE(channel, '')) LIKE '%powershell%'
+- tactic: execution
+  technique_id: T1059.001
+  technique_name: PowerShell
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    channel,\n    message\nFROM evtx_events\nWHERE event_id = 400\n  AND LOWER(COALESCE(channel, '')) LIKE '%powershell%'\n"
 finding:
-  title: "PowerShell engine start: {computer}"
-  summary: "A PowerShell engine start event (400) was observed on {computer} at {timestamp}. Channel: {channel}. User: {target_user}. This is supporting telemetry only; correlate with 4104 script block logging to identify what was actually executed."
+  title: 'PowerShell engine start: {computer}'
+  summary: 'A PowerShell engine start event (400) was observed on {computer} at {timestamp}. Channel: {channel}. User: {target_user}. This is supporting telemetry only; correlate with 4104 script block logging to identify what was actually executed.'

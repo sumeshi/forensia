@@ -3,20 +3,14 @@ title: Event Log service shutdown (Event 1100)
 severity: high
 confidence: 0.8
 tags:
-  - windows
-  - anti-forensics
-  - log-tampering
+- windows
+- anti-forensics
+- log-tampering
 attack:
-  - T1562.001
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      subject_user,
-      message
-  FROM evtx_events
-  WHERE event_id = 1100
+- tactic: defense-evasion
+  technique_id: T1562.001
+  technique_name: Disable or Modify Tools
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    subject_user,\n    message\nFROM evtx_events\nWHERE event_id = 1100\n"
 finding:
-  title: "Event Log service stopped: {computer}"
-  summary: "Event Log service stop (1100) was observed on {computer} at {timestamp}. Actor: {subject_user}. Investigate subsequent log gaps or clearing artifacts."
+  title: 'Event Log service stopped: {computer}'
+  summary: 'Event Log service stop (1100) was observed on {computer} at {timestamp}. Actor: {subject_user}. Investigate subsequent log gaps or clearing artifacts.'

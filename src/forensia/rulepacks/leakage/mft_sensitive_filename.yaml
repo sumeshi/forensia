@@ -3,36 +3,17 @@ title: Sensitive-looking file name observed in user-controlled path
 severity: high
 confidence: 0.65
 required_fields:
-  - file_name
-  - file_path
-query: |
-  SELECT
-      evidence_id,
-      file_name,
-      file_path,
-      si_created,
-      si_modified,
-      fn_modified
-  FROM mft_entries
-  WHERE
-      (
-          LOWER(file_name) LIKE '%secret%' OR
-          LOWER(file_name) LIKE '%confidential%' OR
-          LOWER(file_name) LIKE '%resignation%' OR
-          LOWER(file_name) LIKE '%proposal%'
-      )
-      AND (
-          LOWER(file_path) LIKE '%/desktop/%' OR
-          LOWER(file_path) LIKE '%/documents/%' OR
-          LOWER(file_path) LIKE '%/downloads/%' OR
-          LOWER(file_path) LIKE '%/recent/%'
-      )
+- file_name
+- file_path
+query: "SELECT\n    evidence_id,\n    file_name,\n    file_path,\n    si_created,\n    si_modified,\n    fn_modified\nFROM mft_entries\nWHERE\n    (\n        LOWER(file_name) LIKE '%secret%' OR\n        LOWER(file_name) LIKE '%confidential%' OR\n        LOWER(file_name) LIKE '%resignation%' OR\n        LOWER(file_name) LIKE '%proposal%'\n    )\n    AND (\n        LOWER(file_path) LIKE '%/desktop/%' OR\n        LOWER(file_path) LIKE '%/documents/%' OR\n        LOWER(file_path) LIKE '%/downloads/%' OR\n        LOWER(file_path) LIKE '%/recent/%'\n    )\n"
 finding:
-  title: "Sensitive-looking file observed: {file_name}"
-  summary: "A potentially sensitive file name was observed at {file_path}. Review timestamps {si_created} / {si_modified} / {fn_modified} to determine whether this reflects staging, recent access, or routine document handling."
+  title: 'Sensitive-looking file observed: {file_name}'
+  summary: A potentially sensitive file name was observed at {file_path}. Review timestamps {si_created} / {si_modified} / {fn_modified} to determine whether this reflects staging, recent access, or routine document handling.
 tags:
-  - leakage
-  - insider-threat
-  - file-activity
+- leakage
+- insider-threat
+- file-activity
 attack:
-  - T1005
+- tactic: collection
+  technique_id: T1005
+  technique_name: Data from Local System

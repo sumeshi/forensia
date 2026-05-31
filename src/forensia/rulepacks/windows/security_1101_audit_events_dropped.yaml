@@ -3,20 +3,16 @@ title: Audit events dropped due to transport failure
 severity: high
 confidence: 0.8
 required_fields:
-  - computer
+- computer
 tags:
-  - windows
-  - log-tampering
-  - defense-evasion
+- windows
+- log-tampering
+- defense-evasion
 attack:
-  - T1070.001
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer
-  FROM evtx_events
-  WHERE event_id = 1101
+- tactic: defense-evasion
+  technique_id: T1070.001
+  technique_name: 'Indicator Removal: Clear Windows Event Logs'
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer\nFROM evtx_events\nWHERE event_id = 1101\n"
 finding:
-  title: "Audit events dropped on {computer}"
-  summary: "Event log transport dropped audit events on {computer} at {timestamp}. This indicates the security log may have been cleared or is incomplete. Check for 1100/1102/1104 for additional context."
+  title: Audit events dropped on {computer}
+  summary: Event log transport dropped audit events on {computer} at {timestamp}. This indicates the security log may have been cleared or is incomplete. Check for 1100/1102/1104 for additional context.

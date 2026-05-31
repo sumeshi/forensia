@@ -3,24 +3,18 @@ title: Network share object added
 severity: medium
 confidence: 0.6
 required_fields:
-  - subject_user
-  - computer
-  - share_name
+- subject_user
+- computer
+- share_name
 tags:
-  - windows
-  - lateral-movement
-  - defense-evasion
+- windows
+- lateral-movement
+- defense-evasion
 attack:
-  - T1071
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      subject_user,
-      share_name
-  FROM evtx_events
-  WHERE event_id = 5142
+- tactic: command-and-control
+  technique_id: T1071
+  technique_name: Application Layer Protocol
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    subject_user,\n    share_name\nFROM evtx_events\nWHERE event_id = 5142\n"
 finding:
-  title: "Share added: {share_name} @ {computer}"
-  summary: "{subject_user} added network share '{share_name}' on {computer} at {timestamp}. Attackers may add shares for lateral movement or data staging."
+  title: 'Share added: {share_name} @ {computer}'
+  summary: '{subject_user} added network share ''{share_name}'' on {computer} at {timestamp}. Attackers may add shares for lateral movement or data staging.'

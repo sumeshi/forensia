@@ -3,25 +3,18 @@ title: Detailed file share access
 severity: low
 confidence: 0.4
 required_fields:
-  - subject_user
-  - computer
-  - share_name
-  - access_mask
+- subject_user
+- computer
+- share_name
+- access_mask
 tags:
-  - windows
-  - lateral-movement
+- windows
+- lateral-movement
 attack:
-  - T1083
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      subject_user,
-      share_name,
-      access_mask
-  FROM evtx_events
-  WHERE event_id = 5145
+- tactic: discovery
+  technique_id: T1083
+  technique_name: File and Directory Discovery
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    subject_user,\n    share_name,\n    access_mask\nFROM evtx_events\nWHERE event_id = 5145\n"
 finding:
-  title: "Detailed share access: {share_name} @ {computer}"
-  summary: "{subject_user} accessed share '{share_name}' on {computer} at {timestamp} with access mask: {access_mask}. Useful for detailed file access tracking."
+  title: 'Detailed share access: {share_name} @ {computer}'
+  summary: '{subject_user} accessed share ''{share_name}'' on {computer} at {timestamp} with access mask: {access_mask}. Useful for detailed file access tracking.'

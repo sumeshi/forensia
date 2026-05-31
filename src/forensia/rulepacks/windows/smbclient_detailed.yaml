@@ -3,23 +3,16 @@ title: SMB client detailed events (connectivity)
 severity: low
 confidence: 0.5
 required_fields:
-  - computer
+- computer
 tags:
-  - windows
-  - smb
-  - network
+- windows
+- smb
+- network
 attack:
-  - T1021.002
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      event_id,
-      target_server,
-      message
-  FROM evtx_events
-  WHERE event_id IN (30800, 30804, 30805, 30806)
+- tactic: lateral-movement
+  technique_id: T1021.002
+  technique_name: SMB/Windows Admin Shares
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    event_id,\n    target_server,\n    message\nFROM evtx_events\nWHERE event_id IN (30800, 30804, 30805, 30806)\n"
 finding:
-  title: "SMB client event {event_id} on {computer}"
-  summary: "SMB client event {event_id} on {computer} at {timestamp}. Target: {target_server}. Details: {message}."
+  title: SMB client event {event_id} on {computer}
+  summary: 'SMB client event {event_id} on {computer} at {timestamp}. Target: {target_server}. Details: {message}.'

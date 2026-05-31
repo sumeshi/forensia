@@ -3,20 +3,13 @@ title: Initiated shutdown or restart (System Event 1074)
 severity: medium
 confidence: 0.5
 tags:
-  - windows
-  - shutdown
+- windows
+- shutdown
 attack:
-  - T1529
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      subject_user,
-      process_name,
-      message
-  FROM evtx_events
-  WHERE event_id = 1074
+- tactic: impact
+  technique_id: T1529
+  technique_name: System Shutdown/Reboot
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    subject_user,\n    process_name,\n    message\nFROM evtx_events\nWHERE event_id = 1074\n"
 finding:
-  title: "Shutdown or restart initiated by user or process: {computer}"
-  summary: "A shutdown or restart attributed to {subject_user} or {process_name} was observed on {computer} at {timestamp} (1074). Details: {message}. Determine whether this reflects post-attack reboot activity or service disruption."
+  title: 'Shutdown or restart initiated by user or process: {computer}'
+  summary: 'A shutdown or restart attributed to {subject_user} or {process_name} was observed on {computer} at {timestamp} (1074). Details: {message}. Determine whether this reflects post-attack reboot activity or service disruption.'

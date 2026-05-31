@@ -3,26 +3,18 @@ title: SMB session authentication failed
 severity: medium
 confidence: 0.7
 required_fields:
-  - computer
-  - src_ip
-  - status
+- computer
+- src_ip
+- status
 tags:
-  - windows
-  - smb
-  - failed-access
+- windows
+- smb
+- failed-access
 attack:
-  - T1021
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      src_ip,
-      status,
-      message
-  FROM evtx_events
-  WHERE event_id = 551
-    AND LOWER(COALESCE(channel, '')) LIKE '%smbserver%'
+- tactic: lateral-movement
+  technique_id: T1021
+  technique_name: Remote Services
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    src_ip,\n    status,\n    message\nFROM evtx_events\nWHERE event_id = 551\n  AND LOWER(COALESCE(channel, '')) LIKE '%smbserver%'\n"
 finding:
-  title: "SMB auth failed on {computer}"
-  summary: "SMB session authentication failed on {computer} at {timestamp}. Source IP: {src_ip}, Status: {status}. Multiple failures may indicate brute force or credential stuffing attempts."
+  title: SMB auth failed on {computer}
+  summary: 'SMB session authentication failed on {computer} at {timestamp}. Source IP: {src_ip}, Status: {status}. Multiple failures may indicate brute force or credential stuffing attempts.'

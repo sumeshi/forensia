@@ -3,25 +3,18 @@ title: NTLM incoming authentication attempted
 severity: medium
 confidence: 0.6
 required_fields:
-  - computer
-  - target_user
-  - src_ip
+- computer
+- target_user
+- src_ip
 tags:
-  - windows
-  - ntlm
-  - lateral-movement
+- windows
+- ntlm
+- lateral-movement
 attack:
-  - T1071
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_user,
-      src_ip
-  FROM evtx_events
-  WHERE event_id = 4022
-    AND channel LIKE '%NTLM%'
+- tactic: command-and-control
+  technique_id: T1071
+  technique_name: Application Layer Protocol
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    src_ip\nFROM evtx_events\nWHERE event_id = 4022\n  AND channel LIKE '%NTLM%'\n"
 finding:
-  title: "NTLM incoming auth on {computer}"
-  summary: "NTLM authentication attempt received on {computer} at {timestamp}. User: {target_user}, Source IP: {src_ip}. May indicate lateral movement using NTLM."
+  title: NTLM incoming auth on {computer}
+  summary: 'NTLM authentication attempt received on {computer} at {timestamp}. User: {target_user}, Source IP: {src_ip}. May indicate lateral movement using NTLM.'

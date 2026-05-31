@@ -3,25 +3,18 @@ title: SMB SPN check failed
 severity: medium
 confidence: 0.65
 required_fields:
-  - computer
-  - service_name
-  - status
+- computer
+- service_name
+- status
 tags:
-  - windows
-  - kerberos
-  - reconnaissance
+- windows
+- kerberos
+- reconnaissance
 attack:
-  - T1558
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      service_name,
-      status,
-      message
-  FROM evtx_events
-  WHERE event_id = 5168
+- tactic: credential-access
+  technique_id: T1558
+  technique_name: Steal or Forge Kerberos Tickets
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    service_name,\n    status,\n    message\nFROM evtx_events\nWHERE event_id = 5168\n"
 finding:
-  title: "SPN check failed for {service_name}"
-  summary: "SMB SPN check failed on {computer} at {timestamp}. Service: {service_name}, Status: {status}. May indicate kerberoasting or reconnaissance activity."
+  title: SPN check failed for {service_name}
+  summary: 'SMB SPN check failed on {computer} at {timestamp}. Service: {service_name}, Status: {status}. May indicate kerberoasting or reconnaissance activity.'

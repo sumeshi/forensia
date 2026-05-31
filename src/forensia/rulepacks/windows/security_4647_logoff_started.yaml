@@ -3,22 +3,17 @@ title: User logoff started
 severity: low
 confidence: 0.5
 required_fields:
-  - target_user
-  - computer
+- target_user
+- computer
 tags:
-  - windows
-  - logon
-  - user-activity
+- windows
+- logon
+- user-activity
 attack:
-  - T1078
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_user
-  FROM evtx_events
-  WHERE event_id = 4647
+- tactic: initial-access
+  technique_id: T1078
+  technique_name: Valid Accounts
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user\nFROM evtx_events\nWHERE event_id = 4647\n"
 finding:
-  title: "Logoff started for {target_user}"
-  summary: "Logoff process started for {target_user} on {computer} at {timestamp}. Part of session lifecycle - correlate with 4634 for completion."
+  title: Logoff started for {target_user}
+  summary: Logoff process started for {target_user} on {computer} at {timestamp}. Part of session lifecycle - correlate with 4634 for completion.

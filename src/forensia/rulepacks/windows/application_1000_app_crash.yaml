@@ -3,25 +3,17 @@ title: Application error/crash
 severity: low
 confidence: 0.4
 required_fields:
-  - computer
-  - process_name
-  - exception_code
+- computer
+- process_name
+- exception_code
 tags:
-  - windows
-  - application
+- windows
+- application
 attack:
-  - T1203
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      process_name,
-      exception_code,
-      message
-  FROM evtx_events
-  WHERE event_id IN (1000, 1001, 1002)
-    AND LOWER(COALESCE(channel, '')) LIKE '%application%'
+- tactic: execution
+  technique_id: T1203
+  technique_name: Exploitation for Client Execution
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    process_name,\n    exception_code,\n    message\nFROM evtx_events\nWHERE event_id IN (1000, 1001, 1002)\n  AND LOWER(COALESCE(channel, '')) LIKE '%application%'\n"
 finding:
-  title: "Application error on {computer}"
-  summary: "Application '{process_name}' crashed on {computer} at {timestamp}. Exception code: {exception_code}. May indicate exploitation or stability issues."
+  title: Application error on {computer}
+  summary: 'Application ''{process_name}'' crashed on {computer} at {timestamp}. Exception code: {exception_code}. May indicate exploitation or stability issues.'

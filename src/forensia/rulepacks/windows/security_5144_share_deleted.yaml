@@ -3,23 +3,17 @@ title: Network share object deleted
 severity: high
 confidence: 0.7
 required_fields:
-  - subject_user
-  - computer
-  - share_name
+- subject_user
+- computer
+- share_name
 tags:
-  - windows
-  - defense-evasion
+- windows
+- defense-evasion
 attack:
-  - T1071
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      subject_user,
-      share_name
-  FROM evtx_events
-  WHERE event_id = 5144
+- tactic: command-and-control
+  technique_id: T1071
+  technique_name: Application Layer Protocol
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    subject_user,\n    share_name\nFROM evtx_events\nWHERE event_id = 5144\n"
 finding:
-  title: "Share deleted: {share_name} @ {computer}"
-  summary: "{subject_user} deleted network share '{share_name}' on {computer} at {timestamp}. Attackers may delete shares to remove evidence or hinder response."
+  title: 'Share deleted: {share_name} @ {computer}'
+  summary: '{subject_user} deleted network share ''{share_name}'' on {computer} at {timestamp}. Attackers may delete shares to remove evidence or hinder response.'

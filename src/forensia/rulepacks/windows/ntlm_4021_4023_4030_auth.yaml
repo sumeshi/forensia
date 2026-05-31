@@ -3,25 +3,17 @@ title: NTLM client authentication events
 severity: medium
 confidence: 0.6
 required_fields:
-  - computer
-  - target_server
+- computer
+- target_server
 tags:
-  - windows
-  - ntlm
-  - lateral-movement
+- windows
+- ntlm
+- lateral-movement
 attack:
-  - T1021
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      event_id,
-      target_server,
-      message
-  FROM evtx_events
-  WHERE event_id IN (4021, 4023, 4030)
-    AND LOWER(COALESCE(channel, '')) LIKE '%ntlm%'
+- tactic: lateral-movement
+  technique_id: T1021
+  technique_name: Remote Services
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    event_id,\n    target_server,\n    message\nFROM evtx_events\nWHERE event_id IN (4021, 4023, 4030)\n  AND LOWER(COALESCE(channel, '')) LIKE '%ntlm%'\n"
 finding:
-  title: "NTLM auth event {event_id} on {computer}"
-  summary: "NTLM authentication event {event_id} on {computer} at {timestamp}. Target: {target_server}. Details: {message}."
+  title: NTLM auth event {event_id} on {computer}
+  summary: 'NTLM authentication event {event_id} on {computer} at {timestamp}. Target: {target_server}. Details: {message}.'

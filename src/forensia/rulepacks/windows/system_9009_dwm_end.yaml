@@ -3,22 +3,16 @@ title: Desktop Window Manager ended (RDP disconnect)
 severity: low
 confidence: 0.4
 required_fields:
-  - computer
+- computer
 tags:
-  - windows
-  - rdp
-  - system
+- windows
+- rdp
+- system
 attack:
-  - T1021.001
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      message
-  FROM evtx_events
-  WHERE event_id = 9009
-    AND LOWER(COALESCE(channel, '')) LIKE '%system%'
+- tactic: lateral-movement
+  technique_id: T1021.001
+  technique_name: Remote Desktop Protocol
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    message\nFROM evtx_events\nWHERE event_id = 9009\n  AND LOWER(COALESCE(channel, '')) LIKE '%system%'\n"
 finding:
-  title: "DWM ended on {computer}"
-  summary: "Desktop Window Manager ended on {computer} at {timestamp}. May indicate RDP session disconnect. Details: {message}."
+  title: DWM ended on {computer}
+  summary: 'Desktop Window Manager ended on {computer} at {timestamp}. May indicate RDP session disconnect. Details: {message}.'

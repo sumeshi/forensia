@@ -3,24 +3,18 @@ title: Scheduled task disabled
 severity: medium
 confidence: 0.65
 required_fields:
-  - subject_user
-  - computer
-  - task_name
+- subject_user
+- computer
+- task_name
 tags:
-  - windows
-  - scheduled-task
-  - defense-evasion
+- windows
+- scheduled-task
+- defense-evasion
 attack:
-  - T1053
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      task_name,
-      subject_user
-  FROM evtx_events
-  WHERE event_id = 4701
+- tactic: persistence
+  technique_id: T1053
+  technique_name: Scheduled Task/Job
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    task_name,\n    subject_user\nFROM evtx_events\nWHERE event_id = 4701\n"
 finding:
-  title: "Task disabled: {task_name} @ {computer}"
-  summary: "{subject_user} disabled scheduled task '{task_name}' on {computer} at {timestamp}. Attackers may disable security monitoring tasks."
+  title: 'Task disabled: {task_name} @ {computer}'
+  summary: '{subject_user} disabled scheduled task ''{task_name}'' on {computer} at {timestamp}. Attackers may disable security monitoring tasks.'

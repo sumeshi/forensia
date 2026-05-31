@@ -3,41 +3,18 @@ title: Interactive or RDP user logon
 severity: medium
 confidence: 0.6
 required_fields:
-  - target_user
-  - computer
-  - logon_type
+- target_user
+- computer
+- logon_type
 tags:
-  - windows
-  - logon
-  - user-activity
+- windows
+- logon
+- user-activity
 attack:
-  - T1078
-query: |
-  WITH normalized AS (
-      SELECT
-          evidence_id,
-          timestamp,
-          computer,
-          target_user,
-          subject_user,
-          src_ip,
-          logon_type,
-          UPPER(TRIM(COALESCE(target_user, ''))) AS normalized_target_user
-      FROM evtx_events
-      WHERE event_id = 4624
-        AND logon_type IN ('2', '10')
-  )
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_user,
-      subject_user,
-      src_ip,
-      logon_type
-  FROM normalized
-  WHERE normalized_target_user NOT IN ('ANONYMOUS LOGON', 'SYSTEM', 'LOCAL SERVICE', 'NETWORK SERVICE')
-    AND normalized_target_user NOT LIKE '%$'
+- tactic: initial-access
+  technique_id: T1078
+  technique_name: Valid Accounts
+query: "WITH normalized AS (\n    SELECT\n        evidence_id,\n        timestamp,\n        computer,\n        target_user,\n        subject_user,\n        src_ip,\n        logon_type,\n        UPPER(TRIM(COALESCE(target_user, ''))) AS normalized_target_user\n    FROM evtx_events\n    WHERE event_id = 4624\n      AND logon_type IN ('2', '10')\n)\nSELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    subject_user,\n    src_ip,\n    logon_type\nFROM normalized\nWHERE normalized_target_user NOT IN ('ANONYMOUS LOGON', 'SYSTEM', 'LOCAL SERVICE', 'NETWORK SERVICE')\n  AND normalized_target_user NOT LIKE '%$'\n"
 finding:
-  title: "Interactive logon for {target_user}"
-  summary: "{target_user} logged on interactively (LogonType={logon_type}) on {computer} at {timestamp}. Use this as direct user-activity evidence when determining the last logged-on user."
+  title: Interactive logon for {target_user}
+  summary: '{target_user} logged on interactively (LogonType={logon_type}) on {computer} at {timestamp}. Use this as direct user-activity evidence when determining the last logged-on user.'

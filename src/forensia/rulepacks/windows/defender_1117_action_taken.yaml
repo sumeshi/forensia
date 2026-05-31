@@ -3,20 +3,14 @@ title: Windows Defender action taken (Event 1117)
 severity: medium
 confidence: 0.6
 tags:
-  - windows
-  - defender
-  - malware
+- windows
+- defender
+- malware
 attack:
-  - T1204.002
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_user,
-      message
-  FROM evtx_events
-  WHERE event_id = 1117
+- tactic: execution
+  technique_id: T1204.002
+  technique_name: 'User Execution: Malicious File'
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    message\nFROM evtx_events\nWHERE event_id = 1117\n"
 finding:
-  title: "Defender threat action taken: {computer}"
-  summary: "Windows Defender took threat response action on {computer} at {timestamp} (1117). User: {target_user}. Details: {message}. Correlate with 1116 and 5001 to understand activity before and after the infection."
+  title: 'Defender threat action taken: {computer}'
+  summary: 'Windows Defender took threat response action on {computer} at {timestamp} (1117). User: {target_user}. Details: {message}. Correlate with 1116 and 5001 to understand activity before and after the infection.'

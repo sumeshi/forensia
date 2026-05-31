@@ -3,24 +3,18 @@ title: SMB client connection failed
 severity: medium
 confidence: 0.65
 required_fields:
-  - computer
-  - target_server
-  - status
+- computer
+- target_server
+- status
 tags:
-  - windows
-  - smb
-  - failed-access
+- windows
+- smb
+- failed-access
 attack:
-  - T1021
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      message
-  FROM evtx_events
-  WHERE event_id = 31010
-    AND LOWER(COALESCE(channel, '')) LIKE '%smbclient%'
+- tactic: lateral-movement
+  technique_id: T1021
+  technique_name: Remote Services
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    message\nFROM evtx_events\nWHERE event_id = 31010\n  AND LOWER(COALESCE(channel, '')) LIKE '%smbclient%'\n"
 finding:
-  title: "SMB client connection failed on {computer}"
-  summary: "SMB client connection failed on {computer} at {timestamp}. Details: {message}. May indicate failed lateral movement attempts or network reconnaissance."
+  title: SMB client connection failed on {computer}
+  summary: 'SMB client connection failed on {computer} at {timestamp}. Details: {message}. May indicate failed lateral movement attempts or network reconnaissance.'

@@ -3,25 +3,17 @@ title: Task action started
 severity: medium
 confidence: 0.65
 required_fields:
-  - computer
-  - task_name
+- computer
+- task_name
 tags:
-  - windows
-  - scheduled-task
-  - execution
+- windows
+- scheduled-task
+- execution
 attack:
-  - T1053
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      task_name,
-      user_name,
-      process_id
-  FROM evtx_events
-  WHERE event_id = 200
-    AND LOWER(COALESCE(channel, '')) LIKE '%taskscheduler%'
+- tactic: execution
+  technique_id: T1053
+  technique_name: Scheduled Task/Job
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    task_name,\n    user_name,\n    process_id\nFROM evtx_events\nWHERE event_id = 200\n  AND LOWER(COALESCE(channel, '')) LIKE '%taskscheduler%'\n"
 finding:
-  title: "Task action started: {task_name} @ {computer}"
-  summary: "Task '{task_name}' action started on {computer} at {timestamp}. User: {user_name}. Process ID: {process_id}. Correlate with 4688 for process details."
+  title: 'Task action started: {task_name} @ {computer}'
+  summary: 'Task ''{task_name}'' action started on {computer} at {timestamp}. User: {user_name}. Process ID: {process_id}. Correlate with 4688 for process details.'

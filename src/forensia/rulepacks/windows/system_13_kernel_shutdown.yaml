@@ -3,21 +3,15 @@ title: Kernel shutdown initiated
 severity: medium
 confidence: 0.7
 required_fields:
-  - computer
+- computer
 tags:
-  - windows
-  - power
+- windows
+- power
 attack:
-  - T1562.001
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      message
-  FROM evtx_events
-  WHERE event_id = 13
-    AND LOWER(COALESCE(channel, '')) LIKE '%system%'
+- tactic: defense-evasion
+  technique_id: T1562.001
+  technique_name: Disable or Modify Tools
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    message\nFROM evtx_events\nWHERE event_id = 13\n  AND LOWER(COALESCE(channel, '')) LIKE '%system%'\n"
 finding:
-  title: "Kernel shutdown on {computer}"
-  summary: "OS shutdown initiated on {computer} at {timestamp}. Details: {message}. Part of shutdown lifecycle tracking."
+  title: Kernel shutdown on {computer}
+  summary: 'OS shutdown initiated on {computer} at {timestamp}. Details: {message}. Part of shutdown lifecycle tracking.'

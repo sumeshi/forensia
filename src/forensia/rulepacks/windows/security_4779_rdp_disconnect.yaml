@@ -3,19 +3,13 @@ title: RDP session disconnect without logoff (Event 4779)
 severity: low
 confidence: 0.4
 tags:
-  - windows
-  - rdp
+- windows
+- rdp
 attack:
-  - T1021.001
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_user,
-      src_ip
-  FROM evtx_events
-  WHERE event_id = 4779
+- tactic: lateral-movement
+  technique_id: T1021.001
+  technique_name: Remote Desktop Protocol
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    src_ip\nFROM evtx_events\nWHERE event_id = 4779\n"
 finding:
-  title: "RDP session disconnect without logoff: {target_user} @ {computer}"
-  summary: "{target_user} disconnected an RDP session on {computer} at {timestamp} (4779). Source IP: {src_ip}. If this is immediately followed by 4778 or event 25 from a different IP, it may indicate a session hijack attempt."
+  title: 'RDP session disconnect without logoff: {target_user} @ {computer}'
+  summary: '{target_user} disconnected an RDP session on {computer} at {timestamp} (4779). Source IP: {src_ip}. If this is immediately followed by 4778 or event 25 from a different IP, it may indicate a session hijack attempt.'

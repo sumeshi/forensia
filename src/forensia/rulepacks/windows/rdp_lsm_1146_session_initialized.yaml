@@ -3,23 +3,17 @@ title: Remote Desktop Services session initialized
 severity: low
 confidence: 0.4
 required_fields:
-  - computer
-  - target_user
+- computer
+- target_user
 tags:
-  - windows
-  - rdp
-  - logon
+- windows
+- rdp
+- logon
 attack:
-  - T1021.001
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_user
-  FROM evtx_events
-  WHERE event_id = 1146
-    AND channel LIKE '%LocalSessionManager%'
+- tactic: lateral-movement
+  technique_id: T1021.001
+  technique_name: Remote Desktop Protocol
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user\nFROM evtx_events\nWHERE event_id = 1146\n  AND channel LIKE '%LocalSessionManager%'\n"
 finding:
-  title: "RDP session initialized on {computer}"
-  summary: "RDP session initialized for '{target_user}' on {computer} at {timestamp}. Part of RDP logon chain - correlate with 4624 and 1149 for complete picture."
+  title: RDP session initialized on {computer}
+  summary: RDP session initialized for '{target_user}' on {computer} at {timestamp}. Part of RDP logon chain - correlate with 4624 and 1149 for complete picture.

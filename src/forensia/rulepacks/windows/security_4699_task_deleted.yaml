@@ -3,22 +3,17 @@ title: Scheduled task deleted (Event 4699)
 severity: medium
 confidence: 0.65
 tags:
-  - windows
-  - anti-forensics
-  - scheduled-task
+- windows
+- anti-forensics
+- scheduled-task
 attack:
-  - T1070.004
-  - T1053.005
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_user,
-      subject_user,
-      message
-  FROM evtx_events
-  WHERE event_id = 4699
+- tactic: defense-evasion
+  technique_id: T1070.004
+  technique_name: 'Indicator Removal: File Deletion'
+- tactic: execution
+  technique_id: T1053.005
+  technique_name: Scheduled Task
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    subject_user,\n    message\nFROM evtx_events\nWHERE event_id = 4699\n"
 finding:
-  title: "Scheduled task deleted: {computer} ({subject_user})"
-  summary: "{subject_user} deleted a scheduled task on {computer} at {timestamp}. This may indicate anti-forensics; compare with 4698 to identify suspicious create-then-delete task cycles."
+  title: 'Scheduled task deleted: {computer} ({subject_user})'
+  summary: '{subject_user} deleted a scheduled task on {computer} at {timestamp}. This may indicate anti-forensics; compare with 4698 to identify suspicious create-then-delete task cycles.'

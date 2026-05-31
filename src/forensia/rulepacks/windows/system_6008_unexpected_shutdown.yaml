@@ -3,18 +3,13 @@ title: Unexpected shutdown record (System Event 6008)
 severity: low
 confidence: 0.3
 tags:
-  - windows
-  - shutdown
+- windows
+- shutdown
 attack:
-  - T1529
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      message
-  FROM evtx_events
-  WHERE event_id = 6008
+- tactic: impact
+  technique_id: T1529
+  technique_name: System Shutdown/Reboot
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    message\nFROM evtx_events\nWHERE event_id = 6008\n"
 finding:
-  title: "Unexpected shutdown artifact: {computer}"
-  summary: "An unexpected shutdown artifact (6008) was observed on {computer} at {timestamp}. Details: {message}. Correlate with events 41 and 1074, and consider whether this was power loss, a crash, or an attacker-triggered reboot intended to clear in-memory evidence."
+  title: 'Unexpected shutdown artifact: {computer}'
+  summary: 'An unexpected shutdown artifact (6008) was observed on {computer} at {timestamp}. Details: {message}. Correlate with events 41 and 1074, and consider whether this was power loss, a crash, or an attacker-triggered reboot intended to clear in-memory evidence.'

@@ -3,79 +3,67 @@ title: Network logon followed by service install within 15 minutes
 severity: critical
 confidence: 0.65
 required_fields:
+- src_ip
+- computer
+- target_user
+- logon_time
+- svc_time
+- service_name
+tags:
+- windows
+- lateral-movement
+- persistence
+- correlation
+attack:
+- tactic: persistence
+  technique_id: T1543.003
+  technique_name: Windows Service
+- tactic: lateral-movement
+  technique_id: T1021.002
+  technique_name: SMB/Windows Admin Shares
+query: "WITH net_logons AS (\n    SELECT\n        evidence_id,\n        timestamp AS logon_time,\n        computer,\n        src_ip,\n        target_user\n    FROM evtx_events\n    WHERE event_id = 4624\n      AND logon_type = '3'\n      AND target_user NOT LIKE '%$'\n),\nsvc_installs AS (\n    SELECT\n        evidence_id,\n        timestamp AS svc_time,\n        computer,\n        service_name,\n        subject_user\n    FROM evtx_events\n    WHERE event_id IN (4697, 7045)\n)\nSELECT\n    l.src_ip,\n    l.computer,\n    l.target_user,\n    l.logon_time,\n    s.svc_time,\n    s.service_name\nFROM net_logons l\nJOIN svc_installs s\n  ON l.computer = s.computer\n AND s.svc_time BETWEEN l.logon_time AND l.logon_time + INTERVAL 15 MINUTE\n"
+finding:
+  title: 'Service installation after network logon: {src_ip} -> {computer}'
+  summary: After a network logon from {src_ip} to {computer} at {logon_time}, service '{service_name}' was installed at {svc_time}. This correlation may indicate remote service creation or lateral movement, but source host, service path, and execution context should be verified before attributing a specific technique.
+hypotheses:
+- id: lateral_movement_via_service
+  segment: lateral-movement
+  description: Service '{service_name}' installed on {computer} shortly after network logon from {src_ip} is a lateral movement technique
+  required_entities:
   - src_ip
   - computer
   - target_user
-  - logon_time
-  - svc_time
   - service_name
-tags:
-  - windows
-  - lateral-movement
-  - persistence
-  - correlation
-attack:
-  - T1543.003
-  - T1021.002
-query: |
-  WITH net_logons AS (
-      SELECT
-          evidence_id,
-          timestamp AS logon_time,
-          computer,
-          src_ip,
-          target_user
-      FROM evtx_events
-      WHERE event_id = 4624
-        AND logon_type = '3'
-        AND target_user NOT LIKE '%$'
-  ),
-  svc_installs AS (
-      SELECT
-          evidence_id,
-          timestamp AS svc_time,
-          computer,
-          service_name,
-          subject_user
-      FROM evtx_events
-      WHERE event_id IN (4697, 7045)
-  )
-  SELECT
-      l.src_ip,
-      l.computer,
-      l.target_user,
-      l.logon_time,
-      s.svc_time,
-      s.service_name
-  FROM net_logons l
-  JOIN svc_installs s
-    ON l.computer = s.computer
-   AND s.svc_time BETWEEN l.logon_time AND l.logon_time + INTERVAL 15 MINUTE
-finding:
-  title: "Service installation after network logon: {src_ip} -> {computer}"
-  summary: "After a network logon from {src_ip} to {computer} at {logon_time}, service '{service_name}' was installed at {svc_time}. This correlation may indicate remote service creation or lateral movement, but source host, service path, and execution context should be verified before attributing a specific technique."
-hypotheses:
-  - id: lateral_movement_via_service
-    segment: lateral-movement
-    description: "Service '{service_name}' installed on {computer} shortly after network logon from {src_ip} is a lateral movement technique"
-    required_entities: [src_ip, computer, target_user, service_name]
-    confirm_when:
-      co_observed_event_ids: [4624, 4697, 7045]
-      same_host: true
-      within_minutes: 15
-    refute_when:
-      zero_rows: true
-    follow_up_questions:
-      - "What is the source host IP {src_ip} and was it used for other suspicious activity?"
-      - "Were similar lateral movements attempted on other hosts?"
-      - "Was the installed service actually executed and what was its outcome?"
-    report_sections: [3_technical, 4_gaps]
+  confirm_when:
+    co_observed_event_ids:
+    - 4624
+    - 4697
+    - 7045
+    same_host: true
+    within_minutes: 15
+  refute_when:
+    zero_rows: true
+  follow_up_questions:
+  - What is the source host IP {src_ip} and was it used for other suspicious activity?
+  - Were similar lateral movements attempted on other hosts?
+  - Was the installed service actually executed and what was its outcome?
+  report_sections:
+  - 3_technical
+  - 4_gaps
 correlate_with:
-  - event_ids: [4624, 4720, 4648]
-    rationale: "Account context: logon / account creation / explicit credential usage"
-  - event_ids: [4688, 4104]
-    rationale: "Process execution on target host to verify service deployment"
+- event_ids:
+  - 4624
+  - 4720
+  - 4648
+  rationale: 'Account context: logon / account creation / explicit credential usage'
+- event_ids:
+  - 4688
+  - 4104
+  rationale: Process execution on target host to verify service deployment
 fallback_search:
-  - phase: keyword_in_raw_json
-    keywords: ["sc create", "New-Service", "sc.exe"]
-    rationale: "Service install may be logged as script execution or process creation"
+- phase: keyword_in_raw_json
+  keywords:
+  - sc create
+  - New-Service
+  - sc.exe
+  rationale: Service install may be logged as script execution or process creation

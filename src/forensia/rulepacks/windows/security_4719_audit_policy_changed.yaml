@@ -3,21 +3,14 @@ title: System audit policy changed (Event 4719)
 severity: high
 confidence: 0.8
 tags:
-  - windows
-  - defense-evasion
-  - audit-policy
+- windows
+- defense-evasion
+- audit-policy
 attack:
-  - T1562.002
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_user,
-      subject_user,
-      message
-  FROM evtx_events
-  WHERE event_id = 4719
+- tactic: defense-evasion
+  technique_id: T1562.002
+  technique_name: Disable Windows Event Logging
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    subject_user,\n    message\nFROM evtx_events\nWHERE event_id = 4719\n"
 finding:
-  title: "Audit policy changed: {computer} ({subject_user})"
-  summary: "{subject_user} changed audit policy on {computer} at {timestamp} (4719). This may indicate an attempt to disable logging for specific categories; review the exact policy changes."
+  title: 'Audit policy changed: {computer} ({subject_user})'
+  summary: '{subject_user} changed audit policy on {computer} at {timestamp} (4719). This may indicate an attempt to disable logging for specific categories; review the exact policy changes.'

@@ -3,62 +3,41 @@ title: Account created then added to Administrators within 30 minutes
 severity: critical
 confidence: 0.9
 tags:
-  - windows
-  - correlation
-  - persistence
-  - privilege-escalation
+- windows
+- correlation
+- persistence
+- privilege-escalation
 attack:
-  - T1136.001
-  - T1098
-query: |
-  WITH created AS (
-      SELECT
-          timestamp AS created_time,
-          computer,
-          target_user,
-          subject_user AS creator
-      FROM evtx_events
-      WHERE event_id = 4720
-  ),
-  admin_added AS (
-      SELECT
-          timestamp AS added_time,
-          computer,
-          target_user,
-          subject_user AS adder,
-          message
-      FROM evtx_events
-      WHERE event_id = 4732
-        AND LOWER(COALESCE(message, '')) LIKE '%administrators%'
-  )
-  SELECT
-      c.computer,
-      c.target_user,
-      c.creator,
-      c.created_time,
-      a.adder,
-      a.added_time
-  FROM created c
-  JOIN admin_added a
-    ON c.computer = a.computer
-   AND c.target_user = a.target_user
-   AND a.added_time BETWEEN c.created_time AND c.created_time + INTERVAL 30 MINUTE
+- tactic: persistence
+  technique_id: T1136.001
+  technique_name: Local Account
+- tactic: persistence
+  technique_id: T1098
+  technique_name: Account Manipulation
+query: "WITH created AS (\n    SELECT\n        timestamp AS created_time,\n        computer,\n        target_user,\n        subject_user AS creator\n    FROM evtx_events\n    WHERE event_id = 4720\n),\nadmin_added AS (\n    SELECT\n        timestamp AS added_time,\n        computer,\n        target_user,\n        subject_user AS adder,\n        message\n    FROM evtx_events\n    WHERE event_id = 4732\n      AND LOWER(COALESCE(message, '')) LIKE '%administrators%'\n)\nSELECT\n    c.computer,\n    c.target_user,\n    c.creator,\n    c.created_time,\n    a.adder,\n    a.added_time\nFROM created c\nJOIN admin_added a\n  ON c.computer = a.computer\n AND c.target_user = a.target_user\n AND a.added_time BETWEEN c.created_time AND c.created_time + INTERVAL 30 MINUTE\n"
 finding:
-  title: "New account immediately added to Administrators: {target_user} @ {computer}"
-  summary: "The account '{target_user}' was created by {creator} at {created_time} and then added to Administrators by {adder} at {added_time}. This strongly suggests backdoor account creation. Confirm whether the creator and adder are the same operator and review other lateral movement activity around the same time."
+  title: 'New account immediately added to Administrators: {target_user} @ {computer}'
+  summary: The account '{target_user}' was created by {creator} at {created_time} and then added to Administrators by {adder} at {added_time}. This strongly suggests backdoor account creation. Confirm whether the creator and adder are the same operator and review other lateral movement activity around the same time.
 hypotheses:
-  - id: backdoor_account_admin_escalation
-    segment: persistence
-    description: "Account '{target_user}' was created and added to Administrators on {computer}, indicating backdoor creation with immediate privilege escalation"
-    required_entities: [computer, target_user, creator]
-    confirm_when:
-      co_observed_event_ids: [4720, 4732]
-      same_host: true
-      within_minutes: 30
-    refute_when:
-      zero_rows: true
-    follow_up_questions:
-      - "Are {creator} and {adder} on {computer} the same or different accounts?"
-      - "What other actions were performed by '{target_user}' on {computer} after gaining admin access?"
-      - "Were similar account creation patterns observed on other hosts in the environment?"
-    report_sections: [3_technical, 4_gaps]
+- id: backdoor_account_admin_escalation
+  segment: persistence
+  description: Account '{target_user}' was created and added to Administrators on {computer}, indicating backdoor creation with immediate privilege escalation
+  required_entities:
+  - computer
+  - target_user
+  - creator
+  confirm_when:
+    co_observed_event_ids:
+    - 4720
+    - 4732
+    same_host: true
+    within_minutes: 30
+  refute_when:
+    zero_rows: true
+  follow_up_questions:
+  - Are {creator} and {adder} on {computer} the same or different accounts?
+  - What other actions were performed by '{target_user}' on {computer} after gaining admin access?
+  - Were similar account creation patterns observed on other hosts in the environment?
+  report_sections:
+  - 3_technical
+  - 4_gaps

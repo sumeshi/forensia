@@ -3,26 +3,17 @@ title: Directory service object changes (created, moved, deleted)
 severity: medium
 confidence: 0.7
 required_fields:
-  - computer
-  - object_dn
+- computer
+- object_dn
 tags:
-  - windows
-  - active-directory
-  - defense-evasion
+- windows
+- active-directory
+- defense-evasion
 attack:
-  - T1078
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      subject_user,
-      object_dn,
-      event_id,
-      message
-  FROM evtx_events
-  WHERE event_id IN (5137, 5139, 5141)
-    AND LOWER(COALESCE(channel, '')) LIKE '%directory%'
+- tactic: defense-evasion
+  technique_id: T1078
+  technique_name: Valid Accounts
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    subject_user,\n    object_dn,\n    event_id,\n    message\nFROM evtx_events\nWHERE event_id IN (5137, 5139, 5141)\n  AND LOWER(COALESCE(channel, '')) LIKE '%directory%'\n"
 finding:
-  title: "Directory object event {event_id} on {computer}"
-  summary: "Active Directory object '{object_dn}' event {event_id} on {computer} at {timestamp}. Details: {message}."
+  title: Directory object event {event_id} on {computer}
+  summary: 'Active Directory object ''{object_dn}'' event {event_id} on {computer} at {timestamp}. Details: {message}.'

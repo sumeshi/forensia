@@ -3,22 +3,14 @@ title: System time changed by non-service account (Event 4616)
 severity: high
 confidence: 0.7
 tags:
-  - windows
-  - anti-forensics
-  - time
+- windows
+- anti-forensics
+- time
 attack:
-  - T1070.006
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_user,
-      subject_user,
-      message
-  FROM evtx_events
-  WHERE event_id = 4616
-    AND COALESCE(subject_user, target_user, '') NOT IN ('SYSTEM', 'LOCAL SERVICE', 'NETWORK SERVICE')
+- tactic: defense-evasion
+  technique_id: T1070.006
+  technique_name: 'Indicator Removal: Timestomp'
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    subject_user,\n    message\nFROM evtx_events\nWHERE event_id = 4616\n  AND COALESCE(subject_user, target_user, '') NOT IN ('SYSTEM', 'LOCAL SERVICE', 'NETWORK SERVICE')\n"
 finding:
-  title: "System time changed: {computer} ({subject_user})"
-  summary: "{subject_user} changed the system time on {computer} at {timestamp} (4616). Details: {message}. This strongly suggests timeline tampering or anti-forensics."
+  title: 'System time changed: {computer} ({subject_user})'
+  summary: '{subject_user} changed the system time on {computer} at {timestamp} (4616). Details: {message}. This strongly suggests timeline tampering or anti-forensics.'

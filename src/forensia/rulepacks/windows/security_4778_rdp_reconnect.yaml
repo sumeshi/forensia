@@ -3,20 +3,14 @@ title: RDP session reconnect (Event 4778)
 severity: medium
 confidence: 0.65
 tags:
-  - windows
-  - rdp
-  - lateral-movement
+- windows
+- rdp
+- lateral-movement
 attack:
-  - T1021.001
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_user,
-      src_ip
-  FROM evtx_events
-  WHERE event_id = 4778
+- tactic: lateral-movement
+  technique_id: T1021.001
+  technique_name: Remote Desktop Protocol
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    src_ip\nFROM evtx_events\nWHERE event_id = 4778\n"
 finding:
-  title: "RDP session reconnect: {target_user} @ {computer}"
-  summary: "{target_user} reconnected to an RDP session on {computer} at {timestamp} (4778). Source IP: {src_ip}. This may indicate reuse of an existing session by an attacker."
+  title: 'RDP session reconnect: {target_user} @ {computer}'
+  summary: '{target_user} reconnected to an RDP session on {computer} at {timestamp} (4778). Source IP: {src_ip}. This may indicate reuse of an existing session by an attacker.'

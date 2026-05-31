@@ -3,21 +3,16 @@ title: System uptime logged
 severity: low
 confidence: 0.3
 required_fields:
-  - computer
-  - message
+- computer
+- message
 tags:
-  - windows
-  - system-info
+- windows
+- system-info
 attack:
-  - T1033
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      message
-  FROM evtx_events
-  WHERE event_id = 6009
+- tactic: discovery
+  technique_id: T1033
+  technique_name: System Owner/User Discovery
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    message\nFROM evtx_events\nWHERE event_id = 6009\n"
 finding:
-  title: "System boot info on {computer}"
-  summary: "System boot recorded on {computer} at {timestamp}. Message: {message}. Useful for calculating system uptime and timeline reconstruction."
+  title: System boot info on {computer}
+  summary: 'System boot recorded on {computer} at {timestamp}. Message: {message}. Useful for calculating system uptime and timeline reconstruction.'

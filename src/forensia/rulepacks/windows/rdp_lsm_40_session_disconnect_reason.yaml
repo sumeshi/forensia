@@ -3,24 +3,17 @@ title: Session disconnected with reason (RDP)
 severity: medium
 confidence: 0.65
 required_fields:
-  - computer
-  - session_id
-  - reason
+- computer
+- session_id
+- reason
 tags:
-  - windows
-  - rdp
+- windows
+- rdp
 attack:
-  - T1021.001
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      session_id,
-      reason
-  FROM evtx_events
-  WHERE event_id = 40
-    AND LOWER(COALESCE(channel, '')) LIKE '%LocalSessionManager%'
+- tactic: lateral-movement
+  technique_id: T1021.001
+  technique_name: Remote Desktop Protocol
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    session_id,\n    reason\nFROM evtx_events\nWHERE event_id = 40\n  AND LOWER(COALESCE(channel, '')) LIKE '%LocalSessionManager%'\n"
 finding:
-  title: "RDP session disconnect on {computer}"
-  summary: "RDP session {session_id} disconnected on {computer} at {timestamp} due to: {reason}. Review for unauthorized session terminations."
+  title: RDP session disconnect on {computer}
+  summary: 'RDP session {session_id} disconnected on {computer} at {timestamp} due to: {reason}. Review for unauthorized session terminations.'

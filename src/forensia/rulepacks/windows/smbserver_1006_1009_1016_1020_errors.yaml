@@ -3,25 +3,17 @@ title: SMB server errors (connection refused, access denied, etc.)
 severity: medium
 confidence: 0.6
 required_fields:
-  - computer
-  - target_server
+- computer
+- target_server
 tags:
-  - windows
-  - smb
-  - failed-access
+- windows
+- smb
+- failed-access
 attack:
-  - T1021
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      event_id,
-      target_server,
-      message
-  FROM evtx_events
-  WHERE event_id IN (1006, 1009, 1016, 1020)
-    AND LOWER(COALESCE(channel, '')) LIKE '%smbserver%'
+- tactic: lateral-movement
+  technique_id: T1021
+  technique_name: Remote Services
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    event_id,\n    target_server,\n    message\nFROM evtx_events\nWHERE event_id IN (1006, 1009, 1016, 1020)\n  AND LOWER(COALESCE(channel, '')) LIKE '%smbserver%'\n"
 finding:
-  title: "SMB server event {event_id} on {computer}"
-  summary: "SMB server event {event_id} on {computer} at {timestamp}. Details: {message}."
+  title: SMB server event {event_id} on {computer}
+  summary: 'SMB server event {event_id} on {computer} at {timestamp}. Details: {message}.'

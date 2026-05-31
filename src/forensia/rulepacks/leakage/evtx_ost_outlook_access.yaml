@@ -3,53 +3,63 @@ title: OST file access observed
 severity: medium
 confidence: 0.6
 required_fields:
-  - timestamp
+- timestamp
+- computer
+- target_user
+- file_path
+tags:
+- leakage
+- outlook
+- email
+- insider-threat
+attack:
+- tactic: collection
+  technique_id: T1114
+  technique_name: Email Collection
+- tactic: exfiltration
+  technique_id: T1020
+  technique_name: Automated Exfiltration
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    file_path\nFROM evtx_events\nWHERE event_id = 4663\n  AND LOWER(file_path) LIKE '%.ost'\n"
+finding:
+  title: OST file access on {computer}
+  summary: OST file access detected at {file_path} by {target_user} at {timestamp}. Access to offline Outlook data file may indicate email data harvesting for exfiltration.
+hypotheses:
+- id: leakage-ost-email-exfil
+  segment: exfiltration
+  description: OST file accessed by {target_user} on {computer} at {timestamp} may indicate email data harvesting for exfiltration
+  required_entities:
   - computer
   - target_user
   - file_path
-tags:
-  - leakage
-  - outlook
-  - email
-  - insider-threat
-attack:
-  - T1114
-  - T1020
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_user,
-      file_path
-  FROM evtx_events
-  WHERE event_id = 4663
-    AND LOWER(file_path) LIKE '%.ost'
-finding:
-  title: "OST file access on {computer}"
-  summary: "OST file access detected at {file_path} by {target_user} at {timestamp}. Access to offline Outlook data file may indicate email data harvesting for exfiltration."
-hypotheses:
-  - id: leakage-ost-email-exfil
-    segment: exfiltration
-    description: "OST file accessed by {target_user} on {computer} at {timestamp} may indicate email data harvesting for exfiltration"
-    required_entities: [computer, target_user, file_path]
-    confirm_when:
-      co_observed_event_ids: [4663, 4688]
-      keywords: [outlook, ost, email, exfil]
-    refute_when:
-      zero_rows: true
-    follow_up_questions:
-      - "Was browser launched shortly after the OST access?"
-      - "Were there large email attachments or forwarding rules configured?"
-    report_sections:
-      - 3_technical
-      - 5_recommendations
+  confirm_when:
+    co_observed_event_ids:
+    - 4663
+    - 4688
+    keywords:
+    - outlook
+    - ost
+    - email
+    - exfil
+  refute_when:
+    zero_rows: true
+  follow_up_questions:
+  - Was browser launched shortly after the OST access?
+  - Were there large email attachments or forwarding rules configured?
+  report_sections:
+  - 3_technical
+  - 5_recommendations
 correlate_with:
-  - event_ids: [4688]
-    rationale: "Process execution to detect browser or upload client launch after OST access"
-  - event_ids: [4648]
-    rationale: "Explicit credential usage indicating access to email server"
+- event_ids:
+  - 4688
+  rationale: Process execution to detect browser or upload client launch after OST access
+- event_ids:
+  - 4648
+  rationale: Explicit credential usage indicating access to email server
 fallback_search:
-  - phase: keyword_in_raw_json
-    keywords: [".ost", "outlook", "mail", "harvest"]
-    rationale: "OST file access may be logged in process command lines or event data"
+- phase: keyword_in_raw_json
+  keywords:
+  - .ost
+  - outlook
+  - mail
+  - harvest
+  rationale: OST file access may be logged in process command lines or event data

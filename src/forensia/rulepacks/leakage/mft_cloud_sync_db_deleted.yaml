@@ -3,56 +3,61 @@ title: Cloud sync database deletion detected
 severity: high
 confidence: 0.7
 required_fields:
-  - file_name
-  - file_path
-  - is_deleted
+- file_name
+- file_path
+- is_deleted
 tags:
-  - leakage
-  - cloud-sync
-  - anti-forensics
-  - insider-threat
+- leakage
+- cloud-sync
+- anti-forensics
+- insider-threat
 attack:
-  - T1070
-  - T1567
-query: |
-  SELECT
-      evidence_id,
-      file_name,
-      file_path,
-      is_deleted
-  FROM mft_entries
-  WHERE
-      (
-          LOWER(file_name) LIKE '%sync_config.db%' OR
-          LOWER(file_name) LIKE '%snapshot.db%' OR
-          LOWER(file_name) LIKE '%snapshot.db-wal%'
-      )
-      AND is_deleted = 1
+- tactic: defense-evasion
+  technique_id: T1070
+  technique_name: Indicator Removal
+- tactic: exfiltration
+  technique_id: T1567
+  technique_name: Exfiltration Over Web Service
+query: "SELECT\n    evidence_id,\n    file_name,\n    file_path,\n    is_deleted\nFROM mft_entries\nWHERE\n    (\n        LOWER(file_name) LIKE '%sync_config.db%' OR\n        LOWER(file_name) LIKE '%snapshot.db%' OR\n        LOWER(file_name) LIKE '%snapshot.db-wal%'\n    )\n    AND is_deleted = 1\n"
 finding:
-  title: "Cloud sync database deletion detected: {file_name}"
-  summary: "Cloud sync database '{file_name}' was deleted at {file_path}. Deletion of sync metadata may indicate an attempt to cover cloud exfiltration traces."
+  title: 'Cloud sync database deletion detected: {file_name}'
+  summary: Cloud sync database '{file_name}' was deleted at {file_path}. Deletion of sync metadata may indicate an attempt to cover cloud exfiltration traces.
 hypotheses:
-  - id: leakage-cloud-sync-cleanup
-    segment: exfiltration
-    description: "Cloud sync database deleted at {file_path} may be anti-forensic cleanup after data exfiltration via cloud storage"
-    required_entities: [computer, file_path]
-    confirm_when:
-      co_observed_event_ids: [4663, 4688]
-      keywords: [delete, cloud, sync, cleanup]
-    refute_when:
-      zero_rows: true
-    follow_up_questions:
-      - "Was there a cloud sync client installed and recently updated?"
-      - "Are there archive files created shortly before the deletion timestamp?"
-    report_sections:
-      - 3_technical
-      - 5_recommendations
+- id: leakage-cloud-sync-cleanup
+  segment: exfiltration
+  description: Cloud sync database deleted at {file_path} may be anti-forensic cleanup after data exfiltration via cloud storage
+  required_entities:
+  - computer
+  - file_path
+  confirm_when:
+    co_observed_event_ids:
+    - 4663
+    - 4688
+    keywords:
+    - delete
+    - cloud
+    - sync
+    - cleanup
+  refute_when:
+    zero_rows: true
+  follow_up_questions:
+  - Was there a cloud sync client installed and recently updated?
+  - Are there archive files created shortly before the deletion timestamp?
+  report_sections:
+  - 3_technical
+  - 5_recommendations
 correlate_with:
-  - event_ids: [4663]
-    rationale: "File access events to identify user who deleted the sync database"
-  - event_ids: [4688]
-    rationale: "Process execution including cloud sync client processes"
+- event_ids:
+  - 4663
+  rationale: File access events to identify user who deleted the sync database
+- event_ids:
+  - 4688
+  rationale: Process execution including cloud sync client processes
 fallback_search:
-  - phase: keyword_in_raw_json
-    keywords: ["sync_config.db", "snapshot.db", "cloud", "delete"]
-    rationale: "Cloud sync deletion may appear in process command lines or event data"
+- phase: keyword_in_raw_json
+  keywords:
+  - sync_config.db
+  - snapshot.db
+  - cloud
+  - delete
+  rationale: Cloud sync deletion may appear in process command lines or event data

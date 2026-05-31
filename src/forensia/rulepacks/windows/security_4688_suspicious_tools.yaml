@@ -3,44 +3,22 @@ title: LOLBas / dual-use tool execution via process creation (Event 4688)
 severity: medium
 confidence: 0.55
 required_fields:
-  - target_user
-  - computer
-  - process_name
-  - command_line
+- target_user
+- computer
+- process_name
+- command_line
 tags:
-  - windows
-  - lolbas
-  - execution
+- windows
+- lolbas
+- execution
 attack:
-  - T1218
-  - T1059.003
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_user,
-      process_name,
-      command_line
-  FROM evtx_events
-  WHERE event_id = 4688
-    AND (
-        LOWER(process_name) LIKE '%\cmd.exe'
-        OR LOWER(process_name) LIKE '%\net.exe'
-        OR LOWER(process_name) LIKE '%\net1.exe'
-        OR LOWER(process_name) LIKE '%\wmic.exe'
-        OR LOWER(process_name) LIKE '%\reg.exe'
-        OR LOWER(process_name) LIKE '%\certutil.exe'
-        OR LOWER(process_name) LIKE '%\bitsadmin.exe'
-        OR LOWER(process_name) LIKE '%\mshta.exe'
-        OR LOWER(process_name) LIKE '%\wscript.exe'
-        OR LOWER(process_name) LIKE '%\cscript.exe'
-        OR LOWER(process_name) LIKE '%\rundll32.exe'
-        OR LOWER(process_name) LIKE '%\regsvr32.exe'
-        OR LOWER(process_name) LIKE '%\msiexec.exe'
-        OR LOWER(process_name) LIKE '%\sc.exe'
-        OR LOWER(process_name) LIKE '%\schtasks.exe'
-    )
+- tactic: defense-evasion
+  technique_id: T1218
+  technique_name: System Binary Proxy Execution
+- tactic: execution
+  technique_id: T1059.003
+  technique_name: Command and Scripting Interpreter
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    process_name,\n    command_line\nFROM evtx_events\nWHERE event_id = 4688\n  AND (\n      LOWER(process_name) LIKE '%\\cmd.exe'\n      OR LOWER(process_name) LIKE '%\\net.exe'\n      OR LOWER(process_name) LIKE '%\\net1.exe'\n      OR LOWER(process_name) LIKE '%\\wmic.exe'\n      OR LOWER(process_name) LIKE '%\\reg.exe'\n      OR LOWER(process_name) LIKE '%\\certutil.exe'\n      OR LOWER(process_name) LIKE '%\\bitsadmin.exe'\n      OR LOWER(process_name) LIKE '%\\mshta.exe'\n      OR LOWER(process_name) LIKE '%\\wscript.exe'\n      OR LOWER(process_name) LIKE '%\\cscript.exe'\n      OR LOWER(process_name) LIKE '%\\rundll32.exe'\n      OR LOWER(process_name) LIKE '%\\regsvr32.exe'\n      OR LOWER(process_name) LIKE '%\\msiexec.exe'\n      OR LOWER(process_name) LIKE '%\\sc.exe'\n      OR LOWER(process_name) LIKE '%\\schtasks.exe'\n  )\n"
 finding:
-  title: "LOLBAS-style tool execution: {process_name} @ {computer}"
-  summary: "{target_user} executed {process_name} on {computer} at {timestamp}. Command line: {command_line}. This tool may be used for living-off-the-land activity by attackers."
+  title: 'LOLBAS-style tool execution: {process_name} @ {computer}'
+  summary: '{target_user} executed {process_name} on {computer} at {timestamp}. Command line: {command_line}. This tool may be used for living-off-the-land activity by attackers.'

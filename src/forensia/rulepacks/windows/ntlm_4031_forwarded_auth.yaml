@@ -3,25 +3,18 @@ title: NTLM forwarded authentication
 severity: high
 confidence: 0.75
 required_fields:
-  - computer
-  - target_user
-  - src_ip
+- computer
+- target_user
+- src_ip
 tags:
-  - windows
-  - ntlm
-  - relay-attack
+- windows
+- ntlm
+- relay-attack
 attack:
-  - T1559
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_user,
-      src_ip
-  FROM evtx_events
-  WHERE event_id = 4031
-    AND channel LIKE '%NTLM%'
+- tactic: execution
+  technique_id: T1559
+  technique_name: Inter-Process Communication
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    src_ip\nFROM evtx_events\nWHERE event_id = 4031\n  AND channel LIKE '%NTLM%'\n"
 finding:
-  title: "NTLM forwarded auth on {computer}"
-  summary: "NTLM authentication was forwarded on {computer} at {timestamp}. User: {target_user}, Source IP: {src_ip}. This may indicate NTLM relay attacks or cross-forest authentication."
+  title: NTLM forwarded auth on {computer}
+  summary: 'NTLM authentication was forwarded on {computer} at {timestamp}. User: {target_user}, Source IP: {src_ip}. This may indicate NTLM relay attacks or cross-forest authentication.'

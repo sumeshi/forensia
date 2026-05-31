@@ -3,26 +3,17 @@ title: Task Scheduler events (comprehensive)
 severity: medium
 confidence: 0.6
 required_fields:
-  - computer
-  - task_name
+- computer
+- task_name
 tags:
-  - windows
-  - scheduled-task
-  - persistence
+- windows
+- scheduled-task
+- persistence
 attack:
-  - T1053
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      task_name,
-      event_id,
-      user_name,
-      message
-  FROM evtx_events
-  WHERE event_id IN (100, 101, 102, 103, 106, 107, 108, 110, 111, 118, 119, 129, 140, 141, 142, 200, 201, 203)
-    AND LOWER(COALESCE(channel, '')) LIKE '%taskscheduler%'
+- tactic: execution
+  technique_id: T1053
+  technique_name: Scheduled Task/Job
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    task_name,\n    event_id,\n    user_name,\n    message\nFROM evtx_events\nWHERE event_id IN (100, 101, 102, 103, 106, 107, 108, 110, 111, 118, 119, 129, 140, 141, 142, 200, 201, 203)\n  AND LOWER(COALESCE(channel, '')) LIKE '%taskscheduler%'\n"
 finding:
-  title: "Task Scheduler event {event_id} on {computer}"
-  summary: "Task Scheduler event {event_id} for '{task_name}' on {computer} at {timestamp}. User: {user_name}. Details: {message}."
+  title: Task Scheduler event {event_id} on {computer}
+  summary: 'Task Scheduler event {event_id} for ''{task_name}'' on {computer} at {timestamp}. User: {user_name}. Details: {message}.'

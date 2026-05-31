@@ -3,24 +3,17 @@ title: RDP-Tcp connection received
 severity: medium
 confidence: 0.65
 required_fields:
-  - computer
-  - src_ip
+- computer
+- src_ip
 tags:
-  - windows
-  - rdp
-  - lateral-movement
+- windows
+- rdp
+- lateral-movement
 attack:
-  - T1021.001
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      src_ip,
-      message
-  FROM evtx_events
-  WHERE event_id = 261
-    AND LOWER(COALESCE(channel, '')) LIKE '%remoteconnectionmanager%'
+- tactic: lateral-movement
+  technique_id: T1021.001
+  technique_name: Remote Desktop Protocol
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    src_ip,\n    message\nFROM evtx_events\nWHERE event_id = 261\n  AND LOWER(COALESCE(channel, '')) LIKE '%remoteconnectionmanager%'\n"
 finding:
-  title: "RDP connection received on {computer}"
-  summary: "RDP-Tcp connection received on {computer} at {timestamp}. Source IP: {src_ip}. This event provides the initial connection before authentication."
+  title: RDP connection received on {computer}
+  summary: 'RDP-Tcp connection received on {computer} at {timestamp}. Source IP: {src_ip}. This event provides the initial connection before authentication.'

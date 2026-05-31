@@ -3,73 +3,64 @@ title: Failed logon attempts (grouped by IP)
 severity: medium
 confidence: 0.6
 required_fields:
+- src_ip
+- computer
+- target_user
+- fail_count
+- first_seen
+- last_seen
+tags:
+- windows
+- logon
+- brute-force
+attack:
+- tactic: credential-access
+  technique_id: T1110
+  technique_name: Brute Force
+query: "WITH filtered AS (\n    SELECT\n        src_ip,\n        computer,\n        target_user,\n        timestamp,\n        TIME_BUCKET(INTERVAL '15 minutes', timestamp) AS window_start\n    FROM evtx_events\n    WHERE event_id = 4625\n      AND src_ip IS NOT NULL\n      AND TRIM(src_ip) NOT IN ('', '-', '::1', '127.0.0.1')\n      AND TRIM(src_ip) NOT LIKE '::ffff:127.%'\n)\nSELECT\n    src_ip,\n    computer,\n    target_user,\n    COUNT(*) AS fail_count,\n    MIN(timestamp) AS first_seen,\n    MAX(timestamp) AS last_seen\nFROM filtered\nGROUP BY src_ip, computer, target_user, window_start\nHAVING COUNT(*) >= 5\nORDER BY fail_count DESC, last_seen DESC\n"
+finding:
+  title: 'Repeated failed logons: {src_ip} -> {computer} ({target_user})'
+  summary: '{fail_count} failed logons from {src_ip} against {target_user} on {computer} were observed from {first_seen} to {last_seen}. This may indicate brute-force activity or password spraying.'
+hypotheses:
+- id: rdp_brute_force
+  segment: credential-access
+  description: Multiple failed logons from {src_ip} against {target_user} on {computer} indicates RDP brute-force or password spraying attempt
+  required_entities:
   - src_ip
   - computer
   - target_user
-  - fail_count
-  - first_seen
-  - last_seen
-tags:
-  - windows
-  - logon
-  - brute-force
-attack:
-  - T1110
-query: |
-  WITH filtered AS (
-      SELECT
-          src_ip,
-          computer,
-          target_user,
-          timestamp,
-          TIME_BUCKET(INTERVAL '15 minutes', timestamp) AS window_start
-      FROM evtx_events
-      WHERE event_id = 4625
-        AND src_ip IS NOT NULL
-        AND TRIM(src_ip) NOT IN ('', '-', '::1', '127.0.0.1')
-        AND TRIM(src_ip) NOT LIKE '::ffff:127.%'
-  )
-  SELECT
-      src_ip,
-      computer,
-      target_user,
-      COUNT(*) AS fail_count,
-      MIN(timestamp) AS first_seen,
-      MAX(timestamp) AS last_seen
-  FROM filtered
-  GROUP BY src_ip, computer, target_user, window_start
-  HAVING COUNT(*) >= 5
-  ORDER BY fail_count DESC, last_seen DESC
-finding:
-  title: "Repeated failed logons: {src_ip} -> {computer} ({target_user})"
-  summary: "{fail_count} failed logons from {src_ip} against {target_user} on {computer} were observed from {first_seen} to {last_seen}. This may indicate brute-force activity or password spraying."
-hypotheses:
-  - id: rdp_brute_force
-    segment: credential-access
-    description: "Multiple failed logons from {src_ip} against {target_user} on {computer} indicates RDP brute-force or password spraying attempt"
-    required_entities: [src_ip, computer, target_user]
-    confirm_when:
-      co_observed_event_ids: [4625]
-      same_host: true
-      within_minutes: 15
-    refute_when:
-      zero_rows: true
-    follow_up_questions:
-      - "Did any of the failed attempts from {src_ip} eventually succeed (4624) on {computer}?"
-      - "Are there other target users on {computer} being targeted from {src_ip}?"
-      - "What is the source reputation of {src_ip}?"
-    report_sections: [3_technical, 4_gaps]
-  - id: password_spray
-    segment: credential-access
-    description: "Coordinated failed logons from {src_ip} targeting {target_user} on {computer} may indicate password spraying across multiple accounts"
-    required_entities: [src_ip, computer, target_user]
-    confirm_when:
-      co_observed_event_ids: [4625, 4624]
-      same_host: true
-      within_minutes: 30
-    refute_when:
-      zero_rows: true
-    follow_up_questions:
-      - "How many distinct target users were targeted from {src_ip}?"
-      - "Were there any successful logons immediately after the failure burst?"
-    report_sections: [3_technical, 4_gaps]
+  confirm_when:
+    co_observed_event_ids:
+    - 4625
+    same_host: true
+    within_minutes: 15
+  refute_when:
+    zero_rows: true
+  follow_up_questions:
+  - Did any of the failed attempts from {src_ip} eventually succeed (4624) on {computer}?
+  - Are there other target users on {computer} being targeted from {src_ip}?
+  - What is the source reputation of {src_ip}?
+  report_sections:
+  - 3_technical
+  - 4_gaps
+- id: password_spray
+  segment: credential-access
+  description: Coordinated failed logons from {src_ip} targeting {target_user} on {computer} may indicate password spraying across multiple accounts
+  required_entities:
+  - src_ip
+  - computer
+  - target_user
+  confirm_when:
+    co_observed_event_ids:
+    - 4625
+    - 4624
+    same_host: true
+    within_minutes: 30
+  refute_when:
+    zero_rows: true
+  follow_up_questions:
+  - How many distinct target users were targeted from {src_ip}?
+  - Were there any successful logons immediately after the failure burst?
+  report_sections:
+  - 3_technical
+  - 4_gaps

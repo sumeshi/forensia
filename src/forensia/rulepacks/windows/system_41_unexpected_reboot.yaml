@@ -3,18 +3,13 @@ title: Unexpected reboot (System Event 41)
 severity: low
 confidence: 0.3
 tags:
-  - windows
-  - reboot
+- windows
+- reboot
 attack:
-  - T1529
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      message
-  FROM evtx_events
-  WHERE event_id = 41
+- tactic: impact
+  technique_id: T1529
+  technique_name: System Shutdown/Reboot
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    message\nFROM evtx_events\nWHERE event_id = 41\n"
 finding:
-  title: "Unexpected reboot: {computer}"
-  summary: "An unexpected reboot (41) was observed on {computer} at {timestamp}. Details: {message}. A forced reboot may indicate a BSOD, driver crash, or anti-forensics; check kernel crash dumps and correlate with event 6008."
+  title: 'Unexpected reboot: {computer}'
+  summary: 'An unexpected reboot (41) was observed on {computer} at {timestamp}. Details: {message}. A forced reboot may indicate a BSOD, driver crash, or anti-forensics; check kernel crash dumps and correlate with event 6008.'

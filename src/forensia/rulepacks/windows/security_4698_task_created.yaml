@@ -3,37 +3,36 @@ title: Scheduled task created (Event 4698)
 severity: high
 confidence: 0.75
 tags:
-  - windows
-  - persistence
-  - scheduled-task
+- windows
+- persistence
+- scheduled-task
 attack:
-  - T1053.005
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_user,
-      subject_user,
-      message
-  FROM evtx_events
-  WHERE event_id = 4698
+- tactic: execution
+  technique_id: T1053.005
+  technique_name: Scheduled Task
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    subject_user,\n    message\nFROM evtx_events\nWHERE event_id = 4698\n"
 finding:
-  title: "Scheduled task created: {computer} ({subject_user})"
-  summary: "{subject_user} created a scheduled task on {computer} at {timestamp}. Review the execution command and creator account; this is a common persistence technique."
+  title: 'Scheduled task created: {computer} ({subject_user})'
+  summary: '{subject_user} created a scheduled task on {computer} at {timestamp}. Review the execution command and creator account; this is a common persistence technique.'
 hypotheses:
-  - id: persistence_via_scheduled_task
-    segment: persistence
-    description: "Scheduled task created by {subject_user} on {computer} may be a persistence mechanism"
-    required_entities: [subject_user, computer]
-    confirm_when:
-      co_observed_event_ids: [4698, 106]
-      same_host: true
-      within_minutes: 5
-    refute_when:
-      zero_rows: true
-    follow_up_questions:
-      - "What command does the scheduled task execute on {computer}?"
-      - "When is the task trigger configured on {computer}?"
-      - "Was the task created after a network logon on {computer}?"
-    report_sections: [3_technical, 4_gaps]
+- id: persistence_via_scheduled_task
+  segment: persistence
+  description: Scheduled task created by {subject_user} on {computer} may be a persistence mechanism
+  required_entities:
+  - subject_user
+  - computer
+  confirm_when:
+    co_observed_event_ids:
+    - 4698
+    - 106
+    same_host: true
+    within_minutes: 5
+  refute_when:
+    zero_rows: true
+  follow_up_questions:
+  - What command does the scheduled task execute on {computer}?
+  - When is the task trigger configured on {computer}?
+  - Was the task created after a network logon on {computer}?
+  report_sections:
+  - 3_technical
+  - 4_gaps

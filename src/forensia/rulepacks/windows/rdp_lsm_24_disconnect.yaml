@@ -3,23 +3,14 @@ title: RDP session disconnect (LocalSessionManager Event 24)
 severity: low
 confidence: 0.3
 tags:
-  - windows
-  - rdp
-  - terminalservices
+- windows
+- rdp
+- terminalservices
 attack:
-  - T1021.001
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_user,
-      src_ip,
-      channel,
-      message
-  FROM evtx_events
-  WHERE event_id = 24
-    AND LOWER(COALESCE(channel, '')) LIKE '%localsessionmanager%'
+- tactic: lateral-movement
+  technique_id: T1021.001
+  technique_name: Remote Desktop Protocol
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    src_ip,\n    channel,\n    message\nFROM evtx_events\nWHERE event_id = 24\n  AND LOWER(COALESCE(channel, '')) LIKE '%localsessionmanager%'\n"
 finding:
-  title: "RDP session disconnect: {target_user} @ {computer}"
-  summary: "An RDP session disconnect (LocalSessionManager 24) was observed on {computer} at {timestamp}. Source IP: {src_ip}. Disconnect by itself is low-signal; it becomes suspicious if followed immediately by reconnect events (25 or 4778) from a different IP."
+  title: 'RDP session disconnect: {target_user} @ {computer}'
+  summary: 'An RDP session disconnect (LocalSessionManager 24) was observed on {computer} at {timestamp}. Source IP: {src_ip}. Disconnect by itself is low-signal; it becomes suspicious if followed immediately by reconnect events (25 or 4778) from a different IP.'

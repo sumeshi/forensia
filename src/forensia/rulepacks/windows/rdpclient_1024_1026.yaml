@@ -3,25 +3,17 @@ title: RDP client connection events
 severity: medium
 confidence: 0.65
 required_fields:
-  - computer
-  - target_server
+- computer
+- target_server
 tags:
-  - windows
-  - rdp
-  - lateral-movement
+- windows
+- rdp
+- lateral-movement
 attack:
-  - T1021.001
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      event_id,
-      target_server,
-      message
-  FROM evtx_events
-  WHERE event_id IN (1024, 1026)
-    AND LOWER(COALESCE(channel, '')) LIKE '%rdpclient%'
+- tactic: lateral-movement
+  technique_id: T1021.001
+  technique_name: Remote Desktop Protocol
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    event_id,\n    target_server,\n    message\nFROM evtx_events\nWHERE event_id IN (1024, 1026)\n  AND LOWER(COALESCE(channel, '')) LIKE '%rdpclient%'\n"
 finding:
-  title: "RDP client event {event_id} on {computer}"
-  summary: "RDP client event {event_id} on {computer} at {timestamp}. Target: {target_server}. Details: {message}."
+  title: RDP client event {event_id} on {computer}
+  summary: 'RDP client event {event_id} on {computer} at {timestamp}. Target: {target_server}. Details: {message}.'

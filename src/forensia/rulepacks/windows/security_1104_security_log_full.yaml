@@ -3,20 +3,14 @@ title: Security log full (Event 1104)
 severity: medium
 confidence: 0.6
 tags:
-  - windows
-  - log-management
-  - security-log
+- windows
+- log-management
+- security-log
 attack:
-  - T1562.001
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      subject_user,
-      message
-  FROM evtx_events
-  WHERE event_id = 1104
+- tactic: defense-evasion
+  technique_id: T1562.001
+  technique_name: Disable or Modify Tools
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    subject_user,\n    message\nFROM evtx_events\nWHERE event_id = 1104\n"
 finding:
-  title: "Security log full: {computer}"
-  summary: "Security log full event (1104) was observed on {computer} at {timestamp}. New audit events may be lost; review retention settings and any heavy event volume immediately beforehand."
+  title: 'Security log full: {computer}'
+  summary: Security log full event (1104) was observed on {computer} at {timestamp}. New audit events may be lost; review retention settings and any heavy event volume immediately beforehand.

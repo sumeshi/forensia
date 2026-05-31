@@ -3,20 +3,14 @@ title: Windows Defender real-time protection disabled (Event 5001)
 severity: high
 confidence: 0.9
 tags:
-  - windows
-  - defense-evasion
-  - defender
+- windows
+- defense-evasion
+- defender
 attack:
-  - T1562.001
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_user,
-      message
-  FROM evtx_events
-  WHERE event_id = 5001
+- tactic: defense-evasion
+  technique_id: T1562.001
+  technique_name: Disable or Modify Tools
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    message\nFROM evtx_events\nWHERE event_id = 5001\n"
 finding:
-  title: "[HIGH] Defender real-time protection disabled (5001): {computer}"
-  summary: "Windows Defender real-time protection was disabled on {computer} at {timestamp} (5001). Correlate with subsequent 4688 process execution to determine whether protection was turned off in preparation for malware execution."
+  title: '[HIGH] Defender real-time protection disabled (5001): {computer}'
+  summary: Windows Defender real-time protection was disabled on {computer} at {timestamp} (5001). Correlate with subsequent 4688 process execution to determine whether protection was turned off in preparation for malware execution.

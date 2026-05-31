@@ -3,22 +3,14 @@ title: User account locked out (Event 4740)
 severity: medium
 confidence: 0.6
 tags:
-  - windows
-  - account-management
-  - brute-force
+- windows
+- account-management
+- brute-force
 attack:
-  - T1110
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_user,
-      subject_user,
-      src_ip,
-      message
-  FROM evtx_events
-  WHERE event_id = 4740
+- tactic: credential-access
+  technique_id: T1110
+  technique_name: Brute Force
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    subject_user,\n    src_ip,\n    message\nFROM evtx_events\nWHERE event_id = 4740\n"
 finding:
-  title: "Account lockout: {target_user}"
-  summary: "Account '{target_user}' was locked out at {timestamp} (4740). Recording host: {computer}, source IP: {src_ip}. This may indicate brute-force activity or a concentrated burst of authentication failures."
+  title: 'Account lockout: {target_user}'
+  summary: 'Account ''{target_user}'' was locked out at {timestamp} (4740). Recording host: {computer}, source IP: {src_ip}. This may indicate brute-force activity or a concentrated burst of authentication failures.'

@@ -3,22 +3,16 @@ title: OS started (Kernel-General Event 12)
 severity: low
 confidence: 0.6
 required_fields:
-  - computer
+- computer
 tags:
-  - windows
-  - system
-  - boot
+- windows
+- system
+- boot
 attack:
-  - T1562.001
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      message
-  FROM evtx_events
-  WHERE event_id = 12
-    AND LOWER(COALESCE(channel, '')) LIKE '%system%'
+- tactic: defense-evasion
+  technique_id: T1562.001
+  technique_name: Disable or Modify Tools
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    message\nFROM evtx_events\nWHERE event_id = 12\n  AND LOWER(COALESCE(channel, '')) LIKE '%system%'\n"
 finding:
-  title: "OS started: {computer}"
-  summary: "Kernel-General event 12 recorded on {computer} at {timestamp} — the OS has started. Correlate with event 13 (shutdown start) and 6005/6006 (EventLog service start/stop) to reconstruct reboot sequences. Unexpected boot times may indicate unauthorized restarts."
+  title: 'OS started: {computer}'
+  summary: Kernel-General event 12 recorded on {computer} at {timestamp} — the OS has started. Correlate with event 13 (shutdown start) and 6005/6006 (EventLog service start/stop) to reconstruct reboot sequences. Unexpected boot times may indicate unauthorized restarts.

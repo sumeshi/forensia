@@ -3,53 +3,17 @@ title: RDP or network logon followed by log clear within 30 minutes
 severity: critical
 confidence: 0.85
 tags:
-  - windows
-  - correlation
-  - anti-forensics
+- windows
+- correlation
+- anti-forensics
 attack:
-  - T1070.001
-  - T1021
-query: |
-  WITH logons AS (
-      SELECT
-          timestamp AS logon_time,
-          computer,
-          src_ip,
-          target_user,
-          logon_type
-      FROM evtx_events
-      WHERE event_id = 4624
-        AND logon_type IN ('3', '10')
-        AND COALESCE(target_user, '') NOT LIKE '%$'
-  ),
-  clears AS (
-      SELECT
-          timestamp AS clear_time,
-          computer,
-          event_id AS clear_event_id,
-          subject_user,
-          channel
-      FROM evtx_events
-      WHERE event_id = 1102
-         OR (
-            event_id = 104
-            AND LOWER(COALESCE(json_extract_string(raw_json, '$.winlog.provider.name'), '')) = 'microsoft-windows-eventlog'
-         )
-  )
-  SELECT
-      l.src_ip,
-      l.computer,
-      l.target_user,
-      l.logon_type,
-      l.logon_time,
-      c.clear_time,
-      c.clear_event_id,
-      c.subject_user,
-      c.channel
-  FROM logons l
-  JOIN clears c
-    ON l.computer = c.computer
-   AND c.clear_time BETWEEN l.logon_time AND l.logon_time + INTERVAL 30 MINUTE
+- tactic: defense-evasion
+  technique_id: T1070.001
+  technique_name: 'Indicator Removal: Clear Windows Event Logs'
+- tactic: lateral-movement
+  technique_id: T1021
+  technique_name: Remote Services
+query: "WITH logons AS (\n    SELECT\n        timestamp AS logon_time,\n        computer,\n        src_ip,\n        target_user,\n        logon_type\n    FROM evtx_events\n    WHERE event_id = 4624\n      AND logon_type IN ('3', '10')\n      AND COALESCE(target_user, '') NOT LIKE '%$'\n),\nclears AS (\n    SELECT\n        timestamp AS clear_time,\n        computer,\n        event_id AS clear_event_id,\n        subject_user,\n        channel\n    FROM evtx_events\n    WHERE event_id = 1102\n       OR (\n          event_id = 104\n          AND LOWER(COALESCE(json_extract_string(raw_json, '$.winlog.provider.name'), '')) = 'microsoft-windows-eventlog'\n       )\n)\nSELECT\n    l.src_ip,\n    l.computer,\n    l.target_user,\n    l.logon_type,\n    l.logon_time,\n    c.clear_time,\n    c.clear_event_id,\n    c.subject_user,\n    c.channel\nFROM logons l\nJOIN clears c\n  ON l.computer = c.computer\n AND c.clear_time BETWEEN l.logon_time AND l.logon_time + INTERVAL 30 MINUTE\n"
 finding:
-  title: "Log clearing after logon: {target_user} @ {computer}"
-  summary: "After a successful logon of type {logon_type} from {src_ip} to {computer} at {logon_time}, log clearing event {clear_event_id} was observed at {clear_time}. Actor: {subject_user}, channel: {channel}. This strongly suggests post-compromise anti-forensics."
+  title: 'Log clearing after logon: {target_user} @ {computer}'
+  summary: 'After a successful logon of type {logon_type} from {src_ip} to {computer} at {logon_time}, log clearing event {clear_event_id} was observed at {clear_time}. Actor: {subject_user}, channel: {channel}. This strongly suggests post-compromise anti-forensics.'

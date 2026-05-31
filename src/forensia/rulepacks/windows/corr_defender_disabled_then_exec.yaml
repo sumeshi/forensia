@@ -3,71 +3,41 @@ title: Defender disabled followed by suspicious execution within 60 minutes
 severity: critical
 confidence: 0.85
 tags:
-  - windows
-  - correlation
-  - defender
-  - execution
+- windows
+- correlation
+- defender
+- execution
 attack:
-  - T1562.001
-  - T1059
-query: |
-  WITH disabled AS (
-      SELECT
-          timestamp AS disabled_time,
-          computer,
-          target_user
-      FROM evtx_events
-      WHERE event_id = 5001
-  ),
-  suspicious_exec AS (
-      SELECT
-          timestamp AS exec_time,
-          computer,
-          target_user,
-          process_name,
-          command_line
-      FROM evtx_events
-      WHERE event_id = 4688
-        AND (
-          LOWER(COALESCE(process_name, '')) LIKE '%powershell.exe'
-          OR LOWER(COALESCE(process_name, '')) LIKE '%pwsh.exe'
-          OR LOWER(COALESCE(process_name, '')) LIKE '%\cmd.exe'
-          OR LOWER(COALESCE(process_name, '')) LIKE '%\certutil.exe'
-          OR LOWER(COALESCE(process_name, '')) LIKE '%\bitsadmin.exe'
-          OR LOWER(COALESCE(process_name, '')) LIKE '%\mshta.exe'
-          OR LOWER(COALESCE(process_name, '')) LIKE '%\rundll32.exe'
-          OR LOWER(COALESCE(process_name, '')) LIKE '%\regsvr32.exe'
-          OR LOWER(COALESCE(process_name, '')) LIKE '%\schtasks.exe'
-          OR LOWER(COALESCE(process_name, '')) LIKE '%\sc.exe'
-        )
-  )
-  SELECT
-      d.computer,
-      d.target_user,
-      d.disabled_time,
-      s.exec_time,
-      s.process_name,
-      s.command_line
-  FROM disabled d
-  JOIN suspicious_exec s
-    ON d.computer = s.computer
-   AND s.exec_time BETWEEN d.disabled_time AND d.disabled_time + INTERVAL 60 MINUTE
+- tactic: defense-evasion
+  technique_id: T1562.001
+  technique_name: Disable or Modify Tools
+- tactic: execution
+  technique_id: T1059
+  technique_name: Command and Scripting Interpreter
+query: "WITH disabled AS (\n    SELECT\n        timestamp AS disabled_time,\n        computer,\n        target_user\n    FROM evtx_events\n    WHERE event_id = 5001\n),\nsuspicious_exec AS (\n    SELECT\n        timestamp AS exec_time,\n        computer,\n        target_user,\n        process_name,\n        command_line\n    FROM evtx_events\n    WHERE event_id = 4688\n      AND (\n        LOWER(COALESCE(process_name, '')) LIKE '%powershell.exe'\n        OR LOWER(COALESCE(process_name, '')) LIKE '%pwsh.exe'\n        OR LOWER(COALESCE(process_name, '')) LIKE '%\\cmd.exe'\n        OR LOWER(COALESCE(process_name, '')) LIKE '%\\certutil.exe'\n        OR LOWER(COALESCE(process_name, '')) LIKE '%\\bitsadmin.exe'\n        OR LOWER(COALESCE(process_name, '')) LIKE '%\\mshta.exe'\n        OR LOWER(COALESCE(process_name, '')) LIKE '%\\rundll32.exe'\n        OR LOWER(COALESCE(process_name, '')) LIKE '%\\regsvr32.exe'\n        OR LOWER(COALESCE(process_name, '')) LIKE '%\\schtasks.exe'\n        OR LOWER(COALESCE(process_name, '')) LIKE '%\\sc.exe'\n      )\n)\nSELECT\n    d.computer,\n    d.target_user,\n    d.disabled_time,\n    s.exec_time,\n    s.process_name,\n    s.command_line\nFROM disabled d\nJOIN suspicious_exec s\n  ON d.computer = s.computer\n AND s.exec_time BETWEEN d.disabled_time AND d.disabled_time + INTERVAL 60 MINUTE\n"
 finding:
-  title: "Suspicious execution after Defender disablement: {computer}"
-  summary: "After Defender real-time protection was disabled on {computer} at {disabled_time}, {process_name} executed at {exec_time}. Command line: {command_line}. This strongly suggests defense evasion immediately preceding malware execution."
+  title: 'Suspicious execution after Defender disablement: {computer}'
+  summary: 'After Defender real-time protection was disabled on {computer} at {disabled_time}, {process_name} executed at {exec_time}. Command line: {command_line}. This strongly suggests defense evasion immediately preceding malware execution.'
 hypotheses:
-  - id: defense_evasion_then_execution
-    segment: defense-evasion
-    description: "Defender disabled on {computer} followed by {process_name} execution indicates defense evasion preceding malicious activity"
-    required_entities: [computer, target_user, process_name]
-    confirm_when:
-      co_observed_event_ids: [5001, 4688]
-      same_host: true
-      within_minutes: 60
-    refute_when:
-      zero_rows: true
-    follow_up_questions:
-      - "What was the full command line executed on {computer} after Defender was disabled?"
-      - "Was the executed {process_name} on {computer} signed or unsigned?"
-      - "Were there network connections initiated by {process_name} on {computer}?"
-    report_sections: [3_technical, 4_gaps]
+- id: defense_evasion_then_execution
+  segment: defense-evasion
+  description: Defender disabled on {computer} followed by {process_name} execution indicates defense evasion preceding malicious activity
+  required_entities:
+  - computer
+  - target_user
+  - process_name
+  confirm_when:
+    co_observed_event_ids:
+    - 5001
+    - 4688
+    same_host: true
+    within_minutes: 60
+  refute_when:
+    zero_rows: true
+  follow_up_questions:
+  - What was the full command line executed on {computer} after Defender was disabled?
+  - Was the executed {process_name} on {computer} signed or unsigned?
+  - Were there network connections initiated by {process_name} on {computer}?
+  report_sections:
+  - 3_technical
+  - 4_gaps

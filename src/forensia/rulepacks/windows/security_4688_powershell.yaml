@@ -3,30 +3,19 @@ title: PowerShell execution via process creation (Event 4688)
 severity: medium
 confidence: 0.6
 required_fields:
-  - target_user
-  - computer
-  - process_name
-  - command_line
+- target_user
+- computer
+- process_name
+- command_line
 tags:
-  - windows
-  - powershell
-  - execution
+- windows
+- powershell
+- execution
 attack:
-  - T1059.001
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_user,
-      process_name,
-      command_line
-  FROM evtx_events
-  WHERE event_id = 4688
-    AND (
-        LOWER(process_name) LIKE '%powershell.exe'
-        OR LOWER(process_name) LIKE '%pwsh.exe'
-    )
+- tactic: execution
+  technique_id: T1059.001
+  technique_name: PowerShell
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    process_name,\n    command_line\nFROM evtx_events\nWHERE event_id = 4688\n  AND (\n      LOWER(process_name) LIKE '%powershell.exe'\n      OR LOWER(process_name) LIKE '%pwsh.exe'\n  )\n"
 finding:
-  title: "PowerShell execution: {target_user} @ {computer}"
-  summary: "{target_user} executed PowerShell on {computer} at {timestamp}. Command line: {command_line}. Check for suspicious flags such as encoded commands or execution policy bypass."
+  title: 'PowerShell execution: {target_user} @ {computer}'
+  summary: '{target_user} executed PowerShell on {computer} at {timestamp}. Command line: {command_line}. Check for suspicious flags such as encoded commands or execution policy bypass.'

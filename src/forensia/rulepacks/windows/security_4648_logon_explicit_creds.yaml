@@ -3,46 +3,47 @@ title: Logon with explicit credentials (Event 4648)
 severity: high
 confidence: 0.75
 required_fields:
+- subject_user
+- target_user
+- computer
+- process_name
+tags:
+- windows
+- logon
+- lateral-movement
+- pass-the-hash
+attack:
+- tactic: initial-access
+  technique_id: T1078
+  technique_name: Valid Accounts
+- tactic: lateral-movement
+  technique_id: T1550
+  technique_name: Use Alternate Authentication Material
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    subject_user,\n    src_ip,\n    process_name\nFROM evtx_events\nWHERE event_id = 4648\n  AND target_user NOT LIKE '%$'\n"
+finding:
+  title: 'Logon attempt with explicit credentials (4648): {subject_user} -> {target_user}'
+  summary: '{subject_user} explicitly used credentials for {target_user} in a logon attempt on {computer} at {timestamp}. Process: {process_name}. This is credential-use evidence that may support a lateral movement hypothesis, but it does not by itself confirm Pass-the-Hash, PsExec, or another specific technique.'
+hypotheses:
+- id: credential_reuse_lateral_movement
+  segment: lateral-movement
+  description: '{subject_user} used explicit credentials for {target_user} on {computer} via {process_name}, indicating credential reuse or lateral movement'
+  required_entities:
   - subject_user
   - target_user
   - computer
   - process_name
-tags:
-  - windows
-  - logon
-  - lateral-movement
-  - pass-the-hash
-attack:
-  - T1078
-  - T1550
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_user,
-      subject_user,
-      src_ip,
-      process_name
-  FROM evtx_events
-  WHERE event_id = 4648
-    AND target_user NOT LIKE '%$'
-finding:
-  title: "Logon attempt with explicit credentials (4648): {subject_user} -> {target_user}"
-  summary: "{subject_user} explicitly used credentials for {target_user} in a logon attempt on {computer} at {timestamp}. Process: {process_name}. This is credential-use evidence that may support a lateral movement hypothesis, but it does not by itself confirm Pass-the-Hash, PsExec, or another specific technique."
-hypotheses:
-  - id: credential_reuse_lateral_movement
-    segment: lateral-movement
-    description: "{subject_user} used explicit credentials for {target_user} on {computer} via {process_name}, indicating credential reuse or lateral movement"
-    required_entities: [subject_user, target_user, computer, process_name]
-    confirm_when:
-      co_observed_event_ids: [4648, 4624]
-      same_host: true
-      within_minutes: 10
-    refute_when:
-      zero_rows: true
-    follow_up_questions:
-      - "What process ({process_name}) initiated the credential use on {computer}?"
-      - "Was a network logon (4624 logon_type 3) observed around the same time?"
-      - "Are there multiple explicit credential events from {subject_user} targeting different hosts?"
-    report_sections: [3_technical, 4_gaps]
+  confirm_when:
+    co_observed_event_ids:
+    - 4648
+    - 4624
+    same_host: true
+    within_minutes: 10
+  refute_when:
+    zero_rows: true
+  follow_up_questions:
+  - What process ({process_name}) initiated the credential use on {computer}?
+  - Was a network logon (4624 logon_type 3) observed around the same time?
+  - Are there multiple explicit credential events from {subject_user} targeting different hosts?
+  report_sections:
+  - 3_technical
+  - 4_gaps

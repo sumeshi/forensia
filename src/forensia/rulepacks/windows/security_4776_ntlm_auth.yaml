@@ -3,23 +3,14 @@ title: NTLM authentication attempt (Event 4776)
 severity: low
 confidence: 0.4
 tags:
-  - windows
-  - ntlm
-  - authentication
+- windows
+- ntlm
+- authentication
 attack:
-  - T1550
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_user,
-      subject_user,
-      COALESCE(json_extract_string(raw_json, '$.PackageName'), '-') AS package_name,
-      COALESCE(json_extract_string(raw_json, '$.Workstation'), '-') AS workstation,
-      message
-  FROM evtx_events
-  WHERE event_id = 4776
+- tactic: lateral-movement
+  technique_id: T1550
+  technique_name: Use Alternate Authentication Material
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    subject_user,\n    COALESCE(json_extract_string(raw_json, '$.PackageName'), '-') AS package_name,\n    COALESCE(json_extract_string(raw_json, '$.Workstation'), '-') AS workstation,\n    message\nFROM evtx_events\nWHERE event_id = 4776\n"
 finding:
-  title: "NTLM authentication attempt: {target_user} @ {computer}"
-  summary: "An NTLM authentication attempt (4776) for {target_user} was observed on {computer} at {timestamp}. PackageName: {package_name} / Workstation: {workstation}. Review the authentication source and the use of legacy authentication."
+  title: 'NTLM authentication attempt: {target_user} @ {computer}'
+  summary: 'An NTLM authentication attempt (4776) for {target_user} was observed on {computer} at {timestamp}. PackageName: {package_name} / Workstation: {workstation}. Review the authentication source and the use of legacy authentication.'

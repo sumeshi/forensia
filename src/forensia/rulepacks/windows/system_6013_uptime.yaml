@@ -3,21 +3,16 @@ title: System uptime logged
 severity: low
 confidence: 0.3
 required_fields:
-  - computer
-  - message
+- computer
+- message
 tags:
-  - windows
-  - system-info
+- windows
+- system-info
 attack:
-  - T1033
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      message
-  FROM evtx_events
-  WHERE event_id = 6013
+- tactic: discovery
+  technique_id: T1033
+  technique_name: System Owner/User Discovery
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    message\nFROM evtx_events\nWHERE event_id = 6013\n"
 finding:
-  title: "System uptime on {computer}"
-  summary: "System uptime recorded on {computer} at {timestamp}. Uptime: {message}. Useful for timeline reconstruction and determining system availability."
+  title: System uptime on {computer}
+  summary: 'System uptime recorded on {computer} at {timestamp}. Uptime: {message}. Useful for timeline reconstruction and determining system availability.'

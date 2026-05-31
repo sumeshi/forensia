@@ -3,25 +3,17 @@ title: SMBv1 negotiation events
 severity: medium
 confidence: 0.7
 required_fields:
-  - computer
-  - target_server
+- computer
+- target_server
 tags:
-  - windows
-  - smb
-  - legacy
+- windows
+- smb
+- legacy
 attack:
-  - T1021
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      event_id,
-      target_server,
-      message
-  FROM evtx_events
-  WHERE event_id IN (32000, 32002)
-    AND LOWER(COALESCE(channel, '')) LIKE '%smbclient%'
+- tactic: lateral-movement
+  technique_id: T1021
+  technique_name: Remote Services
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    event_id,\n    target_server,\n    message\nFROM evtx_events\nWHERE event_id IN (32000, 32002)\n  AND LOWER(COALESCE(channel, '')) LIKE '%smbclient%'\n"
 finding:
-  title: "SMBv1 negotiation on {computer}"
-  summary: "SMBv1 negotiation {event_id} with '{target_server}' on {computer} at {timestamp}. SMBv1 is legacy and may indicate older systems or non-Windows targets. Details: {message}."
+  title: SMBv1 negotiation on {computer}
+  summary: 'SMBv1 negotiation {event_id} with ''{target_server}'' on {computer} at {timestamp}. SMBv1 is legacy and may indicate older systems or non-Windows targets. Details: {message}.'

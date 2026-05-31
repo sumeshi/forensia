@@ -3,23 +3,14 @@ title: NewCredentials logon (LogonType=9 / RUNAS /NETWORK)
 severity: high
 confidence: 0.7
 tags:
-  - windows
-  - logon
-  - credential-abuse
+- windows
+- logon
+- credential-abuse
 attack:
-  - T1078
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_user,
-      subject_user,
-      src_ip,
-      logon_type
-  FROM evtx_events
-  WHERE event_id = 4624
-    AND logon_type = '9'
+- tactic: initial-access
+  technique_id: T1078
+  technique_name: Valid Accounts
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    subject_user,\n    src_ip,\n    logon_type\nFROM evtx_events\nWHERE event_id = 4624\n  AND logon_type = '9'\n"
 finding:
-  title: "Explicit credentials logon (LogonType=9): {subject_user} -> {target_user}"
-  summary: "{subject_user} used alternate credentials ({target_user}) to log on at {timestamp} on {computer}. This is a typical pattern for RUNAS /NETWORK or impersonation."
+  title: 'Explicit credentials logon (LogonType=9): {subject_user} -> {target_user}'
+  summary: '{subject_user} used alternate credentials ({target_user}) to log on at {timestamp} on {computer}. This is a typical pattern for RUNAS /NETWORK or impersonation.'

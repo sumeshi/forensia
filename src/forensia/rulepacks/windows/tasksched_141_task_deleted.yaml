@@ -3,22 +3,14 @@ title: Scheduled task deleted (TaskScheduler Event 141)
 severity: medium
 confidence: 0.6
 tags:
-  - windows
-  - anti-forensics
-  - scheduled-task
+- windows
+- anti-forensics
+- scheduled-task
 attack:
-  - T1070.004
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      subject_user,
-      channel,
-      message
-  FROM evtx_events
-  WHERE event_id = 141
-    AND LOWER(COALESCE(channel, '')) LIKE '%taskscheduler%'
+- tactic: defense-evasion
+  technique_id: T1070.004
+  technique_name: 'Indicator Removal: File Deletion'
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    subject_user,\n    channel,\n    message\nFROM evtx_events\nWHERE event_id = 141\n  AND LOWER(COALESCE(channel, '')) LIKE '%taskscheduler%'\n"
 finding:
-  title: "Task deleted: {computer} ({subject_user})"
-  summary: "A TaskScheduler Operational task deletion event (141) was observed on {computer} at {timestamp}. Actor: {subject_user}. Check whether the task was deleted shortly after creation."
+  title: 'Task deleted: {computer} ({subject_user})'
+  summary: 'A TaskScheduler Operational task deletion event (141) was observed on {computer} at {timestamp}. Actor: {subject_user}. Check whether the task was deleted shortly after creation.'

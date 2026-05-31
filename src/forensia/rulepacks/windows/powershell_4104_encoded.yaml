@@ -3,53 +3,47 @@ title: PowerShell encoded or obfuscated script block (Event 4104)
 severity: high
 confidence: 0.8
 tags:
-  - windows
-  - powershell
-  - obfuscation
-  - execution
+- windows
+- powershell
+- obfuscation
+- execution
 attack:
-  - T1059.001
-  - T1027
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      target_user,
-      command_line,
-      message
-  FROM evtx_events
-  WHERE event_id = 4104
-    AND (
-        LOWER(COALESCE(message, command_line, '')) LIKE '%-encodedcommand%'
-        OR LOWER(COALESCE(message, command_line, '')) LIKE '%frombase64%'
-        OR LOWER(COALESCE(message, command_line, '')) LIKE '%iex%'
-        OR LOWER(COALESCE(message, command_line, '')) LIKE '%invoke-expression%'
-        OR LOWER(COALESCE(message, command_line, '')) LIKE '%invoke-mimikatz%'
-        OR LOWER(COALESCE(message, command_line, '')) LIKE '%downloadstring%'
-        OR LOWER(COALESCE(message, command_line, '')) LIKE '%webclient%'
-    )
+- tactic: execution
+  technique_id: T1059.001
+  technique_name: PowerShell
+- tactic: defense-evasion
+  technique_id: T1027
+  technique_name: Obfuscated Files or Information
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    command_line,\n    message\nFROM evtx_events\nWHERE event_id = 4104\n  AND (\n      LOWER(COALESCE(message, command_line, '')) LIKE '%-encodedcommand%'\n      OR LOWER(COALESCE(message, command_line, '')) LIKE '%frombase64%'\n      OR LOWER(COALESCE(message, command_line, '')) LIKE '%iex%'\n      OR LOWER(COALESCE(message, command_line, '')) LIKE '%invoke-expression%'\n      OR LOWER(COALESCE(message, command_line, '')) LIKE '%invoke-mimikatz%'\n      OR LOWER(COALESCE(message, command_line, '')) LIKE '%downloadstring%'\n      OR LOWER(COALESCE(message, command_line, '')) LIKE '%webclient%'\n  )\n"
 finding:
-  title: "Encoded or obfuscated PowerShell script block (4104): {computer}"
-  summary: "An encoded or obfuscated PowerShell script block was detected on {computer} at {timestamp}. Executing user: {target_user}. This strongly suggests malware download or execution."
+  title: 'Encoded or obfuscated PowerShell script block (4104): {computer}'
+  summary: 'An encoded or obfuscated PowerShell script block was detected on {computer} at {timestamp}. Executing user: {target_user}. This strongly suggests malware download or execution.'
 hypotheses:
-  - id: malicious_powershell_execution
-    segment: execution
-    description: "Encoded or obfuscated PowerShell script block detected on {computer} executed by {target_user} indicates malicious execution"
-    required_entities: [computer, target_user]
-    confirm_when:
-      co_observed_event_ids: [4104, 4688]
-      same_host: true
-      within_minutes: 5
-    refute_when:
-      zero_rows: true
-    follow_up_questions:
-      - "What command was decoded from the obfuscated PowerShell block on {computer}?"
-      - "Did the PowerShell process on {computer} initiate network connections?"
-      - "Is there a parent process (4688) that launched PowerShell on {computer}?"
-    report_sections: [3_technical, 4_gaps]
+- id: malicious_powershell_execution
+  segment: execution
+  description: Encoded or obfuscated PowerShell script block detected on {computer} executed by {target_user} indicates malicious execution
+  required_entities:
+  - computer
+  - target_user
+  confirm_when:
+    co_observed_event_ids:
+    - 4104
+    - 4688
+    same_host: true
+    within_minutes: 5
+  refute_when:
+    zero_rows: true
+  follow_up_questions:
+  - What command was decoded from the obfuscated PowerShell block on {computer}?
+  - Did the PowerShell process on {computer} initiate network connections?
+  - Is there a parent process (4688) that launched PowerShell on {computer}?
+  report_sections:
+  - 3_technical
+  - 4_gaps
 fallback_search:
-  - phase: artifact_table
-    table: prefetch_executions
-    keywords: ["powershell.exe", "powershell_ise.exe"]
-    rationale: "PowerShell execution may appear in prefetch even if script block logging is incomplete"
+- phase: artifact_table
+  table: prefetch_executions
+  keywords:
+  - powershell.exe
+  - powershell_ise.exe
+  rationale: PowerShell execution may appear in prefetch even if script block logging is incomplete

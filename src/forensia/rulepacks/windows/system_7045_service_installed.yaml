@@ -3,25 +3,18 @@ title: Service installed (System Event 7045)
 severity: high
 confidence: 0.7
 required_fields:
-  - service_name
-  - computer
-  - subject_user
+- service_name
+- computer
+- subject_user
 tags:
-  - windows
-  - persistence
-  - service
+- windows
+- persistence
+- service
 attack:
-  - T1543.003
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      service_name,
-      subject_user,
-      message
-  FROM evtx_events
-  WHERE event_id = 7045
+- tactic: persistence
+  technique_id: T1543.003
+  technique_name: Windows Service
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    service_name,\n    subject_user,\n    message\nFROM evtx_events\nWHERE event_id = 7045\n"
 finding:
-  title: "Service installed (System 7045): {service_name} @ {computer}"
-  summary: "Service '{service_name}' was installed on {computer} at {timestamp} (7045). Actor: {subject_user}. Even without Security 4697, this should be reviewed as possible persistence or PsExec-related activity."
+  title: 'Service installed (System 7045): {service_name} @ {computer}'
+  summary: 'Service ''{service_name}'' was installed on {computer} at {timestamp} (7045). Actor: {subject_user}. Even without Security 4697, this should be reviewed as possible persistence or PsExec-related activity.'

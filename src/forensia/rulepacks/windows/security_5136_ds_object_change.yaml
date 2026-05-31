@@ -3,25 +3,18 @@ title: Directory service object modified
 severity: medium
 confidence: 0.65
 required_fields:
-  - computer
-  - object_dn
-  - attribute
+- computer
+- object_dn
+- attribute
 tags:
-  - windows
-  - active-directory
-  - defense-evasion
+- windows
+- active-directory
+- defense-evasion
 attack:
-  - T1078
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      object_dn,
-      attribute,
-      message
-  FROM evtx_events
-  WHERE event_id = 5136
+- tactic: defense-evasion
+  technique_id: T1078
+  technique_name: Valid Accounts
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    object_dn,\n    attribute,\n    message\nFROM evtx_events\nWHERE event_id = 5136\n"
 finding:
-  title: "Directory object changed on {computer}"
-  summary: "Active Directory object '{object_dn}' was modified on {computer} at {timestamp}. Attribute: {attribute}. Details: {message}."
+  title: Directory object changed on {computer}
+  summary: 'Active Directory object ''{object_dn}'' was modified on {computer} at {timestamp}. Attribute: {attribute}. Details: {message}.'

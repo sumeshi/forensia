@@ -3,25 +3,17 @@ title: Task completed/failed (TaskScheduler events 102/103)
 severity: medium
 confidence: 0.65
 required_fields:
-  - computer
-  - task_name
+- computer
+- task_name
 tags:
-  - windows
-  - scheduled-task
-  - execution
+- windows
+- scheduled-task
+- execution
 attack:
-  - T1053
-query: |
-  SELECT
-      evidence_id,
-      timestamp,
-      computer,
-      task_name,
-      event_id,
-      message
-  FROM evtx_events
-  WHERE event_id IN (102, 103)
-    AND LOWER(COALESCE(channel, '')) LIKE '%taskscheduler%'
+- tactic: execution
+  technique_id: T1053
+  technique_name: Scheduled Task/Job
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    task_name,\n    event_id,\n    message\nFROM evtx_events\nWHERE event_id IN (102, 103)\n  AND LOWER(COALESCE(channel, '')) LIKE '%taskscheduler%'\n"
 finding:
-  title: "Task event {event_id} on {computer}"
-  summary: "Task '{task_name}' event {event_id} on {computer} at {timestamp}. Details: {message}."
+  title: Task event {event_id} on {computer}
+  summary: 'Task ''{task_name}'' event {event_id} on {computer} at {timestamp}. Details: {message}.'
