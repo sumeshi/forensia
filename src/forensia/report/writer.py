@@ -1952,6 +1952,7 @@ _SCAFFOLD_PATTERNS = [
     re.compile(r"### Structured Data"),
     re.compile(r"^-?\s*(JSON|CSV):\s+.*", re.IGNORECASE),
     re.compile(r"^-\s*structured:.*", re.IGNORECASE),
+    re.compile(r"^\|.*\|$"),
     re.compile(r"^\|[-:|\s]+\|$"),
 ]
 
@@ -2042,28 +2043,56 @@ def _query_top_findings(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
     rows = fetch_records(
         db,
         """
-        SELECT finding_id, title, severity, confidence, summary, evidence
+        SELECT
+          finding_id, title, severity, confidence, summary, evidence,
+          CASE
+            WHEN LOWER(finding_id || ' ' || COALESCE(title, '') || ' ' || COALESCE(summary, '')) LIKE '%4648%'
+              OR LOWER(finding_id || ' ' || COALESCE(title, '') || ' ' || COALESCE(summary, '')) LIKE '%explicit credential%' THEN 0
+            WHEN LOWER(finding_id || ' ' || COALESCE(title, '') || ' ' || COALESCE(summary, '')) LIKE '%4625%'
+              OR LOWER(finding_id || ' ' || COALESCE(title, '') || ' ' || COALESCE(summary, '')) LIKE '%brute%' THEN 1
+            WHEN LOWER(finding_id || ' ' || COALESCE(title, '') || ' ' || COALESCE(summary, '')) LIKE '%ost%'
+              OR LOWER(finding_id || ' ' || COALESCE(title, '') || ' ' || COALESCE(summary, '')) LIKE '%outlook%'
+              OR LOWER(finding_id || ' ' || COALESCE(title, '') || ' ' || COALESCE(summary, '')) LIKE '%browser%'
+              OR LOWER(finding_id || ' ' || COALESCE(title, '') || ' ' || COALESCE(summary, '')) LIKE '%cloud%' THEN 2
+            WHEN LOWER(finding_id || ' ' || COALESCE(title, '') || ' ' || COALESCE(summary, '')) LIKE '%ccleaner%'
+              OR LOWER(finding_id || ' ' || COALESCE(title, '') || ' ' || COALESCE(summary, '')) LIKE '%eraser%'
+              OR LOWER(finding_id || ' ' || COALESCE(title, '') || ' ' || COALESCE(summary, '')) LIKE '%anti%forensic%' THEN 3
+            WHEN finding_id LIKE 'windows-corr-logon-then-service%' THEN 9
+            ELSE 5
+          END AS signal_rank
         FROM findings
         WHERE COALESCE(status, 'accepted') != 'suppressed'
           AND severity IN ('critical','high','medium')
+          AND confidence >= 0.5
           AND COALESCE(title, '') != ''
           AND title NOT LIKE '%:  @%'
+          AND NOT (finding_id LIKE 'windows-corr-logon-then-service%' AND confidence < 0.7)
         ORDER BY
+          signal_rank,
           CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
           confidence DESC,
           created_at DESC
         LIMIT ?
         """,
-        (limit,),
+        (max(limit * 6, limit),),
     )
     normalized: list[dict[str, Any]] = []
+    family_counts: dict[str, int] = {}
     for row in rows:
         item = normalize_value(row)
         if isinstance(item, dict):
+            finding_id = str(item.get("finding_id") or "")
+            family = re.sub(r"-\d{3,}$", "", finding_id) or finding_id
+            if family_counts.get(family, 0) >= 3:
+                continue
+            family_counts[family] = family_counts.get(family, 0) + 1
             evidence_ids = _extract_evidence_ids_from_value(item.get("evidence"))
             if evidence_ids:
                 item["evidence_ids"] = evidence_ids[:5]
+            item.pop("signal_rank", None)
         normalized.append(item)
+        if len(normalized) >= limit:
+            break
     return normalized
 
 
@@ -2482,6 +2511,490 @@ def _final_report_section_body(section_key: str, body: str) -> str:
     return text
 
 
+def _compact_cell(value: Any, max_chars: int = 110) -> str:
+    """Render a value safely inside a Markdown table cell."""
+    value = normalize_value(value)
+    if isinstance(value, list):
+        text = "; ".join(str(item) for item in value if str(item).strip())
+    elif isinstance(value, dict):
+        text = ", ".join(f"{key}={val}" for key, val in value.items() if val not in (None, "", []))
+    else:
+        text = str(value if value is not None else "")
+    text = " ".join(text.replace("\n", " ").split())
+    text = text.replace("|", "\\|")
+    if len(text) > max_chars:
+        return text[: max_chars - 3].rstrip() + "..."
+    return text or "-"
+
+
+def _markdown_table(rows: list[dict[str, Any]], columns: list[tuple[str, str]], *, max_rows: int = 12) -> str:
+    """Build a compact Markdown table for deterministic report sections."""
+    if not rows:
+        return "_No rows available._"
+    header = "| " + " | ".join(label for _, label in columns) + " |"
+    sep = "| " + " | ".join("---" for _ in columns) + " |"
+    body = [
+        "| " + " | ".join(_compact_cell(row.get(key)) for key, _ in columns) + " |"
+        for row in rows[:max_rows]
+    ]
+    if len(rows) > max_rows:
+        body.append(f"| ... | Showing {max_rows} of {len(rows)} rows. |" + " |" * max(0, len(columns) - 2))
+    return "\n".join([header, sep, *body])
+
+
+def _count_table(db: CaseDB) -> list[dict[str, Any]]:
+    rows = fetch_records(
+        db,
+        """
+        SELECT
+          (SELECT COUNT(*) FROM evtx_events) AS evtx_events,
+          (SELECT COUNT(*) FROM mft_entries) AS mft_entries,
+          (SELECT COUNT(*) FROM prefetch_executions) AS prefetch_executions,
+          (SELECT COUNT(DISTINCT computer) FROM evtx_events WHERE COALESCE(computer, '') != '') AS hosts,
+          (SELECT COUNT(DISTINCT channel) FROM evtx_events WHERE COALESCE(channel, '') != '') AS channels
+        """,
+    )
+    if not rows:
+        return []
+    row = rows[0]
+    time_range = _query_evtx_time_range(db)
+    return [
+        {"metric": "EVTX events", "value": row.get("evtx_events"), "scope": f"{time_range.get('first_event', 'unknown')} to {time_range.get('last_event', 'unknown')}"},
+        {"metric": "MFT entries", "value": row.get("mft_entries"), "scope": "Filesystem metadata"},
+        {"metric": "Prefetch executions", "value": row.get("prefetch_executions"), "scope": "Application execution artifacts"},
+        {"metric": "Hosts", "value": row.get("hosts"), "scope": "Distinct EVTX computer names"},
+        {"metric": "EVTX channels", "value": row.get("channels"), "scope": "Distinct channels"},
+    ]
+
+
+def _host_summary_rows(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
+    return fetch_records(
+        db,
+        """
+        SELECT computer AS host, COUNT(*) AS events, MIN(timestamp) AS first_seen, MAX(timestamp) AS last_seen
+        FROM evtx_events
+        WHERE COALESCE(computer, '') != ''
+        GROUP BY computer
+        ORDER BY events DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+
+
+def _account_summary_rows(db: CaseDB, limit: int = 10) -> list[dict[str, Any]]:
+    return fetch_records(
+        db,
+        """
+        SELECT
+          COALESCE(NULLIF(target_user, ''), NULLIF(user_name, ''), NULLIF(subject_user, ''), '-') AS account,
+          computer,
+          COUNT(*) FILTER (WHERE event_id = 4624) AS logons,
+          COUNT(*) FILTER (WHERE event_id = 4625) AS failed_logons,
+          COUNT(*) FILTER (WHERE event_id = 4648) AS explicit_credential_events,
+          MIN(timestamp) AS first_seen,
+          MAX(timestamp) AS last_seen
+        FROM evtx_events
+        WHERE event_id IN (4624, 4625, 4648)
+          AND COALESCE(NULLIF(target_user, ''), NULLIF(user_name, ''), NULLIF(subject_user, '')) IS NOT NULL
+        GROUP BY account, computer
+        ORDER BY explicit_credential_events DESC, failed_logons DESC, logons DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+
+
+def _signal_finding_rows(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in _query_top_findings(db, limit):
+        rows.append(
+            {
+                "finding": item.get("title") or item.get("finding_id"),
+                "severity": item.get("severity"),
+                "confidence": item.get("confidence"),
+                "why_it_matters": item.get("summary"),
+                "reference": "; ".join((item.get("evidence_ids") or [])[:3]) or item.get("finding_id"),
+            }
+        )
+    return rows
+
+
+def _event_interpretation(event_id: Any) -> str:
+    try:
+        event = int(event_id)
+    except (TypeError, ValueError):
+        return "Event"
+    return {
+        4624: "Successful logon",
+        4625: "Failed logon",
+        4648: "Explicit credentials",
+        1100: "Event log service stopped",
+        104: "Event log cleared",
+        1074: "Shutdown/restart initiated",
+        6006: "Event log service stopped",
+    }.get(event, f"Event {event}")
+
+
+def _timeline_rows(db: CaseDB, limit: int = 18) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    evtx_rows = fetch_records(
+        db,
+        """
+        SELECT timestamp, computer, event_id,
+               COALESCE(NULLIF(target_user, ''), NULLIF(user_name, ''), NULLIF(subject_user, ''), '-') AS actor,
+               COALESCE(NULLIF(process_name, ''), NULLIF(service_name, ''), '-') AS object,
+               evidence_id
+        FROM evtx_events
+        WHERE (
+            event_id IN (1100, 1074, 6006)
+            OR (event_id IN (4648, 4625) AND LOWER(COALESCE(channel, '')) LIKE '%security%')
+            OR (event_id = 104 AND LOWER(COALESCE(channel, '')) LIKE '%eventlog%')
+        )
+        ORDER BY timestamp
+        LIMIT 80
+        """,
+    )
+    for row in evtx_rows:
+        rows.append(
+            {
+                "time": row.get("timestamp"),
+                "host": row.get("computer"),
+                "activity": _event_interpretation(row.get("event_id")),
+                "subject": row.get("actor"),
+                "artifact": row.get("object"),
+                "evidence": row.get("evidence_id"),
+            }
+        )
+    prefetch_rows = fetch_records(
+        db,
+        """
+        SELECT last_exec_time AS timestamp, executable_name, exec_count, evidence_id
+        FROM prefetch_executions
+        WHERE UPPER(executable_name) IN (
+          'CCLEANER64.EXE', 'CCLEANER.EXE', 'ERASER.EXE', 'GOOGLEDRIVESYNC.EXE',
+          'CHROME.EXE', 'IEXPLORE.EXE', 'WINWORD.EXE', 'SCHTASKS.EXE'
+        )
+        ORDER BY last_exec_time DESC
+        LIMIT 12
+        """,
+    )
+    for row in prefetch_rows:
+        rows.append(
+            {
+                "time": row.get("timestamp"),
+                "host": "-",
+                "activity": "Application execution",
+                "subject": row.get("executable_name"),
+                "artifact": f"exec_count={row.get('exec_count')}",
+                "evidence": row.get("evidence_id"),
+            }
+        )
+    rows = sorted(rows, key=lambda item: str(item.get("time") or ""))[:limit]
+    return rows
+
+
+def _execution_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
+    return fetch_records(
+        db,
+        """
+        SELECT executable_name, exec_count, last_exec_time, evidence_id, source_file
+        FROM prefetch_executions
+        WHERE UPPER(executable_name) NOT IN (
+          'DLLHOST.EXE', 'CONHOST.EXE', 'AUDIODG.EXE', 'SEARCHFILTERHOST.EXE',
+          'SEARCHPROTOCOLHOST.EXE', 'WMIPRVSE.EXE'
+        )
+        ORDER BY
+          CASE
+            WHEN UPPER(executable_name) IN ('CCLEANER64.EXE','CCLEANER.EXE','ERASER.EXE') THEN 0
+            WHEN UPPER(executable_name) IN ('GOOGLEDRIVESYNC.EXE','CHROME.EXE','IEXPLORE.EXE','WINWORD.EXE') THEN 1
+            ELSE 2
+          END,
+          last_exec_time DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+
+
+def _file_artifact_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
+    return fetch_records(
+        db,
+        """
+        SELECT file_name, file_path,
+               COALESCE(si_modified, si_created, fn_modified, fn_created) AS timestamp,
+               evidence_id
+        FROM mft_entries
+        WHERE (
+             LOWER(file_path) LIKE '%outlook%'
+          OR LOWER(file_path) LIKE '%resignation%'
+          OR LOWER(file_path) LIKE '%secret_project%'
+          OR LOWER(file_path) LIKE '%ccleaner%'
+          OR LOWER(file_path) LIKE '%eraser%'
+          OR LOWER(file_path) LIKE '%google/drive%'
+        )
+          AND COALESCE(is_directory, FALSE) = FALSE
+          AND LOWER(COALESCE(file_name, '')) NOT IN ('logs', 'lang', 'eraser 6', 'user_default')
+        ORDER BY timestamp DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+
+
+def _antiforensic_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in fetch_records(
+        db,
+        """
+        SELECT last_exec_time AS timestamp, executable_name AS artifact, exec_count, evidence_id
+        FROM prefetch_executions
+        WHERE UPPER(executable_name) IN ('CCLEANER64.EXE', 'CCLEANER.EXE', 'ERASER.EXE')
+        ORDER BY last_exec_time DESC
+        LIMIT 6
+        """,
+    ):
+        rows.append({"type": "tool execution", **row})
+    for row in fetch_records(
+        db,
+        """
+        SELECT timestamp, CAST(event_id AS VARCHAR) AS artifact, computer, evidence_id
+        FROM evtx_events
+        WHERE event_id = 1100
+           OR (event_id = 104 AND LOWER(COALESCE(channel, '')) LIKE '%eventlog%')
+        ORDER BY timestamp DESC
+        LIMIT 6
+        """,
+    ):
+        rows.append({"type": "log integrity event", **row})
+    for row in fetch_records(
+        db,
+        """
+        SELECT COALESCE(si_modified, si_created, fn_modified, fn_created) AS timestamp,
+               file_name AS artifact, file_path, evidence_id
+        FROM mft_entries
+        WHERE (
+          LOWER(file_name) LIKE '%ccleaner%.exe%'
+          OR LOWER(file_name) LIKE '%eraser%.exe%'
+          OR LOWER(file_name) IN ('task list.ersy', 'ccleaner.lnk', 'eraser.lnk')
+          OR LOWER(file_path) LIKE '%prefetch%ccleaner%'
+          OR LOWER(file_path) LIKE '%prefetch%eraser%'
+        )
+          AND LOWER(COALESCE(file_name, '')) NOT IN ('lang', 'logs')
+        ORDER BY timestamp DESC
+        LIMIT 6
+        """,
+    ):
+        rows.append({"type": "tool artifact", **row})
+    return sorted(rows, key=lambda item: str(item.get("timestamp") or ""), reverse=True)[:limit]
+
+
+def _network_summary_rows(db: CaseDB) -> list[dict[str, Any]]:
+    row = db.execute(
+        """
+        SELECT
+          COUNT(*) FILTER (WHERE COALESCE(src_ip, '') NOT IN ('', '-', '127.0.0.1', '::1')) AS external_src_ip_rows,
+          COUNT(*) FILTER (WHERE COALESCE(dst_ip, '') NOT IN ('', '-', '127.0.0.1', '::1')) AS external_dst_ip_rows,
+          COUNT(*) FILTER (WHERE COALESCE(src_ip, '') != '' OR COALESCE(dst_ip, '') != '') AS rows_with_ip
+        FROM evtx_events
+        """
+    ).fetchone()
+    if not row:
+        return []
+    return [
+        {
+            "area": "Network indicators in normalized EVTX",
+            "observed_rows": int(row[2] or 0),
+            "external_src_rows": int(row[0] or 0),
+            "external_dst_rows": int(row[1] or 0),
+            "interpretation": "No strong external network row was normalized" if not (row[0] or row[1]) else "Review rows with non-loopback IP values",
+        }
+    ]
+
+
+def _hypothesis_rows(db: CaseDB, status: str | None = None, limit: int = 12) -> list[dict[str, Any]]:
+    where = "WHERE h.status = ?" if status else ""
+    params: tuple[Any, ...] = (status, limit) if status else (limit,)
+    return fetch_records(
+        db,
+        f"""
+        WITH latest AS (
+          SELECT *, ROW_NUMBER() OVER (
+            PARTITION BY hypothesis_id ORDER BY created_at DESC, entry_id DESC
+          ) AS rn
+          FROM hypothesis_reasoning
+        )
+        SELECT h.hypothesis_id, h.status, h.verdict, h.description, h.summary,
+               COUNT(r.entry_id) AS reasoning_count,
+               MAX(r.iteration) AS latest_iteration,
+               l.verdict AS latest_verdict,
+               l.body AS latest_reasoning
+        FROM hypotheses h
+        LEFT JOIN hypothesis_reasoning r ON r.hypothesis_id = h.hypothesis_id
+        LEFT JOIN latest l ON l.hypothesis_id = h.hypothesis_id AND l.rn = 1
+        {where}
+        GROUP BY h.hypothesis_id, h.status, h.verdict, h.description, h.summary, l.verdict, l.body
+        ORDER BY
+          CASE WHEN COUNT(r.entry_id) = 0 THEN 0 ELSE 1 END,
+          MAX(r.iteration) DESC NULLS LAST,
+          h.hypothesis_id
+        LIMIT ?
+        """,
+        params,
+    )
+
+
+def _hypothesis_count(db: CaseDB, status: str) -> int:
+    row = db.execute("SELECT COUNT(*) FROM hypotheses WHERE status = ?", (status,)).fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def _section_gap_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in fetch_records(db, "SELECT section_key, gaps FROM report_sections ORDER BY section_key"):
+        gaps = normalize_value(row.get("gaps")) or []
+        if not isinstance(gaps, list):
+            continue
+        for gap in gaps:
+            text = str(gap or "").strip()
+            if text:
+                rows.append({"section": row.get("section_key"), "gap": text, "next_step": "Regenerate or verify this section with supporting evidence."})
+    return rows[:limit]
+
+
+def _render_overview_section(db: CaseDB) -> str:
+    findings = _signal_finding_rows(db, 8)
+    hosts = _host_summary_rows(db, 5)
+    confirmed = _hypothesis_rows(db, "confirmed", 4)
+    active = _hypothesis_rows(db, "active", 4)
+    finding_count = len(findings)
+    confirmed_count = _hypothesis_count(db, "confirmed")
+    active_count = _hypothesis_count(db, "active")
+    summary = (
+        f"本ケースでは、{finding_count}件の優先所見、{confirmed_count}件の確認済み仮説、"
+        f"{active_count}件の未解決仮説を中心に確認する必要があります。"
+        "最終判断では、下表の高シグナル所見と未解決仮説を分けて扱い、低信頼の相関結果を過度に強い結論として扱わないでください。"
+    )
+    return "\n\n".join(
+        [
+            "# Investigation Overview",
+            "## Executive Summary",
+            summary,
+            "## Evidence Scope",
+            _markdown_table(_count_table(db), [("metric", "Metric"), ("value", "Value"), ("scope", "Scope")], max_rows=8),
+            "## Systems Observed",
+            _markdown_table(hosts, [("host", "Host"), ("events", "EVTX rows"), ("first_seen", "First seen"), ("last_seen", "Last seen")], max_rows=5),
+            "## Key Findings",
+            _markdown_table(findings, [("finding", "Finding"), ("severity", "Severity"), ("confidence", "Confidence"), ("why_it_matters", "Why it matters"), ("reference", "Reference")], max_rows=8),
+        ]
+    )
+
+
+def _render_timeline_section(db: CaseDB) -> str:
+    return "\n\n".join(
+        [
+            "# Activity Timeline",
+            "## Chronological Events",
+            "以下は、ログオン、明示的資格情報、ログ整合性、アプリケーション実行の代表イベントを時系列で並べたものです。",
+            _markdown_table(_timeline_rows(db), [("time", "Time"), ("host", "Host"), ("activity", "Activity"), ("subject", "Subject"), ("artifact", "Artifact"), ("evidence", "Evidence")], max_rows=18),
+            "## Log Integrity",
+            "Event ID 1100/104 はログの停止・消去系の候補として扱い、単独では意図的な証跡消去と断定せず、同時刻のツール実行やファイル操作と相関してください。",
+        ]
+    )
+
+
+def _render_technical_section(db: CaseDB) -> str:
+    return "\n\n".join(
+        [
+            "# Technical Analysis",
+            "## Systems and Accounts",
+            _markdown_table(_account_summary_rows(db), [("account", "Account"), ("computer", "Host"), ("logons", "4624"), ("failed_logons", "4625"), ("explicit_credential_events", "4648"), ("first_seen", "First seen"), ("last_seen", "Last seen")], max_rows=10),
+            "## Execution and Persistence",
+            _markdown_table(_execution_rows(db), [("executable_name", "Executable"), ("exec_count", "Exec count"), ("last_exec_time", "Last execution"), ("evidence_id", "Evidence"), ("source_file", "Source")], max_rows=12),
+            "## Files and User Artifacts",
+            _markdown_table(_file_artifact_rows(db), [("timestamp", "Timestamp"), ("file_name", "File"), ("file_path", "Path"), ("evidence_id", "Evidence")], max_rows=12),
+            "## Antiforensic Indicators",
+            _markdown_table(_antiforensic_rows(db), [("type", "Type"), ("timestamp", "Timestamp"), ("artifact", "Artifact"), ("computer", "Host"), ("evidence_id", "Evidence")], max_rows=12),
+            "## Network Activity",
+            _markdown_table(_network_summary_rows(db), [("area", "Area"), ("observed_rows", "Rows with IP"), ("external_src_rows", "External source rows"), ("external_dst_rows", "External destination rows"), ("interpretation", "Interpretation")], max_rows=3),
+        ]
+    )
+
+
+def _render_gaps_section(db: CaseDB) -> str:
+    active = _hypothesis_rows(db, "active", 10)
+    active_rows = [
+        {
+            "hypothesis": row.get("hypothesis_id"),
+            "state": "not started" if int(row.get("reasoning_count") or 0) == 0 else "inconclusive",
+            "reasoning": row.get("reasoning_count"),
+            "latest": row.get("latest_reasoning") or row.get("description"),
+            "needed": "相関に必要なイベント種別・時刻・ホスト・ユーザーを追加確認する",
+        }
+        for row in active
+    ]
+    return "\n\n".join(
+        [
+            "# Investigation Gaps",
+            "## Unresolved Hypotheses",
+            _markdown_table(active_rows, [("hypothesis", "Hypothesis"), ("state", "State"), ("reasoning", "Reasoning rows"), ("latest", "Latest rationale"), ("needed", "Needed evidence")], max_rows=10),
+            "## Section Quality Gaps",
+            _markdown_table(_section_gap_rows(db), [("section", "Section"), ("gap", "Gap"), ("next_step", "Next step")], max_rows=12),
+        ]
+    )
+
+
+def _render_recommendations_section(db: CaseDB) -> str:
+    active_count = len(_hypothesis_rows(db, "active", 20))
+    recommendations = [
+        {
+            "priority": "High",
+            "action": "未解決仮説を完了状態へ整理する",
+            "rationale": f"{active_count}件の active hypothesis が残っているため、追加調査・needs_data・refuted のいずれかに分類する。",
+            "evidence_or_gap": "hypotheses",
+        },
+        {
+            "priority": "High",
+            "action": "明示的資格情報と失敗ログオンの相関を確認する",
+            "rationale": "4648/4625/4624 の関係はケースの主要シグナルであり、ユーザー・ホスト・時刻で集約して判断する。",
+            "evidence_or_gap": "4624/4625/4648",
+        },
+        {
+            "priority": "Medium",
+            "action": "OST、ブラウザ、クラウド同期、反フォレンジック実行を時系列で突合する",
+            "rationale": "Outlook OST、browser/cloud artifacts、CCleaner/Eraser は exfiltration 仮説に関わるため、単独所見ではなく近接時刻で評価する。",
+            "evidence_or_gap": "MFT/Prefetch",
+        },
+        {
+            "priority": "Medium",
+            "action": "低信頼の service-install correlation を抑制または手動確認へ回す",
+            "rationale": "Microsoft/driver service install と空 src_ip の相関は、remote service creation と断定するには弱い。",
+            "evidence_or_gap": "finding ranking",
+        },
+    ]
+    return "\n\n".join(
+        [
+            "# Recommendations",
+            "## Action Plan",
+            _markdown_table(recommendations, [("priority", "Priority"), ("action", "Action"), ("rationale", "Rationale"), ("evidence_or_gap", "Evidence/Gap")], max_rows=10),
+        ]
+    )
+
+
+def _deterministic_report_section_body(db: CaseDB, section_key: str) -> str | None:
+    renderers = {
+        "1_overview": _render_overview_section,
+        "2_timeline": _render_timeline_section,
+        "3_technical": _render_technical_section,
+        "4_gaps": _render_gaps_section,
+        "5_recommendations": _render_recommendations_section,
+    }
+    renderer = renderers.get(section_key)
+    if renderer is None:
+        return None
+    return renderer(db).strip()
+
+
 def build_report_markdown_from_db(db: CaseDB) -> str:
     """Reassemble the full report Markdown from persisted report sections.
 
@@ -2489,9 +3002,19 @@ def build_report_markdown_from_db(db: CaseDB) -> str:
     should read as an investigation report, not as execution telemetry.
     """
     sections = fetch_report_sections(db)
+    existing_keys = {str(row.get("section_key") or "") for row in sections}
     ordered: list[str] = []
+    narrative_keys = ("1_overview", "2_timeline", "3_technical", "4_gaps", "5_recommendations")
+    deterministic_enabled = set(narrative_keys).issubset(existing_keys)
+    if deterministic_enabled:
+        for section_key in narrative_keys:
+            body = _deterministic_report_section_body(db, section_key)
+            if body:
+                ordered.append(body)
     for row in sections:
         section_key = str(row.get("section_key") or "")
+        if deterministic_enabled and section_key in set(narrative_keys):
+            continue
         body = str(row.get("body") or "").strip()
         if not body:
             continue

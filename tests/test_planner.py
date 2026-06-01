@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from forensia.ai.checker import check_query_result
 from forensia.ai.checker import _parse_new_hypotheses
-from forensia.ai.investigator import HypothesisProgressTracker, _query_fingerprint
+from forensia.ai.investigator import HypothesisProgressTracker, _query_fingerprint, _select_focus_hypotheses
 from forensia.ai.section_agent import _benchmark_report_brief
 from forensia.ai.planner import (
     _request_with_optional_context,
@@ -128,6 +128,37 @@ class PlannerRetryTests(unittest.TestCase):
                 hypothesis,
             )
         )
+
+    def test_select_focus_hypotheses_prioritizes_uninvestigated_items(self) -> None:
+        state = SessionState(
+            session_id="S-1",
+            active_hypotheses=[
+                Hypothesis(
+                    id="H-001",
+                    description="Repeatedly investigated high confidence hypothesis",
+                    source_rule_ids=["r1", "r2", "r3"],
+                    required_entities=["computer", "target_user"],
+                ),
+                Hypothesis(
+                    id="H-002",
+                    description="Newly drafted hypothesis with no reasoning yet",
+                    source_rule_ids=["r4"],
+                ),
+            ],
+        )
+        state.history.append(
+            HistoryEntry(
+                iteration=10,
+                query_id="H-001-q1",
+                hypothesis_id="H-001",
+                verdict="inconclusive",
+                summary="still inconclusive",
+            )
+        )
+
+        selected = _select_focus_hypotheses(state, max_items=1)
+
+        self.assertEqual(["H-002"], [item.id for item in selected])
 
     def test_validate_select_sql_allows_investigation_state_tables(self) -> None:
         for sql in (

@@ -37,6 +37,7 @@ from forensia.report.writer import (
     _build_report_brief,
     _default_keypoints_for_section,
     _extract_claim_texts,
+    _query_top_findings,
     _quality_gate_section,
     _resolve_evidence_results,
     _sort_markdown_table_by_first_column,
@@ -573,6 +574,85 @@ class PersistenceTests(unittest.TestCase):
             self.assertNotIn("benchmark_timeline_events", markdown)
             self.assertNotIn("**Status:** partial", markdown)
             self.assertNotIn("raw_sql", markdown)
+
+    def test_build_report_markdown_rebuilds_non_question_sections_with_tables(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO evtx_events (
+                        evidence_id, channel, event_id, timestamp, computer,
+                        target_user, src_ip, process_name
+                    ) VALUES
+                        ('evtx-security-000000000122', 'Security', 4648, '2015-03-22 14:34:28', 'informant-PC', 'informant', '127.0.0.1', 'winlogon.exe'),
+                        ('evtx-security-000000000123', 'Security', 4625, '2015-03-22 14:35:00', 'informant-PC', 'admin11', '10.0.0.5', 'lsass.exe'),
+                        ('evtx-security-000000000124', 'Security', 1100, '2015-03-22 14:38:16', 'informant-PC', 'SYSTEM', '', '')
+                    """
+                )
+                db.execute(
+                    """
+                    INSERT INTO prefetch_executions (
+                        evidence_id, executable_name, exec_count, last_exec_time, source_file
+                    ) VALUES
+                        ('prefetch-ccleaner64-exe-779bd542', 'CCLEANER64.EXE', 2, '2015-03-25 15:15:50', 'Prefetch/CCLEANER64.EXE.pf'),
+                        ('prefetch-winword-exe-cecba770', 'WINWORD.EXE', 3, '2015-03-25 15:24:48', 'Prefetch/WINWORD.EXE.pf')
+                    """
+                )
+                db.execute(
+                    """
+                    INSERT INTO mft_entries (evidence_id, file_name, file_path, si_modified)
+                    VALUES
+                        ('mft-000000046112-00', 'iaman.informant@nist.gov.ost', 'Users/informant/AppData/Local/Microsoft/Outlook/iaman.informant@nist.gov.ost', '2015-03-25 15:11:47')
+                    """
+                )
+                db.execute(
+                    """
+                    INSERT INTO findings (
+                        finding_id, rule_id, title, summary, severity, confidence, status,
+                        tags, attack, evidence, ai_summary, missing_checks, created_at
+                    ) VALUES
+                        ('windows-corr-logon-then-service-0001', 'svc', 'Service installation after network logon:  -> 37L4247F27-25', 'Low confidence service noise.', 'critical', 0.5, 'accepted', '[]', '[]', '[]', '', '[]', now()),
+                        ('windows-security-4648-logon-explicit-creds-0001', '4648', 'Logon attempt with explicit credentials (4648): INFORMANT-PC$ -> informant', 'Explicit credential use involving informant.', 'high', 0.75, 'accepted', '[]', '[]', '[{"evidence_id":"evtx-security-000000000122"}]', '', '[]', now())
+                    """
+                )
+                db.execute(
+                    """
+                    INSERT INTO hypotheses (
+                        hypothesis_id, description, status, verdict, summary, origin,
+                        created_session, resolved_session, created_at, updated_at,
+                        source_rule_ids, required_entities, confirm_when
+                    ) VALUES
+                        ('H-001', 'Unresolved logon/file/process correlation', 'active', NULL, '', 'broad_plan', 'S-1', NULL, now(), now(), '[]', '[]', NULL),
+                        ('H-002', 'Explicit credential use was confirmed', 'confirmed', 'confirmed', 'Confirmed by 4648 evidence.', 'broad_plan', 'S-1', 'S-1', now(), now(), '[]', '[]', NULL)
+                    """
+                )
+                db.execute(
+                    """
+                    INSERT INTO report_sections (
+                        section_key, title, body, confidence, status, update_count,
+                        gaps, last_filled_session, last_filled_at, stale
+                    ) VALUES
+                        ('1_overview', 'Investigation Overview', '# Investigation Overview\n\n## Executive Summary\n\n**Status:** error\n\n*Section block failed: ''summary''*\n\n## Key Findings\n\nraw_sql', 0.1, 'draft', 1, '[]', 'S-1', now(), FALSE),
+                        ('2_timeline', 'Activity Timeline', '# Activity Timeline\n\n**Status:** partial\n\nraw_sql', 0.5, 'draft', 1, '[]', 'S-1', now(), FALSE),
+                        ('3_technical', 'Technical Analysis', '# Technical Analysis\n\n**Status:** partial\n\nraw_sql', 0.5, 'draft', 1, '[]', 'S-1', now(), FALSE),
+                        ('4_gaps', 'Investigation Gaps', '# Investigation Gaps\n\n**Status:** partial', 0.5, 'draft', 1, '[]', 'S-1', now(), FALSE),
+                        ('5_recommendations', 'Recommendations', '# Recommendations\n\n**Status:** partial', 0.5, 'draft', 1, '[]', 'S-1', now(), FALSE)
+                    """
+                )
+
+                markdown = build_report_markdown_from_db(db)
+                top_findings = _query_top_findings(db)
+
+            self.assertIn("| Finding | Severity | Confidence | Why it matters | Reference |", markdown)
+            self.assertIn("| Time | Host | Activity | Subject | Artifact | Evidence |", markdown)
+            self.assertIn("| Priority | Action | Rationale | Evidence/Gap |", markdown)
+            self.assertIn("Logon attempt with explicit credentials", markdown)
+            self.assertNotIn("Section block failed", markdown)
+            self.assertNotIn("**Status:**", markdown)
+            self.assertNotIn("raw_sql", markdown)
+            self.assertEqual("windows-security-4648-logon-explicit-creds-0001", top_findings[0]["finding_id"])
+            self.assertNotIn("windows-corr-logon-then-service-0001", [row["finding_id"] for row in top_findings])
 
     def test_finalize_section_sanitizes_raw_evidence_tables(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

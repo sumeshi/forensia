@@ -700,15 +700,22 @@ def _audit_broad_plan_hypotheses(
     return audits
 
 
-def _hypothesis_focus_score(state: SessionState, hypothesis: Hypothesis) -> tuple[int, int, int]:
-    """Rank hypotheses by a rough confidence proxy and recency."""
+def _hypothesis_focus_score(state: SessionState, hypothesis: Hypothesis) -> tuple[int, int, int, int]:
+    """Rank hypotheses by fairness first, then rough confidence.
+
+    Newly drafted hypotheses must get at least one investigation pass. Otherwise
+    high-confidence but repeatedly inconclusive hypotheses monopolize every
+    cycle and later hypotheses remain visibly half-started in the report/API.
+    """
     recent_iteration = -1
     for entry in reversed(state.history):
         if entry.hypothesis_id == hypothesis.id:
             recent_iteration = int(entry.iteration)
             break
     confidence_proxy = len(hypothesis.source_rule_ids) + (1 if hypothesis.required_entities else 0)
-    return (confidence_proxy, recent_iteration, -len(hypothesis.description))
+    never_investigated = 1 if recent_iteration < 0 else 0
+    least_recent_first = -recent_iteration if recent_iteration >= 0 else 0
+    return (never_investigated, least_recent_first, confidence_proxy, -len(hypothesis.description))
 
 
 def _select_focus_hypotheses(state: SessionState, max_items: int = 2) -> list[Hypothesis]:
@@ -1044,7 +1051,7 @@ async def _investigate_one_hypothesis(
         if emit_fn:
             emit_fn("investigate/act", f"[act] {hypothesis.id}: verdict={check_result.verdict} resolved={len(state.resolved_hypotheses)}",
                     iteration=plan_cycle, report_kw={"focus_sections": focus_sections})
-        if check_result.verdict in {"confirmed", "refuted"} or query_index >= max_queries_per_hypothesis:
+        if check_result.verdict in {"confirmed", "refuted"}:
             break
         row_count = int(result_summary.get("row_count") or 0)
         query_fp = _query_fingerprint(planned_query.sql)
@@ -1086,6 +1093,8 @@ async def _investigate_one_hypothesis(
                                     session_id=session_id)
                 cycle_progress = True
                 break
+        if query_index >= limit:
+            break
 
     return cycle_progress, state, focus_sections
 
