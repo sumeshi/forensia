@@ -217,7 +217,7 @@ def _default_keypoints_for_section(
         "log integrity": ("timeline_log_clearing", "gaps_log_integrity_events", "timeline_system_events"),
         "network": ("evtx_network_connections", "ioc_source_ips", "evtx_firewall_events"),
         "lateral": ("account_logon_patterns", "account_explicit_credentials", "ioc_source_ips"),
-        "evidence gap": ("gaps_event_coverage", "gaps_channel_coverage", "unresolved_hypotheses_summary"),
+        "evidence gap": ("unresolved_hypotheses_summary", "gaps_event_coverage", "gaps_channel_coverage"),
         "gap": ("unresolved_hypotheses_summary", "gaps_event_coverage", "gaps_channel_coverage"),
         "execution": ("host_execution_activity", "persistence_lolbas_execution", "persistence_service_installs"),
         "persistence": ("host_persistence_activity", "persistence_service_installs", "persistence_scheduled_tasks"),
@@ -234,7 +234,7 @@ def _default_keypoints_for_section(
         "1": ("overview_top_findings", "overview_hosts", "overview_event_range"),
         "2": ("timeline_high_signal_events", "timeline_system_events", "timeline_log_clearing"),
         "3": ("host_execution_activity", "host_persistence_activity", "account_logon_patterns", "ioc_source_ips"),
-        "4": ("gaps_event_coverage", "gaps_channel_coverage", "gaps_log_integrity_events"),
+        "4": ("unresolved_hypotheses_summary", "gaps_event_coverage", "gaps_channel_coverage"),
         "5": ("recommendations_findings", "recommendations_recent_reviews"),
         "6": ("appendix_findings_catalog", "appendix_claims_needing_review"),
     }
@@ -417,6 +417,61 @@ def _parse_section_run_payload(payload: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _extract_evidence_ids_from_value(value: Any) -> list[str]:
+    """Extract evidence_id values from nested row/finding payloads."""
+    ids: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: Any) -> None:
+        text = str(raw or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            ids.append(text)
+
+    def walk(item: Any) -> None:
+        if isinstance(item, str):
+            stripped = item.strip()
+            if not stripped:
+                return
+            if EVIDENCE_ID_PATTERN.fullmatch(stripped):
+                add(stripped)
+                return
+            if stripped[:1] in {"[", "{"}:
+                try:
+                    walk(json.loads(stripped))
+                except json.JSONDecodeError:
+                    return
+            return
+        if isinstance(item, dict):
+            add(item.get("evidence_id"))
+            many = item.get("evidence_ids")
+            if isinstance(many, list):
+                for value in many:
+                    add(value)
+            for key in ("evidence", "rows", "answer"):
+                if key in item:
+                    walk(item.get(key))
+            return
+        if isinstance(item, list):
+            for child in item:
+                walk(child)
+
+    walk(value)
+    return ids
+
+
+def _row_with_evidence_ids(row: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a row and expose nested finding evidence IDs for report prompts."""
+    normalized = normalize_value(row)
+    if not isinstance(normalized, dict):
+        return {}
+    evidence_ids = _extract_evidence_ids_from_value(normalized)
+    if evidence_ids:
+        normalized.setdefault("evidence_ids", evidence_ids)
+        normalized.setdefault("evidence_id", evidence_ids[0])
+    return normalized
+
+
 def _coverage_source_label(result: dict[str, Any], payload: dict[str, Any]) -> str:
     """Derive a human-readable source label from a coverage result and its payload."""
     candidates = [
@@ -504,74 +559,7 @@ def _coverage_table_markdown(rows: list[dict[str, Any]]) -> str:
     return "\n".join([header, separator, *lines])
 
 
-def _append_coverage_table(body: str, coverage_rows: list[dict[str, Any]]) -> str:
-    """Append an Evidence Coverage table to the section body if coverage rows exist."""
-    table_md = _coverage_table_markdown(coverage_rows)
-    if not table_md:
-        return body
-    coverage_block = "#### Evidence Coverage\n\n" + table_md
-    text = str(body or "").rstrip()
-    if not text:
-        return coverage_block
-    if "#### Evidence Coverage" in text:
-        return text
-    return f"{text}\n\n{coverage_block}"
 
-
-def _coverage_summary_markdown(coverage_map: dict[str, list[dict[str, Any]]]) -> str:
-    """Render a section-aggregated coverage overview as a Markdown table."""
-    rows: list[dict[str, Any]] = []
-    for section_key, items in coverage_map.items():
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            row = dict(item)
-            row["section"] = section_key
-            rows.append(row)
-    if not rows:
-        return ""
-    header = "| Section | Source | Queried | Rows | Used in answer |"
-    separator = "|---|---|---|---|---|"
-    lines = []
-    for row in rows:
-        rows_value = row.get("rows")
-        rows_text = "-" if rows_value in {None, ""} else str(rows_value)
-        lines.append(
-            f"| {str(row.get('section') or '').replace('|', '\\|')} | "
-            f"{str(row.get('source') or '').replace('|', '\\|')} | "
-            f"{str(row.get('queried') or 'No')} | "
-            f"{rows_text} | "
-            f"{str(row.get('used_in_answer') or 'No')} |"
-        )
-    return "\n".join([header, separator, *lines])
-
-
-def _replace_overview_evidence_scope(body: str, summary_md: str) -> str:
-    """Replace or insert the Evidence Scope section in the overview body with a coverage summary table."""
-    text = str(body or "").rstrip()
-    if not text or not summary_md:
-        return text
-    lines = text.splitlines()
-    target = "## Evidence Scope"
-    summary_block = "#### Coverage Summary\n\n" + summary_md.strip()
-    out: list[str] = []
-    index = 0
-    while index < len(lines):
-        line = lines[index]
-        if line.strip() == target:
-            out.append(line)
-            out.append("")
-            out.append(summary_block)
-            index += 1
-            while index < len(lines) and not lines[index].strip().startswith("## "):
-                index += 1
-            continue
-        out.append(line)
-        index += 1
-    rendered = "\n".join(out).strip()
-    if target not in text:
-        return f"{rendered}\n\n{summary_block}" if rendered else summary_block
-    return rendered
 
 
 _OPEN_QUESTION_RE = re.compile(r"(?:^|[\s\(])(\?|？|TBD|TODO|FIXME|要確認|要調査|未確認|未調査|未特定|不明瞭|未解明|XXX|N\/A\?)")
@@ -939,9 +927,11 @@ def _summarize_rows(
     seen_evidence_ids: set[str] = set()
     seen_finding_ids: set[str] = set()
     seen_hypothesis_ids: set[str] = set()
+    normalized_rows: list[dict[str, Any]] = []
     for row in rows:
-        evidence_id = row.get("evidence_id")
-        if evidence_id:
+        normalized_row = _row_with_evidence_ids(row)
+        normalized_rows.append(normalized_row)
+        for evidence_id in _extract_evidence_ids_from_value(normalized_row):
             value = str(evidence_id)
             if value not in seen_evidence_ids:
                 seen_evidence_ids.add(value)
@@ -968,7 +958,7 @@ def _summarize_rows(
         "evidence_ids": evidence_ids,
         "finding_ids": finding_ids,
         "hypothesis_ids": hypothesis_ids,
-        "sample_rows": [normalize_value(row) for row in rows[:max_rows]],
+        "sample_rows": normalized_rows[:max_rows],
     }
 
 
@@ -1016,10 +1006,16 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         lambda db: _report_keypoint_rows(
             db,
             """
-            SELECT finding_id, title, severity, confidence
+            SELECT finding_id, title, summary, severity, confidence, evidence
             FROM findings
             WHERE severity IN ('critical','high')
-            ORDER BY confidence DESC
+              AND COALESCE(status, 'new') != 'suppressed'
+              AND COALESCE(title, '') != ''
+              AND title NOT LIKE '%:  @%'
+            ORDER BY
+              CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,
+              confidence DESC,
+              created_at DESC
             LIMIT 10
             """,
         ),
@@ -1365,9 +1361,16 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         lambda db: _report_keypoint_rows(
             db,
             """
-            SELECT finding_id, title, severity, confidence, status, ai_summary
+            SELECT finding_id, title, summary, severity, confidence, status, ai_summary, evidence
             FROM findings
-            ORDER BY confidence DESC
+            WHERE COALESCE(status, 'new') != 'suppressed'
+              AND severity IN ('critical','high','medium')
+              AND COALESCE(title, '') != ''
+              AND title NOT LIKE '%:  @%'
+            ORDER BY
+              CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+              confidence DESC,
+              created_at DESC
             LIMIT 20
             """,
         ),
@@ -1946,7 +1949,10 @@ _SCAFFOLD_PATTERNS = [
     re.compile(r"### Queries Run"),
     re.compile(r"\*Block skipped:\*.*"),
     re.compile(r"\*Section block failed:\*.*"),
-    re.compile(r"^\|[-| ]+\|$"),
+    re.compile(r"### Structured Data"),
+    re.compile(r"^-?\s*(JSON|CSV):\s+.*", re.IGNORECASE),
+    re.compile(r"^-\s*structured:.*", re.IGNORECASE),
+    re.compile(r"^\|[-:|\s]+\|$"),
 ]
 
 
@@ -1954,9 +1960,16 @@ def _extract_claim_texts(body: str) -> list[str]:
     """Extract distinct claim-paragraph texts from a section body, skipping headings and gap markers."""
     lines = body.splitlines()
     filtered_lines = []
+    skip_metadata_block = False
     for line in lines:
         stripped = line.strip()
-        if stripped and not any(p.match(stripped) for p in _SCAFFOLD_PATTERNS):
+        if stripped.startswith("## "):
+            skip_metadata_block = False
+        if stripped in {"### Missing Reason", "### Queries Run", "### Structured Data"}:
+            skip_metadata_block = True
+        if stripped.startswith("### ") and stripped not in {"### Missing Reason", "### Queries Run", "### Structured Data"}:
+            skip_metadata_block = False
+        if stripped and not skip_metadata_block and not any(p.match(stripped) for p in _SCAFFOLD_PATTERNS):
             filtered_lines.append(line)
         else:
             filtered_lines.append("")
@@ -1981,6 +1994,8 @@ def _claim_text_key(text: str) -> str:
 
 def _collect_claim_provenance(evidence_results: list[dict[str, Any]]) -> dict[str, list[str]]:
     """Aggregate all evidence, finding, and hypothesis IDs referenced across a list of evidence result dicts."""
+    max_evidence_ids = 25
+    max_other_ids = 25
     evidence_ids: list[str] = []
     finding_ids: list[str] = []
     hypothesis_ids: list[str] = []
@@ -1988,19 +2003,24 @@ def _collect_claim_provenance(evidence_results: list[dict[str, Any]]) -> dict[st
     seen_finding_ids: set[str] = set()
     seen_hypothesis_ids: set[str] = set()
     for result in evidence_results:
-        for evidence_id in result.get("evidence_ids") or []:
+        if str(result.get("kind") or "rows") != "rows":
+            continue
+        row_evidence_ids: list[str] = []
+        for row in (result.get("sample_rows") or []) + (result.get("head_rows") or []) + (result.get("tail_rows") or []):
+            row_evidence_ids.extend(_extract_evidence_ids_from_value(row))
+        for evidence_id in [*(result.get("evidence_ids") or []), *row_evidence_ids]:
             value = str(evidence_id)
-            if value and value not in seen_evidence_ids:
+            if value and value not in seen_evidence_ids and len(evidence_ids) < max_evidence_ids:
                 seen_evidence_ids.add(value)
                 evidence_ids.append(value)
         for finding_id in result.get("finding_ids") or []:
             value = str(finding_id)
-            if value and value not in seen_finding_ids:
+            if value and value not in seen_finding_ids and len(finding_ids) < max_other_ids:
                 seen_finding_ids.add(value)
                 finding_ids.append(value)
         for hypothesis_id in result.get("hypothesis_ids") or []:
             value = str(hypothesis_id)
-            if value and value not in seen_hypothesis_ids:
+            if value and value not in seen_hypothesis_ids and len(hypothesis_ids) < max_other_ids:
                 seen_hypothesis_ids.add(value)
                 hypothesis_ids.append(value)
     return {
@@ -2019,17 +2039,32 @@ def _render_timestamp_with_timezone(timestamp_str: str, case: Case) -> str:
 
 
 def _query_top_findings(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
-    return fetch_records(
+    rows = fetch_records(
         db,
         """
-        SELECT finding_id, title, severity, confidence, summary
+        SELECT finding_id, title, severity, confidence, summary, evidence
         FROM findings
         WHERE COALESCE(status, 'accepted') != 'suppressed'
-        ORDER BY confidence DESC, created_at DESC
+          AND severity IN ('critical','high','medium')
+          AND COALESCE(title, '') != ''
+          AND title NOT LIKE '%:  @%'
+        ORDER BY
+          CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+          confidence DESC,
+          created_at DESC
         LIMIT ?
         """,
         (limit,),
     )
+    normalized: list[dict[str, Any]] = []
+    for row in rows:
+        item = normalize_value(row)
+        if isinstance(item, dict):
+            evidence_ids = _extract_evidence_ids_from_value(item.get("evidence"))
+            if evidence_ids:
+                item["evidence_ids"] = evidence_ids[:5]
+        normalized.append(item)
+    return normalized
 
 
 def _query_hypotheses_by_status(db: CaseDB, status: str, limit: int = 8) -> list[dict[str, Any]]:
@@ -2420,24 +2455,47 @@ def _load_template_meta(section_key: str) -> TemplateMeta:
     return TemplateMeta(behaviors=behaviors)
 
 
+def _strip_narrative_status_lines(body: str) -> str:
+    """Remove internal block status badges from human-facing narrative sections.
+
+    The raw_sql → evidence query replacement is a legacy safeguard for section bodies
+    persisted before `_result_source_label` was renamed; new runs emit `evidence_query`
+    via the source label itself and never hit the replace branch.
+    """
+    lines = []
+    for line in str(body or "").splitlines():
+        stripped = line.strip()
+        if re.match(r"^\*\*Status:\*\*\s*(answered|partial|not_found|not_searched|wrong_query|insufficient_evidence|error)\b", stripped, flags=re.IGNORECASE):
+            continue
+        lines.append(line)
+    text = "\n".join(lines)
+    text = text.replace("raw_sql", "evidence query")
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _final_report_section_body(section_key: str, body: str) -> str:
+    """Return the Markdown body intended for report.md, leaving debug metadata out."""
+    text = str(body or "").strip()
+    if section_key != "6_appendix":
+        text = _strip_narrative_status_lines(text)
+    return text
+
+
 def build_report_markdown_from_db(db: CaseDB) -> str:
-    """Reassemble the full report Markdown from persisted report sections, injecting coverage tables."""
+    """Reassemble the full report Markdown from persisted report sections.
+
+    Coverage remains available through debug/API artifacts. The final Markdown
+    should read as an investigation report, not as execution telemetry.
+    """
     sections = fetch_report_sections(db)
-    coverage_map = _collect_section_coverage(db)
-    overview_summary = _coverage_summary_markdown(coverage_map)
     ordered: list[str] = []
     for row in sections:
         section_key = str(row.get("section_key") or "")
         body = str(row.get("body") or "").strip()
         if not body:
             continue
-        meta = _load_template_meta(section_key)
-        if "canonical_evidence_scope" in meta.behaviors and overview_summary:
-            body = _replace_overview_evidence_scope(body, overview_summary)
-        coverage_rows = coverage_map.get(section_key, [])
-        if coverage_rows and "canonical_evidence_scope" not in meta.behaviors:
-            body = _append_coverage_table(body, coverage_rows)
-        ordered.append(body)
+        ordered.append(_final_report_section_body(section_key, body))
     if not ordered:
         return ""
     return "\n\n".join(ordered).strip() + "\n"
@@ -3106,18 +3164,24 @@ def _render_answer_block(items: list[Any], columns: Any = None, *, max_rows: int
     return [f"- {str(item).strip()}" for item in items if not isinstance(item, dict) and str(item).strip()]
 
 
+_MISSING_REASON_NOOP_VALUES = frozenset({"none", "n/a", "na", "-", "該当なし", "なし"})
+
+
+def _meaningful_missing_reason_items(value: Any) -> list[str]:
+    """Drop sentinel values (`none` / `該当なし` / blanks) used by upstream to mean "nothing missing"."""
+    return [item for item in _coerce_string_list(value) if item.strip().lower() not in _MISSING_REASON_NOOP_VALUES]
+
+
 def _render_structured_answer_markdown(answer: dict[str, Any], block_heading: str) -> str:
     """Render a single structured answer as Markdown using persisted data rows."""
     answer_block = _render_answer_block(list(answer.get("answer") or []), answer.get("columns"))
-    missing_lines = [f"- {item}" for item in _coerce_string_list(answer.get("missing_reason"))]
+    missing_lines = [f"- {item}" for item in _meaningful_missing_reason_items(answer.get("missing_reason"))]
     query_lines = [f"- {item}" for item in _coerce_string_list(answer.get("queries_run"))]
     data_lines = [f"- JSON: {answer.get('json_path')}"] if answer.get("json_path") else []
     if answer.get("csv_path"):
         data_lines.append(f"- CSV: {answer.get('csv_path')}")
     if not data_lines:
         data_lines = ["- none"]
-    if not missing_lines:
-        missing_lines = ["- none"]
     if not query_lines:
         query_lines = ["- none"]
     lines = [
@@ -3129,15 +3193,19 @@ def _render_structured_answer_markdown(answer: dict[str, Any], block_heading: st
         "### Answer",
         *answer_block,
         "",
-        "### Missing Reason",
-        *missing_lines,
-        "",
+    ]
+    status = str(answer.get("status") or "").strip().lower()
+    if status != "answered" or missing_lines:
+        lines.append("### Missing Reason")
+        lines.extend(missing_lines if missing_lines else ["- none"])
+        lines.append("")
+    lines.extend([
         "### Queries Run",
         *query_lines,
         "",
         "### Structured Data",
         *data_lines,
-    ]
+    ])
     return "\n".join(lines).strip() + "\n"
 
 

@@ -41,6 +41,8 @@ class FindingDTO(DTOModel):
     tags: list[Any] | dict[str, Any] | None = None
     attack: list[Any] | None = None
     evidence: list[Any] | None = None
+    evidence_ids: list[str] = []
+    evidence_count: int = 0
     ai_summary: str | None = None
     missing_checks: list[Any] | None = None
     created_at: str | None = None
@@ -109,6 +111,8 @@ class ReportSectionDTO(DTOModel):
     gaps: list[str]
     gap_hypothesis_ids: list[str] = []
     gap_count: int
+    evidence_ids: list[str] = []
+    evidence_count: int = 0
     last_filled_session: str | None = None
     last_filled_at: str | None = None
     is_writing: bool = False

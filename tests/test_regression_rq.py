@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from forensia.ai.schemas import PARAGRAPH_NARRATE_SCHEMA
+from forensia.ai.prompts import _slim_report_brief_for_section, build_paragraph_narrate_messages
 from forensia.ai.section_agent import _coerce_plan_action, _extract_answer_by_shape, _format_benchmark_answer
 from forensia.report.writer import (
     EVIDENCE_ID_PATTERN,
@@ -85,9 +86,80 @@ class TestRegressionRQ(unittest.TestCase):
     def test_paragraph_narrate_schema_required_body(self):
         self.assertIn("required", PARAGRAPH_NARRATE_SCHEMA)
         self.assertIn("body", PARAGRAPH_NARRATE_SCHEMA["required"])
+        messages, _ = build_paragraph_narrate_messages(
+            heading="Executive Summary",
+            key_points=[],
+            evidence_rows=[],
+            template_body="## Executive Summary",
+        )
+        self.assertIn('{"body"', messages[0]["content"])
+        self.assertIn("Do not return a bare string", messages[0]["content"])
 
     def test_scaffold_patterns_filter_claims(self):
         body = "**Status:** answered\n\nReal Content\n\nSome actual claim here."
         claims = _extract_claim_texts(body)
         self.assertIn("Real Content", claims)
         self.assertNotIn("**Status:**", " ".join(claims))
+
+    def test_claim_extraction_skips_tables_and_structured_metadata(self):
+        body = """
+## 1. Endpoint identity
+
+**Status:** answered
+
+### Answer
+Substantive narrative claim with evidence evtx-security-000000000122.
+
+| host_id | evidence_count |
+| --- | --- |
+| informant-PC | 10 |
+
+### Queries Run
+- structured:host_identity:evtx_distinct_hosts
+
+### Structured Data
+- JSON: structured/answers.json
+- CSV: structured/Q6.csv
+"""
+        claims = _extract_claim_texts(body)
+        joined = " ".join(claims)
+        self.assertIn("Substantive narrative claim", joined)
+        self.assertIn("informant-PC", joined)
+        self.assertNotIn("structured:host_identity", joined)
+        self.assertNotIn("structured/answers.json", joined)
+        self.assertNotIn("### Queries Run", joined)
+
+    def test_slim_report_brief_keeps_case_level_context_for_narrative_sections(self):
+        brief = {
+            "time_range": {"start": "2015-03-22", "end": "2015-03-23"},
+            "source_timezone": "UTC",
+            "top_findings": [
+                {
+                    "finding_id": "finding-1",
+                    "title": "Explicit credential logon",
+                    "summary": "4648 activity involving informant.",
+                    "severity": "high",
+                    "confidence": 0.9,
+                    "evidence_ids": ["evtx-security-000000000122"],
+                    "large_unused_field": "x" * 200,
+                }
+            ],
+            "confirmed_hypotheses": [
+                {
+                    "hypothesis_id": "H-001",
+                    "description": "Explicit credentials were used.",
+                    "status": "confirmed",
+                    "verdict": "confirmed",
+                }
+            ],
+            "active_hypotheses": [{"hypothesis_id": "H-002", "description": "Missing collection gap."}],
+        }
+
+        technical = _slim_report_brief_for_section(brief, "3_technical")
+        gaps = _slim_report_brief_for_section(brief, "4_gaps")
+
+        self.assertEqual("Explicit credential logon", technical["top_findings"][0]["title"])
+        self.assertIn("confirmed_hypotheses", technical)
+        self.assertNotIn("large_unused_field", technical["top_findings"][0])
+        self.assertEqual("H-002", gaps["active_hypotheses"][0]["hypothesis_id"])
+        self.assertNotIn("top_findings", gaps)

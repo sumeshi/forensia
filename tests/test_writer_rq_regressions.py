@@ -11,6 +11,8 @@ from forensia.core.case import Case
 from forensia.ai.section_agent import (
     _fallback_narrative_body,
     _is_effectively_empty_body,
+    _load_reusable_section_facts,
+    _narrate_paragraph_with_retry,
     _question_routing_answer_spec,
     run_section_block_agent,
 )
@@ -91,6 +93,27 @@ class WriterRQRegressionTests(unittest.TestCase):
 
         self.assertIn("returned no matching rows", body)
         self.assertNotIn("Block skipped", body)
+        self.assertNotIn("evtx_network_connections", body)
+
+    def test_reusable_section_facts_exclude_case_probe_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO section_facts (
+                        fact_id, fact_type, fact_key, fact_value, evidence_ids,
+                        source_query, source_section, confidence, created_at, updated_at
+                    ) VALUES
+                        ('sf-case', 'universal_question', 'last_human_logon', '{}', '["evtx-security-000000000001"]', 'structured:last_human_logon', '__case_probe__', 0.9, now(), now()),
+                        ('sf-section', 'observation', 'section_fact', '{}', '["evtx-security-000000000002"]', 'keypoint:test', '1_overview', 0.8, now(), now())
+                    """
+                )
+                normal = _load_reusable_section_facts(db, "1_overview")
+                with_case_probe = _load_reusable_section_facts(db, "1_overview", include_case_probe=True)
+
+            self.assertEqual(["section_fact"], [item["fact_key"] for item in normal])
+            self.assertIn("last_human_logon", [item["fact_key"] for item in with_case_probe])
 
     def test_assemble_section_body_preserves_template_preamble(self) -> None:
         body = _assemble_section_body("# Investigation Overview", ["## Executive Summary\n\nBody"])
@@ -145,6 +168,138 @@ class WriterRQRegressionTests(unittest.TestCase):
         section = markdown.split("### Missing Reason", 1)[1].split("### Queries Run", 1)[0]
         bullets = [line.strip() for line in section.splitlines() if line.strip().startswith("-")]
         self.assertEqual(["- single reason string"], bullets)
+
+    def test_narrate_retries_once_when_first_body_is_empty(self) -> None:
+        """RPT-FU-05: narrator must get one coaching turn before we surrender to the fallback prose.
+
+        Without the retry, every CFREDS narrative section degenerates into the deterministic
+        fallback paragraph (as observed in the prior run). Pin the call sequence so a future
+        refactor cannot silently delete the retry.
+        """
+        calls: list[list[dict[str, str]]] = []
+
+        def fake_llm(*, messages, model, base_url, json_schema, audit_callback=None, **kwargs):
+            calls.append([dict(m) for m in messages])
+            if len(calls) == 1:
+                return {"body": ""}
+            return {"body": "A concrete narrative paragraph that cites evtx-security-000000000122."}
+
+        base_messages = [
+            {"role": "system", "content": "narrate system"},
+            {"role": "user", "content": "narrate user"},
+        ]
+        with patch("forensia.ai.section_agent.request_llm_json", side_effect=fake_llm):
+            body = _narrate_paragraph_with_retry(
+                narrate_messages=base_messages,
+                narrate_schema={"type": "object"},
+                model="m",
+                base_url="http://x",
+                audit_callback=None,
+                status_inner="answered",
+            )
+        self.assertEqual(2, len(calls), msg="retry was not invoked on empty body")
+        self.assertEqual(len(base_messages) + 1, len(calls[1]))
+        self.assertEqual("user", calls[1][-1]["role"])
+        self.assertIn("Retry", calls[1][-1]["content"])
+        self.assertIn("evtx-security-000000000122", body)
+
+    def test_narrate_does_not_retry_when_first_body_is_substantive(self) -> None:
+        """Single-call happy path must not waste a second LLM round-trip."""
+        calls: list[int] = []
+
+        def fake_llm(**kwargs):
+            calls.append(1)
+            return {"body": "A concrete paragraph long enough to pass the empty-body check."}
+
+        with patch("forensia.ai.section_agent.request_llm_json", side_effect=fake_llm):
+            _narrate_paragraph_with_retry(
+                narrate_messages=[{"role": "system", "content": "s"}],
+                narrate_schema={"type": "object"},
+                model="m",
+                base_url="http://x",
+                audit_callback=None,
+                status_inner="answered",
+            )
+        self.assertEqual(1, len(calls))
+
+    def test_missing_reason_section_omitted_when_answered_and_empty(self) -> None:
+        """Status=answered with no missing reason should not render `### Missing Reason\\n- none`.
+
+        Codex's earlier fix handled `missing_reason=[]` but kept emitting the section for
+        sentinel values (`["none"]`, `["該当なし"]`) that mean the same thing.
+        """
+        for missing in ([], ["none"], ["None"], ["該当なし"], ["なし"], ["-"], ["", "  "]):
+            with self.subTest(missing=missing):
+                markdown = _render_structured_answer_markdown(
+                    {
+                        "id": "Q-OK",
+                        "status": "answered",
+                        "answer": [{"value": "x"}],
+                        "missing_reason": missing,
+                        "queries_run": ["structured:test"],
+                    },
+                    "OK",
+                )
+                self.assertNotIn("### Missing Reason", markdown)
+
+        partial_md = _render_structured_answer_markdown(
+            {
+                "id": "Q-PARTIAL",
+                "status": "partial",
+                "answer": [{"value": "x"}],
+                "missing_reason": [],
+                "queries_run": ["structured:test"],
+            },
+            "Partial",
+        )
+        self.assertIn("### Missing Reason", partial_md)
+
+    def test_fallback_narrative_body_stays_compact(self) -> None:
+        """The fallback paragraph must stay readable (under ~240 chars) and avoid keypoint name leakage.
+
+        RPT-FU-06 / RPT-FU-07: protect against regressions where multiple sample rows were
+        joined with ` / ` and exploded the paragraph past 1000 chars, or keypoint identifiers
+        (`overview_top_findings=10`) leaked into the prose.
+        """
+        with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "ja"}):
+            clear_llm_settings_cache()
+            body = _fallback_narrative_body(
+                heading="Executive Summary",
+                status="partial",
+                collected_results=[
+                    {
+                        "kind": "rows",
+                        "keypoint": "overview_top_findings",
+                        "row_count": 13,
+                        "evidence_ids": ["evtx-security-000000001166"],
+                        "sample_rows": [
+                            {"timestamp": "2015-03-25T14:45:59", "event_id": 4624, "evidence_id": "evtx-security-000000001166"},
+                            {"timestamp": "2015-03-25T15:31:00", "event_id": 6006, "evidence_id": "evtx-system-000000001624"},
+                            {"timestamp": "2015-03-25T15:28:47", "event_id": 4688, "evidence_id": "evtx-security-000000001200"},
+                        ],
+                    },
+                    {
+                        "kind": "rows",
+                        "keypoint": "overview_hosts",
+                        "row_count": 3,
+                        "evidence_ids": [],
+                        "sample_rows": [{"host_id": "informant-PC", "evidence_id": "evtx-security-000000000001"}],
+                    },
+                ],
+                flat_evidence=[
+                    {"timestamp": "2015-03-25T14:45:59", "event_id": 4624, "evidence_id": "evtx-security-000000001166"},
+                    {"timestamp": "2015-03-25T15:31:00", "event_id": 6006, "evidence_id": "evtx-system-000000001624"},
+                ],
+                actual_query_count=2,
+                actual_query_row_counts=[13, 3],
+            )
+            clear_llm_settings_cache()
+
+        self.assertLess(len(body), 280, msg=f"fallback paragraph too long ({len(body)} chars): {body!r}")
+        self.assertNotIn("overview_top_findings", body)
+        self.assertNotIn("overview_hosts", body)
+        self.assertNotIn("=10", body)
+        self.assertNotIn("=3", body)
 
     def test_structured_markdown_previews_large_tables(self) -> None:
         markdown = _render_structured_answer_markdown(

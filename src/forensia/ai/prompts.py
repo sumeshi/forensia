@@ -605,17 +605,49 @@ def _truncate_context_sections(context_sections: dict[str, str], max_chars: int 
     return trimmed
 
 
+def _slim_brief_items(items: Any, fields: tuple[str, ...], limit: int) -> list[dict[str, Any]]:
+    """Keep report_brief lists useful for section synthesis without flooding prompts."""
+    if not isinstance(items, list):
+        return []
+    slim: list[dict[str, Any]] = []
+    for item in items[:limit]:
+        if not isinstance(item, dict):
+            continue
+        projected = {field: item.get(field) for field in fields if item.get(field) not in (None, "", [])}
+        if projected:
+            slim.append(projected)
+    return slim
+
+
 def _slim_report_brief_for_section(report_brief: dict, section_key: str) -> dict:
-    """Strip top_findings/hypotheses; keep only structural fields."""
+    """Return case-level report context scoped to the current section."""
     if not report_brief:
         return {}
     if section_key == "1_overview":
         return report_brief
-    return {
+    family = str(section_key or "").split("_", 1)[0]
+    brief = {
         "time_range": report_brief.get("time_range"),
         "source_timezone": report_brief.get("source_timezone"),
         "investigation_objective": report_brief.get("investigation_objective"),
     }
+    finding_fields = ("finding_id", "title", "summary", "severity", "confidence", "evidence_ids")
+    hypothesis_fields = (
+        "hypothesis_id",
+        "description",
+        "status",
+        "verdict",
+        "summary",
+        "required_entities",
+        "confirm_when",
+    )
+    if family in {"2", "3", "5"}:
+        brief["top_findings"] = _slim_brief_items(report_brief.get("top_findings"), finding_fields, 8)
+        brief["confirmed_hypotheses"] = _slim_brief_items(report_brief.get("confirmed_hypotheses"), hypothesis_fields, 6)
+        brief["refuted_hypotheses"] = _slim_brief_items(report_brief.get("refuted_hypotheses"), hypothesis_fields, 4)
+    if family in {"4", "5"}:
+        brief["active_hypotheses"] = _slim_brief_items(report_brief.get("active_hypotheses"), hypothesis_fields, 8)
+    return brief
 
 
 def _summarize_context_sections(context_sections: dict[str, str]) -> dict[str, str]:
@@ -1533,8 +1565,9 @@ def build_paragraph_narrate_messages(
         "<TASK>You are a section_narrator. Write one markdown paragraph for the given heading using the supplied evidence. "
         "Cite evidence_ids inline. Keep the paragraph factual and concise.</TASK>\n"
         f"Language: {language}\n"
-        "<OUTPUT_SCHEMA>Return a single markdown paragraph string.</OUTPUT_SCHEMA>\n"
+        "<OUTPUT_SCHEMA>Return exactly one JSON object: {\"body\": \"single markdown paragraph\"}.</OUTPUT_SCHEMA>\n"
         "<RULES>\n"
+        "The response MUST be valid JSON and MUST contain the key `body`. Do not return a bare string.\n"
         "Citation count: cite AT MOST 2-3 representative evidence_ids per paragraph. If many similar findings exist (same event_id pattern), state the count and cite 1-2 examples.\n"
         "Citation format: cite raw `evidence_id` strings only (e.g. evtx-security-000000000122). Do NOT cite `finding_id` (e.g. windows-security-4648-logon-explicit-creds-0001) — those are finding labels, not evidence references. If the input shows a finding_id without an evidence_id, OMIT the citation entirely instead of using the finding_id.\n"
         "No KP-NNNN identifiers.\n"
@@ -1547,7 +1580,10 @@ def build_paragraph_narrate_messages(
         "</EXAMPLE_GOOD>\n"
         "<EXAMPLE_BAD>\n"
         "The investigation revealed multiple high-severity findings related to logon attempts using explicit credentials (windows-security-4648-logon-explicit-creds-0001, ..., 0011).\n"
-        "</EXAMPLE_BAD>"
+        "</EXAMPLE_BAD>\n"
+        "<EXAMPLE_JSON>\n"
+        "{\"body\":\"Eight explicit-credential logon attempts targeting informant and admin11 were observed from INFORMANT-PC$ on 2015-03-22 (evtx-security-000000000122, evtx-security-000000000152).\"}\n"
+        "</EXAMPLE_JSON>"
     )
     user = (
         f"Heading: {heading}\n"

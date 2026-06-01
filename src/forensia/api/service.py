@@ -30,6 +30,35 @@ from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records, normalize_value
 
 
+def _evidence_ids_from_payload(value: Any) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: Any) -> None:
+        text = str(raw or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            ids.append(text)
+
+    def walk(item: Any) -> None:
+        item = normalize_value(item)
+        if isinstance(item, dict):
+            add(item.get("evidence_id"))
+            many = item.get("evidence_ids")
+            if isinstance(many, list):
+                for value in many:
+                    add(value)
+            for key in ("evidence", "rows", "answer"):
+                if key in item:
+                    walk(item.get(key))
+        elif isinstance(item, list):
+            for child in item:
+                walk(child)
+
+    walk(value)
+    return ids
+
+
 def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:
     return {key: normalize_value(value) for key, value in row.items()}
 
@@ -132,7 +161,14 @@ def list_findings_dto(
         """,
         (*params, limit, offset),
     )
-    return [FindingDTO.model_validate(_normalize_row(row)) for row in rows]
+    items: list[FindingDTO] = []
+    for row in rows:
+        normalized = _normalize_row(row)
+        evidence_ids = _evidence_ids_from_payload(normalized.get("evidence"))
+        normalized["evidence_ids"] = evidence_ids
+        normalized["evidence_count"] = len(evidence_ids)
+        items.append(FindingDTO.model_validate(normalized))
+    return items
 
 
 def get_finding_dto(db: CaseDB, finding_id: str) -> FindingDTO | None:
@@ -149,7 +185,11 @@ def get_finding_dto(db: CaseDB, finding_id: str) -> FindingDTO | None:
     )
     if not rows:
         return None
-    return FindingDTO.model_validate(_normalize_row(rows[0]))
+    normalized = _normalize_row(rows[0])
+    evidence_ids = _evidence_ids_from_payload(normalized.get("evidence"))
+    normalized["evidence_ids"] = evidence_ids
+    normalized["evidence_count"] = len(evidence_ids)
+    return FindingDTO.model_validate(normalized)
 
 
 def list_hypothesis_reasoning_dto(
@@ -360,9 +400,28 @@ def list_report_sections_dto(db: CaseDB) -> list[ReportSectionDTO]:
         ORDER BY section_key
         """,
     )
+    evidence_by_section: dict[str, list[str]] = {}
+    for row in fetch_records(
+        db,
+        """
+        SELECT section_key, evidence_id
+        FROM section_evidence
+        WHERE COALESCE(evidence_id, '') != ''
+        ORDER BY section_key, created_at, evidence_id
+        """,
+    ):
+        section_key = str(row.get("section_key") or "")
+        evidence_id = str(row.get("evidence_id") or "").strip()
+        if not section_key or not evidence_id:
+            continue
+        bucket = evidence_by_section.setdefault(section_key, [])
+        if evidence_id not in bucket:
+            bucket.append(evidence_id)
     items: list[ReportSectionDTO] = []
     for row in rows:
         normalized = _normalize_row(row)
+        section_key = str(normalized.get("section_key") or "")
+        evidence_ids = evidence_by_section.get(section_key, [])
         gaps = normalized.get("gaps") or []
         if not isinstance(gaps, list):
             gaps = []
@@ -374,6 +433,8 @@ def list_report_sections_dto(db: CaseDB) -> list[ReportSectionDTO]:
             for gap in gaps
         ]
         normalized["gap_count"] = len(gaps)
+        normalized["evidence_ids"] = evidence_ids
+        normalized["evidence_count"] = len(evidence_ids)
         items.append(ReportSectionDTO.model_validate(normalized))
     return items
 

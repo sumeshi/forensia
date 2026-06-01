@@ -531,7 +531,7 @@ class PersistenceTests(unittest.TestCase):
             self.assertIn(4732, fallback_info["event_ids"])
             self.assertTrue(any("group membership" in keyword or "added to local group" in keyword for keyword in fallback_info["keywords"]))
 
-    def test_build_report_markdown_adds_evidence_coverage_tables(self) -> None:
+    def test_build_report_markdown_keeps_coverage_out_of_final_markdown(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -541,7 +541,7 @@ class PersistenceTests(unittest.TestCase):
                         section_key, title, body, confidence, status, update_count, gaps, last_filled_session, last_filled_at, stale
                     ) VALUES
                         ('1_overview', 'Overview', '# Investigation Overview\n\n## Evidence Scope\n\nOriginal scope text.\n', 0.9, 'stable', 1, '[]', 's-1', now(), FALSE),
-                        ('2_timeline', 'Timeline', '# Timeline\n\nBody text.\n', 0.9, 'stable', 1, '[]', 's-1', now(), FALSE)
+                        ('2_timeline', 'Timeline', '# Timeline\n\n**Status:** partial\n\nBody text with raw_sql reference.\n', 0.9, 'stable', 1, '[]', 's-1', now(), FALSE)
                     """
                 )
                 db.execute(
@@ -567,10 +567,12 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual("Yes", coverage_rows[0][4])
             zero_row = next(row for row in coverage_rows if row[1] == "empty_timeline_events")
             self.assertEqual("No", zero_row[4])
-            self.assertIn("#### Coverage Summary", markdown)
-            self.assertIn("benchmark_ost_file", markdown)
-            self.assertIn("#### Evidence Coverage", markdown)
-            self.assertIn("benchmark_timeline_events", markdown)
+            self.assertNotIn("#### Coverage Summary", markdown)
+            self.assertNotIn("benchmark_ost_file", markdown)
+            self.assertNotIn("#### Evidence Coverage", markdown)
+            self.assertNotIn("benchmark_timeline_events", markdown)
+            self.assertNotIn("**Status:** partial", markdown)
+            self.assertNotIn("raw_sql", markdown)
 
     def test_finalize_section_sanitizes_raw_evidence_tables(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -610,6 +612,94 @@ class PersistenceTests(unittest.TestCase):
             self.assertNotIn("NULL", body)
             self.assertIn("Raw evidence moved to reports/evidence/6_appendix.json", body)
             self.assertIn("raw evidence rows were moved", str(gaps).lower())
+
+    def test_finding_and_report_section_dtos_include_evidence_counts(self) -> None:
+        from forensia.api.service import list_findings_dto, list_report_sections_dto
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO findings (
+                        finding_id, rule_id, title, summary, severity, confidence, status,
+                        tags, attack, evidence, ai_summary, missing_checks, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())
+                    """,
+                    (
+                        "finding-test",
+                        "rule-test",
+                        "Test finding",
+                        "A finding with concrete evidence.",
+                        "high",
+                        0.9,
+                        "accepted",
+                        "[]",
+                        "[]",
+                        json.dumps(
+                            [
+                                {"evidence_id": "evtx-security-000000000001"},
+                                {"evidence_ids": ["prefetch-execution-000000000002"]},
+                                {"evidence_id": "evtx-security-000000000001"},
+                            ]
+                        ),
+                        "AI summary",
+                        "[]",
+                    ),
+                )
+                db.execute(
+                    """
+                    INSERT INTO report_sections (
+                        section_key, title, body, confidence, status, update_count,
+                        gaps, last_filled_session, last_filled_at, stale
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, now(), false)
+                    """,
+                    ("1_overview", "Overview", "Body", 0.9, "draft", 1, "[]", "S-1"),
+                )
+                db.execute(
+                    """
+                    INSERT INTO section_evidence (section_key, block_heading, evidence_id, role, source_query, created_at)
+                    VALUES
+                        ('1_overview', 'A', 'evtx-security-000000000001', 'support', 'q1', now()),
+                        ('1_overview', 'A', 'evtx-security-000000000001', 'support', 'q2', now()),
+                        ('1_overview', 'A', 'prefetch-execution-000000000002', 'support', 'q3', now())
+                    """
+                )
+
+                finding = list_findings_dto(db)[0]
+                section = list_report_sections_dto(db)[0]
+
+            self.assertEqual(
+                ["evtx-security-000000000001", "prefetch-execution-000000000002"],
+                finding.evidence_ids,
+            )
+            self.assertEqual(2, finding.evidence_count)
+            self.assertEqual(
+                ["evtx-security-000000000001", "prefetch-execution-000000000002"],
+                section.evidence_ids,
+            )
+            self.assertEqual(2, section.evidence_count)
+
+    def test_finalize_section_upserts_section_and_returns_gaps(self) -> None:
+        from forensia.api.service import list_report_sections_dto
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                result = finalize_section(
+                    db=db,
+                    section_key="1_overview",
+                    title="Overview",
+                    body="## Overview\n\nOverview content here.",
+                    evidence_results=[],
+                )
+                section = list_report_sections_dto(db)[0]
+
+            self.assertEqual("1_overview", section.section_key)
+            self.assertEqual("Overview", section.title)
+            self.assertIsInstance(result, dict)
+            self.assertIn("gaps", result)
+            self.assertIn("confidence", result)
 
     def test_merge_active_hypotheses_assigns_sequential_ids_and_dedupes_description(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

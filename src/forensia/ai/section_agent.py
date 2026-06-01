@@ -645,17 +645,34 @@ def _findings_snapshot(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
     )
 
 
-def _load_reusable_section_facts(db: CaseDB, section_key: str, limit: int = 20) -> list[dict[str, Any]]:
-    """Load section facts reusable by sibling blocks within the same section family."""
+def _load_reusable_section_facts(
+    db: CaseDB,
+    section_key: str,
+    limit: int = 20,
+    *,
+    include_case_probe: bool = False,
+) -> list[dict[str, Any]]:
+    """Load section facts reusable by sibling blocks within the same section family.
+
+    Universal question probes are useful for the structured appendix, but they are
+    too broad for normal narrative blocks. They otherwise become a high-volume
+    evidence pool that can dominate unrelated sections.
+    """
+    if include_case_probe:
+        where_sql = "source_section = ? OR source_section = '__case_probe__'"
+        params: tuple[Any, ...] = (section_key, limit)
+    else:
+        where_sql = "source_section = ? AND COALESCE(fact_type, '') != 'universal_question'"
+        params = (section_key, limit)
     rows = db.execute(
-        """
+        f"""
         SELECT fact_type, fact_key, fact_value, evidence_ids, source_section, confidence, updated_at
         FROM section_facts
-        WHERE source_section = ? OR source_section = '__case_probe__'
+        WHERE {where_sql}
         ORDER BY updated_at DESC, confidence DESC
         LIMIT ?
         """,
-        (section_key, limit),
+        params,
     ).fetchall()
     items: list[dict[str, Any]] = []
     for fact_type, fact_key, fact_value, evidence_ids, source_section, confidence, updated_at in rows:
@@ -1025,7 +1042,11 @@ def _prepare_block_context(
         evidence_keypoints=evidence_keypoints,
     )
     template_catalog = _filter_template_catalog_by_section([], section_key, [])
-    reusable_facts = _load_reusable_section_facts(db, section_key)
+    reusable_facts = _load_reusable_section_facts(
+        db,
+        section_key,
+        include_case_probe=section_key == "6_appendix",
+    )
     reusable_evidence = _load_reusable_section_evidence(db, section_key)
     if benchmark_mode:
         reusable_facts = []
@@ -1637,9 +1658,11 @@ def _extract_answer_by_shape(
     return result
 
 
-def _flatten_sample_rows(collected_results: list[dict]) -> list[dict]:
+def _flatten_sample_rows(collected_results: list[dict], *, rows_only: bool = False) -> list[dict]:
     flat: list[dict] = []
     for r in collected_results:
+        if rows_only and str(r.get("kind") or "rows") != "rows":
+            continue
         source = r.get("keypoint") or r.get("source_kind") or ""
         for row in r.get("sample_rows") or []:
             if isinstance(row, dict):
@@ -1668,7 +1691,11 @@ def _report_language() -> str:
 
 
 def _compact_narrative_value(value: Any, *, max_chars: int = 90) -> str:
-    text = str(value if value is not None else "").replace("\n", " ").strip()
+    if isinstance(value, (dict, list)):
+        text = json.dumps(value, ensure_ascii=False, default=str)
+    else:
+        text = str(value if value is not None else "")
+    text = text.replace("\n", " ").strip()
     if text in {"", "-", "None", "null"}:
         return ""
     if len(text) > max_chars:
@@ -1727,7 +1754,7 @@ def _result_source_label(result: dict[str, Any]) -> str:
         value = _compact_narrative_value(result.get(key), max_chars=64)
         if value:
             if value.lower().startswith("select "):
-                return "raw_sql"
+                return "evidence_query"
             return value
     return "unknown_source"
 
@@ -1781,6 +1808,47 @@ def _representative_ids(collected_results: list[dict[str, Any]], flat_rows: list
     return evidence_ids[:3], finding_ids[:3]
 
 
+_NARRATE_RETRY_PROMPT = (
+    "Your previous response had an empty or near-empty body. "
+    "Retry: emit exactly one JSON object {\"body\": \"<paragraph>\"} "
+    "where <paragraph> is at least 50 characters and cites the evidence_ids above. "
+    "Do not return an empty string."
+)
+
+
+def _narrate_paragraph_with_retry(
+    *,
+    narrate_messages: list[dict[str, str]],
+    narrate_schema: dict,
+    model: str,
+    base_url: str,
+    audit_callback,
+    status_inner: str,
+) -> str:
+    """Call paragraph_narrate once; retry once with a coaching turn if body comes back empty.
+
+    Exists as a helper (instead of inline) so that the retry contract can be pinned by
+    a focused regression test — the next investigation run should not silently fall back
+    to deterministic prose when the narrator just needs one nudge.
+    """
+    def _call(messages: list[dict[str, str]]) -> str:
+        parsed = request_llm_json(
+            messages=messages, model=model, base_url=base_url,
+            json_schema=narrate_schema, audit_callback=audit_callback,
+        )
+        return _prepend_status_badge(
+            str(parsed.get("body", parsed.get("content", ""))).strip(),
+            status_inner,
+        )
+
+    body = _call(narrate_messages)
+    if not _is_effectively_empty_body(body):
+        return body
+    retry_messages = list(narrate_messages)
+    retry_messages.append({"role": "user", "content": _NARRATE_RETRY_PROMPT})
+    return _call(retry_messages)
+
+
 def _fallback_narrative_body(
     *,
     heading: str,
@@ -1793,27 +1861,35 @@ def _fallback_narrative_body(
     """Build a deterministic paragraph when the LLM narrator returns an empty body."""
     language = _report_language()
     is_ja = language in {"ja", "jp", "japanese"}
-    total_rows, positive_sources, zero_sources = _result_count_summary(collected_results)
+    total_rows, positive_sources, _zero_sources = _result_count_summary(collected_results)
     evidence_ids, finding_ids = _representative_ids(collected_results, flat_evidence)
-    examples = [_row_narrative(row) for row in flat_evidence if isinstance(row, dict)]
-    examples = [item for item in examples if item][:3]
+    example = ""
+    for row in flat_evidence:
+        if not isinstance(row, dict):
+            continue
+        ts = str(row.get("timestamp") or row.get("date") or "")
+        eid = str(row.get("event_id") or "")
+        evid = str(row.get("evidence_id") or "")
+        parts = [p for p in [ts, eid, evid] if p]
+        if parts:
+            example = " / ".join(parts)
+            break
     status_line = f"**Status:** {status}"
 
     if status in {"not_found", "not_searched"} or (actual_query_count > 0 and not any(actual_query_row_counts)):
-        searched = ", ".join(zero_sources or positive_sources or ["no recorded source"])
         if is_ja:
             paragraph = (
-                f"{heading}について、関連検索（{searched}）を実行しましたが、該当する行は得られていません。"
+                f"{heading}について、関連する証拠検索を実行しましたが、該当する行は得られていません。"
                 "この項目は現時点では証拠不足として扱い、結論本文には採用しません。"
             )
         else:
             paragraph = (
-                f"For {heading}, the relevant searches ({searched}) returned no matching rows. "
+                f"For {heading}, the relevant evidence searches returned no matching rows. "
                 "This item remains unsupported and should not be promoted into the incident narrative."
             )
         return f"{status_line}\n\n{paragraph}"
 
-    sources = ", ".join(positive_sources[:5]) if positive_sources else "available evidence"
+    sources = "取得済み証拠" if is_ja else "the collected evidence"
     ref_text = ""
     if evidence_ids:
         ref_text = ", ".join(evidence_ids)
@@ -1827,23 +1903,23 @@ def _fallback_narrative_body(
             ref_text = f"代表 finding_id: {ref_text}。"
         else:
             ref_text = f"Representative finding IDs: {ref_text}."
-    example_text = " / ".join(examples)
+
     if is_ja:
         paragraph = (
-            f"{heading}について、{sources} から合計 {total_rows} 件の関連行が得られました。"
+            f"{heading}について、{sources}から合計 {total_rows} 件の関連行が得られました。"
         )
-        if example_text:
-            paragraph += f"代表行は {example_text} です。"
+        if example:
+            paragraph += f"代表行は {example} です。"
         if status == "partial":
-            paragraph += "ただし、テンプレートが求める全条件を満たすには追加の相関確認が必要です。"
+            paragraph += "ただし、この記述は追加の相関確認が必要な暫定評価です。"
         if ref_text:
             paragraph += ref_text
     else:
         paragraph = (
-            f"For {heading}, the collected sources returned {total_rows} related rows across {sources}. "
+            f"For {heading}, {sources} returned {total_rows} related rows. "
         )
-        if example_text:
-            paragraph += f"Representative rows include {example_text}. "
+        if example:
+            paragraph += f"Representative row: {example}. "
         if status == "partial":
             paragraph += "Additional correlation is still needed before treating the block as fully answered. "
         if ref_text:
@@ -1960,7 +2036,7 @@ def _write_block_body(
             messages = classify_messages if not (extracted_rows and expected_shape and all(field in extracted_rows[0] for field in expected_shape.get("fields") or [])) else []
     else:
         if status_inner in {"not_searched", "not_found"}:
-            flat_evidence = _flatten_sample_rows(collected_results)
+            flat_evidence = _flatten_sample_rows(collected_results, rows_only=True)
             body = _fallback_narrative_body(
                 heading=ctx.block_heading,
                 status=status_inner,
@@ -1971,7 +2047,7 @@ def _write_block_body(
             )
             messages = []
         else:
-            flat_evidence = _flatten_sample_rows(collected_results)
+            flat_evidence = _flatten_sample_rows(collected_results, rows_only=True)
             prior_section_keypoints = list(
                 {
                     str(r.get("keypoint") or r.get("source_kind") or "")
@@ -2002,13 +2078,13 @@ def _write_block_body(
                 evidence_rows=flat_evidence[:10],
                 template_body=ctx.template_body,
             )
-            narrate_parsed = request_llm_json(
-                messages=narrate_messages, model=ctx.model, base_url=ctx.base_url,
-                json_schema=narrate_schema, audit_callback=ctx.audit,
-            )
-            body = _prepend_status_badge(
-                str(narrate_parsed.get("body", narrate_parsed.get("content", ""))).strip(),
-                status_inner,
+            body = _narrate_paragraph_with_retry(
+                narrate_messages=narrate_messages,
+                narrate_schema=narrate_schema,
+                model=ctx.model,
+                base_url=ctx.base_url,
+                audit_callback=ctx.audit,
+                status_inner=status_inner,
             )
             if _is_effectively_empty_body(body):
                 body = _fallback_narrative_body(
