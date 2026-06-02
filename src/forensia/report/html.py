@@ -25,6 +25,86 @@ def _normalize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{key: normalize_value(value) for key, value in row.items()} for row in rows]
 
 
+def _finding_theme(row: dict[str, Any]) -> str:
+    blob = " ".join(str(row.get(key) or "").lower() for key in ("finding_id", "rule_id", "title", "summary"))
+    if "4648" in blob or "explicit credential" in blob:
+        return "explicit_credentials"
+    if "4722" in blob or "4724" in blob or "account lifecycle" in blob:
+        return "account_lifecycle"
+    if "4616" in blob or "system time" in blob:
+        return "time_change"
+    if "event log service stopped" in blob or " log clear" in blob or "1100" in blob or "1102" in blob:
+        return "log_integrity"
+    if "eraser" in blob or "ccleaner" in blob or "anti-forensic" in blob or "antiforensic" in blob:
+        return "antiforensic_tools"
+    if "ost" in blob or "outlook" in blob or "browser" in blob or "cloud" in blob or "drive" in blob:
+        return "data_access"
+    return "other"
+
+
+def _finding_theme_title(theme: str, count: int) -> str:
+    suffix = f" ({count}件)" if count > 1 else ""
+    return {
+        "explicit_credentials": f"明示的資格情報利用の観測{suffix}",
+        "account_lifecycle": f"ユーザーアカウント変更イベント{suffix}",
+        "time_change": f"システム時刻変更の観測{suffix}",
+        "log_integrity": f"ログ停止・消去候補イベント{suffix}",
+        "antiforensic_tools": f"消去・クリーニング系ツール痕跡{suffix}",
+        "data_access": f"メール・ブラウザ・クラウド関連痕跡{suffix}",
+        "other": f"その他の優先所見{suffix}",
+    }.get(theme, f"優先所見{suffix}")
+
+
+def _finding_theme_summary(theme: str) -> str:
+    return {
+        "explicit_credentials": "対象ユーザー・ホスト・時刻の相関確認が必要です。",
+        "account_lifecycle": "権限利用や痕跡操作の前提になり得るため、変更主体を確認します。",
+        "time_change": "タイムライン解釈に影響するため、前後の操作と突合します。",
+        "log_integrity": "単独では証跡消去と断定せず、消去系ツールや終了処理との近接性を確認します。",
+        "antiforensic_tools": "削除対象までは示しませんが、証跡削除仮説の補助証拠です。",
+        "data_access": "情報参照や同期環境の存在を示し、送信先・対象ファイルの追加確認が必要です。",
+        "other": "個別 evidence と周辺イベントの突合が必要です。",
+    }.get(theme, "個別 evidence と周辺イベントの突合が必要です。")
+
+
+def _finding_theme_rank(theme: str) -> int:
+    return {
+        "explicit_credentials": 0,
+        "account_lifecycle": 1,
+        "time_change": 2,
+        "log_integrity": 3,
+        "antiforensic_tools": 4,
+        "data_access": 5,
+        "other": 9,
+    }.get(theme, 9)
+
+
+def _group_findings_for_display(findings: list[dict[str, Any]], limit: int = 8) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in findings:
+        theme = _finding_theme(row)
+        if theme == "other":
+            continue
+        item = grouped.setdefault(theme, {"theme": theme, "count": 0, "severity": "low", "confidence": 0.0})
+        item["count"] = int(item["count"]) + 1
+        severity = str(row.get("severity") or "low")
+        current = str(item.get("severity") or "low")
+        if {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(severity, 4) < {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(current, 4):
+            item["severity"] = severity
+        try:
+            item["confidence"] = max(float(item.get("confidence") or 0), float(row.get("confidence") or 0))
+        except (TypeError, ValueError):
+            pass
+    return [
+        {
+            "title": _finding_theme_title(str(row.get("theme") or ""), int(row.get("count") or 0)),
+            "summary": _finding_theme_summary(str(row.get("theme") or "")),
+            "severity": row.get("severity"),
+        }
+        for row in sorted(grouped.values(), key=lambda item: (_finding_theme_rank(str(item.get("theme") or "")), -float(item.get("confidence") or 0)))[:limit]
+    ]
+
+
 def _load_report_sections(db: CaseDB) -> tuple[list[dict[str, Any]], str]:
     """Load report sections from the database into an ordered list, returning both list and concatenated markdown."""
     sections = _normalize_rows(
@@ -322,6 +402,7 @@ def render_html_report(case: Case, db: CaseDB, output_path: str | Path | None = 
         "manifest": manifest,
         "manifest_data": manifest_data,
         "findings": findings,
+        "finding_groups": _group_findings_for_display(findings),
         "timeline": timeline,
         "reviews": reviews,
         "claims": claims,

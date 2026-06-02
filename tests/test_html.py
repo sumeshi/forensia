@@ -8,6 +8,7 @@ from forensia.report.html import (
     _flush_list,
     _flush_paragraph,
     _flush_table,
+    _group_findings_for_display,
     _handle_code_fence,
     _handle_heading,
     _handle_horizontal_rule,
@@ -56,6 +57,32 @@ class RenderInlineMarkdownTests(unittest.TestCase):
 
     def test_plain_text_passthrough(self):
         self.assertEqual(_render_inline_markdown("hello world"), "hello world")
+
+
+class FindingDisplayTests(unittest.TestCase):
+    def test_groups_duplicate_raw_finding_titles_for_html_display(self):
+        grouped = _group_findings_for_display(
+            [
+                {
+                    "finding_id": "f-1",
+                    "title": "Logon attempt with explicit credentials (4648): A -> B",
+                    "summary": "raw",
+                    "severity": "high",
+                    "confidence": 0.7,
+                },
+                {
+                    "finding_id": "f-2",
+                    "title": "Logon attempt with explicit credentials (4648): A -> C",
+                    "summary": "raw",
+                    "severity": "high",
+                    "confidence": 0.6,
+                },
+            ]
+        )
+
+        self.assertEqual(1, len(grouped))
+        self.assertEqual("明示的資格情報利用の観測 (2件)", grouped[0]["title"])
+        self.assertNotIn("Logon attempt", grouped[0]["title"])
 
 
 class SplitTableRowTests(unittest.TestCase):

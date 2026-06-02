@@ -2503,11 +2503,154 @@ def _strip_narrative_status_lines(body: str) -> str:
     return text.strip()
 
 
-def _final_report_section_body(section_key: str, body: str) -> str:
+def _parse_markdown_answer_rows(block: str) -> list[dict[str, Any]]:
+    answer_part = re.split(r"(?m)^### (?:Missing Reason|Queries Run|Structured Data)\s*$", block, maxsplit=1)[0]
+    if "### Answer" in answer_part:
+        answer_part = answer_part.split("### Answer", 1)[1]
+    table_lines = [line.strip() for line in answer_part.splitlines() if line.strip().startswith("|") and line.strip().endswith("|")]
+    if len(table_lines) < 2:
+        return []
+    headers = [cell.strip().replace("\\|", "|") for cell in table_lines[0].strip("|").split("|")]
+    rows: list[dict[str, Any]] = []
+    for line in table_lines[1:]:
+        cells = [cell.strip().replace("\\|", "|") for cell in line.strip("|").split("|")]
+        if all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells):
+            continue
+        if len(cells) != len(headers):
+            continue
+        rows.append(dict(zip(headers, cells, strict=False)))
+    return rows
+
+
+def _split_markdown_table_cells(line: str) -> list[str]:
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [cell.strip() for cell in stripped.split("|")]
+
+
+def _join_markdown_table_cells(cells: list[str]) -> str:
+    return "| " + " | ".join(cells) + " |"
+
+
+def _strip_hidden_markdown_table_columns(table_lines: list[str]) -> list[str]:
+    if not table_lines:
+        return table_lines
+    headers = _split_markdown_table_cells(table_lines[0])
+    if not headers:
+        return table_lines
+    keep_indexes = [index for index, header in enumerate(headers) if not _is_human_report_hidden_column(header)]
+    if len(keep_indexes) == len(headers):
+        return table_lines
+    if not keep_indexes:
+        return ["_No report-visible columns._"]
+    stripped_lines: list[str] = []
+    for line_index, line in enumerate(table_lines):
+        cells = _split_markdown_table_cells(line)
+        if len(cells) != len(headers):
+            stripped_lines.append(line)
+            continue
+        if line_index == 1 and all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells):
+            stripped_lines.append(_join_markdown_table_cells(["---"] * len(keep_indexes)))
+        else:
+            stripped_lines.append(_join_markdown_table_cells([cells[index] for index in keep_indexes]))
+    return stripped_lines
+
+
+def _strip_hidden_report_columns_from_markdown_tables(body: str) -> str:
+    lines = str(body or "").splitlines()
+    output: list[str] = []
+    table: list[str] = []
+
+    def flush_table() -> None:
+        nonlocal table
+        if table:
+            output.extend(_strip_hidden_markdown_table_columns(table))
+            table = []
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("|") and stripped.endswith("|"):
+            table.append(line)
+            continue
+        flush_table()
+        output.append(line)
+    flush_table()
+    return "\n".join(output).strip()
+
+
+def _ensure_appendix_interpretations(body: str) -> str:
+    """Insert short reader-facing interpretations into existing appendix question blocks."""
+    chunks = re.split(r"(?m)(?=^## .+$)", str(body or "").strip())
+    rendered: list[str] = []
+    for chunk in chunks:
+        if not chunk.strip() or not chunk.lstrip().startswith("## "):
+            rendered.append(chunk)
+            continue
+        if "### Interpretation" in chunk or "### Answer" not in chunk:
+            rendered.append(chunk)
+            continue
+        heading = chunk.splitlines()[0].lstrip("#").strip()
+        id_match = re.search(r"(?m)^\*\*ID:\*\*\s*(.+)$", chunk)
+        status_match = re.search(r"(?m)^\*\*Status:\*\*\s*(.+)$", chunk)
+        answer = {
+            "id": id_match.group(1).strip() if id_match else _structured_block_id(heading),
+            "status": status_match.group(1).strip() if status_match else "",
+            "answer": _parse_markdown_answer_rows(chunk),
+        }
+        interpretation = _structured_answer_interpretation(answer, heading)
+        chunk = chunk.replace("\n### Answer", f"\n### Interpretation\n{interpretation}\n\n### Answer", 1)
+        rendered.append(chunk)
+    text = "".join(rendered)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _refresh_appendix_structured_blocks(db: CaseDB | None, body: str) -> str:
+    """Refresh stale high-risk appendix blocks whose old Markdown can retain noisy rows."""
+    if db is None:
+        return body
+    chunks = re.split(r"(?m)(?=^## .+$)", str(body or "").strip())
+    rendered: list[str] = []
+    for chunk in chunks:
+        if not chunk.strip() or not chunk.lstrip().startswith("## "):
+            rendered.append(chunk)
+            continue
+        heading = chunk.splitlines()[0].lstrip("#").strip()
+        lower_heading = heading.casefold()
+        answer_spec = ""
+        if "antiforensic" in lower_heading or "anti-forensic" in lower_heading or "反フォレンジック" in lower_heading:
+            answer_spec = "antiforensic_activity"
+        if not answer_spec:
+            rendered.append(chunk)
+            continue
+        id_match = re.search(r"(?m)^\*\*ID:\*\*\s*(.+)$", chunk)
+        answer_id = id_match.group(1).strip() if id_match else _structured_block_id(heading)
+        try:
+            answer = build_structured_answer(
+                db.case,
+                db,
+                answer_spec=answer_spec,
+                answer_id=answer_id,
+                section_key="6_appendix",
+                block_heading=heading,
+            )
+        except Exception:
+            answer = None
+        rendered.append(_render_structured_answer_markdown(answer, heading) if answer else chunk)
+    return "".join(rendered).strip()
+
+
+def _final_report_section_body(section_key: str, body: str, db: CaseDB | None = None) -> str:
     """Return the Markdown body intended for report.md, leaving debug metadata out."""
     text = str(body or "").strip()
     if section_key != "6_appendix":
         text = _strip_narrative_status_lines(text)
+    else:
+        text = _refresh_appendix_structured_blocks(db, text)
+        text = _ensure_appendix_interpretations(text)
+        text = _strip_hidden_report_columns_from_markdown_tables(text)
     return text
 
 
@@ -2606,18 +2749,127 @@ def _account_summary_rows(db: CaseDB, limit: int = 10) -> list[dict[str, Any]]:
 
 
 def _signal_finding_rows(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for item in _query_top_findings(db, max(limit * 4, limit)):
+        theme = _finding_theme(item)
+        target = grouped.setdefault(
+            theme,
+            {
+                "theme": theme,
+                "count": 0,
+                "severity": "low",
+                "confidence": 0.0,
+                "evidence_ids": [],
+                "finding_ids": [],
+            },
+        )
+        target["count"] = int(target["count"]) + 1
+        target["severity"] = _max_severity(str(target.get("severity") or "low"), str(item.get("severity") or "low"))
+        try:
+            target["confidence"] = max(float(target.get("confidence") or 0), float(item.get("confidence") or 0))
+        except (TypeError, ValueError):
+            pass
+        for evidence_id in item.get("evidence_ids") or []:
+            text = str(evidence_id or "").strip()
+            if text and text not in target["evidence_ids"]:
+                target["evidence_ids"].append(text)
+        finding_id = str(item.get("finding_id") or "").strip()
+        if finding_id and finding_id not in target["finding_ids"]:
+            target["finding_ids"].append(finding_id)
+
+    candidates = [
+        item for item in grouped.values()
+        if str(item.get("theme") or "") != "other"
+    ] or list(grouped.values())
     rows: list[dict[str, Any]] = []
-    for item in _query_top_findings(db, limit):
+    for item in sorted(
+        candidates,
+        key=lambda row: (
+            _finding_theme_rank(str(row.get("theme") or "")),
+            _severity_rank(str(row.get("severity") or "")),
+            -float(row.get("confidence") or 0),
+        ),
+    )[:limit]:
+        confidence = item.get("confidence")
+        try:
+            confidence = f"{float(confidence):.2f}"
+        except (TypeError, ValueError):
+            confidence = str(confidence or "-")
         rows.append(
             {
-                "finding": item.get("title") or item.get("finding_id"),
+                "finding": _finding_theme_title(str(item.get("theme") or ""), int(item.get("count") or 0)),
                 "severity": item.get("severity"),
-                "confidence": item.get("confidence"),
-                "why_it_matters": item.get("summary"),
-                "reference": "; ".join((item.get("evidence_ids") or [])[:3]) or item.get("finding_id"),
+                "confidence": confidence,
+                "why_it_matters": _finding_theme_summary(str(item.get("theme") or "")),
+                "reference": "; ".join((item.get("evidence_ids") or [])[:3]) or "; ".join((item.get("finding_ids") or [])[:2]),
             }
         )
     return rows
+
+
+def _severity_rank(severity: str) -> int:
+    return {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(severity.lower(), 4)
+
+
+def _max_severity(left: str, right: str) -> str:
+    return left if _severity_rank(left) <= _severity_rank(right) else right
+
+
+def _finding_theme(item: dict[str, Any]) -> str:
+    blob = " ".join(
+        str(item.get(key) or "").lower()
+        for key in ("finding_id", "rule_id", "title", "summary")
+    )
+    if "4648" in blob or "explicit credential" in blob:
+        return "explicit_credentials"
+    if "4722" in blob or "4724" in blob or "account lifecycle" in blob or "account" in blob and "user" in blob:
+        return "account_lifecycle"
+    if "4616" in blob or "system time" in blob:
+        return "time_change"
+    if "event log service stopped" in blob or " log clear" in blob or "1100" in blob or "1102" in blob:
+        return "log_integrity"
+    if "eraser" in blob or "ccleaner" in blob or "anti-forensic" in blob or "antiforensic" in blob:
+        return "antiforensic_tools"
+    if "ost" in blob or "outlook" in blob or "browser" in blob or "cloud" in blob or "drive" in blob:
+        return "data_access"
+    return "other"
+
+
+def _finding_theme_rank(theme: str) -> int:
+    return {
+        "explicit_credentials": 0,
+        "account_lifecycle": 1,
+        "time_change": 2,
+        "log_integrity": 3,
+        "antiforensic_tools": 4,
+        "data_access": 5,
+        "other": 9,
+    }.get(theme, 9)
+
+
+def _finding_theme_title(theme: str, count: int) -> str:
+    suffix = f" ({count}件)" if count > 1 else ""
+    return {
+        "explicit_credentials": f"明示的資格情報利用の観測{suffix}",
+        "account_lifecycle": f"ユーザーアカウント変更イベント{suffix}",
+        "time_change": f"システム時刻変更の観測{suffix}",
+        "log_integrity": f"ログ停止・消去候補イベント{suffix}",
+        "antiforensic_tools": f"消去・クリーニング系ツール痕跡{suffix}",
+        "data_access": f"メール・ブラウザ・クラウド関連痕跡{suffix}",
+        "other": f"その他の優先所見{suffix}",
+    }.get(theme, f"優先所見{suffix}")
+
+
+def _finding_theme_summary(theme: str) -> str:
+    return {
+        "explicit_credentials": "通常ログオンとは別に資格情報が明示的に使われており、対象ユーザー・ホスト・時刻の相関確認が必要です。",
+        "account_lifecycle": "ユーザー作成・有効化・パスワード変更などは権限利用や痕跡操作の前提になり得ます。",
+        "time_change": "時刻変更はタイムライン解釈に影響するため、前後の認証・ファイル操作と合わせて確認します。",
+        "log_integrity": "ログ停止・消去候補は単独で証跡消去を断定できませんが、消去系ツールや終了処理と近接する場合は重要です。",
+        "antiforensic_tools": "Eraser/CCleaner などは削除対象までは示さないものの、証跡削除仮説の中心的な補助証拠です。",
+        "data_access": "メール・ブラウザ・クラウド痕跡は情報参照や同期環境の存在を示し、送信先・対象ファイルの追加確認が必要です。",
+        "other": "詳細な結論には、個別 evidence と周辺イベントの突合が必要です。",
+    }.get(theme, "詳細な結論には、個別 evidence と周辺イベントの突合が必要です。")
 
 
 def _event_interpretation(event_id: Any) -> str:
@@ -2690,7 +2942,11 @@ def _timeline_rows(db: CaseDB, limit: int = 18) -> list[dict[str, Any]]:
                 "evidence": row.get("evidence_id"),
             }
         )
-    rows = sorted(rows, key=lambda item: str(item.get("time") or ""))[:limit]
+    rows = sorted(rows, key=lambda item: str(item.get("time") or ""))
+    if len(rows) > limit:
+        early_count = max(4, limit // 3)
+        late_count = max(limit - early_count, 0)
+        rows = sorted([*rows[:early_count], *rows[-late_count:]], key=lambda item: str(item.get("time") or ""))
     return rows
 
 
@@ -2812,6 +3068,282 @@ def _network_summary_rows(db: CaseDB) -> list[dict[str, Any]]:
     ]
 
 
+def _as_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _first_nonempty(rows: list[dict[str, Any]], key: str) -> str:
+    for row in rows:
+        text = str(row.get(key) or "").strip()
+        if text and text != "-":
+            return text
+    return ""
+
+
+def _sample_labels(rows: list[dict[str, Any]], key: str, limit: int = 3) -> list[str]:
+    labels: list[str] = []
+    for row in rows:
+        text = str(row.get(key) or "").strip()
+        if text and text != "-" and text not in labels:
+            labels.append(text)
+        if len(labels) >= limit:
+            break
+    return labels
+
+
+def _sentence_list(items: list[str]) -> str:
+    clean = [item for item in items if item]
+    if not clean:
+        return ""
+    if len(clean) == 1:
+        return clean[0]
+    return "、".join(clean[:-1]) + "、および " + clean[-1]
+
+
+def _signal_executable_labels(rows: list[dict[str, Any]], limit: int = 4) -> list[str]:
+    priority = (
+        "ERASER",
+        "CCLEANER",
+        "GOOGLEDRIVESYNC",
+        "WINWORD",
+        "CHROME",
+        "IEXPLORE",
+        "SCHTASKS",
+    )
+    labels: list[str] = []
+    for marker in priority:
+        for row in rows:
+            for key in ("executable_name", "file_name", "artifact"):
+                text = str(row.get(key) or "").strip()
+                if marker in text.upper() and text and text not in labels:
+                    labels.append(text)
+                    break
+            if len(labels) >= limit:
+                return labels
+    return labels or (_sample_labels(rows, "executable_name", limit) or _sample_labels(rows, "file_name", limit))
+
+
+def _overview_assessment(
+    findings: list[dict[str, Any]],
+    hosts: list[dict[str, Any]],
+    confirmed_count: int,
+    active_count: int,
+) -> str:
+    primary_host = _first_nonempty(hosts, "host") or "主要端末"
+    finding_labels = _sample_labels(findings, "finding", 3)
+    high_signal = _sentence_list(finding_labels)
+    if high_signal:
+        signal_text = f"優先度の高い所見は {high_signal} で、"
+    else:
+        signal_text = "優先度の高い所見は限定的で、"
+    return (
+        f"本件の中心は、{primary_host} を軸にした認証活動、ユーザー文書・メール・クラウド同期痕跡、"
+        "およびクリーニング系ツール実行を同じ事件線上で評価する点にあります。"
+        f"{signal_text}これらは単独では結論にならず、時刻・ユーザー・ホストを突合した相関証拠として扱う必要があります。"
+        f"現時点では確認済み仮説が{confirmed_count}件、未解決仮説が{active_count}件残っているため、"
+        "最終判断は「確認できた事実」と「未確認の推定」を明確に分けて読むべきです。"
+    )
+
+
+def _timeline_phase_rows(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
+    evtx_rows = fetch_records(
+        db,
+        """
+        SELECT
+          CAST(CAST(timestamp AS DATE) AS VARCHAR) AS date,
+          COUNT(*) FILTER (WHERE event_id = 4648) AS explicit_credentials,
+          COUNT(*) FILTER (WHERE event_id IN (1100, 104)) AS log_integrity_events,
+          COUNT(*) FILTER (WHERE event_id IN (1074, 6006, 6008)) AS shutdown_events,
+          MIN(timestamp) AS first_seen,
+          MAX(timestamp) AS last_seen
+        FROM evtx_events
+        WHERE timestamp IS NOT NULL
+          AND event_id IN (4648, 1100, 104, 1074, 6006, 6008)
+        GROUP BY CAST(timestamp AS DATE)
+        ORDER BY CAST(timestamp AS DATE)
+        """
+    )
+    exec_rows = fetch_records(
+        db,
+        """
+        SELECT
+          CAST(CAST(last_exec_time AS DATE) AS VARCHAR) AS date,
+          COUNT(*) AS executions,
+          string_agg(DISTINCT executable_name, ', ' ORDER BY executable_name) AS executables
+        FROM prefetch_executions
+        WHERE last_exec_time IS NOT NULL
+          AND UPPER(executable_name) IN (
+            'CCLEANER64.EXE', 'CCLEANER.EXE', 'ERASER.EXE', 'GOOGLEDRIVESYNC.EXE',
+            'CHROME.EXE', 'IEXPLORE.EXE', 'WINWORD.EXE', 'SCHTASKS.EXE'
+          )
+        GROUP BY CAST(last_exec_time AS DATE)
+        ORDER BY CAST(last_exec_time AS DATE)
+        """
+    )
+    by_date: dict[str, dict[str, Any]] = {}
+    for row in evtx_rows:
+        date = str(row.get("date") or "")
+        if date:
+            by_date.setdefault(date, {"date": date}).update(row)
+    for row in exec_rows:
+        date = str(row.get("date") or "")
+        if date:
+            by_date.setdefault(date, {"date": date}).update(row)
+
+    phases: list[dict[str, Any]] = []
+    for date in sorted(by_date):
+        row = by_date[date]
+        points: list[str] = []
+        if _as_int(row.get("explicit_credentials")):
+            points.append(f"4648 が{_as_int(row.get('explicit_credentials'))}件")
+        if _as_int(row.get("log_integrity_events")):
+            points.append(f"ログ整合性イベントが{_as_int(row.get('log_integrity_events'))}件")
+        if _as_int(row.get("shutdown_events")):
+            points.append(f"shutdown/log stop 系が{_as_int(row.get('shutdown_events'))}件")
+        if _as_int(row.get("executions")):
+            executables = str(row.get("executables") or "").strip()
+            points.append(f"注目アプリ実行: {executables}" if executables else "注目アプリ実行あり")
+        if not points:
+            continue
+        phases.append(
+            {
+                "date": date,
+                "phase": " / ".join(points),
+                "interpretation": _phase_interpretation(row),
+                "window": f"{row.get('first_seen') or '-'} to {row.get('last_seen') or '-'}",
+            }
+        )
+    return phases[:limit]
+
+
+def _phase_interpretation(row: dict[str, Any]) -> str:
+    has_tools = any(name in str(row.get("executables") or "").upper() for name in ("ERASER", "CCLEANER"))
+    has_cloud = "GOOGLEDRIVESYNC" in str(row.get("executables") or "").upper()
+    if has_tools and _as_int(row.get("log_integrity_events")):
+        return "クリーニング系ツールとログ整合性イベントが同日にあり、反フォレンジック仮説を優先確認する"
+    if has_cloud and has_tools:
+        return "クラウド同期痕跡とクリーニング系ツールが同日にあり、データ移動後の消去可能性を確認する"
+    if _as_int(row.get("explicit_credentials")):
+        return "明示的資格情報利用があり、通常ログオンとの関係をユーザー単位で確認する"
+    if _as_int(row.get("log_integrity_events")):
+        return "ログ停止・消去候補があり、同時刻の操作主体と周辺イベントを確認する"
+    return "注目イベントが集中する日として、前後のファイル・実行痕跡と突合する"
+
+
+def _timeline_assessment(phase_rows: list[dict[str, Any]]) -> str:
+    if not phase_rows:
+        return "時系列上の注目イベントは限定的です。個別の表に示したイベントは、単独では攻撃や持ち出しを示すものではなく、周辺のファイル操作・実行痕跡との突合が必要です。"
+    first_date = phase_rows[0].get("date")
+    last_date = phase_rows[-1].get("date")
+    return (
+        f"時系列では {first_date} から {last_date} にかけて、認証・ログ整合性・アプリケーション実行の注目点が分布しています。"
+        "重要なのは単発イベントの有無ではなく、文書・メール・クラウド同期・消去系ツールが近い時間帯に現れるかです。"
+        "下表はその読み筋を日単位に圧縮したもので、詳細イベント表は各フェーズの根拠確認に使います。"
+    )
+
+
+def _account_assessment(rows: list[dict[str, Any]]) -> str:
+    explicit = [row for row in rows if _as_int(row.get("explicit_credential_events"))]
+    failed = [row for row in rows if _as_int(row.get("failed_logons"))]
+    parts: list[str] = []
+    if explicit:
+        accounts = _sentence_list([str(row.get("account")) for row in explicit[:3]])
+        parts.append(f"{accounts} に明示的資格情報利用が観測されており、通常の対話ログオンとは別に資格情報の使われ方を確認する必要があります")
+    if failed:
+        accounts = _sentence_list([str(row.get("account")) for row in failed[:3]])
+        parts.append(f"{accounts} では失敗ログオンもあり、試行錯誤や認証失敗の文脈を確認します")
+    if not parts:
+        parts.append("認証表では成功ログオンが中心で、失敗ログオンや明示的資格情報利用は限定的です")
+    return "。".join(parts) + "。"
+
+
+def _execution_assessment(rows: list[dict[str, Any]]) -> str:
+    names = [str(row.get("executable_name") or "").upper() for row in rows]
+    signals: list[str] = []
+    if any("ERASER" in name for name in names) or any("CCLEANER" in name for name in names):
+        signals.append("Eraser/CCleaner の実行は、通常のアプリ利用ではなく証跡削除の可能性を持つため、実行時刻をファイル操作・ログ停止と突合します")
+    if any(name in {"GOOGLEDRIVESYNC.EXE", "CHROME.EXE", "IEXPLORE.EXE"} for name in names):
+        signals.append("ブラウザや Google Drive の実行は、文書閲覧・クラウド同期・外部アクセス仮説の補助証拠になります")
+    if any("WINWORD" in name for name in names):
+        signals.append("Word 実行は resignation や secret_project 系文書の操作時刻と合わせて評価します")
+    return "。".join(signals or ["実行履歴は単体では目的を示さないため、ファイル作成・更新時刻と合わせて読む必要があります"]) + "。"
+
+
+def _file_artifact_assessment(rows: list[dict[str, Any]]) -> str:
+    blob = " ".join(str(value).lower() for row in rows for value in row.values())
+    signals: list[str] = []
+    if "resignation" in blob:
+        signals.append("resignation 関連ファイルと LNK は、ユーザー操作の近接時刻を示す重要な痕跡です")
+    if "outlook" in blob or ".ost" in blob:
+        signals.append("Outlook/OST 痕跡はメールデータ参照の可能性を示しますが、内容取得や送信までは示しません")
+    if "google/drive" in blob or "google\\drive" in blob:
+        signals.append("Google Drive の DB・ログはクラウド同期環境の存在を示し、同期対象と時刻の追加確認が必要です")
+    if "eraser" in blob or "ccleaner" in blob:
+        signals.append("Eraser/CCleaner 関連ファイルはツール導入・実行の補助証拠として扱います")
+    return "。".join(signals or ["ファイル痕跡はユーザー操作の候補を示すため、アプリ実行時刻と組み合わせて評価します"]) + "。"
+
+
+def _antiforensic_assessment(rows: list[dict[str, Any]]) -> str:
+    tool_count = sum(1 for row in rows if "tool" in str(row.get("type") or ""))
+    log_count = sum(1 for row in rows if "log integrity" in str(row.get("type") or ""))
+    return (
+        f"反フォレンジック候補は、ツール系痕跡{tool_count}件とログ整合性イベント{log_count}件に分かれます。"
+        "Eraser/CCleaner の存在だけでは削除実行の対象を断定できませんが、実行時刻が文書・クラウド同期・ログ停止に近い場合は説明力が高くなります。"
+    )
+
+
+def _network_assessment(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return "正規化済み EVTX からはネットワーク評価に使える行が得られていません。外部送信の有無は別ログまたはクラウド同期成果物で補完する必要があります。"
+    row = rows[0]
+    if _as_int(row.get("external_src_rows")) or _as_int(row.get("external_dst_rows")):
+        return "正規化済み EVTX に外部IP候補が含まれるため、宛先・プロセス・ユーザーを個別に確認します。"
+    return "正規化済み EVTX では非ループバックの外部通信行は強く出ていません。データ持ち出しの判断は、Google Drive やブラウザ成果物など別の証跡で補強する必要があります。"
+
+
+def _forensic_gap_rows(db: CaseDB) -> list[dict[str, Any]]:
+    active_count = _hypothesis_count(db, "active")
+    network = _network_summary_rows(db)
+    gaps = [
+        {
+            "gap": "外部送信・同期先の直接証跡",
+            "why_it_matters": "クラウド同期やブラウザ痕跡は存在を示すが、送信先・送信対象・完了可否を直接示すわけではない。",
+            "next_step": "Google Drive/Browser の詳細ログ、同期DB、ネットワークログを突合する。",
+        },
+        {
+            "gap": "ファイルアクセスとプロセス実行の同時相関",
+            "why_it_matters": "OST、resignation、secret_project 系ファイルは観測されるが、どのプロセス・ユーザー操作と結びつくかは追加確認が必要。",
+            "next_step": "MFT/LNK/Prefetch/EVTX を時刻幅で結合し、操作主体と対象ファイルを確認する。",
+        },
+        {
+            "gap": "消去系ツールの対象範囲",
+            "why_it_matters": "Eraser/CCleaner 実行は強い候補だが、削除対象や実行内容までは Prefetch だけでは分からない。",
+            "next_step": "Eraser task file、アプリログ、削除済み MFT エントリ、ログ停止時刻を突合する。",
+        },
+    ]
+    if active_count:
+        gaps.insert(
+            0,
+            {
+                "gap": "未解決仮説の確定/棄却",
+                "why_it_matters": f"{active_count}件の active hypothesis が残っており、結論に混ぜると過剰推定になる。",
+                "next_step": "未調査仮説を優先し、confirmed/refuted/needs_data に分類する。",
+            },
+        )
+    if network and not (_as_int(network[0].get("external_src_rows")) or _as_int(network[0].get("external_dst_rows"))):
+        gaps.append(
+            {
+                "gap": "正規化済みネットワーク証跡の不足",
+                "why_it_matters": "EVTX だけでは外部通信の有無を十分に判断できない。",
+                "next_step": "Firewall/proxy/DNS/cloud client logs が存在する場合は追加取り込みする。",
+            }
+        )
+    return gaps
+
+
 def _hypothesis_rows(db: CaseDB, status: str | None = None, limit: int = 12) -> list[dict[str, Any]]:
     where = "WHERE h.status = ?" if status else ""
     params: tuple[Any, ...] = (status, limit) if status else (limit,)
@@ -2880,23 +3412,30 @@ def _render_overview_section(db: CaseDB) -> str:
             "# Investigation Overview",
             "## Executive Summary",
             summary,
+            "## Assessment",
+            _overview_assessment(findings, hosts, confirmed_count, active_count),
             "## Evidence Scope",
             _markdown_table(_count_table(db), [("metric", "Metric"), ("value", "Value"), ("scope", "Scope")], max_rows=8),
             "## Systems Observed",
             _markdown_table(hosts, [("host", "Host"), ("events", "EVTX rows"), ("first_seen", "First seen"), ("last_seen", "Last seen")], max_rows=5),
             "## Key Findings",
-            _markdown_table(findings, [("finding", "Finding"), ("severity", "Severity"), ("confidence", "Confidence"), ("why_it_matters", "Why it matters"), ("reference", "Reference")], max_rows=8),
+            _markdown_table(findings, [("finding", "Finding"), ("severity", "Severity"), ("confidence", "Confidence"), ("why_it_matters", "Why it matters")], max_rows=8),
         ]
     )
 
 
 def _render_timeline_section(db: CaseDB) -> str:
+    phase_rows = _timeline_phase_rows(db)
     return "\n\n".join(
         [
             "# Activity Timeline",
+            "## Timeline Assessment",
+            _timeline_assessment(phase_rows),
+            "## Phase Summary",
+            _markdown_table(phase_rows, [("date", "Date"), ("phase", "Observed activity"), ("interpretation", "Interpretation"), ("window", "Event window")], max_rows=8),
             "## Chronological Events",
             "以下は、ログオン、明示的資格情報、ログ整合性、アプリケーション実行の代表イベントを時系列で並べたものです。",
-            _markdown_table(_timeline_rows(db), [("time", "Time"), ("host", "Host"), ("activity", "Activity"), ("subject", "Subject"), ("artifact", "Artifact"), ("evidence", "Evidence")], max_rows=18),
+            _markdown_table(_timeline_rows(db), [("time", "Time"), ("host", "Host"), ("activity", "Activity"), ("subject", "Subject"), ("artifact", "Artifact")], max_rows=18),
             "## Log Integrity",
             "Event ID 1100/104 はログの停止・消去系の候補として扱い、単独では意図的な証跡消去と断定せず、同時刻のツール実行やファイル操作と相関してください。",
         ]
@@ -2904,19 +3443,29 @@ def _render_timeline_section(db: CaseDB) -> str:
 
 
 def _render_technical_section(db: CaseDB) -> str:
+    account_rows = _account_summary_rows(db)
+    execution_rows = _execution_rows(db)
+    file_rows = _file_artifact_rows(db)
+    antiforensic_rows = _antiforensic_rows(db)
+    network_rows = _network_summary_rows(db)
     return "\n\n".join(
         [
             "# Technical Analysis",
             "## Systems and Accounts",
-            _markdown_table(_account_summary_rows(db), [("account", "Account"), ("computer", "Host"), ("logons", "4624"), ("failed_logons", "4625"), ("explicit_credential_events", "4648"), ("first_seen", "First seen"), ("last_seen", "Last seen")], max_rows=10),
+            _account_assessment(account_rows),
+            _markdown_table(account_rows, [("account", "Account"), ("computer", "Host"), ("logons", "4624"), ("failed_logons", "4625"), ("explicit_credential_events", "4648"), ("first_seen", "First seen"), ("last_seen", "Last seen")], max_rows=10),
             "## Execution and Persistence",
-            _markdown_table(_execution_rows(db), [("executable_name", "Executable"), ("exec_count", "Exec count"), ("last_exec_time", "Last execution"), ("evidence_id", "Evidence"), ("source_file", "Source")], max_rows=12),
+            _execution_assessment(execution_rows),
+            _markdown_table(execution_rows, [("executable_name", "Executable"), ("exec_count", "Exec count"), ("last_exec_time", "Last execution")], max_rows=12),
             "## Files and User Artifacts",
-            _markdown_table(_file_artifact_rows(db), [("timestamp", "Timestamp"), ("file_name", "File"), ("file_path", "Path"), ("evidence_id", "Evidence")], max_rows=12),
+            _file_artifact_assessment(file_rows),
+            _markdown_table(file_rows, [("timestamp", "Timestamp"), ("file_name", "File"), ("file_path", "Path")], max_rows=12),
             "## Antiforensic Indicators",
-            _markdown_table(_antiforensic_rows(db), [("type", "Type"), ("timestamp", "Timestamp"), ("artifact", "Artifact"), ("computer", "Host"), ("evidence_id", "Evidence")], max_rows=12),
+            _antiforensic_assessment(antiforensic_rows),
+            _markdown_table(antiforensic_rows, [("type", "Type"), ("timestamp", "Timestamp"), ("artifact", "Artifact"), ("computer", "Host")], max_rows=12),
             "## Network Activity",
-            _markdown_table(_network_summary_rows(db), [("area", "Area"), ("observed_rows", "Rows with IP"), ("external_src_rows", "External source rows"), ("external_dst_rows", "External destination rows"), ("interpretation", "Interpretation")], max_rows=3),
+            _network_assessment(network_rows),
+            _markdown_table(network_rows, [("area", "Area"), ("observed_rows", "Rows with IP"), ("external_src_rows", "External source rows"), ("external_dst_rows", "External destination rows"), ("interpretation", "Interpretation")], max_rows=3),
         ]
     )
 
@@ -2936,10 +3485,12 @@ def _render_gaps_section(db: CaseDB) -> str:
     return "\n\n".join(
         [
             "# Investigation Gaps",
+            "## Gap Assessment",
+            "未解決事項は、レポート生成品質ではなく、証拠上まだ確認できていない論点として扱います。特に、データ持ち出しの直接証跡、消去系ツールの実行内容、ファイル操作と認証イベントの相関は、現時点の表だけでは断定できません。",
             "## Unresolved Hypotheses",
             _markdown_table(active_rows, [("hypothesis", "Hypothesis"), ("state", "State"), ("reasoning", "Reasoning rows"), ("latest", "Latest rationale"), ("needed", "Needed evidence")], max_rows=10),
-            "## Section Quality Gaps",
-            _markdown_table(_section_gap_rows(db), [("section", "Section"), ("gap", "Gap"), ("next_step", "Next step")], max_rows=12),
+            "## Evidence Gaps",
+            _markdown_table(_forensic_gap_rows(db), [("gap", "Gap"), ("why_it_matters", "Why it matters"), ("next_step", "Next step")], max_rows=8),
         ]
     )
 
@@ -2975,6 +3526,8 @@ def _render_recommendations_section(db: CaseDB) -> str:
     return "\n\n".join(
         [
             "# Recommendations",
+            "## Recommendation Basis",
+            "推奨事項は、確認済み事実の封じ込めと、未確定仮説の追加検証を分けて実施します。明示的資格情報利用、メール/文書/クラウド同期痕跡、Eraser/CCleaner 実行は同じ事件線上で評価できますが、外部送信や削除対象は追加証拠なしに断定しないでください。",
             "## Action Plan",
             _markdown_table(recommendations, [("priority", "Priority"), ("action", "Action"), ("rationale", "Rationale"), ("evidence_or_gap", "Evidence/Gap")], max_rows=10),
         ]
@@ -3018,7 +3571,7 @@ def build_report_markdown_from_db(db: CaseDB) -> str:
         body = str(row.get("body") or "").strip()
         if not body:
             continue
-        ordered.append(_final_report_section_body(section_key, body))
+        ordered.append(_final_report_section_body(section_key, body, db=db))
     if not ordered:
         return ""
     return "\n\n".join(ordered).strip() + "\n"
@@ -3524,6 +4077,14 @@ def _answer_columns(items: list[Any], preferred: Any = None) -> list[str]:
     return columns
 
 
+_HUMAN_REPORT_HIDDEN_COLUMNS = frozenset({"evidence_id", "evidence_ids", "reference", "references", "source_file"})
+
+
+def _is_human_report_hidden_column(column: Any) -> bool:
+    normalized = str(column or "").strip().lower()
+    return normalized in _HUMAN_REPORT_HIDDEN_COLUMNS
+
+
 def _normalize_benchmark_answer(
     answer: dict[str, Any],
     *,
@@ -3669,7 +4230,7 @@ def _render_answer_block(items: list[Any], columns: Any = None, *, max_rows: int
         return ["- no answer"]
     dicts = [item for item in items if isinstance(item, dict)]
     if dicts and len(dicts) == len(items):
-        keys = _answer_columns(dicts, columns)
+        keys = [key for key in _answer_columns(dicts, columns) if not _is_human_report_hidden_column(key)]
         if not keys:
             return ["- no answer"]
 
@@ -3695,9 +4256,58 @@ def _meaningful_missing_reason_items(value: Any) -> list[str]:
     return [item for item in _coerce_string_list(value) if item.strip().lower() not in _MISSING_REASON_NOOP_VALUES]
 
 
+def _structured_answer_interpretation(answer: dict[str, Any], block_heading: str) -> str:
+    rows = [item for item in list(answer.get("answer") or []) if isinstance(item, dict)]
+    status = str(answer.get("status") or "").strip().lower()
+    heading = str(block_heading or "").strip()
+    spec = str(answer.get("id") or "").strip().lower()
+    if not rows:
+        if status == "not_found":
+            return "この設問に直接対応する行は見つかっていません。該当なしと断定する前に、取り込み対象ログと時刻範囲が十分か確認してください。"
+        return "この設問は十分な行が得られていないため、表の欠落理由を確認したうえで追加証拠の有無を判断してください。"
+
+    first = rows[0]
+    row_count = len(rows)
+    heading_blob = f"{heading} {spec}".casefold()
+    if "endpoint" in heading_blob or "host" in heading_blob:
+        hosts = _sentence_list(_sample_labels(rows, "host_id", 3) or _sample_labels(rows, "computer", 3))
+        return f"EVTX 上では {hosts or '複数ホスト'} が観測されています。以降の判断では、主要ホストと少数ホストを分け、同一端末名の表記揺れも考慮します。"
+    if "last logged" in heading_blob or "logon" in heading_blob:
+        user = first.get("user_name") or first.get("target_user") or first.get("account") or "-"
+        time = first.get("logon_time") or first.get("timestamp") or "-"
+        computer = first.get("computer") or "-"
+        return f"最後に確認できる人間ユーザー系ログオンは {time} の {computer} / {user} です。これは最終利用者の候補であり、ログオン種別と周辺操作で裏付けます。"
+    if "shutdown" in heading_blob:
+        time = first.get("shutdown_time") or first.get("timestamp") or "-"
+        event_id = first.get("event_id") or "-"
+        return f"最後の shutdown/log stop 系イベントは {time} の Event ID {event_id} です。終了時刻の基準として使えますが、意図的停止か通常終了かは周辺イベントで判断します。"
+    if "application" in heading_blob or "execution" in heading_blob:
+        executables = _sentence_list(_signal_executable_labels(rows, 4))
+        return f"実行履歴は {row_count} 行あり、代表例は {executables or '表の上位行'} です。Prefetch は実行の存在を示しますが、操作目的や対象ファイルは別証跡との相関が必要です。"
+    if "browser" in heading_blob:
+        browsers = _sentence_list(_sample_labels(rows, "browser_name", 4))
+        return f"ブラウザ痕跡として {browsers or '表のブラウザ'} が確認できます。Web利用の存在は示しますが、アクセス先や送信内容は履歴・キャッシュ・ネットワーク証跡で補完してください。"
+    if "mail" in heading_blob or "e-mail" in heading_blob or "email" in heading_blob:
+        apps = _sentence_list(_sample_labels(rows, "application_name", 3) or _sample_labels(rows, "file_name", 3))
+        return f"メール関連痕跡は {apps or '表の成果物'} を中心に確認されています。OST/PST はメールデータ参照の可能性を示しますが、内容閲覧や外部送信までは直接示しません。"
+    if "rename" in heading_blob:
+        return f"リネーム候補は {row_count} 件です。Recent LNK 由来の推定はユーザー操作の手掛かりになりますが、実ファイル名変更の直接証跡としては慎重に扱います。"
+    if "cloud" in heading_blob:
+        services = _sentence_list(_sample_labels(rows, "service_name", 4))
+        return f"クラウドサービス痕跡として {services or '表のサービス'} が確認できます。同期環境の存在は示しますが、同期対象と完了可否はクライアントDBやログの追加確認が必要です。"
+    if "resignation" in heading_blob:
+        names = _sentence_list(_sample_labels(rows, "file_name", 3))
+        return f"resignation 関連ファイルは {names or '表のファイル'} を中心に時刻が確認できます。文書作成・閲覧・ショートカット生成の順序を実行履歴と突合します。"
+    if "anti" in heading_blob or "forensic" in heading_blob:
+        types = _sentence_list(_sample_labels(rows, "evidence_type", 4))
+        return f"反フォレンジック候補は {types or '表の痕跡'} として {row_count} 行あります。ツールの存在と実行は重要ですが、削除対象や実行内容は別証拠で確認します。"
+    return f"この設問では {row_count} 行の構造化証拠を確認しています。表は回答の根拠ですが、結論は時刻・ホスト・ユーザー・関連成果物の相関で評価してください。"
+
+
 def _render_structured_answer_markdown(answer: dict[str, Any], block_heading: str) -> str:
     """Render a single structured answer as Markdown using persisted data rows."""
     answer_block = _render_answer_block(list(answer.get("answer") or []), answer.get("columns"))
+    interpretation = _structured_answer_interpretation(answer, block_heading)
     missing_lines = [f"- {item}" for item in _meaningful_missing_reason_items(answer.get("missing_reason"))]
     query_lines = [f"- {item}" for item in _coerce_string_list(answer.get("queries_run"))]
     data_lines = [f"- JSON: {answer.get('json_path')}"] if answer.get("json_path") else []
@@ -3712,6 +4322,9 @@ def _render_structured_answer_markdown(answer: dict[str, Any], block_heading: st
         "",
         f"**ID:** {str(answer.get('id') or _structured_block_id(block_heading))}",
         f"**Status:** {str(answer.get('status') or 'insufficient_evidence')}",
+        "",
+        "### Interpretation",
+        interpretation,
         "",
         "### Answer",
         *answer_block,
@@ -4496,7 +5109,7 @@ def _build_antiforensic_activity(case: Case, db: CaseDB, answer_id: str, section
         db,
         """
         SELECT
-            'event_log' AS evidence_type,
+            'log_integrity_event' AS evidence_type,
             timestamp,
             event_id,
             channel,
@@ -4505,7 +5118,7 @@ def _build_antiforensic_activity(case: Case, db: CaseDB, answer_id: str, section
             evidence_id,
             message
         FROM evtx_events
-        WHERE event_id = 1102
+        WHERE (event_id IN (1100, 1102) AND LOWER(COALESCE(channel, '')) LIKE '%security%')
            OR (event_id = 104 AND LOWER(COALESCE(channel, '')) LIKE '%eventlog%')
         ORDER BY timestamp DESC NULLS LAST
         LIMIT 100
@@ -4522,7 +5135,7 @@ def _build_antiforensic_activity(case: Case, db: CaseDB, answer_id: str, section
             evidence_id
         FROM prefetch_executions
         WHERE LOWER(COALESCE(executable_name, '')) IN (
-            'eraser.exe', 'ccleaner.exe', 'ccleaner64.exe', 'bleachbit.exe', 'sdelete.exe', 'cipher.exe'
+            'eraser.exe', 'ccleaner.exe', 'ccleaner64.exe', 'bleachbit.exe', 'sdelete.exe'
         )
         ORDER BY last_exec_time DESC NULLS LAST, executable_name
         LIMIT 50
@@ -4540,18 +5153,34 @@ def _build_antiforensic_activity(case: Case, db: CaseDB, answer_id: str, section
             si_modified,
             evidence_id
         FROM mft_entries
-        WHERE LOWER(COALESCE(file_name, '')) LIKE 'eraser%.exe'
-           OR LOWER(COALESCE(file_name, '')) LIKE 'ccleaner%.exe'
-           OR LOWER(COALESCE(file_name, '')) LIKE 'ccsetup%.exe'
-           OR LOWER(COALESCE(file_name, '')) LIKE 'bleachbit%.exe'
-           OR LOWER(COALESCE(file_name, '')) LIKE 'sdelete%.exe'
-           OR LOWER(COALESCE(file_name, '')) LIKE 'cipher.exe'
-           OR LOWER(COALESCE(file_name, '')) LIKE 'eraser%.lnk'
-           OR LOWER(COALESCE(file_name, '')) LIKE 'ccleaner%.lnk'
+        WHERE (
+              LOWER(COALESCE(file_name, '')) IN ('task list.ersy', 'ccleaner.lnk', 'eraser.lnk')
            OR LOWER(COALESCE(file_name, '')) LIKE '%eraser%.pf'
            OR LOWER(COALESCE(file_name, '')) LIKE '%ccleaner%.pf'
-           OR LOWER(COALESCE(file_name, '')) = 'task list.ersy'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%/eraser 6/logs/%'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%prefetch%eraser%'
+           OR LOWER(COALESCE(file_path, '')) LIKE '%prefetch%ccleaner%'
+           OR (
+                (LOWER(COALESCE(file_name, '')) LIKE 'eraser%.exe'
+                 OR LOWER(COALESCE(file_name, '')) LIKE 'ccleaner%.exe'
+                 OR LOWER(COALESCE(file_name, '')) LIKE 'ccsetup%.exe'
+                 OR LOWER(COALESCE(file_name, '')) LIKE 'bleachbit%.exe'
+                 OR LOWER(COALESCE(file_name, '')) LIKE 'sdelete%.exe')
+                AND (
+                    LOWER(COALESCE(file_path, '')) LIKE '%/download/%'
+                    OR LOWER(COALESCE(file_path, '')) LIKE '%\\download\\%'
+                    OR LOWER(COALESCE(file_path, '')) LIKE '%/desktop/%'
+                    OR LOWER(COALESCE(file_path, '')) LIKE '%\\desktop\\%'
+                )
+              )
+        )
+          AND LOWER(COALESCE(file_path, '')) NOT LIKE 'windows/system32/%'
+          AND LOWER(COALESCE(file_path, '')) NOT LIKE 'windows/syswow64/%'
+          AND LOWER(COALESCE(file_path, '')) NOT LIKE 'program files/%'
+          AND LOWER(COALESCE(file_path, '')) NOT LIKE 'program files (x86)/%'
+          AND LOWER(COALESCE(file_path, '')) NOT LIKE '%/lang/%'
+          AND LOWER(COALESCE(file_path, '')) NOT LIKE '%\\lang\\%'
+          AND LOWER(COALESCE(file_path, '')) NOT LIKE '%/logs/%'
+          AND LOWER(COALESCE(file_path, '')) NOT LIKE '%\\logs\\%'
         ORDER BY COALESCE(si_modified, si_created) DESC NULLS LAST, file_path
         LIMIT 100
         """,

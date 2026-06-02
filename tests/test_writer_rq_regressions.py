@@ -316,8 +316,30 @@ class WriterRQRegressionTests(unittest.TestCase):
         )
 
         self.assertIn("Showing 25 of 30 rows", markdown)
+        self.assertIn("### Interpretation", markdown)
+        self.assertIn("構造化証拠", markdown)
         self.assertIn("... (+3 more)", markdown)
         self.assertNotIn("| 29 |", markdown)
+
+    def test_structured_markdown_hides_evidence_id_columns(self) -> None:
+        markdown = _render_structured_answer_markdown(
+            {
+                "id": "Q-EVIDENCE",
+                "status": "answered",
+                "answer": [{"name": "row", "evidence_id": "evtx-security-000000000001", "evidence_ids": ["mft-000000000001-00"], "source_file": "raw.evtx"}],
+                "columns": ["name", "evidence_id", "evidence_ids", "source_file"],
+                "missing_reason": [],
+                "queries_run": ["structured:test"],
+            },
+            "Evidence preview",
+        )
+
+        self.assertIn("| name |", markdown)
+        self.assertNotIn("evidence_id", markdown)
+        self.assertNotIn("evtx-security-000000000001", markdown)
+        self.assertNotIn("mft-000000000001-00", markdown)
+        self.assertNotIn("source_file", markdown)
+        self.assertNotIn("raw.evtx", markdown)
 
     def test_benchmark_keypoint_sql_executes_on_minimal_schema(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -531,6 +553,10 @@ class WriterRQRegressionTests(unittest.TestCase):
                     "INSERT INTO evtx_events (evidence_id, channel, event_id, timestamp, computer) VALUES (?, ?, ?, ?, ?)",
                     ("evtx-security-000000000002", "Security", 1102, datetime(2015, 3, 25, 15, 32, 0), "informant-PC"),
                 )
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, channel, event_id, timestamp, computer) VALUES (?, ?, ?, ?, ?)",
+                    ("evtx-security-000000000003", "Security", 1100, datetime(2015, 3, 25, 15, 33, 0), "informant-PC"),
+                )
                 answer = build_structured_answer(
                     case,
                     db,
@@ -542,7 +568,9 @@ class WriterRQRegressionTests(unittest.TestCase):
 
             self.assertIsNotNone(answer)
             event_ids = {row.get("event_id") for row in answer["answer"]}
-            self.assertEqual({1102}, event_ids)
+            self.assertEqual({1100, 1102}, event_ids)
+            evidence_ids = {row.get("evidence_id") for row in answer["answer"]}
+            self.assertNotIn("evtx-system-000000000001", evidence_ids)
 
     def test_structured_benchmark_antiforensics_filters_installed_noise_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -564,6 +592,24 @@ class WriterRQRegressionTests(unittest.TestCase):
                         "Windows/Prefetch/CCLEANER64.EXE-779BD542.pf",
                         "CCLEANER64.EXE-779BD542.pf",
                         datetime(2015, 3, 25, 15, 15, 50),
+                    ),
+                )
+                db.execute(
+                    "INSERT INTO mft_entries (evidence_id, file_path, file_name, si_modified) VALUES (?, ?, ?, ?)",
+                    (
+                        "mft-000000000003-00",
+                        "Windows/System32/cipher.exe",
+                        "cipher.exe",
+                        datetime(2009, 7, 14, 1, 38, 59),
+                    ),
+                )
+                db.execute(
+                    "INSERT INTO mft_entries (evidence_id, file_path, file_name, si_modified) VALUES (?, ?, ?, ?)",
+                    (
+                        "mft-000000000004-00",
+                        "Program Files/CCleaner/CCleaner64.exe",
+                        "CCleaner64.exe",
+                        datetime(2015, 3, 13, 11, 10, 26),
                     ),
                 )
                 answer = build_structured_answer(

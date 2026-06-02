@@ -644,15 +644,124 @@ class PersistenceTests(unittest.TestCase):
                 markdown = build_report_markdown_from_db(db)
                 top_findings = _query_top_findings(db)
 
-            self.assertIn("| Finding | Severity | Confidence | Why it matters | Reference |", markdown)
-            self.assertIn("| Time | Host | Activity | Subject | Artifact | Evidence |", markdown)
+            self.assertIn("| Finding | Severity | Confidence | Why it matters |", markdown)
+            self.assertNotIn("| Finding | Severity | Confidence | Why it matters | Reference |", markdown)
+            self.assertIn("## Assessment", markdown)
+            self.assertIn("## Timeline Assessment", markdown)
+            self.assertIn("## Phase Summary", markdown)
+            self.assertIn("## Evidence Gaps", markdown)
+            self.assertIn("| Time | Host | Activity | Subject | Artifact |", markdown)
+            self.assertNotIn("| Time | Host | Activity | Subject | Artifact | Evidence |", markdown)
             self.assertIn("| Priority | Action | Rationale | Evidence/Gap |", markdown)
-            self.assertIn("Logon attempt with explicit credentials", markdown)
+            self.assertIn("明示的資格情報利用の観測", markdown)
+            self.assertNotIn("Logon attempt with explicit credentials", markdown)
+            self.assertIn("表だけでは断定できません", markdown)
             self.assertNotIn("Section block failed", markdown)
+            self.assertNotIn("Section Quality Gaps", markdown)
             self.assertNotIn("**Status:**", markdown)
             self.assertNotIn("raw_sql", markdown)
             self.assertEqual("windows-security-4648-logon-explicit-creds-0001", top_findings[0]["finding_id"])
             self.assertNotIn("windows-corr-logon-then-service-0001", [row["finding_id"] for row in top_findings])
+
+    def test_build_report_markdown_adds_appendix_interpretation_to_existing_body(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO report_sections (
+                        section_key, title, body, confidence, status, update_count,
+                        gaps, last_filled_session, last_filled_at, stale
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, now(), FALSE)
+                    """,
+                    (
+                        "6_appendix",
+                        "Appendix",
+                        "# Appendix\n\n"
+                        "## 1. Endpoint identity\n\n"
+                        "**ID:** Q6\n"
+                        "**Status:** answered\n\n"
+                        "### Answer\n"
+                        "| host_id | evidence_count | first_seen | last_seen | evidence_id |\n"
+                        "| --- | --- | --- | --- | --- |\n"
+                        "| informant-PC | 4453 | 2015-03-22 | 2015-03-25 | evtx-security-000000000001 |\n\n"
+                        "### Queries Run\n"
+                        "- structured:host_identity:evtx_distinct_hosts\n\n"
+                        "### Structured Data\n"
+                        "- JSON: structured/answers.json\n",
+                        0.9,
+                        "stable",
+                        1,
+                        "[]",
+                        "S-1",
+                    ),
+                )
+
+                markdown = build_report_markdown_from_db(db)
+
+            self.assertIn("### Interpretation", markdown)
+            self.assertIn("EVTX 上では informant-PC", markdown)
+            self.assertIn("### Answer", markdown)
+            self.assertNotIn("evidence_id", markdown)
+            self.assertNotIn("evtx-security-000000000001", markdown)
+
+    def test_build_report_markdown_refreshes_stale_antiforensic_appendix_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO mft_entries (evidence_id, file_path, file_name, si_modified) VALUES (?, ?, ?, ?)",
+                    (
+                        "mft-prefetch-cleaner",
+                        "Windows/Prefetch/CCLEANER64.EXE-779BD542.pf",
+                        "CCLEANER64.EXE-779BD542.pf",
+                        datetime(2015, 3, 25, 15, 15, 50),
+                    ),
+                )
+                db.execute(
+                    "INSERT INTO mft_entries (evidence_id, file_path, file_name, si_modified) VALUES (?, ?, ?, ?)",
+                    (
+                        "mft-cipher-noise",
+                        "Windows/System32/cipher.exe",
+                        "cipher.exe",
+                        datetime(2009, 7, 14, 1, 38, 59),
+                    ),
+                )
+                db.execute(
+                    """
+                    INSERT INTO report_sections (
+                        section_key, title, body, confidence, status, update_count,
+                        gaps, last_filled_session, last_filled_at, stale
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, now(), FALSE)
+                    """,
+                    (
+                        "6_appendix",
+                        "Appendix",
+                        "# Appendix\n\n"
+                        "## 12. Antiforensic activity\n\n"
+                        "**ID:** Q45\n"
+                        "**Status:** answered\n\n"
+                        "### Answer\n"
+                        "| evidence_type | file_name | file_path | evidence_id |\n"
+                        "| --- | --- | --- | --- |\n"
+                        "| tool_or_cleanup_artifact | cipher.exe | Windows/System32/cipher.exe | mft-cipher-noise |\n\n"
+                        "### Queries Run\n"
+                        "- stale\n\n"
+                        "### Structured Data\n"
+                        "- JSON: structured/answers.json\n",
+                        0.9,
+                        "stable",
+                        1,
+                        "[]",
+                        "S-1",
+                    ),
+                )
+
+                markdown = build_report_markdown_from_db(db)
+
+            self.assertIn("CCLEANER64.EXE-779BD542.pf", markdown)
+            self.assertNotIn("cipher.exe", markdown)
+            self.assertNotIn("mft-cipher-noise", markdown)
 
     def test_finalize_section_sanitizes_raw_evidence_tables(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

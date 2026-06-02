@@ -328,11 +328,11 @@
             {{ report_body_html }}
           </section>
 
-          {% if findings %}
+          {% if finding_groups %}
           <section class="footer-section">
             <h2 class="footer-title">Key Findings</h2>
             <div class="finding-list">
-              {% for finding in findings[:8] %}
+              {% for finding in finding_groups %}
               <article class="finding-item">
                 <h3 class="finding-name">{{ finding.title }}</h3>
                 <p class="finding-meta">{{ finding.summary }}</p>
