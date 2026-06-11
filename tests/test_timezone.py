@@ -20,7 +20,7 @@ from forensia.report.writer import (
     _add_local_time_columns,
     _build_report_brief,
 )
-from forensia.ai.question_registry import extract_time_qualifiers
+from forensia.questions import extract_time_qualifiers
 
 
 # ── Case timezone persistence ──────────────────────────────────────────────

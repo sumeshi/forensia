@@ -15,7 +15,7 @@ from forensia.api.cache import (
 from forensia.api.progress import clear_progress_events, record_progress_event
 from forensia.ai.case_profile import profile_advisor
 from forensia.ai.investigator import investigate as investigate_loop
-from forensia.ai.lmstudio import LLMServerUnavailableError
+from forensia.ai.llm_client import LLMServerUnavailableError
 from forensia.config import get_llm_settings, resolve_llm_config
 from forensia.core.case import Case
 from forensia.core.case_tasks import CaseTasks
@@ -671,6 +671,22 @@ def doctor() -> None:
         checks.append(("Playbook drift", False))
         print(f"  ✗ Error: {exc}")
 
+    _status("Import layer contract (R4)...")
+    try:
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).parent.parent.parent / "scripts" / "check_imports.py")],
+            capture_output=True, text=True, timeout=30,
+        )
+        ok = result.returncode == 0
+        checks.append(("Import layers", ok))
+        if ok:
+            print("  ✓ No forbidden import edges")
+        else:
+            print(f"  ✗ Layer violations:\n{result.stdout}")
+    except Exception as exc:
+        checks.append(("Import layers", False))
+        print(f"  ✗ Error: {exc}")
+
     _status("Verdict taxonomy enforcement...")
     try:
         from forensia.core.verdicts import valid_verdicts
@@ -688,8 +704,12 @@ def doctor() -> None:
                     try:
                         tree = ast.parse(open(path).read())
                         for node in ast.walk(tree):
-                            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                                if node.func.attr == "assert_valid_verdict":
+                            if isinstance(node, ast.Call):
+                                callee = node.func
+                                name = callee.attr if isinstance(callee, ast.Attribute) else (
+                                    callee.id if isinstance(callee, ast.Name) else ""
+                                )
+                                if name == "assert_valid_verdict":
                                     enforcement_files.append(os.path.relpath(path, Path(__file__).parent.parent.parent))
                                     break
                     except Exception:

@@ -17,7 +17,7 @@ from forensia.ai.section_agent import (
     _structured_digest_from_answers,
     run_section_block_agent,
 )
-from forensia.ai.question_registry import resolve_question_spec
+from forensia.questions import resolve_question_spec
 from forensia.config import clear_llm_settings_cache
 from forensia.db.database import CaseDB
 from forensia.report.writer import (

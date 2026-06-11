@@ -7,10 +7,17 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
-from forensia.ai.hypothesis_manager import _all_hypotheses, _upsert_hypothesis
+from forensia.ai.hypothesis_manager import (
+    _all_hypotheses,
+    _extract_entities_from_text,
+    _gap_hypothesis_id,
+    _propose_confirm_when,
+    _upsert_hypothesis,
+)
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
+from forensia.core.textutil import normalize_text as _normalize_text
 from forensia.report.writer import fetch_report_sections
 
 
@@ -53,9 +60,6 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
 
-
-def _normalize_text(value: str) -> str:
-    return " ".join(value.lower().split())
 
 
 def _guess_related_sections(text: str) -> list[str]:
@@ -142,12 +146,6 @@ def _report_cycle_progress(previous: dict[str, int], current: dict[str, int]) ->
     )
 
 
-def _gap_hypothesis_id(description: str) -> str:
-    """Generate a deterministic hypothesis ID from a gap description using SHA-1."""
-    digest = hashlib.sha1(description.encode("utf-8")).hexdigest()[:10]
-    return f"gap-{digest}"
-
-
 def _has_internal_db_signals(text: str) -> bool:
     """Check if text contains signals that it can be answered from the case database.
     
@@ -221,33 +219,6 @@ def _classify_gap_kind(description: str) -> str:
     
     # Default: internal DB check
     return "internal_db_check"
-
-
-def _extract_entities_from_text(text: str) -> list[str]:
-    """Safety-net: Extract entity names from a gap description when LLM output is incomplete.
-    
-    This is a fallback for when the LLM did not provide required_entities.
-    The LLM prompt already requires these fields; this should rarely be needed.
-    """
-    entities = []
-    words = text.split()
-    for word in words:
-        word = word.strip('.,;:()[]{}"\'')
-        # Skip obvious non-entities
-        if word.lower() in {"the", "this", "that", "unknown", "cannot", "insufficient", "evidence"}:
-            continue
-        if len(word) > 3 and any(pattern in word.lower() for pattern in ["\\", "/", ".exe", ".dll", "service", "account", "user", "host", "computer", "ip"]):
-            entities.append(word)
-        elif len(word) > 2 and word[0].isupper() and word.isalnum():
-            entities.append(word)
-    return entities[:5]
-
-
-def _propose_confirm_when(entities: list[str]) -> dict[str, Any]:
-    """Safety-net: Propose confirmation criteria when LLM output is incomplete."""
-    if not entities:
-        return {"zero_rows": True}
-    return {"co_observed_entity_names": entities, "same_host": False}
 
 
 def _parse_gap_hypothesis_output(output: dict[str, Any], gap_text: str) -> tuple[list[str], dict[str, Any] | None]:

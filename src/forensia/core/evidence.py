@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from forensia.core.textutil import strict_slugify as _slugify_core
+
 
 def _slugify(value: str) -> str:
-    return "".join(char.lower() if char.isalnum() else "-" for char in value).strip("-")
+    """Backward-compat re-export: return empty string for empty/special-only input."""
+    result = _slugify_core(value)
+    return "" if result == "unknown" else result
 
 
 def make_evtx_evidence_id(channel: str, record_number: int) -> str:

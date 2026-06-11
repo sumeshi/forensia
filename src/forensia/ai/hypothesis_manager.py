@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 import re
 from typing import Any
@@ -12,6 +13,43 @@ from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
 from forensia.rules.loader import load_rule_by_id
+from forensia.core.log import log as _log
+from forensia.core.textutil import normalize_text as _normalize_text
+
+
+# Hypothesis-construction helpers (moved from report_gap.py to break the
+# report_gap <-> hypothesis_manager import cycle; report_gap re-imports them).
+def _gap_hypothesis_id(description: str) -> str:
+    """Generate a deterministic hypothesis ID from a gap description using SHA-1."""
+    digest = hashlib.sha1(description.encode("utf-8")).hexdigest()[:10]
+    return f"gap-{digest}"
+
+
+def _extract_entities_from_text(text: str) -> list[str]:
+    """Safety-net: Extract entity names from a gap description when LLM output is incomplete.
+    
+    This is a fallback for when the LLM did not provide required_entities.
+    The LLM prompt already requires these fields; this should rarely be needed.
+    """
+    entities = []
+    words = text.split()
+    for word in words:
+        word = word.strip('.,;:()[]{}"\'')
+        # Skip obvious non-entities
+        if word.lower() in {"the", "this", "that", "unknown", "cannot", "insufficient", "evidence"}:
+            continue
+        if len(word) > 3 and any(pattern in word.lower() for pattern in ["\\", "/", ".exe", ".dll", "service", "account", "user", "host", "computer", "ip"]):
+            entities.append(word)
+        elif len(word) > 2 and word[0].isupper() and word.isalnum():
+            entities.append(word)
+    return entities[:5]
+
+
+def _propose_confirm_when(entities: list[str]) -> dict[str, Any]:
+    """Safety-net: Propose confirmation criteria when LLM output is incomplete."""
+    if not entities:
+        return {"zero_rows": True}
+    return {"co_observed_entity_names": entities, "same_host": False}
 
 
 def _clean_confirm_when(confirm_when: dict[str, Any] | None, db: CaseDB | None = None) -> dict[str, Any] | None:
@@ -466,11 +504,7 @@ def _merge_active_hypotheses(
         active_by_description[_normalize_hypothesis_description(hypothesis.description)] = hypothesis
         _upsert_hypothesis(db, hypothesis, origin=origin, session_id=session_id)
     if skipped_for_cap:
-        try:
-            from forensia.ai.investigator import _log
-            _log("CAP", f"active hypothesis cap reached ({MAX_ACTIVE_HYPOTHESES}); skipped {len(skipped_for_cap)} new: {skipped_for_cap[:3]}…")
-        except Exception:
-            pass
+        _log("CAP", f"active hypothesis cap reached ({MAX_ACTIVE_HYPOTHESES}); skipped {len(skipped_for_cap)} new: {skipped_for_cap[:3]}…")
     return list(by_id.values())
 
 
@@ -559,7 +593,6 @@ def _resolve_hypothesis(
     sample_rows: list[dict[str, Any]] | None = None,
 ) -> None:
     """Mark a hypothesis as confirmed or refuted, generate follow-ups, and mark stale sections."""
-    from forensia.ai.report_gap import _extract_entities_from_text, _gap_hypothesis_id, _normalize_text, _propose_confirm_when
 
     remaining: list[Hypothesis] = []
     stale_sections: list[str] = []
@@ -613,11 +646,7 @@ def _resolve_hypothesis(
                             # query's sample rows; skip unresolvable follow-ups.
                             rendered = _interpolate_follow_up(follow_up, sample_rows)
                             if rendered is None:
-                                try:
-                                    from forensia.ai.investigator import _log
-                                    _log("RESOLVE", f"[follow-up] skipped (unresolved placeholders): {follow_up[:80]}")
-                                except Exception:
-                                    pass
+                                _log("RESOLVE", f"[follow-up] skipped (unresolved placeholders): {follow_up[:80]}")
                                 continue
                             normalized = _normalize_text(rendered)
                             if normalized not in known_by_description and normalized not in resolved_by_description:

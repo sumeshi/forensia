@@ -10,6 +10,7 @@ from typing import Any
 from rich import print
 
 from forensia.ai.audit import LLMCallLogger
+from forensia.ai.llm_client import chat_completion
 from forensia.ai.report_gap import _build_report_status
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager, memory_for_section
@@ -29,7 +30,9 @@ from forensia.report.writer import (
     prepare_section_request,
     write_report_brief,
 )
-from forensia.ai.section_agent import async_run_section_block_agent
+from forensia.ai.section_agent import SectionBlockResult, async_run_section_block_agent, run_section_block_agent
+from forensia.report.markdown import _markdown_table
+from forensia.report.probes import _TABLE_BLOCK_BUILDERS, _table_block_columns
 from forensia.api.cache import write_api_snapshots
 
 
@@ -218,6 +221,98 @@ async def _render_section_blocks(
         raise
 
 
+def _render_section_from_request(
+    *,
+    db: CaseDB,
+    request: dict[str, Any],
+    base_url: str,
+    model: str,
+    max_queries_per_section: int = 3,
+    audit_callback: Callable[[list[dict[str, str]], str], None] | None = None,
+) -> tuple[str, list[dict[str, Any]], list[str]]:
+    """Iterate block requests through the section agent and stitch them into a single section body with evidence results."""
+    memory = MemoryManager(request["case"], summarize=lambda messages, m: chat_completion(messages=messages, model=m, base_url=base_url))
+    rendered_blocks: list[str] = []
+    block_gaps: list[str] = []
+    block_outline: list[dict] = []
+    all_evidence_results: list[dict[str, Any]] = []
+    for block in request.get("block_requests") or []:
+        block_mode = str(block.get("mode") or "").strip().casefold()
+        is_structured_mode = block_mode in {"benchmark", "structured"} or bool(block.get("answer_spec") or block.get("question"))
+        if block_mode == "table":
+            builder_name = str(block.get("builder") or "")
+            builder_fn = _TABLE_BLOCK_BUILDERS.get(builder_name)
+            if builder_fn is not None:
+                rows = builder_fn(db)
+                columns = _table_block_columns(builder_name, rows)
+                table_body = _markdown_table(rows, columns, max_rows=12)
+                block_result = SectionBlockResult(body=table_body, evidence_results=[])
+            else:
+                block_result = run_section_block_agent(
+                    case=request["case"],
+                    db=db,
+                    section_key=str(request["section_key"]),
+                    title=str(request["title"]),
+                    block_heading=str(block.get("heading") or ""),
+                    template_body=str(block.get("template_body") or ""),
+                    context_sections=request.get("context_sections") or {},
+                    current_section_outline=block_outline,
+                    report_brief=request.get("report_brief") or {},
+                    base_url=base_url,
+                    model=model,
+                    memory=memory_for_section(memory, structured_mode=False),
+                    max_queries_per_section=max_queries_per_section,
+                    evidence_keypoints=list(block.get("evidence_keypoints") or []),
+                    benchmark_mode=False,
+                    benchmark_id="",
+                    answer_id="",
+                    answer_spec="",
+                    question="",
+                    audit_callback=audit_callback,
+                )
+        else:
+            block_result = run_section_block_agent(
+                case=request["case"],
+                db=db,
+                section_key=str(request["section_key"]),
+                title=str(request["title"]),
+                block_heading=str(block.get("heading") or ""),
+                template_body=str(block.get("template_body") or ""),
+                context_sections={} if is_structured_mode else (request.get("context_sections") or {}),
+                current_section_outline=[] if is_structured_mode else block_outline,
+                report_brief=request.get("report_brief") or {},
+                base_url=base_url,
+                model=model,
+                memory=memory_for_section(memory, structured_mode=is_structured_mode),
+                max_queries_per_section=max_queries_per_section,
+                evidence_keypoints=list(block.get("evidence_keypoints") or []),
+                benchmark_mode=is_structured_mode,
+                benchmark_id=str(block.get("benchmark_id") or block.get("answer_id") or ""),
+                answer_id=str(block.get("answer_id") or block.get("benchmark_id") or ""),
+                answer_spec=str(block.get("answer_spec") or ""),
+                question=str(block.get("question") or ""),
+                audit_callback=audit_callback,
+            )
+        block_body = block_result.body
+        heading = str(block.get("heading") or "").strip()
+        if heading and not _body_starts_with_heading(block_body, heading):
+            block_body = f"## {heading}\n\n{block_body}"
+        rendered_blocks.append(block_body)
+        if heading:
+            block_outline.append({
+                "heading": heading,
+                "summary": (block_body.split("\n", 1)[0])[:120],
+            })
+        all_evidence_results.extend(block_result.evidence_results)
+        block_level_gaps, _ = _verify_block_output(db, block_body)
+        for gap in block_level_gaps:
+            label = f"{heading}: {gap}" if heading else gap
+            if label not in block_gaps:
+                block_gaps.append(label)
+    body = _assemble_section_body(str(request.get("template_preamble") or ""), rendered_blocks)
+    return body, all_evidence_results, block_gaps
+
+
 def _persist_section_result(
     case: Case,
     db: CaseDB,
@@ -281,7 +376,7 @@ async def async_refresh_report_sections(
     prior_filled = load_report_sections_map(db)
     ensure_universal_question_probes(case, db)
     report_brief = write_report_brief(case, db)
-    memory = MemoryManager(case)
+    memory = MemoryManager(case, summarize=lambda messages, m: chat_completion(messages=messages, model=m, base_url=base_url))
     requests = _collect_section_requests(case, db, template_paths, prior_filled, report_brief)
     requests = _sort_section_requests(requests)
     filled_sections: dict[str, str] = {}

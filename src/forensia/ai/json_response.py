@@ -6,7 +6,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-from forensia.ai.lmstudio import LLMServerUnavailableError, LLMOutputTruncatedError, chat_completion, async_chat_completion
+from forensia.ai.llm_client import LLMServerUnavailableError, LLMOutputTruncatedError, chat_completion, async_chat_completion
 from forensia.config import get_llm_settings
 
 CODE_BLOCK_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)

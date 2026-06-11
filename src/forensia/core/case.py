@@ -10,6 +10,7 @@ import yaml
 
 from collections import defaultdict
 
+from forensia.core.timeutil import parse_timestamp
 from forensia.report_templates import export_packaged_report_templates
 
 ALLOWLIST_STUB = """# Rule-scoped suppression rules.
@@ -32,8 +33,10 @@ EPOCH_GAP_DAYS = 90
 
 def _parse_dt(ts_str: str) -> datetime:
     """Parse an ISO-8601 timestamp string to a datetime object."""
-    cleaned = str(ts_str).replace("T", " ").split(".")[0].split("+")[0].split("Z")[0].strip()
-    return datetime.strptime(cleaned, "%Y-%m-%d %H:%M:%S")
+    result = parse_timestamp(ts_str)
+    if result is None:
+        raise ValueError(f"Cannot parse timestamp: {ts_str}")
+    return result
 
 
 def _days_between(ts1: str, ts2: str) -> float:

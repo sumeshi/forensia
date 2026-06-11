@@ -64,6 +64,7 @@ forensia doctor
   `tests/test_checker_gates.py`(verdict 整合ゲート・フォールバック降格・memory フィルタ・finding 検証)、
   `tests/test_untestable_resolution.py`(untestable 早期解決)。
 - ルール YAML や `question_routing.yaml` を変更したら `scripts/audit_schema_coverage.py --strict`(`forensia doctor` に含まれる)が通ることを確認してください。
+- import の層契約(`core→ai` 禁止、`report→ai` 禁止など)は `scripts/check_imports.py`(`forensia doctor` に含まれる)で検査されます。新しい module を追加したら通ることを確認してください。
 
 ## ドキュメント
 

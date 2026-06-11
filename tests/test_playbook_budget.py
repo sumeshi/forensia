@@ -142,3 +142,28 @@ def test_collect_event_ids_helper() -> None:
     assert 4625 in ids
     assert 4688 in ids
     assert len(ids) == 3
+
+
+def test_no_profile_playbook_truncates_events_instead_of_dropping_everything():
+    """Without a case profile the full Event ID Reference (~55 KB) exceeds the
+    default budget. The fix shrinks it to the declarative priority_events list
+    so the other guidance sections survive, instead of the serial drop loop
+    discarding every droppable section (the pre-fix behavior left only the
+    Priority Investigation Order)."""
+    from forensia.ai.case_profile import set_case_profile
+    from forensia.ai.prompts import _dfir_playbook
+    from forensia.config import get_system_prompt_budget_chars
+
+    set_case_profile(None, None)
+    try:
+        playbook = _dfir_playbook("report_section")
+    finally:
+        set_case_profile(None, None)
+
+    assert "priority events only" in playbook
+    assert "## False-Positive Reduction Guidance" in playbook
+    assert "## Application Catalog" in playbook
+    assert "## Logon Type Reference" in playbook
+    # Stays in the same order of magnitude as the budget (phase narrative is
+    # appended after enforcement, so allow headroom above the raw budget).
+    assert len(playbook) < get_system_prompt_budget_chars() * 1.5

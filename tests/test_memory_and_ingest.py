@@ -6,7 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from typer.testing import CliRunner
 
@@ -344,15 +344,15 @@ class MemoryAndIngestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "64"}):
             clear_llm_settings_cache()
             case = Case.init(tmpdir)
-            memory = MemoryManager(case)
+            mock_chat = Mock(return_value="compressed overview")
+            memory = MemoryManager(case, summarize=mock_chat)
             memory.overview_path.write_text("# Overview\n\n" + ("x" * 512), encoding="utf-8")
 
-            with patch("forensia.core.memory._llm_call", return_value="compressed overview") as mock_chat:
-                changed = memory.compact_overview_if_needed(self._llm_base_url(), "test-model")
+            changed = memory.compact_overview_if_needed(self._llm_base_url(), "test-model")
 
             self.assertTrue(changed)
             self.assertEqual("compressed overview\n", memory.overview_path.read_text(encoding="utf-8"))
-            messages = mock_chat.call_args.kwargs["messages"]
+            messages = mock_chat.call_args[0][0]
             self.assertIn("Compress the following investigation overview", messages[0]["content"])
             self.assertIn("Write the compressed overview in ja.", messages[0]["content"])
 
@@ -377,13 +377,13 @@ class MemoryAndIngestTests(unittest.TestCase):
         ):
             clear_llm_settings_cache()
             case = Case.init(tmpdir)
-            memory = MemoryManager(case)
+            mock_chat = Mock(return_value="compressed overview")
+            memory = MemoryManager(case, summarize=mock_chat)
             memory.overview_path.write_text("# Overview\n\n" + ("x" * 512), encoding="utf-8")
 
-            with patch("forensia.core.memory._llm_call", return_value="compressed overview") as mock_chat:
-                memory.compact_overview_if_needed(self._llm_base_url(), "test-model")
+            memory.compact_overview_if_needed(self._llm_base_url(), "test-model")
 
-            messages = mock_chat.call_args.kwargs["messages"]
+            messages = mock_chat.call_args[0][0]
             self.assertIn("Write the compressed overview in en.", messages[0]["content"])
             self.assertNotRegex(messages[0]["content"], r"[ぁ-んァ-ン一-龥]")
 
@@ -391,12 +391,11 @@ class MemoryAndIngestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "64"}):
             clear_llm_settings_cache()
             case = Case.init(tmpdir)
-            memory = MemoryManager(case)
+            memory = MemoryManager(case, summarize=Mock(side_effect=RuntimeError("timeout")))
             original = "# Overview\n\n" + ("x" * 512)
             memory.overview_path.write_text(original, encoding="utf-8")
 
-            with patch("forensia.core.memory._llm_call", side_effect=RuntimeError("timeout")):
-                changed = memory.compact_overview_if_needed(self._llm_base_url(), "test-model")
+            changed = memory.compact_overview_if_needed(self._llm_base_url(), "test-model")
 
             self.assertFalse(changed)
             self.assertEqual(original, memory.overview_path.read_text(encoding="utf-8"))
@@ -431,12 +430,12 @@ class MemoryAndIngestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "96"}):
             clear_llm_settings_cache()
             case = Case.init(tmpdir)
-            memory = MemoryManager(case)
+            mock_chat = Mock(return_value="# Hypothesis H-1\n\n- compacted")
+            memory = MemoryManager(case, summarize=mock_chat)
             memory.update_overview("# Overview\n\n" + ("x" * 512))
             memory.upsert_hypothesis("H-1", "oversized", "# Hypothesis H-1\n\n" + ("y" * 512))
 
-            with patch("forensia.core.memory._llm_call", return_value="# Hypothesis H-1\n\n- compacted") as mock_chat:
-                changed = memory.compact_oversized_with_llm(self._llm_base_url(), "test-model")
+            changed = memory.compact_oversized_with_llm(self._llm_base_url(), "test-model")
 
             self.assertEqual([str(memory.hypotheses_dir / "H-1.md")], changed)
             self.assertEqual("# Overview\n\n" + ("x" * 512), memory.overview_path.read_text(encoding="utf-8"))
@@ -447,11 +446,11 @@ class MemoryAndIngestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "96"}):
             clear_llm_settings_cache()
             case = Case.init(tmpdir)
-            memory = MemoryManager(case)
+            mock_chat = Mock(return_value="- compacted entity")
+            memory = MemoryManager(case, summarize=mock_chat)
             memory.upsert_entity("ip", "10.0.0.5", "# ip: 10.0.0.5\n\n" + ("z" * 512))
 
-            with patch("forensia.core.memory._llm_call", return_value="- compacted entity") as mock_chat:
-                changed = memory.compact_oversized_with_llm(self._llm_base_url(), "test-model")
+            changed = memory.compact_oversized_with_llm(self._llm_base_url(), "test-model")
 
             self.assertEqual([str(memory.entities_ip_dir / "10.0.0.5.md")], changed)
             self.assertEqual(
@@ -492,12 +491,11 @@ class MemoryAndIngestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "64"}):
             clear_llm_settings_cache()
             case = Case.init(tmpdir)
-            memory = MemoryManager(case)
+            memory = MemoryManager(case, summarize=Mock(side_effect=RuntimeError("timeout")))
             original = "# Overview\n\n" + ("x" * 512)
             memory.update_overview(original)
 
-            with patch("forensia.core.memory._llm_call", side_effect=RuntimeError("timeout")):
-                changed = memory.compact_oversized_with_llm(self._llm_base_url(), "test-model")
+            changed = memory.compact_oversized_with_llm(self._llm_base_url(), "test-model")
 
             self.assertEqual([], changed)
             self.assertEqual(original, memory.overview_path.read_text(encoding="utf-8"))

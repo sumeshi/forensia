@@ -138,7 +138,7 @@ fallback_search:
 | `app_catalog.yaml` / `artifact_inference.yaml` | `prompts._dfir_playbook()` | Prefetch / MFT / Registry / File → アプリ推定。planning 系では意図的に省略、interpretation 系のみに注入 |
 | `false_positive_rules.yaml` | rule engine + `prompts._dfir_playbook()` | 既知 FP。interpretation 系プロンプトのみで参照 |
 | `dfir_ioc_catalog.yaml` | `prompts._dfir_playbook()` | アンチフォレンジック / クラウド同期 / メール / Recycle Bin 等の補助 IOC 辞書 |
-| `question_routing.yaml` | `question_registry.py` + `section_agent.py` + `prompts.build_section_agent_*` + `prompts.build_structured_classify_messages` | QuestionSpec の正本。`question_type` / `answer_spec` ごとの `expected_answer_shape` (コード側 `_format_structured_answer` が消費)、`evidence_chain` (primary 0-row 時に `_execute_evidence_chain` が決定論的に試行)、required/render fields、status rules を宣言 |
+| `question_routing.yaml` | `questions.py` + `section_agent.py` + `prompts.build_section_agent_*` + `prompts.build_structured_classify_messages` | QuestionSpec の正本。`question_type` / `answer_spec` ごとの `expected_answer_shape` (コード側 `_format_structured_answer` が消費)、`evidence_chain` (primary 0-row 時に `_execute_evidence_chain` が決定論的に試行)、required/render fields、status rules を宣言 |
 | `question_routing_eval.yaml` | `scripts/audit_schema_coverage.py --strict` | QuestionSpec ルーティングの mutation corpus。見出し・本文・言語が変わっても安定した `answer_spec` に解決されるかを監査 |
 | `verdict_taxonomy.yaml` | `core/verdicts.py` | verdict 値の whitelist と層間マッピング |
 | `playbook/*.md` | `prompts._dfir_playbook(phase)` | フェーズ別 (`broad_plan` / `hypothesis_plan` / `check` / `report_section` / `section_agent_plan` / `section_agent_check`) のプレイブック本文。`<CRITICAL_RULES>` / `<FORBIDDEN_PATTERNS>` / `<SCHEMA_CONSTRAINTS>` 等のタグ付き |

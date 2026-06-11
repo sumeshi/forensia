@@ -25,6 +25,14 @@ from forensia.ai.schemas import (
 from forensia.ai.sql_schema import _build_live_schema_guidance, build_investigation_framework, _load_app_catalog
 from forensia.config import get_llm_settings
 from forensia.core.session import Hypothesis
+from forensia.knowledge import (
+    clear_caches as _knowledge_clear_caches,
+    load_benign_context_rules,
+    load_dfir_yamls,
+    load_event_id_hints,
+    load_question_routing_raw,
+    load_schema_hints,
+)
 
 if TYPE_CHECKING:
     from forensia.db.database import CaseDB
@@ -181,28 +189,7 @@ def resolve_rule_context(hypothesis: Hypothesis | None) -> RuleContext | None:
     )
 
 
-@lru_cache(maxsize=1)
-def _load_schema_hints() -> dict[str, dict[str, Any]]:
-    """Load schema hints from rulepacks/_schema/*.yaml for planner guidance.
-    
-    Cached at module level to avoid repeated file I/O.
-    """
-    import yaml
-    from pathlib import Path
-    schema_dir = Path(__file__).parent.parent / "rulepacks" / "_schema"
-    hints: dict[str, dict[str, Any]] = {}
-    if not schema_dir.exists():
-        return hints
-    for path in schema_dir.glob("*.yaml"):
-        try:
-            data = yaml.safe_load(path.read_text(encoding="utf-8"))
-            if data and isinstance(data, dict):
-                table_name = data.get("table")
-                if table_name:
-                    hints[str(table_name)] = data
-        except Exception:
-            continue
-    return hints
+_load_schema_hints = load_schema_hints
 
 
 @lru_cache(maxsize=1)
@@ -246,33 +233,7 @@ def _load_schema_notes() -> str:
     return "\n".join(notes)
 
 
-@lru_cache(maxsize=1)
-def _load_dfir_yamls() -> dict[str, Any]:
-    """Load all DFIR YAML schemas from _schema/ directory with caching."""
-    import yaml
-    from pathlib import Path
-
-    schema_dir = Path(__file__).parent.parent / "rulepacks" / "_schema"
-
-    def _load_yaml(name: str) -> dict:
-        path = schema_dir / name
-        if not path.exists():
-            return {}
-        try:
-            data = yaml.safe_load(path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-        except Exception:
-            return {}
-
-    return {
-        "evtx_events": _load_yaml("evtx_events.yaml"),
-        "logon_types": _load_yaml("logon_types.yaml"),
-        "event_ids": _load_yaml("event_ids.yaml"),
-        "app_catalog": _load_yaml("app_catalog.yaml"),
-        "fp_rules": _load_yaml("false_positive_rules.yaml"),
-        "artifact_inference": _load_yaml("artifact_inference.yaml"),
-        "dfir_ioc_catalog": _load_yaml("dfir_ioc_catalog.yaml"),
-    }
+_load_dfir_yamls = load_dfir_yamls
 
 
 def _render_event_narrative(events_data: dict) -> str:
@@ -571,9 +532,40 @@ def _dfir_playbook(
 
     base_playbook = "\n".join(text for _, text in section_entries) + "\n"
 
-    # -- Budget enforcement: drop sections in priority order until under budget --
+    # -- Budget enforcement --
     budget = get_system_prompt_budget_chars()
     dropped: list[str] = []
+
+    # Step 1: if the Event ID Reference alone busts the budget (no case profile
+    # supplied, so no event-id filtering happened), shrink it to the events the
+    # declarative priority list marks as most important instead of letting the
+    # serial drop loop discard every guidance section just to remove this one.
+    if len(base_playbook) > budget and event_ids is None and isinstance(events_data, dict):
+        priority_ids: list[int] = []
+        for entry in priority_events or []:
+            for eid in entry.get("event_ids", []) if isinstance(entry, dict) else []:
+                try:
+                    eid_int = int(eid)
+                except (TypeError, ValueError):
+                    continue
+                if eid_int not in priority_ids:
+                    priority_ids.append(eid_int)
+        if priority_ids:
+            trimmed = {
+                key: value
+                for key, value in events_data.items()
+                if (int(key) if isinstance(key, str) and key.isdigit() else key) in priority_ids
+            }
+            if trimmed and len(trimmed) < len(events_data):
+                trimmed_narrative = _render_event_narrative(trimmed)
+                section_entries = [
+                    (k, f"## Event ID Reference (priority events only; full list omitted for budget)\n{trimmed_narrative}") if k == "events" else (k, v)
+                    for k, v in section_entries
+                ]
+                base_playbook = "\n".join(text for _, text in section_entries) + "\n"
+                dropped.append("events:truncated-to-priority")
+
+    # Step 2: drop whole sections in priority order until under budget.
     if len(base_playbook) > budget:
         for key in _PLAYBOOK_SECTION_DROP_ORDER:
             if len(base_playbook) <= budget:
@@ -613,42 +605,10 @@ def _dfir_playbook(
     return result
 
 
-def _load_event_id_hints() -> dict[int, dict[str, Any]]:
-    """Load event ID hints from _schema/event_ids.yaml keyed by integer event ID."""
-    import yaml
-    from pathlib import Path
-
-    schema_dir = Path(__file__).parent.parent / "rulepacks" / "_schema"
-    path = schema_dir / "event_ids.yaml"
-    if not path.exists():
-        return {}
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except Exception:
-        return {}
-    events: dict[int, dict[str, Any]] = {}
-    raw_events = data.get("events") if isinstance(data, dict) else {}
-    if not isinstance(raw_events, dict):
-        return {}
-    for key, value in raw_events.items():
-        try:
-            event_id = int(key)
-        except (TypeError, ValueError):
-            continue
-        if isinstance(value, dict):
-            events[event_id] = value
-    return events
+_load_event_id_hints = load_event_id_hints
 
 
-@lru_cache(maxsize=1)
-def _load_benign_context_rules() -> list[dict[str, Any]]:
-    """Load benign-context rules from false_positive_rules.yaml with caching."""
-    yamls = _load_dfir_yamls()
-    fp_rules = yamls.get("fp_rules", {})
-    if isinstance(fp_rules, dict):
-        rules = fp_rules.get("benign_context_rules") or []
-        return list(rules) if isinstance(rules, list) else []
-    return []
+_load_benign_context_rules = load_benign_context_rules
 
 
 def _lang_instruction() -> str:
@@ -1426,18 +1386,7 @@ def build_report_section_messages(
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def _load_question_routing_raw() -> dict[str, Any]:
-    """Load raw question-routing schema from _schema/question_routing.yaml."""
-    import yaml
-    from pathlib import Path
-    routing_path = Path(__file__).resolve().parent.parent / "rulepacks" / "_schema" / "question_routing.yaml"
-    try:
-        raw = yaml.safe_load(routing_path.read_text(encoding="utf-8"))
-        if isinstance(raw, dict):
-            return raw
-    except Exception:
-        pass
-    return {}
+_load_question_routing_raw = load_question_routing_raw
 
 
 def _format_artifact_inference() -> str:

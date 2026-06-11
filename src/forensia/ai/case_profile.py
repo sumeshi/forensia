@@ -1,20 +1,36 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
-_CASE_PROFILE: str | None = None
-_CASE_PROFILE_EVENT_IDS: set[int] | None = None
 _PROFILE_CACHE: dict[str, dict[str, Any]] = {}
 
 
-def set_case_profile(profile_str: str | None, event_ids: set[int] | None = None) -> None:
-    global _CASE_PROFILE, _CASE_PROFILE_EVENT_IDS
-    _CASE_PROFILE = profile_str
-    _CASE_PROFILE_EVENT_IDS = event_ids
+@dataclass
+class CaseEvidenceProfile:
+    """Explicit profile context object replacing module globals.
+
+    ``event_ids=None`` means "no profile computed" (unknown); an empty set
+    means "profile computed and the case has zero EVTX event IDs" (e.g. an
+    MFT-only case). Callers such as the drafter event-ID filter and the
+    untestable detector rely on that distinction.
+    """
+    profile_name: str = ""
+    event_ids: set[int] | None = None
+
+
+# Legacy module-global state — deprecated, will be removed in R5
+_profile: CaseEvidenceProfile = CaseEvidenceProfile()
+
+
+def set_case_profile(profile_name: str | None, event_ids: set[int] | None) -> None:
+    """Set the case profile globally (deprecated: use CaseEvidenceProfile directly)."""
+    global _profile
+    _profile = CaseEvidenceProfile(profile_name=profile_name or "", event_ids=event_ids)
 
 
 def get_case_profile() -> str | None:
-    return _CASE_PROFILE
+    return _profile.profile_name or None
 
 
 def get_profile_event_ids() -> set[int] | None:
@@ -22,7 +38,8 @@ def get_profile_event_ids() -> set[int] | None:
     # hypothesis/row-derived IDs, and mutating the module-global set would
     # corrupt "which event IDs exist in this case" semantics used by the
     # drafter filter and untestable detection.
-    return set(_CASE_PROFILE_EVENT_IDS) if _CASE_PROFILE_EVENT_IDS is not None else None
+    # None (no profile) and empty set (profile with no event IDs) are distinct.
+    return set(_profile.event_ids) if _profile.event_ids is not None else None
 
 
 def _build_profile_queries(conn) -> dict[str, Any]:

@@ -18,6 +18,7 @@ from forensia.ai.prompts import (
 )
 from forensia.config import get_llm_settings
 from forensia.core.case import Case
+from forensia.core.timeutil import parse_epoch_seconds
 from forensia.core.memory import MemoryManager
 from forensia.core.session import ENTITY_ROLES, ENTITY_TYPE_ALIASES, Hypothesis, PlannedQuery
 from forensia.db.database import CaseDB
@@ -196,24 +197,7 @@ def _coerce_float(value: Any) -> float:
 
 def _parse_timestamp(ts: Any) -> float | None:
     """Parse a timestamp value to Unix epoch seconds (float)."""
-    if ts is None:
-        return None
-    if isinstance(ts, (int, float)):
-        return float(ts)
-    if isinstance(ts, datetime):
-        return ts.timestamp()
-    if isinstance(ts, str):
-        ts_str = ts.strip()
-        if not ts_str:
-            return None
-        try:
-            return datetime.fromisoformat(ts_str).timestamp()
-        except (ValueError, TypeError):
-            try:
-                return float(ts_str)
-            except (ValueError, TypeError):
-                return None
-    return None
+    return parse_epoch_seconds(ts)
 
 
 def _co_observation_satisfied(confirm_when: dict, rows: list[dict[str, Any]]) -> tuple[bool, str]:

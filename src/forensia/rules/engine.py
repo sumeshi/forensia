@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime
-from functools import lru_cache
 from pathlib import Path
 from string import Formatter
 from typing import Any
@@ -12,8 +11,14 @@ import orjson
 import yaml
 
 from forensia.core.case import Case
+from forensia.core.timeutil import parse_timestamp
 from forensia.db.database import CaseDB
 from forensia.rules.models import Finding, FindingTemplate, Rule
+from forensia.knowledge import (
+    clear_caches as _knowledge_clear_caches,
+    load_event_id_hints as _load_event_id_hints,
+    load_finding_benign_context_rules as _load_finding_benign_context_rules,
+)
 
 _MISSING_TEXT_VALUES = {"", "-", "n/a", "na", "none", "null", "unknown"}
 _BUILTIN_ALLOWLIST_PATH = Path(__file__).resolve().parent.parent / "rulepacks" / "_schema" / "suppression" / "allowlist_services.yaml"
@@ -22,7 +27,6 @@ FALLBACK_PHASES = {"keyword_in_raw_json", "related_event_ids", "artifact_table"}
 
 # Allowed tables for fallback search - validated against schema
 _ALLOWED_FALLBACK_TABLES = {"evtx_events", "mft_entries", "mft_timeline", "prefetch_executions"}
-_EVENT_ID_SCHEMA_PATH = Path(__file__).resolve().parent.parent / "rulepacks" / "_schema" / "event_ids.yaml"
 
 
 def run_rule(db: CaseDB, rule: Rule) -> list[dict[str, Any]]:
@@ -187,30 +191,9 @@ def _downgrade_builtin_benign_finding(finding: Finding, allowlist_data: dict[str
         finding.missing_checks.append(note)
 
 
-@lru_cache(maxsize=1)
-def _load_finding_benign_context_rules() -> list[dict[str, Any]]:
-    """Load finding-level benign context rules from false_positive_rules.yaml."""
-    fp_path = Path(__file__).resolve().parent.parent / "rulepacks" / "_schema" / "false_positive_rules.yaml"
-    if not fp_path.exists():
-        return []
-    try:
-        data = yaml.safe_load(fp_path.read_text(encoding="utf-8")) or {}
-    except Exception:
-        return []
-    return data.get("finding_benign_context") or []
-
-
 def _parse_event_ts(value: Any) -> datetime | None:
     """Parse an evidence-row timestamp string into a naive datetime."""
-    text = str(value or "").strip()
-    if not text:
-        return None
-    text = text.replace("T", " ").split("+")[0].split("Z")[0]
-    text = text.split(".")[0]
-    try:
-        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
-    except ValueError:
-        return None
+    return parse_timestamp(value)
 
 
 def build_co_occur_index(db: CaseDB, rules: list[dict[str, Any]] | None = None) -> dict[int, list[tuple[datetime, str]]]:
@@ -424,34 +407,6 @@ def _escape_like_pattern(keyword: str) -> str:
     escaped = escaped.replace("_", "!_")  # Escape wildcard
     escaped = escaped.replace("'", "''")  # Escape single quote
     return escaped
-
-
-@lru_cache(maxsize=1)
-def _load_event_id_hints() -> dict[int, dict[str, Any]]:
-    """Load event_id schema YAML and return {event_id: hint_dict} mapping.
-
-    Cached with maxsize=1 to avoid re-parsing the schema file on repeated
-    calls from keyword fallback search. Returns empty dict when the schema
-    file is missing or contains invalid data.
-    """
-    if not _EVENT_ID_SCHEMA_PATH.exists():
-        return {}
-    try:
-        data = yaml.safe_load(_EVENT_ID_SCHEMA_PATH.read_text(encoding="utf-8")) or {}
-    except Exception:
-        return {}
-    raw_events = data.get("events") if isinstance(data, dict) else {}
-    if not isinstance(raw_events, dict):
-        return {}
-    hints: dict[int, dict[str, Any]] = {}
-    for key, value in raw_events.items():
-        try:
-            event_id = int(key)
-        except (TypeError, ValueError):
-            continue
-        if isinstance(value, dict):
-            hints[event_id] = value
-    return hints
 
 
 def _extract_event_ids_from_sql(sql: str) -> list[int]:

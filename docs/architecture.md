@@ -193,7 +193,7 @@ block 単位の処理:
 | 処理 | 場所 |
 |---|---|
 | 質問テンプレートの定義 | `src/forensia/rulepacks/_schema/question_routing.yaml` |
-| answer_spec → builder ルーティング | `question_registry.resolve_question_spec` |
+| answer_spec → builder ルーティング | `questions.resolve_question_spec` |
 | SQL 実行 / extractor 呼び出し | `section_agent._format_benchmark_answer` |
 | Markdown 描画 | `writer._render_structured_answer_markdown` |
 | JSON / CSV エクスポート | `writer._dump_structured_*` (`reports/structured/`) |

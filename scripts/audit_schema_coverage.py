@@ -264,7 +264,7 @@ def _audit_question_routing_eval() -> list[str]:
     if not isinstance(cases, list) or not cases:
         return ["question_routing_eval.yaml has no cases"]
     try:
-        from forensia.ai.question_registry import resolve_question_spec
+        from forensia.questions import resolve_question_spec
     except Exception as exc:
         return [f"could not import question registry: {exc}"]
     issues: list[str] = []

@@ -48,11 +48,11 @@
 | [src/forensia/ai/section_refresher.py](../src/forensia/ai/section_refresher.py) | 既存セクションの再生成エントリ |
 | [src/forensia/ai/prompts.py](../src/forensia/ai/prompts.py) | LLM プロンプト構築 (`build_*_messages` 関数群) |
 | [src/forensia/ai/schemas.py](../src/forensia/ai/schemas.py) | LLM 出力 JSON Schema (`MEMORY_UPDATER_SCHEMA`, `VERDICT_REVIEW_SCHEMA`, `PARAGRAPH_NARRATE_SCHEMA`, ...) |
-| [src/forensia/ai/lmstudio.py](../src/forensia/ai/lmstudio.py) | OpenAI 互換 LLM クライアント (`chat_completion` / `async_chat_completion`)。HTTP リトライ + schema mode 自動降格 + `_SCHEMA_MODE_CACHE` |
+| [src/forensia/ai/llm_client.py](../src/forensia/ai/llm_client.py) | OpenAI 互換 LLM クライアント (`chat_completion` / `async_chat_completion`)。HTTP リトライ + schema mode 自動降格 + `_SCHEMA_MODE_CACHE` |
 | [src/forensia/ai/json_response.py](../src/forensia/ai/json_response.py) | JSON 返却型 LLM 呼び出し (`request_llm_json` / `async_request_llm_json`) |
 | [src/forensia/ai/sql_schema.py](../src/forensia/ai/sql_schema.py) | SQL 生成支援。`information_schema` から live スキーマを取得して prompt に注入 |
 | [src/forensia/ai/sql_templates.py](../src/forensia/ai/sql_templates.py) | テンプレート SQL カタログ (template_id → SQL) |
-| [src/forensia/ai/question_registry.py](../src/forensia/ai/question_registry.py) | structured question テンプレ + answer_spec → builder ルーティング |
+| [src/forensia/questions.py](../src/forensia/questions.py) | structured question テンプレ + answer_spec → builder ルーティング |
 | [src/forensia/ai/report_gap.py](../src/forensia/ai/report_gap.py) | report セクションの gap 検出 + 仮説への変換 |
 
 ## レポート

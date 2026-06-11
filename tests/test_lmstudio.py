@@ -6,12 +6,12 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from forensia.ai import lmstudio
+from forensia.ai import llm_client
 
 
 @pytest.fixture(autouse=True)
 def _reset_schema_mode_cache() -> None:
-    lmstudio._SCHEMA_MODE_CACHE.clear()
+    llm_client._SCHEMA_MODE_CACHE.clear()
 
 
 class _FakeClient:
@@ -47,8 +47,8 @@ def test_chat_completion_retries_llama_strict_schema_failure_with_compatible_sch
     messages: list[str] = []
     schema = {"title": "TestOutput", "type": "object", "properties": {"ok": {"type": "boolean"}}}
 
-    with patch.object(lmstudio, "_get_http_client", return_value=client):
-        result = lmstudio.chat_completion(
+    with patch.object(llm_client, "_get_http_client", return_value=client):
+        result = llm_client.chat_completion(
             [{"role": "user", "content": "return json"}],
             model="local-model",
             base_url="http://llama.test",
@@ -74,14 +74,14 @@ def test_chat_completion_skips_strict_after_server_rejected_it_once() -> None:
     )
     schema = {"title": "TestOutput", "type": "object", "properties": {"ok": {"type": "boolean"}}}
 
-    with patch.object(lmstudio, "_get_http_client", return_value=client):
-        lmstudio.chat_completion(
+    with patch.object(llm_client, "_get_http_client", return_value=client):
+        llm_client.chat_completion(
             [{"role": "user", "content": "first"}],
             model="local-model",
             base_url="http://llama.test",
             json_schema=schema,
         )
-        lmstudio.chat_completion(
+        llm_client.chat_completion(
             [{"role": "user", "content": "second"}],
             model="local-model",
             base_url="http://llama.test",
@@ -103,8 +103,8 @@ def test_chat_completion_removes_schema_only_after_compatible_schema_is_rejected
     )
     schema = {"title": "TestOutput", "type": "object", "properties": {"ok": {"type": "boolean"}}}
 
-    with patch.object(lmstudio, "_get_http_client", return_value=client):
-        result = lmstudio.chat_completion(
+    with patch.object(llm_client, "_get_http_client", return_value=client):
+        result = llm_client.chat_completion(
             [{"role": "user", "content": "return json"}],
             model="local-model",
             base_url="http://llama.test",

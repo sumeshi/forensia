@@ -87,6 +87,15 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertNotIn("【調査不足: 理由】", system)
 
     def test_report_section_prompt_includes_ioc_catalog(self) -> None:
+        # A case profile is always set before report prompts at runtime
+        # (investigate() computes it). Without one, the unfiltered Event ID
+        # Reference alone exceeds the system-prompt budget and every droppable
+        # playbook section (including the IOC catalog) is trimmed. Set a small
+        # profile explicitly so this test is order-independent.
+        from forensia.ai.case_profile import set_case_profile
+
+        set_case_profile("test-profile", {4624, 4625, 4648, 1102, 104, 7045})
+        self.addCleanup(lambda: set_case_profile(None, None))
         messages = build_report_section_messages(
             section_meta={"section": "3_technical"},
             evidence_results=[],

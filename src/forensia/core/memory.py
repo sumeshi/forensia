@@ -8,35 +8,14 @@ from math import ceil
 from pathlib import Path
 from re import sub
 
-from forensia.ai.lmstudio import chat_completion as _llm_call
+from collections.abc import Callable
 from forensia.core.case import Case
 from forensia.config import get_llm_settings
 from forensia.core.session import ENTITY_TYPE_ALIASES, ENTITY_ROLES
+from forensia.core.textutil import jaccard_similarity, normalize_text, slugify
 
 
 logger = logging.getLogger(__name__)
-
-
-def _slugify(value: str) -> str:
-    """Convert a string to a lowercase, dash-separated filesystem-safe slug."""
-    cleaned = sub(r"[^a-zA-Z0-9._-]+", "-", value.strip())
-    return cleaned.strip("-").lower() or "unknown"
-
-
-def _task_normalize(text: str) -> str:
-    """Normalize task text: lowercase, strip punctuation and extra whitespace."""
-    return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
-
-
-def _jaccard_similarity(a: str, b: str) -> float:
-    """Jaccard token-set similarity between two pre-normalized strings."""
-    tokens_a = set(a.split())
-    tokens_b = set(b.split())
-    if not tokens_a or not tokens_b:
-        return 0.0
-    intersection = tokens_a & tokens_b
-    union = tokens_a | tokens_b
-    return len(intersection) / len(union)
 
 
 class MemoryPaths:
@@ -66,7 +45,11 @@ class MemoryPaths:
 
 
 class MemoryManager:
-    def __init__(self, case: Case):
+    def __init__(
+        self,
+        case: Case,
+        summarize: Callable[[list[dict[str, str]], str], str] | None = None,
+    ):
         self.case = case
         self.base_dir = case.memory_dir
         self.archive_dir = self.base_dir / "archive"
@@ -112,6 +95,7 @@ class MemoryManager:
         self._fact_hashes: set[str] = set()
         self._next_fact_id = 1
         self._load_existing_fact_hashes()
+        self._summarize = summarize
 
     @property
     def overview_path(self) -> Path:
@@ -198,7 +182,7 @@ class MemoryManager:
             return "global"
         if hyp_id.upper().startswith("H-"):
             return hyp_id.upper()
-        return f"H-{_slugify(hyp_id).replace('-', '').upper()}"
+        return f"H-{slugify(hyp_id).replace('-', '').upper()}"
 
     def _hypothesis_scratch_dir(self, hypothesis_id: str | None) -> Path:
         return self.scratch_dir / self._scratch_key(hypothesis_id)
@@ -356,14 +340,14 @@ class MemoryManager:
         """Write hypothesis content, removing any stale legacy files with the same slug prefix."""
         stable_id = sub(r"[^a-zA-Z0-9._-]+", "-", str(hyp_id).strip()).strip("-") or "unknown"
         path = self.hypotheses_dir / f"{stable_id}.md"
-        for legacy_path in self.hypotheses_dir.glob(f"{_slugify(hyp_id)}-*.md"):
+        for legacy_path in self.hypotheses_dir.glob(f"{slugify(hyp_id)}-*.md"):
             if legacy_path != path:
                 legacy_path.unlink(missing_ok=True)
         path.write_text(content, encoding="utf-8")
 
     def upsert_keypoint(self, kp_id: str, content: str) -> None:
         """Write a keypoint file, using an upper-case slug as filename."""
-        path = self.keypoints_dir / f"{_slugify(kp_id).upper()}.md"
+        path = self.keypoints_dir / f"{slugify(kp_id).upper()}.md"
         path.write_text(content, encoding="utf-8")
 
     def append_confirmed_fact(
@@ -470,12 +454,12 @@ class MemoryManager:
                 existing_task_lines = [l for l in existing_lines if l.startswith("- [")]
 
                 # R2-10: Jaccard dedup
-                norm_new = _task_normalize(task_text)
+                norm_new = normalize_text(task_text)
                 is_duplicate = False
                 for el in existing_task_lines:
                     existing_text = el.split("] ", 1)[-1] if "] " in el else el
-                    norm_existing = _task_normalize(existing_text)
-                    if _jaccard_similarity(norm_new, norm_existing) >= 0.6:
+                    norm_existing = normalize_text(existing_text)
+                    if jaccard_similarity(norm_new, norm_existing) >= 0.6:
                         is_duplicate = True
                         break
                 if is_duplicate:
@@ -722,7 +706,7 @@ class MemoryManager:
         }.get(normalized_type)
         if base is None:
             return None
-        return base / f"{_slugify(normalized_name)}.md"
+        return base / f"{slugify(normalized_name)}.md"
 
     def _rotate_timeline(self, max_lines: int = 100, keep_lines: int = 80) -> None:
         """Move older timeline entries to the archive when the timeline exceeds max_lines."""
@@ -838,15 +822,18 @@ class MemoryManager:
         error_message: str,
     ) -> str | None:
         """Call the LLM to compact memory text, returning None on failure."""
+        if self._summarize is None:
+            logger.info("no summarizer available, skipping compaction")
+            return None
         try:
-            return _llm_call(
-                messages=[
+            result = self._summarize(
+                [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": text},
                 ],
-                model=model,
-                base_url=base_url,
-            ).strip()
+                model,
+            )
+            return result.strip() if result else None
         except Exception:
             logger.exception(error_message)
             return None

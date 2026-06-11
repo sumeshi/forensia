@@ -76,7 +76,7 @@ section key は **stable な識別子** として扱う。ファイル名のリ�
 - claims は本文から抽出して `claims` に書き込み
 - claim の provenance は本文中の finding_id / hypothesis_id / evidence_id と検証結果から計算
 - gap は明示的な insufficient-evidence マーカー、section agent の extra gaps、quality gate、claim/evidence validation から集約され、次サイクルの仮説候補になる
-- block が `question` / `answer_spec` / `mode: structured` を持つ場合、`question_registry.py` が `question_routing.yaml` の QuestionSpec に解決し、結果を `section_questions` に保存。case-wide probe は `section_key='__case_probe__'` として保存
+- block が `question` / `answer_spec` / `mode: structured` を持つ場合、`questions.py` が `question_routing.yaml` の QuestionSpec に解決し、結果を `section_questions` に保存。case-wide probe は `section_key='__case_probe__'` として保存
 - structured answer は `reports/structured/answers.json` と CSV に永続化し、section ごとの解決結果は `reports/debug/<section>_questions.json` に dump
 
 ### 2.6 内蔵テンプレートと評価用テンプレートの分離

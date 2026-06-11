@@ -18,6 +18,13 @@ from forensia.db.database import CaseDB
 
 
 class InvestigateWiringTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        # investigate() sets the module-global case profile; reset it so later
+        # tests cannot accidentally depend on this test's profile (order bugs).
+        from forensia.ai.case_profile import set_case_profile
+
+        set_case_profile(None, None)
+
     def test_report_only_cycle_completes_without_llm(self) -> None:
         from forensia.ai.investigator import investigate
 

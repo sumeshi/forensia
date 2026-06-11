@@ -9,7 +9,7 @@ forensia は LLM の振る舞いを 11 個の「ロール」に分解し、そ�
 ```
 request_llm_json
    ↓
-chat_completion (src/forensia/ai/lmstudio.py)
+chat_completion (src/forensia/ai/llm_client.py)
    ↓
 HTTP POST <base_url>/v1/chat/completions
 ```
@@ -17,7 +17,7 @@ HTTP POST <base_url>/v1/chat/completions
 HTTP 層の特徴:
 - HTTP 5xx / connect / timeout で **最大 3 回**リトライ (指数バックオフ 2 / 4 / 8 秒)
 - `response_format` に strict json_schema を試し、拒否されたら compatible (`strict: false`) → 無指定 の順に **降格**
-- 降格結果は base_url 単位で `_SCHEMA_MODE_CACHE` ([lmstudio.py:32-49](../src/forensia/ai/lmstudio.py#L32-L49)) にキャッシュされ、次回以降は降格済みモードで送信
+- 降格結果は base_url 単位で `_SCHEMA_MODE_CACHE` ([llm_client.py:32-49](../src/forensia/ai/llm_client.py#L32-L49)) にキャッシュされ、次回以降は降格済みモードで送信
 - 3 回リトライ枯渇後は `LLMServerUnavailableError` を投げ、呼び出し側が `outage_wait_until_recovered` で復旧を待つ
 
 LLM 入出力の生ログは `ai_logs/<phase>-<id>.json` に保存される。

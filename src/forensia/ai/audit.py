@@ -6,17 +6,14 @@ from datetime import UTC, datetime
 from typing import Any
 
 from forensia.core.case import Case
-
-
-def _slugify(value: str) -> str:
-    return "".join(char if char.isalnum() or char in {"-", "_", "."} else "-" for char in value).strip("-") or "call"
+from forensia.core.textutil import slugify
 
 
 class LLMCallLogger:
     def __init__(self, case: Case, session_id: str):
         self.case = case
         self.session_id = session_id
-        self.base_dir = case.ai_logs_dir / _slugify(session_id)
+        self.base_dir = case.ai_logs_dir / slugify(session_id)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._counts: dict[str, int] = {}
         self._lock = threading.Lock()
@@ -75,8 +72,8 @@ class LLMCallLogger:
         suffix: str | None = None,
     ) -> None:
         """Serialize an LLM call transcript to a JSON file on disk."""
-        safe_phase = _slugify(phase)
-        safe_suffix = _slugify(suffix or "")
+        safe_phase = slugify(phase)
+        safe_suffix = slugify(suffix or "")
         counter_key = f"{iteration:02d}-{safe_phase}-{safe_suffix}"
         with self._lock:
             next_index = self._counts.get(counter_key, 0) + 1

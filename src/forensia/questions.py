@@ -26,7 +26,9 @@ _VALID_STRUCTURED_STATUSES = {
 
 
 def _schema_dir() -> Path:
-    return Path(__file__).resolve().parent.parent / "rulepacks" / "_schema"
+    # This module lives at forensia/questions.py (moved from forensia/ai/ in R4):
+    # the schema dir is a sibling package, one level up from this file.
+    return Path(__file__).resolve().parent / "rulepacks" / "_schema"
 
 
 def _clean_text(value: Any) -> str:
