@@ -27,7 +27,8 @@ except ImportError:  # pragma: no cover - optional until dependency is installed
     normalize_identifiers = None
 
 from forensia.ai.audit import LLMCallLogger
-from forensia.ai.checker import check_query_result, summarize_query_result
+from forensia.ai.case_profile import build_case_profile, get_case_profile, get_profile_event_ids, set_case_profile, _format_case_profile
+from forensia.ai.checker import _co_observation_satisfied, check_query_result, summarize_query_result
 from forensia.ai.hypothesis_manager import (
     _all_hypotheses,
     _hypothesis_similarity,
@@ -36,6 +37,7 @@ from forensia.ai.hypothesis_manager import (
     _render_hypothesis_memory,
     _resolve_hypothesis,
     _upsert_hypothesis,
+    MAX_ACTIVE_HYPOTHESES,
 )
 from forensia.ai.json_response import request_llm_json
 from forensia.ai.lmstudio import LLMServerUnavailableError, outage_wait_until_recovered
@@ -68,7 +70,7 @@ from forensia.rules.engine import (
     run_rule,
     save_findings,
 )
-from forensia.rules.loader import _get_rule_cache, load_rule_by_id, load_rules_from_dir
+from forensia.rules.loader import _get_rule_cache, _get_pack_map, load_rule_by_id, load_rules_from_dir, resolve_active_packs
 
 
 def _to_json(value: Any) -> str:
@@ -158,6 +160,52 @@ def _ctx_refresh_caches(
     )
 
 
+def _has_zero_rows_refute_condition(hypothesis: Hypothesis) -> bool:
+    """Check whether a hypothesis has a rule-declared refute_when with zero_rows condition."""
+    refute_when = hypothesis.refute_when or {}
+    if refute_when.get("zero_rows"):
+        return True
+    for source_rule_id in hypothesis.source_rule_ids:
+        rule = load_rule_by_id(source_rule_id)
+        if rule and rule.hypotheses:
+            for decl in rule.hypotheses:
+                if decl.id == hypothesis.id and decl.refute_when and decl.refute_when.get("zero_rows"):
+                    return True
+    return False
+
+
+def _unavailable_missing_event_ids(
+    missing_questions: list[Any],
+    available_event_ids: set[int] | None,
+) -> list[int]:
+    """Return event IDs referenced by the check's missing_questions that the case
+    telemetry cannot contain.
+
+    Returns an empty list (i.e. "keep investigating") when:
+    - no availability profile is set,
+    - the missing questions reference no known event IDs,
+    - at least one referenced event ID exists in the case, or
+    - the missing questions also point at an artifact-table alternative
+      (mft_*/prefetch_*), which remains testable without those event IDs.
+    """
+    if not available_event_ids or not missing_questions:
+        return []
+    from forensia.ai.prompts import _load_event_id_hints
+
+    vocabulary = set(_load_event_id_hints().keys())
+    if not vocabulary:
+        return []
+    missing_text = " ".join(str(q).lower() for q in missing_questions if q)
+    referenced = {int(m) for m in re.findall(r"\b(\d{3,5})\b", missing_text)} & vocabulary
+    if not referenced:
+        return []
+    if referenced & available_event_ids:
+        return []
+    if any(t in missing_text for t in ("mft_entries", "mft_timeline", "prefetch", "mft ")):
+        return []
+    return sorted(referenced)
+
+
 def _query_fingerprint(sql: str | None) -> str:
     """Generate a fingerprint for a query to detect duplicates.
 
@@ -179,73 +227,76 @@ def _query_fingerprint(sql: str | None) -> str:
         except Exception:
             return hashlib.sha1(f"raw:{sql.lower()}".encode("utf-8")).hexdigest()[:8]
 
-    if normalize_identifiers is not None:
-        try:
-            expression = normalize_identifiers(expression, dialect="duckdb")
-        except Exception:
-            pass
-
-    def _column_name(node: Any) -> str | None:
-        if isinstance(node, exp.Column):
-            return node.name.lower()
-        if isinstance(node, exp.Identifier):
-            return node.name.lower()
-        return None
-
-    def _literal_value(node: Any) -> str | None:
-        if isinstance(node, exp.Literal):
-            value = str(node.this)
-            if node.is_string:
-                return value.lower()
+    try:
+        if normalize_identifiers is not None:
             try:
-                return str(int(value))
-            except ValueError:
-                return value.lower()
-        if isinstance(node, exp.Cast):
-            return _literal_value(node.this)
-        if isinstance(node, exp.Paren):
-            return _literal_value(node.this)
-        if isinstance(node, exp.Neg):
-            inner = _literal_value(node.this)
-            return f"-{inner}" if inner is not None else None
-        return None
+                expression = normalize_identifiers(expression, dialect="duckdb")
+            except Exception:
+                pass
 
-    def _collect_terms(predicate: Any, column_name: str) -> list[str]:
-        values: list[str] = []
-        if isinstance(predicate, exp.EQ):
-            left = _column_name(predicate.this)
-            right = _column_name(predicate.expression)
-            if left == column_name:
-                value = _literal_value(predicate.expression)
-                if value is not None:
-                    values.append(value)
-            elif right == column_name:
-                value = _literal_value(predicate.this)
-                if value is not None:
-                    values.append(value)
-        elif isinstance(predicate, exp.In) and _column_name(predicate.this) == column_name:
-            for item in predicate.expressions:
-                value = _literal_value(item)
-                if value is not None:
-                    values.append(value)
-        return values
+        def _column_name(node: Any) -> str | None:
+            if isinstance(node, exp.Column):
+                return node.name.lower()
+            if isinstance(node, exp.Identifier):
+                return node.name.lower()
+            return None
 
-    event_ids: set[str] = set()
-    computers: set[str] = set()
-    for predicate in expression.find_all((exp.EQ, exp.In)):
-        event_ids.update(_collect_terms(predicate, "event_id"))
-        computers.update(_collect_terms(predicate, "computer"))
+        def _literal_value(node: Any) -> str | None:
+            if isinstance(node, exp.Literal):
+                value = str(node.this)
+                if node.is_string:
+                    return value.lower()
+                try:
+                    return str(int(value))
+                except ValueError:
+                    return value.lower()
+            if isinstance(node, exp.Cast):
+                return _literal_value(node.this)
+            if isinstance(node, exp.Paren):
+                return _literal_value(node.this)
+            if isinstance(node, exp.Neg):
+                inner = _literal_value(node.this)
+                return f"-{inner}" if inner is not None else None
+            return None
 
-    parts: list[str] = []
-    if event_ids:
-        parts.append("ev:" + ",".join(sorted(event_ids)))
-    if computers:
-        parts.append("host:" + ",".join(sorted(computers)))
-    if parts:
-        return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:8]
+        def _collect_terms(predicate: Any, column_name: str) -> list[str]:
+            values: list[str] = []
+            if isinstance(predicate, exp.EQ):
+                left = _column_name(predicate.this)
+                right = _column_name(predicate.expression)
+                if left == column_name:
+                    value = _literal_value(predicate.expression)
+                    if value is not None:
+                        values.append(value)
+                elif right == column_name:
+                    value = _literal_value(predicate.this)
+                    if value is not None:
+                        values.append(value)
+            elif isinstance(predicate, exp.In) and _column_name(predicate.this) == column_name:
+                for item in predicate.expressions:
+                    value = _literal_value(item)
+                    if value is not None:
+                        values.append(value)
+            return values
 
-    canonical_sql = expression.sql(dialect="duckdb", pretty=False)
-    return hashlib.sha1(f"sql:{canonical_sql}".encode("utf-8")).hexdigest()[:8]
+        event_ids: set[str] = set()
+        computers: set[str] = set()
+        for predicate in expression.find_all((exp.EQ, exp.In)):
+            event_ids.update(_collect_terms(predicate, "event_id"))
+            computers.update(_collect_terms(predicate, "computer"))
+
+        parts: list[str] = []
+        if event_ids:
+            parts.append("ev:" + ",".join(sorted(event_ids)))
+        if computers:
+            parts.append("host:" + ",".join(sorted(computers)))
+        if parts:
+            return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:8]
+
+        canonical_sql = expression.sql(dialect="duckdb", pretty=False)
+        return hashlib.sha1(f"sql:{canonical_sql}".encode("utf-8")).hexdigest()[:8]
+    except Exception:
+        return hashlib.sha1(f"raw:{sql.lower()}".encode("utf-8")).hexdigest()[:8]
 
 
 @dataclass(slots=True)
@@ -328,16 +379,20 @@ class HypothesisProgressTracker:
         return out
 
     def should_auto_confirm(self, rule_context: Any, rows: list[dict[str, Any]], hypothesis: Any = None) -> bool:
-        """Return True if all co_observed_event_ids are present in query results.
+        """Return True if all co-observation constraints are satisfied.
 
-        Accepts confirm_when from rule_context OR from the hypothesis itself so
-        broad_plan-derived hypotheses (no source_rule_ids) can also auto-confirm.
+        Uses _co_observation_satisfied to check co_observed_event_ids along
+        with same_host and within_minutes correlation constraints.
         """
-        required_set = self._confirm_set_from(rule_context, hypothesis)
-        if not required_set:
+        confirm_when = None
+        if rule_context is not None:
+            confirm_when = getattr(rule_context, "confirm_when", None)
+        if not confirm_when and hypothesis is not None:
+            confirm_when = getattr(hypothesis, "confirm_when", None)
+        if not confirm_when or not isinstance(confirm_when, dict):
             return False
-        observed_event_ids = self._extract_observed_event_ids(rows)
-        return required_set.issubset(observed_event_ids)
+        satisfied, _ = _co_observation_satisfied(confirm_when, rows)
+        return satisfied
 
     def has_partial_confirm_signal(self, rule_context: Any, rows: list[dict[str, Any]], hypothesis: Any = None) -> bool:
         """Return True when some, but not all, confirm_when event IDs are present."""
@@ -432,7 +487,7 @@ def _append_hypothesis_reasoning(
     return entry_id
 
 
-def _seed_findings(case: Case, db: CaseDB, profile: str) -> int:
+def _seed_findings(case: Case, db: CaseDB, profile: str, active_pack_ids: set[str] | None = None) -> int:
     """Run all rules once to seed initial findings, unless already populated."""
     existing = db.execute("SELECT COUNT(*) FROM findings").fetchone()[0]
     if existing:
@@ -440,13 +495,119 @@ def _seed_findings(case: Case, db: CaseDB, profile: str) -> int:
 
     profile_path = Path(__file__).parent.parent / "profiles" / f"{profile}.yaml"
     rules_dir = Path(__file__).parent.parent / "rulepacks"
-    rules = load_rules_from_dir(rules_dir, profile_path)
+    if active_pack_ids is not None:
+        pack_map = _get_pack_map()
+        rules = [
+            r for r in load_rules_from_dir(rules_dir, profile_path)
+            if pack_map.get(r.id) in active_pack_ids
+        ]
+    else:
+        rules = load_rules_from_dir(rules_dir, profile_path)
     total = 0
     for rule in rules:
         findings = generate_findings(rule, run_rule(db, rule))
         save_findings(case, db, findings)
         total += len(findings)
     return total
+
+
+def _seed_rule_hypotheses(db: CaseDB, state: SessionState, session_id: str, active_pack_ids: set[str] | None = None) -> None:
+    """Seed hypotheses declared in rulepacks into active hypotheses.
+
+    For each rule with hypotheses[] that produced at least one finding,
+    renders description placeholders from the first finding's evidence row,
+    builds a Hypothesis with source_rule_ids and source_decl_id, and merges
+    into active hypotheses via _merge_active_hypotheses with origin 'rule'.
+    Called once after initial findings are seeded.
+
+    When active_pack_ids is provided, only rules from those packs are considered.
+    At most 2 hypotheses are seeded per rule to prevent EVTX rules from crowding
+    out file/cloud/email hypotheses.
+    """
+    rule_cache = _get_rule_cache()
+    pack_map = _get_pack_map() if active_pack_ids else {}
+    seeded: list[Hypothesis] = []
+    for rule in rule_cache.values():
+        if not rule.hypotheses:
+            continue
+        if active_pack_ids and pack_map.get(rule.id) not in active_pack_ids:
+            continue
+
+        finding_rows = fetch_records(
+            db,
+            "SELECT evidence FROM findings WHERE rule_id = ? ORDER BY created_at LIMIT 1",
+            (rule.id,),
+        )
+        if not finding_rows:
+            continue
+        evidence_json = finding_rows[0].get("evidence")
+        evidence_rows: list[dict[str, Any]] = []
+        if isinstance(evidence_json, str):
+            try:
+                evidence_rows = json.loads(evidence_json)
+            except (json.JSONDecodeError, TypeError):
+                evidence_rows = []
+        elif isinstance(evidence_json, list):
+            evidence_rows = evidence_json
+        # Cap at 2 hypotheses per rule
+        seeds_from_rule = 0
+        for decl in rule.hypotheses:
+            if seeds_from_rule >= 2:
+                _log("HYPOTHESIS", f"[seed] cap per rule reached for {rule.id} (max 2), skipping decl {decl.id}")
+                break
+            rendered_desc = decl.description
+            # R2-03: resolve placeholders from evidence rows
+            placeholder_keys = re.findall(r"\{(\w+)\}", rendered_desc)
+            if placeholder_keys:
+                unresolved = []
+                for key in placeholder_keys:
+                    value = None
+                    for row in evidence_rows:
+                        v = row.get(key)
+                        if v is not None and str(v).strip():
+                            value = v
+                            break
+                    if value is not None:
+                        rendered_desc = rendered_desc.replace("{" + key + "}", str(value))
+                    else:
+                        unresolved.append(key)
+                if unresolved:
+                    has_fallback = bool(getattr(rule, "fallback_search", None))
+                    if has_fallback:
+                        for key in unresolved:
+                            rendered_desc = rendered_desc.replace("{" + key + "}", f"unknown {key}")
+                        required_entities = [
+                            e for e in (list(decl.required_entities or []))
+                            if e not in unresolved
+                        ]
+                        _log("HYPOTHESIS", f"[seed] unresolved {unresolved} for {rule.id}/{decl.id}, rendered as unknown")
+                    else:
+                        _log("HYPOTHESIS", f"[seed] skipped {rule.id}/{decl.id}: unresolved placeholders {unresolved}")
+                        continue
+                else:
+                    required_entities = list(decl.required_entities or [])
+            else:
+                required_entities = list(decl.required_entities or [])
+            hyp = Hypothesis(
+                id=f"draft-{rule.id}-{decl.id}",
+                description=rendered_desc,
+                status="active",
+                verdict=None,
+                summary="",
+                source_rule_ids=[rule.id],
+                source_decl_id=decl.id,
+                required_entities=required_entities,
+                confirm_when=dict(decl.confirm_when) if decl.confirm_when else None,
+            )
+            seeded.append(hyp)
+            seeds_from_rule += 1
+
+    if seeded:
+        state.active_hypotheses = _merge_active_hypotheses(
+            db=db, current=state.active_hypotheses, updates=seeded,
+            resolved=state.resolved_hypotheses, session_id=session_id, origin="rule",
+        )
+        _log("HYPOTHESIS", f"seeded {len(seeded)} rule-declared hypotheses (active={len(state.active_hypotheses)})")
 
 
 def _load_profile_config(profile: str) -> dict[str, Any]:
@@ -629,10 +790,30 @@ def _observed_keypoints_from_findings(snapshot: list[dict[str, Any]], limit: int
     return keypoints
 
 
+def _family_interleaved_keypoint_names() -> list[str]:
+    """Order keypoint names round-robin across family prefixes (first '_' token).
+
+    Deterministic replacement for shuffling: avoids the alphabetical bias that
+    let one family (e.g. account_*) fill every truncated slice, while keeping
+    scan order reproducible across runs (investigation paths must be auditable).
+    """
+    groups: dict[str, list[str]] = {}
+    for name in sorted(REPORT_KEYPOINTS.keys()):
+        family = name.split("_", 1)[0]
+        groups.setdefault(family, []).append(name)
+    families = sorted(groups)
+    ordered: list[str] = []
+    for index in range(max((len(v) for v in groups.values()), default=0)):
+        for family in families:
+            if index < len(groups[family]):
+                ordered.append(groups[family][index])
+    return ordered
+
+
 def _scan_report_keypoints(case: Case, db: CaseDB, *, limit: int = 80) -> list[dict[str, Any]]:
     """Run each report keypoint once and keep only the ones that produced rows."""
     observed: list[dict[str, Any]] = []
-    for index, keypoint_name in enumerate(sorted(REPORT_KEYPOINTS.keys()), start=1):
+    for index, keypoint_name in enumerate(_family_interleaved_keypoint_names(), start=1):
         try:
             result = _resolve_evidence_results(case, db, keypoints=[keypoint_name])[0]
         except Exception as exc:
@@ -740,6 +921,28 @@ def _final_summary(state: SessionState) -> str:
     }.get(output_language, "No additional progress was made during this investigation.")
 
 
+def _has_multi_source_evidence(evidence_ids: list[str], min_sources: int = 2) -> bool:
+    """Check whether evidence IDs span at least min_sources different artifact source prefixes."""
+    if not evidence_ids:
+        return False
+    sources: set[str] = set()
+    for eid in evidence_ids:
+        eid_str = str(eid).strip().lower()
+        if eid_str.startswith("evtx"):
+            sources.add("evtx")
+        elif eid_str.startswith("mft"):
+            sources.add("mft")
+        elif eid_str.startswith("prefetch"):
+            sources.add("prefetch")
+        elif eid_str.startswith("file"):
+            sources.add("file")
+        elif eid_str.startswith("reg"):
+            sources.add("registry")
+        else:
+            sources.add("other")
+    return len(sources) >= min_sources
+
+
 def _apply_memory_updates(
     memory: MemoryManager,
     active_hypotheses: list[Hypothesis],
@@ -747,19 +950,33 @@ def _apply_memory_updates(
     check_output: dict[str, Any],
     current_hypothesis_id: str | None = None,
     db: CaseDB | None = None,
+    query_id: str | None = None,
+    hypothesis_description: str | None = None,
 ) -> None:
     """Persist facts, timeline, tasks, entities, and hypothesis cards from a check output."""
+    _HARD_CLAIM_WORDS = {"confirmed", "attack", "compromised", "breach", "intrusion", "exfiltration"}
+
     updates = check_output.get("memory_updates") or {}
     verdict = str(check_output.get("verdict") or "confirmed").strip().lower()
-    provisional = verdict != "confirmed"
+    is_confirmed = verdict == "confirmed"
+    provisional = not is_confirmed
     for item in updates.get("facts") or []:
         if not isinstance(item, dict):
             continue
+        fact_text = str(item.get("text") or "")
+        evidence_ids = [str(e) for e in (item.get("evidence_ids") or [])]
+        claim_type = str(item.get("claim_type") or "observation").strip().lower()
+        # R2-09: interpretation facts are stored as provisional (scratch)
+        # unless the evidence spans ≥2 different artifact sources.
+        is_interpretation = claim_type == "interpretation"
+        fact_provisional = provisional or (
+            is_interpretation and not _has_multi_source_evidence(evidence_ids)
+        )
         memory.append_confirmed_fact(
-            str(item.get("text") or ""),
-            [str(evidence_id) for evidence_id in (item.get("evidence_ids") or [])],
+            fact_text,
+            evidence_ids,
             hypothesis_id=current_hypothesis_id,
-            provisional=provisional,
+            provisional=fact_provisional,
         )
 
     for item in updates.get("timeline") or []:
@@ -783,8 +1000,98 @@ def _apply_memory_updates(
             provisional=provisional,
         )
 
-    for item in updates.get("overview") or []:
-        memory.append_overview(str(item))
+    # R2-10: Overview writes only on state transitions
+    _is_resolution = verdict in ("confirmed", "refuted", "untestable")
+    _has_new_nonobserved_entity = False
+    _artifact_overview_families: set[str] = set()
+
+    for item in updates.get("entities") or []:
+        if isinstance(item, dict):
+            role = str(item.get("role") or "").strip().lower()
+            if role != "observed_user":
+                name = str(item.get("name") or "").strip()
+                etype = str(item.get("entity_type") or "").strip()
+                if name and etype:
+                    ent_path = memory._entity_path(etype, name)
+                    if ent_path and not ent_path.exists():
+                        _has_new_nonobserved_entity = True
+
+    for item in updates.get("facts") or []:
+        if isinstance(item, dict):
+            for eid in (item.get("evidence_ids") or []):
+                family = str(eid).split("-")[0] if "-" in str(eid) else str(eid)
+                if family:
+                    _artifact_overview_families.add(family)
+
+    # "First finding of a new artifact family" must be judged against evidence
+    # annotations already recorded in facts.md (`evidence: evtx-...`), not the
+    # overview prose — family tokens almost never appear in prose, which would
+    # make every evidence-citing check pass the gate.
+    _has_new_family = False
+    if _artifact_overview_families:
+        facts_text = ""
+        try:
+            if memory.facts_path.exists():
+                facts_text = memory.facts_path.read_text(encoding="utf-8")
+        except Exception:
+            facts_text = ""
+        for family in _artifact_overview_families:
+            if f"evidence: {family}-" not in facts_text:
+                _has_new_family = True
+                break
+
+    overview_items = updates.get("overview") or []
+    if overview_items and (_is_resolution or _has_new_nonobserved_entity or _has_new_family):
+        for item in overview_items[:1]:
+            item_str = str(item)
+            item_lower = item_str.lower()
+            # R3-09: Skip refuted-template lines (already in archive/refuted.md)
+            if verdict == "refuted" and re.search(r"the hypothesis regarding .* was refuted", item_str, re.IGNORECASE):
+                _log("MEMORY", "R3-09: skipped refuted-template overview line")
+                continue
+            has_hard_claim = any(w in item_lower for w in _HARD_CLAIM_WORDS)
+            if has_hard_claim and not is_confirmed:
+                memory.append_confirmed_fact(
+                    item_str, [],
+                    hypothesis_id=current_hypothesis_id,
+                    provisional=True,
+                )
+            elif "could not be confirmed" in item_lower or "inconclusive" in item_lower or "no evidence" in item_lower:
+                memory.append_confirmed_fact(
+                    item_str, [],
+                    hypothesis_id=current_hypothesis_id,
+                    provisional=True,
+                )
+            else:
+                overview_text = memory.load_overview()
+                recent_lines = [ln.strip() for ln in overview_text.split("\n") if ln.strip()][-20:]
+                item_tokens = set(item_str.lower().split())
+                is_duplicate = False
+                if item_tokens:
+                    for line in recent_lines:
+                        line_tokens = set(line.lower().split())
+                        if line_tokens:
+                            sim = len(item_tokens & line_tokens) / max(len(item_tokens), len(line_tokens))
+                            if sim > 0.7:
+                                is_duplicate = True
+                                break
+                if is_duplicate:
+                    _log("MEMORY", "overview dedup: skipped similar item")
+                else:
+                    memory.append_overview(item_str)
+
+    # T-18: When confirmed, write a deterministic fact line
+    if is_confirmed and hypothesis_description and query_id:
+        evidence_ids: list[str] = []
+        for item in updates.get("facts") or []:
+            if isinstance(item, dict):
+                evidence_ids.extend(str(e) for e in (item.get("evidence_ids") or []) if str(e).strip())
+        memory.append_confirmed_hypothesis_fact(
+            hypothesis_description=hypothesis_description,
+            verdict=verdict,
+            query_id=query_id,
+            evidence_ids=evidence_ids,
+        )
 
     for item in updates.get("refuted_hypotheses") or []:
         if not isinstance(item, dict):
@@ -845,6 +1152,7 @@ async def _investigate_one_hypothesis(
     query_limit: int | None = None,
     emit_fn: Callable[..., None] | None = None,
     llm_status_fn: Callable[[str], None] | None = None,
+    case_profile_str: str | None = None,
 ) -> tuple[bool, SessionState, dict[str, str]]:
     """Investigate a single hypothesis with full emit/save/memory lifecycle.
     Returns (cycle_progress, updated_state, focus_sections).
@@ -869,12 +1177,13 @@ async def _investigate_one_hypothesis(
                 ),
                 query_index=query_index,
                 time_range=case.time_range,
+                case_profile=case_profile_str,
             )
         except Exception as exc:
             err_msg = f"[plan-hypothesis] LLM failed for {hypothesis.id}: {exc}"
             print(f"[red]{err_msg}[/red]")
             _append_hypothesis_reasoning(db=db, hypothesis_id=hypothesis.id, session_id=session_id,
-                                         iteration=plan_cycle, phase="plan", body=err_msg)
+                                         iteration=plan_cycle, phase="error", body=f"[internal-error] {err_msg}")
             break
         _save_step(db=db, session_id=session_id, iteration=plan_cycle, phase="plan-hypothesis",
                    hypothesis_id=hypothesis.id,
@@ -950,7 +1259,7 @@ async def _investigate_one_hypothesis(
             if emit_fn:
                 emit_fn("investigate/do", f"[do] SQL execution error — {planned_query.query_id}: {err_msg}", iteration=plan_cycle, hypothesis_id=hypothesis.id)
             _append_hypothesis_reasoning(db=db, hypothesis_id=hypothesis.id, session_id=session_id,
-                                         iteration=plan_cycle, phase="do", body=f"SQL execution error: {err_msg}",
+                                         iteration=plan_cycle, phase="error", body=f"[internal-error] SQL execution error: {err_msg}",
                                          query_id=planned_query.query_id)
             state.last_execution_error = {
                 "query_id": planned_query.query_id,
@@ -971,12 +1280,17 @@ async def _investigate_one_hypothesis(
                 memory=memory, base_url=base_url, model=model,
                 overview_md=ctx.memory_overview, memory_context_md=ctx.memory_check,
                 status_callback=llm_status_fn or (lambda msg: print(f"[yellow]{msg}[/yellow]")),
+                fallback_info=fallback_info,
+                audit_callback=lambda phase, msgs, out, parsed: llm_logger.write(
+                    iteration=plan_cycle, phase=phase, input_messages=msgs,
+                    output=parsed, model=model, base_url=base_url,
+                ),
             )
         except Exception as exc:
             err_msg = f"[check] LLM failed for {hypothesis.id}/{planned_query.query_id}: {exc}"
             print(f"[red]{err_msg}[/red]")
             _append_hypothesis_reasoning(db=db, hypothesis_id=hypothesis.id, session_id=session_id,
-                                         iteration=plan_cycle, phase="check", body=err_msg,
+                                         iteration=plan_cycle, phase="error", body=f"[internal-error] {err_msg}",
                                          query_id=planned_query.query_id)
             continue
         _save_step(db=db, session_id=session_id, iteration=plan_cycle, phase="check",
@@ -1011,10 +1325,10 @@ async def _investigate_one_hypothesis(
                 db=db, current=state.active_hypotheses, updates=check_result.new_hypotheses,
                 resolved=state.resolved_hypotheses, session_id=session_id, origin="check_new",
             )
-        if check_result.verdict in {"confirmed", "refuted"}:
+        if check_result.verdict in {"confirmed", "refuted", "untestable"}:
             _resolve_hypothesis(db=db, state=state, hypothesis_id=hypothesis.id,
                                 verdict=check_result.verdict, summary=check_result.report_text,
-                                session_id=session_id)
+                                session_id=session_id, sample_rows=rows)
             _log("RESOLVE", f"{hypothesis.id} — {check_result.verdict} (resolved={len(state.resolved_hypotheses)})")
             cycle_progress = True
         elif check_result.verdict == "newlead" or check_result.progress:
@@ -1030,7 +1344,11 @@ async def _investigate_one_hypothesis(
                           "suspicious_evidence": check_result.suspicious_evidence},
             current_hypothesis_id=hypothesis.id,
             db=db,
+            query_id=planned_query.query_id,
+            hypothesis_description=hypothesis.description,
         )
+        # R3-09: Collapse refuted-template overview lines into counter
+        memory.collapse_refuted_overview_lines()
         try:
             memory.compact_overview_if_needed(base_url=base_url, model=model)
             memory.compact_oversized_with_llm(base_url=base_url, model=model)
@@ -1040,6 +1358,8 @@ async def _investigate_one_hypothesis(
             memory.promote_hypothesis_scratch(hypothesis.id)
         elif check_result.verdict == "refuted":
             memory.archive_hypothesis_scratch(hypothesis.id)
+        elif check_result.verdict == "untestable":
+            memory.archive_untestable_hypothesis_scratch(hypothesis.id)
         _ctx_refresh_caches(ctx, memory, base_url, model, current_hypothesis_id=hypothesis.id)
         _save_step(db=db, session_id=session_id, iteration=plan_cycle, phase="act",
                    hypothesis_id=hypothesis.id,
@@ -1051,7 +1371,7 @@ async def _investigate_one_hypothesis(
         if emit_fn:
             emit_fn("investigate/act", f"[act] {hypothesis.id}: verdict={check_result.verdict} resolved={len(state.resolved_hypotheses)}",
                     iteration=plan_cycle, report_kw={"focus_sections": focus_sections})
-        if check_result.verdict in {"confirmed", "refuted"}:
+        if check_result.verdict in {"confirmed", "refuted", "untestable"}:
             break
         row_count = int(result_summary.get("row_count") or 0)
         query_fp = _query_fingerprint(planned_query.sql)
@@ -1066,23 +1386,51 @@ async def _investigate_one_hypothesis(
             or _rationale_signature(str(check_result.report_text or check_result.raw_response.get("rationale", "")))
         )
         tracker.register_check(check_result.verdict, row_count, missing_signature)
+        # T-05b: when the only missing evidence is event IDs the case telemetry
+        # cannot contain, resolve untestable now instead of looping 3 cycles.
+        if check_result.verdict == "inconclusive":
+            unavailable_ids = _unavailable_missing_event_ids(missing_checks_raw, get_profile_event_ids())
+            if unavailable_ids:
+                id_list = ", ".join(str(eid) for eid in unavailable_ids)
+                _log("RESOLVE", f"{hypothesis.id} — untestable: missing event IDs [{id_list}] are not in case telemetry")
+                _resolve_hypothesis(db=db, state=state, hypothesis_id=hypothesis.id, verdict="untestable",
+                                    summary=f"Untestable: verification requires event IDs [{id_list}] which are not present in the available telemetry — absence of telemetry is not a disproof.",
+                                    session_id=session_id)
+                cycle_progress = True
+                break
         if tracker.should_pivot():
             _log("PIVOT", f"{hypothesis.id} — duplicate query fingerprint detected, auto-exhausted")
             break
         rule_context = resolve_rule_context(hypothesis)
         partial_confirm_signal = tracker.has_partial_confirm_signal(rule_context, rows, hypothesis)
         if tracker.should_auto_refute(consecutive_threshold=3) and not partial_confirm_signal:
-            _log("RESOLVE", f"{hypothesis.id} — auto-refuted after 3+ consecutive 0-row inconclusive")
-            _resolve_hypothesis(db=db, state=state, hypothesis_id=hypothesis.id, verdict="refuted",
-                                summary="Auto-refuted: repeated 0-row inconclusive results indicate the hypothesis cannot be verified with available evidence.",
-                                session_id=session_id)
+            has_rule_refute = _has_zero_rows_refute_condition(hypothesis)
+            if has_rule_refute:
+                verdict = "refuted"
+                summary = "Auto-refuted: repeated 0-row inconclusive results, consistent with rule-declared refute_when.zero_rows condition."
+            else:
+                verdict = "untestable"
+                missing_eids = sorted(set(
+                    re.findall(r"event(?:\s+)?[iI][dD]\s*(\d{3,5})", hypothesis.description)
+                ))
+                telemetry_hint = f" (event IDs: {', '.join(missing_eids)})" if missing_eids else ""
+                summary = f"Untestable: repeated 0-row inconclusive results — available telemetry does not contain the event types required to verify this hypothesis{telemetry_hint}."
+            _log("RESOLVE", f"{hypothesis.id} — auto-{verdict} after 3+ consecutive 0-row inconclusive")
+            _resolve_hypothesis(db=db, state=state, hypothesis_id=hypothesis.id, verdict=verdict,
+                                summary=summary, session_id=session_id)
             cycle_progress = True
             break
         if tracker.should_auto_refute_due_to_unobserved_events():
-            _log("RESOLVE", f"{hypothesis.id} — auto-refuted after {tracker.consecutive_same_missing}+ consecutive same-missing checks")
-            _resolve_hypothesis(db=db, state=state, hypothesis_id=hypothesis.id, verdict="refuted",
-                                summary="hypothesis requires evidence not present in current dataset (3+ consecutive same-missing check)",
-                                session_id=session_id)
+            has_rule_refute = _has_zero_rows_refute_condition(hypothesis)
+            if has_rule_refute:
+                verdict = "refuted"
+                summary = "hypothesis requires evidence not present in current dataset (3+ consecutive same-missing check)"
+            else:
+                verdict = "untestable"
+                summary = "Untestable: hypothesis requires evidence not present in current dataset (3+ consecutive same-missing check) — absence of telemetry is not a disproof."
+            _log("RESOLVE", f"{hypothesis.id} — auto-{verdict} after {tracker.consecutive_same_missing}+ consecutive same-missing checks")
+            _resolve_hypothesis(db=db, state=state, hypothesis_id=hypothesis.id, verdict=verdict,
+                                summary=summary, session_id=session_id)
             cycle_progress = True
             break
         if check_result.verdict == "inconclusive":
@@ -1143,106 +1491,6 @@ def _fallback_planned_query_from_hypothesis(hypothesis: Hypothesis, query_index:
         params={},
         sql=sql,
     )
-
-
-def _execute_query(db: CaseDB, planned_query: PlannedQuery, hypothesis: Hypothesis) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
-    """Execute SQL query and optional fallback. Returns (rows, fallback_info)."""
-    try:
-        rows = fetch_records(db, planned_query.sql)
-        if not rows and hypothesis.source_rule_ids:
-            for source_rule_id in hypothesis.source_rule_ids:
-                rule = load_rule_by_id(source_rule_id)
-                if rule and rule.fallback_search:
-                    for fallback in rule.fallback_search:
-                        if isinstance(fallback, dict):
-                            rows = execute_fallback_search(db, fallback)
-                            if rows:
-                                return rows, {"phase": fallback.get("phase"), "source_rule_id": source_rule_id}
-        if not rows:
-            rows, fallback_info = execute_event_keyword_fallback_search(db, planned_query.sql)
-            if rows:
-                if fallback_info is None:
-                    fallback_info = {"phase": "keyword_in_raw_json"}
-                fallback_info["query_sql"] = planned_query.sql
-                return rows, fallback_info
-        return rows, None
-    except Exception:
-        return None, None
-
-
-async def _check_query(
-    planned_query: PlannedQuery,
-    hypothesis: Hypothesis,
-    result_summary: dict[str, Any],
-    findings_snapshot: list[dict[str, Any]],
-    memory: MemoryManager,
-    base_url: str,
-    model: str,
-) -> CheckResult | None:
-    """Execute check phase. Returns CheckResult or None on error."""
-    try:
-        return check_query_result(
-            case=None,
-            db=None,
-            session_id="",
-            planned_query=planned_query,
-            hypothesis=hypothesis,
-            finding_candidates=_matching_findings(findings_snapshot, hypothesis),
-            result_summary=result_summary,
-            memory=memory,
-            base_url=base_url,
-            model=model,
-            overview_md=None,
-            memory_context_md=None,
-        )
-    except Exception:
-        return None
-
-
-def _record_check_result(
-    state: SessionState,
-    hypothesis: Hypothesis,
-    planned_query: PlannedQuery,
-    check_result: CheckResult,
-    result_summary: dict[str, Any],
-    plan_cycle: int,
-) -> None:
-    """Record check outcome to history and state."""
-    state.history.append(
-        HistoryEntry(
-            iteration=plan_cycle,
-            query_id=planned_query.query_id,
-            hypothesis_id=hypothesis.id,
-            verdict=check_result.verdict,
-            summary=check_result.report_text,
-            evidence_ids=result_summary.get("evidence_ids", []),
-            template_id=planned_query.template_id,
-            params=planned_query.params,
-            purpose=planned_query.purpose,
-        )
-    )
-    state.history = state.history[-50:]
-
-
-def _apply_outcome(
-    state: SessionState,
-    hypothesis: Hypothesis,
-    check_result: CheckResult,
-    session_id: str,
-    db: CaseDB,
-) -> None:
-    """Apply check outcome to hypothesis state."""
-    if check_result.verdict in {"confirmed", "refuted"}:
-        _resolve_hypothesis(db, state, hypothesis.id, check_result.verdict, check_result.report_text, session_id)
-    elif check_result.new_hypotheses:
-        state.active_hypotheses = _merge_active_hypotheses(
-            db=db,
-            current=state.active_hypotheses,
-            updates=check_result.new_hypotheses,
-            resolved=state.resolved_hypotheses,
-            session_id=session_id,
-            origin="check_new",
-        )
 
 
 def _dedup_new_hypotheses(new_hypotheses: list[Hypothesis], active_hypotheses: list[Hypothesis], threshold: float = 0.85) -> list[Hypothesis]:
@@ -1318,6 +1566,26 @@ def _parse_hypothesis_from_drafter(parsed: dict[str, Any]) -> Hypothesis | None:
         _log("PLAN", f"drafter output dropped: invalid required_entities {hyp_raw.get('required_entities')}")
         return None
     hyp_raw["required_entities"] = entities
+    # Filter co_observed_event_ids to only include event IDs available in the case profile
+    cw = hyp_raw.get("confirm_when")
+    if isinstance(cw, dict):
+        co_ids = cw.get("co_observed_event_ids")
+        if co_ids and isinstance(co_ids, list):
+            available_ids = get_profile_event_ids()
+            if available_ids is not None:
+                numeric_ids: list[int] = []
+                for eid in co_ids:
+                    try:
+                        numeric_ids.append(int(str(eid).strip()))
+                    except (TypeError, ValueError):
+                        continue
+                filtered = [eid for eid in numeric_ids if eid in available_ids]
+                if len(filtered) < len(numeric_ids) or len(numeric_ids) < len(co_ids):
+                    dropped = sorted(set(numeric_ids) - available_ids)
+                    _log("PLAN", f"drafter co_observed_event_ids filtered: dropped {dropped} (not in case evidence profile)")
+                    cw["co_observed_event_ids"] = filtered
+                    if not filtered:
+                        cw["_llm_note"] = "All co_observed_event_ids were removed (not in case evidence). This hypothesis may be untestable via event IDs."
     try:
         return Hypothesis.model_validate(hyp_raw)
     except Exception as exc:
@@ -1336,6 +1604,7 @@ async def _run_broad_plan_step(
     observed_keypoints: list[dict[str, Any]],
     emit_fn: Callable[..., None] | None,
     llm_status_fn: Callable[[str], None],
+    case_profile_str: str | None = None,
 ) -> bool:
     """Execute broad planning step (2-stage: gap_identifier → hypothesis_drafter). Returns stop flag."""
     observed_keypoint_labels = [
@@ -1346,12 +1615,16 @@ async def _run_broad_plan_step(
     try:
         # 1) gap_identifier — identify which keypoints lack hypothesis coverage
         observed_kp_strs = observed_keypoint_labels or _observed_keypoints_from_findings(state.findings_snapshot)
-        uncovered_keypoints = _compute_uncovered_keypoints(observed_kp_strs, state.active_hypotheses, state.resolved_hypotheses)
+        uncovered_keypoints = _compute_uncovered_keypoints(
+            observed_kp_strs, state.active_hypotheses, state.resolved_hypotheses,
+            proposed_counts=state.proposed_keypoints,
+        )
         active_hypotheses_slim = [{"id": h.id, "description": h.description, "verdict": h.verdict} for h in state.active_hypotheses[:10]]
         gap_msgs, gap_schema = build_gap_identifier_messages(
             observed_keypoints=observed_keypoints,
             uncovered_keypoints=uncovered_keypoints,
             active_hypotheses_slim=active_hypotheses_slim,
+            case_profile=case_profile_str,
         )
         gap_parsed = await _call_with_outage_recovery(
             request_llm_json, base_url=base_url, model=model,
@@ -1364,17 +1637,54 @@ async def _run_broad_plan_step(
             ),
         )
         gap_areas = gap_parsed.get("gap_areas", [])
+        # Track per-keypoint proposal history for round-robin coverage
+        for gap in gap_areas:
+            kpid = gap.get("keypoint_id", "")
+            if kpid:
+                state.proposed_keypoints[kpid] = state.proposed_keypoints.get(kpid, 0) + 1
         valid_gap_areas = [g for g in gap_areas if g.get("keypoint_id") in REPORT_KEYPOINTS]
         if len(valid_gap_areas) < len(gap_areas):
             _log("PLAN", f"gap_identifier invented {len(gap_areas) - len(valid_gap_areas)} non-existent keypoint names, dropped")
         gap_areas = valid_gap_areas
 
+        # R3-08: Cap gap_areas to match investigation throughput. Drafting more
+        # hypotheses than the loop can investigate only pads the Gaps table with
+        # "not started" rows, so draft at most what fits into the active cap
+        # (always >=2 so replacements keep flowing when the set is full).
+        available_slots = max(0, MAX_ACTIVE_HYPOTHESES - len(state.active_hypotheses))
+        max_gap_areas = max(2, min(4, available_slots))
+        if len(gap_areas) > max_gap_areas:
+            gap_areas = gap_areas[:max_gap_areas]
+
         # 2) hypothesis_drafter — draft one hypothesis per gap area
         rule_cache = _get_rule_cache()
-        available_rules = [rule.model_dump() for rule in rule_cache.values()]
+        all_rule_models = list(rule_cache.values())
+        # T-09: Deterministic relevance ranking — score rules by token overlap with
+        # all gap keypoint names and event ID intersection with case profile
+        _all_gap_kp_text = " ".join(
+            str(g.get("keypoint_id", "")) for g in gap_areas
+        )
+        _all_gap_tokens: set[str] = set(re.findall(r"[a-z0-9]+", _all_gap_kp_text.lower())) if _all_gap_kp_text else set()
+        _profile_eids = get_profile_event_ids() or set()
+        def _rule_relevance_score(rule: Any) -> float:
+            score = 0.0
+            rule_text = f"{rule.id} {rule.title} {' '.join(rule.tags)}".lower()
+            rule_tokens = set(re.findall(r"[a-z0-9]+", rule_text))
+            if _all_gap_tokens and rule_tokens:
+                overlap = len(_all_gap_tokens & rule_tokens)
+                score += overlap / max(len(_all_gap_tokens), 1)
+            rule_event_ids: set[int] = set()
+            for corr in getattr(rule, "correlate_with", []) or []:
+                rule_event_ids.update(getattr(corr, "event_ids", []) or [])
+            if _profile_eids and rule_event_ids:
+                intersection = len(rule_event_ids & _profile_eids)
+                score += intersection / max(len(rule_event_ids), 1) * 0.5
+            return score
+        scored = sorted(all_rule_models, key=_rule_relevance_score, reverse=True)
+        available_rules = [r.model_dump() for r in scored[:5]]
         drafted_hypotheses: list[Hypothesis] = []
         for gap in gap_areas:
-            h_msgs, h_schema = build_hypothesis_drafter_messages(gap, available_rules)
+            h_msgs, h_schema = build_hypothesis_drafter_messages(gap, available_rules, case_profile=case_profile_str)
             h_parsed = await _call_with_outage_recovery(
                 request_llm_json, base_url=base_url, model=model,
                 messages=h_msgs,
@@ -1390,6 +1700,10 @@ async def _run_broad_plan_step(
                 kpid = gap.get("keypoint_id", "")
                 if kpid:
                     hyp.target_keypoint_id = kpid
+                # Unique placeholder id per draft: _merge_active_hypotheses aliases
+                # by incoming id, so a shared "draft" id collapses all but the
+                # first drafted hypothesis of the cycle into one record.
+                hyp.id = f"draft-{plan_cycle}-{len(drafted_hypotheses) + 1}"
                 drafted_hypotheses.append(hyp)
 
         # 3) dedup + merge
@@ -1451,7 +1765,9 @@ async def _run_cycle_body(
     progress_callback: Callable[[dict[str, Any]], None] | None,
     max_queries_per_hypothesis: int,
     plan_cycle: int,
+    max_iter: int,
     report_only: bool,
+    case_profile_str: str | None = None,
 ) -> tuple[bool, bool, list[str], dict[str, Any]]:
     """Run one plan cycle: broad plan + hypothesis loop.
 
@@ -1490,14 +1806,20 @@ async def _run_cycle_body(
     )
 
     if not report_only:
-        broad_plan_stop = await _call_with_outage_recovery(
-            _run_broad_plan_step, base_url=base_url, model=model,
-            state=state, db=db, session_id=session_id,
-            llm_logger=llm_logger,
-            plan_cycle=plan_cycle, observed_keypoints=observed_keypoints,
-            emit_fn=_emit, llm_status_fn=llm_status,
-        )
-        focus_hypotheses = _select_focus_hypotheses(state, max_items=2)
+        if len(state.active_hypotheses) >= MAX_ACTIVE_HYPOTHESES:
+            _log("PLAN", f"active cap reached ({len(state.active_hypotheses)} >= {MAX_ACTIVE_HYPOTHESES}); skipping broad_plan this cycle")
+        else:
+            broad_plan_stop = await _call_with_outage_recovery(
+                _run_broad_plan_step, base_url=base_url, model=model,
+                state=state, db=db, session_id=session_id,
+                llm_logger=llm_logger,
+                plan_cycle=plan_cycle, observed_keypoints=observed_keypoints,
+                emit_fn=_emit, llm_status_fn=llm_status,
+                case_profile_str=case_profile_str,
+            )
+        remaining_cycles = max(1, max_iter - plan_cycle + 1)
+        focus_max = max(2, (len(state.active_hypotheses) + remaining_cycles - 1) // remaining_cycles)
+        focus_hypotheses = _select_focus_hypotheses(state, max_items=focus_max)
         for hypothesis in focus_hypotheses:
             if ctx.interrupted:
                 break
@@ -1513,8 +1835,9 @@ async def _run_cycle_body(
                 base_url=base_url, model=model, plan_cycle=plan_cycle,
                 llm_logger=llm_logger, session_id=session_id,
                 max_queries_per_hypothesis=max_queries_per_hypothesis, case=case,
-                query_limit=max(max_queries_per_hypothesis, 10),
+                query_limit=max_queries_per_hypothesis,
                 emit_fn=_emit, llm_status_fn=llm_status,
+                case_profile_str=case_profile_str,
             )
             if progress:
                 cycle_progress = True
@@ -1599,7 +1922,7 @@ def _check_termination(
 
 def _init_session(
     case: Case, db: CaseDB, profile: str, base_url: str, model: str,
-    template_root: Path | None,
+    template_root: Path | None, active_pack_ids: set[str] | None = None,
 ) -> tuple["SessionState", "_Ctx", "MemoryManager", "LLMCallLogger", str, datetime, Path]:
     """Initialize a new investigation session. Returns (state, ctx, memory, llm_logger, session_id, started_at, template_root)."""
     session_id = f"session-{uuid4().hex[:12]}"
@@ -1609,7 +1932,7 @@ def _init_session(
     if template_root is None:
         case.ensure_report_templates()
         template_root = case.report_template_dir
-    _seed_findings(case, db, profile)
+    _seed_findings(case, db, profile, active_pack_ids=active_pack_ids)
     _initialize_overview(memory, case, profile_config)
     _ensure_profile_objective(memory, profile_config)
     llm_logger = LLMCallLogger(case, session_id)
@@ -1618,6 +1941,7 @@ def _init_session(
         session_id=session_id, iteration=0, findings_snapshot=_finding_snapshot(db),
         active_hypotheses=active_hypotheses, resolved_hypotheses=resolved_hypotheses,
     )
+    _seed_rule_hypotheses(db, state, session_id, active_pack_ids=active_pack_ids)
     _sync_keypoint_cards(memory, state.findings_snapshot)
     _sync_hypothesis_cards(memory, state.active_hypotheses, state.resolved_hypotheses)
     ctx = _Ctx(report_status=_build_report_status(db))
@@ -1644,12 +1968,28 @@ async def investigate(
     template_root: Path | None = None,
     report_max_queries_per_section: int = 3,
     max_llm_calls: int = 200,
+    auto_rulepacks: bool = True,
 ) -> dict[str, Any]:
     """Run the full investigation loop: broad plan → hypothesis loop → report refresh, with termination checks and LLM budget enforcement."""
+    profile_path = Path(__file__).parent.parent / "profiles" / f"{profile}.yaml"
+    active_pack_ids = resolve_active_packs(profile_path if profile_path.exists() else None, db, auto_rulepacks=auto_rulepacks)
+    if auto_rulepacks and active_pack_ids:
+        expected = set()
+        if profile_path.exists():
+            import yaml
+            profile_data = yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
+            expected = set(profile_data.get("rulepacks") or [])
+        auto_enabled = active_pack_ids - expected
+        if auto_enabled:
+            _log("PLAN", f"auto-rulepacks enabled: {sorted(auto_enabled)} (detected families trigger pack activation)")
     state, ctx, memory, llm_logger, session_id, started_at, template_root = _init_session(
-        case, db, profile, base_url, model, template_root,
+        case, db, profile, base_url, model, template_root, active_pack_ids=active_pack_ids if auto_rulepacks else None,
     )
     case.extract_time_range(db.conn)
+    case_profile_dict = build_case_profile(db)
+    case_profile_str = _format_case_profile(case_profile_dict)
+    profile_event_ids = {e["event_id"] for e in case_profile_dict.get("event_ids", []) if isinstance(e.get("event_id"), int)}
+    set_case_profile(case_profile_str, profile_event_ids)
     status = "running"
     no_progress_count = 0
     previous_sigint = signal.getsignal(signal.SIGINT)
@@ -1667,7 +2007,6 @@ async def investigate(
         for plan_cycle in range(1, max_iter + 1):
             _check_llm_budget()
             state.iteration = plan_cycle
-            state.iteration = plan_cycle
             state.findings_snapshot = _finding_snapshot(db)
             _sync_keypoint_cards(memory, state.findings_snapshot)
             _log("PLAN", f"Cycle {plan_cycle}/{max_iter} — broad planning (active={len(state.active_hypotheses)} resolved={len(state.resolved_hypotheses)})")
@@ -1679,7 +2018,8 @@ async def investigate(
                 base_url=base_url, model=model, memory=memory, llm_logger=llm_logger,
                 progress_callback=progress_callback,
                 max_queries_per_hypothesis=max_queries_per_hypothesis,
-                plan_cycle=plan_cycle, report_only=report_only,
+                plan_cycle=plan_cycle, max_iter=max_iter, report_only=report_only,
+                case_profile_str=case_profile_str,
             )
             if ctx.interrupted:
                 status = "stopped"
@@ -1694,6 +2034,7 @@ async def investigate(
             )
             ctx.report_status = report_after
             cycle_progress = cycle_progress or report_cycle_progress
+            memory.regenerate_timeline_from_db(db)
             terminal_status, no_progress_count = _check_termination(
                 report_only=report_only, broad_plan_stop=broad_plan_stop,
                 active_hypotheses=state.active_hypotheses, db=db,
@@ -1709,7 +2050,9 @@ async def investigate(
         status = "failed"
         raise
     finally:
+        memory.regenerate_timeline_from_db(db)
         signal.signal(signal.SIGINT, previous_sigint)
+        llm_logger.write_summary()
         finished_at = datetime.now(UTC).replace(tzinfo=None)
         db.execute(
             "UPDATE investigation_sessions SET finished_at = ?, iterations = ?, status = ? WHERE session_id = ?",

@@ -17,11 +17,14 @@ forensia が扱う永続データの定義。3 つの層に分かれている。
 | テーブル | 役割 | 主な列 |
 |---|---|---|
 | `evtx_events` | 正規化済 Windows イベント | `evidence_id`, `timestamp`, `computer`, `event_id`, `channel`, `user_name`, `target_user`, `subject_user`, `src_ip`, `logon_type`, `process_name`, `command_line`, `service_name`, `raw_json` |
-| `mft_entries` | NTFS ファイル単位の MFT レコード | `evidence_id`, `record_number`, `file_path`, `file_name`, `extension`, `is_deleted`, `size`, `si_created`, `si_modified`, `si_accessed`, `fn_created`, `fn_modified`, `fn_accessed` |
+| `mft_entries` | NTFS ファイル単位の MFT レコード | `evidence_id`, `record_number`, `file_path`, `file_name`, `fn_name`, `extension`, `is_deleted`, `size`, `si_created`, `si_modified`, `si_accessed`, `fn_created`, `fn_modified`, `fn_accessed` |
 | `mft_timeline` | MFT エントリを timestamp_type で展開 | `timeline_id`, `evidence_id`, `record_number`, `file_path`, `timestamp`, `timestamp_type`, `description` |
 | `prefetch_executions` | Prefetch 集約 (binary ごとに最新を 1 件) | `evidence_id`, `executable_name`, `exec_count`, `last_exec_time`, `prefetch_hash`, `filenames`, `volumes`, `raw_json` |
 | `prefetch_timeline` | Prefetch 実行履歴 (binary × 8 件まで) | `timeline_id`, `evidence_id`, `executable_name`, `prefetch_hash`, `exec_time`, `exec_index` |
 | `ingested_files` | ingest 重複防止用のハッシュ表 | `path`, `hash`, `source_kind`, `ingested_at` |
+| `case_timeline` | 決定論的タイムライン (R2-11) | `entry_id`, `timestamp`, `source` (`finding`/`verdict`/`structured`/`keypoint`), `ref_id`, `host`, `summary`, `evidence_id` |
+
+`case_timeline` は 3 つの決定論的 feeder で挿入される: (a) severity ≥ medium の findings の初証拠タイムスタンプ (`feed_findings_to_timeline` [engine.py:196](../src/forensia/rules/engine.py#L196))、(b) resolved hypothesis の decisive query row、(c) `question_routing.yaml` で `timeline: true` と宣言された structured answer の該当行。
 
 `evidence_id` は全テーブル横断の証拠識別子。命名規則:
 - EVTX: `evtx-<channel>-<sequence>` (例: `evtx-security-000000001166`)
@@ -37,7 +40,7 @@ forensia が扱う永続データの定義。3 つの層に分かれている。
 | テーブル | 役割 | 主な列 |
 |---|---|---|
 | `findings` | ルール検知の結果 | `finding_id`, `rule_id`, `title`, `summary`, `severity`, `confidence`, `status` (`new`/`accepted`/`suppressed`), `tags`, `attack`, `evidence`, `ai_summary`, `missing_checks`, `created_at` |
-| `hypotheses` | 投資調査の仮説 | `hypothesis_id`, `description`, `status` (`active`/`resolved`), `verdict` (`confirmed`/`refuted`/`inconclusive`), `summary`, `origin`, `created_session`, `resolved_session`, `confidence` |
+| `hypotheses` | 投資調査の仮説 | `hypothesis_id`, `description`, `status` (`active`/`resolved`), `verdict` (`confirmed`/`refuted`/`inconclusive`/`untestable`), `summary`, `origin`, `created_session`, `resolved_session`, `confidence`, `source_rule_ids`, `source_decl_id`, `required_entities`, `confirm_when` |
 | `hypothesis_reasoning` | 仮説検証の reasoning 履歴 | `entry_id`, `hypothesis_id`, `session_id`, `iteration`, `phase` (`plan`/`do`/`check`/`act`/`memo`), `verdict`, `query_id`, `body`, `created_at` |
 
 `findings.attack` は JSON 文字列で、`[{tactic, technique_id, technique_name}]` 形式。`list_attack_coverage_dto` ([src/forensia/api/service.py:716-](../src/forensia/api/service.py#L716)) で tactic × technique マトリックスに集計される。

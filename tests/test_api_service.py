@@ -63,7 +63,7 @@ _REASON_COLS = [
     "verdict", "query_id", "body", "created_at",
 ]
 _REASON_WITH_COLS = _REASON_COLS + ["reasoning_count", "latest_iteration"]
-_STATS_COLS = ["evtx_rows", "mft_entries", "channel_count"]
+_STATS_COLS = ["evtx_rows", "mft_entries", "channel_count", "host_count"]
 _FINDINGS_STATS_COLS = ["findings_accepted", "findings_suppressed"]
 
 
@@ -103,7 +103,7 @@ class TestGetCaseStatsDto(unittest.TestCase):
     def test_returns_stats_dto(self):
         db = MagicMock(spec=CaseDB)
         db.execute.side_effect = [
-            _make_mock_result(_STATS_COLS, [(100, 50, 5)]),
+            _make_mock_result(_STATS_COLS, [(100, 50, 5, 3)]),
             _make_mock_result(_FINDINGS_STATS_COLS, [(30, 2)]),
             _make_mock_result(["active_hypotheses", "resolved_hypotheses"], [(10, 5)]),
             _make_mock_result(["open_gaps", "report_human_reviewed", "report_ai_exhausted"], [(3, 1, 0)]),
@@ -114,6 +114,7 @@ class TestGetCaseStatsDto(unittest.TestCase):
         self.assertEqual(result.evtx_rows, 100)
         self.assertEqual(result.mft_entries, 50)
         self.assertEqual(result.channel_count, 5)
+        self.assertEqual(result.host_count, 3)
         self.assertEqual(result.findings_accepted, 30)
         self.assertEqual(result.findings_suppressed, 2)
         self.assertEqual(result.active_hypotheses, 10)
@@ -127,7 +128,7 @@ class TestGetCaseStatsDto(unittest.TestCase):
     def test_returns_zeroes_when_db_returns_none(self):
         db = MagicMock(spec=CaseDB)
         db.execute.side_effect = [
-            _make_mock_result(_STATS_COLS, [(None, None, None)]),
+            _make_mock_result(_STATS_COLS, [(None, None, None, None)]),
             _make_mock_result(_FINDINGS_STATS_COLS, [(None, None)]),
             _make_mock_result(["active_hypotheses", "resolved_hypotheses"], [(None, None)]),
             _make_mock_result(["open_gaps", "report_human_reviewed", "report_ai_exhausted"], [(None, None, None)]),
@@ -137,6 +138,7 @@ class TestGetCaseStatsDto(unittest.TestCase):
         self.assertEqual(result.evtx_rows, 0)
         self.assertEqual(result.mft_entries, 0)
         self.assertEqual(result.channel_count, 0)
+        self.assertEqual(result.host_count, 0)
         self.assertEqual(result.open_gaps, 0)
         self.assertEqual(result.sessions, 0)
         self.assertEqual(result.total_iterations, 0)

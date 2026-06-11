@@ -5,7 +5,10 @@ behaviors:
 # Activity Timeline
 
 ## Log Integrity
-<!-- Any evidence of log clearing, tampering, or gaps in coverage -->
+<!-- mode: narrative; Evaluate log coverage and integrity issues -->
+
+## Phase Summary
+<!-- mode: table; builder: timeline_phase_summary -->
 
 ## Chronological Events
-<!-- Key events in timeline order with attack lifecycle stages noted -->
+<!-- mode: table; builder: timeline_chronological -->

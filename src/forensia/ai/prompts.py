@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -42,26 +43,34 @@ def _trim_dynamic_content(
     """Trim dynamic (user) message content if total estimated tokens exceed budget.
     
     Strategy: keep system messages intact (they contain the playbook),
-    trim user message content progressively.
+    trim user message content progressively by descending size.
     """
     total_est = sum(_estimate_message_tokens(m.get("content", "")) for m in messages)
     if total_est <= max_total_tokens:
         return messages
     trimmed = list(messages)
-    for msg in trimmed:
-        content = msg.get("content", "")
-        est = _estimate_message_tokens(content)
-        if est > max_total_tokens * system_weight:
-            # Trim user/dynamic content — keep first 60%, drop middle 20%, keep last 20%
-            mid = len(content) // 2
-            quarter = len(content) // 4
-            head = content[:mid + quarter]
-            tail = content[mid - quarter:]
-            dedup = head + "\n...[content trimmed for budget; see full trace in db]...\n" + tail
-            msg["content"] = dedup
-            total_est = sum(_estimate_message_tokens(m.get("content", "")) for m in trimmed)
-            if total_est <= max_total_tokens:
-                break
+    non_system_indices = [
+        i for i, m in enumerate(trimmed)
+        if m.get("role") != "system"
+    ]
+    non_system_indices.sort(
+        key=lambda i: _estimate_message_tokens(trimmed[i].get("content", "")),
+        reverse=True,
+    )
+    for idx in non_system_indices:
+        content = trimmed[idx].get("content", "")
+        if not content:
+            continue
+        length = len(content)
+        head_len = int(length * 0.6)
+        tail_start = int(length * 0.8)
+        head = content[:head_len]
+        tail = content[tail_start:]
+        dedup = head + "\n...[content trimmed for budget; see full trace in db]...\n" + tail
+        trimmed[idx]["content"] = dedup
+        total_est = sum(_estimate_message_tokens(m.get("content", "")) for m in trimmed)
+        if total_est <= max_total_tokens:
+            break
     return trimmed
 
 
@@ -95,6 +104,22 @@ def _time_range_guidance(time_range: dict[str, str] | None = None) -> str:
             "All WHERE clauses on timestamp columns must use values within this range.\n"
         )
     return ""
+
+def _case_profile_guidance(profile_str: str | None = None) -> str:
+    """Return case evidence-availability profile guidance as an XML block, or empty string."""
+    if not profile_str:
+        return ""
+    return (
+        f"<CASE_EVIDENCE_PROFILE>\n"
+        f"{profile_str}\n"
+        f"</CASE_EVIDENCE_PROFILE>\n"
+        f"<RULES>\n"
+        f"confirm_when.co_observed_event_ids MUST be chosen from available_event_ids. "
+        f"If the behavior you want to test has no available event source, design the hypothesis around mft_entries / mft_timeline / prefetch_executions instead.\n"
+        f"Prefer hypotheses that name concrete observed entities (users, hosts, executables, file paths) from the case profile over generic patterns.\n"
+        f"</RULES>"
+    )
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,7 +284,12 @@ def _render_event_narrative(events_data: dict) -> str:
             disallowed = info.get("disallowed_without_extra", [])
             required = info.get("required_fields", [])
             keywords = info.get("keywords_for_string_search", [])
+            channels = info.get("channels", [])
             line_parts = [f"Event {eid_str} ({title})"]
+            if channels:
+                line_parts.append(
+                    f" ONLY meaningful on channel(s): {', '.join(str(c) for c in channels)} — the same ID on other channels is unrelated"
+                )
             if required:
                 line_parts.append(f" always query: {', '.join(required)}")
             if allowed:
@@ -386,15 +416,81 @@ def _render_ioc_catalog_narrative(ioc_data: dict) -> str:
     return "\n".join(parts)
 
 
-@lru_cache(maxsize=8)
-def _dfir_playbook(phase: str) -> str:
+_PLAYBOOK_SECTION_DROP_ORDER = [
+    "ioc",
+    "app",
+    "artifact",
+    "extractor",
+    "fp",
+    "logon",
+    "schema",
+    "events",
+]
+
+
+def _enforce_system_budget(system_str: str, budget_chars: int = 24000) -> str:
+    """Trim system message to fit budget by removing lower-priority sections.
+
+    Applies after the playbook is already budget-constrained; drops additional
+    content (schema cards, cookbook, framework) that was appended after the
+    playbook. Uses section headers as markers for deterministic removal in
+    priority order (last = first to drop).
+    """
+    if len(system_str) <= budget_chars:
+        return system_str
+
+    # Sections appended after the playbook, in priority order (last = first to drop)
+    sections_to_drop = [
+        "<INVESTIGATION_FRAMEWORK>",
+        "<SCHEMA_GUIDANCE>",
+        "## IOC Catalog",
+        "## Artifact-to-Application",
+        "## JSON Field Extractors",
+        "## Application Catalog",
+        "## False-Positive",
+        "## Schema Notes",
+        "## Logon Type Reference",
+        "## Event ID Reference",
+    ]
+
+    text = system_str
+    for marker in sections_to_drop:
+        if len(text) <= budget_chars:
+            break
+        # Remove section from marker to next ## or end
+        pattern = re.compile(rf"\n{re.escape(marker)}.*?(?=\n##|\Z)", re.DOTALL)
+        text = pattern.sub("", text)
+        text = re.sub(r"\n{3,}", "\n\n", text.strip())
+
+    return text
+
+
+def _dfir_playbook(
+    phase: str,
+    *,
+    event_ids: set[int] | None = None,
+    tables: set[str] | None = None,
+) -> str:
     """Generate DFIR investigator playbook narrative for the given phase.
 
     Phase is one of: 'broad_plan', 'hypothesis_plan', 'check', 'report_section',
     'section_agent_plan', 'section_agent_check'.
-    Returns a narrative string (5-10k chars) optimized for weak LLMs.
+
+    Parameters
+    ----------
+    event_ids : optional set of ints
+        If provided, only those event IDs (union of case-present + hypothesis-referenced)
+        are rendered in the Event ID Reference section, capped at 40.
+        When None, all known event IDs are included.
+    tables : optional set of table names
+        If provided, the app/artifact/IOC sections are included only if a relevant
+        table is present in the case. None means include all (current behavior).
+
+    Returns a narrative string optimized for weak LLMs.
     """
     from pathlib import Path
+
+    from forensia.config import get_system_prompt_budget_chars
 
     yamls = _load_dfir_yamls()
 
@@ -407,6 +503,23 @@ def _dfir_playbook(phase: str) -> str:
     app_mappings = yamls["app_catalog"].get("mappings", {}) if isinstance(yamls["app_catalog"], dict) else {}
     artifact_data = yamls["artifact_inference"] if isinstance(yamls["artifact_inference"], dict) else {}
     ioc_data = yamls["dfir_ioc_catalog"] if isinstance(yamls["dfir_ioc_catalog"], dict) else {}
+
+    # -- Event-ID narrative filtering --
+    if event_ids is not None and isinstance(events_data, dict):
+        def _eid_sort_key(k: Any) -> int:
+            if isinstance(k, str) and k.isdigit():
+                return int(k)
+            if isinstance(k, (int, float)):
+                return int(k)
+            return 0
+        filtered: dict[str | int, Any] = {}
+        for eid_key in sorted(events_data, key=_eid_sort_key):
+            eid_val = int(eid_key) if isinstance(eid_key, str) else int(eid_key)
+            if eid_val in event_ids:
+                filtered[eid_key] = events_data[eid_key]
+                if len(filtered) >= 40:
+                    break
+        events_data = filtered
 
     event_narrative = _render_event_narrative(events_data)
     logon_narrative = _render_logon_narrative(logon_types_data)
@@ -424,55 +537,57 @@ def _dfir_playbook(phase: str) -> str:
     planning_phases = {"broad_plan", "hypothesis_plan"}
     interpretation_phases = {"check", "report_section", "section_agent_check"}
     include_fp = phase in interpretation_phases
-    include_app_catalog = phase not in planning_phases  # planners don't interpret process names
+    include_app_catalog = phase not in planning_phases
     include_artifact_inference = phase in interpretation_phases
     include_ioc_catalog = phase in (interpretation_phases | {"section_agent_plan"})
 
-    sections = [
-        "<DFIR_PLAYBOOK>",
-        "You are a DFIR analyst. Follow these investigation principles.",
-        "",
-        "## Event ID Reference",
-        event_narrative or "No event ID reference available.",
-        "",
-        "## Logon Type Reference",
-        logon_narrative or "No logon type reference available.",
-        "",
-        "## Priority Investigation Order",
-        priority_narrative or "No priority order specified.",
-        "",
-        "## Schema Notes & Column Guidance",
-        schema_narrative or "No schema notes available.",
-        "",
-        "## JSON Field Extractors (when columns are NULL)",
-        extractor_narrative or "No extractors available.",
+    # -- Table-scoped gating --
+    has_mft_or_prefetch = tables is None or bool(
+        tables & {"mft_entries", "mft_timeline", "prefetch_executions", "prefetch_timeline"}
+    )
+    has_evtx = tables is None or "evtx_events" in tables
+    if tables is not None:
+        include_app_catalog = include_app_catalog and has_evtx
+        include_artifact_inference = include_artifact_inference and has_mft_or_prefetch
+        include_ioc_catalog = include_ioc_catalog and has_mft_or_prefetch
+
+    # Build section entries as (key, rendered_text) for budget enforcement
+    section_entries: list[tuple[str, str]] = [
+        ("preamble", "<DFIR_PLAYBOOK>\nYou are a DFIR analyst. Follow these investigation principles."),
+        ("events", f"## Event ID Reference\n{event_narrative or 'No event ID reference available.'}"),
+        ("logon", f"## Logon Type Reference\n{logon_narrative or 'No logon type reference available.'}"),
+        ("priority", f"## Priority Investigation Order\n{priority_narrative or 'No priority order specified.'}"),
+        ("schema", f"## Schema Notes & Column Guidance\n{schema_narrative or 'No schema notes available.'}"),
+        ("extractor", f"## JSON Field Extractors (when columns are NULL)\n{extractor_narrative or 'No extractors available.'}"),
     ]
     if include_fp:
-        sections.extend([
-            "",
-            "## False-Positive Reduction Guidance",
-            fp_narrative or "No FP reduction guidance.",
-        ])
+        section_entries.append(("fp", f"## False-Positive Reduction Guidance\n{fp_narrative or 'No FP reduction guidance.'}"))
     if include_app_catalog:
-        sections.extend([
-            "",
-            "## Application Catalog (process categorization)",
-            app_narrative or "No app catalog available.",
-        ])
+        section_entries.append(("app", f"## Application Catalog (process categorization)\n{app_narrative or 'No app catalog available.'}"))
     if include_artifact_inference:
-        sections.extend([
-            "",
-            "## Artifact-to-Application Inference",
-            artifact_narrative or "No artifact inference data available.",
-        ])
+        section_entries.append(("artifact", f"## Artifact-to-Application Inference\n{artifact_narrative or 'No artifact inference data available.'}"))
     if include_ioc_catalog:
-        sections.extend([
-            "",
-            "## IOC Catalog",
-            ioc_narrative or "No IOC catalog available.",
-        ])
-    base_playbook = "\n".join(sections) + "\n"
-    # Phase-specific playbook loaded from external MD file
+        section_entries.append(("ioc", f"## IOC Catalog\n{ioc_narrative or 'No IOC catalog available.'}"))
+
+    base_playbook = "\n".join(text for _, text in section_entries) + "\n"
+
+    # -- Budget enforcement: drop sections in priority order until under budget --
+    budget = get_system_prompt_budget_chars()
+    dropped: list[str] = []
+    if len(base_playbook) > budget:
+        for key in _PLAYBOOK_SECTION_DROP_ORDER:
+            if len(base_playbook) <= budget:
+                break
+            section_entries = [(k, v) for k, v in section_entries if k != key]
+            base_playbook = "\n".join(text for _, text in section_entries) + "\n"
+            dropped.append(key)
+        if dropped:
+            logging.info(
+                "[_dfir_playbook] phase=%s budget=%d exceeded (%d chars), dropped: %s",
+                phase, budget, len(base_playbook), dropped,
+            )
+
+    # -- Phase-specific playbook loaded from external MD file --
     playbook_dir = Path(__file__).parent.parent / "rulepacks" / "_schema" / "playbook"
     phase_file = playbook_dir / f"{phase}.md"
     phase_narrative = ""
@@ -487,7 +602,15 @@ def _dfir_playbook(phase: str) -> str:
         phase_narrative,
         flags=re.DOTALL,
     )
-    return base_playbook + phase_narrative
+    result = base_playbook + phase_narrative
+
+    # -- Telemetry --
+    section_sizes = {k: len(v) for k, v in section_entries}
+    logging.debug(
+        "[_dfir_playbook] phase=%s total=%d chars, sections=%s, dropped=%s",
+        phase, len(result), section_sizes, dropped,
+    )
+    return result
 
 
 def _load_event_id_hints() -> dict[int, dict[str, Any]]:
@@ -515,6 +638,17 @@ def _load_event_id_hints() -> dict[int, dict[str, Any]]:
         if isinstance(value, dict):
             events[event_id] = value
     return events
+
+
+@lru_cache(maxsize=1)
+def _load_benign_context_rules() -> list[dict[str, Any]]:
+    """Load benign-context rules from false_positive_rules.yaml with caching."""
+    yamls = _load_dfir_yamls()
+    fp_rules = yamls.get("fp_rules", {})
+    if isinstance(fp_rules, dict):
+        rules = fp_rules.get("benign_context_rules") or []
+        return list(rules) if isinstance(rules, list) else []
+    return []
 
 
 def _lang_instruction() -> str:
@@ -858,15 +992,23 @@ def build_query_intent_messages(
     schema_context: str = "",
     extra_context_md: str = "",
     prior_check_feedback: str = "",
+    case_profile: str | None = None,
 ) -> list[dict[str, str]]:
     """Build messages for the query_intent_planner phase.
     
     Decides WHAT data to fetch for this hypothesis, not HOW.
     Uses read_more expansion for memory context.
     """
+    from forensia.ai.case_profile import get_profile_event_ids
+    _pb_ids: set[int] | None = get_profile_event_ids()
+    if _pb_ids is not None and hasattr(hypothesis, 'confirm_when') and isinstance(hypothesis.confirm_when, dict):
+        extra = hypothesis.confirm_when.get("co_observed_event_ids", [])
+        if extra:
+            _pb_ids.update(int(e) for e in extra if e is not None)
     system = (
-        f"{_dfir_playbook('hypothesis_plan')}\n"
+        f"{_dfir_playbook('hypothesis_plan', event_ids=_pb_ids)}\n"
         f"{_time_range_guidance(time_range)}"
+        f"{_case_profile_guidance(case_profile)}"
         "<TASK>You are a query_intent_planner. Decide WHAT data to fetch for the given hypothesis. Do NOT write SQL.</TASK>\n"
         "<INPUT_SCHEMA>\n"
         f"hypothesis: {hypothesis.model_dump() if hasattr(hypothesis, 'model_dump') else hypothesis}\n"
@@ -911,8 +1053,9 @@ def build_sql_composer_messages(
     Produces a valid DuckDB SELECT statement that satisfies `intent`.
     Idempotent — no read_more cycle needed.
     """
+    from forensia.ai.case_profile import get_profile_event_ids
     system = (
-        f"{_dfir_playbook('hypothesis_plan')}\n"
+        f"{_dfir_playbook('hypothesis_plan', event_ids=get_profile_event_ids())}\n"
         f"{_time_range_guidance(time_range)}"
         "<TASK>You are a sql_composer. Write a DuckDB SQL query that satisfies the given intent. Output template_id or raw SQL.</TASK>\n"
         "<INPUT_SCHEMA>\n"
@@ -989,13 +1132,59 @@ def build_verdict_review_messages(
     result_summary: dict,
     time_range: dict[str, str] | None = None,
     strictness_note: str = "",
+    fallback_info: dict | None = None,
+    benign_annotations: dict[int, list[str]] | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
     """role: verdict_reviewer.
     Goal: classify the SQL result vs hypothesis as confirmed/refuted/inconclusive.
     Output JSON: {verdict, rationale, confidence}
     """
+    fallback_notice = ""
+    if fallback_info:
+        phase = fallback_info.get("phase", "unknown")
+        fallback_notice = (
+            "\nFALLBACK_NOTICE: the rows below were NOT returned by the planned query; "
+            f"they come from a fallback search ({phase}). They may belong to a different "
+            "event family. You may NOT answer 'confirmed' for the original hypothesis "
+            "from fallback rows; choose 'newlead' if they suggest a different lead, "
+            "otherwise 'inconclusive'.\n"
+        )
+
+    benign_notes_block = ""
+    if benign_annotations:
+        benign_rules = _load_benign_context_rules()
+        rule_notes = {r["id"]: r.get("note", "") for r in benign_rules if isinstance(r, dict)}
+        benign_lines: list[str] = []
+        for row_idx in sorted(benign_annotations.keys())[:3]:
+            rule_ids = benign_annotations[row_idx]
+            notes = [rule_notes.get(rid, rid) for rid in rule_ids]
+            benign_lines.append(f"  Row {row_idx}: {'; '.join(notes)}")
+        if benign_lines:
+            benign_notes_block = (
+                "\nBenign-context notes for relevant evidence rows:\n"
+                + "\n".join(benign_lines)
+                + "\n"
+            )
+
+    from forensia.ai.case_profile import get_profile_event_ids
+    _pb_ids: set[int] | None = get_profile_event_ids()
+    if _pb_ids is not None:
+        if hasattr(hypothesis, 'confirm_when') and isinstance(hypothesis.confirm_when, dict):
+            extra = hypothesis.confirm_when.get("co_observed_event_ids", [])
+            if extra:
+                _pb_ids.update(int(e) for e in extra if e is not None)
+        for row in ((result_summary or {}).get("sample_rows") or []):
+            if not isinstance(row, dict):
+                continue
+            ev = row.get("event_id")
+            if ev is not None:
+                try:
+                    _pb_ids.add(int(ev))
+                except (TypeError, ValueError):
+                    pass
+
     system = (
-        f"{_dfir_playbook('check')}\n"
+        f"{_dfir_playbook('check', event_ids=_pb_ids)}\n"
         f"{_time_range_guidance(time_range)}"
         "<TASK>You are a verdict_reviewer. Classify the SQL result against the hypothesis as confirmed, refuted, or inconclusive.</TASK>\n"
         "<OUTPUT_SCHEMA>\n"
@@ -1007,6 +1196,7 @@ def build_verdict_review_messages(
         "}\n"
         "</OUTPUT_SCHEMA>\n"
         "<RULES>\n"
+        f"{fallback_notice}"
         "When verdict=inconclusive, missing_questions MUST contain at least 1 specific item naming the missing evidence (e.g. 'event_id 4663', 'mft_entries WHERE file_path LIKE %.docx%', 'browser executable in prefetch_executions'). Do NOT leave it empty.\n"
         "</RULES>"
     )
@@ -1015,6 +1205,7 @@ def build_verdict_review_messages(
         f"query: {planned_query.sql if hasattr(planned_query, 'sql') else planned_query}\n"
         f"result_summary: {json.dumps(result_summary, ensure_ascii=False, default=str)}\n"
         f"{strictness_note}"
+        f"{benign_notes_block}"
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}], VERDICT_REVIEW_SCHEMA
 
@@ -1031,9 +1222,15 @@ def build_finding_extractor_messages(
         "<TASK>You are a finding_extractor. Extract findings from the confirmed query results. Only output findings if the evidence clearly supports a specific security event.</TASK>\n"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
-        '  "findings": [{"title": "string", "severity": "low|medium|high|critical", "evidence_ids": ["str"]}]\n'
+        '  "findings": [{"title": "string", "severity": "low|medium|high|critical", "evidence_ids": ["str"], "claim_type": "observation|interpretation"}]\n'
         "}\n"
-        "</OUTPUT_SCHEMA>"
+        "</OUTPUT_SCHEMA>\n"
+        "<RULES>\n"
+        "Each finding MUST be labeled claim_type.\n"
+        "observation: states only what the rows show (who/what/when/where).\n"
+        "interpretation: states what it might mean (attack, staging, exfiltration...).\n"
+        "An interpretation MUST reference at least one observation finding in its text.\n"
+        "</RULES>"
     )
     user = (
         f"hypothesis: {hypothesis.description if hasattr(hypothesis, 'description') else hypothesis}\n"
@@ -1047,16 +1244,25 @@ def build_finding_extractor_messages(
 def build_memory_updater_messages(
     hypothesis, verdict: str, rationale: str,
     time_range: dict[str, str] | None = None,
+    result_summary: dict | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
     """role: memory_updater.
     Goal: propose durable memory writes (facts, timeline anchors, entity cards, etc.).
     """
+    evidence_block = ""
+    if result_summary:
+        evidence_block = (
+            f"\nevidence_rows: {json.dumps(result_summary.get('sample_rows') or [], default=str, ensure_ascii=False)[:3000]}\n"
+            f"observed_evidence_ids: {result_summary.get('evidence_ids')}\n"
+        )
+
     system = (
+        f"{_time_range_guidance(time_range)}"
         "<TASK>You are a memory_updater. Propose durable memory writes based on the investigation result.</TASK>\n"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
         '  "memory_updates": {\n'
-        '    "facts": [{"text": "string", "evidence_ids": ["evtx-...", "mft-..."]}],\n'
+        '    "facts": [{"text": "string", "evidence_ids": ["evtx-...", "mft-..."], "claim_type": "observation|interpretation"}],\n'
         '    "timeline": [{"timestamp": "ISO 8601", "description": "string", "evidence_ids": ["..."]}],\n'
         '    "tasks": [{"text": "string", "kind": "followup | verification | gap"}],\n'
         '    "overview": ["short single-line summary"],\n'
@@ -1069,7 +1275,12 @@ def build_memory_updater_messages(
         "</OUTPUT_SCHEMA>\n"
         "<RULES>\n"
         "Omit any sub-key whose array would be empty — never emit empty arrays. Every fact/timeline/resolved_gap entry MUST cite at least one evidence_id observed in the SQL result; entries without evidence_ids are dropped.\n"
+        "Each fact MUST be labeled claim_type.\n"
+        "observation: states only what the rows show (who/what/when/where).\n"
+        "interpretation: states what it might mean (attack, staging, exfiltration...).\n"
+        "An interpretation MUST reference at least one observation fact in its text.\n"
         "ALWAYS register an `entities` entry for every distinct user, host, IP, process, or service that the verdict rationale attributes a role to — this is what populates the Top Entities panel. Use the entity_type / role enums above; freeform values are dropped.\n"
+        "Use ONLY evidence_ids from observed_evidence_ids. Use ONLY entity names that literally appear as values in evidence_rows (user_name, target_user, computer, src_ip, process_name, service_name, executable_name, file_name, file_path). Never invent descriptive names like 'Source IP Address'.\n"
         "Examples (entity shapes only):\n"
         '  {"entity_type": "user", "name": "alice", "role": "victim", "notes": "Lost session token after 4624 logon from 10.0.0.5 at 03:14 UTC."}\n'
         '  {"entity_type": "host", "name": "WIN10-DC01", "role": "actor_candidate", "notes": "Source of repeated 4625 failures then a successful 4624 logon within 5 minutes."}\n'
@@ -1080,6 +1291,7 @@ def build_memory_updater_messages(
         f"hypothesis: {hypothesis.description if hasattr(hypothesis, 'description') else hypothesis}\n"
         f"verdict: {verdict}\n"
         f"rationale: {rationale}\n"
+        f"{evidence_block}"
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}], MEMORY_UPDATER_SCHEMA
 
@@ -1152,6 +1364,7 @@ def build_report_section_messages(
     verification_notes: list[str] | None = None,
     raw_evidence_rows: list[dict[str, Any]] | None = None,
     time_range: dict[str, str] | None = None,
+    structured_digest: str | None = None,
 ) -> list[dict[str, str]]:
     """Build messages for report section writing with evidence and template context."""
 
@@ -1166,8 +1379,23 @@ def build_report_section_messages(
         strength = "source_verdict guidance: Every supplied evidence result is below confirmed. Use cautious language only; avoid 'confirmed', 'executed', 'compromised', 'attack succeeded', or equivalent strong assertions unless additional evidence explicitly supports them.\n"
     app_cat = ", ".join(f"{e}={i.get('category','?')}" for e, i in _load_app_catalog().get("mappings",{}).items()) or "see investigation framework"
 
+    from forensia.ai.case_profile import get_profile_event_ids
+    _pb_ids: set[int] | None = get_profile_event_ids()
+    if _pb_ids is not None:
+        collected = _collect_event_ids(evidence_results)
+        if collected:
+            _pb_ids.update(collected)
+    exec_rules = ""
+    if structured_digest:
+        exec_rules = (
+            "Write what the evidence shows, not instructions to the reader.\n"
+            "Lead with the 2-3 strongest observations (with dates and counts) from "
+            "STRUCTURED_OBSERVATIONS and confirmed findings. One sentence on open questions.\n"
+            'Do not use phrases like "需要确认/確認する必要があります/should be verified" more than once.\n'
+        )
+    digest_block = f"\n{structured_digest}\n" if structured_digest else ""
     system = (
-        f"{_dfir_playbook('report_section')}\n{_time_range_guidance(time_range)}"
+        f"{_dfir_playbook('report_section', event_ids=_pb_ids)}\n{_time_range_guidance(time_range)}"
         "<TASK>You are a DFIR report writer. Fill the provided Markdown section template using only supplied evidence.</TASK>\n"
         "<INPUT_SCHEMA>section_meta, evidence_results, previous_sections, template_body</INPUT_SCHEMA>\n"
         "<RULES>\nconfidence_matrix: confidence >= 0.8 => 'confirmed'/'observed'; confidence >= 0.5 => 'strongly suggests'; confidence < 0.5 => 'requires further investigation'.\n"
@@ -1177,8 +1405,9 @@ def build_report_section_messages(
         "no_causation: Correlation is not proof of causation.\n"
         "confirmed_hypotheses: Reflect in appropriate sections; refuted_hypotheses only in 'Discarded Hypotheses' subsection.\n"
         "Recommended actions must scale with evidence strength.\n"
-        f"app_categories: {app_cat}\n{_format_artifact_inference()}{_build_event_id_guidance(evidence_results)}{strength}</RULES>\n"
+        f"app_categories: {app_cat}\n{_format_artifact_inference()}{_build_event_id_guidance(evidence_results)}{strength}{exec_rules}</RULES>\n"
         f"{_section_evidence_block(raw_evidence_rows)}{cov or ''}"
+        f"{digest_block}"
         '<EXAMPLE verdict="report_section">\nInput: section_meta={\'section\': \'3_technical\'}, evidence_results=[{\'sample_rows\': [{\'evidence_id\': \'E1\', \'process_name\': \'powershell.exe\'}]}]\nOutput: "## Process Execution\\n\\nOne suspicious process was observed: powershell.exe (evidence_id: E1)."\n</EXAMPLE>\n'
         f"Output Markdown only (no fences). {_lang_instruction()}"
     )
@@ -1212,24 +1441,29 @@ def _load_question_routing_raw() -> dict[str, Any]:
 
 
 def _format_artifact_inference() -> str:
-    return (
-        "\nKnown artifact-to-application inferences:\n"
-        "- *.ost, *.pst files → Microsoft Outlook (almost certainly — no other app uses .ost)\n"
-        "- %LocalAppData%/Google/Drive/sync_config.db → Google Drive\n"
-        "- %LocalAppData%/Google/Drive/snapshot.db → Google Drive\n"
-        "- %LocalAppData%/Apple Computer/iCloud/ → Apple iCloud\n"
-        "- %LocalAppData%/Microsoft/OneDrive/ → Microsoft OneDrive\n"
-        "- %AppData%/Dropbox/config.dbx → Dropbox\n"
-        "- Eraser.exe → Eraser antiforensic tool\n"
-        "- ccsetup*.exe → CCleaner\n"
-        "- bleachbit.exe → BleachBit\n"
-        "- privazer*.exe → PrivaZer\n"
-        "- sdelete.exe → SDelete\n"
-        "- chrome.exe → Google Chrome\n"
-        "- iexplore.exe → Microsoft Internet Explorer\n"
-        "- firefox.exe → Mozilla Firefox\n"
-        "- msedge.exe → Microsoft Edge\n"
-    )
+    """Generate artifact inference text from YAML schema files."""
+    yamls = _load_dfir_yamls()
+    artifact_inference = yamls.get("artifact_inference", {})
+    if not isinstance(artifact_inference, dict):
+        return "\nKnown artifact-to-application inferences:\n- (no artifact inference data loaded)\n"
+    lines = ["\nKnown artifact-to-application inferences:"]
+    for artifact_type, entries in artifact_inference.items():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            pattern = entry.get("pattern", "")
+            app = entry.get("app_name", "")
+            if pattern and app:
+                notes = entry.get("notes", "")
+                line = f"- {pattern} → {app}"
+                if notes:
+                    line += f" — {notes}"
+                lines.append(line)
+    if len(lines) == 1:
+        lines.append("- (no artifact inference data loaded)")
+    return "\n".join(lines) + "\n"
 
 
 def build_benchmark_classify_messages(
@@ -1360,8 +1594,19 @@ Output: {"action": "keypoint", "keypoint": "overview_hosts", "purpose": "List ho
     schema_notes = _load_schema_notes()
     schema_notes_block = f"<SCHEMA_NOTES>\n{schema_notes}\n</SCHEMA_NOTES>\n" if schema_notes else ""
 
+    from forensia.ai.case_profile import get_profile_event_ids
+    _sa_ev = get_profile_event_ids()
+    _sa_tables: set[str] | None = None
+    if db is not None:
+        try:
+            _rows = db.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema='main'"
+            ).fetchall()
+            _sa_tables = {str(r[0]) for r in _rows if r[0]}
+        except Exception:
+            pass
     system = (
-        f"{_dfir_playbook('section_agent_plan')}\n"
+        f"{_dfir_playbook('section_agent_plan', event_ids=_sa_ev, tables=_sa_tables)}\n"
         f"{_time_range_guidance(time_range)}"
         "<TASK>You are a DFIR section-planning agent. Decide next evidence-gathering action for report block.</TASK>\n"
         "<INPUT_SCHEMA>section_key, block_heading, template_block, structured_memory_context, findings_snapshot, keypoint_catalog, query_template_catalog, prior_runs</INPUT_SCHEMA>\n"
@@ -1451,8 +1696,23 @@ Input: collected_results empty, template_body='## Malicious Services\\nList mali
 Output: {"verdict": "block_contradicted", "status": "not_found", "rationale": "No service-related evidence found in collected results.", "missing_questions": ["Query for event_id 4697/7045 returned 0 rows earlier"]}
 </EXAMPLE>
 '''
+    from forensia.ai.case_profile import get_profile_event_ids
+    _sac_ids: set[int] | None = get_profile_event_ids()
+    if _sac_ids is not None:
+        for result in (collected_results or []) + [latest_result]:
+            if not isinstance(result, dict):
+                continue
+            for row in (result.get("sample_rows") or []):
+                if not isinstance(row, dict):
+                    continue
+                ev = row.get("event_id")
+                if ev is not None:
+                    try:
+                        _sac_ids.add(int(ev))
+                    except (TypeError, ValueError):
+                        pass
     system = (
-        f"{_dfir_playbook('section_agent_check')}\n"
+        f"{_dfir_playbook('section_agent_check', event_ids=_sac_ids)}\n"
         f"{_time_range_guidance(time_range)}"
         "<TASK>You are a DFIR section-check agent. Judge if collected evidence suffices to write the report block.</TASK>\n"
         "<INPUT_SCHEMA>collected_results, latest_result, reusable_section_facts, reusable_section_evidence, structured_memory_context, template_block</INPUT_SCHEMA>\n"
@@ -1554,6 +1814,7 @@ def build_paragraph_narrate_messages(
     evidence_rows: list[dict],
     template_body: str,
     language: str = "en",
+    structured_digest: str | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
     settings = get_llm_settings()
     language = str(settings.get("output_language", language))
@@ -1561,6 +1822,15 @@ def build_paragraph_narrate_messages(
     Goal: write ONE markdown paragraph for the given heading using the evidence.
     NO access to other sections, NO full report_brief, NO findings list.
     """
+    digest_block = f"\n{structured_digest}\n" if structured_digest else ""
+    exec_summary_rules = ""
+    if structured_digest:
+        exec_summary_rules = (
+            "Write what the evidence shows, not instructions to the reader.\n"
+            "Lead with the 2-3 strongest observations (with dates and counts) from "
+            "STRUCTURED_OBSERVATIONS and confirmed findings. One sentence on open questions.\n"
+            'Do not use phrases like "需要确认/確認する必要があります/should be verified" more than once.\n'
+        )
     system = (
         "<TASK>You are a section_narrator. Write one markdown paragraph for the given heading using the supplied evidence. "
         "Cite evidence_ids inline. Keep the paragraph factual and concise.</TASK>\n"
@@ -1574,7 +1844,9 @@ def build_paragraph_narrate_messages(
         "No meta-statements: write what was observed, not what was reviewed. Avoid 'investigation covered', 'scope included', 'comprehensive review of' style phrasing.\n"
         "Do NOT write `## {heading}` in your output — the heading is prepended by the renderer. Only write paragraph content below the heading.\n"
         "If the status is not_searched or not_found, this function should not be called. If you see such a status, output nothing.\n"
+        f"{exec_summary_rules}"
         "</RULES>\n"
+        f"{digest_block}"
         "<EXAMPLE_GOOD>\n"
         "Eight explicit-credential logon attempts (4648) targeting informant, admin11, and temporary were observed from INFORMANT-PC$ between 14:33 and 15:55 on 2015-03-22 (evtx-security-000000000122, evtx-security-000000000152). All attempts succeeded and produced no subsequent 4624 from the same src_ip, suggesting localhost credential injection rather than network-reused access.\n"
         "</EXAMPLE_GOOD>\n"
@@ -1600,19 +1872,25 @@ def build_gap_identifier_messages(
     active_hypotheses_slim: list[dict],
     time_range: dict[str, str] | None = None,
     status_callback: Callable[[str], None] | None = None,
+    case_profile: str | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
     """role: gap_identifier.
     Goal: identify which uncovered_keypoints lack active hypothesis coverage.
     """
     slim_observed = [{"keypoint": kp.get("keypoint") or kp.get("name", ""), "row_count": kp.get("row_count", 0)} for kp in (observed_keypoints or [])]
     available_keypoint_names = [
-        kp.get("name", "")
-        for kp in (observed_keypoints + uncovered_keypoints)[:30]
-        if kp.get("name")
+        kp.get("name") or kp.get("keypoint", "")
+        for kp in (observed_keypoints + uncovered_keypoints)[:80]
+        if kp.get("name") or kp.get("keypoint")
     ]
+    if not available_keypoint_names and (observed_keypoints or uncovered_keypoints):
+        logging.warning(
+            "gap_identifier: available_keypoint_names empty — check key names: observed has 'keypoint' vs prompt expects 'name'"
+        )
     schema = gap_identifier_schema(available_keypoint_names)
     system = (
         "<TASK>You are a gap_identifier. From available_keypoints, pick the ones that lack active hypothesis coverage.</TASK>\n"
+        f"{_case_profile_guidance(case_profile)}"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
         '  "gap_areas": [{"keypoint_id": "EXACT name from available_keypoints", "why_uncovered": "str", "required_entities": ["snake_case column names"]}]\n'
@@ -1629,9 +1907,9 @@ def build_gap_identifier_messages(
         "</EXAMPLE>"
     )
     user = (
-        f"available_keypoints: {json.dumps([{'name': kp.get('name'), 'description': kp.get('description', '')[:80]} for kp in (observed_keypoints + uncovered_keypoints)[:30]], ensure_ascii=False, default=str)}\n"
-        f"observed_keypoints: {json.dumps(slim_observed[:10], ensure_ascii=False, default=str)}\n"
-        f"uncovered_keypoints: {json.dumps(uncovered_keypoints[:10], ensure_ascii=False, default=str)}\n"
+        f"available_keypoints: {json.dumps([{'name': kp.get('name') or kp.get('keypoint'), 'description': kp.get('description', '')[:80]} for kp in (observed_keypoints + uncovered_keypoints)[:80]], ensure_ascii=False, default=str)}\n"
+        f"observed_keypoints: {json.dumps(slim_observed, ensure_ascii=False, default=str)}\n"
+        f"uncovered_keypoints: {json.dumps(uncovered_keypoints, ensure_ascii=False, default=str)}\n"
         f"active_hypotheses: {json.dumps(active_hypotheses_slim, ensure_ascii=False, default=str)}\n"
     )
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -1646,6 +1924,7 @@ def build_hypothesis_drafter_messages(
     available_rules: list[dict],
     time_range: dict[str, str] | None = None,
     status_callback: Callable[[str], None] | None = None,
+    case_profile: str | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
     """role: hypothesis_drafter.
     Goal: draft ONE hypothesis targeting the given gap_area.
@@ -1653,6 +1932,7 @@ def build_hypothesis_drafter_messages(
     schema = hypothesis_drafter_schema()
     system = (
         "<TASK>You are a hypothesis_drafter. Draft ONE falsifiable hypothesis targeting the given gap_area.</TASK>\n"
+        f"{_case_profile_guidance(case_profile)}"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
         '  "hypothesis": {\n'
@@ -1699,9 +1979,27 @@ def build_hypothesis_drafter_messages(
         "Reason: 4663 requires Object Access auditing (rarely enabled), and 4688 is process creation not \"browser activity\". Better: split into two hypotheses — one tested via 4624 + mft_entries WHERE file_path LIKE patterns, another via 4624 + prefetch_executions filtered to browser executable names.\n"
         "</EXAMPLE_BAD>\n"
     )
+    # T-09: Slim each rule to essential fields only
+    slim_rules: list[dict[str, Any]] = []
+    for rule in available_rules[:5]:
+        if not isinstance(rule, dict):
+            continue
+        slim_hypotheses: list[dict[str, Any]] = []
+        for h in rule.get("hypotheses") or []:
+            if isinstance(h, dict):
+                slim_hypotheses.append({
+                    "description": h.get("description", ""),
+                    "confirm_when": h.get("confirm_when"),
+                })
+        slim_rules.append({
+            "id": rule.get("id", ""),
+            "title": rule.get("title", ""),
+            "tags": rule.get("tags", []),
+            "hypotheses": slim_hypotheses,
+        })
     user = (
         f"gap_area: {json.dumps(gap_area, ensure_ascii=False, default=str)}\n"
-        f"available_rules: {json.dumps(available_rules[:5], ensure_ascii=False, default=str)}\n"
+        f"available_rules: {json.dumps(slim_rules, ensure_ascii=False, default=str)}\n"
     )
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     total_chars = sum(len(m["content"]) for m in messages)

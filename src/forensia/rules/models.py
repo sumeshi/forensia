@@ -35,6 +35,14 @@ class CorrelateEvent(BaseModel):
     rationale: str
 
 
+class RulePackMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    
+    id: str
+    title: str
+    applies_when: dict = Field(default_factory=dict)
+
+
 class Rule(BaseModel):
     model_config = ConfigDict(extra="forbid")
     
@@ -50,6 +58,7 @@ class Rule(BaseModel):
     hypotheses: list[HypothesisDeclaration] = Field(default_factory=list)
     correlate_with: list[CorrelateEvent] = Field(default_factory=list)
     fallback_search: list[dict[str, Any]] = Field(default_factory=list)
+    applies_when: dict | None = None
 
     @model_validator(mode="before")
     @classmethod

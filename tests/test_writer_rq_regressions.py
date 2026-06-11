@@ -14,6 +14,7 @@ from forensia.ai.section_agent import (
     _load_reusable_section_facts,
     _narrate_paragraph_with_retry,
     _question_routing_answer_spec,
+    _structured_digest_from_answers,
     run_section_block_agent,
 )
 from forensia.ai.question_registry import resolve_question_spec
@@ -23,6 +24,8 @@ from forensia.report.writer import (
     _GateCtx,
     _assemble_section_body,
     _check_recommendations_strength,
+    _extract_needed_evidence,
+    _hypothesis_rows,
     build_structured_answer,
     _check_citation_token_no_finding_id,
     _check_hedge_no_citation,
@@ -72,7 +75,7 @@ class WriterRQRegressionTests(unittest.TestCase):
             )
             clear_llm_settings_cache()
 
-        self.assertIn("**Status:** partial", body)
+        self.assertIn("Additional correlation is still needed", body)
         self.assertIn("evtx-security-000000000122", body)
         self.assertGreater(len(body), 120)
 
@@ -195,7 +198,6 @@ class WriterRQRegressionTests(unittest.TestCase):
                 model="m",
                 base_url="http://x",
                 audit_callback=None,
-                status_inner="answered",
             )
         self.assertEqual(2, len(calls), msg="retry was not invoked on empty body")
         self.assertEqual(len(base_messages) + 1, len(calls[1]))
@@ -218,7 +220,6 @@ class WriterRQRegressionTests(unittest.TestCase):
                 model="m",
                 base_url="http://x",
                 audit_callback=None,
-                status_inner="answered",
             )
         self.assertEqual(1, len(calls))
 
@@ -773,3 +774,233 @@ class WriterRQRegressionTests(unittest.TestCase):
             self.assertEqual(["evtx-eventlog-000000000104"], timeline["evidence_ids"])
             self.assertEqual(1, timeline["row_count"])
             self.assertEqual([{"event_id": 104, "count": 1}], gaps["sample_rows"])
+
+    def test_error_reasoning_rows_excluded_from_latest(self) -> None:
+        """R2-05: error-phase reasoning entries must not appear as latest_reasoning."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO hypotheses (
+                        hypothesis_id, status, description, summary, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, now(), now())
+                    """,
+                    ("H-001", "active", "Test hypothesis", "test"),
+                )
+                db.execute(
+                    """
+                    INSERT INTO hypothesis_reasoning (
+                        entry_id, hypothesis_id, session_id, iteration, phase, body, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, now())
+                    """,
+                    ("err-entry", "H-001", "s1", 1, "error", "[internal-error] SQL execution error: Binder Error",),
+                )
+                db.execute(
+                    """
+                    INSERT INTO hypothesis_reasoning (
+                        entry_id, hypothesis_id, session_id, iteration, phase, body, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, now() + INTERVAL '1 minute')
+                    """,
+                    ("normal-entry", "H-001", "s1", 1, "plan", "Checked for logon events",),
+                )
+                rows = _hypothesis_rows(db, "active")
+                self.assertEqual(1, len(rows))
+                self.assertEqual("H-001", rows[0]["hypothesis_id"])
+                self.assertEqual("Checked for logon events", rows[0]["latest_reasoning"])
+                self.assertEqual(2, rows[0]["reasoning_count"])
+
+    def test_extract_needed_evidence_parses_missing_questions(self) -> None:
+        body = json.dumps({"verdict": "inconclusive", "missing_questions": ["event_id 4663", "process creation 4688"]})
+        self.assertEqual("event_id 4663; process creation 4688", _extract_needed_evidence(body))
+
+    def test_extract_needed_evidence_returns_first_two_only(self) -> None:
+        body = json.dumps({"missing_questions": ["a", "b", "c", "d"]})
+        self.assertEqual("a; b", _extract_needed_evidence(body))
+
+    def test_extract_needed_evidence_empty_on_none(self) -> None:
+        self.assertEqual("", _extract_needed_evidence(None))
+        self.assertEqual("", _extract_needed_evidence(""))
+        self.assertEqual("", _extract_needed_evidence("not json"))
+
+    def test_unresolved_resolver_includes_needed_evidence(self) -> None:
+        from forensia.report.writer import REPORT_KEYPOINTS
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO hypotheses (
+                        hypothesis_id, status, description, summary, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, now(), now())
+                    """,
+                    ("H-099", "active", "Suspicious logon pattern detected", "test"),
+                )
+                db.execute(
+                    """
+                    INSERT INTO hypothesis_reasoning (
+                        entry_id, hypothesis_id, session_id, iteration, phase, body, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, now())
+                    """,
+                    (
+                        "reason-099",
+                        "H-099", "s1", 1, "check",
+                        json.dumps({"verdict": "inconclusive", "missing_questions": ["event_id 4625", "source IP correlation"]}),
+                    ),
+                )
+                _, resolver = REPORT_KEYPOINTS["unresolved_hypotheses_summary"]
+                rows = resolver(db)
+                self.assertEqual(1, len(rows))
+                self.assertEqual("event_id 4625; source IP correlation", rows[0]["needed_evidence"])
+                self.assertEqual("Suspicious logon pattern detected", rows[0]["description"])
+
+    def test_untestable_resolver_includes_needed_evidence(self) -> None:
+        from forensia.report.writer import REPORT_KEYPOINTS
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO hypotheses (
+                        hypothesis_id, status, verdict, description, summary, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, now(), now())
+                    """,
+                    ("H-100", "active", "untestable", "Missing EDR telemetry for process tree", "test"),
+                )
+                db.execute(
+                    """
+                    INSERT INTO hypothesis_reasoning (
+                        entry_id, hypothesis_id, session_id, iteration, phase, body, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, now())
+                    """,
+                    (
+                        "reason-100",
+                        "H-100", "s1", 1, "check",
+                        json.dumps({"verdict": "inconclusive", "missing_questions": ["Sysmon event_id 1 not available", "no EDR process tree"]}),
+                    ),
+                )
+                _, resolver = REPORT_KEYPOINTS["untestable_hypotheses_summary"]
+                rows = resolver(db)
+                self.assertEqual(1, len(rows))
+                self.assertEqual("Sysmon event_id 1 not available; no EDR process tree", rows[0]["needed_evidence"])
+                self.assertEqual("Missing EDR telemetry for process tree", rows[0]["description"])
+
+    def test_structured_digest_empty_case(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            digest = _structured_digest_from_answers(case)
+            self.assertEqual("", digest)
+
+    def test_structured_digest_from_synthetic_answers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            answers_path = case.reports_dir / "structured" / "answers.json"
+            answers_path.parent.mkdir(parents=True, exist_ok=True)
+            synthetic = [
+                {
+                    "id": "probe_host_identity",
+                    "answer_spec": "host_identity",
+                    "status": "answered",
+                    "answer": [
+                        {"host": "HOST-A", "evidence_id": "E1", "timestamp": "2024-01-15T10:00:00"},
+                        {"host": "HOST-B", "evidence_id": "E2", "timestamp": "2024-01-15T11:00:00"},
+                    ],
+                    "columns": ["host", "timestamp"],
+                },
+                {
+                    "id": "probe_not_searched",
+                    "answer_spec": "unused_spec",
+                    "status": "not_searched",
+                    "answer": [],
+                    "columns": [],
+                },
+                {
+                    "id": "antiforensic_activity",
+                    "answer_spec": "antiforensic_activity",
+                    "status": "answered",
+                    "answer": [
+                        {
+                            "tool_name": "Eraser",
+                            "timestamp": "2024-01-15T12:00:00",
+                        },
+                    ],
+                    "columns": ["tool_name", "timestamp"],
+                },
+            ]
+            answers_path.write_text(json.dumps(synthetic, ensure_ascii=False), encoding="utf-8")
+            digest = _structured_digest_from_answers(case)
+            self.assertIn("host_identity", digest)
+            self.assertIn("antiforensic_activity", digest)
+            self.assertNotIn("unused_spec", digest)
+            self.assertNotIn("not_searched", digest)
+            self.assertIn("STRUCTURED_OBSERVATIONS", digest)
+            self.assertIn("HOST-A | HOST-B", digest)
+            self.assertIn("Eraser", digest)
+            self.assertIn("rows=2", digest)
+            self.assertLess(len(digest), 1500)
+
+    def test_structured_digest_in_prompt_for_overview(self) -> None:
+        """Verify that build_paragraph_narrate_messages injects STRUCTURED_OBSERVATIONS for overview blocks."""
+        from forensia.ai.prompts import build_paragraph_narrate_messages
+
+        messages, _schema = build_paragraph_narrate_messages(
+            heading="Executive Summary",
+            key_points=["Key observation"],
+            evidence_rows=[{"evidence_id": "E1", "summary": "test"}],
+            template_body="## Executive Summary\nSummary here.",
+            structured_digest="<STRUCTURED_OBSERVATIONS>\n  - test_spec: rows=3\n</STRUCTURED_OBSERVATIONS>",
+        )
+        combined = "\n".join(m.get("content", "") for m in messages)
+        self.assertIn("STRUCTURED_OBSERVATIONS", combined)
+        self.assertIn("test_spec", combined)
+        self.assertIn("Write what the evidence shows, not instructions to the reader", combined)
+
+    def test_structured_digest_not_in_prompt_for_appendix(self) -> None:
+        """Verify appendix blocks get no STRUCTURED_OBSERVATIONS."""
+        from forensia.ai.prompts import build_paragraph_narrate_messages
+
+        messages, _schema = build_paragraph_narrate_messages(
+            heading="Appendix Details",
+            key_points=["Appendix data"],
+            evidence_rows=[],
+            template_body="## Appendix\nExtra data.",
+        )
+        combined = "\n".join(m.get("content", "") for m in messages)
+        self.assertNotIn("STRUCTURED_OBSERVATIONS", combined)
+
+    def test_structured_digest_context_in_prepare_block_context(self) -> None:
+        """Verify _prepare_block_context computes digest for overview and not for appendix."""
+        from forensia.ai.section_agent import _prepare_block_context
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            answers_path = case.reports_dir / "structured" / "answers.json"
+            answers_path.parent.mkdir(parents=True, exist_ok=True)
+            answers_path.write_text(json.dumps([
+                {
+                    "id": "probe_host",
+                    "answer_spec": "host_identity",
+                    "status": "answered",
+                    "answer": [{"host": "HOST-A", "timestamp": "2024-01-15T10:00:00"}],
+                    "columns": ["host", "timestamp"],
+                },
+            ]), encoding="utf-8")
+            with CaseDB(case) as db:
+                ctx_overview = _prepare_block_context(
+                    case=case, db=db, section_key="1_overview", title="Overview",
+                    block_heading="Test", template_body="## Test",
+                    base_url="", model="test", memory=None, max_queries=3,
+                    evidence_keypoints=None, benchmark_mode=False,
+                    audit_callback=None, report_brief={},
+                )
+                ctx_appendix = _prepare_block_context(
+                    case=case, db=db, section_key="6_appendix", title="Appendix",
+                    block_heading="Test", template_body="## Test",
+                    base_url="", model="test", memory=None, max_queries=3,
+                    evidence_keypoints=None, benchmark_mode=False,
+                    audit_callback=None, report_brief={},
+                )
+                self.assertIn("host_identity", ctx_overview.structured_digest)
+                self.assertEqual(ctx_appendix.structured_digest, "")

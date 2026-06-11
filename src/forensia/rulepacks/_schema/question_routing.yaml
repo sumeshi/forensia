@@ -22,20 +22,21 @@ question_types:
       - mft_prefetch_filenames
       - host_execution_activity
     required_fields: [executable_name]
-    render_columns: [executable_name, exec_count, last_exec_time, artifact_time, artifact_path, evidence_id, source_file]
+    render_columns: [executable_name, exec_count, last_exec_time, executable_path, prefetch_file, prefetch_records, artifact_time, artifact_path, evidence_id, source_file]
+    interpretation_template: "実行履歴は {row_count} 行あり、代表例は {sample(executable_name, 4)} です。Prefetch は実行の存在を示しますが、操作目的や対象ファイルは別証跡との相関が必要です。"
     status_rules:
       min_rows_for_answer: 1
       empty_status: not_found
       empty_reason: "No Prefetch execution rows or Prefetch file artifacts were found."
     expected_answer_shape:
       format: list
-      fields: [executable_name, exec_count, last_exec_time]
+      fields: [executable_name, exec_count, last_exec_time, executable_path, prefetch_file, prefetch_records]
       style: versioned_list
       note: "For applications found in Prefetch, include version if available from MFT file_path."
 
     evidence_chain:
       - source: prefetch_executions
-        query: "SELECT executable_name, exec_count, last_exec_time FROM prefetch_executions"
+        query: "SELECT executable_name, SUM(exec_count) AS exec_count, MAX(last_exec_time) AS last_exec_time, COUNT(*) AS prefetch_records, MIN(COALESCE((SELECT MIN(x.executable_path) FROM (SELECT UNNEST(TRY_CAST(filenames AS VARCHAR[])) AS executable_path) x WHERE x.executable_path LIKE '%' || UPPER(executable_name)), source_file)) AS executable_path, MIN(source_file) AS prefetch_file FROM prefetch_executions GROUP BY executable_name"
       - source: mft_entries
         query: "SELECT file_name, si_modified, file_path FROM mft_entries WHERE file_path LIKE '%/Prefetch/%' AND file_name LIKE '%.pf'"
         # condition: "when prefetch_executions empty" — fallthrough on empty is handled by code
@@ -50,6 +51,7 @@ question_types:
       - mail client
       - e-mail communication
       - email communication
+      - mail communication
       - メールアプリ
       - メールクライアント
       - 電子メールアプリケーション
@@ -58,6 +60,7 @@ question_types:
       - mft_outlook_artifacts
       - ioc_email_ost_files
       - mft_user_app_activity
+    interpretation_template: "メール関連痕跡は {sample(application_name, 3)} を中心に確認されています。OST/PST はメールデータ参照の可能性を示しますが、内容閲覧や外部送信までは直接示しません。"
     required_fields: [application_name]
     render_columns: [application_name, version, evidence_type, artifact_path, artifact_time, evidence_id]
     status_rules:
@@ -92,6 +95,7 @@ question_types:
       - mft_outlook_artifacts
       - ioc_email_ost_files
       - mft_user_app_activity
+    interpretation_template: "メールデータファイルは {row_count} 件、代表は {sample(file_name, 3)} です。OST/PST の存在はメールクライアント利用を示しますが、実際の送受信内容はクライアントログやネットワーク証跡で確認してください。"
     required_fields: [file_path]
     render_columns: [file_name, file_path, extension, si_created, si_modified, si_accessed, fn_created, fn_modified, fn_accessed, evidence_id]
     status_rules:
@@ -125,6 +129,7 @@ question_types:
       - structured_desktop_rename_candidates
       - mft_recent_folder_lnk
       - mft_user_desktop_artifacts
+    interpretation_template: "リネーム候補は {row_count} 件です。Recent LNK 由来の推定はユーザー操作の手掛かりになりますが、実ファイル名変更の直接証跡としては慎重に扱います。"
     required_fields: [original_name, new_name]
     render_columns: [original_name, new_name, timestamp, basis, source_paths, evidence_ids]
     status_rules:
@@ -140,11 +145,12 @@ question_types:
       - source: mft_entries
         query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE file_path LIKE '%/Desktop/%' AND (file_name LIKE '%~%.%' OR file_name LIKE '%(%.%')"
       - source: mft_entries
-        query: "SELECT file_name, json_extract_string(raw_json, '$.fn_filename') AS original_name, si_modified FROM mft_entries WHERE json_extract_string(raw_json, '$.fn_filename') IS NOT NULL AND json_extract_string(raw_json, '$.fn_filename') != file_name"
+        query: "SELECT file_name, json_extract_string(raw_json, '$.attributes.FileName.data.name') AS original_name, si_modified FROM mft_entries WHERE json_extract_string(raw_json, '$.attributes.FileName.data.name') IS NOT NULL AND json_extract_string(raw_json, '$.attributes.FileName.data.name') != file_name"
 
   - name: browser_usage
     answer_spec: browser_usage
     intent: "Identify browser applications observed through Prefetch and filesystem artifacts."
+    timeline: true
     keywords:
       - browser
       - chrome
@@ -158,6 +164,7 @@ question_types:
       - structured_browser_artifacts
       - host_execution_activity
       - mft_user_app_activity
+    interpretation_template: "ブラウザ痕跡として {sample(browser_name, 4)} が確認できます。Web利用の存在は示しますが、アクセス先や送信内容は履歴・キャッシュ・ネットワーク証跡で補完してください。"
     required_fields: [browser_name]
     render_columns: [browser_name, prefetch_records, total_exec_count, last_exec_time, mft_artifacts, first_artifact_time, last_artifact_time, sample_paths, evidence_ids]
     status_rules:
@@ -178,6 +185,7 @@ question_types:
   - name: logon_history
     answer_spec: daily_session_activity
     intent: "Summarize startup, shutdown, logon, and logoff activity by calendar date."
+    timeline: true
     keywords:
       - logon
       - logoff
@@ -198,6 +206,7 @@ question_types:
       - system_startup_events
       - interactive_logon_events
       - logoff_events
+    interpretation_template: "日別セッション活動は {first.date} から {last.date} まで {row_count} 日分確認できます。起動・ログオン・シャットダウンのパターンから、通常稼働期間と異常を評価します。"
     required_fields: [date]
     render_columns: [date, startup, logons, logoff, shutdown]
     status_rules:
@@ -212,6 +221,46 @@ question_types:
     evidence_chain:
       - source: evtx_events
         query: "SELECT event_id, timestamp, computer, user_name, logon_type FROM evtx_events WHERE event_id IN (6005, 6006, 6008, 4624, 4634, 4647, 4776) ORDER BY timestamp"
+
+  - name: daily_session_timeline
+    answer_spec: daily_session_timeline
+    intent: "Per-day session timeline showing first startup, first logon, last logoff, last shutdown, logon users, and interactive logon count."
+    timeline: true
+    keywords:
+      - startup/shutdown traces
+      - startup shutdown
+      - logon/logoff history
+      - logon logoff history
+      - session timeline
+      - session history
+      - first startup
+      - first logon
+      - last logoff
+      - last shutdown
+      - daily session
+      - 起動/シャットダウン
+      - ログオン/ログオフ履歴
+      - セッションタイムライン
+      - 起動時刻
+      - シャットダウン時刻
+    keypoints:
+      - session_activity_events
+      - structured_daily_session_activity
+      - system_shutdown_events
+      - system_startup_events
+      - interactive_logon_events
+      - logoff_events
+    interpretation_template: "セッションタイムラインは {row_count} 日分あります。日ごとの最初の起動・ログオン、最後のログオフ・シャットダウン時刻から、システム稼働パターンを確認できます。"
+    required_fields: [date, first_startup]
+    render_columns: [date, first_startup, first_logon, last_logoff, last_shutdown, logon_users, interactive_logon_count]
+    status_rules:
+      min_rows_for_answer: 1
+      empty_status: not_found
+    expected_answer_shape:
+      format: daily_session_timeline
+      fields: [date, first_startup, first_logon, last_logoff, last_shutdown, logon_users, interactive_logon_count]
+      style: table
+      note: "One row per calendar date with actual timestamps of first startup, first interactive logon, last logoff, and last shutdown events."
 
   - name: cloud_activity
     answer_spec: cloud_service_traces
@@ -230,6 +279,7 @@ question_types:
       - structured_cloud_artifacts
       - host_execution_activity
       - mft_cloud_sync_artifacts
+    interpretation_template: "クラウドサービス痕跡として {sample(service_name, 4)} が確認できます。同期環境の存在は示しますが、同期対象と完了可否はクライアントDBやログの追加確認が必要です。"
     required_fields: [service_name]
     render_columns: [service_name, exe_found, paths_found, config_found, evidence_ids]
     status_rules:
@@ -252,6 +302,7 @@ question_types:
   - name: antiforensics
     answer_spec: antiforensic_activity
     intent: "Scan for anti-forensic activity, event log clearing, and known cleanup tool artifacts."
+    timeline: true
     keywords:
       - wipe
       - delete
@@ -268,6 +319,7 @@ question_types:
       - timeline_system_events
       - system_shutdown_events
     required_fields: [evidence_type]
+    interpretation_template: "反フォレンジック候補は {sample(evidence_type, 4)} として {row_count} 行あります。ツールの存在と実行は重要ですが、削除対象や実行内容は別証拠で確認します。"
     render_columns: [evidence_type, timestamp, event_id, channel, computer, target_user, file_name, file_path, is_deleted, si_created, si_modified, evidence_id, message]
     status_rules:
       min_rows_for_answer: 1
@@ -300,6 +352,7 @@ question_types:
       - 端末名
     keypoints:
       - overview_hosts
+    interpretation_template: "EVTX 上では {sample(host_id, 3)} が観測されています。以降の判断では、主要ホストと少数ホストを分け、同一端末名の表記揺れも考慮します。"
     required_fields: [host_id]
     render_columns: [host_id, evidence_count, first_seen, last_seen]
     status_rules:
@@ -312,8 +365,6 @@ question_types:
     evidence_chain:
       - source: evtx_events
         query: "SELECT DISTINCT computer FROM evtx_events WHERE computer IS NOT NULL"
-      - source: mft_entries
-        query: "SELECT DISTINCT json_extract_string(raw_json, '$.computer') AS host FROM mft_entries WHERE json_extract_string(raw_json, '$.computer') IS NOT NULL"
 
   - name: case_event_window
     answer_spec: case_event_window
@@ -330,6 +381,7 @@ question_types:
     keypoints:
       - overview_event_range
     required_fields: [first_event, last_event]
+    interpretation_template: "証拠期間は {first.first_event} から {first.last_event} まで、合計 {first.event_count} イベントです。"
     render_columns: [first_event, last_event, event_count]
     status_rules:
       min_rows_for_answer: 1
@@ -361,6 +413,7 @@ question_types:
       - session_activity_events
       - interactive_logon_events
     required_fields: [logon_time, user_name]
+    interpretation_template: "最後に確認できる人間ユーザー系ログオンは {first.logon_time} の {first.computer} / {first.user_name} です。これは最終利用者の候補であり、ログオン種別と周辺操作で裏付けます。"
     render_columns: [logon_time, computer, user_name, logon_type, process_name, src_ip, evidence_id]
     status_rules:
       min_rows_for_answer: 1
@@ -408,6 +461,7 @@ question_types:
       - system_shutdown_events
       - system_startup_events
     required_fields: [shutdown_time, event_id]
+    interpretation_template: "最後の shutdown/log stop 系イベントは {first.shutdown_time} の Event ID {first.event_id} です。終了時刻の基準として使えますが、意図的停止か通常終了かは周辺イベントで判断します。"
     render_columns: [shutdown_time, event_id, computer, evidence_id, message]
     status_rules:
       min_rows_for_answer: 1

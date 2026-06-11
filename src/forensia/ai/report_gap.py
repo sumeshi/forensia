@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
@@ -147,9 +148,43 @@ def _gap_hypothesis_id(description: str) -> str:
     return f"gap-{digest}"
 
 
+def _has_internal_db_signals(text: str) -> bool:
+    """Check if text contains signals that it can be answered from the case database.
+    
+    Priority signals: event IDs (4xxx), DB table names, artifact keywords.
+    """
+    # Event ID pattern: 4xxx (4624, 4688, 4776, etc.)
+    if re.search(r'\b4\d{3}\b', text):
+        return True
+    # DB table/keyword signals - match evidence table names and artifact patterns.
+    # Do not add bare English function words ("from", "where") here — they appear
+    # in ordinary prose and would route every gap to the DB.
+    db_keywords = ["prefetch", "mft_", " evtx", "evtx_", "logon event", "logoff event",
+                   "event id ", "select ",
+                   ".evtx", ".pf", "table_name", "artifact"]
+    lowered = text.lower()
+    for kw in db_keywords:
+        if kw in lowered:
+            return True
+    return False
+
+
 def _classify_gap_kind(description: str) -> str:
-    """Determine whether a gap requires external lookup, human decision, or internal DB check."""
+    """Determine whether a gap requires external lookup, human decision, or internal DB check.
+    
+    Routing priority:
+    1. Internal-DB signals (event IDs, table names) → internal_db_check (overrides other keywords)
+    2. External lookup keywords → external_lookup
+    3. Narrow human/business decision keywords → human_decision
+    4. Default → internal_db_check
+    """
     lowered = description.lower()
+    
+    # Priority 1: Internal-DB signals take precedence
+    if _has_internal_db_signals(lowered):
+        return "internal_db_check"
+    
+    # Priority 2: External lookup keywords
     if any(
         token in lowered
         for token in (
@@ -165,28 +200,26 @@ def _classify_gap_kind(description: str) -> str:
             "certificate",
             "public record",
             "internet",
-            "external",
         )
     ):
         return "external_lookup"
+    
+    # Priority 3: Narrow human/business decision keywords only
     if any(
         token in lowered
         for token in (
             "hearing",
             "stakeholder",
-            "user",
             "approval",
-            "human",
-            "business",
-            "user confirmation",
-            "manager approval",
-            "policy",
             "confirm with",
-            "authorized",
-            "permission",
+            "manager",
+            "business owner",
+            "interview",
         )
     ):
         return "human_decision"
+    
+    # Default: internal DB check
     return "internal_db_check"
 
 

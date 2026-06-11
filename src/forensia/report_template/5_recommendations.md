@@ -4,11 +4,8 @@ behaviors:
 ---
 # Recommendations
 
-## Immediate Actions
-<!-- Urgent actions to contain active threats -->
+## Recommendation Basis
+<!-- mode: narrative; Explain the basis for recommendations -->
 
-## Short-Term Improvements
-<!-- Security enhancements within 30-90 days -->
-
-## Long-Term Initiatives
-<!-- Strategic improvements for next 6-12 months -->
+## Action Plan
+<!-- mode: table; builder: recommendations_action_plan -->

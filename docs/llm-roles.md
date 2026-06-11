@@ -28,13 +28,13 @@ LLM 入出力の生ログは `ai_logs/<phase>-<id>.json` に保存される。
 
 ### 2.1 投資調査ループ
 
-| ロール | 呼び出し元 | プロンプトビルダ | 出力スキーマ |
-|---|---|---|---|
-| `gap_identifier` | [investigator._run_broad_plan_step](../src/forensia/ai/investigator.py#L1319) | `build_gap_identifier_messages` | `gap_identifier_schema(available_keypoints)` |
-| `hypothesis_drafter` | 同上 | `build_hypothesis_drafter_messages` | `hypothesis_drafter_schema()` |
-| `query_intent_planner` | [planner.plan_hypothesis_query](../src/forensia/ai/planner.py#L320) | `build_query_intent_messages` | `QUERY_INTENT_SCHEMA` |
-| `sql_self_check` | 同上 | `build_sql_self_check_messages` | `SQL_SELF_CHECK_SCHEMA` |
-| `sql_composer` | 同上 | `build_sql_composer_messages` | `SQL_COMPOSER_SCHEMA` |
+`plan_hypothesis_query` ([planner.py:320](../src/forensia/ai/planner.py#L320)) は Phase 1 (intent) → Phase 2 (composer) の 2 相構成:
+
+| 相 | ロール | 呼び出し元 | プロンプトビルダ | 出力スキーマ |
+|---|---|---|---|---|
+| Phase 1 | `query_intent_planner` | [planner.plan_hypothesis_query](../src/forensia/ai/planner.py#L320) | `build_query_intent_messages` | `QUERY_INTENT_SCHEMA` |
+| Phase 1 | `sql_self_check` | 同上 (intent の gate) | `build_sql_self_check_messages` | `SQL_SELF_CHECK_SCHEMA` |
+| Phase 2 | `sql_composer` | 同上 (最大 3 回リトライ) | `build_sql_composer_messages` | `SQL_COMPOSER_SCHEMA` |
 | `verdict_reviewer` | [checker._check_query](../src/forensia/ai/checker.py#L460) | `build_verdict_review_messages` | `VERDICT_REVIEW_SCHEMA` |
 | `finding_extractor` | 同上 (verdict=confirmed のとき) | `build_finding_extractor_messages` | `FINDING_EXTRACTOR_SCHEMA` |
 | `memory_updater` | 同上 | `build_memory_updater_messages` | `MEMORY_UPDATER_SCHEMA` |
@@ -141,9 +141,11 @@ flowchart TD
     A["broad_plan step"] --> B[gap_identifier]
     B --> C[hypothesis_drafter]
     C --> D["hypothesis loop"]
-    D --> E[query_intent_planner]
-    E --> F[sql_self_check]
-    F --> G[sql_composer]
+    D --> E["Phase 1<br/>query_intent_planner"]
+    E --> F["sql_self_check (gate)"]
+    F -->|blocked| E
+    F -->|ready| G["Phase 2<br/>sql_composer"]
+    G -->|validation fail<br/>≤3 retries| G
     G --> H["DuckDB execute"]
     H --> I[verdict_reviewer]
     I -->|confirmed| J[finding_extractor]

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 
+import duckdb
+
 from forensia.ai.sql_templates import (
     _template_failed_logon_by_ip_window,
     _template_logon_by_user_window,
@@ -9,7 +11,27 @@ from forensia.ai.sql_templates import (
     _template_service_or_task_after_host_logon,
     coerce_list,
     query_template_catalog,
+    validate_select_sql_with_dryrun,
 )
+
+
+class DryRunValidationTests(unittest.TestCase):
+    def test_raises_on_nonexistent_function(self):
+        conn = duckdb.connect(":memory:")
+        try:
+            with self.assertRaises(ValueError):
+                validate_select_sql_with_dryrun("SELECT nonexistent_func(1)", conn)
+        finally:
+            conn.close()
+
+    def test_passes_on_valid_sql(self):
+        conn = duckdb.connect(":memory:")
+        try:
+            conn.execute("CREATE TABLE t (x INTEGER)")
+            result = validate_select_sql_with_dryrun("SELECT x FROM t", conn)
+            self.assertEqual("SELECT x FROM t", result)
+        finally:
+            conn.close()
 
 
 class CoerceListTests(unittest.TestCase):

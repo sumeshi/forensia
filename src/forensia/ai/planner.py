@@ -20,6 +20,7 @@ from forensia.ai.sql_templates import (
     query_template_catalog,
     render_query_template,
     validate_select_sql,
+    validate_select_sql_with_dryrun,
 )
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
@@ -64,38 +65,6 @@ class HypothesisPlanResult:
     raw_response: dict[str, Any]
 
 
-_KEYPOINT_NAME_RE = re.compile(r"[a-zA-Z_][a-zA-Z0-9_]*")
-
-
-def _compute_uncovered_keypoints(
-    observed: list[str],
-    active_hypotheses: list[Hypothesis],
-    resolved_hypotheses: list[Hypothesis],
-) -> list[dict[str, str]]:
-    """Return keypoints not yet covered by existing active or resolved hypotheses."""
-    haystack_parts: list[str] = []
-    for h in active_hypotheses:
-        haystack_parts.append(str(h.description).lower())
-    for h in resolved_hypotheses:
-        haystack_parts.append(str(h.id).lower())
-        if h.description:
-            haystack_parts.append(str(h.description).lower())
-    haystack = " ".join(haystack_parts)
-    uncovered: list[dict[str, str]] = []
-    for item in observed:
-        name = item.split(" (")[0].strip().lower() if " (" in item else item.strip().lower()
-        if not name:
-            continue
-        tokens = _KEYPOINT_NAME_RE.findall(name)
-        if name in haystack:
-            continue
-        if any(tok and len(tok) >= 4 and tok in haystack for tok in tokens):
-            continue
-        uncovered.append({"name": name})
-        if len(uncovered) >= 5:
-            break
-    return uncovered
-
 
 def _retry_sql_composer(
     base_messages: list[dict[str, str]],
@@ -105,11 +74,15 @@ def _retry_sql_composer(
     model: str,
     status_callback: Callable[[str], None] | None = None,
     audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
+    db: CaseDB | None = None,
 ) -> dict[str, Any]:
     """Retry SQL composition up to _PLANNER_SQL_MAX_RETRIES times when SQL validation fails.
-    
+
     Unlike _retry_query_once, this operates on the flattened composer response
     format (template_id/sql/params/purpose) without read_more or hypothesis wrapping.
+    When a db handle is available, an EXPLAIN dry-run (R2-05) catches binder
+    errors (unknown functions/columns) before execution so they feed the retry
+    loop instead of failing at execute time.
     """
     messages = list(base_messages)
     for attempt in range(1, _PLANNER_SQL_MAX_RETRIES + 1):
@@ -129,12 +102,21 @@ def _retry_sql_composer(
             "sql": parsed.get("sql", ""),
         }
         try:
-            _materialize_planned_query(query_dict)
+            planned = _materialize_planned_query(query_dict)
+            if db is not None and planned.sql:
+                validate_select_sql_with_dryrun(planned.sql, db)
             return parsed
         except ValueError as exc:
+            err_msg = str(exc)
+            # R2-03: check for placeholder literals in rejected SQL
+            sql_text = str(parsed.get("sql", "") or "")
+            placeholder_note = ""
+            if re.search(r"\[\w*placeholder\w*\]|\[(start|end)_time\]|\{\w+\}", sql_text):
+                placeholder_note = " Your SQL contained an unresolved placeholder literal. Use real values from the hypothesis/case profile, or omit that filter."
+                err_msg += placeholder_note
             if status_callback:
                 status_callback(
-                    f"SQL composer rejected (attempt {attempt}/{_PLANNER_SQL_MAX_RETRIES}): {exc}."
+                    f"SQL composer rejected (attempt {attempt}/{_PLANNER_SQL_MAX_RETRIES}): {err_msg}."
                 )
             if attempt >= _PLANNER_SQL_MAX_RETRIES:
                 return parsed
@@ -142,7 +124,7 @@ def _retry_sql_composer(
                 "role": "user",
                 "content": (
                     f"Attempt {attempt}/{_PLANNER_SQL_MAX_RETRIES}: the previous SQL was rejected. "
-                    f"Error: {exc}. "
+                    f"Error: {err_msg}. "
                     "MUST return corrected JSON with template_id (or null), sql (raw SELECT), params, purpose. "
                     "Do NOT leave both template_id and sql blank. "
                     "Use a valid SELECT statement against evtx_events / mft_entries / mft_timeline / prefetch_executions / findings. "
@@ -202,47 +184,58 @@ def _request_with_optional_context(
     return reparsed
 
 
-_KEYPOINT_NAME_RE = re.compile(r"[a-zA-Z0-9_]+")
-
-
 def _compute_uncovered_keypoints(
     observed: list[str],
     active: list[Hypothesis],
     resolved: list[Hypothesis],
+    proposed_counts: dict[str, int] | None = None,
 ) -> list[dict[str, str]]:
-    """Heuristic: a keypoint is 'covered' if its name (or any token of it) appears
-    in any active/resolved hypothesis's description or source_rule_ids.
+    """Compute uncovered keypoints using round-robin across families.
 
-    Returns up to 5 uncovered keypoint dicts that broad_plan must address.
+    A keypoint is considered covered (excluded from output) when:
+    - Any active/resolved hypothesis has target_keypoint_id == keypoint name (exact match)
+    - The keypoint has been proposed >=2 times (from proposed_counts)
+
+    Remaining candidates are grouped by family (first underscore token) and
+    selected round-robin across families up to 8 items.
     """
     if not observed:
         return []
-    haystack_parts: list[str] = []
-    for hyp in list(active) + list(resolved):
-        haystack_parts.append((hyp.description or "").lower())
-        for rid in getattr(hyp, "source_rule_ids", None) or []:
-            haystack_parts.append(str(rid).lower())
-    for h in active:
-        if getattr(h, "target_keypoint_id", None):
-            haystack_parts.append(str(h.target_keypoint_id).lower())
-    haystack = " ".join(haystack_parts)
 
-    uncovered: list[dict[str, str]] = []
+    covered: set[str] = set()
+    for hyp in list(active) + list(resolved):
+        if hyp.target_keypoint_id:
+            covered.add(hyp.target_keypoint_id.strip().lower())
+
+    exhausted: set[str] = set()
+    if proposed_counts:
+        for kp_name, count in proposed_counts.items():
+            if count >= 2:
+                exhausted.add(kp_name.strip().lower())
+
+    groups: dict[str, list[str]] = {}
     for item in observed:
         name = item.split(" (")[0].strip().lower() if " (" in item else item.strip().lower()
-        if not name:
+        if not name or name in covered or name in exhausted:
             continue
-        # cover if the keypoint name itself OR any of its underscore-separated tokens
-        # appears in the active/resolved hypothesis context
-        tokens = _KEYPOINT_NAME_RE.findall(name)
-        if name in haystack:
-            continue
-        if any(tok and len(tok) >= 4 and tok in haystack for tok in tokens):
-            continue
-        uncovered.append({"name": name})
-        if len(uncovered) >= 5:
+        family = name.split("_")[0] if "_" in name else name
+        groups.setdefault(family, []).append(name)
+
+    result: list[dict[str, str]] = []
+    families = sorted(groups.keys())
+    indices = {f: 0 for f in families}
+    while len(result) < 8 and families:
+        advanced = False
+        for family in families:
+            if indices[family] < len(groups[family]):
+                advanced = True
+                result.append({"name": groups[family][indices[family]]})
+                indices[family] += 1
+                if len(result) >= 8:
+                    break
+        if not advanced:
             break
-    return uncovered
+    return result
 
 
 def _resolve_planner_context(
@@ -330,6 +323,7 @@ def plan_hypothesis_query(
     audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
     query_index: int = 1,
     time_range: dict[str, str] | None = None,
+    case_profile: str | None = None,
 ) -> HypothesisPlanResult:
     """Plan the next query for a single hypothesis.
 
@@ -379,6 +373,7 @@ def plan_hypothesis_query(
             schema_context=schema_card,
             extra_context_md=extra_context + execution_error_block,
             prior_check_feedback=prior_check_feedback,
+            case_profile=case_profile,
         )
 
     intent_response = _request_with_optional_context(
@@ -435,6 +430,7 @@ def plan_hypothesis_query(
         model=model,
         status_callback=status_callback,
         audit_callback=audit_callback,
+        db=db,
     )
 
     # Build PlannedQuery from composer response via shared helper

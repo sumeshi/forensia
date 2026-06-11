@@ -5,10 +5,13 @@ behaviors:
 # Investigation Overview
 
 ## Executive Summary
-<!-- 1-2 paragraphs summarizing the incident and key findings -->
+<!-- mode: narrative; Write an executive summary of findings -->
 
 ## Evidence Scope
-<!-- Types of evidence analyzed, time range, systems involved, key limitations -->
+<!-- mode: table; builder: overview_evidence_scope -->
+
+## Systems Observed
+<!-- mode: table; builder: overview_systems_observed -->
 
 ## Key Findings
-<!-- Most significant findings in order of importance with evidence references and confidence -->
+<!-- mode: table; builder: overview_key_findings -->

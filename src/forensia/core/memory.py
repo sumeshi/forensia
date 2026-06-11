@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import shutil
 from math import ceil
 from pathlib import Path
@@ -20,6 +21,22 @@ def _slugify(value: str) -> str:
     """Convert a string to a lowercase, dash-separated filesystem-safe slug."""
     cleaned = sub(r"[^a-zA-Z0-9._-]+", "-", value.strip())
     return cleaned.strip("-").lower() or "unknown"
+
+
+def _task_normalize(text: str) -> str:
+    """Normalize task text: lowercase, strip punctuation and extra whitespace."""
+    return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def _jaccard_similarity(a: str, b: str) -> float:
+    """Jaccard token-set similarity between two pre-normalized strings."""
+    tokens_a = set(a.split())
+    tokens_b = set(b.split())
+    if not tokens_a or not tokens_b:
+        return 0.0
+    intersection = tokens_a & tokens_b
+    union = tokens_a | tokens_b
+    return len(intersection) / len(union)
 
 
 class MemoryPaths:
@@ -123,6 +140,10 @@ class MemoryManager:
     @property
     def resolved_gaps_path(self) -> Path:
         return self.archive_dir / "resolved_gaps.md"
+
+    @property
+    def untestable_hypotheses_path(self) -> Path:
+        return self.archive_dir / "untestable.md"
 
     @property
     def suspicious_path(self) -> Path:
@@ -302,6 +323,28 @@ class MemoryManager:
         self.update_overview(existing + "\n\n" + content + "\n")
         return True
 
+    _R3_REFUTED_RE = re.compile(
+        r"^- The hypothesis regarding .* was refuted\..*$",
+        re.MULTILINE | re.IGNORECASE,
+    )
+
+    def collapse_refuted_overview_lines(self) -> None:
+        """Collapse multiple 'hypothesis regarding X was refuted' lines into a counter."""
+        if not self.overview_path.exists():
+            return
+        existing = self.overview_path.read_text(encoding="utf-8").rstrip()
+        if not existing:
+            return
+        refuted_lines = self._R3_REFUTED_RE.findall(existing)
+        if not refuted_lines:
+            return
+        cleaned = self._R3_REFUTED_RE.sub("", existing).strip()
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        counter = f"- {len(refuted_lines)} hypotheses refuted so far"
+        if counter not in cleaned:
+            cleaned = cleaned + "\n\n" + counter if cleaned else counter
+        self.update_overview(cleaned + "\n")
+
     def upsert_entity(self, entity_type: str, name: str, content: str) -> None:
         """Write entity content to the appropriate entity type subdirectory."""
         path = self._entity_path(entity_type, name)
@@ -334,6 +377,10 @@ class MemoryManager:
         body = str(text).strip()
         if not body:
             return
+        # R2-03: Reject fact bodies containing unresolved placeholder tokens
+        if re.search(r"\{\w+\}", body):
+            logger.warning("dropped fact with placeholder tokens: %s", body[:60])
+            return
         normalized_ids = sorted({str(item).strip() for item in evidence_ids if str(item).strip()})
         line = self._memory_line(
             body,
@@ -354,7 +401,15 @@ class MemoryManager:
         if fact_hash in self._fact_hashes:
             return
         detail_id = self._alloc_fact_detail_id()
-        preview = body[:120]
+        # R2-10: Truncate at word boundary ≥160 chars, never mid-token
+        preview = body
+        if len(preview) > 160:
+            truncated = preview[:160]
+            last_space = truncated.rfind(" ")
+            if last_space > 0:
+                preview = truncated[:last_space] + "…"
+            else:
+                preview = truncated + "…"
         shared_line = self._memory_line(
             f"[{detail_id}] {preview}",
             normalized_ids,
@@ -406,6 +461,34 @@ class MemoryManager:
         if not task_text:
             return
         line = f"- [{normalized_kind}] {task_text}"
+
+        if not provisional:
+            path = self.tasks_memory_path
+            if path.exists():
+                existing_content = path.read_text(encoding="utf-8")
+                existing_lines = existing_content.splitlines()
+                existing_task_lines = [l for l in existing_lines if l.startswith("- [")]
+
+                # R2-10: Jaccard dedup
+                norm_new = _task_normalize(task_text)
+                is_duplicate = False
+                for el in existing_task_lines:
+                    existing_text = el.split("] ", 1)[-1] if "] " in el else el
+                    norm_existing = _task_normalize(existing_text)
+                    if _jaccard_similarity(norm_new, norm_existing) >= 0.6:
+                        is_duplicate = True
+                        break
+                if is_duplicate:
+                    return
+
+                # R2-10: Cap open [human_decision] tasks at 10, evict oldest
+                if normalized_kind == "human_decision":
+                    human_lines = [(i, l) for i, l in enumerate(existing_lines) if l.startswith("- [human_decision]")]
+                    if len(human_lines) >= 10:
+                        oldest_idx = human_lines[0][0]
+                        existing_lines.pop(oldest_idx)
+                        path.write_text("\n".join(existing_lines) + "\n", encoding="utf-8")
+
         self._append_markdown_entry(
             self._hypothesis_scratch_path(hypothesis_id, "tasks") if provisional else self.tasks_memory_path,
             "# Tasks",
@@ -434,6 +517,43 @@ class MemoryManager:
         line = self._memory_line(body, evidence_ids)
         if line:
             self._append_markdown_entry(self.resolved_gaps_path, "# Resolved Gaps", line)
+
+    @staticmethod
+    def _split_claim(body: str) -> tuple[str, str]:
+        """Split a body at observation/interpretation markers.
+
+        Returns (observation, interpretation).  When no marker is found the
+        entire body is returned as observation and interpretation is empty.
+        """
+        body = str(body).strip()
+        for sep in (", indicating ", ", suggesting ", " — ", " —"):
+            if sep in body:
+                parts = body.split(sep, 1)
+                return parts[0].strip(), parts[1].strip()
+        return body, ""
+
+    def append_confirmed_hypothesis_fact(
+        self,
+        hypothesis_description: str,
+        verdict: str,
+        query_id: str,
+        evidence_ids: list[str],
+    ) -> None:
+        """Write one deterministic confirmed-fact line from a hypothesis outcome.
+
+        R2-09: splits description at observation/interpretation markers
+        and stores only the observation half as confirmed.  The interpretation
+        half (if any) is stored as a provisional scratch fact instead.
+        """
+        observation, interpretation = self._split_claim(hypothesis_description)
+        text = f"{observation} — {verdict} (query {query_id})"
+        # R2-03: Reject confirmed hypothesis fact with placeholder tokens
+        if re.search(r"\{\w+\}", text):
+            logger.warning("dropped confirmed hypothesis fact with placeholder tokens: %s", text[:60])
+            return
+        self.append_confirmed_fact(text, evidence_ids, provisional=False)
+        if interpretation:
+            self.append_confirmed_fact(interpretation, evidence_ids, provisional=True)
 
     def append_suspicious(self, rows: list[dict]) -> bool:
         """Append rows of suspicious evidence, deduplicating by evidence_id, and compact when oversized."""
@@ -560,6 +680,26 @@ class MemoryManager:
         target_dir.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(scratch_dir), str(target_dir))
         return [str(target_dir)]
+
+    def archive_untestable_hypothesis_scratch(self, hypothesis_id: str | None) -> list[str]:
+        """Append hypothesis scratch content to archive/untestable.md instead of full directory move."""
+        scratch_dir = self._hypothesis_scratch_dir(hypothesis_id)
+        if not scratch_dir.exists():
+            return []
+        lines: list[str] = [f"## Untestable Hypothesis: {hypothesis_id}", ""]
+        for relative_name in ("facts.md", "timeline.md", "tasks.md"):
+            path = scratch_dir / relative_name
+            if not path.exists():
+                continue
+            content = path.read_text(encoding="utf-8").strip()
+            if content:
+                lines.append(f"### {relative_name}")
+                lines.append(content)
+                lines.append("")
+        entry = "\n".join(lines).strip()
+        self._append_markdown_entry(self.untestable_hypotheses_path, "# Untestable Hypotheses", entry)
+        shutil.rmtree(scratch_dir, ignore_errors=True)
+        return [str(self.untestable_hypotheses_path)]
 
     def _entity_path(self, entity_type: str, name: str) -> Path | None:
         """Resolve the filesystem path for an entity by type and name, using alias resolution."""
@@ -763,6 +903,54 @@ class MemoryManager:
             if line.startswith("|---"):
                 break
         return self._trim_rows_to_budget(path, prefix_lines, data_lines)
+
+    def regenerate_timeline_from_db(self, db) -> bool:
+        """Regenerate memory/timeline.md from the case_timeline DB table.
+
+        Reads all rows ordered by timestamp ASC, groups into per-day sections,
+        and writes the result to timeline.md. Returns True when content changed.
+        """
+        from forensia.db.database import CaseDB
+        from forensia.db.query import fetch_records
+
+        rows = fetch_records(
+            db,
+            """
+            SELECT timestamp, source, ref_id, host, summary, evidence_id
+            FROM case_timeline
+            WHERE timestamp IS NOT NULL
+            ORDER BY timestamp ASC
+            """,
+        )
+        if not rows:
+            if self.timeline_path.exists():
+                self.timeline_path.write_text("# Timeline\n\n_No timeline entries yet._\n", encoding="utf-8")
+            return False
+        date_groups: dict[str, list[dict]] = {}
+        for row in rows:
+            ts = str(row.get("timestamp") or "")
+            date_key = ts[:10] if len(ts) >= 10 else "unknown"
+            date_groups.setdefault(date_key, []).append(row)
+        lines = ["# Timeline", ""]
+        for date_key in sorted(date_groups):
+            date_rows = date_groups[date_key]
+            for row in date_rows:
+                ts = str(row.get("timestamp") or "")
+                summary = str(row.get("summary") or "-")[:160]
+                host = str(row.get("host") or "")
+                src = str(row.get("source") or "")
+                ref = str(row.get("ref_id") or "")
+                evidence_id = str(row.get("evidence_id") or "")
+                meta_parts = [p for p in [src, host, ref, evidence_id] if p]
+                meta = f" [{', '.join(meta_parts)}]" if meta_parts else ""
+                lines.append(f"- {ts} {summary}{meta}")
+            lines.append("")
+        content = "\n".join(lines).strip() + "\n"
+        existing = self.timeline_path.read_text(encoding="utf-8") if self.timeline_path.exists() else ""
+        if content.strip() == existing.strip():
+            return False
+        self.timeline_path.write_text(content, encoding="utf-8")
+        return True
 
     def compact_if_oversized(self, path: Path) -> bool:
         """Dispatch compaction for a path if it exceeds the byte budget, returning True if trimmed."""

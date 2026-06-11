@@ -1,0 +1,4 @@
+id: leakage
+title: Data leakage detection
+applies_when:
+  artifact_families: [cloud_sync, mailbox, mft_user_files]

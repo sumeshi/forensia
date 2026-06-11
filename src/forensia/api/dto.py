@@ -19,6 +19,7 @@ class CaseStatsDTO(DTOModel):
     evtx_rows: int
     mft_entries: int
     channel_count: int
+    host_count: int = 0
     findings_accepted: int
     findings_suppressed: int
     active_hypotheses: int

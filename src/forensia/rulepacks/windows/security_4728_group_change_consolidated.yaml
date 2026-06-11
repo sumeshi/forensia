@@ -22,12 +22,12 @@ attack:
   technique_name: Valid Accounts
 query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    event_id,\n    target_user,\n    subject_user,\n    message\nFROM evtx_events\nWHERE event_id IN (4728, 4729, 4730, 4732, 4733, 4734, 4735, 4737, 4738)\n"
 finding:
-  title: Group membership change on ${computer}
-  summary: Event ${event_id} — account ${target_user} modified by ${subject_user} on ${computer}
+  title: Group membership change on {computer}
+  summary: Event {event_id} — account {target_user} modified by {subject_user} on {computer}
 hypotheses:
 - id: windows-security-4728-privilege-escalation
   segment: privilege-escalation
-  description: Account ${target_user} was added to a privileged group (4728/4732/4756) by ${subject_user} on ${computer}, indicating privilege escalation
+  description: Account {target_user} was added to a privileged group (4728/4732/4756) by {subject_user} on {computer}, indicating privilege escalation
   required_entities:
   - computer
   - target_user

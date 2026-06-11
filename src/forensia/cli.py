@@ -13,6 +13,7 @@ from forensia.api.cache import (
     write_progress_snapshot, write_volatile_api_snapshots,
 )
 from forensia.api.progress import clear_progress_events, record_progress_event
+from forensia.ai.case_profile import profile_advisor
 from forensia.ai.investigator import investigate as investigate_loop
 from forensia.ai.lmstudio import LLMServerUnavailableError
 from forensia.config import get_llm_settings, resolve_llm_config
@@ -141,8 +142,6 @@ def _resolve_profile_path(profile: str) -> Path:
         return path
     available = ", ".join(_available_profiles()) or "none"
     raise typer.BadParameter(f"unknown profile: {profile_name}. Available profiles: {available}")
-
-
 def _resolve_llm_or_die(base_url: str | None, model: str | None) -> tuple[str, str]:
     """Resolve LLM endpoint and model, raising an error if either is missing."""
     resolved_base_url, resolved_model = resolve_llm_config(base_url, model)
@@ -151,10 +150,24 @@ def _resolve_llm_or_die(base_url: str | None, model: str | None) -> tuple[str, s
     return resolved_base_url, resolved_model
 
 
-def _open_case_or_die(case_dir: str) -> Case:
+def _resolve_timezone(tz, case) -> str:
+    """Return the resolved timezone string, preferring CLI flag over manifest value."""
+    if isinstance(tz, str):
+        return tz if tz else _case_timezone(case)
+    return _case_timezone(case)
+
+
+def _case_timezone(case) -> str:
+    val = getattr(case, "source_timezone", "UTC") if case is not None else "UTC"
+    return str(val or "UTC")
+
+
+def _open_case_or_die(case_dir: str, timezone: str | None = None) -> Case:
     """Open a case directory or raise a CLI error if the manifest is missing."""
     try:
-        return Case.open(case_dir)
+        case = Case.open(case_dir)
+        case.source_timezone = _resolve_timezone(timezone, case)
+        return case
     except FileNotFoundError as exc:
         target = Path(case_dir).resolve()
         raise typer.BadParameter(
@@ -162,6 +175,7 @@ def _open_case_or_die(case_dir: str) -> Case:
             f"missing: {target / 'manifest.yaml'}\n"
             f"initialize with: forensia investigate {target} <input_dir>"
         ) from exc
+
 
 
 def _progress_pusher(db: CaseDB, initial_state: dict) -> Callable[..., None]:
@@ -426,6 +440,7 @@ def _run_investigate_stage(
     *, max_iter: int, max_queries_per_hypothesis: int,
     no_progress_limit: int, report_every_n_cycles: int,
     report_max_queries_per_section: int, max_llm_calls: int,
+    auto_rulepacks: bool = True,
 ) -> None:
     """Run LLM-driven investigation loop (or skip if LLM not configured)."""
     if not (llm_base_url and model):
@@ -451,6 +466,7 @@ def _run_investigate_stage(
                 report_every_n_cycles=report_every_n_cycles,
                 report_max_queries_per_section=report_max_queries_per_section or get_llm_settings()["report_max_queries_per_section"],
                 max_llm_calls=max_llm_calls,
+                auto_rulepacks=auto_rulepacks,
                 progress_callback=lambda payload: push_progress(
                     payload.get("summary"),
                     stage=payload.get("stage", "investigate"),
@@ -521,6 +537,8 @@ def investigate(
         help="Max iterative agent queries per report block. 0 = use LLM_REPORT_MAX_QUERIES_PER_SECTION env (default 3)",
     ),
     max_llm_calls: int = typer.Option(0, "--max-llm-calls", help="Hard cap on total LLM calls per investigation session. 0 = unlimited (default for local LLM)."),
+    auto_rulepacks: bool = typer.Option(True, "--auto-rulepacks/--no-auto-rulepacks", help="Automatically enable rulepacks whose applies_when artifact_families are detected in case data"),
+    timezone: str = typer.Option("", "--timezone", help="IANA timezone name (e.g. America/New_York). Overrides manifest value."),
 ) -> None:
     """Run full investigation pipeline: ingest, normalize, analyze, investigate, and report."""
     llm_base_url, model = resolve_llm_config(llm_base_url, model)
@@ -531,18 +549,21 @@ def investigate(
     if not case_exists:
         if input_dir is None:
             raise typer.BadParameter("New case requires an input_dir argument")
-        case = Case.init(case_dir)
+        tz_val = _resolve_timezone(timezone, None)
+        case = Case.init(case_dir, source_timezone=tz_val)
         clear_api_snapshots(case)
         _status(f"Initialized case at {case.path}")
     else:
-        case = _open_case_or_die(case_dir)
+        case = _open_case_or_die(case_dir, timezone=timezone)
 
     if rerun:
         _status("Resetting case tables for rerun (preserving raw/ for re-normalize)")
         with CaseDB(case) as db:
             _reset_case_tables(db)
         case.clear_runtime_outputs(preserve_memory=True, preserve_ai_logs=True, drop_database=False, preserve_raw=True)
-        case = Case.init(case_dir)
+        # Preserve the manifest timezone across rerun unless --timezone overrides it.
+        tz_val = _resolve_timezone(timezone, case)
+        case = Case.init(case_dir, source_timezone=tz_val)
         clear_api_snapshots(case)
         _status(f"Re-initialized case at {case.path}")
 
@@ -574,6 +595,28 @@ def investigate(
             _run_analyze_stage(case, db, tasks, profile, profile_path, True, normalized_this_run, push_progress)
 
         if not report_only:
+            advice = profile_advisor(profile, db)
+            if advice:
+                # rich's print would swallow [bracketed] pack names as markup tags.
+                from rich.markup import escape
+                print(escape(advice))
+            if case.source_timezone == "UTC":
+                # R2-14: surface a conservative timezone hint when no explicit
+                # timezone was provided; rendering stays UTC-only until the
+                # analyst confirms via --timezone.
+                try:
+                    from forensia.normalize.timezone import infer_timezone
+                    offset_minutes, basis = infer_timezone(db)
+                    if offset_minutes is not None:
+                        sign = "+" if offset_minutes >= 0 else "-"
+                        hours, minutes = divmod(abs(offset_minutes), 60)
+                        _status(
+                            f"Timezone hint: evidence suggests UTC{sign}{hours}"
+                            + (f":{minutes:02d}" if minutes else "")
+                            + f" ({basis}). Re-run with --timezone <IANA name> to render local times."
+                        )
+                except Exception:
+                    pass
             _run_investigate_stage(
                 case, db, tasks, llm_base_url, model, template_root, profile, push_progress,
                 max_iter=max_iter,
@@ -582,6 +625,7 @@ def investigate(
                 report_every_n_cycles=report_every_n_cycles,
                 report_max_queries_per_section=report_max_queries_per_section,
                 max_llm_calls=max_llm_calls,
+                auto_rulepacks=auto_rulepacks,
             )
 
         report_path = _run_report_stage(case, db, tasks, push_progress)

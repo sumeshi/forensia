@@ -872,7 +872,6 @@ class MemoryAndIngestTests(unittest.TestCase):
                     "flags": "EntryFlags(ALLOCATED)",
                     "record_number": 42,
                     "is_directory": False,
-                    "is_deleted": False,
                 },
                 "attributes": {
                     "StandardInformation": {
@@ -962,6 +961,232 @@ class MemoryAndIngestTests(unittest.TestCase):
             self.assertEqual(0, run_result.exit_code, run_result.output)
             self.assertIn("prefetch_files=1", run_result.output)
             self.assertIn("prefetch_executions=2", run_result.output)
+
+
+    # ─── R2-10 tests ───────────────────────────────────────────────────────────
+
+    def test_r2_10_overview_writes_only_on_state_transitions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            memory.update_overview("# Investigation Overview\n\n## Key Findings\n- none\n")
+            overview_before = memory.load_overview()
+
+            # 5 inconclusive checks → overview unchanged
+            for i in range(5):
+                _apply_memory_updates(
+                    memory=memory,
+                    active_hypotheses=[Hypothesis(id="H-1", description="desc", status="active", summary="")],
+                    resolved_hypotheses=[],
+                    check_output={
+                        "verdict": "inconclusive",
+                        "memory_updates": {
+                            "overview": [f"inconclusive check {i}"],
+                            "facts": [{"text": f"fact {i}", "evidence_ids": ["ev-1"]}],
+                        },
+                    },
+                    db=None,
+                )
+            self.assertEqual(overview_before, memory.load_overview(),
+                             "overview should not grow after 5 inconclusive checks")
+
+            # 1 confirmed → overview grows
+            _apply_memory_updates(
+                memory=memory,
+                active_hypotheses=[Hypothesis(id="H-1", description="desc", status="active", summary="")],
+                resolved_hypotheses=[],
+                check_output={
+                    "verdict": "confirmed",
+                    "memory_updates": {
+                        "overview": ["confirmed finding"],
+                        "facts": [{"text": "confirmed fact", "evidence_ids": ["ev-2"]}],
+                    },
+                },
+                db=None,
+            )
+            self.assertIn("confirmed finding", memory.load_overview(),
+                          "overview should grow after confirmed verdict")
+
+    def test_r2_10_new_nonobserved_entity_triggers_overview(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            memory.update_overview("# Investigation Overview\n\n## Key Findings\n- none\n")
+
+            # Inconclusive but with a new entity (role ≠ observed_user)
+            _apply_memory_updates(
+                memory=memory,
+                active_hypotheses=[Hypothesis(id="H-1", description="desc", status="active", summary="")],
+                resolved_hypotheses=[],
+                check_output={
+                    "verdict": "inconclusive",
+                    "memory_updates": {
+                        "overview": ["new entity discovered"],
+                        "entities": [{"entity_type": "src_ip", "name": "10.0.0.99", "role": "source_ip", "notes": "new"}],
+                    },
+                },
+                db=None,
+            )
+            self.assertIn("new entity discovered", memory.load_overview(),
+                          "new entity with role ≠ observed_user triggers overview")
+
+    def test_r2_10_first_artifact_family_triggers_overview(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            memory.update_overview("# Investigation Overview\n\n## Key Findings\n- none\n")
+
+            _apply_memory_updates(
+                memory=memory,
+                active_hypotheses=[Hypothesis(id="H-1", description="desc", status="active", summary="")],
+                resolved_hypotheses=[],
+                check_output={
+                    "verdict": "inconclusive",
+                    "memory_updates": {
+                        "overview": ["mft evidence found"],
+                        "facts": [{"text": "mft activity", "evidence_ids": ["mft-000001"]}],
+                    },
+                },
+                db=None,
+            )
+            self.assertIn("mft evidence found", memory.load_overview(),
+                          "first artifact family triggers overview")
+
+    def test_r2_10_fact_truncation_at_word_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+
+            long_words = ["word"] * 50  # 250 chars, well over 160
+            long_body = " ".join(long_words)
+            memory.append_confirmed_fact(long_body, ["ev-1"])
+            detail_id = "fact-001"
+            self.assertTrue((memory.details_dir / f"{detail_id}.md").exists())
+            detail_content = (memory.details_dir / f"{detail_id}.md").read_text(encoding="utf-8")
+            self.assertIn(long_body, detail_content,
+                          "detail file has full body")
+
+            facts_text = memory.facts_path.read_text(encoding="utf-8")
+            line_with_preview = [l for l in facts_text.splitlines() if l.startswith("- [fact-001]")][0]
+            self.assertIn("[fact-001]", line_with_preview,
+                          "fact line references detail link")
+            # Extract preview text between [fact-001] and metadata brackets
+            after_link = line_with_preview.split("[fact-001] ", 1)[-1]
+            if " [" in after_link:
+                preview = after_link.split(" [")[0]
+            else:
+                preview = after_link
+            if "…" in preview:
+                self.assertLessEqual(len(preview.replace("…", "")), 160,
+                                     "truncated text ≤ 160 chars")
+                self.assertFalse(preview.endswith(" "),
+                                 "no trailing space")
+                self.assertFalse(preview.endswith("… "),
+                                 "no space before …")
+            else:
+                self.assertLessEqual(len(preview), 160,
+                                     "untruncated preview ≤ 160 chars")
+
+    def test_r2_10_fact_truncation_never_mid_word(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+
+            # Body where char 160 falls mid-word
+            body = "a " + "supercalifragilisticexpialidocious " * 5 + "zzz trailing"
+            memory.append_confirmed_fact(body, ["ev-1"])
+            facts_text = memory.facts_path.read_text(encoding="utf-8")
+            line_with_preview = [l for l in facts_text.splitlines() if l.startswith("- [fact-001]")][0]
+            after_link = line_with_preview.split("[fact-001] ", 1)[-1]
+            if " [" in after_link:
+                preview = after_link.split(" [")[0]
+            else:
+                preview = after_link
+
+            if "…" in preview:
+                chars_before = preview.split("…")[0]
+                # Check that truncation is at a word boundary: the character in
+                # the original 160-char prefix at position len(chars_before) must
+                # be a space (or boundary). We use rfind(" ") so it's always a space.
+                original_prefix = body[:160]
+                if chars_before:
+                    self.assertEqual(
+                        original_prefix[len(chars_before)], " ",
+                        "truncation should occur at a space word boundary",
+                    )
+
+    def test_r2_10_task_jaccard_dedup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+
+            # Add first task
+            memory.append_task("Investigate the context of logon events on host", "human_decision")
+            # Near-paraphrase (≥0.6 Jaccard) → should be deduped
+            memory.append_task("Investigate the context of logon events on host machine", "human_decision")
+            # Different task → should be added
+            memory.append_task("Check network connections from suspicious IP", "human_decision")
+            # Identical to the third → deduped (exact match via existing logic)
+            memory.append_task("Check network connections from suspicious IP", "human_decision")
+
+            tasks_text = memory.tasks_memory_path.read_text(encoding="utf-8")
+            task_lines = [l for l in tasks_text.splitlines() if l.startswith("- [human_decision]")]
+            self.assertEqual(2, len(task_lines),
+                             "only 2 unique tasks after dedup (2 paraphrased → 1, + 1 unique)")
+
+    def test_r2_10_task_human_decision_cap_at_10(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+
+            # Add 11 distinct human_decision tasks (different enough for Jaccard < 0.6)
+            distinct_tasks = [
+                "review dns logs for external beaconing",
+                "check scheduled tasks for persistence",
+                "examine prefetch for unknown executables",
+                "correlate 4625 logon failures by source ip",
+                "extract process parents from 4688 events",
+                "audit service installs around compromise time",
+                "scan mft for recently modified system files",
+                "check registry run keys for autoruns",
+                "inspect 5140 share access for admin shares",
+                "review 4648 explicit credential use patterns",
+                "correlate 4697 service install with network activity",
+            ]
+            for task in distinct_tasks:
+                memory.append_task(task, "human_decision")
+
+            tasks_text = memory.tasks_memory_path.read_text(encoding="utf-8")
+            task_lines = [l for l in tasks_text.splitlines() if l.startswith("- [human_decision]")]
+            self.assertLessEqual(len(task_lines), 10,
+                                 "at most 10 human_decision tasks")
+            task_texts = [l.split("] ", 1)[-1] for l in task_lines]
+            self.assertNotIn(distinct_tasks[0], task_texts,
+                             "oldest human_decision task evicted")
+
+    def test_r2_10_inconclusive_without_transition_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            memory.update_overview("# Investigation Overview\n\n## Key Findings\n- none\n")
+            overview_before = memory.load_overview()
+
+            # Inconclusive with no new entities, no new families
+            _apply_memory_updates(
+                memory=memory,
+                active_hypotheses=[Hypothesis(id="H-1", description="desc", status="active", summary="")],
+                resolved_hypotheses=[],
+                check_output={
+                    "verdict": "inconclusive",
+                    "memory_updates": {
+                        "overview": ["boring inconclusive detail"],
+                        "facts": [{"text": "some fact", "evidence_ids": ["ev-1"]}],
+                    },
+                },
+                db=None,
+            )
+            self.assertEqual(overview_before, memory.load_overview(),
+                             "plain inconclusive without transition writes nothing to overview")
 
 
 if __name__ == "__main__":

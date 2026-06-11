@@ -49,12 +49,34 @@ FINDING_EXTRACTOR_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
     "properties": {
         "new_hypotheses": {"type": "array", "items": {"type": "object"}},
-        "new_findings": {"type": "array", "items": {"type": "object"}},
+        "new_findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "severity": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
+                    "evidence_ids": {"type": "array", "items": {"type": "string"}},
+                    "claim_type": {"type": "string", "enum": ["observation", "interpretation"]},
+                },
+                "required": ["title", "severity", "evidence_ids", "claim_type"],
+            },
+        },
         "finding_title": {"type": "string"},
         "finding_summary": {"type": "string"},
         "finding_severity": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
         "suspicious_evidence_report": {"type": "string"},
     },
+}
+
+_FACT_ITEM_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "text": {"type": "string"},
+        "evidence_ids": {"type": "array", "items": {"type": "string"}},
+        "claim_type": {"type": "string", "enum": ["observation", "interpretation"]},
+    },
+    "required": ["text", "evidence_ids", "claim_type"],
 }
 
 MEMORY_UPDATER_SCHEMA: dict[str, Any] = {
@@ -65,7 +87,7 @@ MEMORY_UPDATER_SCHEMA: dict[str, Any] = {
         "memory_updates": {
             "type": "object",
             "properties": {
-                "facts": {"type": "array", "items": {"type": "object"}},
+                "facts": {"type": "array", "items": _FACT_ITEM_SCHEMA},
                 "timeline": {"type": "array", "items": {"type": "object"}},
                 "tasks": {"type": "array", "items": {"type": "object"}},
                 "overview": {"type": "array", "items": {"type": "string"}},

@@ -220,7 +220,7 @@ def _register_report_routes(app: FastAPI, case: Case, cached):
         if snapshot is not None:
             return Response(content=snapshot, media_type="text/markdown; charset=utf-8")
         with CaseDB(case) as db:
-            markdown = build_report_markdown_from_db(db)
+            markdown = build_report_markdown_from_db(db, case=case)
         return Response(content=markdown, media_type="text/markdown; charset=utf-8")
 
     @app.get("/api/report-html", response_class=HTMLResponse)

@@ -5,6 +5,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+import duckdb
+
 from forensia.ai.sql_schema import _LEGACY_ALLOWED_TABLES
 
 ALLOWED_IDENTIFIER_REFERENCES = _LEGACY_ALLOWED_TABLES | {
@@ -312,6 +314,38 @@ def validate_select_sql(sql: str) -> str:
                 )
     except ImportError:
         pass
+    except ValueError:
+        # Intentional validation failures (e.g. mixed COALESCE types) must propagate.
+        raise
+    except Exception:
+        # sqlglot internal parse errors are not validation verdicts; ignore them
+        # so they never surface as reasoning/rationale text (R2-05).
+        pass
+    # R2-03: Reject SQL with unresolved placeholder literals
+    _PLACEHOLDER_RE = re.compile(r"\[\w*placeholder\w*\]|\[(start|end)_time\]|\{\w+\}")
+    if _PLACEHOLDER_RE.search(normalized):
+        raise ValueError("SQL contains unresolved placeholder literal; use real values from the hypothesis/case profile, or omit that filter")
+    return normalized
+
+
+def validate_select_sql_with_dryrun(sql: str, db: Any) -> str:
+    """Validate a SELECT statement by running EXPLAIN against a live DuckDB connection.
+
+    Catches statically valid SQL that references nonexistent functions or tables.
+    `db` is anything with a DuckDB-backed ``.execute`` (raw connection or CaseDB).
+    This is a binder-level check only; run `validate_select_sql` first for the
+    read-only/allowlist/placeholder guarantees. Returns the normalized SQL on
+    success, raises ValueError with the first line of the DuckDB error message
+    on failure.
+    """
+    normalized = sql.strip().rstrip(";").strip()
+    if not normalized:
+        raise ValueError("SQL is empty")
+    try:
+        db.execute(f"EXPLAIN {normalized}")
+    except duckdb.Error as exc:
+        msg = str(exc).split("\n")[0].strip()
+        raise ValueError(msg) from exc
     return normalized
 
 

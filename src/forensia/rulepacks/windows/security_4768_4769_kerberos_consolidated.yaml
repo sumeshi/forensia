@@ -17,12 +17,12 @@ attack:
   technique_name: 'Use Alternate Authentication Material: Pass the Ticket'
 query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    event_id,\n    target_user,\n    service_name,\n    src_ip,\n    json_extract_string(raw_json, '$.EventData.Status') AS failure_code\nFROM evtx_events\nWHERE event_id IN (4768, 4769)\n"
 finding:
-  title: Kerberos activity for ${target_user} on ${computer}
-  summary: 'Event ${event_id} — user ${target_user} on ${computer} from ${src_ip} (service: ${service_name}, failure code: ${failure_code})'
+  title: Kerberos activity for {target_user} on {computer}
+  summary: 'Event {event_id} — user {target_user} on {computer} from {src_ip} (service: {service_name}, failure code: {failure_code})'
 hypotheses:
 - id: windows-security-4768-kerberoasting
   segment: credential-access
-  description: Service ticket requests (4769) for ${service_name} by ${target_user} on ${computer} may indicate Kerberoasting — request service tickets for offline cracking
+  description: Service ticket requests (4769) for {service_name} by {target_user} on {computer} may indicate Kerberoasting — request service tickets for offline cracking
   required_entities:
   - computer
   - target_user
@@ -39,7 +39,7 @@ hypotheses:
   - 3_technical
 - id: windows-security-4768-as-rep-roasting
   segment: credential-access
-  description: TGT requests (4768) for ${target_user} from ${src_ip} on ${computer} — potential AS-REP roasting if the account does not require pre-authentication
+  description: TGT requests (4768) for {target_user} from {src_ip} on {computer} — potential AS-REP roasting if the account does not require pre-authentication
   required_entities:
   - computer
   - target_user

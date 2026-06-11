@@ -59,6 +59,8 @@ AI を「賢い調査員」として扱わない。
 
 決定論的に決まる処理(SQL の妥当性検証、仮説の同一性判定、構造化質問のルーティングと表組み、フォールバック SQL の生成、重複クエリ検出)は LLM に渡さず、必ずコード側で処理します。LLM を「ルーティング」「リトライ」「フォーマット整形」に使わないことで、出力の予測可能性と監査性を保ちます。
 
+LLM の verdict も無検証では採用しません。`confirmed` は「rationale が主張する Event ID と仮説の必須エンティティが実際のクエリ結果行に存在するか」をコード側の整合ゲートで照合してから確定します。フォールバック検索で代替された行からは `confirmed` を出せず(最大でも `newlead`)、記憶へ書き込む事実・エンティティもクエリ結果行に実在する evidence_id・値のみが受理されます。
+
 
 ### 3. **時間は湯水のごとく使う**
 
@@ -103,27 +105,28 @@ flowchart LR
     M -. context .-> CK
 ```
 
-ループは `plan_cycle` 単位で進み、各サイクルで次の流れを 1 周します。
+ループ開始時には、発火した検知ルールの `hypotheses` 宣言が仮説としてシードされます(`source_decl_id` で宣言と紐づき、confirmed 時の follow-up 質問やレポートセクションの stale 化を駆動)。その後 `plan_cycle` 単位で次の流れを 1 周します。
 
-1. **broad_plan**: `gap_identifier` が未カバーの観測点を抽出し、`hypothesis_drafter` がそれぞれに対し仮説を 1 つずつ起案。コード側で類似仮説を dedup。
+1. **broad_plan**: `gap_identifier` が未カバーの観測点を抽出し、`hypothesis_drafter` がそれぞれに対し仮説を 1 つずつ起案。コード側で類似仮説を dedup し、ケースに存在しない Event ID への依存を確認条件から除去。
 2. **plan**: `query_intent_planner` が「何を取りに行くか」を JSON で出し、`sql_composer` が schema_card を見て SELECT 文を生成。
 3. **execute**: DuckDB に対し SELECT を発行。0 行のときに限り rule 側の `fallback_search` 宣言が決定論的に発火。
-4. **check**: `verdict_reviewer` が verdict を出し、confirmed のときだけ `finding_extractor` が構造化 finding を抽出。
-5. **track**: `HypothesisProgressTracker` が confirm_when / 連続 0-row / フィンガープリント重複を見て auto-confirm / auto-refute / pivot を機械的に判定。
+4. **check**: `verdict_reviewer` が verdict を出し、コード側の整合ゲートが主張と結果行の一致を照合。confirmed のときだけ `finding_extractor` が構造化 finding を抽出し、検証済みのものを `findings` テーブルへ永続化。
+5. **track**: `HypothesisProgressTracker` が confirm_when / 連続 0-row / フィンガープリント重複を見て auto-confirm / auto-refute / untestable / pivot を機械的に判定。「証拠が無く検証不能 (untestable)」は「反証された (refuted)」と区別して記録。
 6. **resolve**: 仮説が確定すると関連レポートセクションが `stale` 化、follow-up 質問が新たな仮説に投入。
-7. **report**: `section_outliner` がレイアウトを決め、`paragraph_narrator` が段落単位で本文を生成。レポートから出た gap は次サイクルの仮説に戻る。
+7. **report**: `section_outliner` がレイアウトを決め、`paragraph_narrator` が段落単位で本文を生成。untestable の仮説は不足テレメトリとともに Gap セクションへ。レポートから出た gap は次サイクルの仮説に戻る。
 
 ## 効率性のための設計
 
 ローカル LLM の処理時間と精度を両立するため、以下の工夫を施しています。
 
 - **宣言層への知識集約**:Event ID 解説、Logon Type、検知ルール、フォールバック手順、レポートセクションのスタイル指示などは `src/forensia/rulepacks/_schema/` 配下の YAML / Markdown にまとめてあり、Python 側は generic に消費するだけです。新しい攻撃手法や調査観点は YAML 編集で追加できます。
+- **証拠アベイラビリティプロファイル**:調査開始時にケース DB から「実在する Event ID・テーブル行数・主要ユーザー/ホスト/実行ファイル」を決定的に集計し、仮説起案と SQL 計画のプロンプトへ注入します。存在しない Event ID にしか依存できない仮説は `untestable` として早期にループから外れます。また、`--auto-rulepacks` (既定 on) により、検出済みの痕跡ファミリ (クラウド同期 exe、`.ost`/`.pst` など) に `applies_when` が一致するルールパックを自動有効化します。`--no-auto-rulepacks` で従来の profile 固定動作に戻します。`resolve_active_packs` ([loader.py:222](../src/forensia/rules/loader.py#L222)) で決定論的に判定されます。
 - **schema_card と SQL クックブック**:planner は intent の `target_table` に応じて `_schema/*.yaml` の schema_card を切り替え、`information_schema` から live スキーマを併記します。SQL クックブックは event_id 列挙 / 時間範囲 / GROUP BY / COALESCE / MFT path LIKE / Prefetch の 6 種で、LLM が SQL をゼロから合成しなくて済むようにしています。SQL バリデーション失敗時は `sql_composer` のみを最大 3 回リトライし、巨大プロンプト全体を送り直しません。
 - **LLM サーバ障害への耐性**:`chat_completion` は HTTP 5xx / 接続エラー / タイムアウトを最大 3 回まで指数バックオフ(2 / 4 / 8 秒)でリトライします。リトライ枯渇後は `_run_broad_plan_step` が再 raise して投資調査全体を停止させ、空のレポート生成を抑止します。
 - **mid-investigation の UI 同期**:調査中は `progress_events.json` に加えて `hypotheses` / `findings` / `attack_coverage` / `report_sections` / `stats` 等の軽量スナップショットを 5 秒間隔で書き出し、webui が長時間調査の途中でも実状態を表示できるようにしています。
-- **記憶の圧縮と分離**:`overview.md` は閾値超過時に LLM で要約圧縮し、`facts.md` / `timeline.md` などは構造を保持。仮説検証中の暫定情報は `memory/scratch/H-NNN/` に隔離され、confirmed 時に共有記憶へ昇格、refuted 時は archive へ退避します。これによって未確証の暫定情報が他仮説の検証に汚染することを防ぎます。
+- **記憶の圧縮と分離**:`overview.md` は状態遷移時のみ追記 (confirmed / refuted / untestable の確定、`observed_user` 以外の新規 entity role、新 artifact family の初 finding)。単なる inconclusive check では書き込みません。`_apply_memory_updates` ([investigator.py:737](../src/forensia/ai/investigator.py#L737)) の決定論的述語で制御されます。`facts.md` / `timeline.md` などは構造を保持し、confirmed verdict では決定的な事実行が必ず追記されます。仮説検証中の暫定情報は `memory/scratch/H-NNN/` に隔離され、confirmed 時に共有記憶へ昇格、refuted / untestable 時は archive へ退避します。これによって未確証の暫定情報が他仮説の検証に汚染することを防ぎます。
 - **段落単位の汚染防止**:レポート生成では `paragraph_narrator` が 1 段落ずつ独立して書き、他セクションの本文や全 top-finding を見ません。ブロック間で共有するのは 120 字程度のサマリのみで、序文の使い回しや無関係な finding の流入を構造的に避けています。
-- **QuestionSpec による構造化質問**:テンプレートの見出しやコメントは `question_routing.yaml` の安定した `answer_spec` に解決されます。シャットダウン時刻、最終ログオン、メールデータファイル、クラウド同期痕跡などの定型質問は LLM に自由回答させず、決定論的 SQL / builder / CSV/JSON export で処理します。
+- **QuestionSpec による構造化質問**:テンプレートの見出しやコメントは `question_routing.yaml` の安定した `answer_spec` に解決されます。シャットダウン時刻、最終ログオン、メールデータファイル、クラウド同期痕跡などの定型質問は LLM に自由回答させず、決定論的 SQL / builder / CSV/JSON export で処理します。回答に添える解釈文も `interpretation_template` として YAML 側で宣言し、コードが行数や代表値を埋めて描画します。質問文中の日付・時刻範囲(`between 09:00 and 18:00` など)は正規表現で抽出され、SQL の時間フィルタに反映されます。
 - **クエリの正規化フィンガープリント**:重複クエリ検出は sqlglot AST ベースで、空白や別名差を無視して「意味的に同じクエリを 2 回出した」を判定します。LLM が同じ問いを言い換えて繰り返すことによる無限ループを防ぎます。
 - **LLM 呼び出し総数の硬上限(opt-in)**:`--max-llm-calls N` を超えると `RuntimeError` で停止します。クラウド API への暴走防止用の安全弁で、ローカル LLM 前提の既定値は `0`(無制限)。phase 別の集計は `ai_logs/` から確認できます。
 
@@ -239,6 +242,10 @@ UI 画面 (cockpit) は次で構成されます。
 - このツールの目的はレポートの材料を半自動で集めることであり、出力結果は必ず人間が検証してください。
 - オフライン動作を前提に設計していますが、ローカル LLM の準備 (モデルダウンロード、推論サーバの起動)は別途必要です。
 - forensia は開発中のソフトウェアです。実装上の詳細、リポジトリ構成、内部不変条件などは [docs/](docs/) を参照してください。
+
+## コントリビュート
+
+検知ルール・スキーマカード・QuestionSpec などの知識追加は `src/forensia/rulepacks/` 配下の YAML 編集だけで完結するよう設計されています。コード変更を伴う貢献の原則(宣言層ファースト、決定的処理とLLMの責務分担、verdict 語彙、マイグレーション、テスト方針)は [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。
 
 ## ベンチマーク
 

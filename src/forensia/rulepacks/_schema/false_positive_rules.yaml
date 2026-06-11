@@ -17,3 +17,35 @@ reduction_guidance:
     - "Activity is within business hours, from known internal IPs."
     - "The account is a known service or IT-admin account."
     - "The action can be explained by routine IT operations."
+
+benign_context_rules:
+  - id: machine-account-subject
+    when: { column: subject_user, regex: '\$$' }
+    note: "Subject is a machine account; self-referential auth is routine."
+  - id: loopback-source
+    when: { column: src_ip, regex: '^(127\.0\.0\.1|::1)$' }
+    note: "Loopback source; not remote activity."
+  - id: os-servicing-process
+    when: { column: process_name, regex: '(?i)(winlogon|poqexec|services|svchost|taskhost|lsass)\.exe$' }
+    note: "Core OS process; presence alone is not attacker tooling."
+  - id: machine-account-explicit-credential
+    when: { column: target_user, regex: '\$$' }
+    note: "Target is a machine account; routine computer authentication."
+
+finding_benign_context:
+  - id: boot-window-service-install
+    applies_to_tags: [persistence, lateral-movement]
+    when_all:
+      - { column: service_name, regex: '(?i)(driver|microsoft|office|software protection)' }
+      - { co_occurs_event_ids: [6005, 12], within_minutes: 10 }
+    note: "Service/driver registrations during OS boot are routine."
+  - id: generic-os-process
+    applies_to_tags: [execution, persistence]
+    when_all:
+      - { column: process_name, regex: '(?i)(svchost|services|lsass|winlogon|csrss|smss|system|smss|spoolsv)\.exe$' }
+    note: "Core OS process execution; benign system activity."
+  - id: generic-service-host
+    applies_to_tags: [persistence]
+    when_all:
+      - { column: service_name, regex: '(?i)(eventlog|plugplay|power|profiles|protection|security|update|wuauserv)' }
+    note: "Standard Windows service; benign startup activity."

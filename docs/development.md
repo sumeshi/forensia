@@ -74,6 +74,7 @@ forensia serve ./dist/DESKTOP-001
 - **実 LLM 呼び出しを伴うテストを書かない**。`investigate(...)` の完全サイクルや実サーバ依存の section refresh は副作用 (DuckDB 書き込み、memory I/O、ファイル走査) が多すぎて軽くならない。`run_section_block_agent` などを通す場合は、structured answer / deterministic builder / mocked JSON response に閉じる
 - **実 LLM サーバを叩くテストを書かない**。過去にあった `tests/test_benchmark_e2e_real_llm.py` (`FORENSIA_LLM_BASE_URL` で gate) は同じ理由で削除済み
 - 代わりに次でカバー: 純粋関数ヘルパのユニットテスト (`_slim_findings`, `_quality_gate_section`, `_render_structured_answer_markdown` 等)、永続化の DB-only テスト、LLM モジュールを import しない CLI / HTTP テスト
+- **決定論ゲートの回帰テスト**: verdict 整合ゲート・フォールバック降格・memory フィルタ・extracted finding 検証は `tests/test_checker_gates.py`、untestable 早期解決は `tests/test_untestable_resolution.py` でカバーする。これらのゲートを変更したら必ず同時に更新する
 - 調査ループの挙動を本気で見たいときは、ローカルモデル相手に `forensia investigate ...` を回し、`ai_logs/` を目で確認する。pytest にしない
 
 ---
@@ -127,6 +128,10 @@ forensia serve ./dist/DESKTOP-001
 - `report --write` は section 再充填してから render
 
 `--rerun` が呼ぶ `_reset_case_tables()` は、証拠由来の正規化テーブルだけでなく、派生 workflow state も消す必要がある。少なくとも `findings` / `hypotheses` / `report_sections` / `claims` / `section_facts` / `section_evidence` / `section_runs` / `section_questions` / `query_cache` / trace tables / `ingested_files` / `prefetch_timeline` を対象に含める。新しい mutable table を追加したら `_reset_case_tables()` と `tests/test_memory_and_ingest.py` の reset テストを同時に更新する。
+
+### 4.3 スキーマ変更とマイグレーション
+
+`db/schema.py` の `CREATE TABLE IF NOT EXISTS` を変更しても既存ケース DB には適用されない。既存テーブルへ列を追加する場合は、`db/database.py` の `_apply_migration_once("<key>", ...)` にマイグレーション (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`) を必ず追加する(例: `hypotheses_source_decl_id`, `mft_entries_fn_name`)。
 
 ---
 

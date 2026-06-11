@@ -187,10 +187,187 @@ def _downgrade_builtin_benign_finding(finding: Finding, allowlist_data: dict[str
         finding.missing_checks.append(note)
 
 
+@lru_cache(maxsize=1)
+def _load_finding_benign_context_rules() -> list[dict[str, Any]]:
+    """Load finding-level benign context rules from false_positive_rules.yaml."""
+    fp_path = Path(__file__).resolve().parent.parent / "rulepacks" / "_schema" / "false_positive_rules.yaml"
+    if not fp_path.exists():
+        return []
+    try:
+        data = yaml.safe_load(fp_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return []
+    return data.get("finding_benign_context") or []
+
+
+def _parse_event_ts(value: Any) -> datetime | None:
+    """Parse an evidence-row timestamp string into a naive datetime."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    text = text.replace("T", " ").split("+")[0].split("Z")[0]
+    text = text.split(".")[0]
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def build_co_occur_index(db: CaseDB, rules: list[dict[str, Any]] | None = None) -> dict[int, list[tuple[datetime, str]]]:
+    """Prefetch timestamps of every event ID referenced by co_occurs_event_ids conditions.
+
+    Returns {event_id: [(timestamp, canonical_computer), ...]} so that
+    benign-context proximity checks run in memory without per-finding queries.
+    """
+    rules = rules if rules is not None else _load_finding_benign_context_rules()
+    event_ids: set[int] = set()
+    for rule in rules:
+        for condition in rule.get("when_all") or []:
+            for eid in condition.get("co_occurs_event_ids") or []:
+                try:
+                    event_ids.add(int(eid))
+                except (TypeError, ValueError):
+                    continue
+    if not event_ids:
+        return {}
+    id_list = ", ".join(str(eid) for eid in sorted(event_ids))
+    index: dict[int, list[tuple[datetime, str]]] = {}
+    try:
+        rows = db.execute(
+            f"SELECT event_id, timestamp, computer FROM evtx_events WHERE event_id IN ({id_list}) AND timestamp IS NOT NULL"
+        ).fetchall()
+    except Exception:
+        return {}
+    for eid, ts, computer in rows:
+        parsed = _parse_event_ts(ts)
+        if parsed is None:
+            continue
+        index.setdefault(int(eid), []).append((parsed, str(computer or "").strip().upper()))
+    return index
+
+
+def _co_occurs_satisfied(
+    condition: dict[str, Any],
+    row: dict[str, Any],
+    co_occur_index: dict[int, list[tuple[datetime, str]]],
+) -> bool:
+    """True when any listed event ID occurs within within_minutes of the row's timestamp.
+
+    Conservative: when the row has no parseable timestamp or the index is empty,
+    the condition is NOT satisfied (the finding keeps its original confidence).
+    Host matching applies when both sides carry a computer value.
+    """
+    row_ts = _parse_event_ts(row.get("timestamp"))
+    if row_ts is None or not co_occur_index:
+        return False
+    within_minutes = int(condition.get("within_minutes") or 10)
+    window = within_minutes * 60
+    row_host = str(row.get("computer") or "").strip().upper()
+    for eid in condition.get("co_occurs_event_ids") or []:
+        try:
+            entries = co_occur_index.get(int(eid)) or []
+        except (TypeError, ValueError):
+            continue
+        for ts, host in entries:
+            if row_host and host and row_host != host:
+                continue
+            if abs((ts - row_ts).total_seconds()) <= window:
+                return True
+    return False
+
+
+def _annotate_finding_benign_context(
+    finding: Finding,
+    co_occur_index: dict[int, list[tuple[datetime, str]]] | None = None,
+) -> None:
+    """Annotate findings with benign-context tags if they match finding-level rules.
+
+    Tags are added to the finding's tags list, and confidence is multiplied by 0.4.
+    The finding is never suppressed outright (visibility preserved).
+    All when_all conditions must positively match: a missing column or an
+    unverifiable co-occurrence means NO downgrade (conservative default).
+    """
+    rules = _load_finding_benign_context_rules()
+    if not rules:
+        return
+
+    row = finding.evidence[0] if finding.evidence and isinstance(finding.evidence[0], dict) else {}
+    if not row:
+        return
+
+    for rule in rules:
+        rule_id = rule.get("id", "")
+        applies_to_tags = rule.get("applies_to_tags") or []
+        when_all = rule.get("when_all") or []
+
+        # Check if finding tags overlap with applies_to_tags
+        finding_tags_lower = {t.lower() for t in (finding.tags or [])}
+        if applies_to_tags and not any(t.lower() in finding_tags_lower for t in applies_to_tags):
+            continue
+
+        # Check when_all conditions — every condition must positively match.
+        all_match = bool(when_all)
+        for condition in when_all:
+            column = condition.get("column", "")
+            regex = condition.get("regex", "")
+            if column and regex:
+                value = str(row.get(column) or "")
+                if not value or not re.search(regex, value):
+                    all_match = False
+                    break
+                continue
+            if condition.get("co_occurs_event_ids"):
+                if not _co_occurs_satisfied(condition, row, co_occur_index or {}):
+                    all_match = False
+                    break
+                continue
+            # Unknown condition shape: fail loud-ish by not matching.
+            all_match = False
+            break
+        if not all_match:
+            continue
+
+        # Match found: annotate with benign-context tag
+        benign_tag = f"benign-context:{rule_id}"
+        if benign_tag not in finding.tags:
+            finding.tags = list(finding.tags or []) + [benign_tag]
+        finding.confidence = min(float(finding.confidence), float(finding.confidence) * 0.4)
+        note = f"Matched benign-context rule: {rule_id} — {rule.get('note', '')}"
+        if note not in finding.missing_checks:
+            finding.missing_checks = list(finding.missing_checks or []) + [note]
+
+
 def clear_rule_findings(case: Case, db: CaseDB, rule_id: str) -> None:
     db.execute("DELETE FROM findings WHERE rule_id = ?", (rule_id,))
     for path in case.findings_dir.glob(f"{rule_id}-*.json"):
         path.unlink(missing_ok=True)
+
+
+def feed_findings_to_timeline(db: CaseDB) -> None:
+    """Feeder (a): Insert finding rows with severity >= medium into case_timeline.
+
+    Extracts the first evidence row's timestamp and evidence_id from each
+    finding's JSON evidence array. Deduplicates by (source, ref_id).
+    """
+    db.execute("""
+        INSERT INTO case_timeline (entry_id, timestamp, source, ref_id, host, summary, evidence_id)
+        SELECT
+            'tl-finding-' || f.finding_id,
+            COALESCE(
+                TRY_CAST(NULLIF(json_extract_string(f.evidence, '$[0].timestamp'), '') AS TIMESTAMP),
+                f.created_at
+            ),
+            'finding',
+            f.finding_id,
+            NULLIF(json_extract_string(f.evidence, '$[0].computer'), ''),
+            COALESCE(NULLIF(f.title, ''), f.finding_id),
+            NULLIF(json_extract_string(f.evidence, '$[0].evidence_id'), '')
+        FROM findings f
+        WHERE f.severity IN ('critical', 'high', 'medium')
+          AND COALESCE(f.status, 'new') != 'suppressed'
+          AND f.evidence IS NOT NULL
+        ON CONFLICT (entry_id) DO NOTHING
+    """)
 
 
 def save_findings(case: Case, db: CaseDB, findings: list[Finding]) -> None:
@@ -203,8 +380,10 @@ def save_findings(case: Case, db: CaseDB, findings: list[Finding]) -> None:
     now = datetime.now(UTC).replace(tzinfo=None)
     allowlist_rules = _load_allowlist(case)
     builtin_allowlist = _load_builtin_benign_allowlist()
+    co_occur_index = build_co_occur_index(db)
     for finding in findings:
         _downgrade_builtin_benign_finding(finding, builtin_allowlist)
+        _annotate_finding_benign_context(finding, co_occur_index)
         if _is_suppressed(finding, allowlist_rules):
             finding.status = "suppressed"
         path = case.findings_dir / f"{finding.finding_id}.json"
@@ -232,6 +411,7 @@ def save_findings(case: Case, db: CaseDB, findings: list[Finding]) -> None:
                 now,
             ),
         )
+    feed_findings_to_timeline(db)
 
 
 def _escape_like_pattern(keyword: str) -> str:

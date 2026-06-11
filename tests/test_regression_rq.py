@@ -3,9 +3,11 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import datetime
+
 from forensia.ai.schemas import PARAGRAPH_NARRATE_SCHEMA
 from forensia.ai.prompts import _slim_report_brief_for_section, build_paragraph_narrate_messages
-from forensia.ai.section_agent import _coerce_plan_action, _extract_answer_by_shape, _format_benchmark_answer
+from forensia.ai.section_agent import _build_daily_session_timeline, _coerce_plan_action, _extract_answer_by_shape, _format_benchmark_answer, _load_event_class_definitions
 from forensia.report.writer import (
     EVIDENCE_ID_PATTERN,
     _check_json_object_leak,
@@ -164,3 +166,136 @@ Substantive narrative claim with evidence evtx-security-000000000122.
         self.assertNotIn("large_unused_field", technical["top_findings"][0])
         self.assertEqual("H-002", gaps["active_hypotheses"][0]["hypothesis_id"])
         self.assertNotIn("top_findings", gaps)
+
+
+class TestDailySessionTimelineBuilder(unittest.TestCase):
+    def test_load_event_class_definitions(self):
+        classes = _load_event_class_definitions()
+        self.assertIn("startup", classes)
+        self.assertIn("shutdown", classes)
+        self.assertIn("logon", classes)
+        self.assertIn("logoff", classes)
+        self.assertEqual(classes["startup"]["event_ids"], [6005, 12])
+        self.assertEqual(classes["shutdown"]["event_ids"], [6006, 13, 1074])
+        self.assertEqual(classes["logon"]["event_ids"], [4624])
+        self.assertEqual(classes["logon"]["logon_types"], [2, 10, 11])
+        self.assertEqual(classes["logoff"]["event_ids"], [4634, 4647])
+
+    def test_builder_with_empty_db_returns_empty_list(self):
+        import tempfile
+        from pathlib import Path
+        from forensia.core.case import Case
+        from forensia.db.database import CaseDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                rows = _build_daily_session_timeline(db)
+                self.assertEqual(rows, [])
+
+    def test_builder_returns_correct_shape_over_two_days(self):
+        import tempfile
+        from pathlib import Path
+        from forensia.core.case import Case
+        from forensia.db.database import CaseDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                # Day 1: 2015-03-22
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
+                    ("evtx-e1", 6005, datetime.datetime(2015, 3, 22, 8, 0, 0), "HOST1", None, None),
+                )
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
+                    ("evtx-e2", 4624, datetime.datetime(2015, 3, 22, 8, 15, 0), "HOST1", "alice", "2"),
+                )
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
+                    ("evtx-e3", 4624, datetime.datetime(2015, 3, 22, 9, 0, 0), "HOST1", "bob", "10"),
+                )
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
+                    ("evtx-e4", 4634, datetime.datetime(2015, 3, 22, 17, 0, 0), "HOST1", "alice", "2"),
+                )
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
+                    ("evtx-e5", 1074, datetime.datetime(2015, 3, 22, 17, 30, 0), "HOST1", None, None),
+                )
+
+                # Day 2: 2015-03-23
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
+                    ("evtx-e6", 12, datetime.datetime(2015, 3, 23, 7, 45, 0), "HOST1", None, None),
+                )
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
+                    ("evtx-e7", 4624, datetime.datetime(2015, 3, 23, 8, 5, 0), "HOST1", "charlie", "2"),
+                )
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
+                    ("evtx-e8", 4647, datetime.datetime(2015, 3, 23, 16, 45, 0), "HOST1", "charlie", "2"),
+                )
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
+                    ("evtx-e9", 6006, datetime.datetime(2015, 3, 23, 17, 0, 0), "HOST1", None, None),
+                )
+
+                rows = _build_daily_session_timeline(db)
+
+        self.assertEqual(len(rows), 2)
+
+        day1 = rows[0]
+        self.assertEqual(day1["date"], "2015-03-22")
+        self.assertEqual(day1["first_startup"], "2015-03-22 08:00:00")
+        self.assertEqual(day1["first_logon"], "2015-03-22 08:15:00")
+        self.assertEqual(day1["last_logoff"], "2015-03-22 17:00:00")
+        self.assertEqual(day1["last_shutdown"], "2015-03-22 17:30:00")
+        self.assertIn("alice", day1["logon_users"])
+        self.assertIn("bob", day1["logon_users"])
+        self.assertEqual(day1["interactive_logon_count"], 2)
+
+        day2 = rows[1]
+        self.assertEqual(day2["date"], "2015-03-23")
+        self.assertEqual(day2["first_startup"], "2015-03-23 07:45:00")
+        self.assertEqual(day2["first_logon"], "2015-03-23 08:05:00")
+        self.assertEqual(day2["last_logoff"], "2015-03-23 16:45:00")
+        self.assertEqual(day2["last_shutdown"], "2015-03-23 17:00:00")
+        self.assertIn("charlie", day2["logon_users"])
+        self.assertEqual(day2["interactive_logon_count"], 1)
+
+    def test_builder_respects_hour_qualifiers(self):
+        import tempfile
+        from pathlib import Path
+        from forensia.core.case import Case
+        from forensia.db.database import CaseDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
+                    ("evtx-e1", 6005, datetime.datetime(2015, 3, 22, 9, 5, 0), "HOST1", None, None),
+                )
+                # This logon is outside qualifier window (before 09:00) so should be excluded
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
+                    ("evtx-e2", 4624, datetime.datetime(2015, 3, 22, 8, 0, 0), "HOST1", "bob", "2"),
+                )
+                # This logon is within the window (09:00-18:00)
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
+                    ("evtx-e3", 4624, datetime.datetime(2015, 3, 22, 9, 0, 0), "HOST1", "alice", "2"),
+                )
+
+                qualifiers = {"hour_from": "09:00", "hour_to": "18:00"}
+                rows = _build_daily_session_timeline(db, qualifiers)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["date"], "2015-03-22")
+        self.assertEqual(rows[0]["first_startup"], "2015-03-22 09:05:00")
+        self.assertEqual(rows[0]["first_logon"], "2015-03-22 09:00:00")
+        self.assertEqual(rows[0]["last_logoff"], "")
+        self.assertEqual(rows[0]["last_shutdown"], "")
+        self.assertEqual(rows[0]["interactive_logon_count"], 1)  # bob at 08:00 excluded

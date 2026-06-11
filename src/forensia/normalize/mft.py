@@ -22,6 +22,7 @@ def _build_stage_table_sql(path_sql: str) -> str:
                 try_cast(nullif(json_extract_string(json, '$.header.record_number'), '') AS BIGINT) AS record_number,
                 json_extract_string(json, '$.attributes.FileName.data.path') AS file_path,
                 regexp_extract(json_extract_string(json, '$.attributes.FileName.data.path'), '[^/\\\\]+$') AS file_name,
+                json_extract_string(json, '$.attributes.FileName.data.name') AS fn_name,
                 nullif(
                     regexp_extract(
                         regexp_extract(json_extract_string(json, '$.attributes.FileName.data.path'), '[^/\\\\]+$'),
@@ -35,8 +36,8 @@ def _build_stage_table_sql(path_sql: str) -> str:
                     ELSE lower(coalesce(json_extract_string(json, '$.header.is_directory'), '')) IN ('1', 'true', 'yes')
                 END AS is_directory,
                 CASE
-                    WHEN json_extract(json, '$.header.is_deleted') IS NULL THEN NULL
-                    ELSE lower(coalesce(json_extract_string(json, '$.header.is_deleted'), '')) IN ('1', 'true', 'yes')
+                    WHEN json_extract(json, '$.header.flags') IS NULL THEN NULL
+                    ELSE lower(coalesce(json_extract_string(json, '$.header.flags'), '')) NOT LIKE '%allocated%'
                 END AS is_deleted,
                 try_cast(
                     nullif(
@@ -78,7 +79,7 @@ def _delete_existing_entries_sql() -> str:
 def _insert_entries_sql() -> str:
     return """
             INSERT INTO mft_entries (
-                evidence_id, source_file, record_number, file_path, file_name, extension,
+                evidence_id, source_file, record_number, file_path, file_name, fn_name, extension,
                 is_directory, is_deleted, size, si_created, si_modified, si_accessed,
                 si_mft_modified, fn_created, fn_modified, fn_accessed, fn_mft_modified,
                 raw_json, tags, severity
@@ -89,6 +90,7 @@ def _insert_entries_sql() -> str:
                 record_number,
                 file_path,
                 file_name,
+                fn_name,
                 extension,
                 is_directory,
                 is_deleted,

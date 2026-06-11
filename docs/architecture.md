@@ -89,9 +89,9 @@ sequenceDiagram
 
     Inv->>Mem: load overview / facts / active_hypotheses
     Inv->>Plan: plan_hypothesis_query(hypothesis, time_range)
-    Plan->>LLM: query_intent_planner
-    Plan->>LLM: sql_self_check
-    Plan->>LLM: sql_composer
+    Plan->>LLM: Phase 1: query_intent_planner
+    Plan->>LLM: → sql_self_check (gate, may repeat intent)
+    Plan->>LLM: Phase 2: sql_composer (≤3 retries on validation fail)
     Plan-->>Inv: PlannedQuery
     Inv->>DB: SELECT
     DB-->>Inv: rows
@@ -107,14 +107,21 @@ sequenceDiagram
 7 ステップ:
 
 1. **broad_plan**: `gap_identifier` が未カバーの観測点を抽出し、`hypothesis_drafter` が gap ごとに仮説を起案
-2. **plan**: `query_intent_planner` → `sql_self_check` → `sql_composer` の 3 段で SQL を組み立て
+2. **plan**: 2 相構成: Phase 1 (intent) で `query_intent_planner` → `sql_self_check` gate (blocked 時は intent 再試行)、Phase 2 (composer) で `sql_composer` (SQL validation 失敗時は composer のみ最大 3 回リトライ)。`plan_hypothesis_query` ([planner.py:320](../src/forensia/ai/planner.py#L320))
 3. **execute**: DuckDB に SELECT 発行。0 行時は rule 側の `fallback_search` 宣言が決定論的に発火
-4. **check**: `verdict_reviewer` が verdict を出し、`confirmed` のときだけ `finding_extractor` が構造化 finding を抽出
-5. **track**: `HypothesisProgressTracker` が `confirm_when` / 連続 0-row / クエリ重複から auto-confirm / refute / pivot を判定
+4. **check**: `verdict_reviewer` が verdict を出し、コード側の整合ゲートが主張と結果行の一致を照合。`confirmed` のときだけ `finding_extractor` が構造化 finding を抽出し `findings` へ永続化
+5. **track**: `HypothesisProgressTracker` が `confirm_when` / 連続 0-row / クエリ重複 / 不在テレメトリから auto-confirm / refute / untestable / pivot を判定
 6. **resolve**: 確定した仮説に紐づくレポートセクションを stale 化、follow-up 質問を新たな仮説に投入
 7. **report**: `section_outliner` がレイアウト確定、`paragraph_narrator` が段落本文を生成
 
 各 LLM ロールの入出力スキーマは [llm-roles.md](llm-roles.md) を参照。
+
+**拡張機能 (R2-07 / R2-08 / R2-11 / R2-14):**
+
+- **auto-rulepacks** (R2-07): `resolve_active_packs` ([loader.py:222](../src/forensia/rules/loader.py#L222)) がケースの証拠ファミリから `applies_when.artifact_families` に一致するルールパックを自動有効化。`--no-auto-rulepacks` で従来動作に。`investigator.investigate` ([investigator.py:1930](../src/forensia/ai/investigator.py#L1930)) の `auto_rulepacks` 引数で制御。
+- **playbook 予算制御** (R2-08): `_dfir_playbook` ([prompts.py:426](../src/forensia/ai/prompts.py#L426)) が `FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS` (既定 24000) を超えないよう Event ID narrative をケース存在 ID に絞り、超過時は優先順位順に sections を削除。
+- **タイムライン自動組み立て** (R2-11): `case_timeline` テーブル ([schema.py:287](../src/forensia/db/schema.py#L287)) に findings (severity ≥ medium) と resolved hypothesis の decisive query row を deterministic に挿入 (`feed_findings_to_timeline` [engine.py:196](../src/forensia/rules/engine.py#L196))。`memory/timeline.md` はこのテーブルから再生成される projection。
+- **タイムゾーン対応** (R2-14): `infer_timezone` ([timezone.py:8](../src/forensia/normalize/timezone.py#L8)) が 4616 システム時刻変更イベント等からオフセットを推定。`case.source_timezone` ([case.py:131](../src/forensia/core/case.py#L131)) に保存され、`_render_timestamp_with_timezone` ([writer.py:2098](../src/forensia/report/writer.py#L2098)) が UTC + ローカルの二重表示を行う。
 
 ### 2.4 Section Agent (レポート生成)
 

@@ -1,9 +1,20 @@
 table: event_ids
+event_classes:
+  startup:
+    event_ids: [6005, 12]
+  shutdown:
+    event_ids: [6006, 13, 1074]
+  logon:
+    event_ids: [4624]
+    logon_types: [2, 10, 11]
+  logoff:
+    event_ids: [4634, 4647]
 events:
   1100:
     title: Event Log service shutdown
     required_fields:
       - computer
+    channels: ["Security", "System"]
     allowed_claims:
       - event log service was shut down
       - logging was intentionally stopped
@@ -18,6 +29,7 @@ events:
     required_fields:
       - subject_user
       - computer
+    channels: ["Security"]
     allowed_claims:
       - security log was cleared
       - log tampering detected
@@ -31,6 +43,7 @@ events:
     title: System log cleared
     required_fields:
       - computer
+    channels: ["System", "Security"]
     allowed_claims:
       - system log was cleared
       - log tampering detected
@@ -595,6 +608,7 @@ events:
     required_fields:
       - service_name
       - service_state
+    channels: ["System"]
     allowed_claims:
       - service started or stopped
       - service state transition observed
@@ -623,6 +637,7 @@ events:
     required_fields:
       - service_name
       - service_command
+    channels: ["System"]
     allowed_claims:
       - service was installed
       - new service created (System log)
@@ -2145,6 +2160,46 @@ events:
       - "32000"
       - smbv1
       - negotiation
+  6005:
+    title: Event log service started
+    required_fields:
+      - computer
+      - timestamp
+    channels: ["System"]
+    allowed_claims:
+      - event log service was started
+    disallowed_without_extra:
+      - normal system operation
+    keywords_for_string_search:
+      - event log started
+      - service start
+  6006:
+    title: Event log service stopped
+    required_fields:
+      - computer
+      - timestamp
+    channels: ["System"]
+    allowed_claims:
+      - event log service was stopped
+    disallowed_without_extra:
+      - attacker action (could be admin shutdown or normal restart)
+    keywords_for_string_search:
+      - event log stopped
+      - service stop
+  6008:
+    title: Unexpected shutdown (Event 6008)
+    required_fields:
+      - computer
+      - timestamp
+    channels: ["System"]
+    allowed_claims:
+      - unexpected system shutdown occurred
+      - system was not shut down cleanly
+    disallowed_without_extra:
+      - attacker action (could be power loss or crash)
+    keywords_for_string_search:
+      - unexpected shutdown
+      - previous shutdown
   32002:
     title: SMBv1 negotiation events
     required_fields:

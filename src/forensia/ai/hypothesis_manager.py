@@ -143,6 +143,7 @@ def _merge_hypothesis_fields(existing: Hypothesis, incoming: Hypothesis) -> Hypo
         verdict=existing.verdict,
         summary=existing.summary or incoming.summary,
         source_rule_ids=source_rule_ids,
+        source_decl_id=existing.source_decl_id or incoming.source_decl_id,
         required_entities=required_entities,
         confirm_when=confirm_when if isinstance(confirm_when, dict) else None,
         refute_when=existing.refute_when or incoming.refute_when,
@@ -172,10 +173,12 @@ def _extract_semantic_triple(description: str) -> dict[str, str]:
         if m:
             action = m.group(1)
             break
-    for pattern, group in [(r"(?:to|on|into|onto)\s+(an?\s+)?([a-z0-9_-]+)", 2), (r"(?:account|service|task|process|host|server|user|group|log|event|file|folder|key)", 1)]:
+    # NOTE: each fallback pattern must contain a capturing group matching its
+    # declared group index — (?:...) here previously caused "no such group".
+    for pattern, group in [(r"(?:to|on|into|onto)\s+(an?\s+)?([a-z0-9_-]+)", 2), (r"(account|service|task|process|host|server|user|group|log|event|file|folder|key)", 1)]:
         m = re.search(pattern, text)
         if m:
-            target = m.group(group if group else 1)
+            target = m.group(group)
             break
     return {"actor": actor or "unknown", "action": action or "unknown", "target": target or "unknown"}
 
@@ -280,6 +283,7 @@ def _row_to_hypothesis(row: dict[str, Any]) -> Hypothesis:
         verdict=str(verdict) if verdict else None,
         summary=str(row.get("summary") or ""),
         source_rule_ids=[str(item) for item in source_rule_ids if item],
+        source_decl_id=row.get("source_decl_id"),
         required_entities=[str(item) for item in required_entities if item],
         confirm_when=confirm_when if isinstance(confirm_when, dict) else None,
         target_keypoint_id=row.get("target_keypoint_id"),
@@ -291,7 +295,7 @@ def _load_persisted_hypotheses(db: CaseDB) -> tuple[list[Hypothesis], list[Hypot
     rows = fetch_records(
         db,
         """
-        SELECT hypothesis_id, description, status, verdict, summary, source_rule_ids, required_entities, confirm_when, target_keypoint_id
+        SELECT hypothesis_id, description, status, verdict, summary, source_rule_ids, source_decl_id, required_entities, confirm_when, target_keypoint_id
         FROM hypotheses
         ORDER BY created_at, hypothesis_id
         """,
@@ -346,8 +350,8 @@ def _upsert_hypothesis(
         INSERT INTO hypotheses (
             hypothesis_id, description, status, verdict, summary, origin,
             created_session, resolved_session, created_at, updated_at, source_rule_ids,
-            required_entities, confirm_when, target_keypoint_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            source_decl_id, required_entities, confirm_when, target_keypoint_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (hypothesis_id) DO UPDATE SET
             description = excluded.description,
             status = excluded.status,
@@ -359,6 +363,7 @@ def _upsert_hypothesis(
             created_at = excluded.created_at,
             updated_at = excluded.updated_at,
             source_rule_ids = excluded.source_rule_ids,
+            source_decl_id = excluded.source_decl_id,
             required_entities = excluded.required_entities,
             confirm_when = excluded.confirm_when,
             target_keypoint_id = COALESCE(excluded.target_keypoint_id, hypotheses.target_keypoint_id)
@@ -375,6 +380,7 @@ def _upsert_hypothesis(
             created_at,
             now,
             json.dumps(hypothesis.source_rule_ids, ensure_ascii=False),
+            hypothesis.source_decl_id,
             json.dumps(hypothesis.required_entities, ensure_ascii=False),
             json.dumps(clean_confirm_when, ensure_ascii=False) if clean_confirm_when else None,
             hypothesis.target_keypoint_id,
@@ -451,6 +457,7 @@ def _merge_active_hypotheses(
             verdict=None,
             summary=item.summary,
             source_rule_ids=_merge_string_lists(item.source_rule_ids),
+            source_decl_id=item.source_decl_id,
             required_entities=_merge_string_lists(item.required_entities),
             confirm_when=_clean_confirm_when(item.confirm_when),
             target_keypoint_id=item.target_keypoint_id,
@@ -467,6 +474,81 @@ def _merge_active_hypotheses(
     return list(by_id.values())
 
 
+def _interpolate_follow_up(
+    follow_up: str,
+    sample_rows: list[dict[str, Any]] | None,
+) -> str | None:
+    """Render {placeholder} keys in a follow-up question from query sample rows.
+
+    Returns the interpolated text, or None when any placeholder cannot be
+    resolved (such follow-ups must be skipped, never stored verbatim).
+    """
+    keys = re.findall(r"\{(\w+)\}", follow_up)
+    if not keys:
+        return follow_up
+    rendered = follow_up
+    for key in keys:
+        value = None
+        for row in sample_rows or []:
+            if not isinstance(row, dict):
+                continue
+            candidate = row.get(key)
+            if candidate is not None and str(candidate).strip():
+                value = str(candidate).strip()
+                break
+        if value is None:
+            return None
+        rendered = rendered.replace("{" + key + "}", value)
+    return rendered
+
+
+def _feed_verdict_to_timeline(
+    db: CaseDB,
+    hypothesis_id: str,
+    verdict: str,
+    description: str,
+    sample_rows: list[dict[str, Any]] | None,
+) -> None:
+    """Feeder (b): insert the decisive query row timestamp into case_timeline."""
+    if verdict not in {"confirmed", "refuted"}:
+        return
+    timestamp = None
+    host = ""
+    evidence_id = ""
+    for row in sample_rows or []:
+        if not isinstance(row, dict):
+            continue
+        for ts_key in ("timestamp", "logon_time", "exec_time", "last_exec_time", "si_modified"):
+            candidate = row.get(ts_key)
+            if candidate is not None and str(candidate).strip():
+                timestamp = candidate
+                host = str(row.get("computer") or row.get("host") or "")
+                evidence_id = str(row.get("evidence_id") or "")
+                break
+        if timestamp is not None:
+            break
+    if timestamp is None:
+        return
+    try:
+        db.execute(
+            """
+            INSERT INTO case_timeline (entry_id, timestamp, source, ref_id, host, summary, evidence_id)
+            VALUES (?, ?, 'verdict', ?, ?, ?, ?)
+            ON CONFLICT (entry_id) DO NOTHING
+            """,
+            (
+                f"tl-verdict-{hypothesis_id}",
+                timestamp,
+                hypothesis_id,
+                host,
+                f"{verdict}: {description}"[:200],
+                evidence_id,
+            ),
+        )
+    except Exception:
+        pass
+
+
 def _resolve_hypothesis(
     db: CaseDB,
     state: SessionState,
@@ -474,10 +556,11 @@ def _resolve_hypothesis(
     verdict: str,
     summary: str,
     session_id: str,
+    sample_rows: list[dict[str, Any]] | None = None,
 ) -> None:
     """Mark a hypothesis as confirmed or refuted, generate follow-ups, and mark stale sections."""
     from forensia.ai.report_gap import _extract_entities_from_text, _gap_hypothesis_id, _normalize_text, _propose_confirm_when
-    
+
     remaining: list[Hypothesis] = []
     stale_sections: list[str] = []
     follow_up_hypotheses: list[Hypothesis] = []
@@ -488,7 +571,7 @@ def _resolve_hypothesis(
             resolved = Hypothesis(
                 id=item.id,
                 description=item.description,
-                status="confirmed" if verdict == "confirmed" else "refuted",
+                status=verdict if verdict in {"untestable"} else ("confirmed" if verdict == "confirmed" else "refuted"),
                 verdict=verdict,
                 summary=summary,
                 source_rule_ids=item.source_rule_ids,
@@ -504,33 +587,50 @@ def _resolve_hypothesis(
                 session_id=session_id,
                 resolved_session=session_id,
             )
+            _feed_verdict_to_timeline(db, item.id, verdict, item.description, sample_rows)
             # DESIGN-2: Mark related sections as stale based on report_sections declaration
             # DESIGN-4: Generate follow-up gaps from confirmed hypothesis
             for source_rule_id in item.source_rule_ids:
                 rule = load_rule_by_id(source_rule_id)
                 if rule:
-                    # BUG-3 fix: Use hypothesis-level report_sections
-                    # Match hypothesis by finding the declaration that corresponds to this hypothesis id
+                    # T-07: Use source_decl_id to find the exact declaration (fall back to id match)
+                    decl_id_lookup = item.source_decl_id if item.source_decl_id else item.id
                     decl = next(
-                        (h for h in rule.hypotheses if h.id == item.id),
+                        (h for h in rule.hypotheses if h.id == decl_id_lookup),
                         None
                     )
+                    # BUG-3 fallback: try matching by declaration id == item.id when source_decl_id match fails
+                    if decl is None and item.source_decl_id is not None:
+                        decl = next(
+                            (h for h in rule.hypotheses if h.id == item.id),
+                            None
+                        )
                     if decl and decl.report_sections:
                         stale_sections.extend(decl.report_sections)
                     if verdict == "confirmed" and decl and decl.follow_up_questions:
                         for follow_up in decl.follow_up_questions:
-                            normalized = _normalize_text(follow_up)
+                            # R2-03: interpolate {placeholders} from the confirming
+                            # query's sample rows; skip unresolvable follow-ups.
+                            rendered = _interpolate_follow_up(follow_up, sample_rows)
+                            if rendered is None:
+                                try:
+                                    from forensia.ai.investigator import _log
+                                    _log("RESOLVE", f"[follow-up] skipped (unresolved placeholders): {follow_up[:80]}")
+                                except Exception:
+                                    pass
+                                continue
+                            normalized = _normalize_text(rendered)
                             if normalized not in known_by_description and normalized not in resolved_by_description:
                                 follow_up_hypotheses.append(
                                     Hypothesis(
-                                        id=_gap_hypothesis_id(follow_up),
-                                        description=follow_up,
+                                        id=_gap_hypothesis_id(rendered),
+                                        description=rendered,
                                         status="active",
                                         verdict=None,
                                         summary="",
                                         source_rule_ids=[source_rule_id],
-                                        required_entities=_extract_entities_from_text(follow_up),
-                                        confirm_when=_propose_confirm_when(_extract_entities_from_text(follow_up)),
+                                        required_entities=_extract_entities_from_text(rendered),
+                                        confirm_when=_propose_confirm_when(_extract_entities_from_text(rendered)),
                                     )
                                 )
         else:

@@ -29,7 +29,7 @@ class NormalizeMftTests(unittest.TestCase):
                                 "header": {
                                     "record_number": "1",
                                     "is_directory": "yes",
-                                    "is_deleted": "0",
+                                    "flags": "EntryFlags(ALLOCATED)",
                                     "allocated_size": 0,
                                     "size": "42",
                                 },
@@ -101,7 +101,7 @@ class NormalizeMftTests(unittest.TestCase):
                         "header": {
                             "record_number": 1,
                             "is_directory": False,
-                            "is_deleted": True,
+                            "flags": "EntryFlags(0x0)",
                             "allocated_size": "100",
                         },
                         "attributes": {

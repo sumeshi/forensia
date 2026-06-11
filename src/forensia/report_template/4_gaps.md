@@ -1,7 +1,13 @@
 # Investigation Gaps
 
-## Evidence Gaps
-<!-- Missing or incomplete evidence that could affect conclusions -->
+## Gap Assessment
+<!-- mode: narrative; Identify key gaps in evidence coverage -->
 
-## Recommended Next Steps
-<!-- Actions to address key gaps -->
+## Unresolved Hypotheses
+<!-- mode: table; builder: gaps_unresolved -->
+
+## Untestable Hypotheses
+<!-- mode: table; builder: gaps_untestable -->
+
+## Evidence Gaps
+<!-- mode: table; builder: gaps_evidence -->

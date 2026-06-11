@@ -22,7 +22,7 @@ attack:
 query: "SELECT\n    evidence_id,\n    file_name,\n    file_path,\n    si_modified,\n    fn_modified\nFROM mft_entries\nWHERE\n    LOWER(file_path) LIKE '%/desktop/%'\n    AND fn_modified != si_modified\n    AND is_directory = FALSE\n"
 finding:
   title: Desktop file rename burst on {file_path}
-  summary: File '{file_name}' on Desktop has fn_modified ({fn_modified}) differing from si_modified ({si_modified}), indicating a rename operation. Multiple rename events in quick succession may indicate data staging for exfiltration.
+  summary: File '{file_name}' on Desktop has fn_modified ({fn_modified}) differing from si_modified ({si_modified}), indicating a possible rename or timestomping. Multiple rename events in quick succession may indicate data staging for exfiltration.
 hypotheses:
 - id: leakage-desktop-rename-staging
   segment: exfiltration

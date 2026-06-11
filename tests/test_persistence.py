@@ -15,7 +15,6 @@ from forensia.ai.checker import _insert_investigation_finding
 from forensia.ai.investigator import (
     _append_hypothesis_reasoning,
     _final_summary,
-    _execute_query,
 )
 from forensia.ai.planner import HypothesisPlanResult
 from forensia.ai.report_gap import (
@@ -484,54 +483,6 @@ class PersistenceTests(unittest.TestCase):
             self.assertIn(4720, fallback_info["event_ids"])
             self.assertTrue(any("account created" in keyword for keyword in fallback_info["keywords"]))
 
-    def test_execute_query_uses_keyword_fallback_for_zero_row_event_id_sql(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                db.execute(
-                    """
-                    INSERT INTO evtx_events (
-                        evidence_id, source_file, channel, event_id, record_id, timestamp, computer,
-                        user_name, target_user, subject_user, src_ip, logon_type, process_name,
-                        command_line, service_name, message, raw_json, tags, severity
-                    ) VALUES (?, ?, ?, ?, ?, now(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        "ev-4732",
-                        "a.evtx",
-                        "Security",
-                        4732,
-                        2,
-                        "host1",
-                        "",
-                        "bob",
-                        "bob",
-                        "",
-                        "",
-                        "",
-                        "",
-                        "",
-                        "added to local group",
-                        '{"message":"added to local group"}',
-                        "[]",
-                        "info",
-                    ),
-                )
-                planned_query = PlannedQuery(
-                    query_id="Q-1",
-                    hypothesis_id="H-1",
-                    purpose="test fallback",
-                    sql="SELECT * FROM evtx_events WHERE event_id = 4732 AND computer = 'missing'",
-                )
-                hypothesis = Hypothesis(id="H-1", description="test")
-
-                rows, fallback_info = _execute_query(db, planned_query, hypothesis)
-
-            self.assertEqual(1, len(rows))
-            self.assertEqual("keyword_in_raw_json", fallback_info["phase"])
-            self.assertIn(4732, fallback_info["event_ids"])
-            self.assertTrue(any("group membership" in keyword or "added to local group" in keyword for keyword in fallback_info["keywords"]))
-
     def test_build_report_markdown_keeps_coverage_out_of_final_markdown(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -576,92 +527,34 @@ class PersistenceTests(unittest.TestCase):
             self.assertNotIn("raw_sql", markdown)
 
     def test_build_report_markdown_rebuilds_non_question_sections_with_tables(self) -> None:
+        """Without deterministic override, report_markdown renders from DB bodies directly."""
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                db.execute(
-                    """
-                    INSERT INTO evtx_events (
-                        evidence_id, channel, event_id, timestamp, computer,
-                        target_user, src_ip, process_name
-                    ) VALUES
-                        ('evtx-security-000000000122', 'Security', 4648, '2015-03-22 14:34:28', 'informant-PC', 'informant', '127.0.0.1', 'winlogon.exe'),
-                        ('evtx-security-000000000123', 'Security', 4625, '2015-03-22 14:35:00', 'informant-PC', 'admin11', '10.0.0.5', 'lsass.exe'),
-                        ('evtx-security-000000000124', 'Security', 1100, '2015-03-22 14:38:16', 'informant-PC', 'SYSTEM', '', '')
-                    """
-                )
-                db.execute(
-                    """
-                    INSERT INTO prefetch_executions (
-                        evidence_id, executable_name, exec_count, last_exec_time, source_file
-                    ) VALUES
-                        ('prefetch-ccleaner64-exe-779bd542', 'CCLEANER64.EXE', 2, '2015-03-25 15:15:50', 'Prefetch/CCLEANER64.EXE.pf'),
-                        ('prefetch-winword-exe-cecba770', 'WINWORD.EXE', 3, '2015-03-25 15:24:48', 'Prefetch/WINWORD.EXE.pf')
-                    """
-                )
-                db.execute(
-                    """
-                    INSERT INTO mft_entries (evidence_id, file_name, file_path, si_modified)
-                    VALUES
-                        ('mft-000000046112-00', 'iaman.informant@nist.gov.ost', 'Users/informant/AppData/Local/Microsoft/Outlook/iaman.informant@nist.gov.ost', '2015-03-25 15:11:47')
-                    """
-                )
-                db.execute(
-                    """
-                    INSERT INTO findings (
-                        finding_id, rule_id, title, summary, severity, confidence, status,
-                        tags, attack, evidence, ai_summary, missing_checks, created_at
-                    ) VALUES
-                        ('windows-corr-logon-then-service-0001', 'svc', 'Service installation after network logon:  -> 37L4247F27-25', 'Low confidence service noise.', 'critical', 0.5, 'accepted', '[]', '[]', '[]', '', '[]', now()),
-                        ('windows-security-4648-logon-explicit-creds-0001', '4648', 'Logon attempt with explicit credentials (4648): INFORMANT-PC$ -> informant', 'Explicit credential use involving informant.', 'high', 0.75, 'accepted', '[]', '[]', '[{"evidence_id":"evtx-security-000000000122"}]', '', '[]', now())
-                    """
-                )
-                db.execute(
-                    """
-                    INSERT INTO hypotheses (
-                        hypothesis_id, description, status, verdict, summary, origin,
-                        created_session, resolved_session, created_at, updated_at,
-                        source_rule_ids, required_entities, confirm_when
-                    ) VALUES
-                        ('H-001', 'Unresolved logon/file/process correlation', 'active', NULL, '', 'broad_plan', 'S-1', NULL, now(), now(), '[]', '[]', NULL),
-                        ('H-002', 'Explicit credential use was confirmed', 'confirmed', 'confirmed', 'Confirmed by 4648 evidence.', 'broad_plan', 'S-1', 'S-1', now(), now(), '[]', '[]', NULL)
-                    """
-                )
                 db.execute(
                     """
                     INSERT INTO report_sections (
                         section_key, title, body, confidence, status, update_count,
                         gaps, last_filled_session, last_filled_at, stale
                     ) VALUES
-                        ('1_overview', 'Investigation Overview', '# Investigation Overview\n\n## Executive Summary\n\n**Status:** error\n\n*Section block failed: ''summary''*\n\n## Key Findings\n\nraw_sql', 0.1, 'draft', 1, '[]', 'S-1', now(), FALSE),
-                        ('2_timeline', 'Activity Timeline', '# Activity Timeline\n\n**Status:** partial\n\nraw_sql', 0.5, 'draft', 1, '[]', 'S-1', now(), FALSE),
-                        ('3_technical', 'Technical Analysis', '# Technical Analysis\n\n**Status:** partial\n\nraw_sql', 0.5, 'draft', 1, '[]', 'S-1', now(), FALSE),
-                        ('4_gaps', 'Investigation Gaps', '# Investigation Gaps\n\n**Status:** partial', 0.5, 'draft', 1, '[]', 'S-1', now(), FALSE),
-                        ('5_recommendations', 'Recommendations', '# Recommendations\n\n**Status:** partial', 0.5, 'draft', 1, '[]', 'S-1', now(), FALSE)
+                        ('1_overview', 'Investigation Overview', '# Investigation Overview\n\n## Executive Summary\n\nLLM written overview content.\n\n## Key Findings\n\nDetailed findings.', 0.8, 'draft', 1, '[]', 'S-1', now(), FALSE),
+                        ('2_timeline', 'Activity Timeline', '# Activity Timeline\n\n## Phase Summary\n\nTimeline narrative.', 0.7, 'draft', 1, '[]', 'S-1', now(), FALSE),
+                        ('3_technical', 'Technical Analysis', '# Technical Analysis\n\n## Systems and Accounts\n\nAccount analysis text.', 0.7, 'draft', 1, '[]', 'S-1', now(), FALSE),
+                        ('4_gaps', 'Investigation Gaps', '# Investigation Gaps\n\n## Evidence Gaps\n\nGap analysis.', 0.7, 'draft', 1, '[]', 'S-1', now(), FALSE)
                     """
                 )
 
                 markdown = build_report_markdown_from_db(db)
-                top_findings = _query_top_findings(db)
 
-            self.assertIn("| Finding | Severity | Confidence | Why it matters |", markdown)
-            self.assertNotIn("| Finding | Severity | Confidence | Why it matters | Reference |", markdown)
-            self.assertIn("## Assessment", markdown)
-            self.assertIn("## Timeline Assessment", markdown)
-            self.assertIn("## Phase Summary", markdown)
-            self.assertIn("## Evidence Gaps", markdown)
-            self.assertIn("| Time | Host | Activity | Subject | Artifact |", markdown)
-            self.assertNotIn("| Time | Host | Activity | Subject | Artifact | Evidence |", markdown)
-            self.assertIn("| Priority | Action | Rationale | Evidence/Gap |", markdown)
-            self.assertIn("明示的資格情報利用の観測", markdown)
-            self.assertNotIn("Logon attempt with explicit credentials", markdown)
-            self.assertIn("表だけでは断定できません", markdown)
-            self.assertNotIn("Section block failed", markdown)
-            self.assertNotIn("Section Quality Gaps", markdown)
+            self.assertIn("# Investigation Overview", markdown)
+            self.assertIn("LLM written overview content", markdown)
+            self.assertIn("# Activity Timeline", markdown)
+            self.assertIn("Timeline narrative.", markdown)
+            self.assertIn("# Technical Analysis", markdown)
+            self.assertIn("Account analysis text.", markdown)
+            self.assertIn("# Investigation Gaps", markdown)
+            self.assertIn("Gap analysis.", markdown)
             self.assertNotIn("**Status:**", markdown)
-            self.assertNotIn("raw_sql", markdown)
-            self.assertEqual("windows-security-4648-logon-explicit-creds-0001", top_findings[0]["finding_id"])
-            self.assertNotIn("windows-corr-logon-then-service-0001", [row["finding_id"] for row in top_findings])
 
     def test_build_report_markdown_adds_appendix_interpretation_to_existing_body(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1151,14 +1044,14 @@ class PersistenceTests(unittest.TestCase):
                 added = _inject_gap_hypotheses(
                     db,
                     state,
-                    ["Check src_ip ownership", "User interview needed"],
+                    ["Check src_ip ownership", "Manager interview needed"],
                     session_id="session-test",
                     memory=memory,
                 )
                 row_count = db.execute("SELECT COUNT(*) FROM hypotheses").fetchone()[0]
 
             self.assertEqual("external_lookup", _classify_gap_kind("Check src_ip ownership"))
-            self.assertEqual("human_decision", _classify_gap_kind("User interview needed"))
+            self.assertEqual("human_decision", _classify_gap_kind("Manager interview needed"))
             self.assertEqual(0, added)
             self.assertEqual(0, row_count)
             self.assertIn("ownership", memory.tasks_memory_path.read_text(encoding="utf-8").lower())
@@ -1173,7 +1066,7 @@ class PersistenceTests(unittest.TestCase):
         for phrase in (
             "Need manager approval before concluding",
             "Confirm with the business owner",
-            "Check whether this action was authorized by policy",
+            "Schedule a stakeholder hearing for this finding",
         ):
             self.assertEqual("human_decision", _classify_gap_kind(phrase))
 

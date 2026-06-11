@@ -143,3 +143,46 @@ In this scenario, find any evidence of the data leakage, and any data that might
 31. Original Q42. When were Volume Shadow Copies created?
 32. Original Q43. Why can't Outlook's e-mail data be found in Volume Shadow Copy?
 33. Original Q44. Examine Recycle Bin data on the PC.
+
+## Evaluation Harness
+
+[`scripts/eval_run.py`](scripts/eval_run.py) computes case-agnostic quality metrics
+from any case directory. Run it after a CFReDS rerun to detect regressions:
+
+```
+uv run python scripts/eval_run.py dist/cfreds
+```
+
+### Metrics computed
+
+| Metric | What it measures | Flag threshold |
+|---|---|---|
+| Hypothesis family diversity | Share of hypotheses per artifact family; flags if >70% single-family | dominant share >0.7 |
+| Confirmed-while-benign rate | Proportion of confirmed hypotheses whose supporting rows match benign-context rules (R2-06) | N/A (placeholder until R2-06 lands) |
+| Placeholder leak count | Lines matching `{…}` or `[placeholder]` in hypotheses, facts, SQL logs | >0 is a defect |
+| Memory duplication ratio | Pairwise Jaccard ≥0.7 among overview lines | ratio >0.3 |
+| Report hygiene | Error-string leaks (sqlglot, internal-error), bare-ID hypothesis tables, day-coverage gap | >0 errors or bare IDs |
+| Evidence traceability | Share of report claims with resolvable finding_id/evidence_id in the findings directory | traceability <0.8 |
+| Per-phase LLM call counts | Distribution of LLM calls by phase (plan-broad-draft, plan-hypothesis, check-verdict, etc.) | N/A (observational) |
+
+### Regression tracking
+
+Compare two runs via the JSON reports at `dist/cfreds/eval_report.json`:
+
+```bash
+uv run python scripts/eval_run.py dist/cfreds --output cfreds_run2.json
+# then diff with a previous report
+python -c "
+import json
+a = json.load(open('cfreds_run1.json'))
+b = json.load(open('cfreds_run2.json'))
+for k in a:
+    if isinstance(a[k], dict) and 'flag_' in str(a[k]):
+        print(f'{k}: {a[k].get(\"flag_single_family_over_70pct\",\"\")} → {b[k].get(\"flag_single_family_over_70pct\",\"\")}')
+"
+```
+
+These metrics augment — not replace — the 12 scored benchmark questions. A run
+that scores well on both dimensions (metrics + questions) is a genuine improvement.
+A run that improves questions but degrades metrics (e.g., narrower hypothesis
+diversity, more placeholder leaks) needs investigation.

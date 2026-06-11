@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS mft_entries (
     record_number BIGINT,
     file_path VARCHAR,
     file_name VARCHAR,
+    fn_name VARCHAR,
     extension VARCHAR,
     is_directory BOOLEAN,
     is_deleted BOOLEAN,
@@ -118,6 +119,7 @@ CREATE TABLE IF NOT EXISTS hypotheses (
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
     source_rule_ids JSON,
+    source_decl_id VARCHAR,
     required_entities JSON,
     confirm_when JSON
 );
@@ -280,6 +282,16 @@ CREATE TABLE IF NOT EXISTS prefetch_timeline (
     exec_index INTEGER,
     source_file VARCHAR,
     tags JSON
+);
+
+CREATE TABLE IF NOT EXISTS case_timeline (
+    entry_id VARCHAR PRIMARY KEY,
+    timestamp TIMESTAMP,
+    source VARCHAR,
+    ref_id VARCHAR,
+    host VARCHAR,
+    summary VARCHAR,
+    evidence_id VARCHAR
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS findings_by_id ON findings(finding_id);

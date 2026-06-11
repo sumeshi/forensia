@@ -8,6 +8,7 @@ hypothesis_verdict:
     - refuted
     - inconclusive
     - newlead
+    - untestable
   description: "Verdict for a hypothesis after query+check phase"
 
 section_verdict:
@@ -50,6 +51,7 @@ mapping:
     refuted: block_contradicted
     inconclusive: block_needs_more
     newlead: block_needs_more
+    untestable: block_needs_more
   section_to_structured:
     block_supported: answered
     block_needs_more: insufficient_evidence

@@ -11,7 +11,7 @@ from datetime import UTC, date as _date, datetime
 from pathlib import Path
 from typing import Any
 
-from forensia.core.case import Case
+from forensia.core.case import Case, detect_epochs
 from forensia.core.memory import MemoryManager, memory_for_section
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records, normalize_value
@@ -41,6 +41,96 @@ def _path_like_any(column: str, *segments: str) -> str:
     return _sql_like_any(column, *patterns)
 
 
+# ----------------------------------------------------------------------------
+# IOC catalog accessors — indicator knowledge (tool names, executables, paths)
+# lives in rulepacks/_schema/dfir_ioc_catalog.yaml, never as literals in code
+# (CLAUDE.md Rule 16: no case-specific values, knowledge stays declarative).
+# ----------------------------------------------------------------------------
+
+
+@lru_cache(maxsize=1)
+def _ioc_catalog() -> dict[str, Any]:
+    import yaml
+
+    path = Path(__file__).resolve().parent.parent / "rulepacks" / "_schema" / "dfir_ioc_catalog.yaml"
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _catalog_entries(section: str) -> list[dict[str, Any]]:
+    entries = _ioc_catalog().get(section) or []
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _catalog_exe_globs(*sections: str) -> tuple[str, ...]:
+    """Lowercase executable glob patterns from the named catalog sections."""
+    globs: list[str] = []
+    for section in sections:
+        for entry in _catalog_entries(section):
+            for pattern in entry.get("exe_patterns") or []:
+                lowered = str(pattern).strip().lower()
+                if lowered and lowered not in globs:
+                    globs.append(lowered)
+    return tuple(globs)
+
+
+def _catalog_names(section: str, key: str = "name") -> tuple[str, ...]:
+    names: list[str] = []
+    for entry in _catalog_entries(section):
+        value = str(entry.get(key) or "").strip()
+        if value and value not in names:
+            names.append(value)
+    return tuple(names)
+
+
+def _catalog_path_terms(*sections: str) -> tuple[str, ...]:
+    """Significant lowercase path fragments from catalog `paths`/`mft_patterns`.
+
+    `%LocalAppData%/Google/Drive/` → `google/drive`. Env-var tokens are stripped;
+    fragments shorter than 4 chars are dropped to avoid over-broad LIKEs.
+    """
+    terms: list[str] = []
+    for section in sections:
+        for entry in _catalog_entries(section):
+            for raw in list(entry.get("paths") or []) + list(entry.get("mft_patterns") or []):
+                cleaned = re.sub(r"%[^%]+%", "", str(raw)).replace("\\", "/").strip("/ ").lower()
+                if len(cleaned) >= 4 and cleaned not in terms:
+                    terms.append(cleaned)
+    return tuple(terms)
+
+
+def _catalog_artifact_names(*sections: str) -> tuple[str, ...]:
+    """Tool-specific artifact filenames (e.g. wiper task lists) plus `<name>.lnk`."""
+    names: list[str] = []
+    for section in sections:
+        for entry in _catalog_entries(section):
+            for raw in entry.get("artifact_names") or []:
+                lowered = str(raw).strip().lower()
+                if lowered and lowered not in names:
+                    names.append(lowered)
+            tool = str(entry.get("name") or "").strip().lower()
+            if tool and f"{tool}.lnk" not in names:
+                names.append(f"{tool}.lnk")
+    return tuple(names)
+
+
+def _exe_glob_sql(column: str, globs: tuple[str, ...]) -> str:
+    """OR-joined LIKE predicate for executable names from glob patterns."""
+    if not globs:
+        return "FALSE"
+    return _sql_like_any(column, *[glob.replace("*", "%") for glob in globs])
+
+
+def _matches_exe_globs(name: str, globs: tuple[str, ...]) -> bool:
+    import fnmatch
+
+    lowered = str(name or "").strip().lower()
+    return any(fnmatch.fnmatch(lowered, glob) for glob in globs)
+
+
 @dataclass(frozen=True)
 class TemplateMeta:
     behaviors: tuple[str, ...] = ()
@@ -56,12 +146,63 @@ HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.*)$")
 FINDING_ID_PATTERN = re.compile(r"\b[A-Za-z][A-Za-z0-9-]*-\d{4}\b")
 HTML_FILL_PATTERN = re.compile(r"<!--\s*fill(?:[^>]*)-->", re.IGNORECASE)
 BLOCK_HINT_PATTERN = re.compile(
-    r"<!--\s*(?P<name>evidence_keypoints|mode|benchmark_id|answer_id|answer_spec)\s*:\s*(?P<value>.*?)\s*-->",
+    r"<!--\s*(?P<name>evidence_keypoints|mode|benchmark_id|answer_id|answer_spec|builder)\s*:\s*(?P<value>.*?)\s*-->",
     re.IGNORECASE,
 )
 QUESTION_HINT_PATTERN = re.compile(r"<!--\s*question(?:\s*:\s*(?P<value>.*?))?\s*-->", re.IGNORECASE)
 RAW_EVIDENCE_HEADING_PATTERN = re.compile(r"^#{2,6}\s*Raw Evidence\s*$", re.IGNORECASE)
 EvidenceResolver = Callable[[CaseDB], list[dict[str, Any]]]
+
+__all__ = [
+    # Public API
+    "build_report_markdown_from_db",
+    "fill_section",
+    "finalize_section",
+    "collect_gaps",
+    "write_report",
+    "write_report_from_db",
+    "render_written_report",
+    "prepare_section_request",
+    "build_structured_answer",
+    "ensure_universal_question_probes",
+    "fetch_report_sections",
+    "load_report_sections_map",
+    "set_report_section_status",
+    "mark_report_sections_ai_exhausted",
+    "write_report_brief",
+    # Internal re-exports for other modules
+    "_assemble_section_body",
+    "_body_starts_with_heading",
+    "_build_report_brief",
+    "_collect_flat_evidence_rows",
+    "_default_keypoints_for_section",
+    "_dump_section_evidence_json",
+    "_dump_section_questions_json",
+    "_dump_section_trace_json",
+    "_extract_claim_texts",
+    "_extract_needed_evidence",
+    "_feed_structured_to_timeline",
+    "_final_report_section_body",
+    "_hypothesis_rows",
+    "_load_structured_answers",
+    "_normalize_structured_answer",
+    "_persist_structured_answer",
+    "_preprocess_section_body",
+    "_quality_gate_section",
+    "_render_structured_answer_markdown",
+    "_resolve_evidence_results",
+    "_section_confidence",
+    "_sort_markdown_table_by_first_column",
+    "_strip_narrative_status_lines",
+    "_summarize_flat_evidence_rows",
+    "_verify_block_output",
+    "EVIDENCE_ID_PATTERN",
+    "_GateCtx",
+    "REPORT_KEYPOINTS",
+    "REPORT_KEYPOINT_ALIASES",
+    "_TABLE_BLOCK_BUILDERS",
+    "_TABLE_COLUMNS",
+]
 
 
 def _parse_frontmatter(text: str) -> dict:
@@ -102,6 +243,7 @@ def _parse_block_hints(block_body: str) -> dict[str, Any]:
         "answer_id": "",
         "answer_spec": "",
         "question": "",
+        "builder": "",
     }
     seen_keypoints: set[str] = set()
     for match in BLOCK_HINT_PATTERN.finditer(block_body):
@@ -125,6 +267,8 @@ def _parse_block_hints(block_body: str) -> dict[str, Any]:
             hints["answer_id"] = value.strip()
         elif name == "answer_spec":
             hints["answer_spec"] = value.strip()
+        elif name == "builder":
+            hints["builder"] = value.strip()
     question_match = QUESTION_HINT_PATTERN.search(block_body)
     if question_match:
         hints["question"] = str(question_match.group("value") or "").strip()
@@ -217,11 +361,13 @@ def _default_keypoints_for_section(
         "log integrity": ("timeline_log_clearing", "gaps_log_integrity_events", "timeline_system_events"),
         "network": ("evtx_network_connections", "ioc_source_ips", "evtx_firewall_events"),
         "lateral": ("account_logon_patterns", "account_explicit_credentials", "ioc_source_ips"),
-        "evidence gap": ("unresolved_hypotheses_summary", "gaps_event_coverage", "gaps_channel_coverage"),
-        "gap": ("unresolved_hypotheses_summary", "gaps_event_coverage", "gaps_channel_coverage"),
+        "evidence gap": ("unresolved_hypotheses_summary", "untestable_hypotheses_summary", "gaps_event_coverage", "gaps_channel_coverage"),
+        "gap": ("unresolved_hypotheses_summary", "untestable_hypotheses_summary", "gaps_event_coverage", "gaps_channel_coverage"),
         "execution": ("host_execution_activity", "persistence_lolbas_execution", "persistence_service_installs"),
         "persistence": ("host_persistence_activity", "persistence_service_installs", "persistence_scheduled_tasks"),
         "authentication": ("account_logon_patterns", "account_bruteforce_clusters", "account_explicit_credentials"),
+        "overview": ("overview_top_findings", "resolved_hypotheses_with_evidence", "overview_hosts"),
+        "chronological": ("timeline_high_signal_events", "timeline_system_events", "timeline_log_clearing", "timeline_case_assembled"),
     }
     if block_heading:
         heading_lower = block_heading.lower()
@@ -231,8 +377,8 @@ def _default_keypoints_for_section(
 
     family = section_key.split("_", 1)[0] if "_" in section_key else section_key
     mapping = {
-        "1": ("overview_top_findings", "overview_hosts", "overview_event_range"),
-        "2": ("timeline_high_signal_events", "timeline_system_events", "timeline_log_clearing"),
+        "1": ("overview_top_findings", "resolved_hypotheses_with_evidence", "overview_hosts", "overview_event_range"),
+        "2": ("timeline_high_signal_events", "timeline_system_events", "timeline_log_clearing", "timeline_case_assembled"),
         "3": ("host_execution_activity", "host_persistence_activity", "account_logon_patterns", "ioc_source_ips"),
         "4": ("unresolved_hypotheses_summary", "gaps_event_coverage", "gaps_channel_coverage"),
         "5": ("recommendations_findings", "recommendations_recent_reviews"),
@@ -569,6 +715,11 @@ _PURE_HEDGE_RE = re.compile(r"(?:may|might|could|possibly|perhaps|seem(?:s|ed)?|
 _TIMESTAMP_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}([T\s]\d{2}:\d{2})?")
 _ENGLISH_PARAGRAPH_RE = re.compile(r"^[\x20-\x7e]{120,}$", re.MULTILINE)
 _JAPANESE_CHAR_RE = re.compile(r"[぀-ヿ一-鿿]")
+
+# ====================================================================
+# QUALITY GATES — quality check functions and gate orchestration
+# Lines: ~579-989
+# ====================================================================
 
 
 def _detect_body_language(text: str) -> str:
@@ -966,6 +1117,26 @@ def _report_keypoint_rows(db: CaseDB, query: str) -> list[dict[str, Any]]:
     return fetch_records(db, query)
 
 
+def _extract_needed_evidence(latest_reasoning: str | None) -> str:
+    """Parse missing_questions from latest_reasoning JSON, return first 2 items joined."""
+    if not latest_reasoning:
+        return ""
+    try:
+        parsed = json.loads(latest_reasoning)
+        missing = parsed.get("missing_questions", [])
+        if isinstance(missing, list) and missing:
+            items = [str(q).strip() for q in missing if q]
+            return "; ".join(items[:2])
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return ""
+
+# ====================================================================
+# KEYPOINTS — keypoint definitions, aliases, resolvers
+# Lines: ~989-2052
+# ====================================================================
+
+
 REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
     "top_keypoints": (
         "Top finding-backed keypoints ranked by confidence.",
@@ -988,14 +1159,21 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         ),
     ),
     "overview_hosts": (
-        "Observed hosts ranked by event volume.",
+        "Observed hosts ranked by event volume (case/whitespace canonicalized).",
         lambda db: _report_keypoint_rows(
             db,
             """
-            SELECT computer, COUNT(*) AS event_count
-            FROM evtx_events
-            WHERE computer IS NOT NULL
-            GROUP BY computer
+            WITH raw AS (
+              SELECT computer, COUNT(*) AS cnt
+              FROM evtx_events
+              WHERE computer IS NOT NULL
+              GROUP BY computer
+            )
+            SELECT
+              ARG_MAX(computer, cnt) AS computer,
+              SUM(cnt) AS event_count
+            FROM raw
+            GROUP BY UPPER(TRIM(computer))
             ORDER BY event_count DESC
             LIMIT 20
             """,
@@ -1074,14 +1252,23 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         ),
     ),
     "host_compromise_candidates": (
-        "Hosts with logon, execution, persistence, or log-clear activity.",
+        "Hosts with logon, execution, persistence, or log-clear activity (case/whitespace canonicalized).",
         lambda db: _report_keypoint_rows(
             db,
             """
-            SELECT computer, COUNT(*) AS events, MIN(timestamp) AS first_seen, MAX(timestamp) AS last_seen
-            FROM evtx_events
-            WHERE event_id IN (4624,4625,4648,4688,4697,4698,5140,1102)
-            GROUP BY computer
+            WITH raw AS (
+              SELECT computer, COUNT(*) AS cnt, MIN(timestamp) AS first_seen, MAX(timestamp) AS last_seen
+              FROM evtx_events
+              WHERE event_id IN (4624,4625,4648,4688,4697,4698,5140,1102)
+              GROUP BY computer
+            )
+            SELECT
+              ARG_MAX(computer, cnt) AS computer,
+              SUM(cnt) AS events,
+              MIN(first_seen) AS first_seen,
+              MAX(last_seen) AS last_seen
+            FROM raw
+            GROUP BY UPPER(TRIM(computer))
             ORDER BY events DESC
             LIMIT 20
             """,
@@ -1347,7 +1534,7 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             """
             SELECT event_id, COUNT(*) AS count
             FROM evtx_events
-            WHERE event_id IN (1102,4719)
+            WHERE (event_id IN (1102,4719) AND (channel IS NULL OR LOWER(channel) LIKE '%security%'))
                OR (
                   event_id = 104
                   AND LOWER(COALESCE(json_extract_string(raw_json, '$.winlog.provider.name'), '')) = 'microsoft-windows-eventlog'
@@ -1429,7 +1616,8 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             """
             SELECT timestamp, computer, target_user, event_id, evidence_id
             FROM evtx_events
-            WHERE event_id IN (4624,4634,4647,4608,4609,6005,6006,6008)
+            WHERE (event_id IN (4624,4634,4647,4608,4609))
+               OR (event_id IN (6005,6006,6008) AND (channel IS NULL OR LOWER(channel) LIKE '%system%'))
             ORDER BY timestamp
             LIMIT 30
             """,
@@ -1442,7 +1630,8 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             """
             SELECT timestamp, computer, event_id, target_user, src_ip, process_name, command_line, evidence_id
             FROM evtx_events
-            WHERE event_id IN (1074,4608,4609,4624,4634,4647,6005,6006,6008)
+            WHERE (event_id IN (1074,4608,4609,4624,4634,4647))
+               OR (event_id IN (6005,6006,6008) AND (channel IS NULL OR LOWER(channel) LIKE '%system%'))
             ORDER BY timestamp
             LIMIT 200
             """,
@@ -1609,7 +1798,8 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         lambda db: _report_keypoint_rows(db, """
             SELECT timestamp, event_id, computer, message
             FROM evtx_events
-            WHERE event_id IN (1074, 6006, 6008, 6013)
+            WHERE (event_id = 1074)
+               OR (event_id IN (6006, 6008, 6013) AND (channel IS NULL OR LOWER(channel) LIKE '%system%'))
             ORDER BY timestamp DESC LIMIT 1
         """),
     ),
@@ -1618,7 +1808,8 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         lambda db: _report_keypoint_rows(db, """
             SELECT DATE(timestamp) AS date, event_id, COUNT(*) AS n
             FROM evtx_events
-            WHERE event_id IN (4624, 4634, 4647, 6005, 6006)
+            WHERE (event_id IN (4624, 4634, 4647))
+               OR (event_id IN (6005, 6006) AND (channel IS NULL OR LOWER(channel) LIKE '%system%'))
             GROUP BY 1, 2 ORDER BY 1
         """),
     ),
@@ -1681,7 +1872,9 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         lambda db: _report_keypoint_rows(db, """
             SELECT timestamp, event_id, computer, target_user, message
             FROM evtx_events
-            WHERE event_id IN (1102, 104, 1100)
+            WHERE (event_id = 1102 AND (channel IS NULL OR LOWER(channel) LIKE '%security%'))
+               OR (event_id = 1100 AND (channel IS NULL OR LOWER(channel) LIKE '%security%'))
+               OR (event_id = 104 AND LOWER(COALESCE(json_extract_string(raw_json, '$.winlog.provider.name'), '')) = 'microsoft-windows-eventlog')
             ORDER BY timestamp DESC LIMIT 50
         """),
     ),
@@ -1690,7 +1883,8 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         lambda db: _report_keypoint_rows(db, """
             SELECT timestamp, event_id, computer, message, evidence_id
             FROM evtx_events
-            WHERE event_id IN (1074, 6006, 6008)
+            WHERE (event_id = 1074)
+               OR (event_id IN (6006, 6008) AND (channel IS NULL OR LOWER(channel) LIKE '%system%'))
             ORDER BY timestamp DESC
             LIMIT 50
         """),
@@ -1700,7 +1894,8 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         lambda db: _report_keypoint_rows(db, """
             SELECT timestamp, event_id, computer, evidence_id
             FROM evtx_events
-            WHERE event_id = 6005
+            WHERE (channel IS NULL OR LOWER(channel) LIKE '%system%')
+               AND event_id = 6005
             ORDER BY timestamp
             LIMIT 50
         """),
@@ -1803,13 +1998,135 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
     ),
     "unresolved_hypotheses_summary": (
         "Open or unresolved hypotheses from the investigation.",
-        lambda db: _report_keypoint_rows(db, """
-            SELECT hypothesis_id, description, status, verdict, summary, updated_at
-            FROM hypotheses
-            WHERE COALESCE(verdict, status) NOT IN ('confirmed', 'refuted', 'rejected')
-            ORDER BY updated_at DESC NULLS LAST
-            LIMIT 30
-        """),
+        lambda db: [
+            {
+                "hypothesis_id": row["hypothesis_id"],
+                "description": row["description"],
+                "status": row["status"],
+                "verdict": row["verdict"],
+                "summary": row["summary"],
+                "updated_at": row["updated_at"],
+                "needed_evidence": _extract_needed_evidence(row.get("latest_reasoning")),
+            }
+            for row in _report_keypoint_rows(
+                db,
+                """
+                WITH latest AS (
+                    SELECT *, ROW_NUMBER() OVER (
+                        PARTITION BY hypothesis_id ORDER BY created_at DESC, entry_id DESC
+                    ) AS rn
+                    FROM hypothesis_reasoning
+                    WHERE phase != 'error'
+                )
+                SELECT h.hypothesis_id, h.description, h.status, h.verdict,
+                       h.summary, h.updated_at, l.body AS latest_reasoning
+                FROM hypotheses h
+                LEFT JOIN latest l ON l.hypothesis_id = h.hypothesis_id AND l.rn = 1
+                WHERE COALESCE(h.verdict, h.status) NOT IN ('confirmed', 'refuted', 'rejected', 'untestable')
+                ORDER BY h.updated_at DESC NULLS LAST
+                LIMIT 30
+                """,
+            )
+        ],
+    ),
+    "resolved_hypotheses_with_evidence": (
+        "Confirmed and refuted hypotheses with verdict, description, and evidence references.",
+        lambda db: [
+            {
+                **row,
+                "evidence_ids": list(
+                    set(
+                        EVIDENCE_ID_PATTERN.findall(
+                            str(row.get("latest_reasoning") or "")
+                        )
+                    )
+                ),
+            }
+            for row in _report_keypoint_rows(
+                db,
+                """
+                WITH latest AS (
+                    SELECT *, ROW_NUMBER() OVER (
+                        PARTITION BY hypothesis_id
+                        ORDER BY created_at DESC, entry_id DESC
+                    ) AS rn
+                    FROM hypothesis_reasoning
+                )
+                SELECT h.hypothesis_id, h.verdict, h.description, h.summary,
+                       l.body AS latest_reasoning,
+                       l.verdict AS latest_verdict
+                FROM hypotheses h
+                LEFT JOIN latest l
+                    ON l.hypothesis_id = h.hypothesis_id AND l.rn = 1
+                WHERE h.status IN ('confirmed', 'refuted')
+                ORDER BY h.updated_at DESC NULLS LAST
+                LIMIT 30
+                """,
+            )
+        ],
+    ),
+    "untestable_hypotheses_summary": (
+        "Hypotheses that could not be tested due to missing telemetry.",
+        lambda db: [
+            {
+                "hypothesis_id": row["hypothesis_id"],
+                "description": row["description"],
+                "status": row["status"],
+                "verdict": row["verdict"],
+                "summary": row["summary"],
+                "updated_at": row["updated_at"],
+                "needed_evidence": _extract_needed_evidence(row.get("latest_reasoning")),
+            }
+            for row in _report_keypoint_rows(
+                db,
+                """
+                WITH latest AS (
+                    SELECT *, ROW_NUMBER() OVER (
+                        PARTITION BY hypothesis_id ORDER BY created_at DESC, entry_id DESC
+                    ) AS rn
+                    FROM hypothesis_reasoning
+                    WHERE phase != 'error'
+                )
+                SELECT h.hypothesis_id, h.description, h.status, h.verdict,
+                       h.summary, h.updated_at, l.body AS latest_reasoning
+                FROM hypotheses h
+                LEFT JOIN latest l ON l.hypothesis_id = h.hypothesis_id AND l.rn = 1
+                WHERE COALESCE(h.verdict, h.status) = 'untestable'
+                ORDER BY h.updated_at DESC NULLS LAST
+                LIMIT 20
+                """,
+            )
+        ],
+    ),
+    "timeline_case_assembled": (
+        "Deterministic case timeline from findings, verdicts, and structured answers (≤6 rows/day).",
+        lambda db: _report_keypoint_rows(
+            db,
+            """
+            WITH ranked AS (
+                SELECT
+                    timestamp, source, ref_id, host, summary, evidence_id,
+                    CAST(timestamp AS DATE) AS day,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY CAST(timestamp AS DATE)
+                        ORDER BY
+                            CASE source
+                                WHEN 'finding' THEN 0
+                                WHEN 'verdict' THEN 1
+                                WHEN 'structured' THEN 2
+                                ELSE 3
+                            END,
+                            timestamp
+                    ) AS rn
+                FROM case_timeline
+                WHERE timestamp IS NOT NULL
+            )
+            SELECT timestamp, source, host, summary, evidence_id
+            FROM ranked
+            WHERE rn <= 6
+            ORDER BY timestamp
+            """,
+        ),
     ),
     "report_sections_with_gaps": (
         "Report sections that have outstanding gaps or low confidence.",
@@ -1878,6 +2195,9 @@ REPORT_KEYPOINT_ALIASES = {
     "benchmark_resignation_file": "structured_resignation_files",
     "benchmark_cloud_artifacts": "structured_cloud_artifacts",
     "benchmark_antiforensics_last_day": "structured_antiforensics",
+    "untestable_hypotheses": "untestable_hypotheses_summary",
+    "timeline_chronological_events": "timeline_case_assembled",
+    "chronological_events": "timeline_case_assembled",
 }
 
 
@@ -2031,11 +2351,77 @@ def _collect_claim_provenance(evidence_results: list[dict[str, Any]]) -> dict[st
     }
 
 
+from zoneinfo import ZoneInfo, available_timezones as _available_timezones
+
+# ====================================================================
+# RENDER HELPERS — markdown table rendering, timestamp formatting
+# Lines: ~2206-2910
+# ====================================================================
+
+
+def _local_time_from_utc(utc_str: str, tz_name: str) -> str | None:
+    """Convert a UTC ISO timestamp string to local time in the given IANA timezone.
+    Returns the local time string like '11:31:00' or None on failure.
+    """
+    if not utc_str or not tz_name or tz_name == "UTC":
+        return None
+    try:
+        utc_dt = datetime.fromisoformat(str(utc_str).replace("Z", "+00:00"))
+        if utc_dt.tzinfo is None:
+            utc_dt = utc_dt.replace(tzinfo=ZoneInfo("UTC"))
+        tz = ZoneInfo(tz_name)
+        local_dt = utc_dt.astimezone(tz)
+        return local_dt.strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError, OSError, KeyError):
+        return None
+
+
+def _tz_offset_str(tz_name: str, at_time_str: str | None = None) -> str:
+    """Return the UTC offset string (e.g. 'UTC-4', 'UTC+9') for a given IANA timezone."""
+    if not tz_name or tz_name == "UTC":
+        return "UTC"
+    try:
+        tz = ZoneInfo(tz_name)
+        if at_time_str:
+            try:
+                dt = datetime.fromisoformat(str(at_time_str).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+                offset = dt.astimezone(tz).utcoffset()
+            except (ValueError, TypeError, OSError):
+                offset = tz.utcoffset(datetime.now(UTC))
+        else:
+            offset = tz.utcoffset(datetime.now(UTC))
+        if offset is None:
+            return f"{tz_name}"
+        total_minutes = int(offset.total_seconds() // 60)
+        sign = "+" if total_minutes >= 0 else "-"
+        abs_min = abs(total_minutes)
+        hours = abs_min // 60
+        minutes = abs_min % 60
+        if minutes:
+            return f"UTC{sign}{hours}:{minutes:02d}"
+        return f"UTC{sign}{hours}"
+    except (OSError, KeyError):
+        return tz_name
+
+
 def _render_timestamp_with_timezone(timestamp_str: str, case: Case) -> str:
-    """Render timestamp with timezone qualifier."""
+    """Render timestamp with timezone qualifier.
+
+    When the case has a known non-UTC timezone, shows dual-time format:
+      2015-03-25 15:31:00 UTC (11:31:00 local, UTC-4, basis: …)
+    Otherwise shows UTC-only.
+    """
     if not timestamp_str:
         return "unknown"
     tz = getattr(case, 'source_timezone', 'UTC')
+    if tz == "UTC":
+        return f"{timestamp_str} UTC"
+    local_time = _local_time_from_utc(timestamp_str, tz)
+    if local_time:
+        offset = _tz_offset_str(tz, timestamp_str)
+        return f"{timestamp_str} UTC ({local_time} local, {offset})"
     return f"{timestamp_str} {tz}"
 
 
@@ -2175,15 +2561,19 @@ def _summarize_section_coverage(db: CaseDB) -> dict[str, Any]:
 
 def _build_report_brief(db: CaseDB, case: Case | None = None) -> dict[str, Any]:
     """Assemble a structured brief of top findings, hypotheses, section excerpts, and coverage data for LLM context."""
+    tz_name = getattr(case, "source_timezone", "UTC") if case else "UTC"
+    tz_offset = _tz_offset_str(tz_name) if tz_name != "UTC" else ""
     return {
         "top_findings": [normalize_value(item) for item in _query_top_findings(db)],
         "active_hypotheses": [normalize_value(item) for item in _query_hypotheses_by_status(db, "active")],
         "confirmed_hypotheses": [normalize_value(item) for item in _query_hypotheses_by_status(db, "confirmed")],
         "refuted_hypotheses": [normalize_value(item) for item in _query_hypotheses_by_status(db, "refuted")],
+        "untestable_hypotheses": [normalize_value(item) for item in _query_hypotheses_by_status(db, "untestable")],
         "prior_sections": _query_prior_sections(db),
         "existing_claims": _dedupe_claims(_query_existing_claims(db)),
         "evidence_coverage": _summarize_section_coverage(db),
-        "source_timezone": getattr(case, "source_timezone", "UTC") if case else "UTC",
+        "source_timezone": tz_name,
+        "timezone_offset": tz_offset,
         "time_range": _query_evtx_time_range(db, case),
     }
 
@@ -2581,7 +2971,7 @@ def _strip_hidden_report_columns_from_markdown_tables(body: str) -> str:
     return "\n".join(output).strip()
 
 
-def _ensure_appendix_interpretations(body: str) -> str:
+def _ensure_appendix_interpretations(body: str, tz_name: str | None = None) -> str:
     """Insert short reader-facing interpretations into existing appendix question blocks."""
     chunks = re.split(r"(?m)(?=^## .+$)", str(body or "").strip())
     rendered: list[str] = []
@@ -2595,19 +2985,21 @@ def _ensure_appendix_interpretations(body: str) -> str:
         heading = chunk.splitlines()[0].lstrip("#").strip()
         id_match = re.search(r"(?m)^\*\*ID:\*\*\s*(.+)$", chunk)
         status_match = re.search(r"(?m)^\*\*Status:\*\*\s*(.+)$", chunk)
+        spec_match = re.search(r"(?m)^- structured:(?P<spec>[^:]+):", chunk)
         answer = {
+            "answer_spec": spec_match.group("spec").strip() if spec_match else "",
             "id": id_match.group(1).strip() if id_match else _structured_block_id(heading),
             "status": status_match.group(1).strip() if status_match else "",
             "answer": _parse_markdown_answer_rows(chunk),
         }
-        interpretation = _structured_answer_interpretation(answer, heading)
+        interpretation = _structured_answer_interpretation(answer, heading, tz_name=tz_name)
         chunk = chunk.replace("\n### Answer", f"\n### Interpretation\n{interpretation}\n\n### Answer", 1)
         rendered.append(chunk)
     text = "".join(rendered)
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
-def _refresh_appendix_structured_blocks(db: CaseDB | None, body: str) -> str:
+def _refresh_appendix_structured_blocks(db: CaseDB | None, body: str, tz_name: str | None = None) -> str:
     """Refresh stale high-risk appendix blocks whose old Markdown can retain noisy rows."""
     if db is None:
         return body
@@ -2638,18 +3030,19 @@ def _refresh_appendix_structured_blocks(db: CaseDB | None, body: str) -> str:
             )
         except Exception:
             answer = None
-        rendered.append(_render_structured_answer_markdown(answer, heading) if answer else chunk)
+        rendered.append(_render_structured_answer_markdown(answer, heading, tz_name=tz_name) if answer else chunk)
     return "".join(rendered).strip()
 
 
-def _final_report_section_body(section_key: str, body: str, db: CaseDB | None = None) -> str:
+def _final_report_section_body(section_key: str, body: str, db: CaseDB | None = None, case: Case | None = None) -> str:
     """Return the Markdown body intended for report.md, leaving debug metadata out."""
     text = str(body or "").strip()
     if section_key != "6_appendix":
         text = _strip_narrative_status_lines(text)
     else:
-        text = _refresh_appendix_structured_blocks(db, text)
-        text = _ensure_appendix_interpretations(text)
+        tz_name = getattr(case, "source_timezone", "UTC") if case else "UTC"
+        text = _refresh_appendix_structured_blocks(db, text, tz_name=tz_name)
+        text = _ensure_appendix_interpretations(text, tz_name=tz_name)
         text = _strip_hidden_report_columns_from_markdown_tables(text)
     return text
 
@@ -2693,7 +3086,7 @@ def _count_table(db: CaseDB) -> list[dict[str, Any]]:
           (SELECT COUNT(*) FROM evtx_events) AS evtx_events,
           (SELECT COUNT(*) FROM mft_entries) AS mft_entries,
           (SELECT COUNT(*) FROM prefetch_executions) AS prefetch_executions,
-          (SELECT COUNT(DISTINCT computer) FROM evtx_events WHERE COALESCE(computer, '') != '') AS hosts,
+          (SELECT COUNT(DISTINCT UPPER(TRIM(computer))) FROM evtx_events WHERE COALESCE(computer, '') != '') AS hosts,
           (SELECT COUNT(DISTINCT channel) FROM evtx_events WHERE COALESCE(channel, '') != '') AS channels
         """,
     )
@@ -2710,19 +3103,61 @@ def _count_table(db: CaseDB) -> list[dict[str, Any]]:
     ]
 
 
+def _build_host_note(clusters: list[dict[str, Any]]) -> str:
+    """Build a human-readable note for a host's epoch clusters."""
+    pre_deploy = [c for c in clusters if c["label"] == "pre-deployment"]
+    active = [c for c in clusters if c["label"] == "active"]
+    if not pre_deploy:
+        return "active"
+    parts: list[str] = []
+    if pre_deploy:
+        bulk = max(pre_deploy, key=lambda c: c["event_count"])
+        year = bulk["first_seen"][:4]
+        parts.append(f"pre-deployment bulk ({year}, {bulk['event_count']} events)")
+    if active:
+        total_active = sum(c["event_count"] for c in active)
+        last_active = max(c["last_seen"] for c in active)
+        parts.append(f"minor activity ({last_active[:10]}, {total_active} events)")
+    return " + ".join(parts)
+
+
 def _host_summary_rows(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
-    return fetch_records(
+    rows = fetch_records(
         db,
         """
-        SELECT computer AS host, COUNT(*) AS events, MIN(timestamp) AS first_seen, MAX(timestamp) AS last_seen
-        FROM evtx_events
-        WHERE COALESCE(computer, '') != ''
-        GROUP BY computer
+        WITH raw AS (
+          SELECT computer, COUNT(*) AS cnt, MIN(timestamp) AS first_seen, MAX(timestamp) AS last_seen
+          FROM evtx_events
+          WHERE COALESCE(computer, '') != ''
+          GROUP BY computer
+        )
+        SELECT
+          ARG_MAX(computer, cnt) AS host,
+          SUM(cnt) AS events,
+          MIN(first_seen) AS first_seen,
+          MAX(last_seen) AS last_seen
+        FROM raw
+        GROUP BY UPPER(TRIM(computer))
         ORDER BY events DESC
         LIMIT ?
         """,
         (limit,),
     )
+    # Annotate each row with pre-deployment note when applicable
+    try:
+        epochs = detect_epochs(db)
+        for row in rows:
+            host_key = str(row.get("host") or "").strip().upper()
+            host_epochs = epochs.get(host_key) or []
+            if host_epochs:
+                row["note"] = _build_host_note(host_epochs)
+        # Only keep note when at least one host is pre-deployment
+        if not any(r.get("note") == "pre-deployment" or "pre-deployment" in (r.get("note") or "") for r in rows):
+            for row in rows:
+                row.pop("note", None)
+    except Exception:
+        pass
+    return rows
 
 
 def _account_summary_rows(db: CaseDB, limit: int = 10) -> list[dict[str, Any]]:
@@ -2748,9 +3183,26 @@ def _account_summary_rows(db: CaseDB, limit: int = 10) -> list[dict[str, Any]]:
     )
 
 
+def _has_benign_context_tag(row: dict[str, Any]) -> bool:
+    tags = row.get("tags")
+    if not tags:
+        return False
+    if isinstance(tags, str):
+        try:
+            tags = json.loads(tags)
+        except (json.JSONDecodeError, TypeError):
+            return False
+    if isinstance(tags, list):
+        return any("benign-context:" in str(t).lower() for t in tags)
+    return False
+
+
 def _signal_finding_rows(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
     grouped: dict[str, dict[str, Any]] = {}
     for item in _query_top_findings(db, max(limit * 4, limit)):
+        # R3-04: Exclude benign-context tagged findings from top findings
+        if _has_benign_context_tag(item):
+            continue
         theme = _finding_theme(item)
         target = grouped.setdefault(
             theme,
@@ -2828,7 +3280,9 @@ def _finding_theme(item: dict[str, Any]) -> str:
         return "time_change"
     if "event log service stopped" in blob or " log clear" in blob or "1100" in blob or "1102" in blob:
         return "log_integrity"
-    if "eraser" in blob or "ccleaner" in blob or "anti-forensic" in blob or "antiforensic" in blob:
+    if "anti-forensic" in blob or "antiforensic" in blob or any(
+        name.lower() in blob for name in _catalog_names("antiforensic_tools")
+    ):
         return "antiforensic_tools"
     if "ost" in blob or "outlook" in blob or "browser" in blob or "cloud" in blob or "drive" in blob:
         return "data_access"
@@ -2866,7 +3320,7 @@ def _finding_theme_summary(theme: str) -> str:
         "account_lifecycle": "ユーザー作成・有効化・パスワード変更などは権限利用や痕跡操作の前提になり得ます。",
         "time_change": "時刻変更はタイムライン解釈に影響するため、前後の認証・ファイル操作と合わせて確認します。",
         "log_integrity": "ログ停止・消去候補は単独で証跡消去を断定できませんが、消去系ツールや終了処理と近接する場合は重要です。",
-        "antiforensic_tools": "Eraser/CCleaner などは削除対象までは示さないものの、証跡削除仮説の中心的な補助証拠です。",
+        "antiforensic_tools": "消去・クリーニング系ツールの痕跡は削除対象までは示さないものの、証跡削除仮説の中心的な補助証拠です。",
         "data_access": "メール・ブラウザ・クラウド痕跡は情報参照や同期環境の存在を示し、送信先・対象ファイルの追加確認が必要です。",
         "other": "詳細な結論には、個別 evidence と周辺イベントの突合が必要です。",
     }.get(theme, "詳細な結論には、個別 evidence と周辺イベントの突合が必要です。")
@@ -2899,7 +3353,9 @@ def _timeline_rows(db: CaseDB, limit: int = 18) -> list[dict[str, Any]]:
                evidence_id
         FROM evtx_events
         WHERE (
-            event_id IN (1100, 1074, 6006)
+            (event_id IN (1074))
+            OR (event_id = 1100 AND (channel IS NULL OR LOWER(channel) LIKE '%security%'))
+            OR (event_id = 6006 AND (channel IS NULL OR LOWER(channel) LIKE '%system%'))
             OR (event_id IN (4648, 4625) AND LOWER(COALESCE(channel, '')) LIKE '%security%')
             OR (event_id = 104 AND LOWER(COALESCE(channel, '')) LIKE '%eventlog%')
         )
@@ -2918,15 +3374,16 @@ def _timeline_rows(db: CaseDB, limit: int = 18) -> list[dict[str, Any]]:
                 "evidence": row.get("evidence_id"),
             }
         )
+    notable_exe_sql = _exe_glob_sql(
+        "executable_name",
+        _catalog_exe_globs("antiforensic_tools", "cloud_sync_artifacts", "browser_artifacts", "email_artifacts"),
+    )
     prefetch_rows = fetch_records(
         db,
-        """
+        f"""
         SELECT last_exec_time AS timestamp, executable_name, exec_count, evidence_id
         FROM prefetch_executions
-        WHERE UPPER(executable_name) IN (
-          'CCLEANER64.EXE', 'CCLEANER.EXE', 'ERASER.EXE', 'GOOGLEDRIVESYNC.EXE',
-          'CHROME.EXE', 'IEXPLORE.EXE', 'WINWORD.EXE', 'SCHTASKS.EXE'
-        )
+        WHERE {notable_exe_sql}
         ORDER BY last_exec_time DESC
         LIMIT 12
         """,
@@ -2951,7 +3408,7 @@ def _timeline_rows(db: CaseDB, limit: int = 18) -> list[dict[str, Any]]:
 
 
 def _execution_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
-    return fetch_records(
+    rows = fetch_records(
         db,
         """
         SELECT executable_name, exec_count, last_exec_time, evidence_id, source_file
@@ -2960,37 +3417,49 @@ def _execution_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
           'DLLHOST.EXE', 'CONHOST.EXE', 'AUDIODG.EXE', 'SEARCHFILTERHOST.EXE',
           'SEARCHPROTOCOLHOST.EXE', 'WMIPRVSE.EXE'
         )
-        ORDER BY
-          CASE
-            WHEN UPPER(executable_name) IN ('CCLEANER64.EXE','CCLEANER.EXE','ERASER.EXE') THEN 0
-            WHEN UPPER(executable_name) IN ('GOOGLEDRIVESYNC.EXE','CHROME.EXE','IEXPLORE.EXE','WINWORD.EXE') THEN 1
-            ELSE 2
-          END,
-          last_exec_time DESC
+        ORDER BY last_exec_time DESC
         LIMIT ?
         """,
-        (limit,),
+        (max(limit * 4, 48),),
     )
+    antiforensic_globs = _catalog_exe_globs("antiforensic_tools")
+    user_app_globs = _catalog_exe_globs("cloud_sync_artifacts", "browser_artifacts", "email_artifacts")
+
+    def _rank(row: dict[str, Any]) -> int:
+        name = str(row.get("executable_name") or "")
+        if _matches_exe_globs(name, antiforensic_globs):
+            return 0
+        if _matches_exe_globs(name, user_app_globs):
+            return 1
+        return 2
+
+    # Rank ascending; within a rank keep most-recent first (stable sorts).
+    rows.sort(key=lambda row: str(row.get("last_exec_time") or ""), reverse=True)
+    rows.sort(key=_rank)
+    return rows[:limit]
 
 
 def _file_artifact_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
+    """Notable user-data file artifacts: mail data, cloud sync state, cleanup tools.
+
+    Path families come from the IOC catalog and the user's Recent folder —
+    no case-specific filename keywords (Rule 16).
+    """
+    path_terms = _catalog_path_terms("email_artifacts", "cloud_sync_artifacts", "antiforensic_tools")
+    tool_globs = _catalog_exe_globs("antiforensic_tools")
+    path_sql = _sql_like_any("file_path", *[f"%{term}%" for term in path_terms]) if path_terms else "FALSE"
+    tool_name_sql = _exe_glob_sql("file_name", tool_globs)
+    recent_lnk_sql = "(LOWER(COALESCE(file_path, '')) LIKE '%/recent/%' AND LOWER(COALESCE(file_name, '')) LIKE '%.lnk')"
     return fetch_records(
         db,
-        """
+        f"""
         SELECT file_name, file_path,
                COALESCE(si_modified, si_created, fn_modified, fn_created) AS timestamp,
                evidence_id
         FROM mft_entries
-        WHERE (
-             LOWER(file_path) LIKE '%outlook%'
-          OR LOWER(file_path) LIKE '%resignation%'
-          OR LOWER(file_path) LIKE '%secret_project%'
-          OR LOWER(file_path) LIKE '%ccleaner%'
-          OR LOWER(file_path) LIKE '%eraser%'
-          OR LOWER(file_path) LIKE '%google/drive%'
-        )
+        WHERE ({path_sql} OR {tool_name_sql} OR {recent_lnk_sql})
           AND COALESCE(is_directory, FALSE) = FALSE
-          AND LOWER(COALESCE(file_name, '')) NOT IN ('logs', 'lang', 'eraser 6', 'user_default')
+          AND LENGTH(COALESCE(file_name, '')) > 3
         ORDER BY timestamp DESC
         LIMIT ?
         """,
@@ -2999,13 +3468,26 @@ def _file_artifact_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
 
 
 def _antiforensic_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
+    tool_globs = _catalog_exe_globs("antiforensic_tools")
+    tool_exe_sql = _exe_glob_sql("executable_name", tool_globs)
+    tool_file_sql = _exe_glob_sql("file_name", tool_globs)
+    artifact_names = _catalog_artifact_names("antiforensic_tools")
+    artifact_name_sql = (
+        _sql_like_any("file_name", *artifact_names) if artifact_names else "FALSE"
+    )
+    tool_name_terms = [name.lower() for name in _catalog_names("antiforensic_tools")]
+    prefetch_path_sql = (
+        _sql_like_any("file_path", *[f"%prefetch%{term}%" for term in tool_name_terms])
+        if tool_name_terms
+        else "FALSE"
+    )
     rows: list[dict[str, Any]] = []
     for row in fetch_records(
         db,
-        """
+        f"""
         SELECT last_exec_time AS timestamp, executable_name AS artifact, exec_count, evidence_id
         FROM prefetch_executions
-        WHERE UPPER(executable_name) IN ('CCLEANER64.EXE', 'CCLEANER.EXE', 'ERASER.EXE')
+        WHERE {tool_exe_sql}
         ORDER BY last_exec_time DESC
         LIMIT 6
         """,
@@ -3016,7 +3498,7 @@ def _antiforensic_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
         """
         SELECT timestamp, CAST(event_id AS VARCHAR) AS artifact, computer, evidence_id
         FROM evtx_events
-        WHERE event_id = 1100
+        WHERE (event_id = 1100 AND (channel IS NULL OR channel ILIKE '%security%' OR channel ILIKE '%system%'))
            OR (event_id = 104 AND LOWER(COALESCE(channel, '')) LIKE '%eventlog%')
         ORDER BY timestamp DESC
         LIMIT 6
@@ -3025,17 +3507,11 @@ def _antiforensic_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
         rows.append({"type": "log integrity event", **row})
     for row in fetch_records(
         db,
-        """
+        f"""
         SELECT COALESCE(si_modified, si_created, fn_modified, fn_created) AS timestamp,
                file_name AS artifact, file_path, evidence_id
         FROM mft_entries
-        WHERE (
-          LOWER(file_name) LIKE '%ccleaner%.exe%'
-          OR LOWER(file_name) LIKE '%eraser%.exe%'
-          OR LOWER(file_name) IN ('task list.ersy', 'ccleaner.lnk', 'eraser.lnk')
-          OR LOWER(file_path) LIKE '%prefetch%ccleaner%'
-          OR LOWER(file_path) LIKE '%prefetch%eraser%'
-        )
+        WHERE ({tool_file_sql} OR {artifact_name_sql} OR {prefetch_path_sql})
           AND LOWER(COALESCE(file_name, '')) NOT IN ('lang', 'logs')
         ORDER BY timestamp DESC
         LIMIT 6
@@ -3104,48 +3580,23 @@ def _sentence_list(items: list[str]) -> str:
 
 
 def _signal_executable_labels(rows: list[dict[str, Any]], limit: int = 4) -> list[str]:
-    priority = (
-        "ERASER",
-        "CCLEANER",
-        "GOOGLEDRIVESYNC",
-        "WINWORD",
-        "CHROME",
-        "IEXPLORE",
-        "SCHTASKS",
+    """Pick high-signal executable labels, catalog families first (wipers, cloud, browsers)."""
+    glob_groups = (
+        _catalog_exe_globs("antiforensic_tools"),
+        _catalog_exe_globs("cloud_sync_artifacts"),
+        _catalog_exe_globs("browser_artifacts", "email_artifacts"),
     )
     labels: list[str] = []
-    for marker in priority:
+    for globs in glob_groups:
         for row in rows:
             for key in ("executable_name", "file_name", "artifact"):
                 text = str(row.get(key) or "").strip()
-                if marker in text.upper() and text and text not in labels:
+                if text and text not in labels and _matches_exe_globs(text, globs):
                     labels.append(text)
                     break
             if len(labels) >= limit:
                 return labels
     return labels or (_sample_labels(rows, "executable_name", limit) or _sample_labels(rows, "file_name", limit))
-
-
-def _overview_assessment(
-    findings: list[dict[str, Any]],
-    hosts: list[dict[str, Any]],
-    confirmed_count: int,
-    active_count: int,
-) -> str:
-    primary_host = _first_nonempty(hosts, "host") or "主要端末"
-    finding_labels = _sample_labels(findings, "finding", 3)
-    high_signal = _sentence_list(finding_labels)
-    if high_signal:
-        signal_text = f"優先度の高い所見は {high_signal} で、"
-    else:
-        signal_text = "優先度の高い所見は限定的で、"
-    return (
-        f"本件の中心は、{primary_host} を軸にした認証活動、ユーザー文書・メール・クラウド同期痕跡、"
-        "およびクリーニング系ツール実行を同じ事件線上で評価する点にあります。"
-        f"{signal_text}これらは単独では結論にならず、時刻・ユーザー・ホストを突合した相関証拠として扱う必要があります。"
-        f"現時点では確認済み仮説が{confirmed_count}件、未解決仮説が{active_count}件残っているため、"
-        "最終判断は「確認できた事実」と「未確認の推定」を明確に分けて読むべきです。"
-    )
 
 
 def _timeline_phase_rows(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
@@ -3155,30 +3606,41 @@ def _timeline_phase_rows(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
         SELECT
           CAST(CAST(timestamp AS DATE) AS VARCHAR) AS date,
           COUNT(*) FILTER (WHERE event_id = 4648) AS explicit_credentials,
-          COUNT(*) FILTER (WHERE event_id IN (1100, 104)) AS log_integrity_events,
-          COUNT(*) FILTER (WHERE event_id IN (1074, 6006, 6008)) AS shutdown_events,
+          COUNT(*) FILTER (WHERE event_id IN (1100, 104)
+            AND NOT (event_id = 104 AND channel NOT ILIKE '%System%' AND channel NOT ILIKE '%Security%')
+            AND NOT (event_id = 1100 AND channel NOT ILIKE '%Security%' AND channel NOT ILIKE '%System%')
+          ) AS log_integrity_events,
+          COUNT(*) FILTER (WHERE event_id IN (1074, 6006, 6008)
+            AND NOT (event_id = 6006 AND channel NOT ILIKE '%System%')
+            AND NOT (event_id = 6008 AND channel NOT ILIKE '%System%')
+          ) AS shutdown_events,
           MIN(timestamp) AS first_seen,
           MAX(timestamp) AS last_seen
         FROM evtx_events
         WHERE timestamp IS NOT NULL
           AND event_id IN (4648, 1100, 104, 1074, 6006, 6008)
+          AND NOT (event_id = 104 AND channel NOT ILIKE '%System%' AND channel NOT ILIKE '%Security%')
+          AND NOT (event_id = 1100 AND channel NOT ILIKE '%Security%' AND channel NOT ILIKE '%System%')
+          AND NOT (event_id = 6006 AND channel NOT ILIKE '%System%')
+          AND NOT (event_id = 6008 AND channel NOT ILIKE '%System%')
         GROUP BY CAST(timestamp AS DATE)
         ORDER BY CAST(timestamp AS DATE)
         """
     )
+    notable_exe_sql = _exe_glob_sql(
+        "executable_name",
+        _catalog_exe_globs("antiforensic_tools", "cloud_sync_artifacts", "browser_artifacts", "email_artifacts"),
+    )
     exec_rows = fetch_records(
         db,
-        """
+        f"""
         SELECT
           CAST(CAST(last_exec_time AS DATE) AS VARCHAR) AS date,
           COUNT(*) AS executions,
           string_agg(DISTINCT executable_name, ', ' ORDER BY executable_name) AS executables
         FROM prefetch_executions
         WHERE last_exec_time IS NOT NULL
-          AND UPPER(executable_name) IN (
-            'CCLEANER64.EXE', 'CCLEANER.EXE', 'ERASER.EXE', 'GOOGLEDRIVESYNC.EXE',
-            'CHROME.EXE', 'IEXPLORE.EXE', 'WINWORD.EXE', 'SCHTASKS.EXE'
-          )
+          AND {notable_exe_sql}
         GROUP BY CAST(last_exec_time AS DATE)
         ORDER BY CAST(last_exec_time AS DATE)
         """
@@ -3220,8 +3682,11 @@ def _timeline_phase_rows(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
 
 
 def _phase_interpretation(row: dict[str, Any]) -> str:
-    has_tools = any(name in str(row.get("executables") or "").upper() for name in ("ERASER", "CCLEANER"))
-    has_cloud = "GOOGLEDRIVESYNC" in str(row.get("executables") or "").upper()
+    executables = [item.strip() for item in str(row.get("executables") or "").split(",") if item.strip()]
+    tool_globs = _catalog_exe_globs("antiforensic_tools")
+    cloud_globs = _catalog_exe_globs("cloud_sync_artifacts")
+    has_tools = any(_matches_exe_globs(name, tool_globs) for name in executables)
+    has_cloud = any(_matches_exe_globs(name, cloud_globs) for name in executables)
     if has_tools and _as_int(row.get("log_integrity_events")):
         return "クリーニング系ツールとログ整合性イベントが同日にあり、反フォレンジック仮説を優先確認する"
     if has_cloud and has_tools:
@@ -3233,105 +3698,54 @@ def _phase_interpretation(row: dict[str, Any]) -> str:
     return "注目イベントが集中する日として、前後のファイル・実行痕跡と突合する"
 
 
-def _timeline_assessment(phase_rows: list[dict[str, Any]]) -> str:
-    if not phase_rows:
-        return "時系列上の注目イベントは限定的です。個別の表に示したイベントは、単独では攻撃や持ち出しを示すものではなく、周辺のファイル操作・実行痕跡との突合が必要です。"
-    first_date = phase_rows[0].get("date")
-    last_date = phase_rows[-1].get("date")
-    return (
-        f"時系列では {first_date} から {last_date} にかけて、認証・ログ整合性・アプリケーション実行の注目点が分布しています。"
-        "重要なのは単発イベントの有無ではなく、文書・メール・クラウド同期・消去系ツールが近い時間帯に現れるかです。"
-        "下表はその読み筋を日単位に圧縮したもので、詳細イベント表は各フェーズの根拠確認に使います。"
-    )
-
-
-def _account_assessment(rows: list[dict[str, Any]]) -> str:
-    explicit = [row for row in rows if _as_int(row.get("explicit_credential_events"))]
-    failed = [row for row in rows if _as_int(row.get("failed_logons"))]
-    parts: list[str] = []
-    if explicit:
-        accounts = _sentence_list([str(row.get("account")) for row in explicit[:3]])
-        parts.append(f"{accounts} に明示的資格情報利用が観測されており、通常の対話ログオンとは別に資格情報の使われ方を確認する必要があります")
-    if failed:
-        accounts = _sentence_list([str(row.get("account")) for row in failed[:3]])
-        parts.append(f"{accounts} では失敗ログオンもあり、試行錯誤や認証失敗の文脈を確認します")
-    if not parts:
-        parts.append("認証表では成功ログオンが中心で、失敗ログオンや明示的資格情報利用は限定的です")
-    return "。".join(parts) + "。"
-
-
-def _execution_assessment(rows: list[dict[str, Any]]) -> str:
-    names = [str(row.get("executable_name") or "").upper() for row in rows]
-    signals: list[str] = []
-    if any("ERASER" in name for name in names) or any("CCLEANER" in name for name in names):
-        signals.append("Eraser/CCleaner の実行は、通常のアプリ利用ではなく証跡削除の可能性を持つため、実行時刻をファイル操作・ログ停止と突合します")
-    if any(name in {"GOOGLEDRIVESYNC.EXE", "CHROME.EXE", "IEXPLORE.EXE"} for name in names):
-        signals.append("ブラウザや Google Drive の実行は、文書閲覧・クラウド同期・外部アクセス仮説の補助証拠になります")
-    if any("WINWORD" in name for name in names):
-        signals.append("Word 実行は resignation や secret_project 系文書の操作時刻と合わせて評価します")
-    return "。".join(signals or ["実行履歴は単体では目的を示さないため、ファイル作成・更新時刻と合わせて読む必要があります"]) + "。"
-
-
-def _file_artifact_assessment(rows: list[dict[str, Any]]) -> str:
-    blob = " ".join(str(value).lower() for row in rows for value in row.values())
-    signals: list[str] = []
-    if "resignation" in blob:
-        signals.append("resignation 関連ファイルと LNK は、ユーザー操作の近接時刻を示す重要な痕跡です")
-    if "outlook" in blob or ".ost" in blob:
-        signals.append("Outlook/OST 痕跡はメールデータ参照の可能性を示しますが、内容取得や送信までは示しません")
-    if "google/drive" in blob or "google\\drive" in blob:
-        signals.append("Google Drive の DB・ログはクラウド同期環境の存在を示し、同期対象と時刻の追加確認が必要です")
-    if "eraser" in blob or "ccleaner" in blob:
-        signals.append("Eraser/CCleaner 関連ファイルはツール導入・実行の補助証拠として扱います")
-    return "。".join(signals or ["ファイル痕跡はユーザー操作の候補を示すため、アプリ実行時刻と組み合わせて評価します"]) + "。"
-
-
-def _antiforensic_assessment(rows: list[dict[str, Any]]) -> str:
-    tool_count = sum(1 for row in rows if "tool" in str(row.get("type") or ""))
-    log_count = sum(1 for row in rows if "log integrity" in str(row.get("type") or ""))
-    return (
-        f"反フォレンジック候補は、ツール系痕跡{tool_count}件とログ整合性イベント{log_count}件に分かれます。"
-        "Eraser/CCleaner の存在だけでは削除実行の対象を断定できませんが、実行時刻が文書・クラウド同期・ログ停止に近い場合は説明力が高くなります。"
-    )
-
-
-def _network_assessment(rows: list[dict[str, Any]]) -> str:
-    if not rows:
-        return "正規化済み EVTX からはネットワーク評価に使える行が得られていません。外部送信の有無は別ログまたはクラウド同期成果物で補完する必要があります。"
-    row = rows[0]
-    if _as_int(row.get("external_src_rows")) or _as_int(row.get("external_dst_rows")):
-        return "正規化済み EVTX に外部IP候補が含まれるため、宛先・プロセス・ユーザーを個別に確認します。"
-    return "正規化済み EVTX では非ループバックの外部通信行は強く出ていません。データ持ち出しの判断は、Google Drive やブラウザ成果物など別の証跡で補強する必要があります。"
-
-
 def _forensic_gap_rows(db: CaseDB) -> list[dict[str, Any]]:
+    """Evidence-gap rows derived from what the case actually contains.
+
+    Each row is emitted only when the corresponding artifact family or signal
+    is present in the evidence — no fixed scenario assumptions (Rule 16).
+    """
+    from forensia.rules.loader import detect_artifact_families
+
     active_count = _hypothesis_count(db, "active")
     network = _network_summary_rows(db)
-    gaps = [
-        {
-            "gap": "外部送信・同期先の直接証跡",
-            "why_it_matters": "クラウド同期やブラウザ痕跡は存在を示すが、送信先・送信対象・完了可否を直接示すわけではない。",
-            "next_step": "Google Drive/Browser の詳細ログ、同期DB、ネットワークログを突合する。",
-        },
-        {
-            "gap": "ファイルアクセスとプロセス実行の同時相関",
-            "why_it_matters": "OST、resignation、secret_project 系ファイルは観測されるが、どのプロセス・ユーザー操作と結びつくかは追加確認が必要。",
-            "next_step": "MFT/LNK/Prefetch/EVTX を時刻幅で結合し、操作主体と対象ファイルを確認する。",
-        },
-        {
-            "gap": "消去系ツールの対象範囲",
-            "why_it_matters": "Eraser/CCleaner 実行は強い候補だが、削除対象や実行内容までは Prefetch だけでは分からない。",
-            "next_step": "Eraser task file、アプリログ、削除済み MFT エントリ、ログ停止時刻を突合する。",
-        },
-    ]
+    try:
+        families = detect_artifact_families(db)
+    except Exception:
+        families = set()
+
+    gaps: list[dict[str, Any]] = []
     if active_count:
-        gaps.insert(
-            0,
+        gaps.append(
             {
                 "gap": "未解決仮説の確定/棄却",
                 "why_it_matters": f"{active_count}件の active hypothesis が残っており、結論に混ぜると過剰推定になる。",
                 "next_step": "未調査仮説を優先し、confirmed/refuted/needs_data に分類する。",
-            },
+            }
+        )
+    if "cloud_sync" in families:
+        gaps.append(
+            {
+                "gap": "クラウド同期の送信先・対象の直接証跡",
+                "why_it_matters": "クラウド同期クライアントの痕跡は環境の存在を示すが、同期対象・送信先・完了可否を直接示すわけではない。",
+                "next_step": "同期クライアントのログ・ローカルDB・ネットワークログを突合する。",
+            }
+        )
+    if "mailbox" in families:
+        gaps.append(
+            {
+                "gap": "メールデータの内容・送受信の裏付け",
+                "why_it_matters": "メールデータファイルの存在はクライアント利用を示すが、送受信内容や添付の移動は別証跡が必要。",
+                "next_step": "メールデータファイルの解析結果やサーバ側ログが利用可能なら突合する。",
+            }
+        )
+    antiforensic_findings = _count_findings_with_tag(db, "benign-context:", negate=True, tag_like="%antiforensic%")
+    if antiforensic_findings or _has_antiforensic_executions(db):
+        gaps.append(
+            {
+                "gap": "消去系ツールの実行対象範囲",
+                "why_it_matters": "クリーニングツールの実行痕跡は強い候補だが、削除対象や実行内容までは実行痕跡だけでは分からない。",
+                "next_step": "ツールの設定・タスクファイル、削除済み MFT エントリ、ログ停止時刻を突合する。",
+            }
         )
     if network and not (_as_int(network[0].get("external_src_rows")) or _as_int(network[0].get("external_dst_rows"))):
         gaps.append(
@@ -3342,6 +3756,33 @@ def _forensic_gap_rows(db: CaseDB) -> list[dict[str, Any]]:
             }
         )
     return gaps
+
+
+def _count_findings_with_tag(db: CaseDB, exclude_prefix: str, *, negate: bool, tag_like: str) -> int:
+    """Count non-suppressed findings whose tags match tag_like, excluding benign-context ones."""
+    try:
+        row = db.execute(
+            """
+            SELECT COUNT(*) FROM findings
+            WHERE COALESCE(status, 'new') != 'suppressed'
+              AND LOWER(COALESCE(tags, '')) LIKE ?
+              AND LOWER(COALESCE(tags, '')) NOT LIKE ?
+            """,
+            (tag_like.lower(), f"%{exclude_prefix.lower()}%"),
+        ).fetchone()
+        return int(row[0] or 0)
+    except Exception:
+        return 0
+
+
+def _has_antiforensic_executions(db: CaseDB) -> bool:
+    """True when prefetch shows execution of a catalog-listed cleanup tool."""
+    tool_sql = _exe_glob_sql("executable_name", _catalog_exe_globs("antiforensic_tools"))
+    try:
+        row = db.execute(f"SELECT COUNT(*) FROM prefetch_executions WHERE {tool_sql}").fetchone()
+        return bool(row and row[0])
+    except Exception:
+        return False
 
 
 def _hypothesis_rows(db: CaseDB, status: str | None = None, limit: int = 12) -> list[dict[str, Any]]:
@@ -3394,184 +3835,198 @@ def _section_gap_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
     return rows[:limit]
 
 
-def _render_overview_section(db: CaseDB) -> str:
-    findings = _signal_finding_rows(db, 8)
-    hosts = _host_summary_rows(db, 5)
-    confirmed = _hypothesis_rows(db, "confirmed", 4)
-    active = _hypothesis_rows(db, "active", 4)
-    finding_count = len(findings)
-    confirmed_count = _hypothesis_count(db, "confirmed")
-    active_count = _hypothesis_count(db, "active")
-    summary = (
-        f"本ケースでは、{finding_count}件の優先所見、{confirmed_count}件の確認済み仮説、"
-        f"{active_count}件の未解決仮説を中心に確認する必要があります。"
-        "最終判断では、下表の高シグナル所見と未解決仮説を分けて扱い、低信頼の相関結果を過度に強い結論として扱わないでください。"
-    )
-    return "\n\n".join(
-        [
-            "# Investigation Overview",
-            "## Executive Summary",
-            summary,
-            "## Assessment",
-            _overview_assessment(findings, hosts, confirmed_count, active_count),
-            "## Evidence Scope",
-            _markdown_table(_count_table(db), [("metric", "Metric"), ("value", "Value"), ("scope", "Scope")], max_rows=8),
-            "## Systems Observed",
-            _markdown_table(hosts, [("host", "Host"), ("events", "EVTX rows"), ("first_seen", "First seen"), ("last_seen", "Last seen")], max_rows=5),
-            "## Key Findings",
-            _markdown_table(findings, [("finding", "Finding"), ("severity", "Severity"), ("confidence", "Confidence"), ("why_it_matters", "Why it matters")], max_rows=8),
-        ]
-    )
+def _build_evidence_scope_table(db: CaseDB) -> list[dict[str, Any]]:
+    return _count_table(db)
 
 
-def _render_timeline_section(db: CaseDB) -> str:
-    phase_rows = _timeline_phase_rows(db)
-    return "\n\n".join(
-        [
-            "# Activity Timeline",
-            "## Timeline Assessment",
-            _timeline_assessment(phase_rows),
-            "## Phase Summary",
-            _markdown_table(phase_rows, [("date", "Date"), ("phase", "Observed activity"), ("interpretation", "Interpretation"), ("window", "Event window")], max_rows=8),
-            "## Chronological Events",
-            "以下は、ログオン、明示的資格情報、ログ整合性、アプリケーション実行の代表イベントを時系列で並べたものです。",
-            _markdown_table(_timeline_rows(db), [("time", "Time"), ("host", "Host"), ("activity", "Activity"), ("subject", "Subject"), ("artifact", "Artifact")], max_rows=18),
-            "## Log Integrity",
-            "Event ID 1100/104 はログの停止・消去系の候補として扱い、単独では意図的な証跡消去と断定せず、同時刻のツール実行やファイル操作と相関してください。",
-        ]
-    )
+def _build_systems_observed_table(db: CaseDB) -> list[dict[str, Any]]:
+    return _host_summary_rows(db, 5)
 
 
-def _render_technical_section(db: CaseDB) -> str:
-    account_rows = _account_summary_rows(db)
-    execution_rows = _execution_rows(db)
-    file_rows = _file_artifact_rows(db)
-    antiforensic_rows = _antiforensic_rows(db)
-    network_rows = _network_summary_rows(db)
-    return "\n\n".join(
-        [
-            "# Technical Analysis",
-            "## Systems and Accounts",
-            _account_assessment(account_rows),
-            _markdown_table(account_rows, [("account", "Account"), ("computer", "Host"), ("logons", "4624"), ("failed_logons", "4625"), ("explicit_credential_events", "4648"), ("first_seen", "First seen"), ("last_seen", "Last seen")], max_rows=10),
-            "## Execution and Persistence",
-            _execution_assessment(execution_rows),
-            _markdown_table(execution_rows, [("executable_name", "Executable"), ("exec_count", "Exec count"), ("last_exec_time", "Last execution")], max_rows=12),
-            "## Files and User Artifacts",
-            _file_artifact_assessment(file_rows),
-            _markdown_table(file_rows, [("timestamp", "Timestamp"), ("file_name", "File"), ("file_path", "Path")], max_rows=12),
-            "## Antiforensic Indicators",
-            _antiforensic_assessment(antiforensic_rows),
-            _markdown_table(antiforensic_rows, [("type", "Type"), ("timestamp", "Timestamp"), ("artifact", "Artifact"), ("computer", "Host")], max_rows=12),
-            "## Network Activity",
-            _network_assessment(network_rows),
-            _markdown_table(network_rows, [("area", "Area"), ("observed_rows", "Rows with IP"), ("external_src_rows", "External source rows"), ("external_dst_rows", "External destination rows"), ("interpretation", "Interpretation")], max_rows=3),
-        ]
-    )
+def _build_key_findings_table(db: CaseDB) -> list[dict[str, Any]]:
+    return _signal_finding_rows(db, 8)
 
 
-def _render_gaps_section(db: CaseDB) -> str:
-    active = _hypothesis_rows(db, "active", 10)
-    active_rows = [
-        {
-            "hypothesis": row.get("hypothesis_id"),
-            "state": "not started" if int(row.get("reasoning_count") or 0) == 0 else "inconclusive",
+def _build_timeline_phase_table(db: CaseDB) -> list[dict[str, Any]]:
+    return _timeline_phase_rows(db)
+
+
+def _build_timeline_chronological_table(db: CaseDB) -> list[dict[str, Any]]:
+    return _timeline_rows(db)
+
+
+def _build_accounts_table(db: CaseDB) -> list[dict[str, Any]]:
+    return _account_summary_rows(db)
+
+
+def _build_execution_table(db: CaseDB) -> list[dict[str, Any]]:
+    return _execution_rows(db)
+
+
+def _build_file_artifacts_table(db: CaseDB) -> list[dict[str, Any]]:
+    return _file_artifact_rows(db)
+
+
+def _build_antiforensic_table(db: CaseDB) -> list[dict[str, Any]]:
+    return _antiforensic_rows(db)
+
+
+def _build_network_table(db: CaseDB) -> list[dict[str, Any]]:
+    return _network_summary_rows(db)
+
+
+def _build_gaps_unresolved_table(db: CaseDB) -> list[dict[str, Any]]:
+    all_rows = _hypothesis_rows(db, "active", 20)
+    investigated = [r for r in all_rows if int(r.get("reasoning_count") or 0) > 0]
+    untouched = [r for r in all_rows if int(r.get("reasoning_count") or 0) == 0]
+
+    result: list[dict[str, Any]] = []
+    for row in investigated:
+        description = str(row.get("description") or row.get("hypothesis_id") or "")[:120]
+        latest = str(row.get("latest_reasoning") or "").strip()
+        needed = _extract_needed_evidence(row.get("latest_reasoning"))
+        if latest and latest[:80] == description[:80]:
+            latest = ""
+        result.append({
+            "hypothesis": description,
+            "state": str(row.get("latest_verdict") or row.get("verdict") or "inconclusive"),
             "reasoning": row.get("reasoning_count"),
-            "latest": row.get("latest_reasoning") or row.get("description"),
-            "needed": "相関に必要なイベント種別・時刻・ホスト・ユーザーを追加確認する",
-        }
-        for row in active
-    ]
-    return "\n\n".join(
-        [
-            "# Investigation Gaps",
-            "## Gap Assessment",
-            "未解決事項は、レポート生成品質ではなく、証拠上まだ確認できていない論点として扱います。特に、データ持ち出しの直接証跡、消去系ツールの実行内容、ファイル操作と認証イベントの相関は、現時点の表だけでは断定できません。",
-            "## Unresolved Hypotheses",
-            _markdown_table(active_rows, [("hypothesis", "Hypothesis"), ("state", "State"), ("reasoning", "Reasoning rows"), ("latest", "Latest rationale"), ("needed", "Needed evidence")], max_rows=10),
-            "## Evidence Gaps",
-            _markdown_table(_forensic_gap_rows(db), [("gap", "Gap"), ("why_it_matters", "Why it matters"), ("next_step", "Next step")], max_rows=8),
-        ]
-    )
+            "latest": latest,
+            "needed": needed if needed else "",
+        })
+
+    if untouched:
+        result.append({
+            "hypothesis": f"{len(untouched)} drafted hypotheses not yet investigated",
+            "state": "not started",
+            "reasoning": 0,
+            "latest": "",
+            "needed": "",
+        })
+
+    return result
 
 
-def _render_recommendations_section(db: CaseDB) -> str:
-    active_count = len(_hypothesis_rows(db, "active", 20))
-    recommendations = [
-        {
-            "priority": "High",
-            "action": "未解決仮説を完了状態へ整理する",
-            "rationale": f"{active_count}件の active hypothesis が残っているため、追加調査・needs_data・refuted のいずれかに分類する。",
-            "evidence_or_gap": "hypotheses",
-        },
-        {
-            "priority": "High",
-            "action": "明示的資格情報と失敗ログオンの相関を確認する",
-            "rationale": "4648/4625/4624 の関係はケースの主要シグナルであり、ユーザー・ホスト・時刻で集約して判断する。",
-            "evidence_or_gap": "4624/4625/4648",
-        },
-        {
-            "priority": "Medium",
-            "action": "OST、ブラウザ、クラウド同期、反フォレンジック実行を時系列で突合する",
-            "rationale": "Outlook OST、browser/cloud artifacts、CCleaner/Eraser は exfiltration 仮説に関わるため、単独所見ではなく近接時刻で評価する。",
-            "evidence_or_gap": "MFT/Prefetch",
-        },
-        {
-            "priority": "Medium",
-            "action": "低信頼の service-install correlation を抑制または手動確認へ回す",
-            "rationale": "Microsoft/driver service install と空 src_ip の相関は、remote service creation と断定するには弱い。",
-            "evidence_or_gap": "finding ranking",
-        },
-    ]
-    return "\n\n".join(
-        [
-            "# Recommendations",
-            "## Recommendation Basis",
-            "推奨事項は、確認済み事実の封じ込めと、未確定仮説の追加検証を分けて実施します。明示的資格情報利用、メール/文書/クラウド同期痕跡、Eraser/CCleaner 実行は同じ事件線上で評価できますが、外部送信や削除対象は追加証拠なしに断定しないでください。",
-            "## Action Plan",
-            _markdown_table(recommendations, [("priority", "Priority"), ("action", "Action"), ("rationale", "Rationale"), ("evidence_or_gap", "Evidence/Gap")], max_rows=10),
-        ]
-    )
+def _build_gaps_untestable_table(db: CaseDB) -> list[dict[str, Any]]:
+    return _hypothesis_rows(db, "untestable", 8)
 
 
-def _deterministic_report_section_body(db: CaseDB, section_key: str) -> str | None:
-    renderers = {
-        "1_overview": _render_overview_section,
-        "2_timeline": _render_timeline_section,
-        "3_technical": _render_technical_section,
-        "4_gaps": _render_gaps_section,
-        "5_recommendations": _render_recommendations_section,
-    }
-    renderer = renderers.get(section_key)
-    if renderer is None:
-        return None
-    return renderer(db).strip()
+def _build_evidence_gaps_table(db: CaseDB) -> list[dict[str, Any]]:
+    return _forensic_gap_rows(db)
 
 
-def build_report_markdown_from_db(db: CaseDB) -> str:
-    """Reassemble the full report Markdown from persisted report sections.
+def _build_recommendations_table(db: CaseDB) -> list[dict[str, Any]]:
+    """Action plan rows derived from the case's own findings and hypotheses.
 
-    Coverage remains available through debug/API artifacts. The final Markdown
-    should read as an investigation report, not as execution telemetry.
+    No fixed scenario actions: every row is conditional on data present in
+    this case (Rule 16). Top finding themes drive correlation actions.
     """
+    rows: list[dict[str, Any]] = []
+    active_count = len(_hypothesis_rows(db, "active", 20))
+    if active_count:
+        rows.append(
+            {
+                "priority": "High",
+                "action": "未解決仮説を完了状態へ整理する",
+                "rationale": f"{active_count}件の active hypothesis が残っているため、追加調査・needs_data・refuted のいずれかに分類する。",
+                "evidence_or_gap": "hypotheses",
+            }
+        )
+
+    # Correlation actions for the top finding themes actually observed.
+    theme_counts: dict[str, int] = {}
+    for finding in fetch_records(
+        db,
+        """
+        SELECT title, tags FROM findings
+        WHERE COALESCE(status, 'new') != 'suppressed'
+          AND severity IN ('high', 'critical')
+          AND LOWER(COALESCE(tags, '')) NOT LIKE '%benign-context:%'
+        ORDER BY confidence DESC
+        LIMIT 60
+        """,
+    ):
+        theme = _finding_theme(finding)
+        theme_counts[theme] = theme_counts.get(theme, 0) + 1
+    ranked_themes = sorted(
+        (theme for theme in theme_counts if theme != "other"),
+        key=lambda theme: (_finding_theme_rank(theme), -theme_counts[theme]),
+    )
+    for theme in ranked_themes[:3]:
+        rows.append(
+            {
+                "priority": "High" if _finding_theme_rank(theme) <= 2 else "Medium",
+                "action": f"{_finding_theme_title(theme, theme_counts[theme])} をユーザー・ホスト・時刻で相関確認する",
+                "rationale": _finding_theme_summary(theme),
+                "evidence_or_gap": theme,
+            }
+        )
+
+    benign_count = _count_findings_with_tag(db, "", negate=False, tag_like="%benign-context:%")
+    if benign_count:
+        rows.append(
+            {
+                "priority": "Low",
+                "action": "benign-context として降格された所見を必要に応じて手動確認する",
+                "rationale": f"{benign_count}件の所見が既知の正常パターンに一致したため自動降格されている。",
+                "evidence_or_gap": "finding ranking",
+            }
+        )
+    return rows
+
+
+_TABLE_BLOCK_BUILDERS: dict[str, Callable[[CaseDB], list[dict[str, Any]]]] = {
+    "overview_evidence_scope": _build_evidence_scope_table,
+    "overview_systems_observed": _build_systems_observed_table,
+    "overview_key_findings": _build_key_findings_table,
+    "timeline_phase_summary": _build_timeline_phase_table,
+    "timeline_chronological": _build_timeline_chronological_table,
+    "technical_accounts": _build_accounts_table,
+    "technical_execution": _build_execution_table,
+    "technical_files": _build_file_artifacts_table,
+    "technical_antiforensic": _build_antiforensic_table,
+    "technical_network": _build_network_table,
+    "gaps_unresolved": _build_gaps_unresolved_table,
+    "gaps_untestable": _build_gaps_untestable_table,
+    "gaps_evidence": _build_evidence_gaps_table,
+    "recommendations_action_plan": _build_recommendations_table,
+}
+
+_TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
+    "overview_evidence_scope": [("metric", "Metric"), ("value", "Value"), ("scope", "Scope")],
+    "overview_systems_observed": [("host", "Host"), ("events", "EVTX rows"), ("first_seen", "First seen"), ("last_seen", "Last seen")],
+    "overview_key_findings": [("finding", "Finding"), ("severity", "Severity"), ("confidence", "Confidence"), ("why_it_matters", "Why it matters")],
+    "timeline_phase_summary": [("date", "Date"), ("phase", "Observed activity"), ("interpretation", "Interpretation"), ("window", "Event window")],
+    "timeline_chronological": [("time", "Time"), ("host", "Host"), ("activity", "Activity"), ("subject", "Subject"), ("artifact", "Artifact")],
+    "technical_accounts": [("account", "Account"), ("computer", "Host"), ("logons", "4624"), ("failed_logons", "4625"), ("explicit_credential_events", "4648"), ("first_seen", "First seen"), ("last_seen", "Last seen")],
+    "technical_execution": [("executable_name", "Executable"), ("exec_count", "Exec count"), ("last_exec_time", "Last execution")],
+    "technical_files": [("timestamp", "Timestamp"), ("file_name", "File"), ("file_path", "Path")],
+    "technical_antiforensic": [("type", "Type"), ("timestamp", "Timestamp"), ("artifact", "Artifact"), ("computer", "Host")],
+    "technical_network": [("area", "Area"), ("observed_rows", "Rows with IP"), ("external_src_rows", "External source rows"), ("external_dst_rows", "External destination rows"), ("interpretation", "Interpretation")],
+    "gaps_unresolved": [("hypothesis", "Hypothesis"), ("state", "State"), ("reasoning", "Reasoning rows"), ("latest", "Latest rationale"), ("needed", "Needed evidence")],
+    "gaps_untestable": [("hypothesis", "Hypothesis"), ("missing_telemetry", "Missing telemetry"), ("rationale", "Rationale"), ("next_step", "Next step")],
+    "gaps_evidence": [("gap", "Gap"), ("why_it_matters", "Why it matters"), ("next_step", "Next step")],
+    "recommendations_action_plan": [("priority", "Priority"), ("action", "Action"), ("rationale", "Rationale"), ("evidence_or_gap", "Evidence/Gap")],
+}
+
+
+def _table_block_columns(builder_name: str, rows: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """Return column definitions for a table builder, with dynamic adjustments."""
+    base = _TABLE_COLUMNS.get(builder_name, [("key", "Key"), ("value", "Value")])
+    if builder_name == "overview_systems_observed" and any("note" in r for r in rows):
+        return [("host", "Host"), ("note", "Note"), ("events", "EVTX rows"), ("first_seen", "First seen"), ("last_seen", "Last seen")]
+    return base
+
+
+def build_report_markdown_from_db(db: CaseDB, case: Case | None = None) -> str:
     sections = fetch_report_sections(db)
-    existing_keys = {str(row.get("section_key") or "") for row in sections}
     ordered: list[str] = []
-    narrative_keys = ("1_overview", "2_timeline", "3_technical", "4_gaps", "5_recommendations")
-    deterministic_enabled = set(narrative_keys).issubset(existing_keys)
-    if deterministic_enabled:
-        for section_key in narrative_keys:
-            body = _deterministic_report_section_body(db, section_key)
-            if body:
-                ordered.append(body)
     for row in sections:
         section_key = str(row.get("section_key") or "")
-        if deterministic_enabled and section_key in set(narrative_keys):
-            continue
         body = str(row.get("body") or "").strip()
         if not body:
             continue
-        ordered.append(_final_report_section_body(section_key, body, db=db))
+        ordered.append(_final_report_section_body(section_key, body, db=db, case=case))
     if not ordered:
         return ""
     return "\n\n".join(ordered).strip() + "\n"
@@ -3603,6 +4058,7 @@ def prepare_section_request(
             "answer_id": "",
             "answer_spec": "",
             "question": "",
+            "builder": "",
         }]
     block_requests = [
         {
@@ -3614,6 +4070,7 @@ def prepare_section_request(
             "answer_id": str(block.get("answer_id") or block.get("benchmark_id") or ""),
             "answer_spec": str(block.get("answer_spec") or ""),
             "question": str(block.get("question") or ""),
+            "builder": str(block.get("builder") or ""),
         }
         for block in blocks
     ]
@@ -3643,6 +4100,11 @@ def _assemble_section_body(template_preamble: str, rendered_blocks: list[str]) -
     parts = [str(template_preamble or "").strip(), *[item.strip() for item in rendered_blocks if item.strip()]]
     return "\n\n".join(part for part in parts if part).strip()
 
+# ====================================================================
+# ORCHESTRATION — fill_section, finalize_section, build_report_markdown_from_db
+# Lines: ~3848-4110, 5923-6001
+# ====================================================================
+
 
 def _render_section_from_request(
     *,
@@ -3654,7 +4116,7 @@ def _render_section_from_request(
     audit_callback: Callable[[list[dict[str, str]], str], None] | None = None,
 ) -> tuple[str, list[dict[str, Any]], list[str]]:
     """Iterate block requests through the section agent and stitch them into a single section body with evidence results."""
-    from forensia.ai.section_agent import run_section_block_agent
+    from forensia.ai.section_agent import SectionBlockResult, run_section_block_agent
 
     memory = MemoryManager(request["case"])
     rendered_blocks: list[str] = []
@@ -3664,28 +4126,60 @@ def _render_section_from_request(
     for block in request.get("block_requests") or []:
         block_mode = str(block.get("mode") or "").strip().casefold()
         is_structured_mode = block_mode in {"benchmark", "structured"} or bool(block.get("answer_spec") or block.get("question"))
-        block_result = run_section_block_agent(
-            case=request["case"],
-            db=db,
-            section_key=str(request["section_key"]),
-            title=str(request["title"]),
-            block_heading=str(block.get("heading") or ""),
-            template_body=str(block.get("template_body") or ""),
-            context_sections={} if is_structured_mode else (request.get("context_sections") or {}),
-            current_section_outline=[] if is_structured_mode else block_outline,
-            report_brief=request.get("report_brief") or {},
-            base_url=base_url,
-            model=model,
-            memory=memory_for_section(memory, structured_mode=is_structured_mode),
-            max_queries_per_section=max_queries_per_section,
-            evidence_keypoints=list(block.get("evidence_keypoints") or []),
-            benchmark_mode=is_structured_mode,
-            benchmark_id=str(block.get("benchmark_id") or block.get("answer_id") or ""),
-            answer_id=str(block.get("answer_id") or block.get("benchmark_id") or ""),
-            answer_spec=str(block.get("answer_spec") or ""),
-            question=str(block.get("question") or ""),
-            audit_callback=audit_callback,
-        )
+        if block_mode == "table":
+            builder_name = str(block.get("builder") or "")
+            builder_fn = _TABLE_BLOCK_BUILDERS.get(builder_name)
+            if builder_fn is not None:
+                rows = builder_fn(db)
+                columns = _table_block_columns(builder_name, rows)
+                table_body = _markdown_table(rows, columns, max_rows=12)
+                block_result = SectionBlockResult(body=table_body, evidence_results=[])
+            else:
+                block_result = run_section_block_agent(
+                    case=request["case"],
+                    db=db,
+                    section_key=str(request["section_key"]),
+                    title=str(request["title"]),
+                    block_heading=str(block.get("heading") or ""),
+                    template_body=str(block.get("template_body") or ""),
+                    context_sections=request.get("context_sections") or {},
+                    current_section_outline=block_outline,
+                    report_brief=request.get("report_brief") or {},
+                    base_url=base_url,
+                    model=model,
+                    memory=memory_for_section(memory, structured_mode=False),
+                    max_queries_per_section=max_queries_per_section,
+                    evidence_keypoints=list(block.get("evidence_keypoints") or []),
+                    benchmark_mode=False,
+                    benchmark_id="",
+                    answer_id="",
+                    answer_spec="",
+                    question="",
+                    audit_callback=audit_callback,
+                )
+        else:
+            block_result = run_section_block_agent(
+                case=request["case"],
+                db=db,
+                section_key=str(request["section_key"]),
+                title=str(request["title"]),
+                block_heading=str(block.get("heading") or ""),
+                template_body=str(block.get("template_body") or ""),
+                context_sections={} if is_structured_mode else (request.get("context_sections") or {}),
+                current_section_outline=[] if is_structured_mode else block_outline,
+                report_brief=request.get("report_brief") or {},
+                base_url=base_url,
+                model=model,
+                memory=memory_for_section(memory, structured_mode=is_structured_mode),
+                max_queries_per_section=max_queries_per_section,
+                evidence_keypoints=list(block.get("evidence_keypoints") or []),
+                benchmark_mode=is_structured_mode,
+                benchmark_id=str(block.get("benchmark_id") or block.get("answer_id") or ""),
+                answer_id=str(block.get("answer_id") or block.get("benchmark_id") or ""),
+                answer_spec=str(block.get("answer_spec") or ""),
+                question=str(block.get("question") or ""),
+                audit_callback=audit_callback,
+            )
         block_body = block_result.body
         heading = str(block.get("heading") or "").strip()
         if heading and not _body_starts_with_heading(block_body, heading):
@@ -3707,6 +4201,7 @@ def _render_section_from_request(
 
 
 def _preprocess_section_body(section_key: str, body: str, *, template_meta: TemplateMeta | None = None) -> tuple[str, bool]:
+    body = re.sub(r"^\*\*Status:\*\*.*$", "", body, flags=re.MULTILINE).strip()
     sanitized_body, removed_raw_evidence = _sanitize_raw_evidence_body(section_key, body)
     if sanitized_body != body:
         body = sanitized_body
@@ -3780,6 +4275,54 @@ def _read_persisted_section(db: CaseDB, section_key: str) -> dict[str, Any]:
     return {"gaps": persisted_gaps, "confidence": persisted_confidence}
 
 
+_EVIDENCE_ID_RE = re.compile(r"\b(evtx|mft|prefetch)-[a-z0-9-]+\b")
+
+
+def _validate_section_evidence_ids(db: CaseDB, body: str) -> tuple[str, list[str]]:
+    """Validate evidence IDs in body against DB. Return (cleaned_body, gaps)."""
+    ids_found = set(_EVIDENCE_ID_RE.findall(body))
+    if not ids_found:
+        return body, []
+
+    # Check existence in evtx_events, mft_entries, prefetch_executions
+    invalid: list[str] = []
+    for eid in ids_found:
+        prefix = eid.split("-")[0] if "-" in eid else ""
+        table_map = {
+            "evtx": "evtx_events",
+            "mft": "mft_entries",
+            "prefetch": "prefetch_executions",
+        }
+        table = table_map.get(prefix)
+        if not table:
+            invalid.append(eid)
+            continue
+        try:
+            row = db.execute(
+                f"SELECT 1 FROM {table} WHERE evidence_id = ? LIMIT 1",
+                (eid,),
+            ).fetchone()
+            if not row:
+                invalid.append(eid)
+        except Exception:
+            invalid.append(eid)
+
+    if not invalid:
+        return body, []
+
+    # Strip invalid IDs from body
+    cleaned = body
+    for inv in invalid:
+        cleaned = re.sub(rf"\b{re.escape(inv)}\b", "", cleaned)
+    # Clean up double spaces, double commas, etc.
+    cleaned = re.sub(r"  +", " ", cleaned)
+    cleaned = re.sub(r", ,", ",", cleaned)
+    cleaned = cleaned.strip().strip(",").strip()
+
+    gaps = [f"cited evidence ids not found: {', '.join(invalid)}"]
+    return cleaned, gaps
+
+
 def finalize_section(
     db: CaseDB,
     section_key: str,
@@ -3792,7 +4335,15 @@ def finalize_section(
 ) -> dict[str, Any]:
     """UPSERT the section into DuckDB. Returns gap list and confidence."""
     body, removed_raw = _preprocess_section_body(section_key, body, template_meta=template_meta)
+    # R3-03: Validate evidence IDs against DB
+    if db is not None and body:
+        body, id_gaps = _validate_section_evidence_ids(db, body)
+    else:
+        id_gaps = []
     candidate_gaps, candidate_confidence = _collect_initial_gaps(db, section_key, body, extra_gaps)
+    if id_gaps:
+        candidate_gaps.extend(id_gaps)
+        candidate_confidence = min(candidate_confidence, 0.5)
     candidate_gaps, candidate_confidence = _quality_gate_section(
         section_key,
         title,
@@ -4117,11 +4668,17 @@ def _normalize_benchmark_answer(
     }
     if normalized_columns:
         normalized["columns"] = normalized_columns
-    for key in ("source", "csv_path", "json_path"):
+    for key in ("source", "csv_path", "json_path", "answer_spec"):
         value = str(answer.get(key) or "").strip()
         if value:
             normalized[key] = value
     return normalized
+
+
+# ====================================================================
+# STRUCTURED ANSWER BUILDERS — builder functions for structured answers
+# Lines: ~4389-5898
+# ====================================================================
 
 
 def _normalize_structured_answer(
@@ -4256,58 +4813,107 @@ def _meaningful_missing_reason_items(value: Any) -> list[str]:
     return [item for item in _coerce_string_list(value) if item.strip().lower() not in _MISSING_REASON_NOOP_VALUES]
 
 
-def _structured_answer_interpretation(answer: dict[str, Any], block_heading: str) -> str:
+@lru_cache(maxsize=1)
+def _load_interpretation_templates() -> dict[str, str]:
+    """Load interpretation_template fields from question_routing.yaml."""
+    import yaml
+    path = Path(__file__).resolve().parent.parent / "rulepacks" / "_schema" / "question_routing.yaml"
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    templates: dict[str, str] = {}
+    if not isinstance(data, dict):
+        return templates
+    question_types = data.get("question_types")
+    if not isinstance(question_types, list):
+        return templates
+    for entry in question_types:
+        if not isinstance(entry, dict):
+            continue
+        spec_key = entry.get("answer_spec") or entry.get("name")
+        if not isinstance(spec_key, str):
+            continue
+        template = entry.get("interpretation_template")
+        if isinstance(template, str) and template.strip():
+            templates[spec_key] = template.strip()
+    return templates
+
+
+def _render_interpretation_template(template: str, answer: dict[str, Any]) -> str:
+    """Render an interpretation template with deterministic aggregates from answer data.
+
+    Supports:
+      {row_count}           - number of rows
+      {first.<col>}         - first row's column value
+      {last.<col>}          - last row's column value
+      {sample(<col>, n)}    - up to n distinct column values, joined
+    """
+    rows = [item for item in list(answer.get("answer") or []) if isinstance(item, dict)]
+    row_count = len(rows)
+
+    result = template.replace("{row_count}", str(row_count))
+
+    def replace_first(match: re.Match[str]) -> str:
+        col = match.group(1)
+        if rows:
+            val = rows[0].get(col, "")
+            return str(val) if val is not None else ""
+        return ""
+
+    result = re.sub(r"\{first\.(\w+)\}", replace_first, result)
+
+    def replace_last(match: re.Match[str]) -> str:
+        col = match.group(1)
+        if rows:
+            val = rows[-1].get(col, "")
+            return str(val) if val is not None else ""
+        return ""
+
+    result = re.sub(r"\{last\.(\w+)\}", replace_last, result)
+
+    def replace_sample(match: re.Match[str]) -> str:
+        col = match.group(1)
+        n = int(match.group(2)) if match.group(2) else 5
+        seen: list[str] = []
+        for row in rows:
+            val = row.get(col)
+            if val is not None and str(val) not in seen:
+                seen.append(str(val))
+            if len(seen) >= n:
+                break
+        return "、".join(seen) if seen else ""
+
+    result = re.sub(r"\{sample\((\w+),\s*(\d+)\)\}", replace_sample, result)
+
+    return result
+
+
+def _structured_answer_interpretation(answer: dict[str, Any], block_heading: str, tz_name: str | None = None) -> str:
     rows = [item for item in list(answer.get("answer") or []) if isinstance(item, dict)]
     status = str(answer.get("status") or "").strip().lower()
-    heading = str(block_heading or "").strip()
-    spec = str(answer.get("id") or "").strip().lower()
+    tz_basis = ""
+    if tz_name and tz_name != "UTC":
+        tz_basis = f" (タイムゾーン: {tz_name})"
+    elif tz_name == "UTC":
+        tz_basis = " (UTC、タイムゾーン未確定のため)"
     if not rows:
-        if status == "not_found":
-            return "この設問に直接対応する行は見つかっていません。該当なしと断定する前に、取り込み対象ログと時刻範囲が十分か確認してください。"
-        return "この設問は十分な行が得られていないため、表の欠落理由を確認したうえで追加証拠の有無を判断してください。"
+        base = "この設問に直接対応する行は見つかっていません。該当なしと断定する前に、取り込み対象ログと時刻範囲が十分か確認してください。" if status == "not_found" else "この設問は十分な行が得られていないため、表の欠落理由を確認したうえで追加証拠の有無を判断してください。"
+        return base + tz_basis
 
-    first = rows[0]
     row_count = len(rows)
-    heading_blob = f"{heading} {spec}".casefold()
-    if "endpoint" in heading_blob or "host" in heading_blob:
-        hosts = _sentence_list(_sample_labels(rows, "host_id", 3) or _sample_labels(rows, "computer", 3))
-        return f"EVTX 上では {hosts or '複数ホスト'} が観測されています。以降の判断では、主要ホストと少数ホストを分け、同一端末名の表記揺れも考慮します。"
-    if "last logged" in heading_blob or "logon" in heading_blob:
-        user = first.get("user_name") or first.get("target_user") or first.get("account") or "-"
-        time = first.get("logon_time") or first.get("timestamp") or "-"
-        computer = first.get("computer") or "-"
-        return f"最後に確認できる人間ユーザー系ログオンは {time} の {computer} / {user} です。これは最終利用者の候補であり、ログオン種別と周辺操作で裏付けます。"
-    if "shutdown" in heading_blob:
-        time = first.get("shutdown_time") or first.get("timestamp") or "-"
-        event_id = first.get("event_id") or "-"
-        return f"最後の shutdown/log stop 系イベントは {time} の Event ID {event_id} です。終了時刻の基準として使えますが、意図的停止か通常終了かは周辺イベントで判断します。"
-    if "application" in heading_blob or "execution" in heading_blob:
-        executables = _sentence_list(_signal_executable_labels(rows, 4))
-        return f"実行履歴は {row_count} 行あり、代表例は {executables or '表の上位行'} です。Prefetch は実行の存在を示しますが、操作目的や対象ファイルは別証跡との相関が必要です。"
-    if "browser" in heading_blob:
-        browsers = _sentence_list(_sample_labels(rows, "browser_name", 4))
-        return f"ブラウザ痕跡として {browsers or '表のブラウザ'} が確認できます。Web利用の存在は示しますが、アクセス先や送信内容は履歴・キャッシュ・ネットワーク証跡で補完してください。"
-    if "mail" in heading_blob or "e-mail" in heading_blob or "email" in heading_blob:
-        apps = _sentence_list(_sample_labels(rows, "application_name", 3) or _sample_labels(rows, "file_name", 3))
-        return f"メール関連痕跡は {apps or '表の成果物'} を中心に確認されています。OST/PST はメールデータ参照の可能性を示しますが、内容閲覧や外部送信までは直接示しません。"
-    if "rename" in heading_blob:
-        return f"リネーム候補は {row_count} 件です。Recent LNK 由来の推定はユーザー操作の手掛かりになりますが、実ファイル名変更の直接証跡としては慎重に扱います。"
-    if "cloud" in heading_blob:
-        services = _sentence_list(_sample_labels(rows, "service_name", 4))
-        return f"クラウドサービス痕跡として {services or '表のサービス'} が確認できます。同期環境の存在は示しますが、同期対象と完了可否はクライアントDBやログの追加確認が必要です。"
-    if "resignation" in heading_blob:
-        names = _sentence_list(_sample_labels(rows, "file_name", 3))
-        return f"resignation 関連ファイルは {names or '表のファイル'} を中心に時刻が確認できます。文書作成・閲覧・ショートカット生成の順序を実行履歴と突合します。"
-    if "anti" in heading_blob or "forensic" in heading_blob:
-        types = _sentence_list(_sample_labels(rows, "evidence_type", 4))
-        return f"反フォレンジック候補は {types or '表の痕跡'} として {row_count} 行あります。ツールの存在と実行は重要ですが、削除対象や実行内容は別証拠で確認します。"
-    return f"この設問では {row_count} 行の構造化証拠を確認しています。表は回答の根拠ですが、結論は時刻・ホスト・ユーザー・関連成果物の相関で評価してください。"
+    answer_spec = answer.get("answer_spec") or answer.get("id", "")
+    templates = _load_interpretation_templates()
+    template = templates.get(answer_spec)
+    if template:
+        return _render_interpretation_template(template, answer) + tz_basis
+    return f"この設問では {row_count} 行の構造化証拠を確認しています。表は回答の根拠ですが、結論は時刻・ホスト・ユーザー・関連成果物の相関で評価してください。{tz_basis}"
 
 
-def _render_structured_answer_markdown(answer: dict[str, Any], block_heading: str) -> str:
+def _render_structured_answer_markdown(answer: dict[str, Any], block_heading: str, tz_name: str | None = None) -> str:
     """Render a single structured answer as Markdown using persisted data rows."""
     answer_block = _render_answer_block(list(answer.get("answer") or []), answer.get("columns"))
-    interpretation = _structured_answer_interpretation(answer, block_heading)
+    interpretation = _structured_answer_interpretation(answer, block_heading, tz_name=tz_name)
     missing_lines = [f"- {item}" for item in _meaningful_missing_reason_items(answer.get("missing_reason"))]
     query_lines = [f"- {item}" for item in _coerce_string_list(answer.get("queries_run"))]
     data_lines = [f"- JSON: {answer.get('json_path')}"] if answer.get("json_path") else []
@@ -4360,9 +4966,9 @@ def _persist_benchmark_answer(case: Case, answer: dict[str, Any]) -> None:
     _persist_structured_answer(case, answer)
 
 
-def _render_benchmark_answer_markdown(answer: dict[str, Any], block_heading: str) -> str:
+def _render_benchmark_answer_markdown(answer: dict[str, Any], block_heading: str, tz_name: str | None = None) -> str:
     """Compatibility wrapper; prefer _render_structured_answer_markdown."""
-    return _render_structured_answer_markdown(answer, block_heading)
+    return _render_structured_answer_markdown(answer, block_heading, tz_name=tz_name)
 
 
 def _structured_rows(db: CaseDB, query: str) -> list[dict[str, Any]]:
@@ -4389,6 +4995,33 @@ def _dedupe_dict_rows(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> list
     return out
 
 
+_TIMESTAMP_COLUMN_SUFFIXES = ("_time", "_Time", "timestamp", "Timestamp")
+
+
+def _add_local_time_columns(rows: list[dict[str, Any]], columns: list[str], case: Case) -> tuple[list[dict[str, Any]], list[str]]:
+    """Append `*_local` columns to rows and columns when the case has a known non-UTC timezone."""
+    tz_name = getattr(case, "source_timezone", "UTC")
+    if tz_name == "UTC":
+        return rows, columns
+    local_columns: list[str] = []
+    ts_cols = [c for c in columns if any(c.endswith(s) or c == s for s in _TIMESTAMP_COLUMN_SUFFIXES) or c in ("date", "logon_time", "shutdown_time", "last_exec_time", "artifact_time")]
+    for col in ts_cols:
+        local_col = f"{col}_local"
+        if local_col not in columns:
+            local_columns.append(local_col)
+    if not local_columns:
+        return rows, columns
+    for row in rows:
+        for col in ts_cols:
+            local_col = f"{col}_local"
+            val = row.get(col)
+            if isinstance(val, str) and val:
+                local_val = _local_time_from_utc(val, tz_name)
+                if local_val:
+                    row[local_col] = local_val
+    return rows, columns + local_columns
+
+
 def _structured_answer(
     case: Case,
     *,
@@ -4402,6 +5035,7 @@ def _structured_answer(
     missing_reason: list[str] | None = None,
     source: str = "deterministic_sql",
 ) -> dict[str, Any]:
+    rows, columns = _add_local_time_columns(rows, columns, case)
     resolved_status = status or ("answered" if rows else "not_found")
     answer = _normalize_structured_answer(
         {
@@ -4446,25 +5080,45 @@ def _build_host_identity(case: Case, db: CaseDB, answer_id: str, section_key: st
     rows = _structured_rows(
         db,
         """
+        WITH raw AS (
+          SELECT
+              computer,
+              COUNT(*) AS evidence_count,
+              MIN(timestamp) AS first_seen,
+              MAX(timestamp) AS last_seen
+          FROM evtx_events
+          WHERE computer IS NOT NULL AND TRIM(computer) <> ''
+          GROUP BY computer
+        )
         SELECT
-            computer AS host_id,
-            COUNT(*) AS evidence_count,
-            MIN(timestamp) AS first_seen,
-            MAX(timestamp) AS last_seen
-        FROM evtx_events
-        WHERE computer IS NOT NULL AND TRIM(computer) <> ''
-        GROUP BY computer
+            ARG_MAX(computer, evidence_count) AS host_id,
+            SUM(evidence_count) AS evidence_count,
+            MIN(first_seen) AS first_seen,
+            MAX(last_seen) AS last_seen
+        FROM raw
+        GROUP BY UPPER(TRIM(computer))
         ORDER BY evidence_count DESC, host_id
         """,
     )
     rows = _dedupe_dict_rows(rows, ("host_id",))
+    # Annotate with epoch note (same summary logic as Systems Observed)
+    try:
+        epochs = detect_epochs(db)
+        for row in rows:
+            host_key = str(row.get("host_id") or "").strip().upper()
+            host_epochs = epochs.get(host_key) or []
+            if host_epochs:
+                row["note"] = _build_host_note(host_epochs)
+    except Exception:
+        pass
+    columns = ["host_id", "note", "evidence_count", "first_seen", "last_seen"] if any("note" in r for r in rows) else ["host_id", "evidence_count", "first_seen", "last_seen"]
     return _structured_answer(
         case,
         answer_id=answer_id,
         section_key=section_key,
         block_heading=block_heading,
         rows=rows,
-        columns=["host_id", "evidence_count", "first_seen", "last_seen"],
+        columns=columns,
         queries_run=["structured:host_identity:evtx_distinct_hosts"],
     )
 
@@ -4542,7 +5196,8 @@ def _build_last_shutdown_event(case: Case, db: CaseDB, answer_id: str, section_k
             evidence_id,
             message
         FROM evtx_events
-        WHERE event_id IN (1074, 6006, 6008)
+        WHERE (event_id = 1074)
+           OR (event_id IN (6006, 6008) AND (channel IS NULL OR LOWER(channel) LIKE '%system%'))
         ORDER BY timestamp DESC
         LIMIT 1
         """,
@@ -4564,13 +5219,20 @@ def _build_application_execution_history(case: Case, db: CaseDB, answer_id: str,
         """
         SELECT
             executable_name,
-            exec_count,
-            last_exec_time,
-            evidence_id,
-            source_file
+            SUM(exec_count) AS exec_count,
+            MAX(last_exec_time) AS last_exec_time,
+            COUNT(*) AS prefetch_records,
+            MIN(COALESCE(
+              (SELECT MIN(x.executable_path)
+               FROM (SELECT UNNEST(TRY_CAST(filenames AS VARCHAR[])) AS executable_path) x
+               WHERE x.executable_path LIKE '%' || UPPER(executable_name)),
+              source_file
+            )) AS executable_path,
+            MIN(source_file) AS prefetch_file
         FROM prefetch_executions
         WHERE executable_name IS NOT NULL AND TRIM(executable_name) <> ''
-        ORDER BY last_exec_time DESC NULLS LAST, executable_name
+        GROUP BY executable_name
+        ORDER BY last_exec_time DESC NULLS LAST
         LIMIT 200
         """,
     )
@@ -4581,7 +5243,7 @@ def _build_application_execution_history(case: Case, db: CaseDB, answer_id: str,
             section_key=section_key,
             block_heading=block_heading,
             rows=rows,
-            columns=["executable_name", "exec_count", "last_exec_time", "evidence_id", "source_file"],
+            columns=["executable_name", "exec_count", "last_exec_time", "prefetch_records", "executable_path", "prefetch_file"],
             queries_run=["structured:application_execution_history:prefetch_executions"],
         )
 
@@ -4605,6 +5267,9 @@ def _build_application_execution_history(case: Case, db: CaseDB, answer_id: str,
             "executable_name": _prefetch_executable_from_filename(row.get("file_name")),
             "exec_count": "",
             "last_exec_time": "",
+            "prefetch_records": "",
+            "executable_path": row.get("file_path"),
+            "prefetch_file": row.get("file_name"),
             "artifact_time": row.get("artifact_time"),
             "artifact_path": row.get("file_path"),
             "evidence_id": row.get("evidence_id"),
@@ -4618,7 +5283,7 @@ def _build_application_execution_history(case: Case, db: CaseDB, answer_id: str,
         section_key=section_key,
         block_heading=block_heading,
         rows=rows,
-        columns=["executable_name", "exec_count", "last_exec_time", "artifact_time", "artifact_path", "evidence_id"],
+        columns=["executable_name", "exec_count", "last_exec_time", "prefetch_records", "executable_path", "prefetch_file", "artifact_time", "artifact_path", "evidence_id"],
         queries_run=["structured:application_execution_history:mft_prefetch_file_fallback"],
         status="partial" if rows else "not_found",
         missing_reason=[] if not rows else ["prefetch_executions was empty; returned MFT Prefetch files without execution counts."],
@@ -4637,7 +5302,10 @@ def _build_daily_session_activity(case: Case, db: CaseDB, answer_id: str, sectio
             SUM(CASE WHEN event_id IN (1074, 6006, 6008) THEN 1 ELSE 0 END) AS shutdown
         FROM evtx_events
         WHERE timestamp IS NOT NULL
-          AND event_id IN (4608, 4624, 4634, 4647, 6005, 6006, 6008, 1074)
+          AND (
+            event_id IN (4608, 4624, 4634, 4647, 1074)
+            OR (event_id IN (6005, 6006, 6008) AND (channel IS NULL OR LOWER(channel) LIKE '%system%'))
+          )
         GROUP BY CAST(timestamp AS DATE)
         ORDER BY CAST(timestamp AS DATE)
         """,
@@ -4650,6 +5318,22 @@ def _build_daily_session_activity(case: Case, db: CaseDB, answer_id: str, sectio
         rows=rows,
         columns=["date", "startup", "logons", "logoff", "shutdown"],
         queries_run=["structured:daily_session_activity:startup_logon_logoff_shutdown"],
+    )
+
+
+def _build_daily_session_timeline(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+    from forensia.ai.section_agent import _build_daily_session_timeline as _build_timeline
+    from forensia.ai.question_registry import extract_time_qualifiers
+    qualifiers = extract_time_qualifiers(block_heading)
+    rows = _build_timeline(db, qualifiers)
+    return _structured_answer(
+        case,
+        answer_id=answer_id,
+        section_key=section_key,
+        block_heading=block_heading,
+        rows=rows,
+        columns=["date", "first_startup", "first_logon", "last_logoff", "last_shutdown", "logon_users", "interactive_logon_count"],
+        queries_run=["structured:daily_session_timeline:per_day_session_timeline"],
     )
 
 
@@ -5238,7 +5922,7 @@ def _build_generic_question_spec_answer(
     columns = list(spec.render_columns)
     if not columns and rows:
         columns = [str(key) for key in rows[0].keys() if not str(key).startswith("_")]
-    return _structured_answer(
+    answer = _structured_answer(
         case,
         answer_id=answer_id,
         section_key=section_key,
@@ -5250,6 +5934,10 @@ def _build_generic_question_spec_answer(
         missing_reason=reasons,
         source="question_spec",
     )
+    if not answer.get("answer_spec"):
+        answer["answer_spec"] = answer_spec
+        _persist_structured_answer(case, answer)
+    return answer
 
 
 StructuredAnswerBuilder = Callable[[Case, CaseDB, str, str, str], dict[str, Any]]
@@ -5260,6 +5948,7 @@ _STRUCTURED_ANSWER_BUILDERS: dict[str, StructuredAnswerBuilder] = {
     "last_shutdown_event": _build_last_shutdown_event,
     "application_execution_history": _build_application_execution_history,
     "daily_session_activity": _build_daily_session_activity,
+    "daily_session_timeline": _build_daily_session_timeline,
     "browser_usage": _build_browser_usage,
     "email_application_usage": _build_email_application_usage,
     "email_data_files": _build_email_data_files,
@@ -5295,6 +5984,9 @@ def build_structured_answer(
         )
     resolved_id = str(answer_id or normalized_spec).strip() or normalized_spec
     answer = builder(case, db, resolved_id, section_key, block_heading)
+    if not answer.get("answer_spec"):
+        answer["answer_spec"] = normalized_spec
+        _persist_structured_answer(case, answer)
     spec = question_spec_for_answer_spec(normalized_spec)
     if spec is not None:
         status, reasons = evaluate_question_spec_status(
@@ -5320,6 +6012,7 @@ UNIVERSAL_QUESTION_SPECS: tuple[str, ...] = (
     "last_shutdown_event",
     "application_execution_history",
     "daily_session_activity",
+    "daily_session_timeline",
     "browser_usage",
     "email_data_files",
     "cloud_service_traces",
@@ -5461,6 +6154,38 @@ def ensure_universal_question_probes(case: Case, db: CaseDB) -> None:
                     now,
                 ),
             )
+        # Feeder (c): Top rows from timeline-enabled structured answers
+        if answer is not None and answer.get("status") in {"answered", "partial"} and spec.timeline:
+            _feed_structured_to_timeline(db, answer_spec, answer)
+
+
+def _feed_structured_to_timeline(db: CaseDB, spec_name: str, answer: dict[str, Any]) -> None:
+    """Feeder (c): Insert top evidence rows from a timeline-tagged structured answer into case_timeline."""
+    answer_rows = [item for item in (answer.get("answer") or []) if isinstance(item, dict)]
+    if not answer_rows:
+        return
+    for index, row in enumerate(answer_rows[:3]):
+        ts = row.get("timestamp") or row.get("logon_time") or row.get("shutdown_time") or row.get("last_exec_time") or row.get("artifact_time") or row.get("si_modified") or row.get("date")
+        if not ts:
+            continue
+        host = row.get("computer") or row.get("host") or ""
+        evidence_id = row.get("evidence_id") or ""
+        summary_parts = [str(row.get(k) or "") for k in ("event_id", "executable_name", "file_name", "service_name", "target_user", "message") if row.get(k)]
+        summary = " ".join(summary_parts)[:200] or spec_name
+        entry_id = f"tl-structured-{spec_name}-{index}"
+        db.execute(
+            """
+            INSERT INTO case_timeline (entry_id, timestamp, source, ref_id, host, summary, evidence_id)
+            VALUES (?, ?, 'structured', ?, ?, ?, ?)
+            ON CONFLICT (entry_id) DO NOTHING
+            """,
+            (entry_id, ts, spec_name, host, summary, evidence_id),
+        )
+
+# ====================================================================
+# ORCHESTRATION (cont.) — fill_section, write_report, render_written_report
+# Lines: ~6000-6078
+# ====================================================================
 
 
 def fill_section(
@@ -5527,7 +6252,7 @@ def write_report(case: Case, filled_sections: dict[str, str]) -> Path:
 
 def write_report_from_db(case: Case, db: CaseDB) -> Path:
     """Read report sections from the database and write the full report to reports/report.md."""
-    report_md = build_report_markdown_from_db(db)
+    report_md = build_report_markdown_from_db(db, case=case)
     report_path = case.reports_dir / "report.md"
     report_path.write_text(report_md, encoding="utf-8")
     return report_path

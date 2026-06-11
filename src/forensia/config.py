@@ -32,3 +32,8 @@ def get_llm_settings() -> dict:
 
 def clear_llm_settings_cache() -> None:
     get_llm_settings.cache_clear()
+
+
+def get_system_prompt_budget_chars() -> int:
+    """Return the hard budget for system prompt (playbook) character count."""
+    return int(os.getenv("FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS", "24000"))

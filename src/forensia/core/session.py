@@ -53,12 +53,13 @@ ENTITY_ROLES = {
 class Hypothesis(BaseModel):
     id: str
     description: str
-    status: Literal["active", "confirmed", "refuted"] = "active"
-    verdict: Literal["confirmed", "refuted"] | None = None
+    status: Literal["active", "confirmed", "refuted", "untestable"] = "active"
+    verdict: Literal["confirmed", "refuted", "untestable"] | None = None
     summary: str = ""
     source_rule_ids: list[str] = Field(default_factory=list)
     required_entities: list[str] = Field(default_factory=list)
     target_keypoint_id: str | None = None
+    source_decl_id: str | None = None
     confirm_when: dict[str, Any] | None = None
     refute_when: dict[str, Any] | None = None
     fallback_phase: str | None = None
@@ -117,3 +118,4 @@ class SessionState(BaseModel):
     findings_snapshot: list[dict[str, Any]] = Field(default_factory=list)
     history: list[HistoryEntry] = Field(default_factory=list)
     last_execution_error: dict[str, Any] | None = None
+    proposed_keypoints: dict[str, int] = Field(default_factory=dict)

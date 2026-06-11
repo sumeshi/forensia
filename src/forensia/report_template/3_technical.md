@@ -1,10 +1,16 @@
 # Technical Analysis
 
 ## Systems and Accounts
-<!-- Identified systems, authentication activity, suspicious account usage -->
+<!-- mode: table; builder: technical_accounts -->
 
 ## Execution and Persistence
-<!-- Process execution, persistence mechanisms, anti-forensics techniques -->
+<!-- mode: table; builder: technical_execution -->
 
-## Authentication and Lateral Movement
-<!-- Network connections, lateral movement, external communications -->
+## Files and User Artifacts
+<!-- mode: table; builder: technical_files -->
+
+## Antiforensic Indicators
+<!-- mode: table; builder: technical_antiforensic -->
+
+## Network Activity
+<!-- mode: table; builder: technical_network -->

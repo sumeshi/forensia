@@ -182,7 +182,9 @@ executor は計画された SQL を実行する。0 行で、かつ仮説に `so
 
 「直接的因果は証明されていない」「さらなる調査が必要」のような名指しなしの hedge は禁止語として明示。
 
-verdict==confirmed のときだけ `build_finding_extractor_messages` が呼ばれ、structured findings を抽出。`build_memory_updater_messages` は verdict 確定後に durable memory updates を提案。
+verdict は LLM 出力のまま採用されず、コード側の整合ゲート (`_verify_verdict_consistency`) を通る: confirmed が主張する Event ID (confirm_when + rationale 中の event 表現) が結果行の event_id 集合に存在しない場合、または `required_entities` 列が全行 NULL の場合は inconclusive に降格。フォールバック検索由来の行からの confirmed は `_guardrail_check_payload` が newlead に降格する。
+
+verdict==confirmed のときだけ `build_finding_extractor_messages` が呼ばれ、structured findings を抽出して検証後に `findings` テーブル (`rule_id='hypothesis-extraction'`) へ永続化。`build_memory_updater_messages` は verdict 確定後に durable memory updates を提案する (結果行サンプルと observed evidence_ids がプロンプトに渡され、行に実在しないエンティティ名・evidence_id はコード側で破棄)。
 
 ### 5.6 Progress Tracker
 
@@ -190,10 +192,13 @@ verdict==confirmed のときだけ `build_finding_extractor_messages` が呼ば�
 
 | メソッド | 条件 | 効果 |
 |---|---|---|
-| `should_auto_confirm(rule_context, rows, hypothesis)` | `confirm_when.co_observed_event_ids` の 50% 以上が rows に存在 | LLM verdict を無視して confirmed に強制 |
-| `should_auto_refute(threshold=3)` | 3 連続 0-row inconclusive (かつ partial 信号なし) | refuted に強制 |
+| `should_auto_confirm(rule_context, rows, hypothesis)` | `_co_observation_satisfied` ([checker.py:218](../src/forensia/ai/checker.py#L218)) が `same_host` で rows をグループ化し、`within_minutes` の時間窓内ですべての `co_observed_event_ids` が共起 | LLM verdict を無視して confirmed に強制。時刻/ホスト列がない行は未充足。`co_observed_event_ids` 未宣言の hypothesis は auto-confirm しない |
+| `should_auto_refute(threshold=3)` | 3 連続 0-row inconclusive (かつ partial 信号なし) | rule が `refute_when.zero_rows` を宣言していれば refuted、そうでなければ untestable に強制 |
 | `should_pivot(fp)` | 同じ query fingerprint が 2 回以上出現 | planner に pivot 指示 |
+| `_unavailable_missing_event_ids` | inconclusive の `missing_questions` が、ケースに存在しない Event ID のみを参照 (mft/prefetch の代替経路なし) | 初回 check で即 untestable |
 | `_investigate_one_hypothesis` short-circuit | 初回 plan で SQL / template / `confirm_when` フォールバックのいずれも組めない | 即 refuted (`no executable evidence path`) |
+
+`refuted` (証拠による反証) と `untestable` (必要なテレメトリ不在で検証不能) は区別され、untestable はレポートの Gap セクションに不足テレメトリ付きで列挙される。
 
 `query_fingerprint` は sqlglot AST を canonicalize して event_id / computer マーカーと合わせてハッシュ化したもの。空白や別名違いを吸収する。sqlglot 不在時は文字列正規化に fallback。
 

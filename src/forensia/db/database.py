@@ -38,6 +38,8 @@ class CaseDB:
         self._apply_migration_once("investigation_steps_hypothesis_id", self._apply_investigation_steps_hypothesis_id)
         self._apply_migration_once("hypotheses_target_keypoint_id", self._apply_hypotheses_target_keypoint_id)
         self._apply_migration_once("section_questions", self._apply_section_questions)
+        self._apply_migration_once("hypotheses_source_decl_id", self._apply_hypotheses_source_decl_id)
+        self._apply_migration_once("mft_entries_fn_name", self._apply_mft_entries_fn_name)
 
     def _apply_migration_once(self, migration_key: str, callback: Callable[[], None]) -> None:
         """Execute a migration callback only if it has not been applied before."""
@@ -99,6 +101,14 @@ class CaseDB:
     def _apply_hypotheses_target_keypoint_id(self) -> None:
         """Add target_keypoint_id column to the hypotheses table."""
         self.conn.execute("ALTER TABLE hypotheses ADD COLUMN IF NOT EXISTS target_keypoint_id VARCHAR")
+
+    def _apply_hypotheses_source_decl_id(self) -> None:
+        """Add source_decl_id column to the hypotheses table."""
+        self.conn.execute("ALTER TABLE hypotheses ADD COLUMN IF NOT EXISTS source_decl_id VARCHAR")
+
+    def _apply_mft_entries_fn_name(self) -> None:
+        """Add fn_name column to the mft_entries table."""
+        self.conn.execute("ALTER TABLE mft_entries ADD COLUMN IF NOT EXISTS fn_name VARCHAR")
 
     def _apply_section_questions(self) -> None:
         """Create semantic question registry table for report blocks."""

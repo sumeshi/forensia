@@ -1,7 +1,7 @@
 # Appendix
 
 ## Detailed Evidence
-<!-- Supporting evidence not in main sections -->
+<!-- mode: structured; builder: appendix_detailed_evidence -->
 
 ## Artifact Lists
-<!-- Complete lists of relevant file hashes, IPs, domains -->
+<!-- mode: structured; builder: appendix_artifact_lists -->

@@ -7,6 +7,7 @@ antiforensic_tools:
     exe_patterns: ["Eraser.exe", "EraserSetup.exe", "eraser*.exe"]
     mft_patterns: ["%ProgramFiles%/Eraser/", "%LocalAppData%/Eraser/"]
     prefetch_names: ["ERASER.EXE-*.pf"]
+    artifact_names: ["Task List.ersy"]
     event_indicators: [4688]
     
   - name: CCleaner
