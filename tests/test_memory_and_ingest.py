@@ -1162,6 +1162,159 @@ class MemoryAndIngestTests(unittest.TestCase):
             self.assertNotIn(distinct_tasks[0], task_texts,
                              "oldest human_decision task evicted")
 
+    def test_append_overview_routes_to_key_findings_section(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            memory.update_overview(
+                "# Investigation Overview\n\n"
+                "## Case Scope\n- none\n\n"
+                "## Key Findings\n- none\n\n"
+                "## Investigation Policy\n- preserve evidence fidelity\n\n"
+                "## Active Tasks\n- none\n"
+            )
+
+            memory.append_overview("Key finding: suspicious logon from 10.0.0.5")
+            memory.append_overview("Finding: anomalous service install detected")
+
+            overview = memory.load_overview()
+            self.assertIn("Key finding: suspicious logon from 10.0.0.5", overview)
+            self.assertIn("Finding: anomalous service install detected", overview)
+
+            # Key Findings section should have no -none placeholder
+            kf_section = overview.split("## Key Findings", 1)[1]
+            if "\n## " in kf_section:
+                kf_section = kf_section.split("\n## ", 1)[0]
+            self.assertNotIn("- none", kf_section)
+
+            # Verify content is under ## Key Findings, not appended at end
+            kf_idx = overview.index("## Key Findings")
+            scope_idx = overview.index("## Case Scope")
+            policy_idx = overview.index("## Investigation Policy")
+            tasks_idx = overview.index("## Active Tasks")
+            finding1_idx = overview.index("Key finding: suspicious logon from 10.0.0.5")
+            finding2_idx = overview.index("Finding: anomalous service install detected")
+            self.assertGreater(finding1_idx, kf_idx)
+            self.assertGreater(finding2_idx, kf_idx)
+            self.assertLess(finding1_idx, policy_idx)
+            self.assertLess(finding2_idx, policy_idx)
+            self.assertLess(scope_idx, kf_idx)
+
+    def test_append_overview_task_routes_to_active_tasks_section(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            memory.update_overview(
+                "# Investigation Overview\n\n"
+                "## Key Findings\n- none\n\n"
+                "## Active Tasks\n- none\n"
+            )
+
+            memory.append_overview("Task: correlate 4625 logon failures by source ip")
+            memory.append_overview("Investigate network connections from 10.0.0.5")
+
+            overview = memory.load_overview()
+            self.assertIn("Task: correlate 4625 logon failures by source ip", overview)
+            self.assertIn("Investigate network connections from 10.0.0.5", overview)
+
+            # Active Tasks section should have no -none placeholder
+            if "## Active Tasks" in overview:
+                at_section = overview.split("## Active Tasks", 1)[1]
+                if "\n## " in at_section:
+                    at_section = at_section.split("\n## ", 1)[0]
+                self.assertNotIn("- none", at_section)
+
+            # Content should be under ## Active Tasks, not under ## Key Findings
+            tasks_idx = overview.index("## Active Tasks")
+            kf_idx = overview.index("## Key Findings")
+            task_idx = overview.index("Task: correlate 4625 logon failures by source ip")
+            inv_idx = overview.index("Investigate network connections from 10.0.0.5")
+            self.assertGreater(task_idx, tasks_idx)
+            self.assertGreater(inv_idx, tasks_idx)
+            self.assertGreater(task_idx, kf_idx)
+            self.assertGreater(inv_idx, kf_idx)
+
+    def test_append_overview_generic_fact_defaults_to_key_findings(self) -> None:
+        """Facts with no routing keyword (the dominant check-output shape, e.g.
+        'A password reset occurred on host X') must land under Key Findings,
+        not pile up after the template — that pile-up was the R5 symptom."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            memory.update_overview(
+                "# Investigation Overview\n\n"
+                "## Key Findings\n- none\n\n"
+                "## Active Tasks\n- none\n"
+            )
+
+            memory.append_overview("A password reset occurred on 'informant-PC'")
+
+            overview = memory.load_overview()
+            kf_idx = overview.index("## Key Findings")
+            tasks_idx = overview.index("## Active Tasks")
+            fact_idx = overview.index("A password reset occurred on 'informant-PC'")
+            self.assertGreater(fact_idx, kf_idx)
+            self.assertLess(fact_idx, tasks_idx)
+
+    def test_append_overview_falls_back_to_end_when_heading_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            memory.update_overview("# Investigation Overview\n\n## Notes\n- existing\n")
+
+            memory.append_overview("Some generic prose without a Key Findings heading")
+
+            overview = memory.load_overview()
+            notes_idx = overview.index("## Notes")
+            prose_idx = overview.index("Some generic prose without a Key Findings heading")
+            self.assertGreater(prose_idx, notes_idx)
+
+    def test_append_overview_clears_seed_placeholder_in_active_tasks(self) -> None:
+        """The initial-overview seed line (初回調査待ち / Awaiting initial
+        investigation) is a placeholder and must vanish once a real task lands."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            memory.update_overview(
+                "# Investigation Overview\n\n"
+                "## Key Findings\n- none\n\n"
+                "## Active Tasks\n- 初回調査待ち\n"
+            )
+
+            memory.append_overview("Verify logon type distribution for host informant-PC")
+
+            overview = memory.load_overview()
+            self.assertNotIn("初回調査待ち", overview)
+            self.assertIn("Verify logon type distribution for host informant-PC", overview)
+            tasks_idx = overview.index("## Active Tasks")
+            task_idx = overview.index("Verify logon type distribution")
+            self.assertGreater(task_idx, tasks_idx)
+
+    def test_append_overview_routes_to_case_scope_section(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+            memory.update_overview(
+                "# Investigation Overview\n\n"
+                "## Case Scope\n- none\n\n"
+                "## Key Findings\n- none\n"
+            )
+
+            memory.append_overview("Scope includes hosts SRV-01, SRV-02")
+
+            overview = memory.load_overview()
+            self.assertIn("Scope includes hosts SRV-01, SRV-02", overview)
+
+            # Case Scope section should have no -none, Key Findings should still have it
+            scope_section = overview.split("## Key Findings")[0]
+            self.assertNotIn("- none", scope_section)
+
+            scope_idx = overview.index("## Case Scope")
+            content_idx = overview.index("Scope includes hosts SRV-01, SRV-02")
+            kf_idx = overview.index("## Key Findings")
+            self.assertGreater(content_idx, scope_idx)
+            self.assertLess(content_idx, kf_idx)
+
     def test_r2_10_inconclusive_without_transition_writes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)

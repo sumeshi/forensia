@@ -195,6 +195,7 @@ def _prepare_block_context(
     answer_id: str = "",
     answer_spec: str = "",
     question: str = "",
+    section_table_digest: str = "",
     audit_callback=None,
     report_brief: dict[str, Any] | None = None,
 ) -> _BlockContext:
@@ -242,6 +243,10 @@ def _prepare_block_context(
     audit = _audit_bridge(audit_callback)
     prompt_report_brief = _structured_report_brief(report_brief) if benchmark_mode else (report_brief or {})
     structured_digest = _structured_digest_from_answers(case) if section_key in {"1_overview", "2_timeline"} else ""
+    if section_table_digest:
+        # R6-05: same-section table data, rendered moments earlier, becomes
+        # part of the narrative blocks' observation context.
+        structured_digest = (structured_digest + "\n" + section_table_digest).strip()
     return _BlockContext(
         case=case,
         db=db,
@@ -695,6 +700,86 @@ def _fallback_narrative_body(
     return paragraph.strip()
 
 
+def _label_key_points_with_verdicts(
+    outline_items: list[dict[str, Any]],
+    collected_results: list[dict[str, Any]],
+    overall_verdict: str,
+) -> list[str]:
+    """Prefix key_points with verdict labels: [confirmed], [refuted], [finding, confidence=N].
+
+    Uses source_verdict from results that went through the check loop, and
+    confidence from fact/finding results for fallback labeling.
+    """
+    eid_verdicts: dict[str, str] = {}
+    eid_finding_conf: dict[str, float] = {}
+
+    for result in collected_results:
+        verdict = str(result.get("source_verdict") or "").strip().lower()
+        evids = [str(e).strip() for e in (result.get("evidence_ids") or []) if str(e).strip()]
+
+        # Confidence from result-level field or sample_rows
+        result_conf: float | None = None
+        raw_conf = result.get("confidence")
+        if raw_conf is not None:
+            try:
+                result_conf = float(raw_conf)
+            except (TypeError, ValueError):
+                pass
+        if result_conf is None:
+            for row in result.get("sample_rows") or []:
+                if isinstance(row, dict):
+                    c = row.get("confidence")
+                    if c is not None:
+                        try:
+                            result_conf = float(c)
+                            break
+                        except (TypeError, ValueError):
+                            pass
+
+        finding_ids = result.get("finding_ids") or []
+
+        if verdict and evids:
+            for eid in evids:
+                if eid not in eid_verdicts or verdict == "block_contradicted":
+                    eid_verdicts[eid] = verdict
+
+        if result_conf is not None and evids:
+            for eid in evids:
+                if eid not in eid_finding_conf:
+                    eid_finding_conf[eid] = result_conf
+
+    labeled: list[str] = []
+    any_verdict_labels = False
+
+    for item in outline_items:
+        item_eids = {str(e).strip() for e in (item.get("evidence_ids") or []) if str(e).strip()}
+        item_verdicts = {eid_verdicts.get(eid) for eid in item_eids if eid in eid_verdicts}
+        item_verdicts.discard(None)
+
+        if "block_contradicted" in item_verdicts:
+            label = "[refuted]"
+            any_verdict_labels = True
+        elif "block_supported" in item_verdicts:
+            label = "[confirmed]"
+            any_verdict_labels = True
+        elif item_eids and any(eid in eid_finding_conf for eid in item_eids):
+            conf_val = max(eid_finding_conf.get(eid, 0.0) for eid in item_eids if eid in eid_finding_conf)
+            label = f"[finding, confidence={conf_val}]"
+            any_verdict_labels = True
+        else:
+            label = ""
+
+        for kp in item.get("key_points") or []:
+            labeled.append(f"{label} {kp}" if label else kp)
+
+    # Fallback: if no per-result verdicts were found, use overall_verdict
+    if not any_verdict_labels and overall_verdict in ("block_supported", "block_contradicted"):
+        fb_label = "[confirmed]" if overall_verdict == "block_supported" else "[refuted]"
+        labeled = [f"{fb_label} {kp}" for kp in labeled]
+
+    return labeled
+
+
 def _write_block_body(
     ctx: _BlockContext,
     collected_results: list[dict[str, Any]],
@@ -797,39 +882,48 @@ def _write_block_body(
             )
             messages = classify_messages if not (extracted_rows and expected_shape and all(field in extracted_rows[0] for field in expected_shape.get("fields") or [])) else []
     else:
-        if status_inner in {"not_searched", "not_found", "wrong_query"}:
+        if status_inner in {"not_searched", "not_found", "wrong_query"} and not ctx.structured_digest:
             # Reader-facing insufficient-evidence placeholder. Must not contain
             # workflow markers ("Block skipped", "Section block failed") or
             # open-question markers — those trip the section quality gates and
             # would cap the whole section's confidence.
+            # When structured observations exist (structured answers or the
+            # section's own table data), narrate from them instead of
+            # claiming insufficiency next to a populated table.
             body = _insufficient_evidence_placeholder()
             messages = []
         else:
             flat_evidence = _flatten_sample_rows(collected_results, rows_only=True)
-            prior_section_keypoints = list(
-                {
-                    str(r.get("keypoint") or r.get("source_kind") or "")
-                    for r in collected_results
-                    if r.get("keypoint") or r.get("source_kind")
-                }
-            )
-            outline_messages, outline_schema = build_section_outline_messages(
-                template_body=ctx.template_body,
-                relevant_evidence=flat_evidence,
-                time_range=ctx.case.time_range,
-                section_meta={"section": ctx.section_key, "title": ctx.title},
-                prior_section_keypoints=prior_section_keypoints,
-            )
-            outline = request_llm_json(
-                messages=outline_messages,
-                model=ctx.model,
-                base_url=ctx.base_url,
-                json_schema=outline_schema,
-                audit_callback=ctx.audit,
-            )
-            all_key_points: list[str] = []
-            for item in outline.get("outline") or []:
-                all_key_points.extend(item.get("key_points") or [])
+            if flat_evidence:
+                prior_section_keypoints = list(
+                    {
+                        str(r.get("keypoint") or r.get("source_kind") or "")
+                        for r in collected_results
+                        if r.get("keypoint") or r.get("source_kind")
+                    }
+                )
+                outline_messages, outline_schema = build_section_outline_messages(
+                    template_body=ctx.template_body,
+                    relevant_evidence=flat_evidence,
+                    time_range=ctx.case.time_range,
+                    section_meta={"section": ctx.section_key, "title": ctx.title},
+                    prior_section_keypoints=prior_section_keypoints,
+                )
+                outline = request_llm_json(
+                    messages=outline_messages,
+                    model=ctx.model,
+                    base_url=ctx.base_url,
+                    json_schema=outline_schema,
+                    audit_callback=ctx.audit,
+                )
+                outline_items: list[dict[str, Any]] = outline.get("outline") or []
+                all_key_points: list[str] = _label_key_points_with_verdicts(
+                    outline_items, collected_results, verdict,
+                )
+            else:
+                # No query evidence — the narrator works from the structured
+                # digest alone; an outline call over zero rows is wasted.
+                all_key_points = []
             narrate_messages, narrate_schema = build_paragraph_narrate_messages(
                 heading=ctx.block_heading,
                 key_points=all_key_points,
@@ -890,6 +984,7 @@ def run_section_block_agent(
     answer_id: str = "",
     answer_spec: str = "",
     question: str = "",
+    section_table_digest: str = "",
     audit_callback=None,
 ) -> SectionBlockResult:
     """Run the complete plan->query->check->write loop for one report section block.
@@ -907,6 +1002,7 @@ def run_section_block_agent(
         max_queries=max_queries, evidence_keypoints=evidence_keypoints,
         benchmark_mode=benchmark_mode, benchmark_id=benchmark_id,
         answer_id=answer_id, answer_spec=answer_spec, question=question,
+        section_table_digest=section_table_digest,
         audit_callback=audit_callback, report_brief=report_brief,
     )
     try:
@@ -1085,6 +1181,7 @@ async def async_run_section_block_agent(
     answer_id: str = "",
     answer_spec: str = "",
     question: str = "",
+    section_table_digest: str = "",
     audit_callback=None,
 ) -> SectionBlockResult:
     """Async wrapper around run_section_block_agent using asyncio.to_thread."""
@@ -1098,5 +1195,6 @@ async def async_run_section_block_agent(
         evidence_keypoints=evidence_keypoints, benchmark_mode=benchmark_mode,
         benchmark_id=benchmark_id, answer_id=answer_id, answer_spec=answer_spec,
         question=question,
+        section_table_digest=section_table_digest,
         audit_callback=audit_callback,
     )

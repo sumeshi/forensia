@@ -33,6 +33,7 @@ from forensia.report.writer import (
     _render_structured_answer_markdown,
     _resolve_evidence_results,
     _validate_body_evidence_ids,
+    _validate_section_evidence_ids,
 )
 
 
@@ -731,6 +732,305 @@ class WriterRQRegressionTests(unittest.TestCase):
 
             self.assertEqual([], missing)
 
+    def test_validate_section_evidence_ids_removes_fabricated_keeps_real(self) -> None:
+        """R5-01: Fix capturing group bug in _EVIDENCE_ID_RE.
+
+        The regex previously used (evtx|mft|prefetch) — a capturing group — so
+        re.findall() returned only the prefix. This meant fabricated IDs were
+        never removed and real IDs were never validated.
+
+        Verifies:
+        - Real evtx ID is kept untouched
+        - Fabricated evtx-security-0001 is fully removed (no -security-0001 residue)
+        - No empty parens （） or () remain after removal
+        - Gap list names the removed full ID
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer) VALUES (?, ?, ?, ?)",
+                    ("evtx-security-000000000001", 4624, datetime(2015, 3, 22, 14, 34, 28), "informant-PC"),
+                )
+                body = (
+                    "The real event evtx-security-000000000001 is supported by evidence. "
+                    "The fabricated event （evtx-security-0001） is not in DB. "
+                    "Another fabricated one (evtx-mft-9999) also not present."
+                )
+                cleaned, gaps = _validate_section_evidence_ids(db, body)
+
+            # Real ID is preserved
+            self.assertIn("evtx-security-000000000001", cleaned)
+            # Fabricated IDs are removed (no residue)
+            self.assertNotIn("evtx-security-0001", cleaned)
+            self.assertNotIn("security-0001", cleaned)
+            self.assertNotIn("evtx-mft-9999", cleaned)
+            # Empty citation shells are cleaned up
+            self.assertNotIn("（）", cleaned)
+            self.assertNotIn("()", cleaned)
+            self.assertNotIn("（,", cleaned)
+            # Gap lists the removed full IDs
+            self.assertTrue(any("evtx-security-0001" in g for g in gaps), msg=f"gap missing fabricated ID: {gaps}")
+            self.assertTrue(any("evtx-mft-9999" in g for g in gaps), msg=f"gap missing fabricated ID: {gaps}")
+            # Real ID is NOT in the gap list
+            self.assertFalse(any("evtx-security-000000000001" in g for g in gaps), msg=f"real ID in gaps: {gaps}")
+
+    def test_validate_section_evidence_ids_keeps_valid_id_sharing_parens_with_invalid(self) -> None:
+        """R5-01 follow-up: removing an invalid ID must not delete a valid ID
+        cited in the same citation group. A naive "(, debris)" cleanup regex
+        deleted the whole group, silently destroying real citations."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer) VALUES (?, ?, ?, ?)",
+                    ("evtx-security-000000000122", 4648, datetime(2015, 3, 22, 15, 57, 54), "informant-PC"),
+                )
+                body = (
+                    "Invalid first （evtx-security-0001, evtx-security-000000000122） here. "
+                    "Invalid last (evtx-security-000000000122, evtx-bogus-1) there."
+                )
+                cleaned, gaps = _validate_section_evidence_ids(db, body)
+
+            # Both surviving citations keep the real ID inside their parens
+            self.assertIn("（evtx-security-000000000122）", cleaned)
+            self.assertIn("(evtx-security-000000000122)", cleaned)
+            self.assertNotIn("evtx-security-0001", cleaned)
+            self.assertNotIn("evtx-bogus-1", cleaned)
+
+    def test_parse_block_hints_combined_comment_syntax(self) -> None:
+        """R5-04 follow-up: the packaged templates use the combined one-comment
+        syntax `<!-- mode: table; builder: X -->`. The parser previously stored
+        mode='table; builder: x' and never extracted the builder, so table mode
+        silently never fired for any template that used it."""
+        from forensia.report.writer import _parse_block_hints
+
+        hints = _parse_block_hints("<!-- mode: table; builder: overview_evidence_scope -->")
+        self.assertEqual("table", hints["mode"])
+        self.assertEqual("overview_evidence_scope", hints["builder"])
+
+        narrative = _parse_block_hints("<!-- mode: narrative; Write an executive summary -->")
+        self.assertEqual("narrative", narrative["mode"])
+        self.assertEqual("", narrative["builder"])
+
+        # One-directive-per-comment syntax keeps working
+        separate = _parse_block_hints(
+            "<!-- mode: structured -->\n<!-- answer_id: Q6 -->\n<!-- answer_spec: host_identity -->"
+        )
+        self.assertEqual("structured", separate["mode"])
+        self.assertEqual("Q6", separate["answer_id"])
+        self.assertEqual("host_identity", separate["answer_spec"])
+
+    def test_async_render_section_blocks_renders_table_mode_without_llm(self) -> None:
+        """R5-04 follow-up: the async render path (used by the investigate loop)
+        must execute table builders deterministically instead of routing table
+        blocks through the LLM agent."""
+        import asyncio
+
+        from forensia.ai.section_refresher import _render_section_blocks
+        from forensia.core.memory import MemoryManager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO report_sections (section_key, title, body, confidence, status, update_count, stale) "
+                    "VALUES ('1_overview', 'Overview', '', 0.0, 'draft', 0, TRUE)"
+                )
+                request = {
+                    "case": case,
+                    "section_key": "1_overview",
+                    "title": "Investigation Overview",
+                    "template_preamble": "",
+                    "context_sections": {},
+                    "report_brief": {},
+                    "is_stale": True,
+                    "block_requests": [
+                        {
+                            "heading": "Evidence Scope",
+                            "template_body": "<!-- mode: table; builder: overview_evidence_scope -->",
+                            "mode": "table",
+                            "builder": "overview_evidence_scope",
+                            "evidence_keypoints": [],
+                        }
+                    ],
+                }
+                memory = MemoryManager(case)
+                # base_url points nowhere: if the table branch regresses into the
+                # LLM agent path, this test fails loudly instead of passing.
+                _, body = asyncio.run(
+                    _render_section_blocks(
+                        request, case, db, memory,
+                        base_url="http://127.0.0.1:1", model="none",
+                        max_queries_per_section=1,
+                        llm_logger=None, iteration=1,
+                        progress_callback=None, focus_sections=None,
+                    )
+                )
+        self.assertIn("## Evidence Scope", body)
+        self.assertIn("| Metric | Value |", body)
+
+
+    def test_render_rows_template_grammar(self) -> None:
+        """R6-03: shared placeholder grammar for captions and interpretations."""
+        from forensia.report.markdown import render_rows_template
+
+        rows = [
+            {"host": "alpha", "events": 10},
+            {"host": "beta", "events": 3},
+        ]
+        out = render_rows_template(
+            "{row_count} hosts ({sample(host, 3)}); first={first.host} last={last.host}", rows,
+        )
+        self.assertEqual("2 hosts (alpha、beta); first=alpha last=beta", out)
+
+    def test_render_table_block_prepends_caption(self) -> None:
+        """R6-03: a mode:table block renders a declarative caption above the table."""
+        from forensia.report.probes import render_table_block
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                body = render_table_block(db, "overview_evidence_scope")
+        self.assertIsNotNone(body)
+        caption, _, rest = body.partition("\n\n")
+        self.assertFalse(caption.startswith("|"), f"caption paragraph expected, got table first: {caption!r}")
+        self.assertIn("指標", caption)
+        self.assertIn("| Metric | Value |", rest)
+
+    def test_render_table_block_empty_rows_render_declared_text(self) -> None:
+        """R6-03: an empty result renders the declared empty text, not a bare table."""
+        from forensia.report.probes import render_table_block
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                body = render_table_block(db, "gaps_untestable")
+        self.assertIsNotNone(body)
+        self.assertNotIn("|", body, "no table for zero rows")
+        self.assertIn("検証不能", body)
+
+    def test_render_table_block_unknown_builder_returns_none(self) -> None:
+        from forensia.report.probes import render_table_block
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                self.assertIsNone(render_table_block(db, "no_such_builder"))
+
+    def test_markdown_table_truncation_marker_outside_table(self) -> None:
+        """R6-06: the Showing-N-of-M marker must not be a fake table row."""
+        from forensia.report.markdown import _markdown_table
+
+        rows = [{"a": i, "b": i} for i in range(20)]
+        table = _markdown_table(rows, [("a", "A"), ("b", "B")], max_rows=5)
+        self.assertNotIn("| ...", table)
+        self.assertIn("_Showing 5 of 20 rows._", table)
+        self.assertTrue(table.rstrip().endswith("_Showing 5 of 20 rows._"))
+
+    def test_execution_rows_aggregate_per_executable(self) -> None:
+        """R6-06: one table row per executable name, exec counts summed."""
+        from forensia.report.probes import _execution_rows
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO prefetch_executions (evidence_id, source_file, executable_name, exec_count, last_exec_time) VALUES "
+                    "('prefetch-iexplore-1', 'a.pf', 'IEXPLORE.EXE', 14, TIMESTAMP '2015-03-25 15:22:07'), "
+                    "('prefetch-iexplore-2', 'b.pf', 'IEXPLORE.EXE', 2, TIMESTAMP '2015-03-25 15:22:06'), "
+                    "('prefetch-winword-1', 'c.pf', 'WINWORD.EXE', 3, TIMESTAMP '2015-03-25 15:24:48')"
+                )
+                rows = _execution_rows(db)
+        names = [str(r.get("executable_name")) for r in rows]
+        self.assertEqual(len(names), len(set(names)), f"duplicate executables in {names}")
+        iexplore = next(r for r in rows if r["executable_name"] == "IEXPLORE.EXE")
+        self.assertEqual(16, int(iexplore["exec_count"]))
+        self.assertIn("15:22:07", str(iexplore["last_exec_time"]))
+
+    def test_prepare_block_context_merges_section_table_digest(self) -> None:
+        """R6-05: same-section table digest reaches the narrator context."""
+        from forensia.ai.section_agent import _prepare_block_context
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                ctx = _prepare_block_context(
+                    case=case, db=db, section_key="2_timeline", title="Activity Timeline",
+                    block_heading="Log Integrity", template_body="<!-- mode: narrative; x -->",
+                    base_url="http://127.0.0.1:1", model="none", memory=None,
+                    max_queries=1, evidence_keypoints=None, benchmark_mode=False,
+                    section_table_digest="<SECTION_TABLES>\n### Phase Summary\n| Date |\n</SECTION_TABLES>",
+                )
+        self.assertIn("<SECTION_TABLES>", ctx.structured_digest)
+        self.assertIn("Phase Summary", ctx.structured_digest)
+
+
+
+    def test_async_render_blocks_feed_table_digest_to_narrative_in_template_order(self) -> None:
+        """R6-05: tables render first and feed the narrative agent; the
+        assembled body keeps template order (narrative before table here)."""
+        import asyncio
+        from unittest import mock
+
+        from forensia.ai import section_refresher
+        from forensia.ai.section_blocks import SectionBlockResult
+        from forensia.core.memory import MemoryManager
+
+        captured: dict = {}
+
+        async def _stub_agent(**kwargs):
+            captured.update(kwargs)
+            return SectionBlockResult(body="narrative body", evidence_results=[], iterations=1, status="answered")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                request = {
+                    "case": case,
+                    "section_key": "1_overview",
+                    "title": "Investigation Overview",
+                    "template_preamble": "",
+                    "context_sections": {},
+                    "report_brief": {},
+                    "is_stale": True,
+                    "block_requests": [
+                        {
+                            "heading": "Executive Summary",
+                            "template_body": "<!-- mode: narrative; summary -->",
+                            "mode": "narrative",
+                            "evidence_keypoints": [],
+                        },
+                        {
+                            "heading": "Evidence Scope",
+                            "template_body": "<!-- mode: table; builder: overview_evidence_scope -->",
+                            "mode": "table",
+                            "builder": "overview_evidence_scope",
+                            "evidence_keypoints": [],
+                        },
+                    ],
+                }
+                with mock.patch.object(section_refresher, "async_run_section_block_agent", _stub_agent):
+                    _, body = asyncio.run(
+                        section_refresher._render_section_blocks(
+                            request, case, db, MemoryManager(case),
+                            base_url="http://127.0.0.1:1", model="none",
+                            max_queries_per_section=1,
+                            llm_logger=None, iteration=1,
+                            progress_callback=None, focus_sections=None,
+                        )
+                    )
+
+        digest = str(captured.get("section_table_digest") or "")
+        self.assertIn("<SECTION_TABLES>", digest, "narrative agent must receive the table digest")
+        self.assertIn("Evidence Scope", digest)
+        self.assertIn("| Metric | Value |", digest)
+        self.assertLess(
+            body.index("## Executive Summary"), body.index("## Evidence Scope"),
+            "assembly must keep template order even though tables render first",
+        )
+
+
     def test_log_integrity_keypoints_ignore_non_eventlog_104(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -773,7 +1073,7 @@ class WriterRQRegressionTests(unittest.TestCase):
             gaps = next(result for result in results if result["keypoint"] == "gaps_log_integrity_events")
             self.assertEqual(["evtx-eventlog-000000000104"], timeline["evidence_ids"])
             self.assertEqual(1, timeline["row_count"])
-            self.assertEqual([{"event_id": 104, "count": 1}], gaps["sample_rows"])
+            self.assertEqual([{"event_id": 104, "count": 1, "citable": False}], gaps["sample_rows"])
 
     def test_error_reasoning_rows_excluded_from_latest(self) -> None:
         """R2-05: error-phase reasoning entries must not appear as latest_reasoning."""

@@ -112,8 +112,8 @@ flowchart LR
 3. **execute**: DuckDB に対し SELECT を発行。0 行のときに限り rule 側の `fallback_search` 宣言が決定論的に発火。
 4. **check**: `verdict_reviewer` が verdict を出し、コード側の整合ゲートが主張と結果行の一致を照合。confirmed のときだけ `finding_extractor` が構造化 finding を抽出し、検証済みのものを `findings` テーブルへ永続化。
 5. **track**: `HypothesisProgressTracker` が confirm_when / 連続 0-row / フィンガープリント重複を見て auto-confirm / auto-refute / untestable / pivot を機械的に判定。「証拠が無く検証不能 (untestable)」は「反証された (refuted)」と区別して記録。
-6. **resolve**: 仮説が確定すると関連レポートセクションが `stale` 化、follow-up 質問が新たな仮説に投入。
-7. **report**: `section_outliner` がレイアウトを決め、`paragraph_narrator` が段落単位で本文を生成。untestable の仮説は不足テレメトリとともに Gap セクションへ。レポートから出た gap は次サイクルの仮説に戻る。
+6. **resolve**: 仮説が確定すると関連レポートセクションが `stale` 化(ルール宣言の `report_sections` に加え、`target_keypoint_id` と記述キーワードからも導出。セクションごとの更新回数に上限あり)、follow-up 質問が新たな仮説に投入。
+7. **report**: `mode: table` ブロックは決定論的ビルダーが「宣言済みキャプション+表」を描画し(`rulepacks/_schema/report_tables.yaml`)、narrative ブロックは同一セクションの表データをダイジェストとして受け取ってから `section_outliner` / `paragraph_narrator` が本文を生成。untestable の仮説は不足テレメトリとともに Gap セクションへ。レポートから出た gap は次サイクルの仮説に戻る。ループ終了時には最終リフレッシュが走り、終盤サイクルで確定した仮説も `reports/report.md` に反映される。レポートリフレッシュの失敗は調査ループを止めない: LLM サーバ障害は調査ループと同じ復旧待機(既定で最大 8 時間)でリトライし、それ以外の失敗はトレースバックと進捗イベントに記録して続行する。stale フラグは DB に保持されるため、次に成功したリフレッシュ(または終了時の最終リフレッシュ)が未反映分に追いつく。失敗回数は調査結果の `report_refresh_failures` で確認できる。
 
 ## 効率性のための設計
 

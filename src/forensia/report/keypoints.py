@@ -95,6 +95,8 @@ def _row_with_evidence_ids(row: dict[str, Any]) -> dict[str, Any]:
     if evidence_ids:
         normalized.setdefault("evidence_ids", evidence_ids)
         normalized.setdefault("evidence_id", evidence_ids[0])
+    else:
+        normalized["citable"] = False
     return normalized
 
 

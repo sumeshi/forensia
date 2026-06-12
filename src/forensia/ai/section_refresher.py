@@ -10,7 +10,7 @@ from typing import Any
 from rich import print
 
 from forensia.ai.audit import LLMCallLogger
-from forensia.ai.llm_client import chat_completion
+from forensia.ai.llm_client import LLMServerUnavailableError, chat_completion
 from forensia.ai.report_gap import _build_report_status
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager, memory_for_section
@@ -31,8 +31,7 @@ from forensia.report.writer import (
     write_report_brief,
 )
 from forensia.ai.section_agent import SectionBlockResult, async_run_section_block_agent, run_section_block_agent
-from forensia.report.markdown import _markdown_table
-from forensia.report.probes import _TABLE_BLOCK_BUILDERS, _table_block_columns
+from forensia.report.probes import render_table_block
 from forensia.api.cache import write_api_snapshots
 
 
@@ -47,8 +46,10 @@ def _collect_section_requests(
     prior_filled: dict[str, str],
     report_brief: dict[str, Any],
 ) -> list[dict[str, Any]]:
+    # Raw fetchall() returns tuples (dict rows come from fetch_records) —
+    # dict-style access here crashed every refresh once stale rows existed.
     stale_section_keys = {
-        str(row["section_key"])
+        str(row[0])
         for row in db.execute("SELECT section_key FROM report_sections WHERE stale = TRUE").fetchall()
     }
     requests: list[dict[str, Any]] = []
@@ -104,6 +105,35 @@ def _emit_section_failure(
         )
 
 
+def _table_first_order(blocks: list[dict[str, Any]]) -> list[int]:
+    """Render order: `mode: table` blocks first (template order within each group)."""
+    def _key(index: int) -> tuple[int, int]:
+        mode = str(blocks[index].get("mode") or "").strip().casefold()
+        return (0 if mode == "table" else 1, index)
+
+    return sorted(range(len(blocks)), key=_key)
+
+
+_TABLE_DIGEST_PART_LIMIT = 1200
+_TABLE_DIGEST_TOTAL_LIMIT = 4000
+
+
+def _append_table_digest(parts: list[str], heading: str, table_body: str) -> None:
+    """Collect a bounded per-table digest for same-section narrative blocks."""
+    digest = table_body if len(table_body) <= _TABLE_DIGEST_PART_LIMIT else table_body[:_TABLE_DIGEST_PART_LIMIT - 3] + "..."
+    parts.append(f"### {heading}\n{digest}" if heading else digest)
+
+
+def _section_table_digest(parts: list[str]) -> str:
+    """Assemble collected table digests into one bounded observation block."""
+    if not parts:
+        return ""
+    digest = "<SECTION_TABLES>\n" + "\n\n".join(parts) + "\n</SECTION_TABLES>"
+    if len(digest) > _TABLE_DIGEST_TOTAL_LIMIT:
+        digest = digest[:_TABLE_DIGEST_TOTAL_LIMIT - 3] + "..."
+    return digest
+
+
 async def _render_section_blocks(
     request: dict[str, Any],
     case: Case,
@@ -150,46 +180,59 @@ async def _render_section_blocks(
             }
         )
 
-    rendered_blocks: list[str] = []
+    blocks: list[dict[str, Any]] = list(request.get("block_requests") or [])
+    rendered_bodies: dict[int, str] = {}
     block_gaps: list[str] = []
     block_outline: list[dict] = []
     all_evidence_results: list[dict[str, Any]] = []
+    table_digest_parts: list[str] = []
 
     try:
-        for block in request.get("block_requests") or []:
+        # Two-pass render: deterministic table blocks first so narrative
+        # blocks can consume their data; assembly keeps template order.
+        for index in _table_first_order(blocks):
+            block = blocks[index]
             try:
                 block_mode = str(block.get("mode") or "").strip().casefold()
                 is_structured_mode = block_mode in {"benchmark", "structured"} or bool(block.get("answer_spec") or block.get("question"))
-                block_result = await async_run_section_block_agent(
-                    case=request["case"],
-                    db=db,
-                    section_key=str(request["section_key"]),
-                    title=str(request["title"]),
-                    block_heading=str(block.get("heading") or ""),
-                    template_body=str(block.get("template_body") or ""),
-                    context_sections={} if is_structured_mode else (request.get("context_sections") or {}),
-                    current_section_outline=[] if is_structured_mode else block_outline,
-                    report_brief=request.get("report_brief") or {},
-                    base_url=base_url,
-                    model=model,
-                    memory=memory_for_section(memory, structured_mode=is_structured_mode),
-                    max_queries_per_section=max_queries_per_section,
-                    evidence_keypoints=list(block.get("evidence_keypoints") or []),
-                    benchmark_mode=is_structured_mode,
-                    benchmark_id=str(block.get("benchmark_id") or block.get("answer_id") or ""),
-                    answer_id=str(block.get("answer_id") or block.get("benchmark_id") or ""),
-                    answer_spec=str(block.get("answer_spec") or ""),
-                    question=str(block.get("question") or ""),
-                    audit_callback=lambda messages, body, section=request["section_key"], heading=block.get("heading", ""): llm_logger.write(
-                        iteration=iteration,
-                        phase="report-section-block",
-                        input_messages=messages,
-                        output=body,
-                        model=model,
+                block_result = None
+                if block_mode == "table":
+                    table_body = render_table_block(db, str(block.get("builder") or ""))
+                    if table_body is not None:
+                        block_result = SectionBlockResult(body=table_body, evidence_results=[], iterations=0, status="answered")
+                        _append_table_digest(table_digest_parts, str(block.get("heading") or ""), table_body)
+                if block_result is None:
+                    block_result = await async_run_section_block_agent(
+                        case=request["case"],
+                        db=db,
+                        section_key=str(request["section_key"]),
+                        title=str(request["title"]),
+                        block_heading=str(block.get("heading") or ""),
+                        template_body=str(block.get("template_body") or ""),
+                        context_sections={} if is_structured_mode else (request.get("context_sections") or {}),
+                        current_section_outline=[] if is_structured_mode else block_outline,
+                        report_brief=request.get("report_brief") or {},
                         base_url=base_url,
-                        suffix=f"{request['section_key']}-{heading}",
-                    ),
-                )
+                        model=model,
+                        memory=memory_for_section(memory, structured_mode=is_structured_mode),
+                        max_queries_per_section=max_queries_per_section,
+                        evidence_keypoints=list(block.get("evidence_keypoints") or []),
+                        benchmark_mode=is_structured_mode,
+                        benchmark_id=str(block.get("benchmark_id") or block.get("answer_id") or ""),
+                        answer_id=str(block.get("answer_id") or block.get("benchmark_id") or ""),
+                        answer_spec=str(block.get("answer_spec") or ""),
+                        question=str(block.get("question") or ""),
+                        section_table_digest="" if is_structured_mode else _section_table_digest(table_digest_parts),
+                        audit_callback=lambda messages, body, section=request["section_key"], heading=block.get("heading", ""): llm_logger.write(
+                            iteration=iteration,
+                            phase="report-section-block",
+                            input_messages=messages,
+                            output=body,
+                            model=model,
+                            base_url=base_url,
+                            suffix=f"{request['section_key']}-{heading}",
+                        ),
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -199,7 +242,7 @@ async def _render_section_blocks(
             heading = str(block.get("heading") or "").strip()
             if heading and not _body_starts_with_heading(block_body, heading):
                 block_body = f"## {heading}\n\n{block_body}"
-            rendered_blocks.append(block_body)
+            rendered_bodies[index] = block_body
             if heading:
                 block_outline.append({
                     "heading": heading,
@@ -212,6 +255,7 @@ async def _render_section_blocks(
                 if label not in block_gaps:
                     block_gaps.append(label)
 
+        rendered_blocks = [rendered_bodies[index] for index in sorted(rendered_bodies)]
         body = _assemble_section_body(str(request.get("template_preamble") or ""), rendered_blocks)
         request["block_gaps"] = block_gaps
         request["evidence_results"] = all_evidence_results
@@ -232,45 +276,25 @@ def _render_section_from_request(
 ) -> tuple[str, list[dict[str, Any]], list[str]]:
     """Iterate block requests through the section agent and stitch them into a single section body with evidence results."""
     memory = MemoryManager(request["case"], summarize=lambda messages, m: chat_completion(messages=messages, model=m, base_url=base_url))
-    rendered_blocks: list[str] = []
+    blocks: list[dict[str, Any]] = list(request.get("block_requests") or [])
+    rendered_bodies: dict[int, str] = {}
     block_gaps: list[str] = []
     block_outline: list[dict] = []
     all_evidence_results: list[dict[str, Any]] = []
-    for block in request.get("block_requests") or []:
+    table_digest_parts: list[str] = []
+    # Two-pass render: deterministic table blocks first so narrative blocks
+    # can consume their data; assembly keeps template order.
+    for index in _table_first_order(blocks):
+        block = blocks[index]
         block_mode = str(block.get("mode") or "").strip().casefold()
         is_structured_mode = block_mode in {"benchmark", "structured"} or bool(block.get("answer_spec") or block.get("question"))
+        block_result = None
         if block_mode == "table":
-            builder_name = str(block.get("builder") or "")
-            builder_fn = _TABLE_BLOCK_BUILDERS.get(builder_name)
-            if builder_fn is not None:
-                rows = builder_fn(db)
-                columns = _table_block_columns(builder_name, rows)
-                table_body = _markdown_table(rows, columns, max_rows=12)
-                block_result = SectionBlockResult(body=table_body, evidence_results=[])
-            else:
-                block_result = run_section_block_agent(
-                    case=request["case"],
-                    db=db,
-                    section_key=str(request["section_key"]),
-                    title=str(request["title"]),
-                    block_heading=str(block.get("heading") or ""),
-                    template_body=str(block.get("template_body") or ""),
-                    context_sections=request.get("context_sections") or {},
-                    current_section_outline=block_outline,
-                    report_brief=request.get("report_brief") or {},
-                    base_url=base_url,
-                    model=model,
-                    memory=memory_for_section(memory, structured_mode=False),
-                    max_queries_per_section=max_queries_per_section,
-                    evidence_keypoints=list(block.get("evidence_keypoints") or []),
-                    benchmark_mode=False,
-                    benchmark_id="",
-                    answer_id="",
-                    answer_spec="",
-                    question="",
-                    audit_callback=audit_callback,
-                )
-        else:
+            table_body = render_table_block(db, str(block.get("builder") or ""))
+            if table_body is not None:
+                block_result = SectionBlockResult(body=table_body, evidence_results=[], iterations=0, status="answered")
+                _append_table_digest(table_digest_parts, str(block.get("heading") or ""), table_body)
+        if block_result is None:
             block_result = run_section_block_agent(
                 case=request["case"],
                 db=db,
@@ -291,13 +315,14 @@ def _render_section_from_request(
                 answer_id=str(block.get("answer_id") or block.get("benchmark_id") or ""),
                 answer_spec=str(block.get("answer_spec") or ""),
                 question=str(block.get("question") or ""),
+                section_table_digest="" if is_structured_mode else _section_table_digest(table_digest_parts),
                 audit_callback=audit_callback,
             )
         block_body = block_result.body
         heading = str(block.get("heading") or "").strip()
         if heading and not _body_starts_with_heading(block_body, heading):
             block_body = f"## {heading}\n\n{block_body}"
-        rendered_blocks.append(block_body)
+        rendered_bodies[index] = block_body
         if heading:
             block_outline.append({
                 "heading": heading,
@@ -309,6 +334,7 @@ def _render_section_from_request(
             label = f"{heading}: {gap}" if heading else gap
             if label not in block_gaps:
                 block_gaps.append(label)
+    rendered_blocks = [rendered_bodies[index] for index in sorted(rendered_bodies)]
     body = _assemble_section_body(str(request.get("template_preamble") or ""), rendered_blocks)
     return body, all_evidence_results, block_gaps
 
@@ -388,6 +414,10 @@ async def async_refresh_report_sections(
                 progress_callback, focus_sections,
             )
         except asyncio.CancelledError:
+            raise
+        except LLMServerUnavailableError:
+            # Don't downgrade an outage to a per-section failure: propagate so
+            # the caller's wait-for-recovery logic can pause and retry.
             raise
         except Exception as exc:
             _emit_section_failure(progress_callback, iteration, exc, db, focus_sections)

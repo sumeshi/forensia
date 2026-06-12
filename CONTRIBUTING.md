@@ -66,6 +66,10 @@ forensia doctor
 - ルール YAML や `question_routing.yaml` を変更したら `scripts/audit_schema_coverage.py --strict`(`forensia doctor` に含まれる)が通ることを確認してください。
 - import の層契約(`core→ai` 禁止、`report→ai` 禁止など)は `scripts/check_imports.py`(`forensia doctor` に含まれる)で検査されます。新しい module を追加したら通ることを確認してください。
 
+## テンプレート同期
+
+`./templates/` の sections 1–5 は `src/forensia/report_template/` のコピーです。`report_template/` 側を変更したら `./templates/` の該当ファイルも同じ内容で更新してください（`./templates/6_appendix.md` のみケース固有の質問リストを保持するため同期対象外）。
+
 ## ドキュメント
 
 コードを変更したら**同じ PR で** [docs/](docs/) の該当ページと、ユーザー向け挙動が変わる場合は README.md を更新してください(docs/architecture.md 冒頭の規約)。

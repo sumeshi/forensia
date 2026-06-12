@@ -1,0 +1,50 @@
+# Captions for `mode: table` report blocks, keyed by builder name
+# (see _TABLE_BLOCK_BUILDERS in forensia/report/probes.py).
+#
+# `caption` renders as one short paragraph between the block heading and the
+# table. `empty` replaces the table entirely when the builder returns no rows.
+# Placeholder grammar is shared with question_routing.yaml
+# interpretation_template: {row_count}, {first.col}, {last.col}, {sample(col, n)}.
+tables:
+  overview_evidence_scope:
+    caption: "取り込み済み証拠ソースの件数とカバレッジの一覧({row_count} 指標)。件数 0 のソースは未取り込みまたは未検出を意味します。"
+    empty: "取り込み済みの証拠ソースがありません。インジェスト結果を確認してください。"
+  overview_systems_observed:
+    caption: "観測されたホストは {row_count} 台({sample(host, 3)})。行数と初観測・最終観測時刻から各ホストの活動期間を把握できます。"
+    empty: "EVTX からホストを特定できませんでした。"
+  overview_key_findings:
+    caption: "重要度順の主要所見 {row_count} 件。最上位は「{first.finding}」。確信度と根拠は本文および付録の対応箇所で確認してください。"
+    empty: "確信度の高い所見はまだ抽出されていません。"
+  timeline_phase_summary:
+    caption: "日別の活動フェーズ要約({row_count} 日分、{first.date} 〜 {last.date})。Interpretation 列は機械判定の優先確認観点です。"
+    empty: "フェーズ要約を構成するイベントがありません。"
+  timeline_chronological:
+    caption: "注目イベントの時系列 {row_count} 件({first.time} 〜 {last.time})。認証・ログ操作・注目アプリ実行を時刻順に並べています。"
+    empty: "時系列に載せる注目イベントが抽出されていません。"
+  technical_accounts:
+    caption: "アカウント別の認証アクティビティ集計({row_count} 行)。主要アカウント: {sample(account, 3)}。4624=成功ログオン、4625=失敗、4648=明示的資格情報の使用。"
+    empty: "認証イベントからアカウント集計を構成できませんでした。"
+  technical_execution:
+    caption: "注目実行ファイル {row_count} 件(クリーニング系ツールとユーザーアプリを優先表示)。代表: {sample(executable_name, 3)}。"
+    empty: "Prefetch から注目すべき実行履歴は見つかりませんでした。"
+  technical_files:
+    caption: "ユーザー関連ファイル痕跡 {row_count} 件(更新の新しい順)。代表: {sample(file_name, 3)}。"
+    empty: "注目すべきユーザーファイル痕跡は抽出されていません。"
+  technical_antiforensic:
+    caption: "反フォレンジック候補 {row_count} 件(ログ消去系イベント・ツール実行・関連アーティファクト)。単独では断定せず、近接する操作と併せて評価してください。"
+    empty: "反フォレンジックを示す痕跡は検出されていません。"
+  technical_network:
+    caption: "正規化済みネットワーク痕跡の集計。外部送信元・宛先の行数が 0 の場合、このデータセットには外部通信の証跡が正規化されていないことを意味します。"
+    empty: "ネットワーク痕跡が正規化されていません。"
+  gaps_unresolved:
+    caption: "未解決の仮説 {row_count} 件。Latest rationale と Needed evidence が再調査の優先度判断材料です。"
+    empty: "未解決の仮説はありません。"
+  gaps_untestable:
+    caption: "現データセットでは検証不能と判定した仮説 {row_count} 件。不足テレメトリの取得が検証再開の条件です。"
+    empty: "検証不能と判定された仮説はありません。"
+  gaps_evidence:
+    caption: "結論に影響し得る証拠ギャップ {row_count} 件。"
+    empty: "記録された証拠ギャップはありません。"
+  recommendations_action_plan:
+    caption: "優先度順の推奨アクション {row_count} 件。Evidence/Gap 列が根拠となる所見またはギャップに対応します。"
+    empty: "推奨アクションを導出する所見・ギャップがありません。"

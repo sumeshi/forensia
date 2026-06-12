@@ -5,6 +5,7 @@ import functools
 import hashlib
 import json
 import signal
+import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -1248,28 +1249,50 @@ async def _run_report_phase(
     state: "SessionState",
     report_before: dict[str, Any],
     memory: "MemoryManager",
-) -> tuple[dict[str, Any], bool]:
-    """Run the report refresh phase. Returns (report_after, cycle_progress_from_report)."""
+) -> tuple[dict[str, Any], bool, str]:
+    """Run the report refresh phase.
+
+    Returns (report_after, cycle_progress_from_report, refresh_status) where
+    refresh_status is "skipped" (off-cycle), "ok", or "failed: <type>: <msg>".
+    """
     cycle_progress = False
     if plan_cycle % max(1, report_every_n_cycles) != 0:
-        return report_before, cycle_progress
+        return report_before, cycle_progress, "skipped"
     report_result: dict[str, Any] | None = None
     try:
         template_paths = sorted(template_root.glob("[0-9]*_*.md"))
-        report_result = await async_refresh_report_sections(
+        # LLM-server outages get the same wait-for-recovery treatment as the
+        # investigation loop (unattended multi-day runs must survive them);
+        # only an exhausted outage budget propagates and stops the session.
+        report_result = await _call_with_outage_recovery(
+            async_refresh_report_sections, base_url=base_url, model=model,
             case=case, db=db, session_id=session_id, iteration=plan_cycle,
-            base_url=base_url, model=model, template_paths=template_paths,
+            template_paths=template_paths,
             llm_logger=llm_logger, progress_callback=progress_callback,
             focus_sections=focus_sections,
             max_queries_per_section=report_max_queries_per_section,
         )
+    except LLMServerUnavailableError:
+        raise
     except Exception as exc:
-        print(f"[red][report] section refresh failed: {exc}[/red]")
+        # Rule 12: loud, not dead. Log the full traceback and a typed progress
+        # event, publish any sections that were persisted before the crash,
+        # and let the investigation continue — stale flags stay in the DB, so
+        # the next successful refresh catches up on everything missed.
+        error_label = f"{type(exc).__name__}: {exc}"
+        print(f"[red][report] section refresh failed: {error_label}[/red]")
+        print(traceback.format_exc())
         if progress_callback:
             progress_callback({"stage": "investigate/report-cycle-done", "status": "running",
-                               "iteration": plan_cycle, "summary": f"[report] refresh failed: {exc}"})
+                               "iteration": plan_cycle,
+                               "summary": f"[report] refresh failed: {error_label}"})
+        try:
+            render_written_report(case, db)
+        except Exception as render_exc:
+            print(f"[yellow][report] fallback render failed: {render_exc}[/yellow]")
+        return report_before, cycle_progress, f"failed: {error_label}"
     if report_result is None:
-        return report_before, cycle_progress
+        return report_before, cycle_progress, "ok"
     report_after = report_result["report_status"]
     gap_new_hypotheses = _inject_gap_hypotheses(
         db=db, state=state, gaps=report_result["gaps"], session_id=session_id, memory=memory,
@@ -1279,7 +1302,7 @@ async def _run_report_phase(
     if _report_cycle_progress(report_before, report_after):
         cycle_progress = True
     render_written_report(case, db)
-    return report_after, cycle_progress
+    return report_after, cycle_progress, "ok"
 
 
 def _check_termination(
@@ -1378,6 +1401,7 @@ async def investigate(
     set_case_profile(case_profile_str, profile_event_ids)
     status = "running"
     no_progress_count = 0
+    report_refresh_failures = 0
     previous_sigint = signal.getsignal(signal.SIGINT)
     signal.signal(signal.SIGINT, lambda signum, frame: setattr(ctx, "interrupted", True))
 
@@ -1410,7 +1434,7 @@ async def investigate(
             if ctx.interrupted:
                 status = "stopped"
                 break
-            report_after, report_cycle_progress = await _run_report_phase(
+            report_after, report_cycle_progress, refresh_status = await _run_report_phase(
                 case=case, db=db, session_id=session_id, plan_cycle=plan_cycle,
                 report_every_n_cycles=report_every_n_cycles, template_root=template_root,
                 base_url=base_url, model=model, llm_logger=llm_logger,
@@ -1418,6 +1442,8 @@ async def investigate(
                 report_max_queries_per_section=report_max_queries_per_section,
                 state=state, report_before=report_before, memory=memory,
             )
+            if refresh_status.startswith("failed"):
+                report_refresh_failures += 1
             ctx.report_status = report_after
             cycle_progress = cycle_progress or report_cycle_progress
             memory.regenerate_timeline_from_db(db)
@@ -1432,6 +1458,25 @@ async def investigate(
                 break
         else:
             status = "completed"
+
+        # R5-03: Final report refresh pass after loop termination, so stale
+        # sections from late-cycle resolutions reach the rendered report.
+        # Skipped on user interrupt — they asked to stop, not to spend more LLM calls.
+        if status == "completed" and not ctx.interrupted:
+            try:
+                template_paths = sorted(template_root.glob("[0-9]*_*.md"))
+                await async_refresh_report_sections(
+                    case=case, db=db, session_id=session_id, iteration=max_iter + 1,
+                    base_url=base_url, model=model, template_paths=template_paths,
+                    llm_logger=llm_logger, progress_callback=progress_callback,
+                    focus_sections=[], max_queries_per_section=report_max_queries_per_section,
+                )
+                render_written_report(case, db)
+                memory.regenerate_timeline_from_db(db)
+            except Exception as exc:
+                report_refresh_failures += 1
+                print(f"[yellow][final-refresh] failed: {type(exc).__name__}: {exc}[/yellow]")
+                print(traceback.format_exc())
     except Exception:
         status = "failed"
         raise
@@ -1444,6 +1489,12 @@ async def investigate(
             "UPDATE investigation_sessions SET finished_at = ?, iterations = ?, status = ? WHERE session_id = ?",
             (finished_at, state.iteration, status, session_id),
         )
+    if report_refresh_failures:
+        print(
+            f"[red][report] {report_refresh_failures} report refresh phase(s) failed during this "
+            f"session — see tracebacks above. Stale sections persist and are retried on later "
+            f"cycles and the final refresh.[/red]"
+        )
     summary = _final_summary(state)
     return {
         "session_id": session_id, "status": status,
@@ -1451,4 +1502,5 @@ async def investigate(
         "focus_hypothesis_id": state.focus_hypothesis_id, "summary": summary,
         "hypotheses": [item.model_dump() for item in _all_hypotheses(state)],
         "report_sections": _ctx_get_report_status(ctx, db, refresh=True),
+        "report_refresh_failures": report_refresh_failures,
     }

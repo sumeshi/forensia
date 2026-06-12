@@ -789,12 +789,19 @@ def _facts_as_result(reusable_facts: list[dict[str, Any]]) -> dict[str, Any]:
     """Wrap reusable facts into a result dict consumable by the section agent loop."""
     evidence_ids: list[str] = []
     seen: set[str] = set()
+    max_confidence = 0.0
     for item in reusable_facts:
         for evidence_id in item.get("evidence_ids") or []:
             normalized = str(evidence_id).strip()
             if normalized and normalized not in seen:
                 seen.add(normalized)
                 evidence_ids.append(normalized)
+        c = item.get("confidence")
+        if c is not None:
+            try:
+                max_confidence = max(max_confidence, float(c))
+            except (TypeError, ValueError):
+                pass
     return {
         "keypoint": "section_facts",
         "description": "Reusable facts extracted from prior section-agent runs.",
@@ -805,6 +812,7 @@ def _facts_as_result(reusable_facts: list[dict[str, Any]]) -> dict[str, Any]:
         "evidence_ids": evidence_ids,
         "finding_ids": [],
         "hypothesis_ids": [],
+        "confidence": max_confidence,
         "sample_rows": _safe_rows(reusable_facts),
     }
 

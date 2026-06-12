@@ -224,9 +224,52 @@ def _markdown_table(rows: list[dict[str, Any]], columns: list[tuple[str, str]], 
         "| " + " | ".join(_compact_cell(row.get(key)) for key, _ in columns) + " |"
         for row in rows[:max_rows]
     ]
+    table = "\n".join([header, sep, *body])
     if len(rows) > max_rows:
-        body.append(f"| ... | Showing {max_rows} of {len(rows)} rows. |" + " |" * max(0, len(columns) - 2))
-    return "\n".join([header, sep, *body])
+        table += f"\n\n_Showing {max_rows} of {len(rows)} rows._"
+    return table
+
+
+def render_rows_template(template: str, rows: list[dict[str, Any]]) -> str:
+    """Fill a declarative text template from result rows.
+
+    Supports the same placeholder grammar as the question-routing
+    interpretation templates: ``{row_count}``, ``{first.col}``, ``{last.col}``
+    and ``{sample(col, n)}`` (up to n distinct values of a column).
+    """
+    result = template.replace("{row_count}", str(len(rows)))
+
+    def replace_first(match: re.Match[str]) -> str:
+        col = match.group(1)
+        if rows:
+            val = rows[0].get(col, "")
+            return str(val) if val is not None else ""
+        return ""
+
+    result = re.sub(r"\{first\.(\w+)\}", replace_first, result)
+
+    def replace_last(match: re.Match[str]) -> str:
+        col = match.group(1)
+        if rows:
+            val = rows[-1].get(col, "")
+            return str(val) if val is not None else ""
+        return ""
+
+    result = re.sub(r"\{last\.(\w+)\}", replace_last, result)
+
+    def replace_sample(match: re.Match[str]) -> str:
+        col = match.group(1)
+        n = int(match.group(2)) if match.group(2) else 5
+        seen: list[str] = []
+        for row in rows:
+            val = row.get(col)
+            if val is not None and str(val) not in seen:
+                seen.append(str(val))
+            if len(seen) >= n:
+                break
+        return "、".join(seen) if seen else ""
+
+    return re.sub(r"\{sample\((\w+),\s*(\d+)\)\}", replace_sample, result)
 
 
 def _build_host_note(clusters: list[dict[str, Any]]) -> str:

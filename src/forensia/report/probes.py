@@ -144,6 +144,7 @@ from forensia.report.markdown import (
     _join_markdown_table_cells,
     _local_time_from_utc,
     _markdown_table,
+    render_rows_template,
     _render_timestamp_with_timezone,
     _sort_markdown_table_by_first_column,
     _split_markdown_table_cells,
@@ -1441,6 +1442,20 @@ def _execution_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
         """,
         (max(limit * 4, 48),),
     )
+    # One row per executable name: prefetch keeps one record per .pf file,
+    # which rendered duplicates (e.g. IEXPLORE.EXE twice).
+    aggregated: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        name = str(row.get("executable_name") or "")
+        existing = aggregated.get(name)
+        if existing is None:
+            aggregated[name] = dict(row)
+            continue
+        existing["exec_count"] = int(existing.get("exec_count") or 0) + int(row.get("exec_count") or 0)
+        if str(row.get("last_exec_time") or "") > str(existing.get("last_exec_time") or ""):
+            existing["last_exec_time"] = row.get("last_exec_time")
+    rows = list(aggregated.values())
+
     antiforensic_globs = _catalog_exe_globs("antiforensic_tools")
     user_app_globs = _catalog_exe_globs("cloud_sync_artifacts", "browser_artifacts", "email_artifacts")
 
@@ -2035,6 +2050,45 @@ def _table_block_columns(builder_name: str, rows: list[dict[str, Any]]) -> list[
     if builder_name == "overview_systems_observed" and any("note" in r for r in rows):
         return [("host", "Host"), ("note", "Note"), ("events", "EVTX rows"), ("first_seen", "First seen"), ("last_seen", "Last seen")]
     return base
+
+
+@lru_cache(maxsize=1)
+def _load_table_captions() -> dict[str, dict[str, str]]:
+    """Load per-builder caption/empty templates from rulepacks/_schema/report_tables.yaml."""
+    import yaml
+
+    path = Path(__file__).resolve().parent.parent / "rulepacks" / "_schema" / "report_tables.yaml"
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    tables = data.get("tables") if isinstance(data, dict) else None
+    if not isinstance(tables, dict):
+        return {}
+    return {
+        str(name): {str(k): str(v) for k, v in spec.items() if isinstance(v, str)}
+        for name, spec in tables.items()
+        if isinstance(spec, dict)
+    }
+
+
+def render_table_block(db: CaseDB, builder_name: str, *, max_rows: int = 12) -> str | None:
+    """Render a `mode: table` block deterministically: caption paragraph + table.
+
+    Returns None when the builder name is unknown (caller falls back to the
+    LLM agent). Empty result sets render the declared `empty` text instead of
+    a bare empty table.
+    """
+    builder_fn = _TABLE_BLOCK_BUILDERS.get(builder_name)
+    if builder_fn is None:
+        return None
+    rows = builder_fn(db)
+    spec = _load_table_captions().get(builder_name) or {}
+    if not rows:
+        return str(spec.get("empty") or "").strip() or "_No rows available._"
+    caption = render_rows_template(str(spec.get("caption") or "").strip(), rows).strip()
+    table = _markdown_table(rows, _table_block_columns(builder_name, rows), max_rows=max_rows)
+    return f"{caption}\n\n{table}" if caption else table
 
 
 def _collect_flat_evidence_rows(

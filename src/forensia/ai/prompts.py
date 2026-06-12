@@ -1743,8 +1743,8 @@ def build_section_outline_messages(
         "If evidence_id is '?' (unknown), do NOT include it in evidence_ids array — only reference evidence with real identifiers.\n"
         "</RULES>\n"
         "<EXAMPLE>\n"
-        'Input evidence rows: [{"evidence_id": "evtx-security-0001", "summary": "4648 logon WIN-D9->informant 2015-03-22 14:33:54"}, {"evidence_id": "evtx-security-0002", "summary": "4648 logon WIN-D9->informant 2015-03-22 14:34:28"}]\n'
-        'Output: {"outline": [{"heading": "Executive Summary", "key_points": ["Two explicit-credential logon attempts (4648) from WIN-D9RGPJQ68G8$ targeting informant were observed within 60 seconds on 2015-03-22"], "evidence_ids": ["evtx-security-0001"]}]}\n'
+        'Input evidence rows: [{"evidence_id": "evtx-security-000000000122", "summary": "4648 logon WIN-D9->informant 2015-03-22 14:33:54"}, {"evidence_id": "evtx-security-000000000152", "summary": "4648 logon WIN-D9->informant 2015-03-22 14:34:28"}]\n'
+        'Output: {"outline": [{"heading": "Executive Summary", "key_points": ["Two explicit-credential logon attempts (4648) from WIN-D9RGPJQ68G8$ targeting informant were observed within 60 seconds on 2015-03-22"], "evidence_ids": ["evtx-security-000000000122"]}]}\n'
         "</EXAMPLE>\n"
         "Output JSON only. "
     )
@@ -1793,6 +1793,8 @@ def build_paragraph_narrate_messages(
         "No meta-statements: write what was observed, not what was reviewed. Avoid 'investigation covered', 'scope included', 'comprehensive review of' style phrasing.\n"
         "Do NOT write `## {heading}` in your output — the heading is prepended by the renderer. Only write paragraph content below the heading.\n"
         "If the status is not_searched or not_found, this function should not be called. If you see such a status, output nothing.\n"
+        "Key points may be prefixed with verdict labels: [confirmed], [refuted], [finding, confidence=N]. Refuted items may only be mentioned as ruled-out. Confirmed and refuted items must not be blended into one claim.\n"
+        "If a row has `\"citable\": false`, do NOT invent an evidence_id for it. State the factual claim without a citation token.\n"
         f"{exec_summary_rules}"
         "</RULES>\n"
         f"{digest_block}"

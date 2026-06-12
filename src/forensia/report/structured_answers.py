@@ -21,7 +21,7 @@ from forensia.questions import (
     question_spec_for_answer_spec,
 )
 from forensia.report.keypoints import _report_keypoint_rows
-from forensia.report.markdown import _build_host_note
+from forensia.report.markdown import _build_host_note, render_rows_template
 from forensia.knowledge import load_event_class_definitions as _load_event_class_definitions
 from forensia.report.markdown import _HUMAN_REPORT_HIDDEN_COLUMNS, _is_human_report_hidden_column, _local_time_from_utc
 
@@ -334,43 +334,7 @@ def _load_interpretation_templates() -> dict[str, str]:
 
 def _render_interpretation_template(template: str, answer: dict[str, Any]) -> str:
     rows = [item for item in list(answer.get("answer") or []) if isinstance(item, dict)]
-    row_count = len(rows)
-
-    result = template.replace("{row_count}", str(row_count))
-
-    def replace_first(match: re.Match[str]) -> str:
-        col = match.group(1)
-        if rows:
-            val = rows[0].get(col, "")
-            return str(val) if val is not None else ""
-        return ""
-
-    result = re.sub(r"\{first\.(\w+)\}", replace_first, result)
-
-    def replace_last(match: re.Match[str]) -> str:
-        col = match.group(1)
-        if rows:
-            val = rows[-1].get(col, "")
-            return str(val) if val is not None else ""
-        return ""
-
-    result = re.sub(r"\{last\.(\w+)\}", replace_last, result)
-
-    def replace_sample(match: re.Match[str]) -> str:
-        col = match.group(1)
-        n = int(match.group(2)) if match.group(2) else 5
-        seen: list[str] = []
-        for row in rows:
-            val = row.get(col)
-            if val is not None and str(val) not in seen:
-                seen.append(str(val))
-            if len(seen) >= n:
-                break
-        return "、".join(seen) if seen else ""
-
-    result = re.sub(r"\{sample\((\w+),\s*(\d+)\)\}", replace_sample, result)
-
-    return result
+    return render_rows_template(template, rows)
 
 
 def _structured_answer_interpretation(answer: dict[str, Any], block_heading: str, tz_name: str | None = None) -> str:

@@ -301,10 +301,26 @@ def _parse_block_hints(block_body: str) -> dict[str, Any]:
         "question": "",
         "builder": "",
     }
+    def _iter_hint_pairs(name: str, value: str):
+        """Yield (name, value) pairs, expanding the combined one-comment syntax
+        ``<!-- mode: table; builder: X -->`` into separate directives.
+        Fragments without a colon (free-text guidance) are dropped."""
+        parts = [part.strip() for part in value.split(";")]
+        yield name, parts[0]
+        for part in parts[1:]:
+            if ":" in part:
+                sub_name, sub_value = part.split(":", 1)
+                yield sub_name.strip().lower(), sub_value.strip()
+
     seen_keypoints: set[str] = set()
+    pairs: list[tuple[str, str]] = []
     for match in BLOCK_HINT_PATTERN.finditer(block_body):
-        name = str(match.group("name") or "").strip().lower()
-        value = str(match.group("value") or "").strip()
+        raw_name = str(match.group("name") or "").strip().lower()
+        raw_value = str(match.group("value") or "").strip()
+        if not raw_name or not raw_value:
+            continue
+        pairs.extend(_iter_hint_pairs(raw_name, raw_value))
+    for name, value in pairs:
         if not name or not value:
             continue
         if name == "evidence_keypoints":
@@ -543,7 +559,7 @@ def _read_persisted_section(db: CaseDB, section_key: str) -> dict[str, Any]:
     return {"gaps": persisted_gaps, "confidence": persisted_confidence}
 
 
-_EVIDENCE_ID_RE = re.compile(r"\b(evtx|mft|prefetch)-[a-z0-9-]+\b")
+_EVIDENCE_ID_RE = re.compile(r"\b(?:evtx|mft|prefetch)-[a-z0-9-]+\b")
 
 
 def _validate_section_evidence_ids(db: CaseDB, body: str) -> tuple[str, list[str]]:
@@ -582,9 +598,14 @@ def _validate_section_evidence_ids(db: CaseDB, body: str) -> tuple[str, list[str
     cleaned = body
     for inv in invalid:
         cleaned = re.sub(rf"\b{re.escape(inv)}\b", "", cleaned)
+    # Trim comma debris at citation-group edges without touching surviving
+    # valid IDs in the same group, then drop now-empty shells.
+    cleaned = re.sub(r"([（(])\s*(?:,\s*)+", r"\1", cleaned)  # leading commas
+    cleaned = re.sub(r"(?:\s*,)+\s*([)）])", r"\1", cleaned)  # trailing commas
+    cleaned = re.sub(r"（\s*）|\(\s*\)", "", cleaned)          # empty shells
     # Clean up double spaces, double commas, etc.
     cleaned = re.sub(r"  +", " ", cleaned)
-    cleaned = re.sub(r", ,", ",", cleaned)
+    cleaned = re.sub(r",\s*,", ",", cleaned)
     cleaned = cleaned.strip().strip(",").strip()
 
     gaps = [f"cited evidence ids not found: {', '.join(invalid)}"]

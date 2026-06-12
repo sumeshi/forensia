@@ -573,6 +573,80 @@ class RuleExecutionTests(unittest.TestCase):
             self.assertEqual(1, len(rows))
             self.assertEqual("eventlog-104", rows[0]["evidence_id"])
 
+    def test_correlation_finding_carries_source_evidence_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                self._insert_evtx_event(
+                    db,
+                    evidence_id="evtx-security-000000000001",
+                    event_id=4624,
+                    timestamp="2026-05-16 01:00:00",
+                    computer="host1",
+                    target_user="alice",
+                    subject_user="SYSTEM",
+                    src_ip="10.0.0.5",
+                    logon_type="3",
+                )
+                self._insert_evtx_event(
+                    db,
+                    evidence_id="evtx-security-000000000002",
+                    event_id=4697,
+                    timestamp="2026-05-16 01:05:00",
+                    computer="host1",
+                    target_user="alice",
+                    subject_user="alice",
+                )
+
+                rule = Rule.model_validate(
+                    {
+                        "id": "test-corr",
+                        "title": "Network logon then service install",
+                        "severity": "critical",
+                        "confidence": 0.65,
+                        "query": (
+                            "WITH net_logons AS (\n"
+                            "    SELECT evidence_id, timestamp AS logon_time, computer,\n"
+                            "           src_ip, target_user\n"
+                            "    FROM evtx_events\n"
+                            "    WHERE event_id = 4624 AND logon_type = '3'\n"
+                            "      AND target_user NOT LIKE '%$'\n"
+                            "),\n"
+                            "svc_installs AS (\n"
+                            "    SELECT evidence_id, timestamp AS svc_time, computer,\n"
+                            "           service_name, subject_user\n"
+                            "    FROM evtx_events\n"
+                            "    WHERE event_id IN (4697, 7045)\n"
+                            ")\n"
+                            "SELECT l.evidence_id,\n"
+                            "       LIST_VALUE(l.evidence_id, s.evidence_id) AS evidence_ids,\n"
+                            "       l.src_ip, l.computer, l.target_user,\n"
+                            "       l.logon_time, s.svc_time, s.service_name\n"
+                            "FROM net_logons l\n"
+                            "JOIN svc_installs s\n"
+                            "  ON l.computer = s.computer\n"
+                            " AND s.svc_time BETWEEN l.logon_time AND l.logon_time + INTERVAL 15 MINUTE"
+                        ),
+                        "finding": {
+                            "title": "test {src_ip}",
+                            "summary": "test {service_name}",
+                        },
+                        "tags": ["test"],
+                        "attack": [],
+                    }
+                )
+                result = db.execute(rule.query)
+                columns = [item[0] for item in result.description]
+                rows = [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
+                findings = generate_findings(rule, rows)
+
+            self.assertEqual(1, len(findings))
+            ev = findings[0].evidence[0]
+            self.assertIn("evidence_id", ev, "correlation finding must carry source evidence_id")
+            self.assertIn("evidence_ids", ev, "correlation finding must carry evidence_ids list")
+            self.assertIn("evtx-security-000000000001", str(ev.get("evidence_ids")))
+            self.assertIn("evtx-security-000000000002", str(ev.get("evidence_ids")))
+
     def test_generate_findings_degrades_confidence_when_key_fields_are_missing(self) -> None:
         rule = Rule.model_validate(
             {

@@ -583,6 +583,42 @@ def _feed_verdict_to_timeline(
         pass
 
 
+def _guess_related_sections(text: str) -> list[str]:
+    """Guess which report sections a gap description relates to by keyword matching."""
+    lowered = text.lower()
+    section_map = {
+        "1_overview": ["overview", "first evidence", "summary", "fec", "initial"],
+        "2_timeline": ["timeline", "time", "log clear", "reboot", "shutdown", "when"],
+        "3_technical": ["host", "computer", "server", "workstation", "account", "user", "credential", "password", "logon", "rdp", "admin", "service", "task", "powershell", "defender", "persistence", "execution", "ioc", "ip", "process", "file", "path", "indicator"],
+        "4_gaps": ["gap", "unknown", "insufficient", "unresolved"],
+        "5_recommendations": ["mitigation", "recommendation", "countermeasure"],
+    }
+    matches = [section for section, keywords in section_map.items() if any(keyword in lowered for keyword in keywords)]
+    return matches or ["4_gaps"]
+
+
+_MAX_SECTION_UPDATES = 5
+
+
+def _sections_for_keypoint(keypoint_name: str) -> list[str]:
+    """Return section keys whose default keypoints include the given keypoint name."""
+    from forensia.report.keypoints import _default_keypoints_for_section
+
+    results: list[str] = []
+    for section_key in ("1_overview", "2_timeline", "3_technical", "4_gaps", "5_recommendations", "6_appendix"):
+        if keypoint_name in _default_keypoints_for_section(section_key):
+            results.append(section_key)
+    return results
+
+
+def _mark_section_stale(db: CaseDB, section_key: str) -> None:
+    """Mark a report section as stale, respecting the update_count cap."""
+    db.execute(
+        "UPDATE report_sections SET stale = TRUE WHERE section_key = ? AND update_count < ?",
+        (section_key, _MAX_SECTION_UPDATES),
+    )
+
+
 def _resolve_hypothesis(
     db: CaseDB,
     state: SessionState,
@@ -621,6 +657,11 @@ def _resolve_hypothesis(
                 resolved_session=session_id,
             )
             _feed_verdict_to_timeline(db, item.id, verdict, item.description, sample_rows)
+            # R5-03: Mark stale based on target_keypoint_id (runs regardless of source_rule_ids)
+            if item.target_keypoint_id:
+                stale_sections.extend(_sections_for_keypoint(item.target_keypoint_id))
+            # R5-03: Mark stale based on description keyword matching
+            stale_sections.extend(_guess_related_sections(item.description))
             # DESIGN-2: Mark related sections as stale based on report_sections declaration
             # DESIGN-4: Generate follow-up gaps from confirmed hypothesis
             for source_rule_id in item.source_rule_ids:
@@ -667,11 +708,12 @@ def _resolve_hypothesis(
     state.active_hypotheses = remaining
     
     # Mark stale sections in report_sections table
+    seen_sections: set[str] = set()
     for section_key in stale_sections:
-        db.execute(
-            "UPDATE report_sections SET stale = TRUE WHERE section_key = ?",
-            (section_key,),
-        )
+        if section_key in seen_sections:
+            continue
+        seen_sections.add(section_key)
+        _mark_section_stale(db, section_key)
     
     # DESIGN-4: Add follow-up hypotheses to active list
     for follow_up in follow_up_hypotheses:

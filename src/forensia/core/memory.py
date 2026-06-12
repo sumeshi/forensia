@@ -298,13 +298,47 @@ class MemoryManager:
     def update_overview(self, content: str) -> None:
         self.overview_path.write_text(content, encoding="utf-8")
 
+    # Placeholder bullets cleared when real content lands in a section
+    # (includes the Active Tasks seed lines from _initialize_overview).
+    _OVERVIEW_PLACEHOLDERS = ("- none", "- 初回調査待ち", "- Awaiting initial investigation")
+    _TASK_VERB_RE = re.compile(r"^(?:task:|todo:|(?:investigate|verify|check|review|correlate|confirm)\b)", re.IGNORECASE)
+
     def append_overview(self, content: str) -> bool:
-        """Append content to the overview file."""
+        """Insert content as a bullet under the matching overview heading.
+
+        Facts (the default) go under '## Key Findings'; imperative/task items
+        under '## Active Tasks'; scope statements under '## Case Scope'.
+        Placeholder bullets in the target section are cleared. Falls back to
+        appending at the end only when the target heading is missing.
+        """
         content = content.strip()
         if not content:
             return False
-        existing = self.load_overview().rstrip()
-        self.update_overview(existing + "\n\n" + content + "\n")
+        existing = self.load_overview()
+        lowered = content.lower()
+        if self._TASK_VERB_RE.match(lowered):
+            target_heading = '## Active Tasks'
+        elif lowered.startswith('scope') or 'case scope' in lowered:
+            target_heading = '## Case Scope'
+        else:
+            target_heading = '## Key Findings'
+        bullet = content if content.startswith('- ') else f'- {content}'
+
+        if target_heading in existing:
+            sections = re.split(r'(?=^## )', existing, flags=re.MULTILINE)
+            for index, section in enumerate(sections):
+                if not section.startswith(target_heading):
+                    continue
+                for placeholder in self._OVERVIEW_PLACEHOLDERS:
+                    section = section.replace(placeholder + '\n', '').replace(placeholder, '')
+                stripped = section.rstrip('\n')
+                trailing = section[len(stripped):] or '\n'
+                sections[index] = stripped + '\n' + bullet + trailing
+                self.update_overview(''.join(sections))
+                return True
+
+        # Fall back: target heading missing — append to end
+        self.update_overview(existing.rstrip() + '\n\n' + content + '\n')
         return True
 
     _R3_REFUTED_RE = re.compile(

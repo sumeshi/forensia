@@ -168,7 +168,9 @@ def _apply_memory_updates(
                 )
             else:
                 overview_text = memory.load_overview()
-                recent_lines = [ln.strip() for ln in overview_text.split("\n") if ln.strip()][-20:]
+                # Scan all lines: items now land under their heading (mid-file),
+                # so a tail window would miss previously inserted facts.
+                recent_lines = [ln.strip() for ln in overview_text.split("\n") if ln.strip()]
                 item_tokens = set(item_str.lower().split())
                 is_duplicate = False
                 if item_tokens:

@@ -216,6 +216,116 @@ class TimelineRegenerationIdempotenceTests(unittest.TestCase):
                 self.assertFalse(changed_second)
 
 
+class RowWithEvidenceIdsCitableTests(unittest.TestCase):
+    """_row_with_evidence_ids must tag rows as citable: False when no evidence_id is present."""
+
+    def test_row_without_evidence_id_gets_citable_false(self) -> None:
+        from forensia.report.keypoints import _row_with_evidence_ids
+
+        row = {"src_ip": "10.0.0.5", "computer": "host1", "event_id": 4624}
+        normalized = _row_with_evidence_ids(row)
+        self.assertIs(False, normalized.get("citable"))
+        self.assertNotIn("evidence_id", normalized)
+        self.assertNotIn("evidence_ids", normalized)
+
+    def test_row_with_evidence_id_does_not_get_citable_false(self) -> None:
+        from forensia.report.keypoints import _row_with_evidence_ids
+
+        row = {"src_ip": "10.0.0.5", "evidence_id": "evtx-security-000000000001"}
+        normalized = _row_with_evidence_ids(row)
+        self.assertNotIn("citable", normalized)
+        self.assertEqual("evtx-security-000000000001", normalized.get("evidence_id"))
+
+    def test_row_with_evidence_ids_list_does_not_get_citable_false(self) -> None:
+        from forensia.report.keypoints import _row_with_evidence_ids
+
+        row = {"src_ip": "10.0.0.5", "evidence_ids": ["evtx-security-000000000001", "evtx-security-000000000002"]}
+        normalized = _row_with_evidence_ids(row)
+        self.assertNotIn("citable", normalized)
+        self.assertIn("evtx-security-000000000001", normalized.get("evidence_ids", []))
+
+
+class VerdictLabeledKeyPointsTests(unittest.TestCase):
+    """RC5: Verdict-labeled key points for narrative blocks."""
+
+    def test_label_refuted_from_source_verdict(self) -> None:
+        from forensia.ai.section_agent import _label_key_points_with_verdicts
+
+        outline = [
+            {"heading": "Logon Activity", "key_points": ["Suspicious logon from WIN-PC"], "evidence_ids": ["evtx-001"]},
+        ]
+        collected = [
+            {"evidence_ids": ["evtx-001"], "source_verdict": "block_contradicted", "finding_ids": []},
+        ]
+        labeled = _label_key_points_with_verdicts(outline, collected, "block_contradicted")
+        self.assertEqual(1, len(labeled))
+        self.assertTrue(labeled[0].startswith("[refuted]"), labeled[0])
+
+    def test_label_confirmed_from_source_verdict(self) -> None:
+        from forensia.ai.section_agent import _label_key_points_with_verdicts
+
+        outline = [
+            {"heading": "Execution", "key_points": ["Eraser.exe was launched"], "evidence_ids": ["evtx-002"]},
+        ]
+        collected = [
+            {"evidence_ids": ["evtx-002"], "source_verdict": "block_supported", "finding_ids": []},
+        ]
+        labeled = _label_key_points_with_verdicts(outline, collected, "block_supported")
+        self.assertEqual(1, len(labeled))
+        self.assertTrue(labeled[0].startswith("[confirmed]"), labeled[0])
+
+    def test_label_finding_confidence_from_confidence_field(self) -> None:
+        from forensia.ai.section_agent import _label_key_points_with_verdicts
+
+        outline = [
+            {"heading": "Services", "key_points": ["Service install detected"], "evidence_ids": ["evtx-003"]},
+        ]
+        collected = [
+            {"evidence_ids": ["evtx-003"], "finding_ids": ["finding-1"], "confidence": 0.85},
+        ]
+        labeled = _label_key_points_with_verdicts(outline, collected, "block_supported")
+        self.assertEqual(1, len(labeled))
+        self.assertIn("[finding, confidence=", labeled[0])
+        self.assertIn("0.85", labeled[0])
+
+    def test_unlabeled_when_no_verdict_info(self) -> None:
+        from forensia.ai.section_agent import _label_key_points_with_verdicts
+
+        outline = [
+            {"heading": "Misc", "key_points": ["Generic observation"], "evidence_ids": []},
+        ]
+        labeled = _label_key_points_with_verdicts(outline, [], "")
+        self.assertEqual(["Generic observation"], labeled)
+
+    def test_fallback_to_overall_verdict_when_no_per_result_verdicts(self) -> None:
+        from forensia.ai.section_agent import _label_key_points_with_verdicts
+
+        outline = [
+            {"heading": "Seed", "key_points": ["Seed observation"], "evidence_ids": ["evtx-004"]},
+        ]
+        collected = [
+            {"evidence_ids": ["evtx-004"], "finding_ids": [], "confidence": None},
+        ]
+        labeled = _label_key_points_with_verdicts(outline, collected, "block_supported")
+        self.assertEqual(1, len(labeled))
+        self.assertTrue(labeled[0].startswith("[confirmed]"), labeled[0])
+
+    def test_narrate_prompt_rules_contain_verdict_label_guidance(self) -> None:
+        from forensia.ai.prompts import build_paragraph_narrate_messages
+
+        messages, schema = build_paragraph_narrate_messages(
+            heading="Test Heading",
+            key_points=["[confirmed] observation one", "[refuted] false claim"],
+            evidence_rows=[],
+            template_body="Test template body",
+        )
+        system_content = messages[0]["content"]
+        self.assertIn("[confirmed]", system_content)
+        self.assertIn("[refuted]", system_content)
+        self.assertIn("[finding, confidence=N]", system_content)
+        self.assertIn("Refuted items may only be mentioned as ruled-out", system_content)
+
+
 if __name__ == "__main__":
     unittest.main()
 
