@@ -16,9 +16,9 @@ export function formatReasoningPhase(value: string | null | undefined): string {
 }
 
 export function reasoningToneClass(value: string | null | undefined): string {
-  if (value === "confirmed") return "bg-mocha-green";
-  if (value === "refuted") return "bg-mocha-red";
-  if (value === "inconclusive") return "bg-mocha-yellow";
+  if (value === "confirmed") return "bg-semantic-ok";
+  if (value === "refuted") return "bg-semantic-danger";
+  if (value === "inconclusive") return "bg-semantic-warn";
   return "bg-mocha-overlay1";
 }
 

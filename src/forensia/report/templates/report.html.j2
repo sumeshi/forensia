@@ -267,6 +267,87 @@
       margin-top: 10px;
     }
 
+    /* TOC sidebar */
+    .toc-sidebar {
+      position: sticky;
+      top: 20px;
+      float: right;
+      width: 260px;
+      margin-left: 24px;
+      margin-bottom: 24px;
+      padding: 16px 18px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--paper);
+      font-size: 13px;
+      max-height: calc(100vh - 60px);
+      overflow-y: auto;
+    }
+    .toc-sidebar ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+    .toc-sidebar li { margin: 0; }
+    .toc-sidebar a {
+      display: block;
+      padding: 4px 0;
+      color: var(--muted);
+      text-decoration: none;
+      border-bottom: 1px solid transparent;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .toc-sidebar a:hover { color: var(--accent); }
+    .toc-h3 { padding-left: 16px; font-size: 12px; }
+    .toc-h2 { font-weight: 600; }
+
+    /* Evidence reference/button styling */
+    .evidence-ref {
+      color: var(--accent);
+      text-decoration: none;
+      border-bottom: 1px dotted var(--accent);
+      cursor: help;
+    }
+    .evidence-ref:hover {
+      border-bottom-style: solid;
+    }
+    .evidence-open {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+      font-size: 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--paper);
+      color: var(--muted);
+      text-decoration: none;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .evidence-open:hover {
+      background: var(--accent-soft);
+      color: var(--accent);
+      border-color: var(--accent);
+    }
+
+    /* Evidence References list items */
+    .report-body ul li code {
+      font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+      font-size: 0.88em;
+    }
+
+    /* Mobile: collapse TOC to top bar */
+    @media (max-width: 900px) {
+      .toc-sidebar {
+        float: none;
+        width: 100%;
+        margin: 0 0 16px;
+        position: static;
+        max-height: none;
+      }
+    }
+
     @media (max-width: 760px) {
       .page {
         width: min(100% - 16px, 1560px);
@@ -346,5 +427,30 @@
       </section>
     </article>
   </main>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  var toc = document.createElement('nav');
+  toc.className = 'toc-sidebar';
+  var ul = document.createElement('ul');
+  var headings = document.querySelectorAll('.report-body h2, .report-body h3');
+  headings.forEach(function(h, i) {
+    var id = 'toc-' + i;
+    h.setAttribute('id', id);
+    var li = document.createElement('li');
+    li.className = h.tagName === 'H3' ? 'toc-h3' : 'toc-h2';
+    var a = document.createElement('a');
+    a.href = '#' + id;
+    a.textContent = h.textContent;
+    li.appendChild(a);
+    ul.appendChild(li);
+  });
+  toc.appendChild(ul);
+  var content = document.querySelector('.content');
+  if (content && ul.children.length > 0) {
+    content.parentNode.insertBefore(toc, content);
+  }
+});
+</script>
 </body>
 </html>

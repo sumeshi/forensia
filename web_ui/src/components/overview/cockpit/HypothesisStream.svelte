@@ -24,23 +24,23 @@
 <section class="panel min-w-0 p-4">
   <div class="mb-3 flex items-center justify-between gap-2">
     <h3 class="panel-title">Hypotheses</h3>
-    <div class="flex rounded-full border border-mocha-surface1 bg-mocha-surface0 p-1">
+    <div class="flex gap-1">
       <button
-        class={`rounded-full px-3 py-1 text-xs ${tab === "active" ? "bg-mocha-mauve text-mocha-base" : "text-mocha-subtext0"}`}
+        class={`btn-ghost ${tab === "active" ? "bg-semantic-accent/10 text-semantic-accent border-semantic-accent/40" : ""}`}
         type="button"
         on:click={() => (tab = "active")}
       >
         Active ({activeHypotheses.length})
       </button>
       <button
-        class={`rounded-full px-3 py-1 text-xs ${tab === "resolved" ? "bg-mocha-mauve text-mocha-base" : "text-mocha-subtext0"}`}
+        class={`btn-ghost ${tab === "resolved" ? "bg-semantic-accent/10 text-semantic-accent border-semantic-accent/40" : ""}`}
         type="button"
         on:click={() => (tab = "resolved")}
       >
         Resolved ({resolvedHypotheses.length})
       </button>
       <button
-        class={`rounded-full px-3 py-1 text-xs ${tab === "reasoning" ? "bg-mocha-mauve text-mocha-base" : "text-mocha-subtext0"}`}
+        class={`btn-ghost ${tab === "reasoning" ? "bg-semantic-accent/10 text-semantic-accent border-semantic-accent/40" : ""}`}
         type="button"
         on:click={() => (tab = "reasoning")}
       >

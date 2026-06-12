@@ -250,8 +250,8 @@
   function btnClass(active: boolean): string {
     return `rounded px-2 py-0.5 text-xs ${
       active
-        ? "bg-mocha-mauve text-mocha-base"
-        : "bg-mocha-surface0 text-mocha-subtext0 hover:text-mocha-text"
+        ? "bg-semantic-accent text-semantic-bg"
+        : "bg-semantic-bg-raised text-semantic-fg-muted hover:text-semantic-fg"
     }`;
   }
 </script>
@@ -261,7 +261,7 @@
     <h2 class="panel-title">Event Volume</h2>
     {#if drill.length > 0}
       <button
-        class="rounded-full border border-mocha-surface1 px-3 py-0.5 text-xs text-mocha-subtext0 hover:text-mocha-text"
+        class="btn-ghost"
         type="button"
         on:click={() => onDrillChange([])}
       >
@@ -273,7 +273,7 @@
   <div class="mt-3 space-y-1.5">
     {#if availableYears.length > 0}
       <div class="flex flex-wrap items-center gap-1">
-        <span class="mr-2 w-12 shrink-0 text-[10px] uppercase tracking-wider text-mocha-overlay1">Year</span>
+        <span class="mr-2 w-12 shrink-0 text-xs uppercase text-semantic-fg-faint">Year</span>
         {#each availableYears as y}
           <button class={btnClass(drill[0] === y)} type="button" on:click={() => pickYear(y)}>{y}</button>
         {/each}
@@ -282,7 +282,7 @@
 
     {#if drill.length >= 1}
       <div class="flex flex-wrap items-center gap-1">
-        <span class="mr-2 w-12 shrink-0 text-[10px] uppercase tracking-wider text-mocha-overlay1">Month</span>
+        <span class="mr-2 w-12 shrink-0 text-xs uppercase text-semantic-fg-faint">Month</span>
         {#each Array.from({ length: 12 }, (_, i) => i + 1) as m}
           {@const hasData = availableMonths.includes(m)}
           <button
@@ -299,7 +299,7 @@
 
     {#if drill.length >= 2}
       <div class="flex flex-wrap items-center gap-1">
-        <span class="mr-2 w-12 shrink-0 text-[10px] uppercase tracking-wider text-mocha-overlay1">Day</span>
+        <span class="mr-2 w-12 shrink-0 text-xs uppercase text-semantic-fg-faint">Day</span>
         {#each availableDays as d}
           <button class={btnClass(drill[2] === d)} type="button" on:click={() => pickDay(d)}>{String(d).padStart(2, "0")}</button>
         {/each}
@@ -308,11 +308,11 @@
   </div>
 
   {#if points.length === 0}
-    <div class="mt-4 rounded-xl border border-dashed border-mocha-surface1 px-4 py-8 text-center text-sm text-mocha-subtext0">
+    <div class="mt-4 rounded-xl border border-dashed border-mocha-surface1 px-4 py-8 text-center text-sm text-semantic-fg-muted">
       No timeline points
     </div>
   {:else}
-    <div class="mt-4 h-[360px] rounded-xl border border-mocha-surface1 bg-mocha-base/30 p-3">
+    <div class="mt-4 h-[clamp(320px,38vh,640px)] rounded-xl border border-mocha-surface1 bg-semantic-bg/30 p-3">
       <canvas bind:this={canvas}></canvas>
     </div>
   {/if}

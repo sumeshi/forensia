@@ -106,6 +106,7 @@ class ReportSectionDTO(DTOModel):
     section_key: str
     title: str
     body: str
+    body_html: str = ""
     confidence: float | None = None
     status: str = "draft"
     update_count: int = 0
@@ -188,6 +189,12 @@ class EntityCardDTO(DTOModel):
     name: str
     mention_count: int | None = None
     summary: str | None = None
+
+
+class EvidenceRecordDTO(DTOModel):
+    evidence_id: str
+    source: str
+    record: dict[str, Any]
 
 
 class AttackCoverageRowDTO(DTOModel):

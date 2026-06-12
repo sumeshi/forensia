@@ -1391,7 +1391,7 @@ def _timeline_rows(db: CaseDB, limit: int = 18) -> list[dict[str, Any]]:
                 "activity": _event_interpretation(row.get("event_id")),
                 "subject": row.get("actor"),
                 "artifact": row.get("object"),
-                "evidence": row.get("evidence_id"),
+                "evidence_id": row.get("evidence_id"),
             }
         )
     notable_exe_sql = _exe_glob_sql(
@@ -1416,7 +1416,7 @@ def _timeline_rows(db: CaseDB, limit: int = 18) -> list[dict[str, Any]]:
                 "activity": "Application execution",
                 "subject": row.get("executable_name"),
                 "artifact": f"exec_count={row.get('exec_count')}",
-                "evidence": row.get("evidence_id"),
+                "evidence_id": row.get("evidence_id"),
             }
         )
     rows = sorted(rows, key=lambda item: str(item.get("time") or ""))
@@ -2031,11 +2031,11 @@ _TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
     "overview_systems_observed": [("host", "Host"), ("events", "EVTX rows"), ("first_seen", "First seen"), ("last_seen", "Last seen")],
     "overview_key_findings": [("finding", "Finding"), ("severity", "Severity"), ("confidence", "Confidence"), ("why_it_matters", "Why it matters")],
     "timeline_phase_summary": [("date", "Date"), ("phase", "Observed activity"), ("interpretation", "Interpretation"), ("window", "Event window")],
-    "timeline_chronological": [("time", "Time"), ("host", "Host"), ("activity", "Activity"), ("subject", "Subject"), ("artifact", "Artifact")],
+    "timeline_chronological": [("time", "Time"), ("host", "Host"), ("activity", "Activity"), ("subject", "Subject"), ("artifact", "Artifact"), ("evidence_id", "Ref")],
     "technical_accounts": [("account", "Account"), ("computer", "Host"), ("logons", "4624"), ("failed_logons", "4625"), ("explicit_credential_events", "4648"), ("first_seen", "First seen"), ("last_seen", "Last seen")],
-    "technical_execution": [("executable_name", "Executable"), ("exec_count", "Exec count"), ("last_exec_time", "Last execution")],
-    "technical_files": [("timestamp", "Timestamp"), ("file_name", "File"), ("file_path", "Path")],
-    "technical_antiforensic": [("type", "Type"), ("timestamp", "Timestamp"), ("artifact", "Artifact"), ("computer", "Host")],
+    "technical_execution": [("executable_name", "Executable"), ("exec_count", "Exec count"), ("last_exec_time", "Last execution"), ("evidence_id", "Ref")],
+    "technical_files": [("timestamp", "Timestamp"), ("file_name", "File"), ("file_path", "Path"), ("evidence_id", "Ref")],
+    "technical_antiforensic": [("type", "Type"), ("timestamp", "Timestamp"), ("artifact", "Artifact"), ("computer", "Host"), ("evidence_id", "Ref")],
     "technical_network": [("area", "Area"), ("observed_rows", "Rows with IP"), ("external_src_rows", "External source rows"), ("external_dst_rows", "External destination rows"), ("interpretation", "Interpretation")],
     "gaps_unresolved": [("hypothesis", "Hypothesis"), ("state", "State"), ("reasoning", "Reasoning rows"), ("latest", "Latest rationale"), ("needed", "Needed evidence")],
     "gaps_untestable": [("hypothesis", "Hypothesis"), ("missing_telemetry", "Missing telemetry"), ("rationale", "Rationale"), ("next_step", "Next step")],

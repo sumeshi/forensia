@@ -46,6 +46,18 @@ export const nextAction = derived([reportSections, hypotheses], ([$reportSection
   return "No additional work found.";
 });
 
+type RecencySortable = {
+  latestReasoningAt: string | null;
+  latestIteration: number | null;
+};
+
+function byRecency(a: RecencySortable, b: RecencySortable): number {
+  const aTime = a.latestReasoningAt ? new Date(a.latestReasoningAt).getTime() : 0;
+  const bTime = b.latestReasoningAt ? new Date(b.latestReasoningAt).getTime() : 0;
+  if (aTime !== bTime) return bTime - aTime;
+  return (b.latestIteration ?? 0) - (a.latestIteration ?? 0);
+}
+
 export const activeHypothesesView = derived([hypotheses], ([$hypotheses]) =>
   $hypotheses.active.map((item) => ({
     id: item.hypothesis_id,
@@ -57,7 +69,7 @@ export const activeHypothesesView = derived([hypotheses], ([$hypotheses]) =>
     reasoningCount: item.reasoning_count ?? 0,
     latestIteration: item.latest_iteration ?? null,
     latestReasoningAt: item.latest_reasoning_at ?? null
-  }))
+  })).sort(byRecency)
 );
 
 export const resolvedHypothesesView = derived([hypotheses], ([$hypotheses]) =>
@@ -71,7 +83,7 @@ export const resolvedHypothesesView = derived([hypotheses], ([$hypotheses]) =>
     reasoningCount: item.reasoning_count ?? 0,
     latestIteration: item.latest_iteration ?? null,
     latestReasoningAt: item.latest_reasoning_at ?? null
-  }))
+  })).sort(byRecency)
 );
 
 export const openGapsView = derived([reportSections], ([$reportSections]) => {

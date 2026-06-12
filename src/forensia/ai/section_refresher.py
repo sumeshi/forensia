@@ -247,6 +247,15 @@ async def _render_section_blocks(
                             base_url=base_url,
                             suffix=f"{request['section_key']}-{heading}",
                         ),
+                        review_audit_callback=lambda messages, body, section=request["section_key"], heading=block.get("heading", ""): llm_logger.write(
+                            iteration=iteration,
+                            phase="report-section-review",
+                            input_messages=messages,
+                            output=body,
+                            model=model,
+                            base_url=base_url,
+                            suffix=f"{request['section_key']}-{heading}",
+                        ),
                     )
             except asyncio.CancelledError:
                 raise

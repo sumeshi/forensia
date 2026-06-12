@@ -5,14 +5,14 @@
   function tag(line: string): { label: string; tone: string } {
     const found = line.match(/^\[([a-z-]+)\]/i)?.[1]?.toLowerCase() ?? "other";
     const tones: Record<string, string> = {
-      plan: "text-mocha-lavender",
-      do: "text-mocha-blue",
-      check: "text-mocha-peach",
-      act: "text-mocha-green",
-      hypothesis: "text-mocha-mauve",
-      report: "text-mocha-pink"
+      plan: "text-semantic-accent",
+      do: "text-semantic-info",
+      check: "text-semantic-warn",
+      act: "text-semantic-ok",
+      hypothesis: "text-semantic-accent",
+      report: "text-semantic-accent"
     };
-    return { label: found, tone: tones[found] ?? "text-mocha-overlay1" };
+    return { label: found, tone: tones[found] ?? "text-semantic-fg-faint" };
   }
 </script>
 
@@ -20,12 +20,12 @@
   {#if progress}
     {#each ((progress.payload.recent_logs as string[] | undefined) ?? []) as line}
       {@const info = tag(line)}
-      <article class="flex gap-3 rounded-xl border border-mocha-surface1 bg-mocha-mantle/70 px-3 py-2">
+      <article class="flex gap-3 rounded-xl border border-mocha-surface1 bg-semantic-bg/70 px-3 py-2">
         <span class={`chip ${info.tone}`}>[{info.label}]</span>
-        <span class="text-mocha-subtext1">{line.replace(/^\[[^\]]+\]\s*/, "")}</span>
+        <span class="text-semantic-fg-muted">{line.replace(/^\[[^\]]+\]\s*/, "")}</span>
       </article>
     {/each}
   {:else}
-    <p class="text-sm text-mocha-subtext1">Waiting for progress events.</p>
+    <p class="text-sm text-semantic-fg-muted">Waiting for progress events.</p>
   {/if}
 </div>

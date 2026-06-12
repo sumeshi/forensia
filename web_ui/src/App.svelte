@@ -6,7 +6,9 @@
   import Header from "./components/layout/Header.svelte";
   import KpiBar from "./components/layout/KpiBar.svelte";
   import type { KpiItem } from "./components/layout/kpi_types";
-  import Cockpit from "./components/overview/cockpit/Cockpit.svelte";
+  import AiActivityPanel from "./components/overview/cockpit/AiActivityPanel.svelte";
+  import HypothesisStream from "./components/overview/cockpit/HypothesisStream.svelte";
+  import OpenGaps from "./components/overview/cockpit/OpenGaps.svelte";
   import ReportDraftProgress from "./components/report/ReportDraftProgress.svelte";
   import VolumeTimeline from "./components/VolumeTimeline.svelte";
   import AttackCoverage from "./components/overview/AttackCoverage.svelte";
@@ -44,6 +46,10 @@
   } from "./lib/stores";
   import { formatStage, getInvestigateSubphase, getPipelinePhase } from "./lib/format";
 
+  // Initial-render decision only: DetailsTabs copies the prop once, so the
+  // user keeps manual control after mount.
+  const wideViewport = typeof window !== "undefined" && window.innerWidth >= 1280;
+
   onMount(() => {
     refreshAll();
     return connectProgress();
@@ -69,11 +75,11 @@
     {
       label: "Findings",
       value: Intl.NumberFormat("ja-JP").format($caseStats?.findings_accepted ?? 0),
-      tone: "text-mocha-peach",
+      tone: "text-semantic-warn",
       breakdown: [
-        { label: "High", value: $severityBreakdown.highAccepted, color: "bg-mocha-red" },
-        { label: "Medium", value: $severityBreakdown.mediumAccepted, color: "bg-mocha-yellow" },
-        { label: "Low", value: $severityBreakdown.lowAccepted, color: "bg-mocha-green" }
+        { label: "High", value: $severityBreakdown.highAccepted, color: "bg-semantic-danger" },
+        { label: "Medium", value: $severityBreakdown.mediumAccepted, color: "bg-semantic-warn" },
+        { label: "Low", value: $severityBreakdown.lowAccepted, color: "bg-semantic-ok" }
       ]
     },
     {
@@ -81,18 +87,18 @@
       value: Intl.NumberFormat("ja-JP").format(
         ($caseStats?.active_hypotheses ?? 0) + ($caseStats?.resolved_hypotheses ?? 0)
       ),
-      tone: "text-mocha-mauve",
+      tone: "text-semantic-accent",
       breakdown: [
-        { label: "Active", value: $verdictBreakdown.active, color: "bg-mocha-mauve" },
-        { label: "Confirmed", value: $verdictBreakdown.confirmed, color: "bg-mocha-green" },
-        { label: "Refuted", value: $verdictBreakdown.refuted, color: "bg-mocha-red" },
-        { label: "Inconclusive", value: $verdictBreakdown.inconclusive, color: "bg-mocha-yellow" }
+        { label: "Active", value: $verdictBreakdown.active, color: "bg-semantic-accent" },
+        { label: "Confirmed", value: $verdictBreakdown.confirmed, color: "bg-semantic-ok" },
+        { label: "Refuted", value: $verdictBreakdown.refuted, color: "bg-semantic-danger" },
+        { label: "Inconclusive", value: $verdictBreakdown.inconclusive, color: "bg-semantic-warn" }
       ]
     },
     {
       label: "Open Gaps",
       value: Intl.NumberFormat("ja-JP").format($caseStats?.open_gaps ?? 0),
-      tone: "text-mocha-yellow"
+      tone: "text-semantic-warn"
     }
   ] satisfies KpiItem[];
 </script>
@@ -103,7 +109,7 @@
 
 <ActivityBanner />
 
-<main class="mx-auto flex max-w-[1920px] flex-col gap-3 p-3 2xl:px-5">
+<main class="mx-auto flex max-w-none flex-col gap-4 p-4 2xl:px-6">
   <Header
     caseName={$caseInfo?.case_name ?? "loading"}
     connection={$connection}
@@ -124,29 +130,38 @@
     onDrillChange={updateDrill}
   />
 
-  <ReportDraftProgress sections={$reportSections} progress={$reportProgress} />
+  <!-- Wide screens: 12-col grid — main flow (8) + sticky side rail (4).
+       Below xl the source order stacks: main content first, side info after. -->
+  <div class="grid gap-4 xl:grid-cols-12 xl:items-start">
+    <div class="flex min-w-0 flex-col gap-4 xl:col-span-8 2xl:col-span-9">
+      <ReportDraftProgress sections={$reportSections} progress={$reportProgress} />
 
-  <AttackCoverage items={$attackCoverage} />
+      <HypothesisStream
+        activeHypotheses={$activeHypothesesView}
+        resolvedHypotheses={$resolvedHypothesesView}
+        latestReasoningItems={$latestReasoning}
+      />
 
-  <Cockpit
-    aiTask={$currentTask}
-    runningQuery={$runningQuery}
-    activeHypotheses={$activeHypothesesView}
-    resolvedHypotheses={$resolvedHypothesesView}
-    openGaps={$openGapsView}
-    latestReasoningItems={$latestReasoning}
-  />
+      <DetailsTabs
+        findings={$findings}
+        steps={$steps}
+        sessions={$sessions}
+        progress={$progress}
+        timeline={$timeline}
+        collapsed={!wideViewport}
+      />
+    </div>
 
-  <section class="grid gap-3 md:grid-cols-2">
-    <TopRules items={$topRules} />
-    <TopEntities items={$entities} />
-  </section>
+    <div class="flex min-w-0 flex-col gap-4 xl:sticky xl:top-4 xl:col-span-4 xl:max-h-[calc(100vh-2rem)] xl:overflow-y-auto 2xl:col-span-3">
+      <AiActivityPanel currentTask={$currentTask} runningQuery={$runningQuery} />
 
-  <DetailsTabs
-    findings={$findings}
-    steps={$steps}
-    sessions={$sessions}
-    progress={$progress}
-    timeline={$timeline}
-  />
+      <OpenGaps items={$openGapsView} />
+
+      <AttackCoverage items={$attackCoverage} />
+
+      <TopRules items={$topRules} />
+
+      <TopEntities items={$entities} />
+    </div>
+  </div>
 </main>

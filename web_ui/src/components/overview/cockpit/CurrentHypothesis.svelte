@@ -9,6 +9,6 @@
     <h3 class="panel-title">Current Hypothesis</h3>
     <span class="chip chip-muted">{status}</span>
   </div>
-  <h4 class="truncate text-sm font-semibold text-mocha-text">{title}</h4>
-  <p class="mt-2 line-clamp-4 min-h-[6rem] text-sm text-mocha-subtext1">{summary}</p>
+  <h4 class="truncate text-sm font-semibold text-semantic-fg">{title}</h4>
+  <p class="mt-2 line-clamp-4 min-h-[6rem] text-sm text-semantic-fg-muted">{summary}</p>
 </section>

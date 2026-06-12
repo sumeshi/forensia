@@ -4,6 +4,9 @@ const config: Config = {
   content: ["./index.html", "./src/**/*.{svelte,ts}"],
   theme: {
     extend: {
+      fontFamily: {
+        mono: ['"JetBrains Mono"', '"IBM Plex Mono"', 'Consolas', 'monospace'],
+      },
       colors: {
         mocha: {
           base: "#1e1e2e",
@@ -31,10 +34,22 @@ const config: Config = {
           pink: "#f5c2e7",
           flamingo: "#f2cdcd",
           rosewater: "#f5e0dc"
+        },
+        // Static hex (not CSS vars): Tailwind opacity modifiers (/40 etc.)
+        // need alpha-capable color values. Revisit if a theme switch lands.
+        semantic: {
+          accent: "#b4befe",
+          ok: "#a6e3a1",
+          warn: "#f9e2af",
+          danger: "#f38ba8",
+          info: "#89b4fa",
+          fg: "#cdd6f4",
+          "fg-muted": "#a6adc8",
+          "fg-faint": "#7f849c",
+          bg: "#1e1e2e",
+          "bg-raised": "#313244",
+          "bg-inset": "#11111b",
         }
-      },
-      boxShadow: {
-        cockpit: "0 18px 48px rgba(0, 0, 0, 0.28)"
       }
     }
   },

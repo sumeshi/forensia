@@ -1329,7 +1329,7 @@ class HtmlEvidenceIdAnchorTests(unittest.TestCase):
         from forensia.report.html import _render_inline_markdown
         html = _render_inline_markdown("See evtx-security-000000000001.")
         self.assertIn('href="#ev-evtx-security-000000000001"', html)
-        # Placeholder title (bare id); _inject_evidence_tooltips swaps in the
+        # Placeholder title (bare id); _inject_evidence_interactivity swaps in the
         # record summary when the evidence map is available.
         self.assertIn('title="evtx-security-000000000001"', html)
         self.assertIn('class="evidence-ref"', html)

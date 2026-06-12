@@ -597,22 +597,43 @@ class EvidenceTooltipInjectionTests(unittest.TestCase):
     }
 
     def test_inline_citation_gets_summary_tooltip(self):
-        from forensia.report.html import _inject_evidence_tooltips
+        from forensia.report.html import _inject_evidence_interactivity
         html = str(render_markdown_fragment("Logon observed (evtx-security-000000000001)."))
-        injected = _inject_evidence_tooltips(html, self.EMAP)
-        self.assertIn('href="#ev-evtx-security-000000000001"', injected)
+        injected = _inject_evidence_interactivity(html, self.EMAP)
         self.assertIn("4624 Security informant@informant-PC", injected)
         self.assertNotIn('title="evtx-security-000000000001"', injected,
                          "placeholder title must be replaced by the record summary")
 
-    def test_reference_entry_gets_anchor_target(self):
-        from forensia.report.html import _inject_evidence_tooltips
+    def test_full_document_keeps_in_page_anchor_for_inline_citation(self):
+        """With a references section present, inline citations stay two-hop
+        (claim → reference entry → record viewer)."""
+        from forensia.report.html import _inject_evidence_interactivity
         md = (
             "Logon observed (evtx-security-000000000001).\n\n"
             "## Evidence References\n\n"
             "- `evtx-security-000000000001` 2015-03-22T14:34:28 evtx_events — 4624 logon\n"
         )
-        injected = _inject_evidence_tooltips(str(render_markdown_fragment(md)), self.EMAP)
+        injected = _inject_evidence_interactivity(str(render_markdown_fragment(md)), self.EMAP)
+        self.assertIn('href="#ev-evtx-security-000000000001"', injected)
+
+    def test_fragment_without_references_links_straight_to_record(self):
+        """A section fragment (web UI) has no references section, so a "#ev-"
+        anchor would be dead — inline citations must open the record viewer."""
+        from forensia.report.html import _inject_evidence_interactivity
+        html = str(render_markdown_fragment("Logon observed (evtx-security-000000000001)."))
+        injected = _inject_evidence_interactivity(html, self.EMAP)
+        self.assertIn('href="/evidence/evtx-security-000000000001"', injected)
+        self.assertIn('target="_blank"', injected)
+        self.assertNotIn('href="#ev-', injected, "no dead in-page anchors in fragments")
+
+    def test_reference_entry_gets_anchor_target(self):
+        from forensia.report.html import _inject_evidence_interactivity
+        md = (
+            "Logon observed (evtx-security-000000000001).\n\n"
+            "## Evidence References\n\n"
+            "- `evtx-security-000000000001` 2015-03-22T14:34:28 evtx_events — 4624 logon\n"
+        )
+        injected = _inject_evidence_interactivity(str(render_markdown_fragment(md)), self.EMAP)
         self.assertIn('id="ev-evtx-security-000000000001"', injected)
         # the anchor target sits after the references heading, not on the inline citation
         refs_idx = injected.index("Evidence References")
@@ -620,6 +641,28 @@ class EvidenceTooltipInjectionTests(unittest.TestCase):
         self.assertGreater(anchor_idx, refs_idx)
 
     def test_no_map_leaves_html_untouched(self):
-        from forensia.report.html import _inject_evidence_tooltips
+        from forensia.report.html import _inject_evidence_interactivity
         html = str(render_markdown_fragment("Logon observed (evtx-security-000000000001)."))
-        self.assertEqual(html, _inject_evidence_tooltips(html, {}))
+        self.assertEqual(html, _inject_evidence_interactivity(html, {}))
+
+    def test_reference_entry_gets_open_record_button(self):
+        from forensia.report.html import _inject_evidence_interactivity
+        md = (
+            "Some text.\n\n"
+            "## Evidence References\n\n"
+            "- `evtx-security-000000000001` 2015-03-22T14:34:28 evtx_events — 4624 logon\n"
+        )
+        injected = _inject_evidence_interactivity(str(render_markdown_fragment(md)), self.EMAP)
+        self.assertIn('/evidence/evtx-security-000000000001', injected)
+        self.assertIn('target="_blank"', injected)
+        self.assertIn('rel="noopener"', injected)
+        self.assertIn('記録を開く', injected)
+
+    def test_inline_citation_does_not_get_open_record_button(self):
+        """Inline citations never carry the 記録を開く button label — only
+        references entries do (fragments get a plain direct link instead)."""
+        from forensia.report.html import _inject_evidence_interactivity
+        html = str(render_markdown_fragment("Logon observed (evtx-security-000000000001)."))
+        injected = _inject_evidence_interactivity(html, self.EMAP)
+        self.assertNotIn("記録を開く", injected)
+        self.assertNotIn("evidence-open", injected)

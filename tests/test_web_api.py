@@ -238,5 +238,132 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(1000, count)
 
 
+    def test_evidence_record_api_returns_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            now = datetime.now(UTC).replace(tzinfo=None)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO evtx_events (
+                        evidence_id, source_file, channel, event_id, record_id, timestamp, computer,
+                        user_name, target_user, subject_user, src_ip, logon_type, process_name,
+                        command_line, service_name, message, raw_json, tags, severity
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "evtx-100",
+                        "security.evtx",
+                        "Security",
+                        4624,
+                        42,
+                        now,
+                        "WS-001",
+                        "jdoe",
+                        "admin",
+                        "",
+                        "10.0.0.5",
+                        "2",
+                        "svchost.exe",
+                        "",
+                        "",
+                        "Successful logon",
+                        '{"LogonType": "2", "TargetUserSid": "S-1-5-21-…"}',
+                        '["logon"]',
+                        "info",
+                    ),
+                )
+
+            client = TestClient(create_app(case))
+
+            resp = client.get("/api/evidence/evtx-100")
+            self.assertEqual(200, resp.status_code)
+            payload = resp.json()
+            self.assertEqual(payload["evidence_id"], "evtx-100")
+            self.assertEqual(payload["source"], "evtx_events")
+            self.assertEqual(payload["record"]["event_id"], 4624)
+            self.assertEqual(payload["record"]["computer"], "WS-001")
+            self.assertEqual(payload["record"]["user_name"], "jdoe")
+            self.assertIn("raw", payload["record"])
+            self.assertIn("LogonType", payload["record"]["raw"])
+
+            resp404 = client.get("/api/evidence/nonexistent")
+            self.assertEqual(404, resp404.status_code)
+
+
+    def test_evidence_record_html_page_escapes_untrusted_content(self) -> None:
+        """Forensic artifact content is untrusted input: record values and the
+        URL path must be HTML-escaped in the record viewer (XSS regression)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, channel, computer, timestamp, raw_json) VALUES "
+                    "('evtx-security-000000000666', 4688, 'Security', 'victim-PC', TIMESTAMP '2015-03-22 14:34:28', "
+                    "'{\"command_line\": \"<script>alert(1)</script>\"}')"
+                )
+            client = TestClient(create_app(case))
+            page = client.get("/evidence/evtx-security-000000000666")
+            self.assertEqual(200, page.status_code)
+            self.assertNotIn("<script>alert(1)</script>", page.text)
+            self.assertIn("&lt;script&gt;", page.text)
+            missing = client.get("/evidence/<img src=x onerror=alert(1)>")
+            self.assertEqual(404, missing.status_code)
+            self.assertNotIn("<img src=x", missing.text)
+
+    def test_evidence_record_html_page(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            now = datetime.now(UTC).replace(tzinfo=None)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO evtx_events (
+                        evidence_id, source_file, channel, event_id, record_id, timestamp, computer,
+                        user_name, target_user, subject_user, src_ip, logon_type, process_name,
+                        command_line, service_name, message, raw_json, tags, severity
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "evtx-200",
+                        "system.evtx",
+                        "System",
+                        104,
+                        1,
+                        now,
+                        "WS-002",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "{}",
+                        "[]",
+                        "warning",
+                    ),
+                )
+
+            client = TestClient(create_app(case))
+
+            resp = client.get("/evidence/evtx-200")
+            self.assertEqual(200, resp.status_code)
+            self.assertIn("text/html", resp.headers["content-type"])
+            html = resp.text
+            self.assertIn("evtx-200", html)
+            self.assertIn("<pre>", html)
+            self.assertIn("WS-002", html)
+            self.assertIn("Source: evtx_events", html)
+            self.assertIn("← Back", html)
+
+            resp404 = client.get("/evidence/nonexistent")
+            self.assertEqual(404, resp404.status_code)
+            self.assertIn("404", resp404.text)
+            self.assertIn("nonexistent", resp404.text)
+
+
 if __name__ == "__main__":
     unittest.main()

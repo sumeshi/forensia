@@ -48,15 +48,15 @@
 <section class="panel min-w-0 p-4">
   <h3 class="panel-title mb-3">ATT&CK Coverage</h3>
   {#if items.length === 0}
-    <p class="text-sm text-mocha-subtext1">No ATT&CK mappings found.</p>
+    <p class="text-sm text-semantic-fg-muted">No ATT&CK mappings found.</p>
   {:else}
     <div class="overflow-x-auto">
-      <table class="w-full text-[11px]">
+      <table class="w-full text-xs">
         <thead>
           <tr>
-            <th class="sticky left-0 z-10 bg-mocha-base pr-2 text-left text-mocha-subtext0">Technique</th>
+            <th class="sticky left-0 z-10 bg-semantic-bg pr-2 text-left text-semantic-fg-muted">Technique</th>
             {#each tacticOrder as tactic}
-              <th class="min-w-[28px] px-1 pb-1 text-center font-medium text-mocha-subtext0" title={tactic}>
+              <th class="min-w-[28px] px-1 pb-1 text-center font-medium text-semantic-fg-muted" title={tactic}>
                 {tacticLabel(tactic)}
               </th>
             {/each}
@@ -64,11 +64,11 @@
         </thead>
         <tbody>
           {#each [...grouped.values()].flat().sort((a, b) => b.count - a.count) as row}
-            <tr class="hover:bg-mocha-mantle/50">
-              <td class="sticky left-0 z-10 max-w-[160px] truncate bg-mocha-base py-1 pr-2 text-mocha-text" title={`${row.technique_id}: ${row.technique_name ?? ""}`}>
-                <span class="font-mono text-mocha-mauve">{row.technique_id}</span>
+            <tr class="hover:bg-semantic-bg/50">
+              <td class="sticky left-0 z-10 max-w-[160px] truncate bg-semantic-bg py-1 pr-2 text-semantic-fg" title={`${row.technique_id}: ${row.technique_name ?? ""}`}>
+                <span class="font-mono tabular-nums text-semantic-accent">{row.technique_id}</span>
                 {#if row.technique_name}
-                  <span class="ml-1 text-mocha-subtext0">{row.technique_name}</span>
+                  <span class="ml-1 text-semantic-fg-muted">{row.technique_name}</span>
                 {/if}
               </td>
               {#each tacticOrder as tactic}
@@ -79,7 +79,7 @@
                       style="background-color: rgba(203, 166, 247, {cellOpacity(row.count)})"
                       title={`${row.technique_id}: ${row.count} (accepted: ${row.accepted}, suppressed: ${row.suppressed})`}
                     >
-                      <span class="text-[9px] font-semibold leading-5 text-mocha-base">{row.count}</span>
+                      <span class="text-[10px] font-semibold leading-5 tabular-nums text-semantic-bg">{row.count}</span>
                     </div>
                   {/if}
                 </td>

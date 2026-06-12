@@ -143,7 +143,7 @@ def _render_inline_markdown(text: str) -> str:
     rendered = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", rendered)
     rendered = re.sub(r"\*([^*]+)\*", r"<em>\1</em>", rendered)
     # R7-03: Render evidence IDs as anchor links. The placeholder title is
-    # replaced with the real record summary by _inject_evidence_tooltips.
+    # replaced with the real record summary by _inject_evidence_interactivity.
     rendered = EVIDENCE_ID_PATTERN.sub(
         lambda m: f'<a class="evidence-ref" href="#ev-{m.group(0)}" title="{m.group(0)}">{m.group(0)}</a>',
         rendered,
@@ -154,10 +154,11 @@ def _render_inline_markdown(text: str) -> str:
 _EVIDENCE_LINK_RE = re.compile(r'<a class="evidence-ref" href="#ev-([^"]+)" title="[^"]*">')
 
 
-def _inject_evidence_tooltips(html_text: str, evidence_map: dict[str, dict[str, str]]) -> str:
+def _inject_evidence_interactivity(html_text: str, evidence_map: dict[str, dict[str, str]]) -> str:
     """Post-process rendered HTML: hover tooltips from the evidence map, and
     anchor targets (`id="ev-..."`) on the Evidence References entries so inline
-    citation links have somewhere to jump."""
+    citation links have somewhere to jump. Also adds evidence-open buttons to
+    Evidence References entries."""
     if not evidence_map:
         return html_text
 
@@ -189,7 +190,30 @@ def _inject_evidence_tooltips(html_text: str, evidence_map: dict[str, dict[str, 
             return match.group(0).replace("<a ", f'<a id="ev-{eid}" ', 1)
 
         tail = _EVIDENCE_LINK_RE.sub(_with_anchor, tail)
+
+        # R8-03: Add an open-record button after each references entry — after
+        # the enclosing </code> when the ID is rendered as a code span, so the
+        # button is not styled as code.
+        def _with_open_button(match: re.Match[str]) -> str:
+            eid = match.group(2)
+            return f'{match.group(1)} <a class="evidence-open" href="/evidence/{eid}" target="_blank" rel="noopener">記録を開く ⧉</a>'
+
+        tail = re.sub(
+            r'(<a\s+id="ev-([^"]+)"[^>]*>.*?</a>(?:</code>)?)',
+            _with_open_button,
+            tail,
+        )
+
         html_text = head + tail
+    else:
+        # Fragment without a references section (e.g. a single section body in
+        # the web UI): "#ev-..." anchors have no target, so point inline
+        # citations straight at the record viewer instead.
+        html_text = re.sub(
+            r'<a class="evidence-ref" href="#ev-([^"]+)"',
+            r'<a class="evidence-ref" href="/evidence/\1" target="_blank" rel="noopener"',
+            html_text,
+        )
     return html_text
 
 
@@ -224,6 +248,11 @@ def _is_table_row(line: str) -> bool:
     return "|" in line and len(_split_table_row(line)) >= 2
 
 
+_EVIDENCE_ONLY_CELL_RE = re.compile(
+    r'^<a class="evidence-ref" href="#ev-([^"]+)" title="[^"]*">[^<]+</a>$'
+)
+
+
 def _render_table(table_lines: list[str]) -> str:
     """Render a list of Markdown table lines as an HTML <table> element."""
     headers = _split_table_row(table_lines[0])
@@ -232,7 +261,14 @@ def _render_table(table_lines: list[str]) -> str:
     rows = []
     for line in body_lines:
         cells = _split_table_row(line)
-        rows.append("".join(f"<td>{_render_inline_markdown(cell)}</td>" for cell in cells))
+        td_list: list[str] = []
+        for cell in cells:
+            cell_html = _render_inline_markdown(cell)
+            m = _EVIDENCE_ONLY_CELL_RE.match(str(cell_html))
+            if m:
+                cell_html = Markup(f'<a class="evidence-open" href="/evidence/{m.group(1)}" target="_blank" rel="noopener" title="Open record">⧉</a>')
+            td_list.append(f"<td>{cell_html}</td>")
+        rows.append("".join(td_list))
     tbody = "".join(f"<tr>{row}</tr>" for row in rows)
     return f"<table><thead><tr>{thead}</tr></thead><tbody>{tbody}</tbody></table>"
 
@@ -445,7 +481,7 @@ def render_html_report(case: Case, db: CaseDB, output_path: str | Path | None = 
     )
     report_sections, report_markdown = _load_report_sections(db)
     report_body_html = Markup(
-        _inject_evidence_tooltips(str(render_markdown_fragment(report_markdown)), _load_evidence_map(case))
+        _inject_evidence_interactivity(str(render_markdown_fragment(report_markdown)), _load_evidence_map(case))
     )
     host_rows = _normalize_rows(
         _fetch_records(

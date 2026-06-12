@@ -15,6 +15,7 @@ from forensia.api.dto import (
     ClaimDTO,
     EntityCardDTO,
     EventVolumePointDTO,
+    EvidenceRecordDTO,
     FindingDTO,
     HypothesisDTO,
     HypothesisReasoningEntryDTO,
@@ -27,7 +28,10 @@ from forensia.api.dto import (
 )
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
+from forensia.db.evidence_lookup import lookup_evidence_record
 from forensia.db.query import fetch_records, normalize_value
+from forensia.report.evidence_map import build_evidence_map
+from forensia.report.html import render_markdown_fragment, _inject_evidence_interactivity
 
 
 def _evidence_ids_from_payload(value: Any) -> list[str]:
@@ -438,6 +442,17 @@ def list_report_sections_dto(db: CaseDB) -> list[ReportSectionDTO]:
         normalized["evidence_ids"] = evidence_ids
         normalized["evidence_count"] = len(evidence_ids)
         items.append(ReportSectionDTO.model_validate(normalized))
+
+    # Populate body_html (server-rendered HTML from markdown body)
+    non_empty_bodies = [item.body for item in items if item.body]
+    if non_empty_bodies:
+        all_bodies = "\n\n".join(non_empty_bodies)
+        evidence_map = build_evidence_map(db, all_bodies)
+        for item in items:
+            if item.body:
+                html = str(render_markdown_fragment(item.body))
+                item.body_html = _inject_evidence_interactivity(html, evidence_map)
+
     return items
 
 
@@ -735,6 +750,17 @@ def list_event_volume_dto(
     if source in {"mft", "all"}:
         rows.extend(_mft_volume_points(db, bucket_expr, range_sql, range_params, source))
     return _normalize_volume_rows(rows)
+
+
+def get_evidence_record_dto(db: CaseDB, evidence_id: str) -> EvidenceRecordDTO | None:
+    """Return a single evidence record as a DTO, or None if not found."""
+    record = lookup_evidence_record(db, evidence_id)
+    if record is None:
+        return None
+    # The lookup tags the owning table itself (correct for prefetch IDs that
+    # may live in prefetch_timeline); don't re-derive it from the prefix.
+    source = str(record.pop("_source", "unknown"))
+    return EvidenceRecordDTO(evidence_id=evidence_id, source=source, record=record)
 
 
 def list_entity_cards_dto(case: Case) -> list[EntityCardDTO]:

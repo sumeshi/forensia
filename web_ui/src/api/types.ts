@@ -88,6 +88,7 @@ export type ReportSectionDTO = {
   section_key: string;
   title: string;
   body: string;
+  body_html: string;
   confidence?: number | null;
   status: string;
   update_count: number;

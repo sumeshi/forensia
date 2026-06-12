@@ -54,19 +54,19 @@
   <div class="mb-4 flex items-start justify-between gap-3">
     <div>
       <h2 class="panel-title">Report Draft Progress</h2>
-      <p class="mt-1 text-xs text-mocha-subtext0">Human reviewed {progress.percent}% / {progress.humanReviewed} of {progress.total} sections</p>
+      <p class="mt-1 text-xs text-semantic-fg-muted">Human reviewed <span class="font-mono tabular-nums">{progress.percent}%</span> / <span class="font-mono tabular-nums">{progress.humanReviewed}</span> of <span class="font-mono tabular-nums">{progress.total}</span> sections</p>
     </div>
-    <div class="flex flex-col items-end gap-2 self-start text-right text-xs text-mocha-subtext0">
+    <div class="flex flex-col items-end gap-2 self-start text-right text-xs text-semantic-fg-muted">
       <div class="flex flex-wrap justify-end gap-2">
         <button
-          class="rounded-md border border-mocha-blue/40 px-3 py-1.5 text-mocha-blue disabled:opacity-55"
+          class="rounded-md border border-semantic-info/40 px-3 py-1.5 text-semantic-info disabled:opacity-55"
           on:click={openReport}
           type="button"
         >
           Open Report
         </button>
         <button
-          class="rounded-md border border-mocha-green/40 px-3 py-1.5 text-mocha-green disabled:opacity-55"
+          class="rounded-md border border-semantic-ok/40 px-3 py-1.5 text-semantic-ok disabled:opacity-55"
           on:click={downloadMarkdown}
           disabled={exportBusy}
           type="button"
@@ -74,7 +74,7 @@
           {exportBusy ? "Preparing..." : "Download report.md"}
         </button>
       </div>
-      <div>
+      <div class="font-mono tabular-nums">
         {progress.total} sections
         / {progress.gaps} gaps
         {#if progress.writing}

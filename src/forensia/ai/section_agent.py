@@ -177,6 +177,7 @@ class _BlockContext:
     answer_spec: str = ""
     question: str = ""
     structured_digest: str = ""
+    review_audit: Callable | None = None
 
 
 def _prepare_block_context(
@@ -199,6 +200,7 @@ def _prepare_block_context(
     question: str = "",
     section_table_digest: str = "",
     audit_callback=None,
+    review_audit_callback=None,
     report_brief: dict[str, Any] | None = None,
 ) -> _BlockContext:
     routing_text = f"{question}\n{template_body}".strip() if question else template_body
@@ -243,6 +245,7 @@ def _prepare_block_context(
         reusable_facts = []
         reusable_evidence = []
     audit = _audit_bridge(audit_callback)
+    review_audit = _audit_bridge(review_audit_callback)
     prompt_report_brief = _structured_report_brief(report_brief) if benchmark_mode else (report_brief or {})
     structured_digest = _structured_digest_from_answers(case) if section_key in {"1_overview", "2_timeline"} else ""
     if section_table_digest:
@@ -276,6 +279,7 @@ def _prepare_block_context(
         answer_spec=resolved_answer_spec,
         question=question,
         structured_digest=structured_digest,
+        review_audit=review_audit,
     )
 
 # ====================================================================
@@ -804,9 +808,10 @@ def _review_and_rewrite_narrative(
         review_msgs, review_schema = build_section_review_messages(
             ctx.block_heading, body, ctx.structured_digest or None, deterministic_problems,
         )
+        review_audit = ctx.review_audit or ctx.audit
         review = request_llm_json(
             messages=review_msgs, model=ctx.model, base_url=ctx.base_url,
-            json_schema=review_schema, audit_callback=ctx.audit,
+            json_schema=review_schema, audit_callback=review_audit,
         )
         if deterministic_problems or review.get("verdict") == "rewrite":
             guidance = str(review.get("guidance") or "")
@@ -825,7 +830,7 @@ def _review_and_rewrite_narrative(
             ]
             rewritten = _narrate_paragraph_with_retry(
                 narrate_messages=rewrite_msgs, narrate_schema=narrate_schema,
-                model=ctx.model, base_url=ctx.base_url, audit_callback=ctx.audit,
+                model=ctx.model, base_url=ctx.base_url, audit_callback=review_audit,
                 target_language=_report_language(),
             )
             rewritten_problems = review_narrative_body(rewritten)
@@ -1058,6 +1063,7 @@ def run_section_block_agent(
     question: str = "",
     section_table_digest: str = "",
     audit_callback=None,
+    review_audit_callback=None,
 ) -> SectionBlockResult:
     """Run the complete plan->query->check->write loop for one report section block.
 
@@ -1075,7 +1081,8 @@ def run_section_block_agent(
         benchmark_mode=benchmark_mode, benchmark_id=benchmark_id,
         answer_id=answer_id, answer_spec=answer_spec, question=question,
         section_table_digest=section_table_digest,
-        audit_callback=audit_callback, report_brief=report_brief,
+        audit_callback=audit_callback, review_audit_callback=review_audit_callback,
+        report_brief=report_brief,
     )
     try:
         if ctx.benchmark_mode and ctx.answer_spec:
@@ -1255,6 +1262,7 @@ async def async_run_section_block_agent(
     question: str = "",
     section_table_digest: str = "",
     audit_callback=None,
+    review_audit_callback=None,
 ) -> SectionBlockResult:
     """Async wrapper around run_section_block_agent using asyncio.to_thread."""
     return await asyncio.to_thread(
@@ -1269,4 +1277,5 @@ async def async_run_section_block_agent(
         question=question,
         section_table_digest=section_table_digest,
         audit_callback=audit_callback,
+        review_audit_callback=review_audit_callback,
     )

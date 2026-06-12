@@ -28,12 +28,12 @@
 <section class="panel p-4">
   <div class="mb-3 flex items-center justify-between">
     <h2 class="panel-title">Details</h2>
-    <button class="chip-muted" on:click={() => (open = !open)}>{open ? "▴ collapse" : "▾ expand"}</button>
+    <button class="btn-ghost" on:click={() => (open = !open)}>{open ? "▴ collapse" : "▾ expand"}</button>
   </div>
   {#if open}
     <div class="mb-3 flex flex-wrap gap-2">
       {#each tabs as tab}
-        <button class={`rounded-lg px-3 py-1.5 text-xs ${$detailsTab === tab.id ? "bg-mocha-mauve/20 text-mocha-text border border-mocha-mauve" : "bg-mocha-mantle/70 text-mocha-subtext0 border border-mocha-surface1"}`} on:click={() => detailsTab.set(tab.id)}>
+        <button class={`btn-ghost ${$detailsTab === tab.id ? "bg-semantic-accent/10 text-semantic-accent border-semantic-accent/40" : ""}`} on:click={() => detailsTab.set(tab.id)}>
           {tab.label}
         </button>
       {/each}

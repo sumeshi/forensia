@@ -12,20 +12,20 @@
   <div class="flex flex-wrap items-start justify-between gap-4">
     <div class="min-w-0">
       <div class="flex min-w-0 flex-wrap items-center gap-2">
-        <strong class="truncate text-lg font-semibold text-mocha-text">{caseName}</strong>
+        <strong class="truncate text-lg font-semibold text-semantic-fg">{caseName}</strong>
         <span class="chip-muted">{pipelinePhase}</span>
         <span class="chip">{currentStage}</span>
         {#if subphase}
-          <span class="chip text-mocha-sky">{subphase}</span>
+          <span class="chip text-semantic-accent">{subphase}</span>
         {/if}
       </div>
-      <div class="mt-2 flex flex-wrap items-center gap-3 text-xs text-mocha-subtext0">
-        <span>Model {model}</span>
-        <span>Updated {updatedAt}</span>
+      <div class="mt-2 flex flex-wrap items-center gap-3 text-xs text-semantic-fg-muted">
+        <span class="font-mono tabular-nums">Model {model}</span>
+        <span class="font-mono tabular-nums">Updated {updatedAt}</span>
       </div>
     </div>
     <div class="shrink-0">
-      <span class={`chip ${connection === "connected" ? "text-mocha-green" : connection === "error" ? "text-mocha-red" : "text-mocha-overlay1"}`}>{connection}</span>
+      <span class={`chip ${connection === "connected" ? "text-semantic-ok" : connection === "error" ? "text-semantic-danger" : "text-semantic-fg-faint"}`}>{connection}</span>
     </div>
   </div>
 </header>

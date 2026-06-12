@@ -4,14 +4,21 @@
 
 @layer base {
   html {
-    @apply bg-mocha-crust text-mocha-text;
+    @apply bg-semantic-bg-inset text-semantic-fg;
   }
 
   body {
-    @apply min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(203,166,247,0.14),transparent_24%),radial-gradient(circle_at_top_right,rgba(137,180,250,0.12),transparent_22%),linear-gradient(180deg,#1e1e2e_0%,#11111b_100%)];
+    @apply min-h-screen bg-semantic-bg;
     font-family: "IBM Plex Sans JP", "Avenir Next", sans-serif;
     scrollbar-width: thin;
-    scrollbar-color: rgba(108, 112, 134, 0.72) rgba(49, 50, 68, 0.45);
+    scrollbar-color: rgba(108, 112, 134, 0.5) rgba(49, 50, 68, 0.3);
+  }
+
+  code,
+  kbd,
+  samp,
+  pre {
+    font-family: "JetBrains Mono", "IBM Plex Mono", Consolas, monospace;
   }
 
   button {
@@ -24,7 +31,7 @@
 
   * {
     scrollbar-width: thin;
-    scrollbar-color: rgba(108, 112, 134, 0.72) rgba(49, 50, 68, 0.35);
+    scrollbar-color: rgba(108, 112, 134, 0.5) rgba(49, 50, 68, 0.3);
   }
 
   *::-webkit-scrollbar {
@@ -33,18 +40,18 @@
   }
 
   *::-webkit-scrollbar-track {
-    background: rgba(49, 50, 68, 0.28);
+    background: rgba(49, 50, 68, 0.3);
     border-radius: 9999px;
   }
 
   *::-webkit-scrollbar-thumb {
-    background: linear-gradient(180deg, rgba(108, 112, 134, 0.92), rgba(88, 91, 112, 0.92));
+    background: rgba(108, 112, 134, 0.5);
     border: 2px solid rgba(24, 24, 37, 0.82);
     border-radius: 9999px;
   }
 
   *::-webkit-scrollbar-thumb:hover {
-    background: linear-gradient(180deg, rgba(137, 180, 250, 0.88), rgba(116, 199, 236, 0.88));
+    background: rgba(108, 112, 134, 0.5);
   }
 
   *::-webkit-scrollbar-corner {
@@ -54,23 +61,30 @@
 
 @layer components {
   .panel {
-    @apply rounded-xl border border-mocha-surface1 bg-mocha-surface0/90 shadow-cockpit;
+    @apply rounded-lg border border-mocha-surface2/60 bg-semantic-bg-raised;
   }
 
   .panel-title {
-    @apply text-sm font-semibold tracking-wide text-mocha-text;
+    @apply text-sm font-semibold tracking-wide text-semantic-fg;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center rounded-md border border-semantic-bg-raised px-2.5 py-1 text-xs font-medium text-semantic-fg-muted transition-colors;
+  }
+  .btn-ghost:hover {
+    @apply border-semantic-accent/40 bg-semantic-accent/10 text-semantic-accent;
   }
 
   .chip {
-    @apply inline-flex items-center rounded-full border border-mocha-surface2 bg-mocha-surface1/80 px-2 py-0.5 text-[11px] font-medium text-mocha-text;
+    @apply inline-flex items-center rounded-full border border-mocha-surface2 bg-semantic-bg-raised/80 px-2 py-0.5 text-xs font-medium text-semantic-fg;
   }
 
   .chip-muted {
-    @apply chip text-mocha-overlay1;
+    @apply chip text-semantic-fg-faint;
   }
 
   .chip-accent {
-    @apply chip text-mocha-pink;
+    @apply chip text-semantic-accent;
   }
 
   .scroll-thin {

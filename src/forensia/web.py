@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from html import escape as html_escape
 from pathlib import Path
 from typing import Annotated
 
@@ -22,6 +23,7 @@ from forensia.api.dto import (
     ClaimDTO,
     EntityCardDTO,
     EventVolumePointDTO,
+    EvidenceRecordDTO,
     FindingDTO,
     HypothesesResponseDTO,
     HypothesisReasoningEntryDTO,
@@ -36,6 +38,7 @@ from forensia.api.service import (
     aggregate_event_volume,
     get_case_dto,
     get_case_stats_dto,
+    get_evidence_record_dto,
     get_finding_dto,
     list_attack_coverage_dto,
     list_entity_cards_dto,
@@ -197,15 +200,6 @@ def _register_session_routes(app: FastAPI, case: Case, cached):
 
 
 def _register_report_routes(app: FastAPI, case: Case, cached):
-    def cached_report_markdown() -> str | None:
-        snapshot = cached("report_sections.json")
-        if snapshot is None:
-            return None
-        ordered = [str(item.get("body") or "").strip() for item in snapshot if str(item.get("body") or "").strip()]
-        if not ordered:
-            return ""
-        return "\n\n".join(ordered).strip() + "\n"
-
     @app.get("/api/report-sections", response_model=list[ReportSectionDTO])
     def api_report_sections() -> list[ReportSectionDTO]:
         snapshot = cached("report_sections.json")
@@ -216,11 +210,18 @@ def _register_report_routes(app: FastAPI, case: Case, cached):
 
     @app.get("/api/report-markdown")
     def api_report_markdown() -> Response:
-        snapshot = cached_report_markdown()
-        if snapshot is not None:
-            return Response(content=snapshot, media_type="text/markdown; charset=utf-8")
+        report_path = case.reports_dir / "report.md"
+        if report_path.exists():
+            return Response(content=report_path.read_text(encoding="utf-8"), media_type="text/markdown; charset=utf-8")
         with CaseDB(case) as db:
             markdown = build_report_markdown_from_db(db, case=case)
+            # Read-only GET: build the references in memory, never write
+            # reports/ artifacts from an API request.
+            from forensia.report.evidence_map import build_evidence_map, render_evidence_references
+
+            ref_section = render_evidence_references(build_evidence_map(db, markdown))
+            if ref_section:
+                markdown = markdown.rstrip() + "\n\n" + ref_section + "\n"
         return Response(content=markdown, media_type="text/markdown; charset=utf-8")
 
     @app.get("/api/report-html", response_class=HTMLResponse)
@@ -252,6 +253,49 @@ def _register_report_routes(app: FastAPI, case: Case, cached):
             return [ClaimDTO.model_validate(item) for item in snapshot]
         with CaseDB(case) as db:
             return list_claims_dto(db, section_key=section_key)
+
+
+def _register_evidence_record_routes(app: FastAPI, case: Case):
+    @app.get("/api/evidence/{evidence_id}", response_model=EvidenceRecordDTO)
+    def api_evidence_record(evidence_id: str) -> EvidenceRecordDTO:
+        with CaseDB(case) as db:
+            dto = get_evidence_record_dto(db, evidence_id)
+            if dto is None:
+                raise HTTPException(status_code=404, detail=f"Evidence record not found: {evidence_id}")
+            return dto
+
+    @app.get("/evidence/{evidence_id}", response_class=HTMLResponse)
+    def evidence_record_page(evidence_id: str) -> HTMLResponse:
+        # Forensic artifact content (and the URL path) is untrusted input —
+        # escape everything interpolated into this page.
+        safe_id = html_escape(evidence_id)
+        with CaseDB(case) as db:
+            dto = get_evidence_record_dto(db, evidence_id)
+            if dto is None:
+                return HTMLResponse(
+                    f"<!DOCTYPE html><html><body><h1>404 - Not Found</h1><p>Evidence ID: {safe_id}</p></body></html>",
+                    status_code=404,
+                )
+            pretty_json = html_escape(json.dumps(dto.record, indent=2, ensure_ascii=False, default=str))
+            return HTMLResponse(
+                f"""<!DOCTYPE html>
+<html lang="ja">
+<head><meta charset="utf-8"><title>{safe_id} — Forensia Evidence</title>
+<style>
+  body {{ font-family: "IBM Plex Mono", "SFMono-Regular", monospace; background: #1e1e2e; color: #cdd6f4; padding: 24px; }}
+  h1 {{ font-size: 18px; margin: 0 0 8px; color: #b4befe; }}
+  .meta {{ color: #a6adc8; font-size: 13px; margin-bottom: 20px; }}
+  pre {{ background: #181825; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }}
+  .back {{ display: inline-block; margin-top: 20px; color: #89b4fa; text-decoration: none; }}
+  .back:hover {{ text-decoration: underline; }}
+</style></head>
+<body>
+  <h1>{safe_id}</h1>
+  <div class="meta">Source: {html_escape(dto.source)}</div>
+  <pre>{pretty_json}</pre>
+  <a class="back" href="javascript:history.back()">← Back</a>
+</body></html>"""
+            )
 
 
 def _register_evidence_routes(app: FastAPI, case: Case, cached, aggregate_event_volume_func):
@@ -423,6 +467,7 @@ def create_app(case: Case) -> FastAPI:
     _register_session_routes(app, case, cached)
     _register_report_routes(app, case, cached)
     _register_evidence_routes(app, case, cached, aggregate_event_volume)
+    _register_evidence_record_routes(app, case)
     _register_stream_routes(app, case)
     _register_spa_routes(app, spa_dir)
 

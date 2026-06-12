@@ -609,6 +609,48 @@ class TestListReportSectionsDto(unittest.TestCase):
             list_report_sections_dto(db)
 
 
+class TestListReportSectionsDtoBodyHtml(unittest.TestCase):
+    def test_table_body_renders_as_html_table(self):
+        db = MagicMock(spec=CaseDB)
+        body = "| Col1 | Col2 |\n|------|------|\n| A    | B    |"
+        db.execute.return_value = _make_mock_result(
+            ["section_key", "title", "body", "confidence", "status", "update_count", "gaps", "last_filled_session", "last_filled_at"],
+            [("overview", "Overview", body, 0.8, "human_reviewed", 3, '[]', "S1", "2024-01-01T00:00:00")],
+        )
+        result = list_report_sections_dto(db)
+        self.assertIn("<table>", result[0].body_html)
+        self.assertIn("<th>Col1</th>", result[0].body_html)
+        self.assertIn("<td>A</td>", result[0].body_html)
+
+    def test_body_html_empty_when_body_empty(self):
+        db = MagicMock(spec=CaseDB)
+        db.execute.return_value = _make_mock_result(
+            ["section_key", "title", "body", "confidence", "status", "update_count", "gaps", "last_filled_session", "last_filled_at"],
+            [("overview", "Overview", "", 0.8, "human_reviewed", 3, '[]', "S1", "2024-01-01T00:00:00")],
+        )
+        result = list_report_sections_dto(db)
+        self.assertEqual(result[0].body_html, "")
+
+    @patch("forensia.api.service.build_evidence_map")
+    def test_body_html_contains_evidence_ref_links(self, mock_build_evidence_map):
+        mock_build_evidence_map.return_value = {
+            "evtx-security-000000000120": {
+                "source": "evtx_events",
+                "timestamp": "2024-01-01T10:00:00",
+                "summary": "Event 4624",
+            }
+        }
+        db = MagicMock(spec=CaseDB)
+        body = "Suspicious logon detected: evtx-security-000000000120"
+        db.execute.return_value = _make_mock_result(
+            ["section_key", "title", "body", "confidence", "status", "update_count", "gaps", "last_filled_session", "last_filled_at"],
+            [("overview", "Overview", body, 0.8, "human_reviewed", 3, '[]', "S1", "2024-01-01T00:00:00")],
+        )
+        result = list_report_sections_dto(db)
+        self.assertIn('class="evidence-ref"', result[0].body_html)
+        self.assertIn("evtx-security-000000000120", result[0].body_html)
+
+
 class TestListSectionQuestionsDto(unittest.TestCase):
     def test_returns_section_questions(self):
         db = MagicMock(spec=CaseDB)
