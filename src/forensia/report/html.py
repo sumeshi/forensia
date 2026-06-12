@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -13,6 +14,7 @@ import yaml
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.db.query import normalize_value
+from forensia.report.keypoints import EVIDENCE_ID_PATTERN
 
 
 def _fetch_records(db: CaseDB, query: str, params: tuple[Any, ...] | None = None) -> list[dict[str, Any]]:
@@ -140,7 +142,67 @@ def _render_inline_markdown(text: str) -> str:
     rendered = re.sub(r"`([^`]+)`", r"<code>\1</code>", str(escaped))
     rendered = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", rendered)
     rendered = re.sub(r"\*([^*]+)\*", r"<em>\1</em>", rendered)
+    # R7-03: Render evidence IDs as anchor links. The placeholder title is
+    # replaced with the real record summary by _inject_evidence_tooltips.
+    rendered = EVIDENCE_ID_PATTERN.sub(
+        lambda m: f'<a class="evidence-ref" href="#ev-{m.group(0)}" title="{m.group(0)}">{m.group(0)}</a>',
+        rendered,
+    )
     return rendered
+
+
+_EVIDENCE_LINK_RE = re.compile(r'<a class="evidence-ref" href="#ev-([^"]+)" title="[^"]*">')
+
+
+def _inject_evidence_tooltips(html_text: str, evidence_map: dict[str, dict[str, str]]) -> str:
+    """Post-process rendered HTML: hover tooltips from the evidence map, and
+    anchor targets (`id="ev-..."`) on the Evidence References entries so inline
+    citation links have somewhere to jump."""
+    if not evidence_map:
+        return html_text
+
+    def _with_title(match: re.Match[str]) -> str:
+        eid = match.group(1)
+        info = evidence_map.get(eid) or {}
+        summary = " · ".join(
+            str(part) for part in (info.get("timestamp"), info.get("source"), info.get("summary")) if part
+        )
+        if not summary:
+            return match.group(0)
+        return f'<a class="evidence-ref" href="#ev-{eid}" title="{escape(summary)}">'
+
+    html_text = _EVIDENCE_LINK_RE.sub(_with_title, html_text)
+
+    # Anchor targets live in the Evidence References section (each ID's first
+    # occurrence after that heading gets id="ev-<id>").
+    marker_match = re.search(r"<h[1-6][^>]*>Evidence References</h[1-6]>", html_text)
+    if marker_match:
+        head = html_text[: marker_match.end()]
+        tail = html_text[marker_match.end():]
+        seen: set[str] = set()
+
+        def _with_anchor(match: re.Match[str]) -> str:
+            eid = match.group(1)
+            if eid in seen:
+                return match.group(0)
+            seen.add(eid)
+            return match.group(0).replace("<a ", f'<a id="ev-{eid}" ', 1)
+
+        tail = _EVIDENCE_LINK_RE.sub(_with_anchor, tail)
+        html_text = head + tail
+    return html_text
+
+
+def _load_evidence_map(case: Case) -> dict[str, dict[str, str]]:
+    """Load reports/evidence_map.json written by render_written_report (empty if absent)."""
+    path = case.reports_dir / "evidence_map.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _split_table_row(line: str) -> list[str]:
@@ -382,7 +444,9 @@ def render_html_report(case: Case, db: CaseDB, output_path: str | Path | None = 
         )
     )
     report_sections, report_markdown = _load_report_sections(db)
-    report_body_html = render_markdown_fragment(report_markdown)
+    report_body_html = Markup(
+        _inject_evidence_tooltips(str(render_markdown_fragment(report_markdown)), _load_evidence_map(case))
+    )
     host_rows = _normalize_rows(
         _fetch_records(
             db,

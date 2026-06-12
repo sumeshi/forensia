@@ -323,3 +323,42 @@ class CollectSectionRequestsTests(unittest.TestCase):
         self.assertNotIn("1_overview", keys, "fresh filled section must be skipped")
         gap_request = next(r for r in requests if r["section_key"] == "4_gaps")
         self.assertTrue(gap_request["is_stale"])
+
+    def test_force_all_returns_every_template(self) -> None:
+        from pathlib import Path
+
+        from forensia.ai.section_refresher import _collect_section_requests
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            template_dir = Path(tmpdir) / "templates"
+            template_dir.mkdir()
+            (template_dir / "1_overview.md").write_text(
+                "# Investigation Overview\n\n## Executive Summary\n<!-- mode: narrative; summary -->\n",
+                encoding="utf-8",
+            )
+            (template_dir / "4_gaps.md").write_text(
+                "# Investigation Gaps\n\n## Evidence Gaps\n<!-- mode: table; builder: gaps_evidence -->\n",
+                encoding="utf-8",
+            )
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO report_sections (section_key, title, body, confidence, status, update_count, stale) "
+                    "VALUES ('1_overview', 'Overview', 'filled body text', 0.8, 'stable', 1, FALSE)"
+                )
+                db.execute(
+                    "INSERT INTO report_sections (section_key, title, body, confidence, status, update_count, stale) "
+                    "VALUES ('4_gaps', 'Gaps', 'old gap body', 0.5, 'draft', 5, FALSE)"
+                )
+                prior_filled = {"1_overview": "filled body text", "4_gaps": "old gap body"}
+                requests = _collect_section_requests(
+                    case, db, sorted(template_dir.glob("[0-9]*_*.md")), prior_filled, report_brief={},
+                    force_all=True,
+                )
+
+        keys = [str(r.get("section_key")) for r in requests]
+        self.assertIn("1_overview", keys, "force_all must include fresh sections")
+        self.assertIn("4_gaps", keys, "force_all must include at-cap sections")
+        for r in requests:
+            self.assertTrue(r["is_stale"], f"force_all must mark {r['section_key']} as stale")
+            self.assertTrue(r["needs_refresh"], f"force_all must mark {r['section_key']} as needs_refresh")

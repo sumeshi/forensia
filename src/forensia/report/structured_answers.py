@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -257,7 +258,19 @@ def _persist_structured_answer(case: Case, answer: dict[str, Any]) -> None:
     path.write_text(json.dumps(answers, ensure_ascii=False, default=str, indent=2), encoding="utf-8")
 
 
-STRUCTURED_MARKDOWN_MAX_ROWS = 25
+_STRUCTURED_MARKDOWN_MAX_ROWS_DEFAULT = 200
+
+def _resolve_max_rows() -> int:
+    """Return STRUCTURED_MARKDOWN_MAX_ROWS, overridable via env var."""
+    env = os.environ.get("STRUCTURED_MARKDOWN_MAX_ROWS")
+    if env is not None:
+        try:
+            return max(1, int(env))
+        except (TypeError, ValueError):
+            pass
+    return _STRUCTURED_MARKDOWN_MAX_ROWS_DEFAULT
+
+STRUCTURED_MARKDOWN_MAX_ROWS = _resolve_max_rows()
 STRUCTURED_MARKDOWN_MAX_LIST_ITEMS = 5
 STRUCTURED_MARKDOWN_MAX_CELL_CHARS = 240
 

@@ -1461,7 +1461,9 @@ async def investigate(
 
         # R5-03: Final report refresh pass after loop termination, so stale
         # sections from late-cycle resolutions reach the rendered report.
-        # Skipped on user interrupt — they asked to stop, not to spend more LLM calls.
+        # R7-04: Use force_all=True so every section renders at one DB state,
+        # bypassing the update_count cap (it guards per-cycle loops, not the
+        # closing render). Skipped on user interrupt.
         if status == "completed" and not ctx.interrupted:
             try:
                 template_paths = sorted(template_root.glob("[0-9]*_*.md"))
@@ -1470,6 +1472,7 @@ async def investigate(
                     base_url=base_url, model=model, template_paths=template_paths,
                     llm_logger=llm_logger, progress_callback=progress_callback,
                     focus_sections=[], max_queries_per_section=report_max_queries_per_section,
+                    force_all=True,
                 )
                 render_written_report(case, db)
                 memory.regenerate_timeline_from_db(db)

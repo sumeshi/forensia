@@ -317,11 +317,29 @@ class WriterRQRegressionTests(unittest.TestCase):
             "Large Answer",
         )
 
-        self.assertIn("Showing 25 of 30 rows", markdown)
         self.assertIn("### Interpretation", markdown)
         self.assertIn("構造化証拠", markdown)
         self.assertIn("... (+3 more)", markdown)
-        self.assertNotIn("| 29 |", markdown)
+        # STRUCTURED_MARKDOWN_MAX_ROWS is now 200, so all 30 rows are shown
+        self.assertIn("| 29 |", markdown)
+
+    def test_structured_markdown_truncates_above_two_hundred(self) -> None:
+        """R7-02: structured answer with 250 rows truncates at 200."""
+        markdown = _render_structured_answer_markdown(
+            {
+                "id": "Q-HUGE",
+                "status": "answered",
+                "answer": [{"value": i} for i in range(250)],
+                "missing_reason": [],
+                "queries_run": ["structured:test"],
+                "json_path": "structured/answers.json",
+                "csv_path": "structured/Q-HUGE.csv",
+            },
+            "Huge Answer",
+        )
+
+        self.assertIn("_Showing 200 of 250 rows", markdown)
+        self.assertNotIn("| 249 |", markdown)
 
     def test_structured_markdown_hides_evidence_id_columns(self) -> None:
         markdown = _render_structured_answer_markdown(
@@ -1304,3 +1322,33 @@ class WriterRQRegressionTests(unittest.TestCase):
                 )
                 self.assertIn("host_identity", ctx_overview.structured_digest)
                 self.assertEqual(ctx_appendix.structured_digest, "")
+
+
+class HtmlEvidenceIdAnchorTests(unittest.TestCase):
+    def test_html_evidence_id_anchor_rendering(self):
+        from forensia.report.html import _render_inline_markdown
+        html = _render_inline_markdown("See evtx-security-000000000001.")
+        self.assertIn('href="#ev-evtx-security-000000000001"', html)
+        # Placeholder title (bare id); _inject_evidence_tooltips swaps in the
+        # record summary when the evidence map is available.
+        self.assertIn('title="evtx-security-000000000001"', html)
+        self.assertIn('class="evidence-ref"', html)
+
+    def test_markdown_table_max_rows_zero_is_unlimited(self) -> None:
+        """R7-02: max_rows=0 renders all rows without truncation marker."""
+        from forensia.report.markdown import _markdown_table
+
+        rows = [{"a": i, "b": i * 10} for i in range(50)]
+        table = _markdown_table(rows, [("a", "A"), ("b", "B")], max_rows=0)
+        self.assertIn("| 49 |", table)
+        self.assertNotIn("_Showing", table)
+
+    def test_structured_answer_increased_max_rows(self) -> None:
+        """R7-02: structured answer with 68 rows renders all 68 (no truncation below 200)."""
+        from forensia.report.structured_answers import _render_answer_block
+
+        items = [{"idx": i} for i in range(68)]
+        lines = _render_answer_block(items, columns=["idx"], max_rows=200)
+        body = "\n".join(lines)
+        self.assertIn("| 67 |", body)
+        self.assertNotIn("_Showing", body)

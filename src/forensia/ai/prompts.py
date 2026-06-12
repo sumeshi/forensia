@@ -1741,6 +1741,7 @@ def build_section_outline_messages(
         "If the evidence is insufficient to make a substantive claim, return an empty outline list.\n"
         "If prior_section_keypoints is non-empty, avoid re-using those same keypoints for this section — choose different evidence.\n"
         "If evidence_id is '?' (unknown), do NOT include it in evidence_ids array — only reference evidence with real identifiers.\n"
+        "Do not use raw internal IDs (gap-*, H-*, KP-*) in prose. Use human-readable descriptions instead.\n"
         "</RULES>\n"
         "<EXAMPLE>\n"
         'Input evidence rows: [{"evidence_id": "evtx-security-000000000122", "summary": "4648 logon WIN-D9->informant 2015-03-22 14:33:54"}, {"evidence_id": "evtx-security-000000000152", "summary": "4648 logon WIN-D9->informant 2015-03-22 14:34:28"}]\n'
@@ -1789,7 +1790,7 @@ def build_paragraph_narrate_messages(
         "The response MUST be valid JSON and MUST contain the key `body`. Do not return a bare string.\n"
         "Citation count: cite AT MOST 2-3 representative evidence_ids per paragraph. If many similar findings exist (same event_id pattern), state the count and cite 1-2 examples.\n"
         "Citation format: cite raw `evidence_id` strings only (e.g. evtx-security-000000000122). Do NOT cite `finding_id` (e.g. windows-security-4648-logon-explicit-creds-0001) — those are finding labels, not evidence references. If the input shows a finding_id without an evidence_id, OMIT the citation entirely instead of using the finding_id.\n"
-        "No KP-NNNN identifiers.\n"
+        "No KP-NNNN identifiers. Do not use raw internal IDs (gap-*, H-*, KP-*) in prose. Use human-readable descriptions instead.\n"
         "No meta-statements: write what was observed, not what was reviewed. Avoid 'investigation covered', 'scope included', 'comprehensive review of' style phrasing.\n"
         "Do NOT write `## {heading}` in your output — the heading is prepended by the renderer. Only write paragraph content below the heading.\n"
         "If the status is not_searched or not_found, this function should not be called. If you see such a status, output nothing.\n"
@@ -1957,3 +1958,45 @@ def build_hypothesis_drafter_messages(
     if status_callback:
         status_callback(f"[hypothesis_drafter] prompt size: {total_chars} chars / ~{total_chars // 4} tokens")
     return messages, schema
+
+
+SECTION_REVIEW_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "enum": ["pass", "rewrite"]},
+        "problems": {"type": "array", "items": {"type": "string"}},
+        "guidance": {"type": "string"},
+    },
+    "required": ["verdict", "problems", "guidance"],
+}
+
+
+def build_section_review_messages(
+    heading: str,
+    body: str,
+    digest: str | None,
+    deterministic_problems: list[str],
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    system = (
+        "<TASK>You are a section_reviewer. Evaluate the narrative paragraph for the given heading. "
+        "Check: does it state what happened, who/when, and what remains open? Does it cite at most 2-3 "
+        "representative evidence IDs (not enumerate findings)? Is it factual, concise, and self-contained? "
+        "Output verdict 'pass' if acceptable, 'rewrite' if needs improvement, with specific guidance.</TASK>\n"
+        "<OUTPUT_SCHEMA>{\"verdict\": \"pass\"|\"rewrite\", \"problems\": [\"...\"], \"guidance\": \"...\"}</OUTPUT_SCHEMA>\n"
+        "<RULES>\n"
+        "- Executive Summary must state what happened, who/when, and what remains open in ≤2 paragraphs\n"
+        "- At most 3 representative evidence IDs per paragraph\n"
+        "- Must not enumerate findings or list finding_ids\n"
+        "- Must not contain internal IDs (gap-*, H-*, KP-*)\n"
+        "- Must not contain pseudo-citations like (some_label)\n"
+        "- If body is the insufficient-evidence placeholder but digest has data, always rewrite\n"
+        "</RULES>\n"
+    )
+    digest_block = f"\nSection table digest:\n{digest}\n" if digest else ""
+    problems_block = (
+        f"\nDeterministic problems found:\n{chr(10).join('- ' + p for p in deterministic_problems)}\n"
+        if deterministic_problems
+        else ""
+    )
+    user = f"Heading: {heading}\n\nBody:\n{body}\n{digest_block}{problems_block}"
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}], SECTION_REVIEW_SCHEMA

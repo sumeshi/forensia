@@ -766,6 +766,21 @@ def render_written_report(
     filled_sections: dict[str, str] | None = None,
 ) -> tuple[Path, Path]:
     """Write report Markdown (from sections or DB) and generate the corresponding HTML report."""
-    report_md = write_report(case, filled_sections) if filled_sections is not None else write_report_from_db(case, db)
+    if filled_sections is not None:
+        ordered = [filled_sections[key].strip() for key in sorted(filled_sections) if filled_sections[key].strip()]
+        report_body = "\n\n".join(ordered).strip() + "\n"
+    else:
+        report_body = build_report_markdown_from_db(db, case=case)
+    # R7-03: Evidence reference layer. report.md keeps plain IDs plus the
+    # references appendix; the interactive layer (hover/anchor links) lives in
+    # report.html, whose renderer reads evidence_map.json.
+    from forensia.report.evidence_map import render_evidence_references, write_evidence_map
+
+    evidence_map = write_evidence_map(db, report_body, case.reports_dir)
+    ref_section = render_evidence_references(evidence_map)
+    if ref_section:
+        report_body = report_body.rstrip() + "\n\n" + ref_section + "\n"
+    report_path = case.reports_dir / "report.md"
+    report_path.write_text(report_body, encoding="utf-8")
     report_html = render_html_report(case, db)
-    return report_md, report_html
+    return report_path, report_html

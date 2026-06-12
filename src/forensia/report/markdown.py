@@ -214,18 +214,23 @@ def _compact_cell(value: Any, max_chars: int = 110) -> str:
     return text or "-"
 
 
-def _markdown_table(rows: list[dict[str, Any]], columns: list[tuple[str, str]], *, max_rows: int = 12) -> str:
-    """Build a compact Markdown table for deterministic report sections."""
+def _markdown_table(rows: list[dict[str, Any]], columns: list[tuple[str, str]], *, max_rows: int = 0) -> str:
+    """Build a compact Markdown table for deterministic report sections.
+
+    When ``max_rows`` is ``0`` (or negative), all rows are rendered (unlimited).
+    When positive, rows beyond the limit are truncated with a summary note.
+    """
     if not rows:
         return "_No rows available._"
     header = "| " + " | ".join(label for _, label in columns) + " |"
     sep = "| " + " | ".join("---" for _ in columns) + " |"
+    display_rows = rows[:max_rows] if max_rows > 0 else rows
     body = [
         "| " + " | ".join(_compact_cell(row.get(key)) for key, _ in columns) + " |"
-        for row in rows[:max_rows]
+        for row in display_rows
     ]
     table = "\n".join([header, sep, *body])
-    if len(rows) > max_rows:
+    if max_rows > 0 and len(rows) > max_rows:
         table += f"\n\n_Showing {max_rows} of {len(rows)} rows._"
     return table
 

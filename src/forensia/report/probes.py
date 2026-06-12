@@ -2072,11 +2072,16 @@ def _load_table_captions() -> dict[str, dict[str, str]]:
     }
 
 
-def render_table_block(db: CaseDB, builder_name: str, *, max_rows: int = 12) -> str | None:
+def render_table_block(db: CaseDB, builder_name: str, *, max_rows: int | None = None) -> str | None:
     """Render a `mode: table` block deterministically: caption paragraph + table.
 
+    ``max_rows`` controls the number of table rows shown in the Markdown output.
+    ``0`` means unlimited. When *None*, the value is read from the per-builder
+    ``max_rows:`` key in *report_tables.yaml*; if absent, defaults to ``0``
+    (unlimited).
+
     Returns None when the builder name is unknown (caller falls back to the
-    LLM agent). Empty result sets render the declared `empty` text instead of
+    LLM agent). Empty result sets render the declared ``empty`` text instead of
     a bare empty table.
     """
     builder_fn = _TABLE_BLOCK_BUILDERS.get(builder_name)
@@ -2086,6 +2091,11 @@ def render_table_block(db: CaseDB, builder_name: str, *, max_rows: int = 12) -> 
     spec = _load_table_captions().get(builder_name) or {}
     if not rows:
         return str(spec.get("empty") or "").strip() or "_No rows available._"
+    if max_rows is None:
+        try:
+            max_rows = int(spec.get("max_rows") or 0)
+        except (TypeError, ValueError):
+            max_rows = 0
     caption = render_rows_template(str(spec.get("caption") or "").strip(), rows).strip()
     table = _markdown_table(rows, _table_block_columns(builder_name, rows), max_rows=max_rows)
     return f"{caption}\n\n{table}" if caption else table

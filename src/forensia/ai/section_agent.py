@@ -18,8 +18,10 @@ from forensia.ai.prompts import (
     build_section_agent_check_messages,
     build_section_agent_plan_messages,
     build_section_outline_messages,
+    build_section_review_messages,
     build_structured_classify_messages,
 )
+from forensia.report.narrative_review import review_narrative_body
 from forensia.questions import (
     QuestionSpec,
     extract_time_qualifiers,
@@ -780,6 +782,75 @@ def _label_key_points_with_verdicts(
     return labeled
 
 
+def _review_and_rewrite_narrative(
+    ctx: _BlockContext,
+    body: str,
+    narrate_messages: list[dict[str, str]],
+    narrate_schema: dict[str, Any],
+) -> str:
+    """R7-01 section_reviewer: criticize every narrative body, rewrite at most once.
+
+    Deterministic rubric problems (citation overload, pseudo-citations,
+    internal IDs) are computed in code and handed to the LLM reviewer as
+    ground truth. On a 'rewrite' verdict the narrator runs ONCE more, seeing
+    its previous body plus the problems; the rewrite is kept only when it is
+    no worse (deterministic problem count), and leftovers are recorded in the
+    section run trace. Failures never block the section.
+    """
+    deterministic_problems = review_narrative_body(body)
+    review: dict[str, Any] = {}
+    remaining: list[str] = deterministic_problems
+    try:
+        review_msgs, review_schema = build_section_review_messages(
+            ctx.block_heading, body, ctx.structured_digest or None, deterministic_problems,
+        )
+        review = request_llm_json(
+            messages=review_msgs, model=ctx.model, base_url=ctx.base_url,
+            json_schema=review_schema, audit_callback=ctx.audit,
+        )
+        if deterministic_problems or review.get("verdict") == "rewrite":
+            guidance = str(review.get("guidance") or "")
+            problems_str = "; ".join(str(p) for p in (review.get("problems") or deterministic_problems))
+            rewrite_msgs = [
+                *narrate_messages,
+                {"role": "assistant", "content": json.dumps({"body": body}, ensure_ascii=False)},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Your previous paragraph (above) has these problems: {problems_str}. "
+                        f"Guidance: {guidance}. Rewrite the paragraph fixing every problem; "
+                        f"keep only claims supported by the evidence and at most 2-3 citations."
+                    ),
+                },
+            ]
+            rewritten = _narrate_paragraph_with_retry(
+                narrate_messages=rewrite_msgs, narrate_schema=narrate_schema,
+                model=ctx.model, base_url=ctx.base_url, audit_callback=ctx.audit,
+                target_language=_report_language(),
+            )
+            rewritten_problems = review_narrative_body(rewritten)
+            if rewritten.strip() and len(rewritten_problems) <= len(deterministic_problems):
+                body = rewritten
+                remaining = rewritten_problems
+            if remaining:
+                print(f"[review] {ctx.section_key}/{ctx.block_heading} — unresolved after rewrite: {remaining}")
+    except Exception as exc:
+        print(f"[review] LLM review failed for {ctx.section_key}/{ctx.block_heading}: {exc}")
+    _store_section_run(
+        ctx.db,
+        section_key=ctx.section_key,
+        block_heading=ctx.block_heading,
+        iteration=1,
+        phase="review",
+        payload={
+            "verdict": str(review.get("verdict") or ""),
+            "deterministic_problems": deterministic_problems,
+            "remaining_problems": remaining,
+        },
+    )
+    return body
+
+
 def _write_block_body(
     ctx: _BlockContext,
     collected_results: list[dict[str, Any]],
@@ -948,6 +1019,7 @@ def _write_block_body(
                     actual_query_count=actual_query_count,
                     actual_query_row_counts=actual_query_row_counts,
                 )
+            body = _review_and_rewrite_narrative(ctx, body, narrate_messages, narrate_schema)
             messages = narrate_messages
 
     if audit_callback:

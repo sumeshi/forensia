@@ -517,3 +517,109 @@ class RenderMarkdownFragmentTests(unittest.TestCase):
         from markupsafe import Markup
         result = render_markdown_fragment("# Hello")
         self.assertIsInstance(result, Markup)
+
+
+class EvidenceMapTests(unittest.TestCase):
+    def test_evidence_map_builds_from_body(self):
+        import json
+        import tempfile
+        from forensia.core.case import Case
+        from forensia.db.database import CaseDB
+        from forensia.report.evidence_map import build_evidence_map
+        body = "See evtx-security-000000000001 for details."
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, raw_json) "
+                    "VALUES (?, ?, ?, ?)",
+                    ("evtx-security-000000000001", 4624, "2015-03-22T14:34:28",
+                     json.dumps({"event_id": 4624, "target_user": "informant"})),
+                )
+                emap = build_evidence_map(db, body)
+        self.assertIn("evtx-security-000000000001", emap)
+        info = emap["evtx-security-000000000001"]
+        self.assertEqual(info["source"], "evtx_events")
+        self.assertIn("4624", info["summary"])
+
+    def test_evidence_references_renders_markdown(self):
+        from forensia.report.evidence_map import render_evidence_references
+        emap = {
+            "evtx-security-000000000001": {"source": "evtx_events", "timestamp": "2015-03-22T14:34:28", "summary": "4624 logon"},
+        }
+        md = render_evidence_references(emap)
+        self.assertIn("## Evidence References", md)
+        self.assertIn("evtx-security-000000000001", md)
+
+    def test_evidence_map_summarizes_mft_and_prefetch_rows(self):
+        """mft/prefetch references must show file/executable details, not '?'."""
+        import tempfile
+        from forensia.core.case import Case
+        from forensia.db.database import CaseDB
+        from forensia.report.evidence_map import build_evidence_map
+        body = "Files mft-000000078080-01 and runs prefetch-ccleaner64.exe-779bd542."
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO mft_entries (evidence_id, file_name, file_path, si_modified) VALUES "
+                    "('mft-000000078080-01', 'Task List.ersy', 'Users/informant/AppData/Local/Eraser 6/Task List.ersy', TIMESTAMP '2015-03-25 15:29:37')"
+                )
+                db.execute(
+                    "INSERT INTO prefetch_executions (evidence_id, executable_name, exec_count, last_exec_time) VALUES "
+                    "('prefetch-ccleaner64.exe-779bd542', 'CCLEANER64.EXE', 2, TIMESTAMP '2015-03-25 15:15:50')"
+                )
+                emap = build_evidence_map(db, body)
+        self.assertIn("Task List.ersy", emap["mft-000000078080-01"]["summary"])
+        self.assertIn("CCLEANER64.EXE", emap["prefetch-ccleaner64.exe-779bd542"]["summary"])
+
+    def test_evidence_map_marks_unknown_ids_unresolved(self):
+        import tempfile
+        from forensia.core.case import Case
+        from forensia.db.database import CaseDB
+        from forensia.report.evidence_map import build_evidence_map
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                emap = build_evidence_map(db, "Bogus evtx-security-000000000099 cited.")
+        self.assertEqual("unresolved", emap["evtx-security-000000000099"]["source"])
+
+
+class EvidenceTooltipInjectionTests(unittest.TestCase):
+    """R7-03: inline citations get hover tooltips; references get anchor targets."""
+
+    EMAP = {
+        "evtx-security-000000000001": {
+            "source": "evtx_events",
+            "timestamp": "2015-03-22T14:34:28",
+            "summary": "4624 Security informant@informant-PC",
+        }
+    }
+
+    def test_inline_citation_gets_summary_tooltip(self):
+        from forensia.report.html import _inject_evidence_tooltips
+        html = str(render_markdown_fragment("Logon observed (evtx-security-000000000001)."))
+        injected = _inject_evidence_tooltips(html, self.EMAP)
+        self.assertIn('href="#ev-evtx-security-000000000001"', injected)
+        self.assertIn("4624 Security informant@informant-PC", injected)
+        self.assertNotIn('title="evtx-security-000000000001"', injected,
+                         "placeholder title must be replaced by the record summary")
+
+    def test_reference_entry_gets_anchor_target(self):
+        from forensia.report.html import _inject_evidence_tooltips
+        md = (
+            "Logon observed (evtx-security-000000000001).\n\n"
+            "## Evidence References\n\n"
+            "- `evtx-security-000000000001` 2015-03-22T14:34:28 evtx_events — 4624 logon\n"
+        )
+        injected = _inject_evidence_tooltips(str(render_markdown_fragment(md)), self.EMAP)
+        self.assertIn('id="ev-evtx-security-000000000001"', injected)
+        # the anchor target sits after the references heading, not on the inline citation
+        refs_idx = injected.index("Evidence References")
+        anchor_idx = injected.index('id="ev-evtx-security-000000000001"')
+        self.assertGreater(anchor_idx, refs_idx)
+
+    def test_no_map_leaves_html_untouched(self):
+        from forensia.report.html import _inject_evidence_tooltips
+        html = str(render_markdown_fragment("Logon observed (evtx-security-000000000001)."))
+        self.assertEqual(html, _inject_evidence_tooltips(html, {}))

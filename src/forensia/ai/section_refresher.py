@@ -45,7 +45,22 @@ def _collect_section_requests(
     template_paths: list[Path],
     prior_filled: dict[str, str],
     report_brief: dict[str, Any],
+    *,
+    force_all: bool = False,
 ) -> list[dict[str, Any]]:
+    if force_all:
+        # R7-04: Force-refresh all sections — bypass the stale query and
+        # update_count cap. Each template section gets is_stale=True and
+        # needs_refresh=True regardless of DB state.
+        result: list[dict[str, Any]] = []
+        for template_path in template_paths:
+            request = prepare_section_request(case, db, template_path, prior_filled, report_brief=report_brief)
+            request["template_path"] = str(template_path)
+            request["is_stale"] = True
+            request["needs_refresh"] = True
+            result.append(request)
+        return result
+
     # Raw fetchall() returns tuples (dict rows come from fetch_records) —
     # dict-style access here crashed every refresh once stale rows existed.
     stale_section_keys = {
@@ -392,18 +407,22 @@ async def async_refresh_report_sections(
     progress_callback: Callable[[dict[str, Any]], None] | None,
     focus_sections: list[str] | None,
     max_queries_per_section: int,
+    force_all: bool = False,
 ) -> dict[str, Any]:
     """Orchestrate async report section refresh: prepare, render blocks, finalize.
 
     Processes sections sequentially (not parallel), prioritising stale sections
     over empty ones. Each section runs the agentic block loop via
     async_run_section_block_agent, then finalizes (stores body, evidence, gaps).
+
+    When *force_all* is True, every template section is treated as stale regardless
+    of DB state (bypasses update_count cap). Used only by the final-refresh pass.
     """
     prior_filled = load_report_sections_map(db)
     ensure_universal_question_probes(case, db)
     report_brief = write_report_brief(case, db)
     memory = MemoryManager(case, summarize=lambda messages, m: chat_completion(messages=messages, model=m, base_url=base_url))
-    requests = _collect_section_requests(case, db, template_paths, prior_filled, report_brief)
+    requests = _collect_section_requests(case, db, template_paths, prior_filled, report_brief, force_all=force_all)
     requests = _sort_section_requests(requests)
     filled_sections: dict[str, str] = {}
     for request in requests:

@@ -24,6 +24,10 @@ from forensia.ai.hypothesis_manager import (
     _interpolate_follow_up,
     _resolve_hypothesis,
 )
+from forensia.ai.prompts import (
+    build_paragraph_narrate_messages,
+    build_section_outline_messages,
+)
 from forensia.ai.sql_templates import validate_select_sql
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
@@ -461,3 +465,142 @@ class HostNoteTests(unittest.TestCase):
             {"label": "active", "display_name": "H", "first_seen": "2015-03-22 10:00:00", "last_seen": "2015-03-25 10:00:00", "event_count": 4000},
         ]
         self.assertEqual("active", _build_host_note(clusters))
+
+
+class SectionReviewerTests(unittest.TestCase):
+    """Deterministic rubric checks for narrative body quality (R7-01)."""
+
+    def test_check_citation_overload_flags_paragraphs(self) -> None:
+        from forensia.report.narrative_review import check_citation_overload
+
+        body = "One cite evtx-security-000000000001.\n\nPara with evtx-security-000000000002, evtx-security-000000000003, evtx-security-000000000004, evtx-security-000000000005."
+        problems = check_citation_overload(body)
+        self.assertGreaterEqual(len(problems), 1)
+
+    def test_check_pseudo_citations_flags_labels(self) -> None:
+        from forensia.report.narrative_review import check_pseudo_citations
+
+        body = "The analysis shows (antiforensic_activity) and (STRUCTURED_OBSERVATIONS)."
+        problems = check_pseudo_citations(body)
+        self.assertEqual(2, len(problems), problems)
+
+    def test_check_pseudo_citations_fullwidth_parens(self) -> None:
+        from forensia.report.narrative_review import check_pseudo_citations
+
+        body = "確認された（antiforensic_activity）事象。"
+        self.assertEqual(1, len(check_pseudo_citations(body)))
+
+    def test_check_pseudo_citations_ignores_plain_words_and_ids(self) -> None:
+        """Ordinary parenthesized words and real evidence IDs are not pseudo-citations."""
+        from forensia.report.narrative_review import check_pseudo_citations
+
+        body = "informant (informant) logged on (evtx-security-000000000122) at (4624)."
+        self.assertEqual([], check_pseudo_citations(body))
+
+    def test_review_narrative_body_combines_checks(self) -> None:
+        from forensia.report.narrative_review import review_narrative_body
+
+        body = (
+            "Hypothesis H-010 remains open (STRUCTURED_OBSERVATIONS). "
+            "IDs evtx-security-000000000001, evtx-security-000000000002, "
+            "evtx-security-000000000003, evtx-security-000000000004 were cited."
+        )
+        problems = review_narrative_body(body)
+        self.assertTrue(any("cites 4" in p for p in problems), problems)
+        self.assertTrue(any("STRUCTURED_OBSERVATIONS" in p for p in problems), problems)
+        self.assertTrue(any("H-010" in p for p in problems), problems)
+
+    def test_review_and_rewrite_narrative_runs_at_most_one_rewrite(self) -> None:
+        """R7-01 contract: one review call, at most one rewrite call, and a
+        worse rewrite is rejected in favour of the original body."""
+        import tempfile
+        from unittest import mock
+
+        from forensia.ai import section_agent
+        from forensia.core.case import Case
+        from forensia.db.database import CaseDB
+
+        clean_body = "informant のログオンが確認された (evtx-security-000000000122)。"
+        dirty_body = "観測 (STRUCTURED_OBSERVATIONS) のとおり gap-8b9254d65e は未解決。"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                ctx = section_agent._prepare_block_context(
+                    case=case, db=db, section_key="1_overview", title="Overview",
+                    block_heading="Executive Summary", template_body="<!-- mode: narrative; x -->",
+                    base_url="http://127.0.0.1:1", model="none", memory=None,
+                    max_queries=1, evidence_keypoints=None, benchmark_mode=False,
+                )
+                narrate_calls = []
+                with mock.patch.object(section_agent, "request_llm_json",
+                                       return_value={"verdict": "rewrite", "problems": ["dump"], "guidance": "summarize"}) as review_call, \
+                     mock.patch.object(section_agent, "_narrate_paragraph_with_retry",
+                                       side_effect=lambda **kw: narrate_calls.append(kw) or clean_body):
+                    result = section_agent._review_and_rewrite_narrative(
+                        ctx, dirty_body,
+                        narrate_messages=[{"role": "system", "content": "narrate"}],
+                        narrate_schema={"type": "object"},
+                    )
+                self.assertEqual(clean_body, result)
+                self.assertEqual(1, review_call.call_count)
+                self.assertEqual(1, len(narrate_calls), "exactly one rewrite call")
+                rewrite_prompt = str(narrate_calls[0]["narrate_messages"])
+                self.assertIn(dirty_body, rewrite_prompt, "rewrite must see the previous body")
+
+                # A rewrite that is WORSE than the original is rejected.
+                with mock.patch.object(section_agent, "request_llm_json",
+                                       return_value={"verdict": "rewrite", "problems": [], "guidance": ""}), \
+                     mock.patch.object(section_agent, "_narrate_paragraph_with_retry",
+                                       return_value=dirty_body):
+                    kept = section_agent._review_and_rewrite_narrative(
+                        ctx, clean_body,
+                        narrate_messages=[{"role": "system", "content": "narrate"}],
+                        narrate_schema={"type": "object"},
+                    )
+                self.assertEqual(clean_body, kept, "a worse rewrite must be rejected")
+
+    def test_check_internal_ids_flags_gap_h(self) -> None:
+        from forensia.report.narrative_review import check_internal_ids
+
+        body = "The hypothesis H-010 and gap-8b9254d65e are unresolved."
+        problems = check_internal_ids(body)
+        self.assertGreaterEqual(len(problems), 2)
+
+    def test_build_section_review_messages_includes_problems(self) -> None:
+        from forensia.ai.prompts import (
+            SECTION_REVIEW_SCHEMA,
+            build_section_review_messages,
+        )
+
+        msgs, schema = build_section_review_messages("test", "body text", None, ["Citation overload"])
+        self.assertIn("Citation overload", msgs[1]["content"])
+        self.assertTrue(schema == SECTION_REVIEW_SCHEMA or "verdict" in str(schema))
+
+
+class HumanReadableIdsInstructionTests(unittest.TestCase):
+    """Prompt rules must tell LLMs to use descriptions instead of raw internal IDs."""
+
+    def test_narrator_rules_ban_raw_internal_ids(self) -> None:
+        msgs, _ = build_paragraph_narrate_messages(
+            heading="Test Section",
+            key_points=["A key point"],
+            evidence_rows=[],
+            template_body="test",
+        )
+        system = msgs[0]["content"]
+        self.assertIn("Do not use raw internal IDs", system)
+        self.assertIn("gap-*", system)
+        self.assertIn("H-*", system)
+        self.assertIn("KP-*", system)
+
+    def test_outline_rules_ban_raw_internal_ids(self) -> None:
+        msgs, _ = build_section_outline_messages(
+            template_body="## Test\nContent",
+            relevant_evidence=[],
+        )
+        system = msgs[0]["content"]
+        self.assertIn("Do not use raw internal IDs", system)
+        self.assertIn("gap-*", system)
+        self.assertIn("H-*", system)
+        self.assertIn("KP-*", system)
