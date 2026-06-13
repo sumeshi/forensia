@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { formatAttackMappings } from "../../lib/format";
   import { selectedFindingId } from "../../lib/stores";
   import type { FindingDTO } from "../../lib/types";
 
@@ -36,7 +37,7 @@
           <td class="px-3 py-2 text-semantic-fg-muted">{String(evidence.target_user ?? evidence.subject_user ?? evidence.user_name ?? "-")}</td>
           <td class="px-3 py-2 font-mono tabular-nums text-semantic-fg-muted">{String(evidence.timestamp ?? finding.finding_id)}</td>
           <td class="px-3 py-2 font-mono tabular-nums text-semantic-fg-muted">{finding.confidence ? finding.confidence.toFixed(2) : "-"}</td>
-          <td class="px-3 py-2 text-semantic-fg-muted">{finding.attack?.join(", ") ?? "-"}</td>
+          <td class="px-3 py-2 text-semantic-fg-muted">{formatAttackMappings(finding.attack)}</td>
           <td class="px-3 py-2 text-semantic-fg-muted">{finding.status ?? "accepted"}</td>
         </tr>
       {/each}

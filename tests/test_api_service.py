@@ -17,6 +17,7 @@ from forensia.api.dto import (
     HypothesesResponseDTO,
     HypothesisReasoningEntryDTO,
     ReportSectionDTO,
+    RuntimeConfigDTO,
     SectionQuestionDTO,
 )
 from forensia.api.service import (
@@ -27,6 +28,7 @@ from forensia.api.service import (
     aggregate_event_volume,
     get_case_dto,
     get_case_stats_dto,
+    get_runtime_config_dto,
     list_attack_coverage_dto,
     list_entity_cards_dto,
     list_event_volume_dto,
@@ -87,7 +89,13 @@ _REASON_COLS = [
     "created_at",
 ]
 _REASON_WITH_COLS = _REASON_COLS + ["reasoning_count", "latest_iteration"]
-_STATS_COLS = ["evtx_rows", "mft_entries", "channel_count", "host_count", "prefetch_rows"]
+_STATS_COLS = [
+    "evtx_rows",
+    "mft_entries",
+    "channel_count",
+    "host_count",
+    "prefetch_rows",
+]
 _FINDINGS_STATS_COLS = ["findings_accepted", "findings_suppressed"]
 
 
@@ -125,6 +133,25 @@ class TestGetCaseDto(unittest.TestCase):
         self.assertEqual(result.manifest, {})
 
 
+class TestGetRuntimeConfigDto(unittest.TestCase):
+    def test_returns_effective_non_secret_settings(self):
+        with patch("forensia.config.settings") as settings:
+            settings.llm_base_url = "http://172.16.0.10:8080"
+            settings.llm_model = "test-model"
+            settings.llm_max_tokens = 8192
+            settings.llm_output_language = "ja"
+            settings.llm_report_max_queries_per_section = 4
+            settings.llm_outage_wall_clock_budget_s = 600
+            settings.llm_outage_probe_interval_s = 15
+
+            result = get_runtime_config_dto()
+
+        self.assertIsInstance(result, RuntimeConfigDTO)
+        self.assertEqual(result.llm_base_url, "http://172.16.0.10:8080")
+        self.assertEqual(result.llm_model, "test-model")
+        self.assertEqual(result.llm_max_tokens, 8192)
+
+
 class TestGetCaseStatsDto(unittest.TestCase):
     def test_returns_stats_dto(self):
         db = MagicMock(spec=CaseDB)
@@ -137,6 +164,23 @@ class TestGetCaseStatsDto(unittest.TestCase):
                 [(3, 1, 0)],
             ),
             _make_mock_result(["sessions", "total_iterations"], [(2, 15)]),
+            _make_mock_result(
+                ["name", "first_seen", "last_seen", "event_count"],
+                [
+                    (
+                        "37L4247F27-25",
+                        "2010-11-21 03:58:31",
+                        "2015-03-25 10:18:29",
+                        745,
+                    ),
+                    (
+                        "informant-PC",
+                        "2015-03-22 14:33:53",
+                        "2015-03-25 15:31:00",
+                        4454,
+                    ),
+                ],
+            ),
         ]
         result = get_case_stats_dto(db)
         self.assertIsInstance(result, CaseStatsDTO)
@@ -153,6 +197,11 @@ class TestGetCaseStatsDto(unittest.TestCase):
         self.assertEqual(result.total_iterations, 15)
         self.assertEqual(result.report_human_reviewed, 1)
         self.assertEqual(result.report_ai_exhausted, 0)
+        # Hosts are returned in first-seen order (rename timeline).
+        self.assertEqual(
+            [h.name for h in result.hosts], ["37L4247F27-25", "informant-PC"]
+        )
+        self.assertEqual(result.hosts[0].first_seen, "2010-11-21 03:58:31")
 
     def test_returns_zeroes_when_db_returns_none(self):
         db = MagicMock(spec=CaseDB)
@@ -167,6 +216,7 @@ class TestGetCaseStatsDto(unittest.TestCase):
                 [(None, None, None)],
             ),
             _make_mock_result(["sessions", "total_iterations"], [(None, None)]),
+            _make_mock_result(["name", "first_seen", "last_seen", "event_count"], []),
         ]
         result = get_case_stats_dto(db)
         self.assertEqual(result.evtx_rows, 0)

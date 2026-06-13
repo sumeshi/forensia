@@ -14,9 +14,9 @@
   const main: NavItem[] = [
     { id: "dashboard", label: "Dashboard", icon: "dashboard", view: "dashboard", anchor: "#top" },
     { id: "timeline", label: "Activity", icon: "activity", view: "dashboard", anchor: "#timeline" },
-    { id: "report", label: "Report", icon: "report", view: "dashboard", anchor: "#report" },
     { id: "hypotheses", label: "Hypotheses", icon: "hypotheses", view: "dashboard", anchor: "#hypotheses" },
     { id: "findings", label: "Findings", icon: "findings", view: "dashboard", anchor: "#details" },
+    { id: "report", label: "Report", icon: "report", view: "dashboard", anchor: "#report" },
     { id: "gaps", label: "Open Gaps", icon: "gaps", view: "dashboard", anchor: "#gaps" }
   ];
   const system: NavItem[] = [

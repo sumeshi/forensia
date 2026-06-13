@@ -31,6 +31,7 @@ from forensia.api.dto import (
     MftTimelineDTO,
     ProgressEventDTO,
     ReportSectionDTO,
+    RuntimeConfigDTO,
     SessionDTO,
 )
 from forensia.api.progress import list_progress_events
@@ -40,6 +41,7 @@ from forensia.api.service import (
     get_case_stats_dto,
     get_evidence_record_dto,
     get_finding_dto,
+    get_runtime_config_dto,
     list_ai_reviews_dto,
     list_attack_coverage_dto,
     list_claims_dto,
@@ -131,6 +133,10 @@ def _register_case_routes(app: FastAPI, case: Case, cached):
         if snapshot is not None:
             return CaseDTO.model_validate(snapshot)
         return get_case_dto(case)
+
+    @app.get("/api/config", response_model=RuntimeConfigDTO)
+    def api_config() -> RuntimeConfigDTO:
+        return get_runtime_config_dto()
 
     @app.get("/api/stats", response_model=CaseStatsDTO)
     def api_stats() -> CaseStatsDTO:

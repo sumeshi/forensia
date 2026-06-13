@@ -17,12 +17,14 @@ from forensia.api.dto import (
     EventVolumePointDTO,
     EvidenceRecordDTO,
     FindingDTO,
+    HostInfoDTO,
     HypothesesResponseDTO,
     HypothesisDTO,
     HypothesisReasoningEntryDTO,
     InvestigationStepDTO,
     MftTimelineDTO,
     ReportSectionDTO,
+    RuntimeConfigDTO,
     SectionQuestionDTO,
     SessionDTO,
 )
@@ -79,6 +81,21 @@ def get_case_dto(case: Case) -> CaseDTO:
     return CaseDTO(case_name=case.path.name, paths=paths, manifest=manifest)
 
 
+def get_runtime_config_dto() -> RuntimeConfigDTO:
+    """Return the effective non-secret runtime configuration."""
+    from forensia.config import settings
+
+    return RuntimeConfigDTO(
+        llm_base_url=settings.llm_base_url,
+        llm_model=settings.llm_model,
+        llm_max_tokens=settings.llm_max_tokens,
+        llm_output_language=settings.llm_output_language,
+        llm_report_max_queries_per_section=settings.llm_report_max_queries_per_section,
+        llm_outage_wall_clock_budget_s=settings.llm_outage_wall_clock_budget_s,
+        llm_outage_probe_interval_s=settings.llm_outage_probe_interval_s,
+    )
+
+
 def get_case_stats_dto(db: CaseDB) -> CaseStatsDTO:
     """Aggregate case-wide statistics from multiple tables into a single DTO."""
     event_rows = db.execute(
@@ -127,12 +144,38 @@ def get_case_stats_dto(db: CaseDB) -> CaseStatsDTO:
         FROM investigation_sessions
         """
     ).fetchone()
+    # Distinct hosts (case-insensitive) with their activity window. Ordered by
+    # first appearance so a rename reads as a timeline. `mode` keeps the most
+    # common original casing as the display name.
+    host_rows = db.execute(
+        """
+        SELECT
+            mode(computer) AS name,
+            MIN(timestamp) AS first_seen,
+            MAX(timestamp) AS last_seen,
+            COUNT(*) AS event_count
+        FROM evtx_events
+        WHERE COALESCE(TRIM(computer), '') != ''
+        GROUP BY UPPER(TRIM(computer))
+        ORDER BY first_seen
+        """
+    ).fetchall()
+    hosts = [
+        HostInfoDTO(
+            name=str(row[0]),
+            first_seen=str(row[1]) if row[1] is not None else None,
+            last_seen=str(row[2]) if row[2] is not None else None,
+            event_count=int(row[3] or 0),
+        )
+        for row in host_rows
+    ]
     return CaseStatsDTO(
         evtx_rows=int(event_rows[0] or 0),
         mft_entries=int(event_rows[1] or 0),
         channel_count=int(event_rows[2] or 0),
         host_count=int(event_rows[3] or 0),
         prefetch_rows=int(event_rows[4] or 0),
+        hosts=hosts,
         findings_accepted=int(finding_rows[0] or 0),
         findings_suppressed=int(finding_rows[1] or 0),
         active_hypotheses=int(hypothesis_rows[0] or 0),

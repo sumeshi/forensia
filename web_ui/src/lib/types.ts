@@ -1,5 +1,6 @@
 export type {
   AIReviewDTO,
+  AttackMappingDTO,
   AttackCoverageRowDTO,
   EntityCardDTO,
   CaseDTO,
@@ -14,5 +15,6 @@ export type {
   MftTimelineDTO,
   ProgressEventDTO,
   ReportSectionDTO,
+  RuntimeConfigDTO,
   SessionDTO
 } from "../api/types";

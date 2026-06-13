@@ -208,6 +208,9 @@ class WebApiTests(unittest.TestCase):
             client = TestClient(create_app(case))
 
             self.assertEqual(200, client.get("/api/case").status_code)
+            config_response = client.get("/api/config")
+            self.assertEqual(200, config_response.status_code)
+            self.assertIn("llm_base_url", config_response.json())
             self.assertEqual(1, client.get("/api/stats").json()["findings_accepted"])
             self.assertEqual(1, len(client.get("/api/findings").json()))
             self.assertEqual(

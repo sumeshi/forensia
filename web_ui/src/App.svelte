@@ -41,6 +41,7 @@
     progress,
     refreshAll,
     reportSections,
+    runtimeConfig,
     searchQuery,
     sessions,
     steps,
@@ -103,8 +104,9 @@
   ).length;
   $: totalSectionCount = $reportSections.length;
 
-  // Host name(s) the evidence came from, listed under the case name.
-  $: hostNames = $entities.filter((e) => e.kind === "host" && e.name).map((e) => e.name);
+  // Host(s) the evidence came from, with their activity window. A machine
+  // rename shows as two entries ordered by first-seen (timeline under the name).
+  $: hosts = $caseStats?.hosts ?? [];
 
   async function updateDrill(next: number[]) {
     $volumeDrill = next;
@@ -177,14 +179,14 @@
     <ActivityBanner />
 
     {#if view === "settings"}
-      <Settings />
+      <Settings config={$runtimeConfig} />
     {:else}
     <Header
       caseName={$caseInfo?.case_name ?? "loading"}
       connection={$connection}
       currentStage={currentStage}
       phaseIndex={pipelineMeta.index}
-      hostNames={hostNames}
+      hosts={hosts}
       model={llmModel}
       {updatedAt}
     />

@@ -15,12 +15,34 @@ class CaseDTO(DTOModel):
     manifest: dict[str, Any]
 
 
+class RuntimeConfigDTO(DTOModel):
+    llm_base_url: str | None = None
+    llm_model: str | None = None
+    llm_max_tokens: int
+    llm_output_language: str
+    llm_report_max_queries_per_section: int
+    llm_outage_wall_clock_budget_s: int
+    llm_outage_probe_interval_s: int
+
+
+class HostInfoDTO(DTOModel):
+    """A distinct host (computer name) seen in EVTX, with its activity window.
+
+    Multiple entries for one physical machine indicate a rename over time."""
+
+    name: str
+    first_seen: str | None = None
+    last_seen: str | None = None
+    event_count: int = 0
+
+
 class CaseStatsDTO(DTOModel):
     evtx_rows: int
     mft_entries: int
     channel_count: int
     host_count: int = 0
     prefetch_rows: int = 0
+    hosts: list[HostInfoDTO] = []
     findings_accepted: int
     findings_suppressed: int
     active_hypotheses: int
@@ -32,6 +54,12 @@ class CaseStatsDTO(DTOModel):
     report_ai_exhausted: int = 0
 
 
+class AttackMappingDTO(DTOModel):
+    tactic: str = ""
+    technique_id: str = ""
+    technique_name: str = ""
+
+
 class FindingDTO(DTOModel):
     finding_id: str
     rule_id: str | None = None
@@ -41,7 +69,7 @@ class FindingDTO(DTOModel):
     confidence: float | None = None
     status: str | None = None
     tags: list[Any] | dict[str, Any] | None = None
-    attack: list[Any] | None = None
+    attack: list[AttackMappingDTO | str] | None = None
     evidence: list[Any] | None = None
     evidence_ids: list[str] = []
     evidence_count: int = 0

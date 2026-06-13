@@ -71,6 +71,28 @@ export function formatStatus(value: string | null | undefined): string {
   return value ?? "-";
 }
 
+type AttackMapping = {
+  tactic?: string | null;
+  technique_id?: string | null;
+  technique_name?: string | null;
+};
+
+export function formatAttackMappings(
+  values: Array<AttackMapping | string> | null | undefined
+): string {
+  if (!values?.length) return "-";
+  const labels = values
+    .map((value) => {
+      if (typeof value === "string") return value.trim();
+      const techniqueId = value?.technique_id?.trim() ?? "";
+      const techniqueName = value?.technique_name?.trim() ?? "";
+      const tactic = value?.tactic?.trim() ?? "";
+      return [techniqueId, techniqueName].filter(Boolean).join(" ") || tactic;
+    })
+    .filter(Boolean);
+  return labels.length ? labels.join(", ") : "-";
+}
+
 
 export function formatStage(value: string | null | undefined): string {
   if (!value) return "Idle";

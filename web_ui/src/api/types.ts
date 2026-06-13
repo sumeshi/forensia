@@ -4,12 +4,30 @@ export type CaseDTO = {
   manifest: Record<string, unknown>;
 };
 
+export type RuntimeConfigDTO = {
+  llm_base_url?: string | null;
+  llm_model?: string | null;
+  llm_max_tokens: number;
+  llm_output_language: string;
+  llm_report_max_queries_per_section: number;
+  llm_outage_wall_clock_budget_s: number;
+  llm_outage_probe_interval_s: number;
+};
+
+export type HostInfoDTO = {
+  name: string;
+  first_seen?: string | null;
+  last_seen?: string | null;
+  event_count: number;
+};
+
 export type CaseStatsDTO = {
   evtx_rows: number;
   mft_entries: number;
   channel_count: number;
   host_count: number;
   prefetch_rows: number;
+  hosts: HostInfoDTO[];
   findings_accepted: number;
   findings_suppressed: number;
   active_hypotheses: number;
@@ -21,6 +39,12 @@ export type CaseStatsDTO = {
   report_ai_exhausted: number;
 };
 
+export type AttackMappingDTO = {
+  tactic?: string;
+  technique_id?: string;
+  technique_name?: string;
+};
+
 export type FindingDTO = {
   finding_id: string;
   rule_id?: string | null;
@@ -30,7 +54,7 @@ export type FindingDTO = {
   confidence?: number | null;
   status?: string | null;
   tags?: Array<unknown> | Record<string, unknown> | null;
-  attack?: string[] | null;
+  attack?: Array<AttackMappingDTO | string> | null;
   evidence?: Array<Record<string, unknown>> | null;
   ai_summary?: string | null;
   missing_checks?: Array<unknown> | null;

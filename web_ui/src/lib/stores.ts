@@ -15,10 +15,12 @@ import type {
   MftTimelineDTO,
   ProgressEventDTO,
   ReportSectionDTO,
+  RuntimeConfigDTO,
   SessionDTO
 } from "./types";
 
 export const caseInfo = writable<CaseDTO | null>(null);
+export const runtimeConfig = writable<RuntimeConfigDTO | null>(null);
 export const caseStats = writable<CaseStatsDTO | null>(null);
 export const findings = writable<FindingDTO[]>([]);
 export const hypotheses = writable<HypothesesResponseDTO>({ active: [], resolved: [] });
@@ -121,9 +123,10 @@ export async function refreshAll(): Promise<void> {
   let drillValue: number[] = [];
   volumeDrill.subscribe((value) => (drillValue = value))();
   const { bucket: volumeBucketParam, start: volumeStart, end: volumeEnd } = drillToParams(drillValue);
-  const [caseResult, statsResult, findingsResult, hypothesesResult, sessionsResult, reportResult, timelineResult, eventVolumeResult, eventVolumeDetectedResult, eventVolumeYearsResult, reviewsResult, reasoningResult, coverageResult, entitiesResult] =
+  const [caseResult, configResult, statsResult, findingsResult, hypothesesResult, sessionsResult, reportResult, timelineResult, eventVolumeResult, eventVolumeDetectedResult, eventVolumeYearsResult, reviewsResult, reasoningResult, coverageResult, entitiesResult] =
     await Promise.allSettled([
       api.getCase(),
+      api.getConfig(),
       api.getStats(),
       api.getFindings(),
       api.getHypotheses(),
@@ -140,6 +143,7 @@ export async function refreshAll(): Promise<void> {
     ]);
 
   if (caseResult.status === "fulfilled") caseInfo.set(caseResult.value);
+  if (configResult.status === "fulfilled") runtimeConfig.set(configResult.value);
   if (statsResult.status === "fulfilled") caseStats.set(statsResult.value);
   if (findingsResult.status === "fulfilled") findings.set(findingsResult.value);
   if (hypothesesResult.status === "fulfilled") hypotheses.set(hypothesesResult.value);

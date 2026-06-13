@@ -8,8 +8,12 @@
   export let updatedAt = "-";
   // 1-based index of the active pipeline phase (0 = idle / not started).
   export let phaseIndex = 0;
-  // Host name(s) the evidence came from (listed under the case name).
-  export let hostNames: string[] = [];
+  // Host(s) the evidence came from, ordered by first-seen so a machine rename
+  // reads as a timeline under the case name.
+  type HostInfo = { name: string; first_seen?: string | null; last_seen?: string | null };
+  export let hosts: HostInfo[] = [];
+
+  const ym = (s: string | null | undefined): string => (s ?? "").slice(0, 7);
 
   const steps = ["Ingest", "Normalize", "Analyze", "Investigate"];
   const address = typeof window !== "undefined" ? window.location.host : "";
@@ -35,10 +39,16 @@
     <div class="min-w-0">
       <h1 class="truncate text-2xl font-bold tracking-tight text-semantic-fg">{caseName}</h1>
 
-      {#if hostNames.length}
-        <div class="mt-0.5 break-words text-xs text-semantic-fg-muted">
-          <span class="text-semantic-fg-faint">Host{hostNames.length > 1 ? "s" : ""}</span>
-          <span class="font-medium text-semantic-fg">{hostNames.join(", ")}</span>
+      {#if hosts.length}
+        <div class="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-semantic-fg-muted">
+          <span class="text-semantic-fg-faint">Host</span>
+          {#each hosts as h, i}
+            {#if i > 0}<span class="text-semantic-fg-faint">→</span>{/if}
+            <span class="font-medium text-semantic-fg">{h.name}</span>
+            {#if ym(h.first_seen)}
+              <span class="text-semantic-fg-faint">({ym(h.first_seen)}{ym(h.last_seen) && ym(h.last_seen) !== ym(h.first_seen) ? `–${ym(h.last_seen)}` : ""})</span>
+            {/if}
+          {/each}
         </div>
       {/if}
 

@@ -13,6 +13,7 @@ import type {
   MftTimelineDTO,
   ProgressEventDTO,
   ReportSectionDTO,
+  RuntimeConfigDTO,
   SessionDTO
 } from "./types";
 
@@ -42,6 +43,7 @@ async function postJson<T>(path: string): Promise<T> {
 
 export const api = {
   getCase: () => getJson<CaseDTO>("/api/case"),
+  getConfig: () => getJson<RuntimeConfigDTO>("/api/config"),
   getStats: () => getJson<CaseStatsDTO>("/api/stats"),
   getFindings: () => getJson<FindingDTO[]>("/api/findings?limit=200"),
   getHypotheses: () => getJson<HypothesesResponseDTO>("/api/hypotheses"),
