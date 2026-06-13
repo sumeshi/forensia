@@ -4,5 +4,7 @@ export type KpiItem = {
   label: string;
   value: string;
   tone?: string;
+  icon?: string;
+  note?: string;
   breakdown?: KpiBreakdownSegment[];
 };

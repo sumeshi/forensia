@@ -87,7 +87,8 @@ def get_case_stats_dto(db: CaseDB) -> CaseStatsDTO:
             (SELECT COUNT(*) FROM evtx_events) AS evtx_rows,
             (SELECT COUNT(*) FROM mft_entries) AS mft_entries,
             (SELECT COUNT(DISTINCT channel) FROM evtx_events) AS channel_count,
-            (SELECT COUNT(DISTINCT UPPER(TRIM(computer))) FROM evtx_events WHERE COALESCE(computer, '') != '') AS host_count
+            (SELECT COUNT(DISTINCT UPPER(TRIM(computer))) FROM evtx_events WHERE COALESCE(computer, '') != '') AS host_count,
+            (SELECT COUNT(*) FROM prefetch_executions) AS prefetch_rows
         """
     ).fetchone()
     finding_rows = db.execute(
@@ -131,6 +132,7 @@ def get_case_stats_dto(db: CaseDB) -> CaseStatsDTO:
         mft_entries=int(event_rows[1] or 0),
         channel_count=int(event_rows[2] or 0),
         host_count=int(event_rows[3] or 0),
+        prefetch_rows=int(event_rows[4] or 0),
         findings_accepted=int(finding_rows[0] or 0),
         findings_suppressed=int(finding_rows[1] or 0),
         active_hypotheses=int(hypothesis_rows[0] or 0),

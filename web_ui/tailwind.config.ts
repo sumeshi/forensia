@@ -8,19 +8,22 @@ const config: Config = {
         mono: ['"JetBrains Mono"', '"IBM Plex Mono"', 'Consolas', 'monospace'],
       },
       colors: {
+        // Near-black neutral ramp (page → cards → borders → text). The accent
+        // hues below stay vivid for charts/status; the primary accent is a
+        // single violet so the UI reads as one calm, dark surface.
         mocha: {
-          base: "#1e1e2e",
-          mantle: "#181825",
-          crust: "#11111b",
-          text: "#cdd6f4",
-          subtext0: "#a6adc8",
-          subtext1: "#bac2de",
-          overlay0: "#6c7086",
-          overlay1: "#7f849c",
-          overlay2: "#9399b2",
-          surface0: "#313244",
-          surface1: "#45475a",
-          surface2: "#585b70",
+          base: "#0a0a0d",
+          mantle: "#08080b",
+          crust: "#060608",
+          text: "#e8e8ef",
+          subtext0: "#9a9aa8",
+          subtext1: "#c2c2cd",
+          overlay0: "#4f4f5a",
+          overlay1: "#6b6b78",
+          overlay2: "#8a8a98",
+          surface0: "#18181f",
+          surface1: "#2c2c38",
+          surface2: "#3a3a47",
           mauve: "#cba6f7",
           lavender: "#b4befe",
           blue: "#89b4fa",
@@ -38,17 +41,17 @@ const config: Config = {
         // Static hex (not CSS vars): Tailwind opacity modifiers (/40 etc.)
         // need alpha-capable color values. Revisit if a theme switch lands.
         semantic: {
-          accent: "#b4befe",
+          accent: "#cba6f7",
           ok: "#a6e3a1",
           warn: "#f9e2af",
           danger: "#f38ba8",
           info: "#89b4fa",
-          fg: "#cdd6f4",
-          "fg-muted": "#a6adc8",
-          "fg-faint": "#7f849c",
-          bg: "#1e1e2e",
-          "bg-raised": "#313244",
-          "bg-inset": "#11111b",
+          fg: "#e8e8ef",
+          "fg-muted": "#9a9aa8",
+          "fg-faint": "#62626e",
+          bg: "#0a0a0d",
+          "bg-raised": "#18181f",
+          "bg-inset": "#060608",
         }
       }
     }

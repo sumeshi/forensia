@@ -201,76 +201,49 @@ def _render_inline_markdown(text: str) -> str:
 _EVIDENCE_LINK_RE = re.compile(
     r'<a class="evidence-ref" href="#ev-([^"]+)" title="[^"]*">'
 )
+_EVIDENCE_REF_HEADING_RE = re.compile(
+    r"<h([1-6])[^>]*>\s*Evidence References\s*</h\1>", re.IGNORECASE
+)
+
+
+def _strip_evidence_references_section(html_text: str) -> str:
+    """Drop the trailing 'Evidence References' appendix from rendered HTML.
+
+    Inline citations now open the record viewer on click, so the collected list
+    is redundant. Removes from the heading to the next heading of the same or
+    higher level (or to the end of the document)."""
+    match = _EVIDENCE_REF_HEADING_RE.search(html_text)
+    if not match:
+        return html_text
+    level = int(match.group(1))
+    rest = html_text[match.end() :]
+    nxt = re.search(rf"<h[1-{level}][^>]*>", rest)
+    return html_text[: match.start()] + (rest[nxt.start() :] if nxt else "")
 
 
 def _inject_evidence_interactivity(
     html_text: str, evidence_map: dict[str, dict[str, str]]
 ) -> str:
-    """Post-process rendered HTML: hover tooltips from the evidence map, and
-    anchor targets (`id="ev-..."`) on the Evidence References entries so inline
-    citation links have somewhere to jump. Also adds evidence-open buttons to
-    Evidence References entries."""
-    if not evidence_map:
-        return html_text
+    """Post-process rendered HTML: make every inline evidence citation open the
+    record viewer directly (new tab), with the record summary as a hover title,
+    and remove the redundant 'Evidence References' appendix."""
 
-    def _with_title(match: re.Match[str]) -> str:
+    def _rewrite(match: re.Match[str]) -> str:
         eid = match.group(1)
-        info = evidence_map.get(eid) or {}
+        info = (evidence_map or {}).get(eid) or {}
         summary = " · ".join(
             str(part)
             for part in (info.get("timestamp"), info.get("source"), info.get("summary"))
             if part
         )
-        if not summary:
-            return match.group(0)
-        return f'<a class="evidence-ref" href="#ev-{eid}" title="{escape(summary)}">'
-
-    html_text = _EVIDENCE_LINK_RE.sub(_with_title, html_text)
-
-    # Anchor targets live in the Evidence References section (each ID's first
-    # occurrence after that heading gets id="ev-<id>").
-    marker_match = re.search(r"<h[1-6][^>]*>Evidence References</h[1-6]>", html_text)
-    if marker_match:
-        head = html_text[: marker_match.end()]
-        tail = html_text[marker_match.end() :]
-        seen: set[str] = set()
-
-        def _with_anchor(match: re.Match[str]) -> str:
-            eid = match.group(1)
-            if eid in seen:
-                return match.group(0)
-            seen.add(eid)
-            return match.group(0).replace("<a ", f'<a id="ev-{eid}" ', 1)
-
-        tail = _EVIDENCE_LINK_RE.sub(_with_anchor, tail)
-
-        # R8-03: Add an open-record button after each references entry — after
-        # the enclosing </code> when the ID is rendered as a code span, so the
-        # button is not styled as code.
-        def _with_open_button(match: re.Match[str]) -> str:
-            eid = match.group(2)
-            return (
-                f'{match.group(1)} <a class="evidence-open" href="/evidence/{eid}" '
-                f'target="_blank" rel="noopener" title="記録を開く" aria-label="記録を開く">⧉</a>'
-            )
-
-        tail = re.sub(
-            r'(<a\s+id="ev-([^"]+)"[^>]*>.*?</a>(?:</code>)?)',
-            _with_open_button,
-            tail,
+        title = escape(summary) if summary else escape(eid)
+        return (
+            f'<a class="evidence-ref" href="/evidence/{eid}" target="_blank" '
+            f'rel="noopener" title="{title}">'
         )
 
-        html_text = head + tail
-    else:
-        # Fragment without a references section (e.g. a single section body in
-        # the web UI): "#ev-..." anchors have no target, so point inline
-        # citations straight at the record viewer instead.
-        html_text = re.sub(
-            r'<a class="evidence-ref" href="#ev-([^"]+)"',
-            r'<a class="evidence-ref" href="/evidence/\1" target="_blank" rel="noopener"',
-            html_text,
-        )
-    return html_text
+    html_text = _EVIDENCE_LINK_RE.sub(_rewrite, html_text)
+    return _strip_evidence_references_section(html_text)
 
 
 _TOC_HEADING_RE = re.compile(r"<(h2|h3)>(.*?)</\1>", re.DOTALL)

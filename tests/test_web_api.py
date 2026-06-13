@@ -464,8 +464,8 @@ class WebApiTests(unittest.TestCase):
             self.assertIn("evtx-200", html)
             self.assertIn("<pre>", html)
             self.assertIn("WS-002", html)
-            self.assertIn("Source: evtx_events", html)
-            self.assertIn("← Back", html)
+            # Minimal raw-content page with JSON syntax-highlight spans.
+            self.assertIn('class="j-key"', html)
 
             resp404 = client.get("/evidence/nonexistent")
             self.assertEqual(404, resp404.status_code)

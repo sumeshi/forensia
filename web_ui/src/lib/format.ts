@@ -92,6 +92,18 @@ export function formatStage(value: string | null | undefined): string {
   return map[value] ?? value;
 }
 
+// Coarse, human-facing case status for the header. The fine-grained momentary
+// action (Querying / Evaluating / …) belongs in the activity banner, not here.
+export function formatCaseStatus(value: string | null | undefined): string {
+  if (!value) return "Idle";
+  if (value === "investigate/report-cycle-done") return "Investigation Complete";
+  if (value.startsWith("investigate")) return "Investigating";
+  if (value.startsWith("analyze")) return "Analyzing";
+  if (value.startsWith("normalize")) return "Normalizing";
+  if (value.startsWith("ingest")) return "Ingesting";
+  return formatStage(value);
+}
+
 export function formatActionVerb(value: string | null | undefined): string {
   if (!value) return "Waiting";
   const map: Record<string, string> = {

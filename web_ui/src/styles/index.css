@@ -5,6 +5,7 @@
 @layer base {
   html {
     @apply bg-semantic-bg-inset text-semantic-fg;
+    scroll-behavior: smooth;
   }
 
   body {
@@ -61,7 +62,8 @@
 
 @layer components {
   .panel {
-    @apply rounded-lg border border-mocha-surface2/60 bg-semantic-bg-raised;
+    @apply rounded-xl border border-mocha-surface1 bg-semantic-bg-raised;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   }
 
   .panel-title {
@@ -69,14 +71,14 @@
   }
 
   .btn-ghost {
-    @apply inline-flex items-center rounded-md border border-semantic-bg-raised px-2.5 py-1 text-xs font-medium text-semantic-fg-muted transition-colors;
+    @apply inline-flex items-center rounded-lg border border-mocha-surface1 px-2.5 py-1 text-xs font-medium text-semantic-fg-muted transition-colors;
   }
   .btn-ghost:hover {
     @apply border-semantic-accent/40 bg-semantic-accent/10 text-semantic-accent;
   }
 
   .chip {
-    @apply inline-flex items-center rounded-full border border-mocha-surface2 bg-semantic-bg-raised/80 px-2 py-0.5 text-xs font-medium text-semantic-fg;
+    @apply inline-flex items-center rounded-full border border-mocha-surface1 bg-semantic-bg-inset/60 px-2 py-0.5 text-xs font-medium text-semantic-fg;
   }
 
   .chip-muted {

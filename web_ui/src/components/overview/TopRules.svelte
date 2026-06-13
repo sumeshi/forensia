@@ -14,8 +14,8 @@
         {@const pct = (item.accepted / maxAccepted) * 100}
         <div class="flex items-center gap-2 text-xs">
           <span class="w-8 shrink-0 text-right font-mono tabular-nums text-semantic-fg-muted">{item.accepted}</span>
-          <div class="relative h-5 flex-1 overflow-hidden rounded bg-semantic-bg-raised">
-            <div class="h-full rounded bg-semantic-accent/60" style="width: {pct}%"></div>
+          <div class="relative h-5 flex-1 overflow-hidden rounded bg-semantic-bg-inset">
+            <div class="h-full rounded bg-semantic-accent/70" style="width: {pct}%"></div>
           </div>
         </div>
         <p class="-mt-1 truncate pl-10 text-xs text-semantic-fg-muted">{item.title}</p>

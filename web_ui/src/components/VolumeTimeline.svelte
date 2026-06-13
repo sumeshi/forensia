@@ -312,7 +312,7 @@
       No timeline points
     </div>
   {:else}
-    <div class="mt-4 h-[clamp(320px,38vh,640px)] rounded-xl border border-mocha-surface1 bg-semantic-bg/30 p-3">
+    <div class="mt-4 h-[clamp(160px,19vh,320px)] rounded-xl border border-mocha-surface1 bg-semantic-bg/30 p-3">
       <canvas bind:this={canvas}></canvas>
     </div>
   {/if}

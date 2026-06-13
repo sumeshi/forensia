@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api } from "../../lib/api";
   import type { ReportSectionDTO } from "../../lib/types";
+  import Icon from "../Icon.svelte";
   import ReportSectionRow from "./ReportSectionRow.svelte";
 
   export let sections: ReportSectionDTO[] = [];
@@ -58,20 +59,16 @@
     </div>
     <div class="flex flex-col items-end gap-2 self-start text-right text-xs text-semantic-fg-muted">
       <div class="flex flex-wrap justify-end gap-2">
-        <button
-          class="rounded-md border border-semantic-info/40 px-3 py-1.5 text-semantic-info disabled:opacity-55"
-          on:click={openReport}
-          type="button"
-        >
-          Open Report
+        <button class="btn-ghost gap-1.5" on:click={openReport} type="button">
+          <Icon name="open" size={15} />Open Report
         </button>
         <button
-          class="rounded-md border border-semantic-ok/40 px-3 py-1.5 text-semantic-ok disabled:opacity-55"
+          class="btn-ghost gap-1.5 disabled:opacity-55"
           on:click={downloadMarkdown}
           disabled={exportBusy}
           type="button"
         >
-          {exportBusy ? "Preparing..." : "Download report.md"}
+          <Icon name="export" size={15} />{exportBusy ? "Preparing…" : "Export Report"}
         </button>
       </div>
       <div class="font-mono tabular-nums">

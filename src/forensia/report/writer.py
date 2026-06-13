@@ -799,18 +799,12 @@ def render_written_report(
         report_body = "\n\n".join(ordered).strip() + "\n"
     else:
         report_body = build_report_markdown_from_db(db, case=case)
-    # R7-03: Evidence reference layer. report.md keeps plain IDs plus the
-    # references appendix; the interactive layer (hover/anchor links) lives in
-    # report.html, whose renderer reads evidence_map.json.
-    from forensia.report.evidence_map import (
-        render_evidence_references,
-        write_evidence_map,
-    )
+    # R7-03: Evidence reference layer. Inline IDs link straight to the record
+    # viewer (report.html injects hover summaries from evidence_map.json), so we
+    # no longer append a collected references appendix to report.md.
+    from forensia.report.evidence_map import write_evidence_map
 
-    evidence_map = write_evidence_map(db, report_body, case.reports_dir)
-    ref_section = render_evidence_references(evidence_map)
-    if ref_section:
-        report_body = report_body.rstrip() + "\n\n" + ref_section + "\n"
+    write_evidence_map(db, report_body, case.reports_dir)
     report_path = case.reports_dir / "report.md"
     report_path.write_text(report_body, encoding="utf-8")
     report_html = render_html_report(case, db)

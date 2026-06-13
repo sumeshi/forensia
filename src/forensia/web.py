@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from html import escape as html_escape
 from pathlib import Path
 from typing import Annotated
@@ -62,6 +63,34 @@ from forensia.report.writer import (
 )
 
 load_dotenv()
+
+
+# Token regex for server-side JSON syntax highlighting. Strings (and the key
+# variant followed by a colon), numbers, and literals are wrapped in colored
+# spans; structural punctuation passes through untouched (and is safe — it never
+# contains <, >, or &).
+_JSON_TOKEN_RE = re.compile(
+    r'(?P<str>"(?:\\.|[^"\\])*")(?P<colon>\s*:)?'
+    r"|(?P<num>-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"
+    r"|(?P<lit>\btrue\b|\bfalse\b|\bnull\b)"
+)
+
+
+def _json_to_colored_html(obj: object) -> str:
+    """Pretty-print a value as JSON with syntax-highlight spans (HTML-escaped)."""
+    text = json.dumps(obj, indent=2, ensure_ascii=False, default=str)
+
+    def _repl(match: re.Match[str]) -> str:
+        if match.group("str") is not None:
+            token = html_escape(match.group("str"))
+            if match.group("colon"):
+                return f'<span class="j-key">{token}</span>{match.group("colon")}'
+            return f'<span class="j-str">{token}</span>'
+        if match.group("num") is not None:
+            return f'<span class="j-num">{match.group("num")}</span>'
+        return f'<span class="j-lit">{match.group("lit")}</span>'
+
+    return _JSON_TOKEN_RE.sub(_repl, text)
 
 
 def _repo_root() -> Path:
@@ -368,26 +397,26 @@ def _register_evidence_record_routes(app: FastAPI, case: Case):
                 f"<!DOCTYPE html><html><body><h1>404 - Not Found</h1><p>Evidence ID: {safe_id}</p></body></html>",
                 status_code=404,
             )
-        pretty_json = html_escape(
-            json.dumps(dto.record, indent=2, ensure_ascii=False, default=str)
-        )
+        # Show just the raw artifact content (parsed raw_json) when present,
+        # falling back to the full normalized record when raw is empty/missing.
+        raw = dto.record.get("raw") if isinstance(dto.record, dict) else None
+        colored_json = _json_to_colored_html(raw if raw else dto.record)
         return HTMLResponse(
             f"""<!DOCTYPE html>
 <html lang="ja">
 <head><meta charset="utf-8"><title>{safe_id} — Forensia Evidence</title>
 <style>
-  body {{ font-family: "IBM Plex Mono", "SFMono-Regular", monospace; background: #1e1e2e; color: #cdd6f4; padding: 24px; }}
-  h1 {{ font-size: 18px; margin: 0 0 8px; color: #b4befe; }}
-  .meta {{ color: #a6adc8; font-size: 13px; margin-bottom: 20px; }}
-  pre {{ background: #181825; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }}
-  .back {{ display: inline-block; margin-top: 20px; color: #89b4fa; text-decoration: none; }}
-  .back:hover {{ text-decoration: underline; }}
+  body {{ font-family: "JetBrains Mono", "IBM Plex Mono", "SFMono-Regular", monospace; background: #0a0a0d; color: #e8e8ef; padding: 20px; margin: 0; }}
+  .id {{ font-size: 12px; color: #62626e; margin: 0 0 12px; }}
+  pre {{ background: #18181f; border: 1px solid #2c2c38; padding: 16px; border-radius: 12px; overflow-x: auto; font-size: 13px; line-height: 1.65; white-space: pre-wrap; word-break: break-all; margin: 0; }}
+  .j-key {{ color: #89b4fa; }}
+  .j-str {{ color: #a6e3a1; }}
+  .j-num {{ color: #fab387; }}
+  .j-lit {{ color: #cba6f7; }}
 </style></head>
 <body>
-  <h1>{safe_id}</h1>
-  <div class="meta">Source: {html_escape(dto.source)}</div>
-  <pre>{pretty_json}</pre>
-  <a class="back" href="javascript:history.back()">← Back</a>
+  <div class="id">{safe_id}</div>
+  <pre>{colored_json}</pre>
 </body></html>"""
         )
 

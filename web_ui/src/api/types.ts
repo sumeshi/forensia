@@ -8,6 +8,8 @@ export type CaseStatsDTO = {
   evtx_rows: number;
   mft_entries: number;
   channel_count: number;
+  host_count: number;
+  prefetch_rows: number;
   findings_accepted: number;
   findings_suppressed: number;
   active_hypotheses: number;

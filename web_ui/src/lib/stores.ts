@@ -35,6 +35,8 @@ export const attackCoverage = writable<AttackCoverageRowDTO[]>([]);
 export const entities = writable<EntityCardDTO[]>([]);
 export const progress = writable<ProgressEventDTO | null>(null);
 export const connection = writable<"idle" | "connected" | "error">("idle");
+// Free-text filter for the findings table (driven by the header search box).
+export const searchQuery = writable<string>("");
 // Hierarchical drill-down path for Event Volume:
 //   []                  → bucket=year   (whole record range)
 //   [2024]              → bucket=month  (within 2024)

@@ -87,7 +87,7 @@ _REASON_COLS = [
     "created_at",
 ]
 _REASON_WITH_COLS = _REASON_COLS + ["reasoning_count", "latest_iteration"]
-_STATS_COLS = ["evtx_rows", "mft_entries", "channel_count", "host_count"]
+_STATS_COLS = ["evtx_rows", "mft_entries", "channel_count", "host_count", "prefetch_rows"]
 _FINDINGS_STATS_COLS = ["findings_accepted", "findings_suppressed"]
 
 
@@ -129,7 +129,7 @@ class TestGetCaseStatsDto(unittest.TestCase):
     def test_returns_stats_dto(self):
         db = MagicMock(spec=CaseDB)
         db.execute.side_effect = [
-            _make_mock_result(_STATS_COLS, [(100, 50, 5, 3)]),
+            _make_mock_result(_STATS_COLS, [(100, 50, 5, 3, 7)]),
             _make_mock_result(_FINDINGS_STATS_COLS, [(30, 2)]),
             _make_mock_result(["active_hypotheses", "resolved_hypotheses"], [(10, 5)]),
             _make_mock_result(
@@ -157,7 +157,7 @@ class TestGetCaseStatsDto(unittest.TestCase):
     def test_returns_zeroes_when_db_returns_none(self):
         db = MagicMock(spec=CaseDB)
         db.execute.side_effect = [
-            _make_mock_result(_STATS_COLS, [(None, None, None, None)]),
+            _make_mock_result(_STATS_COLS, [(None, None, None, None, None)]),
             _make_mock_result(_FINDINGS_STATS_COLS, [(None, None)]),
             _make_mock_result(
                 ["active_hypotheses", "resolved_hypotheses"], [(None, None)]
