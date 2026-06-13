@@ -267,21 +267,43 @@
       margin-top: 10px;
     }
 
-    /* TOC sidebar */
+    /* TOC sidebar: grid column (float+sticky overlapped the content) */
+    .content {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 248px;
+      column-gap: 32px;
+      align-items: start;
+    }
+    .content > .content-inner,
+    .content > .footer-section {
+      grid-column: 1;
+      min-width: 0;
+    }
     .toc-sidebar {
+      grid-column: 2;
+      grid-row: 1 / span 9;
       position: sticky;
       top: 20px;
-      float: right;
-      width: 260px;
-      margin-left: 24px;
-      margin-bottom: 24px;
       padding: 16px 18px;
       border: 1px solid var(--line);
-      border-radius: 16px;
+      border-radius: 12px;
       background: var(--paper);
       font-size: 13px;
-      max-height: calc(100vh - 60px);
+      max-height: calc(100vh - 40px);
       overflow-y: auto;
+    }
+    .toc-title {
+      margin: 0 0 8px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    /* Anchor jumps must not glue headings to the viewport edge */
+    .report-body h2,
+    .report-body h3 {
+      scroll-margin-top: 18px;
     }
     .toc-sidebar ul {
       list-style: none;
@@ -337,13 +359,14 @@
       font-size: 0.88em;
     }
 
-    /* Mobile: collapse TOC to top bar */
+    /* Mobile: single column, TOC becomes a static block on top */
     @media (max-width: 900px) {
+      .content {
+        display: block;
+      }
       .toc-sidebar {
-        float: none;
-        width: 100%;
-        margin: 0 0 16px;
         position: static;
+        margin: 0 0 16px;
         max-height: none;
       }
     }
@@ -404,6 +427,12 @@
       </section>
 
       <section class="content">
+        {% if report_toc_html %}
+        <nav class="toc-sidebar" aria-label="Table of contents">
+          <p class="toc-title">Contents</p>
+          {{ report_toc_html }}
+        </nav>
+        {% endif %}
         <div class="content-inner">
           <section class="report-body">
             {{ report_body_html }}
@@ -428,29 +457,5 @@
     </article>
   </main>
 
-<script>
-document.addEventListener('DOMContentLoaded', function() {
-  var toc = document.createElement('nav');
-  toc.className = 'toc-sidebar';
-  var ul = document.createElement('ul');
-  var headings = document.querySelectorAll('.report-body h2, .report-body h3');
-  headings.forEach(function(h, i) {
-    var id = 'toc-' + i;
-    h.setAttribute('id', id);
-    var li = document.createElement('li');
-    li.className = h.tagName === 'H3' ? 'toc-h3' : 'toc-h2';
-    var a = document.createElement('a');
-    a.href = '#' + id;
-    a.textContent = h.textContent;
-    li.appendChild(a);
-    ul.appendChild(li);
-  });
-  toc.appendChild(ul);
-  var content = document.querySelector('.content');
-  if (content && ul.children.length > 0) {
-    content.parentNode.insertBefore(toc, content);
-  }
-});
-</script>
 </body>
 </html>

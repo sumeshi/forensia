@@ -291,6 +291,41 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(404, resp404.status_code)
 
 
+
+    def test_evidence_routes_degrade_gracefully_when_db_locked(self) -> None:
+        """While an investigation holds the DuckDB write lock, the record
+        viewer must not 500: API returns 503 + Retry-After, and the HTML page
+        falls back to the evidence_map summary with an auto-retry notice."""
+        import json as json_module
+
+        import duckdb
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            (case.reports_dir).mkdir(parents=True, exist_ok=True)
+            (case.reports_dir / "evidence_map.json").write_text(
+                json_module.dumps({
+                    "evtx-security-000000000032": {
+                        "source": "evtx_events",
+                        "timestamp": "2015-03-25 10:15:54",
+                        "summary": "4624 Security ANONYMOUS LOGON@37L4247F27-25",
+                    }
+                }),
+                encoding="utf-8",
+            )
+            app = create_app(case)
+            client = TestClient(app)
+            import forensia.web as web_module
+            with mock.patch.object(web_module, "CaseDB", side_effect=duckdb.IOException("Could not set lock")):
+                api = client.get("/api/evidence/evtx-security-000000000032")
+                self.assertEqual(503, api.status_code)
+                self.assertEqual("30", api.headers.get("retry-after"))
+                page = client.get("/evidence/evtx-security-000000000032")
+                self.assertEqual(503, page.status_code)
+                self.assertIn("ロックされています", page.text)
+                self.assertIn("4624 Security ANONYMOUS LOGON@37L4247F27-25", page.text)
+
     def test_evidence_record_html_page_escapes_untrusted_content(self) -> None:
         """Forensic artifact content is untrusted input: record values and the
         URL path must be HTML-escaped in the record viewer (XSS regression)."""

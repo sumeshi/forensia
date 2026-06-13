@@ -256,28 +256,74 @@ def _register_report_routes(app: FastAPI, case: Case, cached):
 
 
 def _register_evidence_record_routes(app: FastAPI, case: Case):
+    def _lookup_resilient(evidence_id: str) -> tuple[str, EvidenceRecordDTO | None]:
+        """Live DB lookup; while an investigation holds the DuckDB write lock
+        (single-writer), report it as 'locked' instead of failing with 500."""
+        try:
+            with CaseDB(case) as db:
+                return "ok", get_evidence_record_dto(db, evidence_id)
+        except duckdb.Error:
+            return "locked", None
+
+    def _evidence_map_summary(evidence_id: str) -> dict | None:
+        path = case.reports_dir / "evidence_map.json"
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
+        entry = data.get(evidence_id) if isinstance(data, dict) else None
+        return entry if isinstance(entry, dict) else None
+
     @app.get("/api/evidence/{evidence_id}", response_model=EvidenceRecordDTO)
     def api_evidence_record(evidence_id: str) -> EvidenceRecordDTO:
-        with CaseDB(case) as db:
-            dto = get_evidence_record_dto(db, evidence_id)
-            if dto is None:
-                raise HTTPException(status_code=404, detail=f"Evidence record not found: {evidence_id}")
-            return dto
+        status, dto = _lookup_resilient(evidence_id)
+        if status == "locked":
+            raise HTTPException(
+                status_code=503,
+                detail="Case database is locked by a running investigation; retry after the run (or see reports/evidence_map.json for the summary).",
+                headers={"Retry-After": "30"},
+            )
+        if dto is None:
+            raise HTTPException(status_code=404, detail=f"Evidence record not found: {evidence_id}")
+        return dto
 
     @app.get("/evidence/{evidence_id}", response_class=HTMLResponse)
     def evidence_record_page(evidence_id: str) -> HTMLResponse:
         # Forensic artifact content (and the URL path) is untrusted input —
         # escape everything interpolated into this page.
         safe_id = html_escape(evidence_id)
-        with CaseDB(case) as db:
-            dto = get_evidence_record_dto(db, evidence_id)
-            if dto is None:
-                return HTMLResponse(
-                    f"<!DOCTYPE html><html><body><h1>404 - Not Found</h1><p>Evidence ID: {safe_id}</p></body></html>",
-                    status_code=404,
+        status, dto = _lookup_resilient(evidence_id)
+        if status == "locked":
+            summary = _evidence_map_summary(evidence_id)
+            summary_html = ""
+            if summary:
+                line = " · ".join(
+                    html_escape(str(part))
+                    for part in (summary.get("timestamp"), summary.get("source"), summary.get("summary"))
+                    if part
                 )
-            pretty_json = html_escape(json.dumps(dto.record, indent=2, ensure_ascii=False, default=str))
+                summary_html = f"<pre>{line}</pre>"
             return HTMLResponse(
+                "<!DOCTYPE html><html lang=\"ja\"><head><meta charset=\"utf-8\">"
+                "<meta http-equiv=\"refresh\" content=\"30\">"
+                f"<title>{safe_id} — Forensia Evidence</title>"
+                "<style>body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 24px; }"
+                " h1 { font-size: 18px; color: #b4befe; } .meta { color: #a6adc8; font-size: 13px; }"
+                " pre { background: #181825; padding: 16px; border-radius: 8px; white-space: pre-wrap; }</style></head>"
+                f"<body><h1>{safe_id}</h1>"
+                "<p class=\"meta\">調査実行中のためデータベースがロックされています。全文は実行終了後に表示できます(このページは30秒ごとに自動再試行します)。</p>"
+                f"{summary_html}</body></html>",
+                status_code=503,
+            )
+        if dto is None:
+            return HTMLResponse(
+                f"<!DOCTYPE html><html><body><h1>404 - Not Found</h1><p>Evidence ID: {safe_id}</p></body></html>",
+                status_code=404,
+            )
+        pretty_json = html_escape(json.dumps(dto.record, indent=2, ensure_ascii=False, default=str))
+        return HTMLResponse(
                 f"""<!DOCTYPE html>
 <html lang="ja">
 <head><meta charset="utf-8"><title>{safe_id} — Forensia Evidence</title>
@@ -295,7 +341,7 @@ def _register_evidence_record_routes(app: FastAPI, case: Case):
   <pre>{pretty_json}</pre>
   <a class="back" href="javascript:history.back()">← Back</a>
 </body></html>"""
-            )
+        )
 
 
 def _register_evidence_routes(app: FastAPI, case: Case, cached, aggregate_event_volume_func):

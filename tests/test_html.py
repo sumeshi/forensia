@@ -656,13 +656,43 @@ class EvidenceTooltipInjectionTests(unittest.TestCase):
         self.assertIn('/evidence/evtx-security-000000000001', injected)
         self.assertIn('target="_blank"', injected)
         self.assertIn('rel="noopener"', injected)
-        self.assertIn('記録を開く', injected)
+        self.assertIn('aria-label="記録を開く"', injected)
+        self.assertIn('>⧉</a>', injected)
 
     def test_inline_citation_does_not_get_open_record_button(self):
-        """Inline citations never carry the 記録を開く button label — only
+        """Inline citations never become open-record buttons — only
         references entries do (fragments get a plain direct link instead)."""
         from forensia.report.html import _inject_evidence_interactivity
         html = str(render_markdown_fragment("Logon observed (evtx-security-000000000001)."))
         injected = _inject_evidence_interactivity(html, self.EMAP)
         self.assertNotIn("記録を開く", injected)
         self.assertNotIn("evidence-open", injected)
+
+
+class ReportTocTests(unittest.TestCase):
+    """R12: server-side TOC — heading ids and nav list built at render time."""
+
+    def test_build_report_toc_assigns_ids_and_levels(self):
+        from forensia.report.html import build_report_toc
+        html = (
+            "<h2>Investigation Overview</h2><p>x</p>"
+            "<h3>Executive Summary</h3><p>y</p>"
+            "<h2>Activity Timeline</h2>"
+        )
+        body, toc = build_report_toc(html)
+        self.assertIn('<h2 id="sec-0">Investigation Overview</h2>', body)
+        self.assertIn('<h3 id="sec-1">Executive Summary</h3>', body)
+        self.assertIn('<li class="toc-h2"><a href="#sec-0">Investigation Overview</a></li>', toc)
+        self.assertIn('<li class="toc-h3"><a href="#sec-1">Executive Summary</a></li>', toc)
+
+    def test_build_report_toc_strips_inline_tags_from_labels(self):
+        from forensia.report.html import build_report_toc
+        body, toc = build_report_toc("<h2><code>1.</code> Endpoint identity</h2>")
+        self.assertIn(">1. Endpoint identity</a>", toc)
+        self.assertNotIn("<code>", toc)
+
+    def test_build_report_toc_empty_body(self):
+        from forensia.report.html import build_report_toc
+        body, toc = build_report_toc("<p>no headings</p>")
+        self.assertEqual("<p>no headings</p>", body)
+        self.assertEqual("", toc)

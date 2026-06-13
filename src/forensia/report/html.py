@@ -196,7 +196,10 @@ def _inject_evidence_interactivity(html_text: str, evidence_map: dict[str, dict[
         # button is not styled as code.
         def _with_open_button(match: re.Match[str]) -> str:
             eid = match.group(2)
-            return f'{match.group(1)} <a class="evidence-open" href="/evidence/{eid}" target="_blank" rel="noopener">記録を開く ⧉</a>'
+            return (
+                f'{match.group(1)} <a class="evidence-open" href="/evidence/{eid}" '
+                f'target="_blank" rel="noopener" title="記録を開く" aria-label="記録を開く">⧉</a>'
+            )
 
         tail = re.sub(
             r'(<a\s+id="ev-([^"]+)"[^>]*>.*?</a>(?:</code>)?)',
@@ -215,6 +218,35 @@ def _inject_evidence_interactivity(html_text: str, evidence_map: dict[str, dict[
             html_text,
         )
     return html_text
+
+
+_TOC_HEADING_RE = re.compile(r"<(h2|h3)>(.*?)</\1>", re.DOTALL)
+_TAG_STRIP_RE = re.compile(r"<[^>]+>")
+
+
+def build_report_toc(html_text: str) -> tuple[str, str]:
+    """Assign stable ids to report h2/h3 headings and build the TOC nav.
+
+    Returns (html_with_heading_ids, toc_list_html). Server-side and
+    deterministic — the template only wraps the list in <nav>.
+    """
+    entries: list[tuple[str, str, str]] = []
+
+    def _assign_id(match: re.Match[str]) -> str:
+        tag, inner = match.group(1), match.group(2)
+        heading_id = f"sec-{len(entries)}"
+        label = _TAG_STRIP_RE.sub("", inner).strip()
+        entries.append((tag, heading_id, label))
+        return f'<{tag} id="{heading_id}">{inner}</{tag}>'
+
+    html_text = _TOC_HEADING_RE.sub(_assign_id, html_text)
+    if not entries:
+        return html_text, ""
+    items = "".join(
+        f'<li class="toc-{tag}"><a href="#{heading_id}">{escape(label)}</a></li>'
+        for tag, heading_id, label in entries
+    )
+    return html_text, f"<ul>{items}</ul>"
 
 
 def _load_evidence_map(case: Case) -> dict[str, dict[str, str]]:
@@ -480,9 +512,12 @@ def render_html_report(case: Case, db: CaseDB, output_path: str | Path | None = 
         )
     )
     report_sections, report_markdown = _load_report_sections(db)
-    report_body_html = Markup(
-        _inject_evidence_interactivity(str(render_markdown_fragment(report_markdown)), _load_evidence_map(case))
+    interactive_html = _inject_evidence_interactivity(
+        str(render_markdown_fragment(report_markdown)), _load_evidence_map(case)
     )
+    body_with_ids, toc_list_html = build_report_toc(interactive_html)
+    report_body_html = Markup(body_with_ids)
+    report_toc_html = Markup(toc_list_html)
     host_rows = _normalize_rows(
         _fetch_records(
             db,
@@ -511,6 +546,7 @@ def render_html_report(case: Case, db: CaseDB, output_path: str | Path | None = 
         "report_sections": report_sections,
         "report_markdown": report_markdown,
         "report_body_html": report_body_html,
+        "report_toc_html": report_toc_html,
         "hostnames": hostnames,
         "generated_at": generated_at,
     }

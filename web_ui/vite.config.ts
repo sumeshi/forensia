@@ -10,6 +10,7 @@ export default defineConfig(({ mode }) => {
     server: {
       proxy: {
         "/api": apiBaseUrl,
+        "/evidence": apiBaseUrl,
         "/openapi.json": apiBaseUrl
       }
     }
