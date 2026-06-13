@@ -1,60 +1,48 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
-import re
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from functools import lru_cache
 from typing import Any
 
-from forensia.ai.checker import summarize_query_result
-from forensia.ai.json_response import async_request_llm_json, request_llm_json
+from forensia.ai.json_response import (  # noqa: F401 — import needed for test mocking
+    async_request_llm_json,
+    request_llm_json,
+)
 from forensia.ai.prompts import (
     _enforce_system_budget,
     build_paragraph_narrate_messages,
-    build_report_section_messages,
     build_section_agent_check_messages,
     build_section_agent_plan_messages,
     build_section_outline_messages,
     build_section_review_messages,
     build_structured_classify_messages,
 )
-from forensia.report.narrative_review import review_narrative_body
-from forensia.questions import (
-    QuestionSpec,
-    extract_time_qualifiers,
-    load_question_specs,
-    resolve_question_spec,
-)
-from forensia.ai.sql_templates import query_template_catalog, render_query_template, validate_select_sql
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
-from forensia.core.session import PlannedQuery
 from forensia.db.database import CaseDB
-from forensia.db.query import fetch_records
-from forensia.knowledge import load_event_class_definitions as _load_event_class_definitions
-from forensia.report.keypoints import (
-    REPORT_KEYPOINTS,
-    REPORT_KEYPOINT_ALIASES,
-    _default_keypoints_for_section,
-    _resolve_evidence_results,
+from forensia.knowledge import (  # noqa: F401 — re-export for test import
+    load_event_class_definitions as _load_event_class_definitions,
 )
+from forensia.questions import (
+    QuestionSpec,
+    resolve_question_spec,
+)
+from forensia.report.keypoints import (
+    _default_keypoints_for_section,
+)
+from forensia.report.narrative_review import review_narrative_body
+from forensia.report.probes import (
+    _collect_flat_evidence_rows,
+    _summarize_flat_evidence_rows,
+)
+from forensia.report.quality_gates import _detect_body_language
 from forensia.report.structured_answers import (
-    _build_daily_session_timeline_rows,
     _feed_structured_to_timeline,
-    _load_structured_answers,
-    _normalize_structured_answer,
-    _persist_structured_answer,
     _render_structured_answer_markdown,
-    _structured_block_id,
     build_structured_answer,
 )
-from forensia.knowledge import catalog_names as _catalog_names
-from forensia.report.quality_gates import _detect_body_language
-from forensia.report.probes import _collect_flat_evidence_rows, _summarize_flat_evidence_rows
-
 
 _CONFIDENCE_KEYWORD_MAP = {
     "critical": 0.95,
@@ -72,13 +60,12 @@ _CONFIDENCE_KEYWORD_MAP = {
 }
 
 
-
 # Block-support helpers moved to ai.section_blocks (R4 follow-up); re-exported
 # here for backward compatibility with existing imports and tests.
 from forensia.ai.section_blocks import (  # noqa: F401,E402
+    _CONFIDENCE_KEYWORD_MAP,
     SectionBlockResult,
     SectionPlanAction,
-    _CONFIDENCE_KEYWORD_MAP,
     _add_json_fallback,
     _all_values_empty,
     _antiforensic_tool_names,
@@ -147,8 +134,6 @@ from forensia.ai.section_blocks import (  # noqa: F401,E402
 )
 
 
-
-
 @dataclass(slots=True)
 class _BlockContext:
     case: Case
@@ -210,7 +195,9 @@ def _prepare_block_context(
         question=question,
         answer_spec=answer_spec,
     )
-    resolved_answer_spec = answer_spec or (question_spec.answer_spec if question_spec is not None else "")
+    resolved_answer_spec = answer_spec or (
+        question_spec.answer_spec if question_spec is not None else ""
+    )
     _store_section_question(
         db,
         section_key=section_key,
@@ -246,8 +233,16 @@ def _prepare_block_context(
         reusable_evidence = []
     audit = _audit_bridge(audit_callback)
     review_audit = _audit_bridge(review_audit_callback)
-    prompt_report_brief = _structured_report_brief(report_brief) if benchmark_mode else (report_brief or {})
-    structured_digest = _structured_digest_from_answers(case) if section_key in {"1_overview", "2_timeline"} else ""
+    prompt_report_brief = (
+        _structured_report_brief(report_brief)
+        if benchmark_mode
+        else (report_brief or {})
+    )
+    structured_digest = (
+        _structured_digest_from_answers(case)
+        if section_key in {"1_overview", "2_timeline"}
+        else ""
+    )
     if section_table_digest:
         # R6-05: same-section table data, rendered moments earlier, becomes
         # part of the narrative blocks' observation context.
@@ -282,6 +277,7 @@ def _prepare_block_context(
         review_audit=review_audit,
     )
 
+
 # ====================================================================
 # PLAN/CHECK — plan and check phase logic
 # Lines: ~1177-1400
@@ -312,12 +308,16 @@ def _run_block_plan(
         reusable_evidence=ctx.reusable_evidence,
         memory_context_md=ctx.memory_context_md,
         evidence_keypoints=ctx.evidence_keypoints,
-        question_spec=ctx.question_spec.to_prompt_dict() if ctx.question_spec is not None else None,
+        question_spec=ctx.question_spec.to_prompt_dict()
+        if ctx.question_spec is not None
+        else None,
         db=ctx.db,
     )
     # R3-07: Enforce system message budget at message assembly level
     if plan_messages and plan_messages[0].get("role") == "system":
-        plan_messages[0]["content"] = _enforce_system_budget(plan_messages[0]["content"])
+        plan_messages[0]["content"] = _enforce_system_budget(
+            plan_messages[0]["content"]
+        )
     try:
         plan = request_llm_json(
             messages=plan_messages,
@@ -344,7 +344,9 @@ def _run_block_plan(
         phase="plan",
         payload=plan,
     )
-    return _coerce_plan_action(plan, section_key=ctx.section_key, iteration=iteration, db=ctx.db)
+    return _coerce_plan_action(
+        plan, section_key=ctx.section_key, iteration=iteration, db=ctx.db
+    )
 
 
 def _execute_block_plan(
@@ -356,16 +358,32 @@ def _execute_block_plan(
         keypoint = plan_action.keypoint
         if not keypoint:
             if ctx.benchmark_mode:
-                _store_section_run(ctx.db, section_key=ctx.section_key, block_heading=ctx.block_heading,
-                                   iteration=iteration, phase="plan_error",
-                                   payload={"error": "benchmark_mode: no keypoint name and default not allowed"})
+                _store_section_run(
+                    ctx.db,
+                    section_key=ctx.section_key,
+                    block_heading=ctx.block_heading,
+                    iteration=iteration,
+                    phase="plan_error",
+                    payload={
+                        "error": "benchmark_mode: no keypoint name and default not allowed"
+                    },
+                )
                 return None
-            defaults = _default_keypoints_for_section(ctx.section_key, block_heading=ctx.block_heading)
+            defaults = _default_keypoints_for_section(
+                ctx.section_key, block_heading=ctx.block_heading
+            )
             keypoint = defaults[0] if defaults else None
         if not keypoint:
-            _store_section_run(ctx.db, section_key=ctx.section_key, block_heading=ctx.block_heading,
-                               iteration=iteration, phase="plan_error",
-                               payload={"error": "planner returned action=keypoint without keypoint name and no default available"})
+            _store_section_run(
+                ctx.db,
+                section_key=ctx.section_key,
+                block_heading=ctx.block_heading,
+                iteration=iteration,
+                phase="plan_error",
+                payload={
+                    "error": "planner returned action=keypoint without keypoint name and no default available"
+                },
+            )
             return None
         kp_parts = _split_keypoint_names(keypoint)
         source_query = None
@@ -375,18 +393,27 @@ def _execute_block_plan(
             if result is None:
                 source_query, result = sq, res
             else:
-                for eid in (res.get("evidence_ids") or []):
+                for eid in res.get("evidence_ids") or []:
                     sid = str(eid).strip()
-                    if sid and sid not in {str(e).strip() for e in (result.get("evidence_ids") or [])}:
+                    if sid and sid not in {
+                        str(e).strip() for e in (result.get("evidence_ids") or [])
+                    }:
                         result.setdefault("evidence_ids", []).append(sid)
                 if res.get("sample_rows"):
                     result.setdefault("sample_rows", []).extend(res["sample_rows"])
                 if res.get("row_count"):
-                    result["row_count"] = (result.get("row_count") or 0) + int(res["row_count"])
+                    result["row_count"] = (result.get("row_count") or 0) + int(
+                        res["row_count"]
+                    )
         if result is None:
-            _store_section_run(ctx.db, section_key=ctx.section_key, block_heading=ctx.block_heading,
-                               iteration=iteration, phase="query_error",
-                               payload={"error": "all keypoint parts returned None"})
+            _store_section_run(
+                ctx.db,
+                section_key=ctx.section_key,
+                block_heading=ctx.block_heading,
+                iteration=iteration,
+                phase="query_error",
+                payload={"error": "all keypoint parts returned None"},
+            )
             return None
     elif plan_action.action in {"template", "sql"}:
         planned_query = plan_action.planned_query
@@ -473,11 +500,15 @@ def _run_block_check(
         reusable_facts=ctx.reusable_facts,
         reusable_evidence=ctx.reusable_evidence,
         memory_context_md=ctx.memory_context_md,
-        question_spec=ctx.question_spec.to_prompt_dict() if ctx.question_spec is not None else None,
+        question_spec=ctx.question_spec.to_prompt_dict()
+        if ctx.question_spec is not None
+        else None,
     )
     # R3-07: Enforce system message budget at message assembly level
     if check_messages and check_messages[0].get("role") == "system":
-        check_messages[0]["content"] = _enforce_system_budget(check_messages[0]["content"])
+        check_messages[0]["content"] = _enforce_system_budget(
+            check_messages[0]["content"]
+        )
     try:
         check = request_llm_json(
             messages=check_messages,
@@ -498,11 +529,17 @@ def _run_block_check(
         return None
     verdict = str(check.get("verdict") or "block_needs_more").strip().lower()
     rationale = str(check.get("rationale") or "")
-    missing_questions = check.get("missing_questions") if isinstance(check.get("missing_questions"), list) else []
+    missing_questions = (
+        check.get("missing_questions")
+        if isinstance(check.get("missing_questions"), list)
+        else []
+    )
     status = str(check.get("status") or "").strip().lower()
     result["source_verdict"] = verdict
     if not _is_valid_status(status):
-        reusable_rows_present = any(str(item.get("kind") or "rows") != "rows" for item in collected_results)
+        reusable_rows_present = any(
+            str(item.get("kind") or "rows") != "rows" for item in collected_results
+        )
         status = _classify_block_status(
             verdict=verdict,
             actual_query_rows=actual_query_row_counts,
@@ -523,7 +560,9 @@ def _run_block_check(
         section_key=ctx.section_key,
         source_query=source_query,
         result=result,
-        fact_updates=check.get("fact_updates") if isinstance(check.get("fact_updates"), list) else None,
+        fact_updates=check.get("fact_updates")
+        if isinstance(check.get("fact_updates"), list)
+        else None,
     )
     return verdict, rationale, missing_questions, status
 
@@ -536,17 +575,24 @@ def _try_evidence_chain_fallback(
     *,
     force: bool = False,
 ) -> int:
-    if not force and actual_query_count > 0 and any(c > 0 for c in actual_query_row_counts):
+    if (
+        not force
+        and actual_query_count > 0
+        and any(c > 0 for c in actual_query_row_counts)
+    ):
         return actual_query_count
-    chain_rows = _execute_evidence_chain(ctx.db, ctx.block_heading, ctx.template_body, question=ctx.question)
+    chain_rows = _execute_evidence_chain(
+        ctx.db, ctx.block_heading, ctx.template_body, question=ctx.question
+    )
     if chain_rows:
         chain_result = _summarize_sql_result("evidence_chain_fallback", chain_rows)
         chain_result["source_kind"] = "evidence_chain"
         collected_results.append(chain_result)
-        actual_query_row_counts.append(int(chain_result.get("row_count") or len(chain_rows)))
+        actual_query_row_counts.append(
+            int(chain_result.get("row_count") or len(chain_rows))
+        )
         return actual_query_count + 1
     return actual_query_count
-
 
 
 # ====================================================================
@@ -557,7 +603,7 @@ def _try_evidence_chain_fallback(
 
 _NARRATE_RETRY_PROMPT = (
     "Your previous response had an empty or near-empty body. "
-    "Retry: emit exactly one JSON object {\"body\": \"<paragraph>\"} "
+    'Retry: emit exactly one JSON object {"body": "<paragraph>"} '
     "where <paragraph> is at least 50 characters and cites the evidence_ids above. "
     "Do not return an empty string."
 )
@@ -581,12 +627,17 @@ def _narrate_paragraph_with_retry(
     Empty-body retry: if the body is effectively empty, retry once with _NARRATE_RETRY_PROMPT.
     """
     target = target_language.strip().lower() if target_language else ""
-    target = "ja" if target in {"ja", "jp", "japanese"} else "en" if target == "en" else ""
+    target = (
+        "ja" if target in {"ja", "jp", "japanese"} else "en" if target == "en" else ""
+    )
 
     def _call(messages: list[dict[str, str]]) -> str:
         parsed = request_llm_json(
-            messages=messages, model=model, base_url=base_url,
-            json_schema=narrate_schema, audit_callback=audit_callback,
+            messages=messages,
+            model=model,
+            base_url=base_url,
+            json_schema=narrate_schema,
+            audit_callback=audit_callback,
         )
         return str(parsed.get("body", parsed.get("content", ""))).strip()
 
@@ -642,7 +693,9 @@ def _fallback_narrative_body(
     """Build a deterministic paragraph when the LLM narrator returns an empty body."""
     language = _report_language()
     is_ja = language in {"ja", "jp", "japanese"}
-    total_rows, positive_sources, _zero_sources = _result_count_summary(collected_results)
+    total_rows, positive_sources, _zero_sources = _result_count_summary(
+        collected_results
+    )
     evidence_ids, finding_ids = _representative_ids(collected_results, flat_evidence)
     example = ""
     for row in flat_evidence:
@@ -655,7 +708,9 @@ def _fallback_narrative_body(
         if parts:
             example = " / ".join(parts)
             break
-    if status in {"not_found", "not_searched"} or (actual_query_count > 0 and not any(actual_query_row_counts)):
+    if status in {"not_found", "not_searched"} or (
+        actual_query_count > 0 and not any(actual_query_row_counts)
+    ):
         if is_ja:
             paragraph = (
                 f"{heading}について、関連する証拠検索を実行しましたが、該当する行は得られていません。"
@@ -684,9 +739,7 @@ def _fallback_narrative_body(
             ref_text = f"Representative finding IDs: {ref_text}."
 
     if is_ja:
-        paragraph = (
-            f"{heading}について、{sources}から合計 {total_rows} 件の関連行が得られました。"
-        )
+        paragraph = f"{heading}について、{sources}から合計 {total_rows} 件の関連行が得られました。"
         if example:
             paragraph += f"代表行は {example} です。"
         if status == "partial":
@@ -694,9 +747,7 @@ def _fallback_narrative_body(
         if ref_text:
             paragraph += ref_text
     else:
-        paragraph = (
-            f"For {heading}, {sources} returned {total_rows} related rows. "
-        )
+        paragraph = f"For {heading}, {sources} returned {total_rows} related rows. "
         if example:
             paragraph += f"Representative row: {example}. "
         if status == "partial":
@@ -721,7 +772,9 @@ def _label_key_points_with_verdicts(
 
     for result in collected_results:
         verdict = str(result.get("source_verdict") or "").strip().lower()
-        evids = [str(e).strip() for e in (result.get("evidence_ids") or []) if str(e).strip()]
+        evids = [
+            str(e).strip() for e in (result.get("evidence_ids") or []) if str(e).strip()
+        ]
 
         # Confidence from result-level field or sample_rows
         result_conf: float | None = None
@@ -729,7 +782,7 @@ def _label_key_points_with_verdicts(
         if raw_conf is not None:
             try:
                 result_conf = float(raw_conf)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 pass
         if result_conf is None:
             for row in result.get("sample_rows") or []:
@@ -739,10 +792,8 @@ def _label_key_points_with_verdicts(
                         try:
                             result_conf = float(c)
                             break
-                        except (TypeError, ValueError):
+                        except TypeError, ValueError:
                             pass
-
-        finding_ids = result.get("finding_ids") or []
 
         if verdict and evids:
             for eid in evids:
@@ -758,8 +809,12 @@ def _label_key_points_with_verdicts(
     any_verdict_labels = False
 
     for item in outline_items:
-        item_eids = {str(e).strip() for e in (item.get("evidence_ids") or []) if str(e).strip()}
-        item_verdicts = {eid_verdicts.get(eid) for eid in item_eids if eid in eid_verdicts}
+        item_eids = {
+            str(e).strip() for e in (item.get("evidence_ids") or []) if str(e).strip()
+        }
+        item_verdicts = {
+            eid_verdicts.get(eid) for eid in item_eids if eid in eid_verdicts
+        }
         item_verdicts.discard(None)
 
         if "block_contradicted" in item_verdicts:
@@ -769,7 +824,11 @@ def _label_key_points_with_verdicts(
             label = "[confirmed]"
             any_verdict_labels = True
         elif item_eids and any(eid in eid_finding_conf for eid in item_eids):
-            conf_val = max(eid_finding_conf.get(eid, 0.0) for eid in item_eids if eid in eid_finding_conf)
+            conf_val = max(
+                eid_finding_conf.get(eid, 0.0)
+                for eid in item_eids
+                if eid in eid_finding_conf
+            )
             label = f"[finding, confidence={conf_val}]"
             any_verdict_labels = True
         else:
@@ -779,8 +838,13 @@ def _label_key_points_with_verdicts(
             labeled.append(f"{label} {kp}" if label else kp)
 
     # Fallback: if no per-result verdicts were found, use overall_verdict
-    if not any_verdict_labels and overall_verdict in ("block_supported", "block_contradicted"):
-        fb_label = "[confirmed]" if overall_verdict == "block_supported" else "[refuted]"
+    if not any_verdict_labels and overall_verdict in (
+        "block_supported",
+        "block_contradicted",
+    ):
+        fb_label = (
+            "[confirmed]" if overall_verdict == "block_supported" else "[refuted]"
+        )
         labeled = [f"{fb_label} {kp}" for kp in labeled]
 
     return labeled
@@ -792,33 +856,60 @@ def _review_and_rewrite_narrative(
     narrate_messages: list[dict[str, str]],
     narrate_schema: dict[str, Any],
 ) -> str:
-    """R7-01 section_reviewer: criticize every narrative body, rewrite at most once.
+    """R7-01 section_reviewer: rewrite deterministic failures at most once.
 
     Deterministic rubric problems (citation overload, pseudo-citations,
-    internal IDs) are computed in code and handed to the LLM reviewer as
-    ground truth. On a 'rewrite' verdict the narrator runs ONCE more, seeing
-    its previous body plus the problems; the rewrite is kept only when it is
-    no worse (deterministic problem count), and leftovers are recorded in the
-    section run trace. Failures never block the section.
+    internal IDs) are computed in code. Clean bodies pass without an extra LLM
+    call. Bodies with deterministic problems are handed to the LLM reviewer as
+    ground truth; on a 'rewrite' verdict the narrator runs once more. The
+    rewrite is kept only when it is no worse, and leftovers are recorded in
+    the section run trace. Failures never block the section.
     """
     deterministic_problems = review_narrative_body(body)
+    if not deterministic_problems:
+        _store_section_run(
+            ctx.db,
+            section_key=ctx.section_key,
+            block_heading=ctx.block_heading,
+            iteration=1,
+            phase="review",
+            payload={
+                "verdict": "pass",
+                "deterministic_problems": [],
+                "remaining_problems": [],
+                "reviewer": "deterministic",
+            },
+        )
+        return body
+
     review: dict[str, Any] = {}
     remaining: list[str] = deterministic_problems
     try:
         review_msgs, review_schema = build_section_review_messages(
-            ctx.block_heading, body, ctx.structured_digest or None, deterministic_problems,
+            ctx.block_heading,
+            body,
+            ctx.structured_digest or None,
+            deterministic_problems,
         )
         review_audit = ctx.review_audit or ctx.audit
         review = request_llm_json(
-            messages=review_msgs, model=ctx.model, base_url=ctx.base_url,
-            json_schema=review_schema, audit_callback=review_audit,
+            messages=review_msgs,
+            model=ctx.model,
+            base_url=ctx.base_url,
+            json_schema=review_schema,
+            audit_callback=review_audit,
         )
         if deterministic_problems or review.get("verdict") == "rewrite":
             guidance = str(review.get("guidance") or "")
-            problems_str = "; ".join(str(p) for p in (review.get("problems") or deterministic_problems))
+            problems_str = "; ".join(
+                str(p) for p in (review.get("problems") or deterministic_problems)
+            )
             rewrite_msgs = [
                 *narrate_messages,
-                {"role": "assistant", "content": json.dumps({"body": body}, ensure_ascii=False)},
+                {
+                    "role": "assistant",
+                    "content": json.dumps({"body": body}, ensure_ascii=False),
+                },
                 {
                     "role": "user",
                     "content": (
@@ -829,18 +920,27 @@ def _review_and_rewrite_narrative(
                 },
             ]
             rewritten = _narrate_paragraph_with_retry(
-                narrate_messages=rewrite_msgs, narrate_schema=narrate_schema,
-                model=ctx.model, base_url=ctx.base_url, audit_callback=review_audit,
+                narrate_messages=rewrite_msgs,
+                narrate_schema=narrate_schema,
+                model=ctx.model,
+                base_url=ctx.base_url,
+                audit_callback=review_audit,
                 target_language=_report_language(),
             )
             rewritten_problems = review_narrative_body(rewritten)
-            if rewritten.strip() and len(rewritten_problems) <= len(deterministic_problems):
+            if rewritten.strip() and len(rewritten_problems) <= len(
+                deterministic_problems
+            ):
                 body = rewritten
                 remaining = rewritten_problems
             if remaining:
-                print(f"[review] {ctx.section_key}/{ctx.block_heading} — unresolved after rewrite: {remaining}")
+                print(
+                    f"[review] {ctx.section_key}/{ctx.block_heading} — unresolved after rewrite: {remaining}"
+                )
     except Exception as exc:
-        print(f"[review] LLM review failed for {ctx.section_key}/{ctx.block_heading}: {exc}")
+        print(
+            f"[review] LLM review failed for {ctx.section_key}/{ctx.block_heading}: {exc}"
+        )
     _store_section_run(
         ctx.db,
         section_key=ctx.section_key,
@@ -867,9 +967,10 @@ def _write_block_body(
     actual_query_row_counts: list[int],
     audit_callback=None,
 ) -> tuple[str, str]:
-    verification_notes: list[str] = []
     if status == "insufficient_evidence":
-        reusable_rows_present = any(str(item.get("kind") or "rows") != "rows" for item in collected_results)
+        reusable_rows_present = any(
+            str(item.get("kind") or "rows") != "rows" for item in collected_results
+        )
         status_inner = _classify_block_status(
             verdict=verdict,
             actual_query_rows=actual_query_row_counts,
@@ -878,14 +979,12 @@ def _write_block_body(
         )
     else:
         status_inner = status
-    if verdict == "block_contradicted":
-        notes = [rationale] if rationale else ["Evidence contradicts the template claim"]
-        notes.extend(str(q) for q in missing_questions if q)
-        verification_notes = notes
 
     raw_rows = _collect_flat_evidence_rows(collected_results)
     if raw_rows:
-        raw_rows = _select_columns_by_template(raw_rows, ctx.section_key, ctx.template_body)
+        raw_rows = _select_columns_by_template(
+            raw_rows, ctx.section_key, ctx.template_body
+        )
     prompt_rows = _summarize_flat_evidence_rows(raw_rows) if raw_rows else None
 
     if ctx.benchmark_mode:
@@ -899,13 +998,17 @@ def _write_block_body(
         )
         if structured_answer is not None:
             status_inner = str(structured_answer.get("status") or status_inner)
-            body = _render_structured_answer_markdown(structured_answer, ctx.block_heading)
+            body = _render_structured_answer_markdown(
+                structured_answer, ctx.block_heading
+            )
             messages = []
         else:
             expected_shape = _resolve_structured_expected_shape(ctx.block_heading)
 
             extracted_rows = (
-                _extract_answer_by_shape(raw_rows, expected_shape, expected_shape.get("format", ""))
+                _extract_answer_by_shape(
+                    raw_rows, expected_shape, expected_shape.get("format", "")
+                )
                 if raw_rows and expected_shape
                 else []
             )
@@ -914,11 +1017,18 @@ def _write_block_body(
             if (
                 extracted_rows
                 and expected_shape
-                and all(field in extracted_rows[0] for field in expected_shape.get("fields") or [])
+                and all(
+                    field in extracted_rows[0]
+                    for field in expected_shape.get("fields") or []
+                )
             ):
                 # rows already match the expected shape — skip classify, use them directly
                 picked_rows = extracted_rows
-                classification = {"status": "answered", "picked_row_indices": [], "rationale": "rows match expected_shape"}
+                classification = {
+                    "status": "answered",
+                    "picked_row_indices": [],
+                    "rationale": "rows match expected_shape",
+                }
             else:
                 classify_messages, classify_schema = build_structured_classify_messages(
                     question=ctx.template_body or ctx.block_heading,
@@ -937,12 +1047,20 @@ def _write_block_body(
                 # Handle picked_row_indices (int array) instead of picked_row_ids
                 picked_row_indices = classification.get("picked_row_indices") or []
                 if isinstance(picked_row_indices, list):
-                    valid_indices = [i for i in picked_row_indices if isinstance(i, int) and 0 <= i < len(raw_rows or [])]
+                    valid_indices = [
+                        i
+                        for i in picked_row_indices
+                        if isinstance(i, int) and 0 <= i < len(raw_rows or [])
+                    ]
                 else:
                     valid_indices = []
                 picked_rows = [raw_rows[i] for i in valid_indices] if raw_rows else []
 
-            queries_run = [str(r.get("source_ref") or r.get("source_query") or "") for r in collected_results if r.get("source_ref") or r.get("source_query")]
+            queries_run = [
+                str(r.get("source_ref") or r.get("source_query") or "")
+                for r in collected_results
+                if r.get("source_ref") or r.get("source_query")
+            ]
             body = _format_structured_answer(
                 classification=classification,
                 picked_rows=picked_rows,
@@ -954,11 +1072,30 @@ def _write_block_body(
                 benchmark_id=ctx.benchmark_id,
                 queries_run=queries_run,
                 evidence_rows=prompt_rows or [],
-                answer_spec=ctx.answer_spec or (ctx.question_spec.answer_spec if ctx.question_spec is not None else ""),
+                answer_spec=ctx.answer_spec
+                or (
+                    ctx.question_spec.answer_spec
+                    if ctx.question_spec is not None
+                    else ""
+                ),
             )
-            messages = classify_messages if not (extracted_rows and expected_shape and all(field in extracted_rows[0] for field in expected_shape.get("fields") or [])) else []
+            messages = (
+                classify_messages
+                if not (
+                    extracted_rows
+                    and expected_shape
+                    and all(
+                        field in extracted_rows[0]
+                        for field in expected_shape.get("fields") or []
+                    )
+                )
+                else []
+            )
     else:
-        if status_inner in {"not_searched", "not_found", "wrong_query"} and not ctx.structured_digest:
+        if (
+            status_inner in {"not_searched", "not_found", "wrong_query"}
+            and not ctx.structured_digest
+        ):
             # Reader-facing insufficient-evidence placeholder. Must not contain
             # workflow markers ("Block skipped", "Section block failed") or
             # open-question markers — those trip the section quality gates and
@@ -994,7 +1131,9 @@ def _write_block_body(
                 )
                 outline_items: list[dict[str, Any]] = outline.get("outline") or []
                 all_key_points: list[str] = _label_key_points_with_verdicts(
-                    outline_items, collected_results, verdict,
+                    outline_items,
+                    collected_results,
+                    verdict,
                 )
             else:
                 # No query evidence — the narrator works from the structured
@@ -1024,7 +1163,9 @@ def _write_block_body(
                     actual_query_count=actual_query_count,
                     actual_query_row_counts=actual_query_row_counts,
                 )
-            body = _review_and_rewrite_narrative(ctx, body, narrate_messages, narrate_schema)
+            body = _review_and_rewrite_narrative(
+                ctx, body, narrate_messages, narrate_schema
+            )
             messages = narrate_messages
 
     if audit_callback:
@@ -1074,14 +1215,25 @@ def run_section_block_agent(
     """
     max_queries = max(1, int(max_queries_per_section or 1))
     ctx = _prepare_block_context(
-        case=case, db=db, section_key=section_key, title=title,
-        block_heading=block_heading, template_body=template_body,
-        base_url=base_url, model=model, memory=memory,
-        max_queries=max_queries, evidence_keypoints=evidence_keypoints,
-        benchmark_mode=benchmark_mode, benchmark_id=benchmark_id,
-        answer_id=answer_id, answer_spec=answer_spec, question=question,
+        case=case,
+        db=db,
+        section_key=section_key,
+        title=title,
+        block_heading=block_heading,
+        template_body=template_body,
+        base_url=base_url,
+        model=model,
+        memory=memory,
+        max_queries=max_queries,
+        evidence_keypoints=evidence_keypoints,
+        benchmark_mode=benchmark_mode,
+        benchmark_id=benchmark_id,
+        answer_id=answer_id,
+        answer_spec=answer_spec,
+        question=question,
         section_table_digest=section_table_digest,
-        audit_callback=audit_callback, review_audit_callback=review_audit_callback,
+        audit_callback=audit_callback,
+        review_audit_callback=review_audit_callback,
         report_brief=report_brief,
     )
     try:
@@ -1095,7 +1247,9 @@ def run_section_block_agent(
                 block_heading=ctx.block_heading,
             )
             if structured_answer is not None:
-                body = _render_structured_answer_markdown(structured_answer, ctx.block_heading)
+                body = _render_structured_answer_markdown(
+                    structured_answer, ctx.block_heading
+                )
                 if audit_callback:
                     audit_callback([], body)
                 _store_section_run(
@@ -1111,13 +1265,21 @@ def run_section_block_agent(
                         "status": structured_answer.get("status"),
                     },
                 )
-                if structured_answer.get("status") in {"answered", "partial"} and ctx.question_spec is not None and ctx.question_spec.timeline:
-                    _feed_structured_to_timeline(ctx.db, ctx.answer_spec, structured_answer)
+                if (
+                    structured_answer.get("status") in {"answered", "partial"}
+                    and ctx.question_spec is not None
+                    and ctx.question_spec.timeline
+                ):
+                    _feed_structured_to_timeline(
+                        ctx.db, ctx.answer_spec, structured_answer
+                    )
                 return SectionBlockResult(
                     body=body,
                     evidence_results=[],
                     iterations=1,
-                    status=str(structured_answer.get("status") or "insufficient_evidence"),
+                    status=str(
+                        structured_answer.get("status") or "insufficient_evidence"
+                    ),
                 )
 
         collected_results: list[dict[str, Any]] = []
@@ -1132,7 +1294,13 @@ def run_section_block_agent(
         actual_query_count = 0
         actual_query_row_counts: list[int] = []
         template_catalog = ctx.template_catalog
-        seed_keypoints = _default_keypoints_for_section(ctx.section_key, block_heading=ctx.block_heading)[:2] if not ctx.benchmark_mode else list(ctx.evidence_keypoints or [])[:3]
+        seed_keypoints = (
+            _default_keypoints_for_section(
+                ctx.section_key, block_heading=ctx.block_heading
+            )[:2]
+            if not ctx.benchmark_mode
+            else list(ctx.evidence_keypoints or [])[:3]
+        )
         executed_seed_keypoints: set[str] = set()
         for seed_index, kp in enumerate(seed_keypoints, start=0):
             if kp in _known_keypoints(ctx.keypoint_catalog):
@@ -1155,7 +1323,9 @@ def run_section_block_agent(
                     )
                     if str(result.get("kind") or "rows") == "rows":
                         actual_query_count += 1
-                        actual_query_row_counts.append(int(result.get("row_count") or 0))
+                        actual_query_row_counts.append(
+                            int(result.get("row_count") or 0)
+                        )
                         _store_section_evidence(
                             ctx.db,
                             section_key=ctx.section_key,
@@ -1178,25 +1348,43 @@ def run_section_block_agent(
             for r in collected_results
         ):
             body, final_status = _write_block_body(
-                ctx, collected_results,
-                "answered", "block_supported", "", [],
-                actual_query_count, actual_query_row_counts,
+                ctx,
+                collected_results,
+                "answered",
+                "block_supported",
+                "",
+                [],
+                actual_query_count,
+                actual_query_row_counts,
                 audit_callback=audit_callback,
             )
-            return SectionBlockResult(body=body, evidence_results=collected_results, iterations=max(len(collected_results), 1), status=final_status)
+            return SectionBlockResult(
+                body=body,
+                evidence_results=collected_results,
+                iterations=max(len(collected_results), 1),
+                status=final_status,
+            )
 
         for iteration in range(1, ctx.max_queries + 1):
             prior_runs = _load_prior_runs(db, section_key, block_heading)
-            template_catalog = _filter_template_catalog_by_section(template_catalog, section_key, collected_results)
+            template_catalog = _filter_template_catalog_by_section(
+                template_catalog, section_key, collected_results
+            )
             plan_action = _run_block_plan(
-                ctx, iteration, prior_runs, template_catalog,
-                context_sections, current_section_outline,
+                ctx,
+                iteration,
+                prior_runs,
+                template_catalog,
+                context_sections,
+                current_section_outline,
             )
             if plan_action is None or plan_action.action == "write":
                 break
             if plan_action.action == "keypoint":
                 planned_keypoints = set(_split_keypoint_names(plan_action.keypoint))
-                if planned_keypoints and planned_keypoints.issubset(executed_seed_keypoints):
+                if planned_keypoints and planned_keypoints.issubset(
+                    executed_seed_keypoints
+                ):
                     continue
             outcome = _execute_block_plan(ctx, plan_action, iteration)
             if outcome is None:
@@ -1207,15 +1395,25 @@ def run_section_block_agent(
                 actual_query_count += 1
                 actual_query_row_counts.append(int(result.get("row_count") or 0))
             check_result = _run_block_check(
-                ctx, iteration, result, collected_results, prior_runs,
-                actual_query_count, actual_query_row_counts, source_query,
+                ctx,
+                iteration,
+                result,
+                collected_results,
+                prior_runs,
+                actual_query_count,
+                actual_query_row_counts,
+                source_query,
             )
             if check_result is None:
                 break
             verdict, rationale, missing_questions, status = check_result
             if verdict in {"block_supported", "block_contradicted"}:
                 break
-        force_chain = ctx.benchmark_mode and status in {"wrong_query", "insufficient_evidence", "not_searched"}
+        force_chain = ctx.benchmark_mode and status in {
+            "wrong_query",
+            "insufficient_evidence",
+            "not_searched",
+        }
         actual_query_count = _try_evidence_chain_fallback(
             ctx,
             collected_results,
@@ -1224,12 +1422,22 @@ def run_section_block_agent(
             force=force_chain,
         )
         body, final_status = _write_block_body(
-            ctx, collected_results,
-            status, verdict, rationale, missing_questions,
-            actual_query_count, actual_query_row_counts,
+            ctx,
+            collected_results,
+            status,
+            verdict,
+            rationale,
+            missing_questions,
+            actual_query_count,
+            actual_query_row_counts,
             audit_callback=audit_callback,
         )
-        return SectionBlockResult(body=body, evidence_results=collected_results, iterations=max(len(collected_results), 1), status=final_status)
+        return SectionBlockResult(
+            body=body,
+            evidence_results=collected_results,
+            iterations=max(len(collected_results), 1),
+            status=final_status,
+        )
     except Exception as exc:
         return SectionBlockResult(
             body=f"**Status:** error\n\n*Section block failed: {str(exc)[:200]}*",
@@ -1267,13 +1475,24 @@ async def async_run_section_block_agent(
     """Async wrapper around run_section_block_agent using asyncio.to_thread."""
     return await asyncio.to_thread(
         run_section_block_agent,
-        case=case, db=db, section_key=section_key, title=title,
-        block_heading=block_heading, template_body=template_body,
-        context_sections=context_sections, current_section_outline=current_section_outline,
-        report_brief=report_brief, base_url=base_url, model=model,
-        memory=memory, max_queries_per_section=max_queries_per_section,
-        evidence_keypoints=evidence_keypoints, benchmark_mode=benchmark_mode,
-        benchmark_id=benchmark_id, answer_id=answer_id, answer_spec=answer_spec,
+        case=case,
+        db=db,
+        section_key=section_key,
+        title=title,
+        block_heading=block_heading,
+        template_body=template_body,
+        context_sections=context_sections,
+        current_section_outline=current_section_outline,
+        report_brief=report_brief,
+        base_url=base_url,
+        model=model,
+        memory=memory,
+        max_queries_per_section=max_queries_per_section,
+        evidence_keypoints=evidence_keypoints,
+        benchmark_mode=benchmark_mode,
+        benchmark_id=benchmark_id,
+        answer_id=answer_id,
+        answer_spec=answer_spec,
         question=question,
         section_table_digest=section_table_digest,
         audit_callback=audit_callback,

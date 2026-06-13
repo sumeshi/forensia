@@ -7,9 +7,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import yaml
 from jinja2 import Environment, FileSystemLoader
 from markupsafe import Markup, escape
-import yaml
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
@@ -17,29 +17,51 @@ from forensia.db.query import normalize_value
 from forensia.report.keypoints import EVIDENCE_ID_PATTERN
 
 
-def _fetch_records(db: CaseDB, query: str, params: tuple[Any, ...] | None = None) -> list[dict[str, Any]]:
+def _fetch_records(
+    db: CaseDB, query: str, params: tuple[Any, ...] | None = None
+) -> list[dict[str, Any]]:
     """Execute a query and return the result as a list of dicts keyed by column name."""
     result = db.execute(query, params)
     columns = [item[0] for item in result.description]
     return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
+
 
 def _normalize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{key: normalize_value(value) for key, value in row.items()} for row in rows]
 
 
 def _finding_theme(row: dict[str, Any]) -> str:
-    blob = " ".join(str(row.get(key) or "").lower() for key in ("finding_id", "rule_id", "title", "summary"))
+    blob = " ".join(
+        str(row.get(key) or "").lower()
+        for key in ("finding_id", "rule_id", "title", "summary")
+    )
     if "4648" in blob or "explicit credential" in blob:
         return "explicit_credentials"
     if "4722" in blob or "4724" in blob or "account lifecycle" in blob:
         return "account_lifecycle"
     if "4616" in blob or "system time" in blob:
         return "time_change"
-    if "event log service stopped" in blob or " log clear" in blob or "1100" in blob or "1102" in blob:
+    if (
+        "event log service stopped" in blob
+        or " log clear" in blob
+        or "1100" in blob
+        or "1102" in blob
+    ):
         return "log_integrity"
-    if "eraser" in blob or "ccleaner" in blob or "anti-forensic" in blob or "antiforensic" in blob:
+    if (
+        "eraser" in blob
+        or "ccleaner" in blob
+        or "anti-forensic" in blob
+        or "antiforensic" in blob
+    ):
         return "antiforensic_tools"
-    if "ost" in blob or "outlook" in blob or "browser" in blob or "cloud" in blob or "drive" in blob:
+    if (
+        "ost" in blob
+        or "outlook" in blob
+        or "browser" in blob
+        or "cloud" in blob
+        or "drive" in blob
+    ):
         return "data_access"
     return "other"
 
@@ -81,29 +103,48 @@ def _finding_theme_rank(theme: str) -> int:
     }.get(theme, 9)
 
 
-def _group_findings_for_display(findings: list[dict[str, Any]], limit: int = 8) -> list[dict[str, Any]]:
+def _group_findings_for_display(
+    findings: list[dict[str, Any]], limit: int = 8
+) -> list[dict[str, Any]]:
     grouped: dict[str, dict[str, Any]] = {}
     for row in findings:
         theme = _finding_theme(row)
         if theme == "other":
             continue
-        item = grouped.setdefault(theme, {"theme": theme, "count": 0, "severity": "low", "confidence": 0.0})
+        item = grouped.setdefault(
+            theme, {"theme": theme, "count": 0, "severity": "low", "confidence": 0.0}
+        )
         item["count"] = int(item["count"]) + 1
         severity = str(row.get("severity") or "low")
         current = str(item.get("severity") or "low")
-        if {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(severity, 4) < {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(current, 4):
+        if {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(severity, 4) < {
+            "critical": 0,
+            "high": 1,
+            "medium": 2,
+            "low": 3,
+        }.get(current, 4):
             item["severity"] = severity
         try:
-            item["confidence"] = max(float(item.get("confidence") or 0), float(row.get("confidence") or 0))
-        except (TypeError, ValueError):
+            item["confidence"] = max(
+                float(item.get("confidence") or 0), float(row.get("confidence") or 0)
+            )
+        except TypeError, ValueError:
             pass
     return [
         {
-            "title": _finding_theme_title(str(row.get("theme") or ""), int(row.get("count") or 0)),
+            "title": _finding_theme_title(
+                str(row.get("theme") or ""), int(row.get("count") or 0)
+            ),
             "summary": _finding_theme_summary(str(row.get("theme") or "")),
             "severity": row.get("severity"),
         }
-        for row in sorted(grouped.values(), key=lambda item: (_finding_theme_rank(str(item.get("theme") or "")), -float(item.get("confidence") or 0)))[:limit]
+        for row in sorted(
+            grouped.values(),
+            key=lambda item: (
+                _finding_theme_rank(str(item.get("theme") or "")),
+                -float(item.get("confidence") or 0),
+            ),
+        )[:limit]
     ]
 
 
@@ -123,7 +164,11 @@ def _load_report_sections(db: CaseDB) -> tuple[list[dict[str, Any]], str]:
     if report_path.exists():
         report_markdown = report_path.read_text(encoding="utf-8").strip()
     else:
-        ordered = [str(section.get("body") or "").strip() for section in sections if str(section.get("body") or "").strip()]
+        ordered = [
+            str(section.get("body") or "").strip()
+            for section in sections
+            if str(section.get("body") or "").strip()
+        ]
         report_markdown = "\n\n".join(ordered).strip()
     if report_markdown:
         report_markdown += "\n"
@@ -145,16 +190,22 @@ def _render_inline_markdown(text: str) -> str:
     # R7-03: Render evidence IDs as anchor links. The placeholder title is
     # replaced with the real record summary by _inject_evidence_interactivity.
     rendered = EVIDENCE_ID_PATTERN.sub(
-        lambda m: f'<a class="evidence-ref" href="#ev-{m.group(0)}" title="{m.group(0)}">{m.group(0)}</a>',
+        lambda m: (
+            f'<a class="evidence-ref" href="#ev-{m.group(0)}" title="{m.group(0)}">{m.group(0)}</a>'
+        ),
         rendered,
     )
     return rendered
 
 
-_EVIDENCE_LINK_RE = re.compile(r'<a class="evidence-ref" href="#ev-([^"]+)" title="[^"]*">')
+_EVIDENCE_LINK_RE = re.compile(
+    r'<a class="evidence-ref" href="#ev-([^"]+)" title="[^"]*">'
+)
 
 
-def _inject_evidence_interactivity(html_text: str, evidence_map: dict[str, dict[str, str]]) -> str:
+def _inject_evidence_interactivity(
+    html_text: str, evidence_map: dict[str, dict[str, str]]
+) -> str:
     """Post-process rendered HTML: hover tooltips from the evidence map, and
     anchor targets (`id="ev-..."`) on the Evidence References entries so inline
     citation links have somewhere to jump. Also adds evidence-open buttons to
@@ -166,7 +217,9 @@ def _inject_evidence_interactivity(html_text: str, evidence_map: dict[str, dict[
         eid = match.group(1)
         info = evidence_map.get(eid) or {}
         summary = " · ".join(
-            str(part) for part in (info.get("timestamp"), info.get("source"), info.get("summary")) if part
+            str(part)
+            for part in (info.get("timestamp"), info.get("source"), info.get("summary"))
+            if part
         )
         if not summary:
             return match.group(0)
@@ -179,7 +232,7 @@ def _inject_evidence_interactivity(html_text: str, evidence_map: dict[str, dict[
     marker_match = re.search(r"<h[1-6][^>]*>Evidence References</h[1-6]>", html_text)
     if marker_match:
         head = html_text[: marker_match.end()]
-        tail = html_text[marker_match.end():]
+        tail = html_text[marker_match.end() :]
         seen: set[str] = set()
 
         def _with_anchor(match: re.Match[str]) -> str:
@@ -256,7 +309,7 @@ def _load_evidence_map(case: Case) -> dict[str, dict[str, str]]:
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError, OSError:
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -288,7 +341,11 @@ _EVIDENCE_ONLY_CELL_RE = re.compile(
 def _render_table(table_lines: list[str]) -> str:
     """Render a list of Markdown table lines as an HTML <table> element."""
     headers = _split_table_row(table_lines[0])
-    body_lines = table_lines[2:] if len(table_lines) >= 2 and _is_table_separator(table_lines[1]) else table_lines[1:]
+    body_lines = (
+        table_lines[2:]
+        if len(table_lines) >= 2 and _is_table_separator(table_lines[1])
+        else table_lines[1:]
+    )
     thead = "".join(f"<th>{_render_inline_markdown(cell)}</th>" for cell in headers)
     rows = []
     for line in body_lines:
@@ -298,7 +355,9 @@ def _render_table(table_lines: list[str]) -> str:
             cell_html = _render_inline_markdown(cell)
             m = _EVIDENCE_ONLY_CELL_RE.match(str(cell_html))
             if m:
-                cell_html = Markup(f'<a class="evidence-open" href="/evidence/{m.group(1)}" target="_blank" rel="noopener" title="Open record">⧉</a>')
+                cell_html = Markup(
+                    f'<a class="evidence-open" href="/evidence/{m.group(1)}" target="_blank" rel="noopener" title="Open record">⧉</a>'
+                )
             td_list.append(f"<td>{cell_html}</td>")
         rows.append("".join(td_list))
     tbody = "".join(f"<tr>{row}</tr>" for row in rows)
@@ -319,7 +378,11 @@ class _MdState:
 def _flush_paragraph(state: _MdState) -> None:
     if not state.paragraph_lines:
         return
-    content = "<br>".join(_render_inline_markdown(line.strip()) for line in state.paragraph_lines if line.strip())
+    content = "<br>".join(
+        _render_inline_markdown(line.strip())
+        for line in state.paragraph_lines
+        if line.strip()
+    )
     if content:
         state.blocks.append(f"<p>{content}</p>")
     state.paragraph_lines = []
@@ -331,14 +394,18 @@ def _flush_list(state: _MdState) -> None:
         state.list_kind = None
         return
     tag = "ol" if state.list_kind == "ol" else "ul"
-    items = "".join(f"<li>{_render_inline_markdown(item)}</li>" for item in state.list_items)
+    items = "".join(
+        f"<li>{_render_inline_markdown(item)}</li>" for item in state.list_items
+    )
     state.blocks.append(f"<{tag}>{items}</{tag}>")
     state.list_items = []
     state.list_kind = None
 
 
 def _flush_code(state: _MdState) -> None:
-    state.blocks.append(f"<pre><code>{escape(chr(10).join(state.code_lines))}</code></pre>")
+    state.blocks.append(
+        f"<pre><code>{escape(chr(10).join(state.code_lines))}</code></pre>"
+    )
     state.code_lines = []
 
 
@@ -396,7 +463,9 @@ def _handle_heading(state: _MdState, stripped: str) -> bool:
     _flush_paragraph(state)
     _flush_list(state)
     level = min(len(heading.group(1)) + 1, 6)
-    state.blocks.append(f"<h{level}>{_render_inline_markdown(heading.group(2).strip())}</h{level}>")
+    state.blocks.append(
+        f"<h{level}>{_render_inline_markdown(heading.group(2).strip())}</h{level}>"
+    )
     return True
 
 
@@ -443,7 +512,13 @@ def render_markdown_fragment(markdown: str) -> Markup:
             _flush_all(state)
             continue
 
-        for handler in (_handle_horizontal_rule, _handle_table_row, _handle_heading, _handle_ordered_list_item, _handle_unordered_list_item):
+        for handler in (
+            _handle_horizontal_rule,
+            _handle_table_row,
+            _handle_heading,
+            _handle_ordered_list_item,
+            _handle_unordered_list_item,
+        ):
             if handler(state, stripped):
                 break
         else:
@@ -458,10 +533,15 @@ def render_markdown_fragment(markdown: str) -> Markup:
 
 
 def _env() -> Environment:
-    return Environment(loader=FileSystemLoader(str(Path(__file__).parent / "templates")), autoescape=True)
+    return Environment(
+        loader=FileSystemLoader(str(Path(__file__).parent / "templates")),
+        autoescape=True,
+    )
 
 
-def render_html_report(case: Case, db: CaseDB, output_path: str | Path | None = None) -> Path:
+def render_html_report(
+    case: Case, db: CaseDB, output_path: str | Path | None = None
+) -> Path:
     """Render the full HTML report from case data and DB content using a Jinja2 template."""
     manifest = case.manifest_path.read_text(encoding="utf-8")
     try:
@@ -530,7 +610,11 @@ def render_html_report(case: Case, db: CaseDB, output_path: str | Path | None = 
             """,
         )
     )
-    hostnames = [str(row.get("computer") or "").strip() for row in host_rows if str(row.get("computer") or "").strip()]
+    hostnames = [
+        str(row.get("computer") or "").strip()
+        for row in host_rows
+        if str(row.get("computer") or "").strip()
+    ]
     generated_at = datetime.now().isoformat(timespec="seconds")
     payload = {
         "case_name": case.path.name,

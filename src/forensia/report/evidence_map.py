@@ -4,6 +4,7 @@ Derived from the final report body (one-directional: section writers never see
 it), so it adds no coupling into the ai/ layer. The map feeds the Evidence
 References appendix in report.md and the hover/anchor links in report.html.
 """
+
 from __future__ import annotations
 
 import json
@@ -96,17 +97,24 @@ def build_evidence_map(db: CaseDB, body: str) -> dict[str, dict[str, str]]:
 
     for eid in ids:
         if eid not in found:
-            found[eid] = {"source": "unresolved", "timestamp": "", "summary": "ID not found in evidence tables"}
+            found[eid] = {
+                "source": "unresolved",
+                "timestamp": "",
+                "summary": "ID not found in evidence tables",
+            }
 
     return found
 
 
-def write_evidence_map(db: CaseDB, body: str, output_dir: Path) -> dict[str, dict[str, str]]:
+def write_evidence_map(
+    db: CaseDB, body: str, output_dir: Path
+) -> dict[str, dict[str, str]]:
     """Build, persist (reports/evidence_map.json), and return the evidence map."""
     evidence_map = build_evidence_map(db, body)
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "evidence_map.json").write_text(
-        json.dumps(evidence_map, indent=2, ensure_ascii=False, default=str), encoding="utf-8"
+        json.dumps(evidence_map, indent=2, ensure_ascii=False, default=str),
+        encoding="utf-8",
     )
     return evidence_map
 

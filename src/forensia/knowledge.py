@@ -9,7 +9,6 @@ from typing import Any
 
 import yaml
 
-
 logger = logging.getLogger(__name__)
 
 _SCHEMA_DIR = Path(__file__).parent / "rulepacks" / "_schema"
@@ -21,6 +20,7 @@ _SCHEMA_DIR = Path(__file__).parent / "rulepacks" / "_schema"
 @lru_cache(maxsize=1)
 def load_dfir_yamls() -> dict[str, Any]:
     """Load all DFIR YAML schemas from _schema/ directory with caching."""
+
     def _load_yaml(name: str) -> dict:
         path = _SCHEMA_DIR / name
         if not path.exists():
@@ -62,7 +62,7 @@ def load_event_id_hints() -> dict[int, dict[str, Any]]:
     for key, value in raw_events.items():
         try:
             event_id = int(key)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         if isinstance(value, dict):
             events[event_id] = value
@@ -184,8 +184,15 @@ def catalog_path_terms(*sections: str) -> tuple[str, ...]:
     terms: list[str] = []
     for section in sections:
         for entry in _catalog_entries(section):
-            for raw in list(entry.get("paths") or []) + list(entry.get("mft_patterns") or []):
-                cleaned = re.sub(r"%[^%]+%", "", str(raw)).replace("\\", "/").strip("/ ").lower()
+            for raw in list(entry.get("paths") or []) + list(
+                entry.get("mft_patterns") or []
+            ):
+                cleaned = (
+                    re.sub(r"%[^%]+%", "", str(raw))
+                    .replace("\\", "/")
+                    .strip("/ ")
+                    .lower()
+                )
                 if len(cleaned) >= 4 and cleaned not in terms:
                     terms.append(cleaned)
     return tuple(terms)

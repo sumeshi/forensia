@@ -1,53 +1,56 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
+
 import yaml
 from typer.testing import CliRunner
 
 from forensia import cli as cli_module
 from forensia.ai.checker import _insert_investigation_finding
+from forensia.ai.hypothesis_manager import (
+    _load_persisted_hypotheses,
+    _merge_active_hypotheses,
+)
 from forensia.ai.investigator import (
     _append_hypothesis_reasoning,
     _final_summary,
 )
-from forensia.ai.planner import HypothesisPlanResult
 from forensia.ai.report_gap import (
     _classify_gap_kind,
     _gap_hypothesis_id,
     _inject_gap_hypotheses,
     _report_cycle_progress,
 )
-from forensia.ai.hypothesis_manager import _load_persisted_hypotheses
-from forensia.ai.hypothesis_manager import _merge_active_hypotheses
-from forensia.config import clear_llm_settings_cache, resolve_llm_config
+from forensia.config import (
+    reload_settings,
+    resolve_llm_config,
+)
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.db.database import CaseDB
-from forensia.rules.engine import execute_event_keyword_fallback_search
 from forensia.report.writer import (
-    _collect_flat_evidence_rows,
     _build_report_brief,
+    _collect_flat_evidence_rows,
     _default_keypoints_for_section,
     _extract_claim_texts,
-    _query_top_findings,
     _quality_gate_section,
     _resolve_evidence_results,
-    _sort_markdown_table_by_first_column,
     _section_confidence,
-    collect_gaps,
+    _sort_markdown_table_by_first_column,
     build_report_markdown_from_db,
+    collect_gaps,
     ensure_universal_question_probes,
     finalize_section,
     prepare_section_request,
 )
 from forensia.report_templates import export_packaged_report_templates
+from forensia.rules.engine import execute_event_keyword_fallback_search
 
 
 def _agent_plan_router(*_args, **kwargs):
@@ -114,11 +117,17 @@ class PersistenceTests(unittest.TestCase):
             ),
         )
 
-    def test_section_confidence_and_claim_extraction_respect_english_gap_placeholder(self) -> None:
+    def test_section_confidence_and_claim_extraction_respect_english_gap_placeholder(
+        self,
+    ) -> None:
         self.assertEqual(1.0, _section_confidence("no gaps here"))
         self.assertLess(_section_confidence("[INSUFFICIENT EVIDENCE: x]"), 1.0)
-        self.assertEqual([], _extract_claim_texts("[INSUFFICIENT EVIDENCE: missing evidence]"))
-        self.assertEqual(["same claim"], _extract_claim_texts("same claim\n\nsame claim"))
+        self.assertEqual(
+            [], _extract_claim_texts("[INSUFFICIENT EVIDENCE: missing evidence]")
+        )
+        self.assertEqual(
+            ["same claim"], _extract_claim_texts("same claim\n\nsame claim")
+        )
 
     def test_append_hypothesis_reasoning_is_idempotent_per_query_phase(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -142,7 +151,9 @@ class PersistenceTests(unittest.TestCase):
                     query_id="q-1",
                     body="look for 4625 burst",
                 )
-                count = db.execute("SELECT COUNT(*) FROM hypothesis_reasoning WHERE hypothesis_id = 'H-1'").fetchone()[0]
+                count = db.execute(
+                    "SELECT COUNT(*) FROM hypothesis_reasoning WHERE hypothesis_id = 'H-1'"
+                ).fetchone()[0]
 
             self.assertEqual(first, second)
             self.assertEqual(1, count)
@@ -179,7 +190,9 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual("H-1", resolved[0].id)
             self.assertEqual("confirmed", resolved[0].status)
 
-    def test_prepare_section_request_infers_section_evidence_without_template_keypoints(self) -> None:
+    def test_prepare_section_request_infers_section_evidence_without_template_keypoints(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             template_path = case.path / "report_template_custom" / "1_overview.md"
@@ -202,19 +215,44 @@ class PersistenceTests(unittest.TestCase):
                         command_line, service_name, message, raw_json, tags, severity
                     ) VALUES (?, ?, ?, ?, ?, now(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    ("ev-1", "a.evtx", "Security", 4624, 1, "host1", "", "", "", "", "", "", "", "", "", "{}", "[]", "info"),
+                    (
+                        "ev-1",
+                        "a.evtx",
+                        "Security",
+                        4624,
+                        1,
+                        "host1",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "{}",
+                        "[]",
+                        "info",
+                    ),
                 )
-                request = prepare_section_request(case, db, template_path, {}, report_brief={})
+                request = prepare_section_request(
+                    case, db, template_path, {}, report_brief={}
+                )
                 # Evidence resolution moved into section_agent; verify the default
                 # keypoint selection + resolver directly.
                 default_keypoints = _default_keypoints_for_section("1_overview")
-                resolved = _resolve_evidence_results(case, db, keypoints=default_keypoints)
+                resolved = _resolve_evidence_results(
+                    case, db, keypoints=default_keypoints
+                )
 
             self.assertEqual("1_overview", request["section_key"])
             result_names = {item["keypoint"] for item in resolved}
             self.assertIn("overview_top_findings", result_names)
 
-    def test_prepare_section_request_infers_ioc_keypoints_from_section_name(self) -> None:
+    def test_prepare_section_request_infers_ioc_keypoints_from_section_name(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             template_path = case.path / "report_template_custom" / "3_technical.md"
@@ -237,13 +275,18 @@ class PersistenceTests(unittest.TestCase):
                 )
                 prepare_section_request(case, db, template_path, {}, report_brief={})
                 default_keypoints = _default_keypoints_for_section("3_technical")
-                resolved = _resolve_evidence_results(case, db, keypoints=default_keypoints)
+                resolved = _resolve_evidence_results(
+                    case, db, keypoints=default_keypoints
+                )
 
             results = {item["keypoint"]: item for item in resolved}
             self.assertIn("host_execution_activity", results)
             self.assertIn("account_logon_patterns", results)
             self.assertIn("ioc_source_ips", results)
-            self.assertEqual("powershell.exe", results["host_execution_activity"]["sample_rows"][0]["process_name"])
+            self.assertEqual(
+                "powershell.exe",
+                results["host_execution_activity"]["sample_rows"][0]["process_name"],
+            )
             self.assertGreater(results["ioc_source_ips"]["row_count"], 0)
 
     def test_prepare_section_request_extracts_block_hints(self) -> None:
@@ -265,25 +308,39 @@ class PersistenceTests(unittest.TestCase):
                 encoding="utf-8",
             )
             with CaseDB(case) as db:
-                request = prepare_section_request(case, db, template_path, {}, report_brief={})
+                request = prepare_section_request(
+                    case, db, template_path, {}, report_brief={}
+                )
 
             block = request["block_requests"][0]
             self.assertEqual("structured", block["mode"])
             self.assertEqual("Q20", block["answer_id"])
             self.assertEqual("email_data_files", block["answer_spec"])
             self.assertEqual("Where is the e-mail file located?", block["question"])
-            self.assertEqual(["ioc_email_ost_files", "timeline_prefetch_history"], block["evidence_keypoints"])
+            self.assertEqual(
+                ["ioc_email_ost_files", "timeline_prefetch_history"],
+                block["evidence_keypoints"],
+            )
 
     def test_universal_question_probes_are_explicit_and_store_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             template_path = case.path / "report_template_custom" / "1_overview.md"
             template_path.parent.mkdir(parents=True, exist_ok=True)
-            template_path.write_text("# Overview\n\n## Evidence Scope\n<!-- fill -->\n", encoding="utf-8")
+            template_path.write_text(
+                "# Overview\n\n## Evidence Scope\n<!-- fill -->\n", encoding="utf-8"
+            )
             with CaseDB(case) as db:
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-security-000000000001", 4624, datetime(2015, 3, 22, 14, 34, 28), "informant-PC", "informant", "2"),
+                    (
+                        "evtx-security-000000000001",
+                        4624,
+                        datetime(2015, 3, 22, 14, 34, 28),
+                        "informant-PC",
+                        "informant",
+                        "2",
+                    ),
                 )
                 prepare_section_request(case, db, template_path, {}, report_brief={})
                 initial_probe_count = db.execute(
@@ -308,28 +365,29 @@ class PersistenceTests(unittest.TestCase):
             self.assertIn("informant", str(fact[0]))
             self.assertIn("evtx-security-000000000001", str(fact[1]))
 
-    def test_question_marker_enables_structured_mode_without_explicit_mode(self) -> None:
+    def test_question_marker_enables_structured_mode_without_explicit_mode(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             template_path = case.path / "report_template_custom" / "6_appendix.md"
             template_path.parent.mkdir(parents=True, exist_ok=True)
             template_path.write_text(
-                (
-                    "# Appendix\n\n"
-                    "## Last shutdown\n"
-                    "<!-- question -->\n"
-                    "<!-- fill -->\n"
-                ),
+                ("# Appendix\n\n## Last shutdown\n<!-- question -->\n<!-- fill -->\n"),
                 encoding="utf-8",
             )
             with CaseDB(case) as db:
-                request = prepare_section_request(case, db, template_path, {}, report_brief={})
+                request = prepare_section_request(
+                    case, db, template_path, {}, report_brief={}
+                )
 
             block = request["block_requests"][0]
             self.assertEqual("structured", block["mode"])
             self.assertEqual("", block["answer_spec"])
 
-    def test_quality_gate_flags_placeholder_entities_and_non_chronological_timeline(self) -> None:
+    def test_quality_gate_flags_placeholder_entities_and_non_chronological_timeline(
+        self,
+    ) -> None:
         body = (
             "| Timestamp | Host | Stage | Event | evidence_id |\n"
             "|---|---|---|---|---|\n"
@@ -337,7 +395,14 @@ class PersistenceTests(unittest.TestCase):
             "| 2026-05-16 09:00:00 | host1 | Execution | process | ev-1 |\n"
         )
 
-        gaps, confidence = _quality_gate_section("2_timeline", "Attack Timeline", body, [], 1.0, behaviors=("require_chronological_table",))
+        gaps, confidence = _quality_gate_section(
+            "2_timeline",
+            "Attack Timeline",
+            body,
+            [],
+            1.0,
+            behaviors=("require_chronological_table",),
+        )
 
         self.assertTrue(any("Placeholder entity values detected" in g for g in gaps))
         self.assertTrue(any("events are not strictly chronological" in g for g in gaps))
@@ -380,7 +445,26 @@ class PersistenceTests(unittest.TestCase):
                         command_line, service_name, message, raw_json, tags, severity
                     ) VALUES (?, ?, ?, ?, ?, now(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    ("ev-4720", "a.evtx", "Security", 4720, 1, "host1", "", "alice", "alice", "admin", "", "", "", "", "", "{}", "[]", "info"),
+                    (
+                        "ev-4720",
+                        "a.evtx",
+                        "Security",
+                        4720,
+                        1,
+                        "host1",
+                        "",
+                        "alice",
+                        "alice",
+                        "admin",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "{}",
+                        "[]",
+                        "info",
+                    ),
                 )
                 result = finalize_section(
                     db=db,
@@ -390,7 +474,9 @@ class PersistenceTests(unittest.TestCase):
                     evidence_results=[
                         {
                             "kind": "rows",
-                            "sample_rows": [{"event_id": 4720, "evidence_id": "ev-4720"}],
+                            "sample_rows": [
+                                {"event_id": 4720, "evidence_id": "ev-4720"}
+                            ],
                             "head_rows": [],
                             "tail_rows": [],
                             "evidence_ids": ["ev-4720"],
@@ -405,7 +491,9 @@ class PersistenceTests(unittest.TestCase):
                 msg=f"Expected event-specific claim gap in {result['gaps']}",
             )
 
-    def test_finalize_section_flags_overstated_claims_for_non_confirmed_sources(self) -> None:
+    def test_finalize_section_flags_overstated_claims_for_non_confirmed_sources(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -417,7 +505,26 @@ class PersistenceTests(unittest.TestCase):
                         command_line, service_name, message, raw_json, tags, severity
                     ) VALUES (?, ?, ?, ?, ?, now(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    ("ev-1", "a.evtx", "Security", 4720, 1, "host1", "", "alice", "alice", "admin", "", "", "", "", "", "{}", "[]", "info"),
+                    (
+                        "ev-1",
+                        "a.evtx",
+                        "Security",
+                        4720,
+                        1,
+                        "host1",
+                        "",
+                        "alice",
+                        "alice",
+                        "admin",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "{}",
+                        "[]",
+                        "info",
+                    ),
                 )
                 result = finalize_section(
                     db=db,
@@ -475,13 +582,19 @@ class PersistenceTests(unittest.TestCase):
                     ),
                 )
                 rows, fallback_info = execute_event_keyword_fallback_search(
-                    db, "SELECT * FROM evtx_events WHERE event_id = 4720 AND computer = 'missing'"
+                    db,
+                    "SELECT * FROM evtx_events WHERE event_id = 4720 AND computer = 'missing'",
                 )
 
             self.assertEqual(1, len(rows))
             self.assertEqual("keyword_in_raw_json", fallback_info["phase"])
             self.assertIn(4720, fallback_info["event_ids"])
-            self.assertTrue(any("account created" in keyword for keyword in fallback_info["keywords"]))
+            self.assertTrue(
+                any(
+                    "account created" in keyword
+                    for keyword in fallback_info["keywords"]
+                )
+            )
 
     def test_build_report_markdown_keeps_coverage_out_of_final_markdown(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -517,7 +630,9 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual(3, len(coverage_rows))
             self.assertEqual("benchmark_ost_file", coverage_rows[0][1])
             self.assertEqual("Yes", coverage_rows[0][4])
-            zero_row = next(row for row in coverage_rows if row[1] == "empty_timeline_events")
+            zero_row = next(
+                row for row in coverage_rows if row[1] == "empty_timeline_events"
+            )
             self.assertEqual("No", zero_row[4])
             self.assertNotIn("#### Coverage Summary", markdown)
             self.assertNotIn("benchmark_ost_file", markdown)
@@ -526,7 +641,9 @@ class PersistenceTests(unittest.TestCase):
             self.assertNotIn("**Status:** partial", markdown)
             self.assertNotIn("raw_sql", markdown)
 
-    def test_build_report_markdown_rebuilds_non_question_sections_with_tables(self) -> None:
+    def test_build_report_markdown_rebuilds_non_question_sections_with_tables(
+        self,
+    ) -> None:
         """Without deterministic override, report_markdown renders from DB bodies directly."""
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -556,7 +673,9 @@ class PersistenceTests(unittest.TestCase):
             self.assertIn("Gap analysis.", markdown)
             self.assertNotIn("**Status:**", markdown)
 
-    def test_build_report_markdown_adds_appendix_interpretation_to_existing_body(self) -> None:
+    def test_build_report_markdown_adds_appendix_interpretation_to_existing_body(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -598,7 +717,9 @@ class PersistenceTests(unittest.TestCase):
             self.assertNotIn("evidence_id", markdown)
             self.assertNotIn("evtx-security-000000000001", markdown)
 
-    def test_build_report_markdown_refreshes_stale_antiforensic_appendix_block(self) -> None:
+    def test_build_report_markdown_refreshes_stale_antiforensic_appendix_block(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -676,7 +797,12 @@ class PersistenceTests(unittest.TestCase):
                         {
                             "kind": "rows",
                             "source_verdict": "newlead",
-                            "sample_rows": [{"timestamp": "2026-05-28 10:00:00", "process_name": "None"}],
+                            "sample_rows": [
+                                {
+                                    "timestamp": "2026-05-28 10:00:00",
+                                    "process_name": "None",
+                                }
+                            ],
                             "evidence_ids": [],
                             "finding_ids": [],
                             "hypothesis_ids": [],
@@ -692,7 +818,9 @@ class PersistenceTests(unittest.TestCase):
             gaps = row[1]
             self.assertNotIn("None", body)
             self.assertNotIn("NULL", body)
-            self.assertIn("Raw evidence moved to reports/evidence/6_appendix.json", body)
+            self.assertIn(
+                "Raw evidence moved to reports/evidence/6_appendix.json", body
+            )
             self.assertIn("raw evidence rows were moved", str(gaps).lower())
 
     def test_finding_and_report_section_dtos_include_evidence_counts(self) -> None:
@@ -783,7 +911,9 @@ class PersistenceTests(unittest.TestCase):
             self.assertIn("gaps", result)
             self.assertIn("confidence", result)
 
-    def test_merge_active_hypotheses_assigns_sequential_ids_and_dedupes_description(self) -> None:
+    def test_merge_active_hypotheses_assigns_sequential_ids_and_dedupes_description(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -799,15 +929,49 @@ class PersistenceTests(unittest.TestCase):
                     """
                 )
                 current = [
-                    Hypothesis(id="H-001", description="existing active hypothesis", status="active", summary="", source_rule_ids=["rule-1"], required_entities=["host"]),
+                    Hypothesis(
+                        id="H-001",
+                        description="existing active hypothesis",
+                        status="active",
+                        summary="",
+                        source_rule_ids=["rule-1"],
+                        required_entities=["host"],
+                    ),
                 ]
                 updates = [
-                    Hypothesis(id="H-new", description="existing active hypothesis", status="active", summary="", source_rule_ids=["rule-3"], required_entities=["computer"]),
-                    Hypothesis(id="H-new-2", description="brand new hypothesis", status="active", summary="", source_rule_ids=["rule-4"], required_entities=["service"]),
-                    Hypothesis(id="H-new-3", description="resolved reference hypothesis", status="active", summary="", source_rule_ids=["rule-5"], required_entities=["user"]),
+                    Hypothesis(
+                        id="H-new",
+                        description="existing active hypothesis",
+                        status="active",
+                        summary="",
+                        source_rule_ids=["rule-3"],
+                        required_entities=["computer"],
+                    ),
+                    Hypothesis(
+                        id="H-new-2",
+                        description="brand new hypothesis",
+                        status="active",
+                        summary="",
+                        source_rule_ids=["rule-4"],
+                        required_entities=["service"],
+                    ),
+                    Hypothesis(
+                        id="H-new-3",
+                        description="resolved reference hypothesis",
+                        status="active",
+                        summary="",
+                        source_rule_ids=["rule-5"],
+                        required_entities=["user"],
+                    ),
                 ]
                 resolved = [
-                    Hypothesis(id="H-002", description="resolved reference hypothesis", status="confirmed", verdict="confirmed", summary="done"),
+                    Hypothesis(
+                        id="H-002",
+                        description="resolved reference hypothesis",
+                        status="confirmed",
+                        verdict="confirmed",
+                        summary="done",
+                    ),
                 ]
                 merged = _merge_active_hypotheses(
                     db=db,
@@ -844,9 +1008,23 @@ class PersistenceTests(unittest.TestCase):
                 )
                 merged = _merge_active_hypotheses(
                     db=db,
-                    current=[Hypothesis(id="H-010", description="RDP lateral movement to deploy service", status="active", source_rule_ids=["rule-1"], required_entities=["host"])],
+                    current=[
+                        Hypothesis(
+                            id="H-010",
+                            description="RDP lateral movement to deploy service",
+                            status="active",
+                            source_rule_ids=["rule-1"],
+                            required_entities=["host"],
+                        )
+                    ],
                     updates=[
-                        Hypothesis(id="H-new", description="RDP lateral movement used to deploy service", status="active", source_rule_ids=["rule-2"], required_entities=["host"]),
+                        Hypothesis(
+                            id="H-new",
+                            description="RDP lateral movement used to deploy service",
+                            status="active",
+                            source_rule_ids=["rule-2"],
+                            required_entities=["host"],
+                        ),
                     ],
                     resolved=[],
                     session_id="session-test",
@@ -871,7 +1049,9 @@ class PersistenceTests(unittest.TestCase):
         self.assertTrue(any("heading does not match" in gap.lower() for gap in gaps))
         self.assertLessEqual(confidence, 0.65)
 
-    def test_quality_gate_forces_low_confidence_when_fill_placeholder_remains(self) -> None:
+    def test_quality_gate_forces_low_confidence_when_fill_placeholder_remains(
+        self,
+    ) -> None:
         gaps, confidence = _quality_gate_section(
             "1_overview",
             "Investigation Overview",
@@ -891,9 +1071,18 @@ class PersistenceTests(unittest.TestCase):
             "| High | Isolate host1 now | suspicious activity observed |\n"
         )
 
-        gaps, confidence = _quality_gate_section("5_recommendations", "Recommended Actions", body, [], 1.0, behaviors=("require_recommendations_strength",))
+        gaps, confidence = _quality_gate_section(
+            "5_recommendations",
+            "Recommended Actions",
+            body,
+            [],
+            1.0,
+            behaviors=("require_recommendations_strength",),
+        )
 
-        self.assertTrue(any("Recommendations should state evidence strength" in g for g in gaps))
+        self.assertTrue(
+            any("Recommendations should state evidence strength" in g for g in gaps)
+        )
         self.assertLess(confidence, 1.0)
 
     def test_sort_markdown_table_by_first_column_orders_timeline_rows(self) -> None:
@@ -925,7 +1114,21 @@ class PersistenceTests(unittest.TestCase):
                         tags, attack, evidence, ai_summary, missing_checks, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    ("F-1", "rule", "Suspicious Service", "Summary", "high", 0.9, "accepted", "[]", "[]", "[]", "", "[]", now),
+                    (
+                        "F-1",
+                        "rule",
+                        "Suspicious Service",
+                        "Summary",
+                        "high",
+                        0.9,
+                        "accepted",
+                        "[]",
+                        "[]",
+                        "[]",
+                        "",
+                        "[]",
+                        now,
+                    ),
                 )
                 result = finalize_section(
                     db=db,
@@ -951,7 +1154,21 @@ class PersistenceTests(unittest.TestCase):
                         tags, attack, evidence, ai_summary, missing_checks, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    ("windows-corr-logon-then-service-0001", "windows-corr-logon-then-service", "Correlation", "Summary", "medium", 0.65, "accepted", "[]", "[]", "[]", "", "[]", now),
+                    (
+                        "windows-corr-logon-then-service-0001",
+                        "windows-corr-logon-then-service",
+                        "Correlation",
+                        "Summary",
+                        "medium",
+                        0.65,
+                        "accepted",
+                        "[]",
+                        "[]",
+                        "[]",
+                        "",
+                        "[]",
+                        now,
+                    ),
                 )
                 result = finalize_section(
                     db=db,
@@ -962,7 +1179,9 @@ class PersistenceTests(unittest.TestCase):
                     session_id="S-1",
                 )
 
-            self.assertTrue(any("Correlation-rule findings" in gap for gap in result["gaps"]))
+            self.assertTrue(
+                any("Correlation-rule findings" in gap for gap in result["gaps"])
+            )
             self.assertLessEqual(result["confidence"], 0.55)
 
     def test_build_report_brief_trims_excerpt_in_sql(self) -> None:
@@ -976,7 +1195,17 @@ class PersistenceTests(unittest.TestCase):
                         section_key, title, body, confidence, status, update_count, gaps, last_filled_session, last_filled_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    ("1_overview", "Overview", "x" * 800, 0.9, "draft", 1, "[]", "S-1", now),
+                    (
+                        "1_overview",
+                        "Overview",
+                        "x" * 800,
+                        0.9,
+                        "draft",
+                        1,
+                        "[]",
+                        "S-1",
+                        now,
+                    ),
                 )
                 brief = _build_report_brief(db)
 
@@ -1023,8 +1252,12 @@ class PersistenceTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 state = SessionState(session_id="session-test")
-                added = _inject_gap_hypotheses(db, state, ["foo bar"], session_id="session-test")
-                duplicate = _inject_gap_hypotheses(db, state, ["foo bar"], session_id="session-test")
+                added = _inject_gap_hypotheses(
+                    db, state, ["foo bar"], session_id="session-test"
+                )
+                duplicate = _inject_gap_hypotheses(
+                    db, state, ["foo bar"], session_id="session-test"
+                )
                 rows = db.execute(
                     "SELECT hypothesis_id, origin, status, description FROM hypotheses ORDER BY hypothesis_id"
                 ).fetchall()
@@ -1032,8 +1265,13 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual(1, added)
             self.assertEqual(0, duplicate)
             self.assertEqual(1, len(state.active_hypotheses))
-            self.assertEqual(_gap_hypothesis_id("foo bar"), state.active_hypotheses[0].id)
-            self.assertEqual([(_gap_hypothesis_id("foo bar"), "report_gap", "active", "foo bar")], rows)
+            self.assertEqual(
+                _gap_hypothesis_id("foo bar"), state.active_hypotheses[0].id
+            )
+            self.assertEqual(
+                [(_gap_hypothesis_id("foo bar"), "report_gap", "active", "foo bar")],
+                rows,
+            )
 
     def test_external_or_human_gaps_do_not_become_hypotheses(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1050,13 +1288,22 @@ class PersistenceTests(unittest.TestCase):
                 )
                 row_count = db.execute("SELECT COUNT(*) FROM hypotheses").fetchone()[0]
 
-            self.assertEqual("external_lookup", _classify_gap_kind("Check src_ip ownership"))
-            self.assertEqual("human_decision", _classify_gap_kind("Manager interview needed"))
+            self.assertEqual(
+                "external_lookup", _classify_gap_kind("Check src_ip ownership")
+            )
+            self.assertEqual(
+                "human_decision", _classify_gap_kind("Manager interview needed")
+            )
             self.assertEqual(0, added)
             self.assertEqual(0, row_count)
-            self.assertIn("ownership", memory.tasks_memory_path.read_text(encoding="utf-8").lower())
+            self.assertIn(
+                "ownership",
+                memory.tasks_memory_path.read_text(encoding="utf-8").lower(),
+            )
 
-    def test_gap_classification_supports_english_external_and_human_keywords(self) -> None:
+    def test_gap_classification_supports_english_external_and_human_keywords(
+        self,
+    ) -> None:
         for phrase in (
             "Need ip reputation check for this address",
             "Perform geo lookup for the source IP",
@@ -1072,19 +1319,24 @@ class PersistenceTests(unittest.TestCase):
 
     def test_final_summary_fallback_follows_output_language(self) -> None:
         with patch.dict("os.environ", {"LLM_OUTPUT_LANGUAGE": "en"}):
-            clear_llm_settings_cache()
+            reload_settings()
             self.assertEqual(
                 "No additional progress was made during this investigation.",
                 _final_summary(SessionState(session_id="S-1")),
             )
-            clear_llm_settings_cache()
+            reload_settings()
 
     def test_investigation_finding_title_prefix_follows_output_language(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
-            planned_query = PlannedQuery(query_id="Q-1", hypothesis_id="H-1", purpose="host triage", sql="SELECT 1")
+            planned_query = PlannedQuery(
+                query_id="Q-1",
+                hypothesis_id="H-1",
+                purpose="host triage",
+                sql="SELECT 1",
+            )
             with patch.dict("os.environ", {"LLM_OUTPUT_LANGUAGE": "ja"}):
-                clear_llm_settings_cache()
+                reload_settings()
                 with CaseDB(case) as db:
                     finding_id = _insert_investigation_finding(
                         db=db,
@@ -1093,9 +1345,11 @@ class PersistenceTests(unittest.TestCase):
                         result_summary={"sample_rows": []},
                         report_text="body",
                     )
-                    title = db.execute("SELECT title FROM findings WHERE finding_id = ?", (finding_id,)).fetchone()[0]
+                    title = db.execute(
+                        "SELECT title FROM findings WHERE finding_id = ?", (finding_id,)
+                    ).fetchone()[0]
             self.assertEqual("Investigation: host triage", title)
-            clear_llm_settings_cache()
+            reload_settings()
 
     def test_case_init_creates_allowlist_stub_and_preserves_existing_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1103,7 +1357,9 @@ class PersistenceTests(unittest.TestCase):
             initial = case.allowlist_path.read_text(encoding="utf-8")
             parsed = yaml.safe_load(initial)
             self.assertIn("rules", parsed)
-            case.allowlist_path.write_text("rules:\n  - rule_id: custom\n", encoding="utf-8")
+            case.allowlist_path.write_text(
+                "rules:\n  - rule_id: custom\n", encoding="utf-8"
+            )
             Case.init(tmpdir)
             preserved = case.allowlist_path.read_text(encoding="utf-8")
             self.assertEqual("rules:\n  - rule_id: custom\n", preserved)
@@ -1112,7 +1368,9 @@ class PersistenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             self.assertTrue((case.report_template_dir / "1_overview.md").exists())
-            self.assertTrue((case.report_template_dir / "5_recommendations.md").exists())
+            self.assertTrue(
+                (case.report_template_dir / "5_recommendations.md").exists()
+            )
 
     def test_export_packaged_report_templates_writes_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1146,9 +1404,17 @@ class PersistenceTests(unittest.TestCase):
                     "report_sections": {"items": []},
                 }
 
-            with patch("forensia.cli.investigate_loop", side_effect=fake_investigate_loop), patch(
-                "forensia.cli.render_written_report",
-                return_value=(case.path / "reports" / "report.md", case.path / "reports" / "report.html"),
+            with (
+                patch(
+                    "forensia.cli.investigate_loop", side_effect=fake_investigate_loop
+                ),
+                patch(
+                    "forensia.cli.render_written_report",
+                    return_value=(
+                        case.path / "reports" / "report.md",
+                        case.path / "reports" / "report.html",
+                    ),
+                ),
             ):
                 result = runner.invoke(
                     cli_module.app,
@@ -1211,18 +1477,38 @@ class PersistenceTests(unittest.TestCase):
                     "report_sections": {"items": []},
                 }
 
-            with patch(
-                "forensia.cli.ingest_all",
-                return_value={"new_files": 0, "skipped_files": 0, "evtx_files": 0, "mft_files": 0, "prefetch_files": 0},
-            ), patch(
-                "forensia.cli.normalize_all",
-                return_value={"evtx_rows": 0, "mft_entries": 0, "mft_timeline_rows": 0, "prefetch_executions": 0},
-            ), patch("forensia.cli.load_rules_from_dir", return_value=[]), patch(
-                "forensia.cli.investigate_loop",
-                side_effect=fake_investigate_loop,
-            ), patch(
-                "forensia.cli.render_written_report",
-                return_value=(output_dir / "reports" / "report.md", output_dir / "reports" / "report.html"),
+            with (
+                patch(
+                    "forensia.cli.ingest_all",
+                    return_value={
+                        "new_files": 0,
+                        "skipped_files": 0,
+                        "evtx_files": 0,
+                        "mft_files": 0,
+                        "prefetch_files": 0,
+                    },
+                ),
+                patch(
+                    "forensia.cli.normalize_all",
+                    return_value={
+                        "evtx_rows": 0,
+                        "mft_entries": 0,
+                        "mft_timeline_rows": 0,
+                        "prefetch_executions": 0,
+                    },
+                ),
+                patch("forensia.cli.load_rules_from_dir", return_value=[]),
+                patch(
+                    "forensia.cli.investigate_loop",
+                    side_effect=fake_investigate_loop,
+                ),
+                patch(
+                    "forensia.cli.render_written_report",
+                    return_value=(
+                        output_dir / "reports" / "report.md",
+                        output_dir / "reports" / "report.html",
+                    ),
+                ),
             ):
                 result = runner.invoke(
                     cli_module.app,

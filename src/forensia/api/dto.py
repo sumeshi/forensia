@@ -63,7 +63,7 @@ class HypothesisDTO(DTOModel):
     reasoning_count: int = 0
     latest_iteration: int | None = None
     latest_reasoning_at: str | None = None
-    latest_reasoning: list["HypothesisReasoningEntryDTO"] = []
+    latest_reasoning: list[HypothesisReasoningEntryDTO] = []
 
 
 class HypothesesResponseDTO(DTOModel):

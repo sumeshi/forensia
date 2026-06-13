@@ -1,84 +1,101 @@
 from __future__ import annotations
 
-import csv
-from functools import lru_cache
-import hashlib
-import json
 import re
 from collections.abc import Callable
-from datetime import UTC, datetime
+from functools import cache
 from pathlib import Path
 from typing import Any
 
-from forensia.core.case import Case, detect_epochs
-from forensia.core.memory import MemoryManager, memory_for_section
+from forensia.core.case import Case
 from forensia.db.database import CaseDB
-from forensia.db.query import fetch_records, normalize_value
-from forensia.questions import (
-    evaluate_question_spec_status,
-    project_rows_for_question_spec,
-    question_spec_for_answer_spec,
-)
-from forensia.report.html import render_html_report
-from forensia.report.quality_gates import (
-    PLACEHOLDER_ENTITY_PATTERN,
-    HEADING_PATTERN,
-    HTML_FILL_PATTERN,
-    FINDING_ID_PATTERN,
-    _first_heading_text,
-    _timeline_rows_are_chronological,
-    _title_matches_body_heading,
-    _normalized_text_key,
-    _detect_body_language,
-    _GateCtx,
-    _QUALITY_CHECKS,
-    _SEVERE_GATE_SUBSTRINGS,
-    _check_placeholder_entity,
-    _check_template_marker,
-    _check_heading_mismatch,
-    _check_timeline_ordering,
-    _check_recommendations_strength,
-    _check_verdict_inflation,
-    _check_raw_evidence_dump,
-    _check_output_language,
-    _check_open_questions,
-    _check_empty_body,
-    _check_bullet_only,
-    _check_kp_citation,
-    _check_hedge_no_citation,
-    _check_citation_token_no_finding_id,
-    _check_duplicate_paragraph,
-    _check_out_of_range_timestamp,
-    _check_overused_evidence_id,
-    _check_json_object_leak,
-    _check_failure_spam,
-    _quality_gate_section,
-)
+from forensia.db.query import normalize_value
 from forensia.knowledge import (
     catalog_artifact_names,
     catalog_exe_globs,
     catalog_names,
     catalog_path_terms,
     exe_glob_sql,
-    ioc_catalog as _ioc_catalog,
     matches_exe_globs,
 )
+from forensia.report import (
+    probes as _probes,  # noqa: F401 — re-export below, lazy import used internally
+)
+from forensia.report.html import render_html_report
 from forensia.report.keypoints import (
     EVIDENCE_ID_PATTERN,
-    REPORT_KEYPOINTS,
     REPORT_KEYPOINT_ALIASES,
+    REPORT_KEYPOINTS,
     _default_keypoints_for_section,
-    _extract_evidence_ids_from_value,
     _extract_needed_evidence,
-    _report_keypoint_rows,
     _resolve_evidence_results,
-    _sql_like_any,
+)
+from forensia.report.probes import (  # noqa: F401 — re-export for backward compat
+    _TABLE_BLOCK_BUILDERS,
+    _TABLE_COLUMNS,
+    # Re-exported for backward compat
+    _build_host_note,
+    _build_report_brief,
+    # Used directly by core writer.py functions
+    _collect_flat_evidence_rows,
+    _correlation_finding_ids,
+    _dump_section_evidence_json,
+    _dump_section_questions_json,
+    _dump_section_trace_json,
+    _duplicate_finding_titles,
+    _event_claim_gaps,
+    _extract_claim_texts,
+    _final_report_section_body,
+    _host_summary_rows,
+    _hypothesis_rows,
+    _markdown_table,
+    _query_evtx_time_range,
+    _query_prior_sections,
+    _query_top_findings,
+    _render_timestamp_with_timezone,
+    _sanitize_raw_evidence_body,
+    _section_confidence,
+    _sort_markdown_table_by_first_column,
+    _strip_narrative_status_lines,
+    _summarize_flat_evidence_rows,
+    _table_block_columns,
+    _title_from_template_body,
+    _tz_offset_str,
+    _update_section_quality_only,
+    _upsert_claims,
+    _upsert_report_section,
+    _validate_body_evidence_ids,
+    _verify_block_output,
+    collect_gaps,
+    fetch_report_sections,
+    load_report_sections_map,
+    mark_report_sections_ai_exhausted,
+    set_report_section_status,
+    write_report_brief,
+)
+from forensia.report.quality_gates import (  # noqa: F401 — re-exported for test imports
+    FINDING_ID_PATTERN,
+    _check_citation_token_no_finding_id,
+    _check_failure_spam,
+    _check_hedge_no_citation,
+    _check_json_object_leak,
+    _check_recommendations_strength,
+    _GateCtx,
+    _quality_gate_section,
 )
 from forensia.report.structured_answers import (  # noqa: F401
+    _HUMAN_REPORT_HIDDEN_COLUMNS,
+    _MISSING_REASON_NOOP_VALUES,
+    _STRUCTURED_ANSWER_BUILDERS,
+    _TIMESTAMP_COLUMN_SUFFIXES,
+    STRUCTURED_MARKDOWN_MAX_CELL_CHARS,
+    STRUCTURED_MARKDOWN_MAX_LIST_ITEMS,
+    STRUCTURED_MARKDOWN_MAX_ROWS,
+    UNIVERSAL_QUESTION_SPECS,
+    StructuredAnswerBuilder,
     _add_local_time_columns,
     _answer_columns,
-    _benchmark_block_id,
     _benchmark_answers_path,
+    _benchmark_block_id,
     _build_antiforensic_activity,
     _build_application_execution_history,
     _build_browser_usage,
@@ -124,64 +141,8 @@ from forensia.report.structured_answers import (  # noqa: F401
     _structured_block_id,
     _structured_rows,
     _text,
-    _TIMESTAMP_COLUMN_SUFFIXES,
-    _HUMAN_REPORT_HIDDEN_COLUMNS,
-    _MISSING_REASON_NOOP_VALUES,
-    _STRUCTURED_ANSWER_BUILDERS,
-    STRUCTURED_MARKDOWN_MAX_CELL_CHARS,
-    STRUCTURED_MARKDOWN_MAX_LIST_ITEMS,
-    STRUCTURED_MARKDOWN_MAX_ROWS,
-    StructuredAnswerBuilder,
-    UNIVERSAL_QUESTION_SPECS,
     build_structured_answer,
     ensure_universal_question_probes,
-)
-
-from forensia.report import probes as _probes  # noqa: F401 — re-export below, lazy import used internally
-
-from forensia.report.probes import (  # noqa: F401 — re-export for backward compat
-    # Used directly by core writer.py functions
-    _collect_flat_evidence_rows,
-    _correlation_finding_ids,
-    _dump_section_evidence_json,
-    _dump_section_questions_json,
-    _dump_section_trace_json,
-    _duplicate_finding_titles,
-    _event_claim_gaps,
-    _final_report_section_body,
-    _markdown_table,
-    _sanitize_raw_evidence_body,
-    _section_confidence,
-    _sort_markdown_table_by_first_column,
-    _table_block_columns,
-    _TABLE_BLOCK_BUILDERS,
-    _TABLE_COLUMNS,
-    _title_from_template_body,
-    _update_section_quality_only,
-    _upsert_claims,
-    _upsert_report_section,
-    _validate_body_evidence_ids,
-    _verify_block_output,
-    # Re-exported for backward compat
-    _build_host_note,
-    _build_report_brief,
-    _dump_section_questions_json,
-    _extract_claim_texts,
-    _host_summary_rows,
-    _hypothesis_rows,
-    _query_top_findings,
-    _query_evtx_time_range,
-    _query_prior_sections,
-    _render_timestamp_with_timezone,
-    _strip_narrative_status_lines,
-    _summarize_flat_evidence_rows,
-    _tz_offset_str,
-    collect_gaps,
-    fetch_report_sections,
-    load_report_sections_map,
-    mark_report_sections_ai_exhausted,
-    set_report_section_status,
-    write_report_brief,
 )
 
 # Re-export aliases so existing internal callers keep working
@@ -248,7 +209,6 @@ __all__ = [
 # template parsers; duplicating the dataclass made identity/typing fragile).
 from forensia.report.probes import TemplateMeta  # noqa: E402
 
-
 GAP_PATTERN = re.compile(
     r"\[INSUFFICIENT EVIDENCE:\s*([^\]]+)\]|【調査不足:\s*([^】]+)】",
     re.IGNORECASE,
@@ -257,7 +217,9 @@ BLOCK_HINT_PATTERN = re.compile(
     r"<!--\s*(?P<name>evidence_keypoints|mode|benchmark_id|answer_id|answer_spec|builder)\s*:\s*(?P<value>.*?)\s*-->",
     re.IGNORECASE,
 )
-QUESTION_HINT_PATTERN = re.compile(r"<!--\s*question(?:\s*:\s*(?P<value>.*?))?\s*-->", re.IGNORECASE)
+QUESTION_HINT_PATTERN = re.compile(
+    r"<!--\s*question(?:\s*:\s*(?P<value>.*?))?\s*-->", re.IGNORECASE
+)
 RAW_EVIDENCE_HEADING_PATTERN = re.compile(r"^#{2,6}\s*Raw Evidence\s*$", re.IGNORECASE)
 
 
@@ -269,6 +231,7 @@ def _parse_frontmatter(text: str) -> dict:
     if len(parts) < 3:
         return {}
     import yaml
+
     try:
         meta = yaml.safe_load(parts[1])
     except Exception:
@@ -276,7 +239,7 @@ def _parse_frontmatter(text: str) -> dict:
     return meta if isinstance(meta, dict) else {}
 
 
-@lru_cache(maxsize=None)
+@cache
 def _parse_template(template_path: str) -> tuple[str, TemplateMeta]:
     """Parse YAML front matter from a template file, returning (body, meta)."""
     text = Path(template_path).read_text(encoding="utf-8")
@@ -301,6 +264,7 @@ def _parse_block_hints(block_body: str) -> dict[str, Any]:
         "question": "",
         "builder": "",
     }
+
     def _iter_hint_pairs(name: str, value: str):
         """Yield (name, value) pairs, expanding the combined one-comment syntax
         ``<!-- mode: table; builder: X -->`` into separate directives.
@@ -324,7 +288,9 @@ def _parse_block_hints(block_body: str) -> dict[str, Any]:
         if not name or not value:
             continue
         if name == "evidence_keypoints":
-            keypoints = [item.strip() for item in re.split(r"[,，\s]+", value) if item.strip()]
+            keypoints = [
+                item.strip() for item in re.split(r"[,，\s]+", value) if item.strip()
+            ]
             for keypoint in keypoints:
                 if keypoint in seen_keypoints:
                     continue
@@ -399,10 +365,31 @@ SECTION_KEYPOINT_PREFIXES: dict[str, tuple[str, ...]] = {
 
 SECTION_EXTRA_KEYPOINTS: dict[str, tuple[str, ...]] = {
     "overview": ("top_keypoints", "session_activity_events"),
-    "timeline": ("top_keypoints", "gaps_log_integrity_events", "timeline_prefetch_full_history"),
-    "technical": ("top_keypoints", "overview_hosts", "session_activity_events", "host_user_profile_paths", "timeline_prefetch_history", "timeline_prefetch_full_history", "host_execution_activity", "mft_prefetch_filenames", "mft_user_app_activity", "mft_recent_folder_lnk", "ioc_user_data_files"),
+    "timeline": (
+        "top_keypoints",
+        "gaps_log_integrity_events",
+        "timeline_prefetch_full_history",
+    ),
+    "technical": (
+        "top_keypoints",
+        "overview_hosts",
+        "session_activity_events",
+        "host_user_profile_paths",
+        "timeline_prefetch_history",
+        "timeline_prefetch_full_history",
+        "host_execution_activity",
+        "mft_prefetch_filenames",
+        "mft_user_app_activity",
+        "mft_recent_folder_lnk",
+        "ioc_user_data_files",
+    ),
     "gaps": ("top_keypoints",),
-    "recommendations": ("top_keypoints", "timeline_system_events", "timeline_prefetch_history", "ioc_user_data_files"),
+    "recommendations": (
+        "top_keypoints",
+        "timeline_system_events",
+        "timeline_prefetch_history",
+        "ioc_user_data_files",
+    ),
     "appendix": ("top_keypoints",),
 }
 
@@ -410,6 +397,8 @@ SECTION_EXTRA_KEYPOINTS: dict[str, tuple[str, ...]] = {
 def _section_family(section_key: str) -> str:
     parts = str(section_key or "").split("_", 1)
     return parts[1] if len(parts) == 2 else parts[0]
+
+
 def prepare_section_request(
     case: Case,
     db: CaseDB,
@@ -427,17 +416,19 @@ def prepare_section_request(
     title = _title_from_template_body(template_body, section_key)
     template_preamble, blocks = _split_template_body(template_body)
     if not blocks:
-        blocks = [{
-            "heading": "",
-            "template_body": template_body,
-            "evidence_keypoints": [],
-            "mode": "",
-            "benchmark_id": "",
-            "answer_id": "",
-            "answer_spec": "",
-            "question": "",
-            "builder": "",
-        }]
+        blocks = [
+            {
+                "heading": "",
+                "template_body": template_body,
+                "evidence_keypoints": [],
+                "mode": "",
+                "benchmark_id": "",
+                "answer_id": "",
+                "answer_spec": "",
+                "question": "",
+                "builder": "",
+            }
+        ]
     block_requests = [
         {
             "heading": block["heading"],
@@ -475,8 +466,12 @@ def _body_starts_with_heading(body: str, heading: str) -> bool:
 
 def _assemble_section_body(template_preamble: str, rendered_blocks: list[str]) -> str:
     """Join a section preamble and rendered blocks consistently across sync/async paths."""
-    parts = [str(template_preamble or "").strip(), *[item.strip() for item in rendered_blocks if item.strip()]]
+    parts = [
+        str(template_preamble or "").strip(),
+        *[item.strip() for item in rendered_blocks if item.strip()],
+    ]
     return "\n\n".join(part for part in parts if part).strip()
+
 
 # ====================================================================
 # ORCHESTRATION — fill_section, finalize_section, build_report_markdown_from_db
@@ -484,9 +479,13 @@ def _assemble_section_body(template_preamble: str, rendered_blocks: list[str]) -
 # ====================================================================
 
 
-def _preprocess_section_body(section_key: str, body: str, *, template_meta: TemplateMeta | None = None) -> tuple[str, bool]:
+def _preprocess_section_body(
+    section_key: str, body: str, *, template_meta: TemplateMeta | None = None
+) -> tuple[str, bool]:
     body = re.sub(r"^\*\*Status:\*\*.*$", "", body, flags=re.MULTILINE).strip()
-    sanitized_body, removed_raw_evidence = _sanitize_raw_evidence_body(section_key, body)
+    sanitized_body, removed_raw_evidence = _sanitize_raw_evidence_body(
+        section_key, body
+    )
     if sanitized_body != body:
         body = sanitized_body
     if template_meta and "require_chronological_table" in template_meta.behaviors:
@@ -525,13 +524,20 @@ def _run_post_upsert_gap_checks(
     needs_update = False
     referenced_finding_ids = sorted(set(FINDING_ID_PATTERN.findall(body)))
     correlation_ids = _correlation_finding_ids(referenced_finding_ids, db)
-    if correlation_ids and "confirmed" in body.casefold() and not EVIDENCE_ID_PATTERN.search(body):
+    if (
+        correlation_ids
+        and "confirmed" in body.casefold()
+        and not EVIDENCE_ID_PATTERN.search(body)
+    ):
         note = "Correlation-rule findings are described as confirmed without direct evidence_id support; rewrite as hypothesis."
         if note not in candidate_gaps:
             candidate_gaps.append(note)
         candidate_confidence = min(candidate_confidence, 0.55)
         needs_update = True
-    if any(status in {"unsupported", "orphaned_reference", "needs_review"} for status in claim_statuses):
+    if any(
+        status in {"unsupported", "orphaned_reference", "needs_review"}
+        for status in claim_statuses
+    ):
         note = "One or more claims require support review due to unsupported, orphaned, or conflicting provenance."
         if note not in candidate_gaps:
             candidate_gaps.append(note)
@@ -602,7 +608,7 @@ def _validate_section_evidence_ids(db: CaseDB, body: str) -> tuple[str, list[str
     # valid IDs in the same group, then drop now-empty shells.
     cleaned = re.sub(r"([（(])\s*(?:,\s*)+", r"\1", cleaned)  # leading commas
     cleaned = re.sub(r"(?:\s*,)+\s*([)）])", r"\1", cleaned)  # trailing commas
-    cleaned = re.sub(r"（\s*）|\(\s*\)", "", cleaned)          # empty shells
+    cleaned = re.sub(r"（\s*）|\(\s*\)", "", cleaned)  # empty shells
     # Clean up double spaces, double commas, etc.
     cleaned = re.sub(r"  +", " ", cleaned)
     cleaned = re.sub(r",\s*,", ",", cleaned)
@@ -623,13 +629,17 @@ def finalize_section(
     template_meta: TemplateMeta | None = None,
 ) -> dict[str, Any]:
     """UPSERT the section into DuckDB. Returns gap list and confidence."""
-    body, removed_raw = _preprocess_section_body(section_key, body, template_meta=template_meta)
+    body, removed_raw = _preprocess_section_body(
+        section_key, body, template_meta=template_meta
+    )
     # R3-03: Validate evidence IDs against DB
     if db is not None and body:
         body, id_gaps = _validate_section_evidence_ids(db, body)
     else:
         id_gaps = []
-    candidate_gaps, candidate_confidence = _collect_initial_gaps(db, section_key, body, extra_gaps)
+    candidate_gaps, candidate_confidence = _collect_initial_gaps(
+        db, section_key, body, extra_gaps
+    )
     if id_gaps:
         candidate_gaps.extend(id_gaps)
         candidate_confidence = min(candidate_confidence, 0.5)
@@ -667,7 +677,12 @@ def finalize_section(
         return _read_persisted_section(db, section_key)
     claim_statuses = _upsert_claims(db, section_key, body, evidence_results or [])
     candidate_gaps, candidate_confidence, needs_update = _run_post_upsert_gap_checks(
-        db, body, evidence_results, claim_statuses, candidate_gaps, candidate_confidence,
+        db,
+        body,
+        evidence_results,
+        claim_statuses,
+        candidate_gaps,
+        candidate_confidence,
     )
     if needs_update:
         _update_section_quality_only(
@@ -682,7 +697,10 @@ def finalize_section(
             for r in (evidence_results if isinstance(evidence_results, list) else [])
         )
         if is_benchmark and candidate_confidence and candidate_confidence >= 0.8:
-            db.execute("UPDATE report_sections SET stale = FALSE WHERE section_key = ?", [section_key])
+            db.execute(
+                "UPDATE report_sections SET stale = FALSE WHERE section_key = ?",
+                [section_key],
+            )
     return {"gaps": candidate_gaps, "confidence": candidate_confidence}
 
 
@@ -700,7 +718,9 @@ def fill_section(
 ) -> str:
     """Prepare, render, and finalize a single report section, dispatching block agents and persisting evidence."""
     ensure_universal_question_probes(case, db)
-    request = prepare_section_request(case, db, template_path, context_sections, report_brief=report_brief)
+    request = prepare_section_request(
+        case, db, template_path, context_sections, report_brief=report_brief
+    )
     # Lazy import: section rendering is ai-side orchestration; report stays passive.
     from forensia.ai.section_refresher import _render_section_from_request
 
@@ -745,7 +765,11 @@ def build_report_markdown_from_db(db: CaseDB, case: Case | None = None) -> str:
 
 def write_report(case: Case, filled_sections: dict[str, str]) -> Path:
     """Write the concatenated filled sections to reports/report.md in section-key order."""
-    ordered = [filled_sections[key].strip() for key in sorted(filled_sections) if filled_sections[key].strip()]
+    ordered = [
+        filled_sections[key].strip()
+        for key in sorted(filled_sections)
+        if filled_sections[key].strip()
+    ]
     report_md = "\n\n".join(ordered).strip() + "\n"
     report_path = case.reports_dir / "report.md"
     report_path.write_text(report_md, encoding="utf-8")
@@ -767,14 +791,21 @@ def render_written_report(
 ) -> tuple[Path, Path]:
     """Write report Markdown (from sections or DB) and generate the corresponding HTML report."""
     if filled_sections is not None:
-        ordered = [filled_sections[key].strip() for key in sorted(filled_sections) if filled_sections[key].strip()]
+        ordered = [
+            filled_sections[key].strip()
+            for key in sorted(filled_sections)
+            if filled_sections[key].strip()
+        ]
         report_body = "\n\n".join(ordered).strip() + "\n"
     else:
         report_body = build_report_markdown_from_db(db, case=case)
     # R7-03: Evidence reference layer. report.md keeps plain IDs plus the
     # references appendix; the interactive layer (hover/anchor links) lives in
     # report.html, whose renderer reads evidence_map.json.
-    from forensia.report.evidence_map import render_evidence_references, write_evidence_map
+    from forensia.report.evidence_map import (
+        render_evidence_references,
+        write_evidence_map,
+    )
 
     evidence_map = write_evidence_map(db, report_body, case.reports_dir)
     ref_section = render_evidence_references(evidence_map)

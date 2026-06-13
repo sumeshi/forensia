@@ -170,7 +170,9 @@ class NormalizeMftTests(unittest.TestCase):
                 self.assertEqual(1, entries)
                 self.assertEqual(0, timeline)
             except Exception:
-                self.skipTest("DuckDB read_ndjson_objects does not skip malformed lines without ignore_errors")
+                self.skipTest(
+                    "DuckDB read_ndjson_objects does not skip malformed lines without ignore_errors"
+                )
 
     def test_mft_record_missing_optional_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

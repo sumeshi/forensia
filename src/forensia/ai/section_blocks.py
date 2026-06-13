@@ -8,7 +8,6 @@ The LLM-driven agent loop stays in section_agent.py.
 """
 
 
-import asyncio
 import hashlib
 import json
 import re
@@ -18,49 +17,32 @@ from functools import lru_cache
 from typing import Any
 
 from forensia.ai.checker import summarize_query_result
-from forensia.ai.json_response import async_request_llm_json, request_llm_json
-from forensia.ai.prompts import (
-    _enforce_system_budget,
-    build_paragraph_narrate_messages,
-    build_report_section_messages,
-    build_section_agent_check_messages,
-    build_section_agent_plan_messages,
-    build_section_outline_messages,
-    build_structured_classify_messages,
-)
+from forensia.ai.sql_templates import query_template_catalog, validate_select_sql
+from forensia.core.case import Case
+from forensia.core.session import PlannedQuery
+from forensia.db.database import CaseDB
+from forensia.db.query import fetch_records
+from forensia.knowledge import catalog_names as _catalog_names
 from forensia.questions import (
     QuestionSpec,
     extract_time_qualifiers,
     load_question_specs,
     resolve_question_spec,
 )
-from forensia.ai.sql_templates import query_template_catalog, render_query_template, validate_select_sql
-from forensia.core.case import Case
-from forensia.core.memory import MemoryManager
-from forensia.core.session import PlannedQuery
-from forensia.db.database import CaseDB
-from forensia.db.query import fetch_records
-from forensia.knowledge import load_event_class_definitions as _load_event_class_definitions
 from forensia.report.keypoints import (
-    REPORT_KEYPOINTS,
     REPORT_KEYPOINT_ALIASES,
+    REPORT_KEYPOINTS,
     _default_keypoints_for_section,
     _resolve_evidence_results,
 )
 from forensia.report.structured_answers import (
     _build_daily_session_timeline_rows,
-    _feed_structured_to_timeline,
     _load_structured_answers,
     _normalize_structured_answer,
     _persist_structured_answer,
     _render_structured_answer_markdown,
     _structured_block_id,
-    build_structured_answer,
 )
-from forensia.knowledge import catalog_names as _catalog_names
-from forensia.report.quality_gates import _detect_body_language
-from forensia.report.probes import _collect_flat_evidence_rows, _summarize_flat_evidence_rows
-
 
 _CONFIDENCE_KEYWORD_MAP = {
     "critical": 0.95,
@@ -85,7 +67,7 @@ def _coerce_confidence(value: Any, default: float = 0.5) -> float:
     if isinstance(value, (int, float)):
         try:
             return max(0.0, min(1.0, float(value)))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return default
     text = str(value).strip().lower()
     if not text:
@@ -96,6 +78,7 @@ def _coerce_confidence(value: Any, default: float = 0.5) -> float:
         return max(0.0, min(1.0, float(text)))
     except ValueError:
         return default
+
 
 # ====================================================================
 # BLOCK CONTEXT + HELPERS — _BlockContext, status helpers, digest helpers
@@ -170,8 +153,12 @@ def _load_question_routing() -> list[QuestionSpec]:
     return list(load_question_specs())
 
 
-def _question_routing_rule(block_heading: str, template_body: str) -> QuestionSpec | None:
-    spec, _confidence = resolve_question_spec(block_heading=block_heading, template_body=template_body)
+def _question_routing_rule(
+    block_heading: str, template_body: str
+) -> QuestionSpec | None:
+    spec, _confidence = resolve_question_spec(
+        block_heading=block_heading, template_body=template_body
+    )
     return spec
 
 
@@ -237,7 +224,9 @@ def _structured_digest_from_answers(case: Case) -> str:
         if not isinstance(answer_rows, list) or not answer_rows:
             continue
 
-        answer_spec = str(answer.get("answer_spec") or "").strip() or str(answer.get("id") or "?")
+        answer_spec = str(answer.get("answer_spec") or "").strip() or str(
+            answer.get("id") or "?"
+        )
         row_count = len(answer_rows)
         first_row = answer_rows[0] if isinstance(answer_rows[0], dict) else None
         columns = answer.get("columns") or []
@@ -255,7 +244,15 @@ def _structured_digest_from_answers(case: Case) -> str:
                 val = str(row.get(first_col) or "").strip()
                 if val and val not in top_values:
                     top_values.append(val)
-            for ts_key in ("timestamp", "logon_time", "last_exec_time", "si_modified", "date", "shutdown_time", "first_event_time"):
+            for ts_key in (
+                "timestamp",
+                "logon_time",
+                "last_exec_time",
+                "si_modified",
+                "date",
+                "shutdown_time",
+                "first_event_time",
+            ):
                 ts = str(row.get(ts_key) or "").strip()
                 if ts:
                     timestamps.append(ts)
@@ -275,7 +272,11 @@ def _structured_digest_from_answers(case: Case) -> str:
     if not lines:
         return ""
 
-    digest = "<STRUCTURED_OBSERVATIONS>\n" + "\n".join(lines) + "\n</STRUCTURED_OBSERVATIONS>"
+    digest = (
+        "<STRUCTURED_OBSERVATIONS>\n"
+        + "\n".join(lines)
+        + "\n</STRUCTURED_OBSERVATIONS>"
+    )
     if len(digest) > 1500:
         digest = digest[:1497] + "..."
     return digest
@@ -288,12 +289,21 @@ def _benchmark_report_brief(report_brief: dict[str, Any] | None) -> dict[str, An
     narratives, to prevent answer leakage.
     """
     brief = dict(report_brief or {})
-    keys_to_keep = {"evidence_inventory", "table_inventory", "row_counts", "time_range", "time_window", "source_inventory"}
+    keys_to_keep = {
+        "evidence_inventory",
+        "table_inventory",
+        "row_counts",
+        "time_range",
+        "time_window",
+        "source_inventory",
+    }
     if "evidence_inventory" in brief:
         evidence_inventory = brief.get("evidence_inventory")
         if isinstance(evidence_inventory, dict):
             brief["evidence_inventory"] = {
-                key: value for key, value in evidence_inventory.items() if key in keys_to_keep
+                key: value
+                for key, value in evidence_inventory.items()
+                if key in keys_to_keep
             }
     for key in list(brief.keys()):
         if key in keys_to_keep or key == "evidence_inventory":
@@ -312,7 +322,9 @@ def _audit_bridge(audit_callback):
     if audit_callback is None:
         return None
 
-    def inner(messages: list[dict[str, str]], output: str, parsed: dict[str, Any]) -> None:
+    def inner(
+        messages: list[dict[str, str]], output: str, parsed: dict[str, Any]
+    ) -> None:
         audit_callback(messages, output)
 
     return inner
@@ -330,13 +342,15 @@ def _store_section_run(
 ) -> None:
     """Persist one section-agent run step (plan, query, check, write) to section_runs."""
     if verdict is not None:
-        normalized = {"sufficient": "block_supported", "refuted": "block_contradicted"}.get(verdict, verdict)
+        normalized = {
+            "sufficient": "block_supported",
+            "refuted": "block_contradicted",
+        }.get(verdict, verdict)
         from forensia.core.verdicts import assert_valid_verdict
+
         assert_valid_verdict(normalized, "section_verdict")
     run_id = hashlib.sha1(
-        f"{section_key}-{block_heading}-{iteration}-{phase}-{json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)}".encode(
-            "utf-8"
-        )
+        f"{section_key}-{block_heading}-{iteration}-{phase}-{json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)}".encode()
     ).hexdigest()[:20]
     db.execute(
         """
@@ -372,7 +386,7 @@ def _store_section_question(
     if spec is None and not normalized_text:
         return
     question_id = hashlib.sha1(
-        f"{section_key}\n{block_heading}\n{normalized_text}\n{spec.semantic_id if spec else ''}".encode("utf-8")
+        f"{section_key}\n{block_heading}\n{normalized_text}\n{spec.semantic_id if spec else ''}".encode()
     ).hexdigest()[:20]
     required_evidence = {
         "required_fields": list(spec.required_fields) if spec else [],
@@ -420,7 +434,9 @@ def _store_section_question(
         return
 
 
-def _load_prior_runs(db: CaseDB, section_key: str, block_heading: str) -> list[dict[str, Any]]:
+def _load_prior_runs(
+    db: CaseDB, section_key: str, block_heading: str
+) -> list[dict[str, Any]]:
     """Load prior section-agent run history for a given (section, block).
 
     JSON payloads are deserialized automatically. Results are ordered by
@@ -479,7 +495,9 @@ def _load_cached_result(db: CaseDB, source_query: str) -> dict[str, Any] | None:
     return parsed
 
 
-def _store_cached_result(db: CaseDB, source_query: str, payload: dict[str, Any]) -> None:
+def _store_cached_result(
+    db: CaseDB, source_query: str, payload: dict[str, Any]
+) -> None:
     db.execute(
         """
         INSERT INTO query_cache (sql_hash, sql_text, result_json, executed_at)
@@ -489,7 +507,12 @@ def _store_cached_result(db: CaseDB, source_query: str, payload: dict[str, Any])
             result_json = excluded.result_json,
             executed_at = excluded.executed_at
         """,
-        (_cache_key(source_query), source_query, json.dumps(payload, ensure_ascii=False, default=str), _now()),
+        (
+            _cache_key(source_query),
+            source_query,
+            json.dumps(payload, ensure_ascii=False, default=str),
+            _now(),
+        ),
     )
 
 
@@ -502,7 +525,11 @@ def _store_section_evidence(
     source_query: str,
 ) -> None:
     """Persist evidence IDs referenced by a section block result."""
-    evidence_ids = [str(item).strip() for item in (result.get("evidence_ids") or []) if str(item).strip()]
+    evidence_ids = [
+        str(item).strip()
+        for item in (result.get("evidence_ids") or [])
+        if str(item).strip()
+    ]
     rows = [
         (
             section_key,
@@ -542,7 +569,11 @@ def _store_section_facts(
     # Only persist facts explicitly verified by the LLM check phase.
     # Do NOT auto-promote raw sample_rows to "facts" — they are unverified data
     # and would pollute the fact store with high-confidence noise.
-    evidence_ids = [str(item).strip() for item in (result.get("evidence_ids") or []) if str(item).strip()]
+    evidence_ids = [
+        str(item).strip()
+        for item in (result.get("evidence_ids") or [])
+        if str(item).strip()
+    ]
     rows: list[tuple[Any, ...]] = []
     timestamp = _now()
     for item in fact_updates or []:
@@ -556,7 +587,7 @@ def _store_section_facts(
         # by different sections must converge to the same id so it is reused
         # across the whole report (e.g. Q6 computer_name discovered in 1_overview
         # must be visible to 3_technical via the same fact_id).
-        fact_id = hashlib.sha1(f"{fact_type}-{fact_key}".encode("utf-8")).hexdigest()[:20]
+        fact_id = hashlib.sha1(f"{fact_type}-{fact_key}".encode()).hexdigest()[:20]
         new_value = json.dumps(item.get("fact_value"), ensure_ascii=False, default=str)
         new_confidence = _coerce_confidence(item.get("confidence"))
         # Check for conflicts: existing value differs from new value
@@ -618,6 +649,7 @@ def _keypoint_catalog(
     Explicit evidence_keypoints from template hints win first. If absent, use
     heading/body routing hints, then fall back to the section family default.
     """
+
     def resolve_name(name: str) -> str:
         normalized = str(name or "").strip()
         return REPORT_KEYPOINT_ALIASES.get(normalized, normalized)
@@ -635,7 +667,9 @@ def _keypoint_catalog(
         if catalog:
             return catalog
 
-    routed_keypoints = _question_routing_keypoints(block_heading or "", template_body or "")
+    routed_keypoints = _question_routing_keypoints(
+        block_heading or "", template_body or ""
+    )
     if routed_keypoints:
         catalog: list[dict[str, str]] = []
         seen: set[str] = set()
@@ -651,19 +685,41 @@ def _keypoint_catalog(
 
     if not section_key:
         template_body = template_body or ""
-        keywords = {"logon", "user", "host", "ip", "service", "task", "powershell", "process", "execution", "event", "finding", "persistence", "defender"}
+        keywords = {
+            "logon",
+            "user",
+            "host",
+            "ip",
+            "service",
+            "task",
+            "powershell",
+            "process",
+            "execution",
+            "event",
+            "finding",
+            "persistence",
+            "defender",
+        }
         filtered: list[dict[str, str]] = []
         for keypoint, (description, _) in sorted(REPORT_KEYPOINTS.items()):
             lowered = template_body.lower()
-            if any(kw in lowered and (kw in keypoint.lower() or kw in description.lower()) for kw in keywords):
+            if any(
+                kw in lowered and (kw in keypoint.lower() or kw in description.lower())
+                for kw in keywords
+            ):
                 filtered.append({"name": keypoint, "description": description})
             if len(filtered) >= 10:
                 break
         if filtered:
             return filtered
-        return [{"name": keypoint, "description": description} for keypoint, (description, _) in sorted(REPORT_KEYPOINTS.items())[:10]]
+        return [
+            {"name": keypoint, "description": description}
+            for keypoint, (description, _) in sorted(REPORT_KEYPOINTS.items())[:10]
+        ]
 
-    preferred = _default_keypoints_for_section(section_key, block_heading=block_heading or "")
+    preferred = _default_keypoints_for_section(
+        section_key, block_heading=block_heading or ""
+    )
     catalog: list[dict[str, str]] = []
     seen: set[str] = set()
     for keypoint in preferred:
@@ -680,10 +736,12 @@ def _query_template_catalog() -> list[dict[str, Any]]:
 
 
 def _filter_template_catalog_by_section(
-    full_catalog: list[dict[str, Any]], section_key: str, collected_results: list[dict[str, Any]]
+    full_catalog: list[dict[str, Any]],
+    section_key: str,
+    collected_results: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Filter template catalog to relevant subset based on section_key and evidence types.
-    
+
     Pass empty list to get full catalog filtered; otherwise filters already-loaded catalog.
     """
     if not full_catalog:
@@ -696,13 +754,30 @@ def _filter_template_catalog_by_section(
         for result in collected_results
         if str(result.get("keypoint", "")).startswith("template:")
     }
-    keywords = {"logon", "user", "host", "ip", "service", "task", "powershell", "process", "execution"}
+    keywords = {
+        "logon",
+        "user",
+        "host",
+        "ip",
+        "service",
+        "task",
+        "powershell",
+        "process",
+        "execution",
+    }
     if section_key.startswith("1_") or section_key.startswith("overview"):
         keywords = keywords | {"event", "range", "hosts", "findings"}
     elif section_key.startswith("2_") or section_key.startswith("timeline"):
         keywords = keywords | {"timeline", "event", "mft", "prefetch"}
     elif section_key.startswith("3_") or section_key.startswith("technical"):
-        keywords = keywords | {"host", "account", "persistence", "ioc", "execution", "defender"}
+        keywords = keywords | {
+            "host",
+            "account",
+            "persistence",
+            "ioc",
+            "execution",
+            "defender",
+        }
     elif section_key.startswith("4_") or section_key.startswith("gaps"):
         keywords = keywords | {"gap", "missing"}
     elif section_key.startswith("5_") or section_key.startswith("recommendations"):
@@ -713,7 +788,9 @@ def _filter_template_catalog_by_section(
         if template_id in already_used_templates:
             continue
         template_desc = str(template.get("description", "")).lower()
-        if family in template_id.lower() or any(kw in template_id or kw in template_desc for kw in keywords):
+        if family in template_id.lower() or any(
+            kw in template_id or kw in template_desc for kw in keywords
+        ):
             filtered.append(template)
     return filtered[:8] if len(filtered) > 8 else filtered
 
@@ -749,7 +826,9 @@ def _load_reusable_section_facts(
         where_sql = "source_section = ? OR source_section = '__case_probe__'"
         params: tuple[Any, ...] = (section_key, limit)
     else:
-        where_sql = "source_section = ? AND COALESCE(fact_type, '') != 'universal_question'"
+        where_sql = (
+            "source_section = ? AND COALESCE(fact_type, '') != 'universal_question'"
+        )
         params = (section_key, limit)
     rows = db.execute(
         f"""
@@ -762,13 +841,25 @@ def _load_reusable_section_facts(
         params,
     ).fetchall()
     items: list[dict[str, Any]] = []
-    for fact_type, fact_key, fact_value, evidence_ids, source_section, confidence, updated_at in rows:
+    for (
+        fact_type,
+        fact_key,
+        fact_value,
+        evidence_ids,
+        source_section,
+        confidence,
+        updated_at,
+    ) in rows:
         try:
-            parsed_value = json.loads(str(fact_value)) if fact_value is not None else None
+            parsed_value = (
+                json.loads(str(fact_value)) if fact_value is not None else None
+            )
         except json.JSONDecodeError:
             parsed_value = str(fact_value)
         try:
-            parsed_evidence_ids = json.loads(str(evidence_ids)) if evidence_ids is not None else []
+            parsed_evidence_ids = (
+                json.loads(str(evidence_ids)) if evidence_ids is not None else []
+            )
         except json.JSONDecodeError:
             parsed_evidence_ids = []
         items.append(
@@ -776,7 +867,9 @@ def _load_reusable_section_facts(
                 "fact_type": str(fact_type or ""),
                 "fact_key": str(fact_key or ""),
                 "fact_value": parsed_value,
-                "evidence_ids": parsed_evidence_ids if isinstance(parsed_evidence_ids, list) else [],
+                "evidence_ids": parsed_evidence_ids
+                if isinstance(parsed_evidence_ids, list)
+                else [],
                 "source_section": str(source_section or ""),
                 "confidence": float(confidence or 0.0),
                 "updated_at": str(updated_at),
@@ -800,7 +893,7 @@ def _facts_as_result(reusable_facts: list[dict[str, Any]]) -> dict[str, Any]:
         if c is not None:
             try:
                 max_confidence = max(max_confidence, float(c))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 pass
     return {
         "keypoint": "section_facts",
@@ -817,7 +910,9 @@ def _facts_as_result(reusable_facts: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _load_reusable_section_evidence(db: CaseDB, section_key: str, limit: int = 30) -> list[dict[str, Any]]:
+def _load_reusable_section_evidence(
+    db: CaseDB, section_key: str, limit: int = 30
+) -> list[dict[str, Any]]:
     """Load prior section evidence records reusable by sibling blocks."""
     rows = db.execute(
         """
@@ -889,7 +984,9 @@ def _summarize_sql_result(sql: str, rows: list[dict[str, Any]]) -> dict[str, Any
     }
 
 
-def _execute_keypoint(case: Case, db: CaseDB, keypoint: str) -> tuple[str, dict[str, Any]]:
+def _execute_keypoint(
+    case: Case, db: CaseDB, keypoint: str
+) -> tuple[str, dict[str, Any]]:
     """Execute a single keypoint and cache the result.
 
     Returns (source_query, result_dict). Uses query_cache to avoid re-resolving
@@ -900,18 +997,22 @@ def _execute_keypoint(case: Case, db: CaseDB, keypoint: str) -> tuple[str, dict[
     if cached is not None:
         return source_query, cached
     resolved = _resolve_evidence_results(case, db, keypoints=[keypoint])
-    result = resolved[0] if resolved else {
-        "keypoint": keypoint,
-        "description": "",
-        "kind": "rows",
-        "source_kind": "keypoint",
-        "source_ref": keypoint,
-        "row_count": 0,
-        "evidence_ids": [],
-        "finding_ids": [],
-        "hypothesis_ids": [],
-        "sample_rows": [],
-    }
+    result = (
+        resolved[0]
+        if resolved
+        else {
+            "keypoint": keypoint,
+            "description": "",
+            "kind": "rows",
+            "source_kind": "keypoint",
+            "source_ref": keypoint,
+            "row_count": 0,
+            "evidence_ids": [],
+            "finding_ids": [],
+            "hypothesis_ids": [],
+            "sample_rows": [],
+        }
+    )
     _store_cached_result(db, source_query, result)
     return source_query, result
 
@@ -925,7 +1026,7 @@ def _add_json_fallback(sql: str) -> str:
 
     import re
 
-    select_match = re.search(r'SELECT\s+(.+?)\s+FROM', sql, re.IGNORECASE | re.DOTALL)
+    select_match = re.search(r"SELECT\s+(.+?)\s+FROM", sql, re.IGNORECASE | re.DOTALL)
     if not select_match:
         return sql
 
@@ -941,14 +1042,14 @@ def _add_json_fallback(sql: str) -> str:
 
     new_select = select_clause
     for col_name, replacement in nullable_cols.items():
-        pattern = r'(?:evtx_events\.)?\b' + re.escape(col_name) + r'\b'
+        pattern = r"(?:evtx_events\.)?\b" + re.escape(col_name) + r"\b"
         if re.search(pattern, select_clause, re.IGNORECASE):
             new_select = re.sub(pattern, replacement, new_select, flags=re.IGNORECASE)
 
     if new_select == select_clause:
         return sql
 
-    return sql[:select_match.start(1)] + new_select + sql[select_match.end(1):]
+    return sql[: select_match.start(1)] + new_select + sql[select_match.end(1) :]
 
 
 def _execute_sql(db: CaseDB, sql: str) -> tuple[str, dict[str, Any]]:
@@ -968,14 +1069,19 @@ def _execute_sql(db: CaseDB, sql: str) -> tuple[str, dict[str, Any]]:
     return source_query, result
 
 
-def _coerce_plan_action(plan: dict[str, Any], *, section_key: str, iteration: int, db: CaseDB | None = None) -> SectionPlanAction | None:
+def _coerce_plan_action(
+    plan: dict[str, Any], *, section_key: str, iteration: int, db: CaseDB | None = None
+) -> SectionPlanAction | None:
     """Parse and normalize the LLM plan output into a typed SectionPlanAction.
 
     Handles default action/keypoint assignment, template vs SQL vs keypoint routing,
     and builds a PlannedQuery for template/sql actions.
     """
     action = str(plan.get("action") or "").strip().lower() or "keypoint"
-    purpose = str(plan.get("purpose") or "").strip() or f"report block {section_key} iteration {iteration}"
+    purpose = (
+        str(plan.get("purpose") or "").strip()
+        or f"report block {section_key} iteration {iteration}"
+    )
     enough_to_write = bool(plan.get("enough_to_write"))
     keypoint = (
         str(plan.get("keypoint") or "").strip()
@@ -992,7 +1098,9 @@ def _coerce_plan_action(plan: dict[str, Any], *, section_key: str, iteration: in
                 block_heading="",
                 iteration=iteration,
                 phase="plan_error",
-                payload={"error": "planner returned action=keypoint without keypoint name"},
+                payload={
+                    "error": "planner returned action=keypoint without keypoint name"
+                },
             )
         return None
     planned_query: PlannedQuery | None = None
@@ -1026,7 +1134,9 @@ def _load_evidence_chains() -> dict[str, list[dict[str, str]]]:
     return chains
 
 
-def _substitute_placeholders(sql: str, qualifiers: dict[str, str | None], defaults: dict[str, str]) -> str:
+def _substitute_placeholders(
+    sql: str, qualifiers: dict[str, str | None], defaults: dict[str, str]
+) -> str:
     """Substitute {{date_from}}, {{date_to}}, {{hour_from}}, {{hour_to}} placeholders.
     Values from qualifiers (extracted from question text) take priority;
     defaults provide fallback. Placeholders with no resolved value are left untouched.
@@ -1039,7 +1149,9 @@ def _substitute_placeholders(sql: str, qualifiers: dict[str, str | None], defaul
     return result
 
 
-def _execute_evidence_chain(db: CaseDB, block_heading: str, template_body: str, question: str = "") -> list[dict[str, Any]]:
+def _execute_evidence_chain(
+    db: CaseDB, block_heading: str, template_body: str, question: str = ""
+) -> list[dict[str, Any]]:
     """Execute deterministic evidence chain for the block.
     Tries each chain entry in order until one returns rows.
 
@@ -1050,7 +1162,9 @@ def _execute_evidence_chain(db: CaseDB, block_heading: str, template_body: str, 
     chains = _load_evidence_chains()
     if not chains:
         return []
-    spec, _confidence = resolve_question_spec(block_heading=block_heading, template_body=template_body)
+    spec, _confidence = resolve_question_spec(
+        block_heading=block_heading, template_body=template_body
+    )
     chain_name = spec.name if spec is not None else None
     if chain_name is None or chain_name not in chains:
         return []
@@ -1064,6 +1178,7 @@ def _execute_evidence_chain(db: CaseDB, block_heading: str, template_body: str, 
                 query = _substitute_placeholders(query, time_qualifiers, defaults)
                 try:
                     from forensia.db.query import fetch_records
+
                     rows = fetch_records(db, query)
                     if rows:
                         return rows[:50]
@@ -1111,20 +1226,38 @@ def _format_structured_answer(
             if entry:
                 answer_data.append(entry)
 
-    resolved_id = benchmark_id.strip() if benchmark_id else _structured_block_id(block_heading)
-    normalized_status = str(classification.get("status") or status or "insufficient_evidence").strip().lower()
+    resolved_id = (
+        benchmark_id.strip() if benchmark_id else _structured_block_id(block_heading)
+    )
+    normalized_status = (
+        str(classification.get("status") or status or "insufficient_evidence")
+        .strip()
+        .lower()
+    )
     if not _is_valid_status(normalized_status):
-        normalized_status = status if _is_valid_status(status) else "insufficient_evidence"
+        normalized_status = (
+            status if _is_valid_status(status) else "insufficient_evidence"
+        )
     # Validate via row indices
     picked_row_indices = classification.get("picked_row_indices") or []
     if isinstance(picked_row_indices, list):
-        valid_indices = [i for i in picked_row_indices if isinstance(i, (int, float)) and evidence_rows and 0 <= int(i) < len(evidence_rows)]
+        valid_indices = [
+            i
+            for i in picked_row_indices
+            if isinstance(i, (int, float))
+            and evidence_rows
+            and 0 <= int(i) < len(evidence_rows)
+        ]
     else:
         valid_indices = []
-    validated_rows = [evidence_rows[int(i)] for i in valid_indices] if evidence_rows else []
+    validated_rows = (
+        [evidence_rows[int(i)] for i in valid_indices] if evidence_rows else []
+    )
     if not validated_rows and picked_row_indices:
         normalized_status = "wrong_query"
-        classification["rationale"] = "no valid evidence rows (picked_row_indices out of range or empty)"
+        classification["rationale"] = (
+            "no valid evidence rows (picked_row_indices out of range or empty)"
+        )
     answer_spec_val = str(answer_spec or "").strip()
     if not answer_spec_val:
         spec, _confidence = resolve_question_spec(block_heading=block_heading)
@@ -1134,7 +1267,9 @@ def _format_structured_answer(
         "section": section_key,
         "status": normalized_status,
         "answer": answer_data or validated_rows,
-        "missing_reason": [str(classification.get("rationale") or "").strip()] if classification.get("rationale") else [],
+        "missing_reason": [str(classification.get("rationale") or "").strip()]
+        if classification.get("rationale")
+        else [],
         "queries_run": queries_run or [],
         "answer_spec": answer_spec_val,
     }
@@ -1151,9 +1286,14 @@ def _format_structured_answer(
                 filtered.append(item)
         normalized_answer["answer"] = filtered
 
-    if normalized_answer["status"] in {"answered", "partial"} and not normalized_answer.get("answer"):
+    if normalized_answer["status"] in {
+        "answered",
+        "partial",
+    } and not normalized_answer.get("answer"):
         normalized_answer["status"] = "wrong_query"
-        reason = str(classification.get("rationale") or "answer was empty after filtering").strip()
+        reason = str(
+            classification.get("rationale") or "answer was empty after filtering"
+        ).strip()
         normalized_answer["missing_reason"] = [reason]
 
     normalized_answer = _normalize_structured_answer(
@@ -1203,7 +1343,9 @@ def _antiforensic_tool_names() -> tuple[str, ...]:
 
 
 def _row_text(row: dict[str, Any]) -> str:
-    return " ".join(str(value) for value in row.values() if value is not None).casefold()
+    return " ".join(
+        str(value) for value in row.values() if value is not None
+    ).casefold()
 
 
 def _row_value(row: dict[str, Any], *keys: str) -> Any:
@@ -1231,7 +1373,9 @@ def _build_daily_session_timeline(
     return _build_daily_session_timeline_rows(db, qualifiers)
 
 
-def _extract_daily_table(raw_rows: list[dict[str, Any]], fields: list[str]) -> list[dict[str, Any]]:
+def _extract_daily_table(
+    raw_rows: list[dict[str, Any]], fields: list[str]
+) -> list[dict[str, Any]]:
     by_date: dict[str, dict[str, Any]] = {}
     for row in raw_rows:
         date_value = _row_value(row, "date")
@@ -1243,7 +1387,14 @@ def _extract_daily_table(raw_rows: list[dict[str, Any]], fields: list[str]) -> l
             continue
         bucket = by_date.setdefault(
             str(date_value),
-            {"startup": 0, "logons": 0, "logoff": 0, "shutdown": 0, "first_event_time": None, "last_event_time": None},
+            {
+                "startup": 0,
+                "logons": 0,
+                "logoff": 0,
+                "shutdown": 0,
+                "first_event_time": None,
+                "last_event_time": None,
+            },
         )
         count = int(row.get("n") or row.get("count") or 1)
         if event_id in {"6005", "4608"}:
@@ -1261,12 +1412,17 @@ def _extract_daily_table(raw_rows: list[dict[str, Any]], fields: list[str]) -> l
             if bucket["last_event_time"] is None or ts > bucket["last_event_time"]:
                 bucket["last_event_time"] = ts
     return [
-        {field: (date_value if field == "date" else values.get(field, "")) for field in fields}
+        {
+            field: (date_value if field == "date" else values.get(field, ""))
+            for field in fields
+        }
         for date_value, values in sorted(by_date.items())
     ]
 
 
-def _extract_known_list(raw_rows: list[dict[str, Any]], fields: list[str]) -> list[dict[str, Any]]:
+def _extract_known_list(
+    raw_rows: list[dict[str, Any]], fields: list[str]
+) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for row in raw_rows:
         item: dict[str, Any] = {}
@@ -1288,7 +1444,9 @@ def _extract_known_list(raw_rows: list[dict[str, Any]], fields: list[str]) -> li
     return out
 
 
-def _extract_name_with_version(raw_rows: list[dict[str, Any]], fields: list[str]) -> list[dict[str, Any]]:
+def _extract_name_with_version(
+    raw_rows: list[dict[str, Any]], fields: list[str]
+) -> list[dict[str, Any]]:
     detected: dict[str, dict[str, Any]] = {}
     app_markers = {
         "Microsoft Outlook": ("outlook", ".ost", ".pst"),
@@ -1308,7 +1466,9 @@ def _extract_name_with_version(raw_rows: list[dict[str, Any]], fields: list[str]
                     data_file = _row_value(row, "file_path", "file_name", "summary")
                     if data_file:
                         existing = str(item.get("data_files") or "")
-                        item["data_files"] = data_file if not existing else f"{existing}; {data_file}"
+                        item["data_files"] = (
+                            data_file if not existing else f"{existing}; {data_file}"
+                        )
                 if "version" in fields and not item.get("version"):
                     match = re.search(r"(\d+(?:\.\d+){1,4})", text)
                     if match:
@@ -1316,7 +1476,9 @@ def _extract_name_with_version(raw_rows: list[dict[str, Any]], fields: list[str]
     return [item for item in detected.values() if not _all_values_empty(item)]
 
 
-def _extract_enumerated_services(raw_rows: list[dict[str, Any]], fields: list[str]) -> list[dict[str, Any]]:
+def _extract_enumerated_services(
+    raw_rows: list[dict[str, Any]], fields: list[str]
+) -> list[dict[str, Any]]:
     services = {
         "Google Drive": ("googledrive", "google drive", "googledrivesync"),
         "iCloud": ("icloud",),
@@ -1325,46 +1487,86 @@ def _extract_enumerated_services(raw_rows: list[dict[str, Any]], fields: list[st
     }
     rows: list[dict[str, Any]] = []
     for service_name, markers in services.items():
-        matches = [row for row in raw_rows if any(marker in _row_text(row) for marker in markers)]
+        matches = [
+            row
+            for row in raw_rows
+            if any(marker in _row_text(row) for marker in markers)
+        ]
         if not matches:
             continue
         item = {field: "" for field in fields}
         if "service_name" in fields:
             item["service_name"] = service_name
         if "exe_found" in fields:
-            item["exe_found"] = "yes" if any(".exe" in _row_text(row) or ".pf" in _row_text(row) for row in matches) else "no"
+            item["exe_found"] = (
+                "yes"
+                if any(
+                    ".exe" in _row_text(row) or ".pf" in _row_text(row)
+                    for row in matches
+                )
+                else "no"
+            )
         if "paths_found" in fields:
-            item["paths_found"] = "; ".join(str(_row_value(row, "file_path", "summary") or "") for row in matches[:3]).strip("; ")
+            item["paths_found"] = "; ".join(
+                str(_row_value(row, "file_path", "summary") or "")
+                for row in matches[:3]
+            ).strip("; ")
         if "config_found" in fields:
-            item["config_found"] = "yes" if any(marker in _row_text(row) for row in matches for marker in ("config", ".db", "snapshot")) else "no"
+            item["config_found"] = (
+                "yes"
+                if any(
+                    marker in _row_text(row)
+                    for row in matches
+                    for marker in ("config", ".db", "snapshot")
+                )
+                else "no"
+            )
         rows.append(item)
     return [item for item in rows if not _all_values_empty(item)]
 
 
-def _extract_pair_list(raw_rows: list[dict[str, Any]], fields: list[str]) -> list[dict[str, Any]]:
+def _extract_pair_list(
+    raw_rows: list[dict[str, Any]], fields: list[str]
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for row in raw_rows:
         original = _row_value(row, "original_name", "fn_filename")
         new = _row_value(row, "new_name", "file_name")
         if original and new and str(original) != str(new):
-            rows.append({
-                field: {
-                    "original_name": original,
-                    "new_name": new,
-                    "timestamp": _row_value(row, "timestamp", "si_modified", "fn_modified") or "",
-                }.get(field, "")
-                for field in fields
-            })
+            rows.append(
+                {
+                    field: {
+                        "original_name": original,
+                        "new_name": new,
+                        "timestamp": _row_value(
+                            row, "timestamp", "si_modified", "fn_modified"
+                        )
+                        or "",
+                    }.get(field, "")
+                    for field in fields
+                }
+            )
     return rows
 
 
-def _extract_full_scan(raw_rows: list[dict[str, Any]], fields: list[str]) -> list[dict[str, Any]]:
+def _extract_full_scan(
+    raw_rows: list[dict[str, Any]], fields: list[str]
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for row in raw_rows:
         text = _row_text(row)
         tool_names = _antiforensic_tool_names()
         tool_markers = tuple(name.casefold() for name in tool_names)
-        if not any(marker in text for marker in (*tool_markers, "log cleared", "event_id=104", "event_id=1102", "event_id=1100")):
+        if not any(
+            marker in text
+            for marker in (
+                *tool_markers,
+                "log cleared",
+                "event_id=104",
+                "event_id=1102",
+                "event_id=1100",
+            )
+        ):
             continue
         item = {field: "" for field in fields}
         if "tool_name" in fields:
@@ -1372,14 +1574,18 @@ def _extract_full_scan(raw_rows: list[dict[str, Any]], fields: list[str]) -> lis
                 if tool.casefold() in text:
                     item["tool_name"] = tool
                     break
-            if not item.get("tool_name") and any(marker in text for marker in ("104", "1102", "1100")):
+            if not item.get("tool_name") and any(
+                marker in text for marker in ("104", "1102", "1100")
+            ):
                 item["tool_name"] = "Windows Event Log"
         if "evidence_type" in fields:
             item["evidence_type"] = "event" if "event_id" in text else "file"
         if "found" in fields:
             item["found"] = "yes"
         if "details" in fields:
-            item["details"] = str(_row_value(row, "summary", "file_path", "message") or row)
+            item["details"] = str(
+                _row_value(row, "summary", "file_path", "message") or row
+            )
         rows.append(item)
     return [item for item in rows if not _all_values_empty(item)]
 
@@ -1425,7 +1631,9 @@ def _extract_answer_by_shape(
     return result
 
 
-def _flatten_sample_rows(collected_results: list[dict], *, rows_only: bool = False) -> list[dict]:
+def _flatten_sample_rows(
+    collected_results: list[dict], *, rows_only: bool = False
+) -> list[dict]:
     flat: list[dict] = []
     for r in collected_results:
         if rows_only and str(r.get("kind") or "rows") != "rows":
@@ -1537,7 +1745,9 @@ def _result_source_label(result: dict[str, Any]) -> str:
     return "unknown_source"
 
 
-def _result_count_summary(collected_results: list[dict[str, Any]]) -> tuple[int, list[str], list[str]]:
+def _result_count_summary(
+    collected_results: list[dict[str, Any]],
+) -> tuple[int, list[str], list[str]]:
     total_rows = 0
     positive: list[str] = []
     zero: list[str] = []
@@ -1547,7 +1757,7 @@ def _result_count_summary(collected_results: list[dict[str, Any]]) -> tuple[int,
         label = _result_source_label(result)
         try:
             count = int(result.get("row_count") or 0)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             count = 0
         total_rows += max(count, 0)
         target = positive if count > 0 else zero
@@ -1557,7 +1767,9 @@ def _result_count_summary(collected_results: list[dict[str, Any]]) -> tuple[int,
     return total_rows, positive, zero
 
 
-def _representative_ids(collected_results: list[dict[str, Any]], flat_rows: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
+def _representative_ids(
+    collected_results: list[dict[str, Any]], flat_rows: list[dict[str, Any]]
+) -> tuple[list[str], list[str]]:
     evidence_ids: list[str] = []
     finding_ids: list[str] = []
     seen_evidence: set[str] = set()

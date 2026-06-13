@@ -1,20 +1,17 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, datetime
+import json
 import re
+from datetime import UTC, datetime
 from typing import Any
 
-import json
-
-from forensia.ai.prompts import resolve_rule_context
-
+from forensia.core.log import log as _log
 from forensia.core.session import Hypothesis, SessionState
+from forensia.core.textutil import normalize_text as _normalize_text
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
 from forensia.rules.loader import load_rule_by_id
-from forensia.core.log import log as _log
-from forensia.core.textutil import normalize_text as _normalize_text
 
 
 # Hypothesis-construction helpers (moved from report_gap.py to break the
@@ -27,18 +24,40 @@ def _gap_hypothesis_id(description: str) -> str:
 
 def _extract_entities_from_text(text: str) -> list[str]:
     """Safety-net: Extract entity names from a gap description when LLM output is incomplete.
-    
+
     This is a fallback for when the LLM did not provide required_entities.
     The LLM prompt already requires these fields; this should rarely be needed.
     """
     entities = []
     words = text.split()
     for word in words:
-        word = word.strip('.,;:()[]{}"\'')
+        word = word.strip(".,;:()[]{}\"'")
         # Skip obvious non-entities
-        if word.lower() in {"the", "this", "that", "unknown", "cannot", "insufficient", "evidence"}:
+        if word.lower() in {
+            "the",
+            "this",
+            "that",
+            "unknown",
+            "cannot",
+            "insufficient",
+            "evidence",
+        }:
             continue
-        if len(word) > 3 and any(pattern in word.lower() for pattern in ["\\", "/", ".exe", ".dll", "service", "account", "user", "host", "computer", "ip"]):
+        if len(word) > 3 and any(
+            pattern in word.lower()
+            for pattern in [
+                "\\",
+                "/",
+                ".exe",
+                ".dll",
+                "service",
+                "account",
+                "user",
+                "host",
+                "computer",
+                "ip",
+            ]
+        ):
             entities.append(word)
         elif len(word) > 2 and word[0].isupper() and word.isalnum():
             entities.append(word)
@@ -52,26 +71,28 @@ def _propose_confirm_when(entities: list[str]) -> dict[str, Any]:
     return {"co_observed_entity_names": entities, "same_host": False}
 
 
-def _clean_confirm_when(confirm_when: dict[str, Any] | None, db: CaseDB | None = None) -> dict[str, Any] | None:
+def _clean_confirm_when(
+    confirm_when: dict[str, Any] | None, db: CaseDB | None = None
+) -> dict[str, Any] | None:
     """Remove non-finding_id entries from confirm_when.co_observed_event_ids.
-    
+
     Validates that each entry is either a valid finding_id (matching DB pattern)
     or a valid event_id (integer). Drops keypoint names, free text, etc.
     """
     if not confirm_when or not isinstance(confirm_when, dict):
         return confirm_when
-    
+
     co_observed = confirm_when.get("co_observed_event_ids")
     if not co_observed or not isinstance(co_observed, list):
         return confirm_when
-    
+
     cleaned: list[str] = []
     for entry in co_observed:
         entry_str = str(entry).strip()
         if not entry_str:
             continue
         # Keep valid finding_ids (pattern: windows-xxx-yyyy-xxxx-xxxx)
-        if re.match(r'^[a-z]+-[a-z0-9]+-[0-9]+-[a-z0-9-]+$', entry_str):
+        if re.match(r"^[a-z]+-[a-z0-9]+-[0-9]+-[a-z0-9-]+$", entry_str):
             cleaned.append(entry_str)
             continue
         # Keep valid event_ids (pure integers)
@@ -83,16 +104,18 @@ def _clean_confirm_when(confirm_when: dict[str, Any] | None, db: CaseDB | None =
             pass
         # Skip everything else (keypoint names, free text, etc.)
         continue
-    
+
     if not cleaned:
         confirm_when.pop("co_observed_event_ids", None)
     else:
         confirm_when["co_observed_event_ids"] = cleaned
-    
+
     return confirm_when if any(confirm_when.values()) else None
 
 
-def _recent_reasoning_rows(db: CaseDB, hypothesis_id: str, limit: int = 10) -> list[dict[str, Any]]:
+def _recent_reasoning_rows(
+    db: CaseDB, hypothesis_id: str, limit: int = 10
+) -> list[dict[str, Any]]:
     """Fetch the most recent reasoning entries for a given hypothesis."""
     return fetch_records(
         db,
@@ -133,7 +156,9 @@ def _render_hypothesis_memory(db: CaseDB | None, hypothesis: Hypothesis) -> str:
                 verdict = str(row.get("verdict") or "-")
                 query_id = str(row.get("query_id") or "-")
                 body = " ".join(str(row.get("body") or "").split())[:240]
-                lines.append(f"- [{phase}] verdict={verdict} query={query_id} :: {body}")
+                lines.append(
+                    f"- [{phase}] verdict={verdict} query={query_id} :: {body}"
+                )
     return "\n".join(lines) + "\n"
 
 
@@ -169,11 +194,17 @@ def _next_hypothesis_id(db: CaseDB) -> str:
 
 def _merge_hypothesis_fields(existing: Hypothesis, incoming: Hypothesis) -> Hypothesis:
     """Merge fields from an incoming hypothesis into an existing one, preserving existing status and verdict."""
-    source_rule_ids = _merge_string_lists(existing.source_rule_ids, incoming.source_rule_ids)
-    required_entities = _merge_string_lists(existing.required_entities, incoming.required_entities)
+    source_rule_ids = _merge_string_lists(
+        existing.source_rule_ids, incoming.source_rule_ids
+    )
+    required_entities = _merge_string_lists(
+        existing.required_entities, incoming.required_entities
+    )
     confirm_when = existing.confirm_when or incoming.confirm_when
     if confirm_when:
-        confirm_when = _clean_confirm_when(dict(confirm_when) if isinstance(confirm_when, dict) else confirm_when)
+        confirm_when = _clean_confirm_when(
+            dict(confirm_when) if isinstance(confirm_when, dict) else confirm_when
+        )
     return Hypothesis(
         id=existing.id,
         description=existing.description or incoming.description,
@@ -186,13 +217,20 @@ def _merge_hypothesis_fields(existing: Hypothesis, incoming: Hypothesis) -> Hypo
         confirm_when=confirm_when if isinstance(confirm_when, dict) else None,
         refute_when=existing.refute_when or incoming.refute_when,
         fallback_phase=existing.fallback_phase or incoming.fallback_phase,
-        fallback_source_rule_id=existing.fallback_source_rule_id or incoming.fallback_source_rule_id,
+        fallback_source_rule_id=existing.fallback_source_rule_id
+        or incoming.fallback_source_rule_id,
         target_keypoint_id=existing.target_keypoint_id or incoming.target_keypoint_id,
     )
 
 
 def _hypothesis_tokens(description: str) -> set[str]:
-    return {token for token in re.findall(r"[a-z0-9]+", _normalize_hypothesis_description(description)) if token}
+    return {
+        token
+        for token in re.findall(
+            r"[a-z0-9]+", _normalize_hypothesis_description(description)
+        )
+        if token
+    }
 
 
 def _extract_semantic_triple(description: str) -> dict[str, str]:
@@ -201,24 +239,41 @@ def _extract_semantic_triple(description: str) -> dict[str, str]:
     actor = ""
     action = ""
     target = ""
-    for pattern, group in [(r"(?:by|from|via)\s+(an?\s+)?([a-z0-9_-]+)", 2), (r"(external ip|attacker|user|admin|malicious|suspicious)", 1)]:
+    for pattern, group in [
+        (r"(?:by|from|via)\s+(an?\s+)?([a-z0-9_-]+)", 2),
+        (r"(external ip|attacker|user|admin|malicious|suspicious)", 1),
+    ]:
         m = re.search(pattern, text)
         if m:
             actor = m.group(group)
             break
-    for pattern in [r"(lateral movement|rdp|remote desktop|persistence|privilege escalation|defense evasion|credential access|discovery|exfiltration)", r"(create|install|deploy|modify|delete|clear|disable|bypass|elevat|escalat)", r"(execut|run|launch|invoke|schedule)"]:
+    for pattern in [
+        r"(lateral movement|rdp|remote desktop|persistence|privilege escalation|defense evasion|credential access|discovery|exfiltration)",
+        r"(create|install|deploy|modify|delete|clear|disable|bypass|elevat|escalat)",
+        r"(execut|run|launch|invoke|schedule)",
+    ]:
         m = re.search(pattern, text)
         if m:
             action = m.group(1)
             break
     # NOTE: each fallback pattern must contain a capturing group matching its
     # declared group index — (?:...) here previously caused "no such group".
-    for pattern, group in [(r"(?:to|on|into|onto)\s+(an?\s+)?([a-z0-9_-]+)", 2), (r"(account|service|task|process|host|server|user|group|log|event|file|folder|key)", 1)]:
+    for pattern, group in [
+        (r"(?:to|on|into|onto)\s+(an?\s+)?([a-z0-9_-]+)", 2),
+        (
+            r"(account|service|task|process|host|server|user|group|log|event|file|folder|key)",
+            1,
+        ),
+    ]:
         m = re.search(pattern, text)
         if m:
             target = m.group(group)
             break
-    return {"actor": actor or "unknown", "action": action or "unknown", "target": target or "unknown"}
+    return {
+        "actor": actor or "unknown",
+        "action": action or "unknown",
+        "target": target or "unknown",
+    }
 
 
 def _semantic_hypothesis_similarity(left: str, right: str) -> float:
@@ -250,7 +305,9 @@ def _hypothesis_similarity(left: str, right: str) -> float:
     semantic_score = _semantic_hypothesis_similarity(left, right)
     left_triple = _extract_semantic_triple(left)
     right_triple = _extract_semantic_triple(right)
-    all_unknown = all(v == "unknown" for v in left_triple.values()) or all(v == "unknown" for v in right_triple.values())
+    all_unknown = all(v == "unknown" for v in left_triple.values()) or all(
+        v == "unknown" for v in right_triple.values()
+    )
     if all_unknown:
         return surface_score
     return max(surface_score, semantic_score)
@@ -285,7 +342,6 @@ def _best_hypothesis_match(
     return best_hypothesis, best_score
 
 
-
 def _row_to_hypothesis(row: dict[str, Any]) -> Hypothesis:
     """Convert a database result row into a Hypothesis object, parsing JSON fields."""
     verdict = row.get("verdict")
@@ -295,6 +351,7 @@ def _row_to_hypothesis(row: dict[str, Any]) -> Hypothesis:
     if isinstance(source_rule_ids, str):
         try:
             import json
+
             source_rule_ids = json.loads(source_rule_ids)
         except Exception:
             source_rule_ids = []
@@ -303,6 +360,7 @@ def _row_to_hypothesis(row: dict[str, Any]) -> Hypothesis:
     if isinstance(required_entities, str):
         try:
             import json
+
             required_entities = json.loads(required_entities)
         except Exception:
             required_entities = []
@@ -311,6 +369,7 @@ def _row_to_hypothesis(row: dict[str, Any]) -> Hypothesis:
     if isinstance(confirm_when, str):
         try:
             import json
+
             confirm_when = json.loads(confirm_when)
         except Exception:
             confirm_when = None
@@ -358,6 +417,7 @@ def _upsert_hypothesis(
 ) -> None:
     """Insert or update a hypothesis row, preserving original creation metadata on conflict."""
     from forensia.core.verdicts import assert_valid_verdict
+
     if hypothesis.verdict is not None:
         assert_valid_verdict(hypothesis.verdict, "hypothesis_verdict")
     now = datetime.now(UTC).replace(tzinfo=None)
@@ -420,7 +480,9 @@ def _upsert_hypothesis(
             json.dumps(hypothesis.source_rule_ids, ensure_ascii=False),
             hypothesis.source_decl_id,
             json.dumps(hypothesis.required_entities, ensure_ascii=False),
-            json.dumps(clean_confirm_when, ensure_ascii=False) if clean_confirm_when else None,
+            json.dumps(clean_confirm_when, ensure_ascii=False)
+            if clean_confirm_when
+            else None,
             hypothesis.target_keypoint_id,
         ),
     )
@@ -442,17 +504,27 @@ def _merge_active_hypotheses(
     by_id = {item.id: item for item in current if item.id not in resolved_ids}
     skipped_for_cap: list[str] = []
     alias_map: dict[str, str] = {}
-    active_by_description = {_normalize_hypothesis_description(item.description): item for item in current if item.id not in resolved_ids}
-    resolved_by_description = {_normalize_hypothesis_description(item.description): item for item in resolved}
+    active_by_description = {
+        _normalize_hypothesis_description(item.description): item
+        for item in current
+        if item.id not in resolved_ids
+    }
+    resolved_by_description = {
+        _normalize_hypothesis_description(item.description): item for item in resolved
+    }
     for item in updates:
         if item.id in resolved_ids or item.status in {"confirmed", "refuted"}:
             continue
         incoming_id = alias_map.get(item.id, item.id)
         existing = by_id.get(incoming_id)
         if existing is None:
-            existing = active_by_description.get(_normalize_hypothesis_description(item.description))
+            existing = active_by_description.get(
+                _normalize_hypothesis_description(item.description)
+            )
         if existing is None:
-            best_active, best_active_score = _best_hypothesis_match(list(by_id.values()), item.description)
+            best_active, best_active_score = _best_hypothesis_match(
+                list(by_id.values()), item.description
+            )
             if best_active is not None and best_active_score > 0.85:
                 existing = best_active
         if existing is not None:
@@ -461,19 +533,33 @@ def _merge_active_hypotheses(
             by_id[merged.id] = merged
             if existing.id != merged.id:
                 by_id.pop(existing.id, None)
-            active_by_description[_normalize_hypothesis_description(merged.description)] = merged
+            active_by_description[
+                _normalize_hypothesis_description(merged.description)
+            ] = merged
             _upsert_hypothesis(db, merged, origin=origin, session_id=session_id)
             continue
-        resolved_existing = resolved_by_description.get(_normalize_hypothesis_description(item.description))
+        resolved_existing = resolved_by_description.get(
+            _normalize_hypothesis_description(item.description)
+        )
         if resolved_existing is None:
-            best_resolved, best_resolved_score = _best_hypothesis_match(resolved, item.description)
+            best_resolved, best_resolved_score = _best_hypothesis_match(
+                resolved, item.description
+            )
             if best_resolved is not None and best_resolved_score > 0.85:
                 resolved_existing = best_resolved
         if resolved_existing is not None:
             merged = _merge_hypothesis_fields(resolved_existing, item)
             alias_map[item.id] = merged.id
-            resolved_by_description[_normalize_hypothesis_description(merged.description)] = merged
-            _upsert_hypothesis(db, merged, origin="resolved", session_id=session_id, resolved_session=session_id)
+            resolved_by_description[
+                _normalize_hypothesis_description(merged.description)
+            ] = merged
+            _upsert_hypothesis(
+                db,
+                merged,
+                origin="resolved",
+                session_id=session_id,
+                resolved_session=session_id,
+            )
             continue
         # Cap the active set. Updates to existing hypotheses already happened
         # above (in the merge branches); only NEW additions are subject to the
@@ -501,10 +587,15 @@ def _merge_active_hypotheses(
             target_keypoint_id=item.target_keypoint_id,
         )
         by_id[assigned_id] = hypothesis
-        active_by_description[_normalize_hypothesis_description(hypothesis.description)] = hypothesis
+        active_by_description[
+            _normalize_hypothesis_description(hypothesis.description)
+        ] = hypothesis
         _upsert_hypothesis(db, hypothesis, origin=origin, session_id=session_id)
     if skipped_for_cap:
-        _log("CAP", f"active hypothesis cap reached ({MAX_ACTIVE_HYPOTHESES}); skipped {len(skipped_for_cap)} new: {skipped_for_cap[:3]}…")
+        _log(
+            "CAP",
+            f"active hypothesis cap reached ({MAX_ACTIVE_HYPOTHESES}); skipped {len(skipped_for_cap)} new: {skipped_for_cap[:3]}…",
+        )
     return list(by_id.values())
 
 
@@ -552,7 +643,13 @@ def _feed_verdict_to_timeline(
     for row in sample_rows or []:
         if not isinstance(row, dict):
             continue
-        for ts_key in ("timestamp", "logon_time", "exec_time", "last_exec_time", "si_modified"):
+        for ts_key in (
+            "timestamp",
+            "logon_time",
+            "exec_time",
+            "last_exec_time",
+            "si_modified",
+        ):
             candidate = row.get(ts_key)
             if candidate is not None and str(candidate).strip():
                 timestamp = candidate
@@ -589,11 +686,39 @@ def _guess_related_sections(text: str) -> list[str]:
     section_map = {
         "1_overview": ["overview", "first evidence", "summary", "fec", "initial"],
         "2_timeline": ["timeline", "time", "log clear", "reboot", "shutdown", "when"],
-        "3_technical": ["host", "computer", "server", "workstation", "account", "user", "credential", "password", "logon", "rdp", "admin", "service", "task", "powershell", "defender", "persistence", "execution", "ioc", "ip", "process", "file", "path", "indicator"],
+        "3_technical": [
+            "host",
+            "computer",
+            "server",
+            "workstation",
+            "account",
+            "user",
+            "credential",
+            "password",
+            "logon",
+            "rdp",
+            "admin",
+            "service",
+            "task",
+            "powershell",
+            "defender",
+            "persistence",
+            "execution",
+            "ioc",
+            "ip",
+            "process",
+            "file",
+            "path",
+            "indicator",
+        ],
         "4_gaps": ["gap", "unknown", "insufficient", "unresolved"],
         "5_recommendations": ["mitigation", "recommendation", "countermeasure"],
     }
-    matches = [section for section, keywords in section_map.items() if any(keyword in lowered for keyword in keywords)]
+    matches = [
+        section
+        for section, keywords in section_map.items()
+        if any(keyword in lowered for keyword in keywords)
+    ]
     return matches or ["4_gaps"]
 
 
@@ -605,7 +730,14 @@ def _sections_for_keypoint(keypoint_name: str) -> list[str]:
     from forensia.report.keypoints import _default_keypoints_for_section
 
     results: list[str] = []
-    for section_key in ("1_overview", "2_timeline", "3_technical", "4_gaps", "5_recommendations", "6_appendix"):
+    for section_key in (
+        "1_overview",
+        "2_timeline",
+        "3_technical",
+        "4_gaps",
+        "5_recommendations",
+        "6_appendix",
+    ):
         if keypoint_name in _default_keypoints_for_section(section_key):
             results.append(section_key)
     return results
@@ -633,14 +765,20 @@ def _resolve_hypothesis(
     remaining: list[Hypothesis] = []
     stale_sections: list[str] = []
     follow_up_hypotheses: list[Hypothesis] = []
-    known_by_description: set[str] = {_normalize_text(item.description) for item in _all_hypotheses(state)}
-    resolved_by_description: set[str] = {_normalize_text(item.description) for item in state.resolved_hypotheses}
+    known_by_description: set[str] = {
+        _normalize_text(item.description) for item in _all_hypotheses(state)
+    }
+    resolved_by_description: set[str] = {
+        _normalize_text(item.description) for item in state.resolved_hypotheses
+    }
     for item in state.active_hypotheses:
         if item.id == hypothesis_id:
             resolved = Hypothesis(
                 id=item.id,
                 description=item.description,
-                status=verdict if verdict in {"untestable"} else ("confirmed" if verdict == "confirmed" else "refuted"),
+                status=verdict
+                if verdict in {"untestable"}
+                else ("confirmed" if verdict == "confirmed" else "refuted"),
                 verdict=verdict,
                 summary=summary,
                 source_rule_ids=item.source_rule_ids,
@@ -656,7 +794,9 @@ def _resolve_hypothesis(
                 session_id=session_id,
                 resolved_session=session_id,
             )
-            _feed_verdict_to_timeline(db, item.id, verdict, item.description, sample_rows)
+            _feed_verdict_to_timeline(
+                db, item.id, verdict, item.description, sample_rows
+            )
             # R5-03: Mark stale based on target_keypoint_id (runs regardless of source_rule_ids)
             if item.target_keypoint_id:
                 stale_sections.extend(_sections_for_keypoint(item.target_keypoint_id))
@@ -668,16 +808,16 @@ def _resolve_hypothesis(
                 rule = load_rule_by_id(source_rule_id)
                 if rule:
                     # T-07: Use source_decl_id to find the exact declaration (fall back to id match)
-                    decl_id_lookup = item.source_decl_id if item.source_decl_id else item.id
+                    decl_id_lookup = (
+                        item.source_decl_id if item.source_decl_id else item.id
+                    )
                     decl = next(
-                        (h for h in rule.hypotheses if h.id == decl_id_lookup),
-                        None
+                        (h for h in rule.hypotheses if h.id == decl_id_lookup), None
                     )
                     # BUG-3 fallback: try matching by declaration id == item.id when source_decl_id match fails
                     if decl is None and item.source_decl_id is not None:
                         decl = next(
-                            (h for h in rule.hypotheses if h.id == item.id),
-                            None
+                            (h for h in rule.hypotheses if h.id == item.id), None
                         )
                     if decl and decl.report_sections:
                         stale_sections.extend(decl.report_sections)
@@ -687,10 +827,16 @@ def _resolve_hypothesis(
                             # query's sample rows; skip unresolvable follow-ups.
                             rendered = _interpolate_follow_up(follow_up, sample_rows)
                             if rendered is None:
-                                _log("RESOLVE", f"[follow-up] skipped (unresolved placeholders): {follow_up[:80]}")
+                                _log(
+                                    "RESOLVE",
+                                    f"[follow-up] skipped (unresolved placeholders): {follow_up[:80]}",
+                                )
                                 continue
                             normalized = _normalize_text(rendered)
-                            if normalized not in known_by_description and normalized not in resolved_by_description:
+                            if (
+                                normalized not in known_by_description
+                                and normalized not in resolved_by_description
+                            ):
                                 follow_up_hypotheses.append(
                                     Hypothesis(
                                         id=_gap_hypothesis_id(rendered),
@@ -699,14 +845,18 @@ def _resolve_hypothesis(
                                         verdict=None,
                                         summary="",
                                         source_rule_ids=[source_rule_id],
-                                        required_entities=_extract_entities_from_text(rendered),
-                                        confirm_when=_propose_confirm_when(_extract_entities_from_text(rendered)),
+                                        required_entities=_extract_entities_from_text(
+                                            rendered
+                                        ),
+                                        confirm_when=_propose_confirm_when(
+                                            _extract_entities_from_text(rendered)
+                                        ),
                                     )
                                 )
         else:
             remaining.append(item)
     state.active_hypotheses = remaining
-    
+
     # Mark stale sections in report_sections table
     seen_sections: set[str] = set()
     for section_key in stale_sections:
@@ -714,7 +864,7 @@ def _resolve_hypothesis(
             continue
         seen_sections.add(section_key)
         _mark_section_stale(db, section_key)
-    
+
     # DESIGN-4: Add follow-up hypotheses to active list
     for follow_up in follow_up_hypotheses:
         state.active_hypotheses.append(follow_up)

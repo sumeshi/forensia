@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import shutil
 from importlib import resources
 from pathlib import Path
-import shutil
 
 
 def _packaged_report_template_root():
     return resources.files("forensia").joinpath("report_template")
 
 
-def _copy_traversable_tree(source, destination: Path, written: list[Path], overwrite: bool) -> None:
+def _copy_traversable_tree(
+    source, destination: Path, written: list[Path], overwrite: bool
+) -> None:
     """Recursively copy a traversable resource tree to a filesystem destination."""
     destination.mkdir(parents=True, exist_ok=True)
     for child in source.iterdir():
@@ -29,7 +31,9 @@ def _copy_traversable_tree(source, destination: Path, written: list[Path], overw
         written.append(child_target)
 
 
-def export_packaged_report_templates(destination: str | Path, overwrite: bool = False) -> list[Path]:
+def export_packaged_report_templates(
+    destination: str | Path, overwrite: bool = False
+) -> list[Path]:
     """Export bundled report template files to the given directory."""
     target_root = Path(destination).resolve()
     target_root.mkdir(parents=True, exist_ok=True)

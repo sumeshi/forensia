@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync dependencies (installs Python 3.14 + dev group)
+        run: uv sync --dev
+
+      - name: Ruff lint (F, I, UP)
+        run: uv run ruff check
+
+      - name: Ruff format check
+        run: uv run ruff format --check
+
+      # `forensia doctor` runs the declarative-layer audits and the full pytest
+      # suite in one gate: schema coverage, playbook MD/YAML drift, import-layer
+      # contract, verdict-taxonomy enforcement, then the test suite. It performs
+      # no real LLM calls, so it is safe and deterministic in CI.
+      - name: Doctor (schema / playbook / verdict / tests)
+        run: uv run forensia doctor

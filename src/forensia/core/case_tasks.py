@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import Path
 
 from forensia.core.case import Case
 
@@ -55,12 +54,12 @@ class CaseTasks:
     def _write(self) -> None:
         """Write the in-memory state back to the tasks.md file."""
         done_section = (
-            "\n".join(f"- [x] {e}" for e in self._done)
-            if self._done
-            else "_none yet_"
+            "\n".join(f"- [x] {e}" for e in self._done) if self._done else "_none yet_"
         )
         todo_section = "\n".join(self._todo_lines) if self._todo_lines else "_none yet_"
-        defer_section = "\n".join(self._defer_lines) if self._defer_lines else "_none yet_"
+        defer_section = (
+            "\n".join(self._defer_lines) if self._defer_lines else "_none yet_"
+        )
         self._path.write_text(
             f"# Case Tasks: {self._case_name}\n\n"
             f"## DONE\n\n{done_section}\n\n"
@@ -82,12 +81,14 @@ class CaseTasks:
         if note:
             entry += f" — {note}"
         if step not in _ALWAYS_RUN:
-            self._done = [e for e in self._done if not (e == step or e.startswith(f"{step} "))]
+            self._done = [
+                e for e in self._done if not (e == step or e.startswith(f"{step} "))
+            ]
         self._done.append(entry)
         self._write()
 
     @classmethod
-    def for_case(cls, case: Case) -> "CaseTasks":
+    def for_case(cls, case: Case) -> CaseTasks:
         return cls(case)
 
     @staticmethod

@@ -115,7 +115,9 @@ class FailedLogonByIpWindowTests(unittest.TestCase):
         self.assertIn("HAVING COUNT(*) >= 5", sql)
 
     def test_custom_params(self):
-        sql = _template_failed_logon_by_ip_window({"event_id": 4630, "hours": 12, "threshold": 10})
+        sql = _template_failed_logon_by_ip_window(
+            {"event_id": 4630, "hours": 12, "threshold": 10}
+        )
         self.assertIn("event_id = 4630", sql)
         self.assertIn("12 hours", sql)
         self.assertIn("HAVING COUNT(*) >= 10", sql)
@@ -270,7 +272,9 @@ class ServiceOrTaskAfterHostLogonTests(unittest.TestCase):
         self.assertIn("24 hours", sql)
 
     def test_custom_hours(self):
-        sql = _template_service_or_task_after_host_logon({"computer": "PC-01", "hours": 6})
+        sql = _template_service_or_task_after_host_logon(
+            {"computer": "PC-01", "hours": 6}
+        )
         self.assertIn("6 hours", sql)
 
     def test_columns_present(self):

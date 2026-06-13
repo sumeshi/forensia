@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import asyncio
-import os
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,31 +9,37 @@ from unittest.mock import Mock, patch
 
 from typer.testing import CliRunner
 
-from forensia.ai.checker import CheckResult, summarize_query_result
+from forensia import cli as cli_module
+from forensia.ai.checker import summarize_query_result
 from forensia.ai.investigator import _apply_memory_updates, _sync_keypoint_cards
 from forensia.artifacts import MftArtifactAdapter, PrefetchArtifactAdapter
-from forensia import cli as cli_module
 from forensia.cli import _progress_pusher, _reset_case_tables
-from forensia.config import clear_llm_settings_cache, get_llm_settings, resolve_llm_config
+from forensia.config import (
+    get_llm_settings,
+    reload_settings,
+    resolve_llm_config,
+)
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
-from forensia.core.session import Hypothesis, PlannedQuery
+from forensia.core.session import Hypothesis
 from forensia.db.database import CaseDB
 from forensia.ingest import ingest_all
+from forensia.normalize import normalize_all
 from forensia.normalize.evtx import normalize_evtx
 from forensia.normalize.mft import normalize_mft
-from forensia.normalize import normalize_all
 
 
 class MemoryAndIngestTests(unittest.TestCase):
     def tearDown(self) -> None:
-        clear_llm_settings_cache()
+        reload_settings()
 
     @staticmethod
     def _llm_base_url() -> str:
         return resolve_llm_config()[0] or "http://test-llm.invalid"
 
-    def test_summarize_query_result_includes_head_tail_and_distinct_counts(self) -> None:
+    def test_summarize_query_result_includes_head_tail_and_distinct_counts(
+        self,
+    ) -> None:
         rows = [
             {
                 "evidence_id": f"ev-{index}",
@@ -83,7 +88,9 @@ class MemoryAndIngestTests(unittest.TestCase):
             with CaseDB(case) as db:
                 db.execute("UPDATE hypotheses SET verdict = ?", (legacy_verdict,))
                 db.execute("UPDATE ai_reviews SET verdict = ?", (legacy_verdict,))
-                db.execute("DELETE FROM schema_migrations WHERE migration_key = 'legacy_schema_backfill'")
+                db.execute(
+                    "DELETE FROM schema_migrations WHERE migration_key = 'legacy_schema_backfill'"
+                )
 
             with CaseDB(case) as db:
                 hypothesis_verdict = db.execute(
@@ -97,23 +104,51 @@ class MemoryAndIngestTests(unittest.TestCase):
             self.assertEqual("newlead", review_verdict)
 
     def test_structured_memory_updates_and_compaction_rules(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "256"}):
-            clear_llm_settings_cache()
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "256"}),
+        ):
+            reload_settings()
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
 
             _apply_memory_updates(
                 memory=memory,
-                active_hypotheses=[Hypothesis(id="H-1", description="desc", status="active", summary="")],
+                active_hypotheses=[
+                    Hypothesis(
+                        id="H-1", description="desc", status="active", summary=""
+                    )
+                ],
                 resolved_hypotheses=[],
                 check_output={
                     "memory_updates": {
                         "facts": [{"text": "fact one", "evidence_ids": ["ev-1"]}],
-                        "timeline": [{"timestamp": "2026-05-12T10:00:00", "description": "anchor", "evidence_ids": ["ev-2"]}],
-                        "tasks": [{"text": "need more logs", "kind": "internal_db_check"}],
+                        "timeline": [
+                            {
+                                "timestamp": "2026-05-12T10:00:00",
+                                "description": "anchor",
+                                "evidence_ids": ["ev-2"],
+                            }
+                        ],
+                        "tasks": [
+                            {"text": "need more logs", "kind": "internal_db_check"}
+                        ],
                         "overview": ["initial storyline"],
-                        "refuted_hypotheses": [{"hypothesis_id": "H-old", "description": "old theory", "reason": "timestamps do not line up"}],
-                        "entities": [{"entity_type": "src_ip", "name": "10.0.0.5", "role": "source_ip", "notes": "reused across failed logons"}],
+                        "refuted_hypotheses": [
+                            {
+                                "hypothesis_id": "H-old",
+                                "description": "old theory",
+                                "reason": "timestamps do not line up",
+                            }
+                        ],
+                        "entities": [
+                            {
+                                "entity_type": "src_ip",
+                                "name": "10.0.0.5",
+                                "role": "source_ip",
+                                "notes": "reused across failed logons",
+                            }
+                        ],
                     }
                 },
                 db=None,
@@ -123,30 +158,57 @@ class MemoryAndIngestTests(unittest.TestCase):
             self.assertIn("[fact-001]", confirmed_text)
             self.assertNotIn("- fact one [evidence: ev-1]", confirmed_text)
             self.assertTrue((memory.details_dir / "fact-001.md").exists())
-            self.assertIn("fact one", (memory.details_dir / "fact-001.md").read_text(encoding="utf-8"))
+            self.assertIn(
+                "fact one",
+                (memory.details_dir / "fact-001.md").read_text(encoding="utf-8"),
+            )
             self.assertIn("anchor", memory.timeline_path.read_text(encoding="utf-8"))
-            self.assertIn("need more logs", memory.tasks_memory_path.read_text(encoding="utf-8"))
-            self.assertIn("initial storyline", memory.overview_path.read_text(encoding="utf-8"))
-            self.assertIn("old theory", memory.refuted_hypotheses_path.read_text(encoding="utf-8"))
+            self.assertIn(
+                "need more logs", memory.tasks_memory_path.read_text(encoding="utf-8")
+            )
+            self.assertIn(
+                "initial storyline", memory.overview_path.read_text(encoding="utf-8")
+            )
+            self.assertIn(
+                "old theory", memory.refuted_hypotheses_path.read_text(encoding="utf-8")
+            )
             self.assertTrue((memory.entities_ip_dir / "10.0.0.5.md").exists())
-            self.assertIn("10.0.0.5", (memory.entities_ip_dir / "10.0.0.5.md").read_text(encoding="utf-8"))
-            self.assertIn("role: source_ip", (memory.entities_ip_dir / "10.0.0.5.md").read_text(encoding="utf-8"))
+            self.assertIn(
+                "10.0.0.5",
+                (memory.entities_ip_dir / "10.0.0.5.md").read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                "role: source_ip",
+                (memory.entities_ip_dir / "10.0.0.5.md").read_text(encoding="utf-8"),
+            )
 
             memory.update_overview("# Overview\n\n" + ("x" * 4096))
             confirmed_before = memory.facts_path.read_text(encoding="utf-8")
             timeline_before = memory.timeline_path.read_text(encoding="utf-8")
             refuted_before = memory.refuted_hypotheses_path.read_text(encoding="utf-8")
-            entities_before = (memory.entities_ip_dir / "10.0.0.5.md").read_text(encoding="utf-8")
+            entities_before = (memory.entities_ip_dir / "10.0.0.5.md").read_text(
+                encoding="utf-8"
+            )
             for index in range(20):
                 memory.append_task(f"question-{index}", "internal_db_check")
 
             tasks_text = memory.tasks_memory_path.read_text(encoding="utf-8")
 
             self.assertTrue(memory.overview_path.stat().st_size > memory.max_bytes)
-            self.assertEqual(confirmed_before, memory.facts_path.read_text(encoding="utf-8"))
-            self.assertEqual(timeline_before, memory.timeline_path.read_text(encoding="utf-8"))
-            self.assertEqual(refuted_before, memory.refuted_hypotheses_path.read_text(encoding="utf-8"))
-            self.assertEqual(entities_before, (memory.entities_ip_dir / "10.0.0.5.md").read_text(encoding="utf-8"))
+            self.assertEqual(
+                confirmed_before, memory.facts_path.read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                timeline_before, memory.timeline_path.read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                refuted_before,
+                memory.refuted_hypotheses_path.read_text(encoding="utf-8"),
+            )
+            self.assertEqual(
+                entities_before,
+                (memory.entities_ip_dir / "10.0.0.5.md").read_text(encoding="utf-8"),
+            )
             self.assertNotIn("question-0", tasks_text)
             self.assertIn("question-19", tasks_text)
 
@@ -158,12 +220,18 @@ class MemoryAndIngestTests(unittest.TestCase):
             memory.append_confirmed_fact("same fact", ["ev-1"])
             memory.append_confirmed_fact("same fact", ["ev-1"])
 
-            lines = [line for line in memory.facts_path.read_text(encoding="utf-8").splitlines() if line.startswith("- ")]
+            lines = [
+                line
+                for line in memory.facts_path.read_text(encoding="utf-8").splitlines()
+                if line.startswith("- ")
+            ]
             self.assertEqual(1, len(lines))
             self.assertTrue((memory.details_dir / "fact-001.md").exists())
             self.assertFalse((memory.details_dir / "fact-002.md").exists())
 
-    def test_confirmed_fact_duplicates_with_dash_prefixed_body_are_skipped(self) -> None:
+    def test_confirmed_fact_duplicates_with_dash_prefixed_body_are_skipped(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
@@ -171,11 +239,17 @@ class MemoryAndIngestTests(unittest.TestCase):
             memory.append_confirmed_fact("- suspicious dash-prefixed fact", ["ev-1"])
             memory.append_confirmed_fact("- suspicious dash-prefixed fact", ["ev-1"])
 
-            lines = [line for line in memory.facts_path.read_text(encoding="utf-8").splitlines() if line.startswith("- ")]
+            lines = [
+                line
+                for line in memory.facts_path.read_text(encoding="utf-8").splitlines()
+                if line.startswith("- ")
+            ]
             self.assertEqual(1, len(lines))
             self.assertFalse((memory.details_dir / "fact-002.md").exists())
 
-    def test_confirmed_fact_duplicates_with_reordered_evidence_ids_are_skipped(self) -> None:
+    def test_confirmed_fact_duplicates_with_reordered_evidence_ids_are_skipped(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
@@ -183,27 +257,39 @@ class MemoryAndIngestTests(unittest.TestCase):
             memory.append_confirmed_fact("same fact", ["ev-2", "ev-1"])
             memory.append_confirmed_fact("same fact", ["ev-1", "ev-2"])
 
-            lines = [line for line in memory.facts_path.read_text(encoding="utf-8").splitlines() if line.startswith("- ")]
+            lines = [
+                line
+                for line in memory.facts_path.read_text(encoding="utf-8").splitlines()
+                if line.startswith("- ")
+            ]
             self.assertEqual(1, len(lines))
             detail = (memory.details_dir / "fact-001.md").read_text(encoding="utf-8")
             self.assertIn("- ev-1", detail)
             self.assertIn("- ev-2", detail)
 
-    def test_confirmed_fact_duplicate_check_uses_hash_cache_before_detail_scan(self) -> None:
+    def test_confirmed_fact_duplicate_check_uses_hash_cache_before_detail_scan(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
             memory.append_confirmed_fact("fact one", ["ev-1"])
 
-            with patch.object(Path, "glob", side_effect=AssertionError("glob should not be called")):
+            with patch.object(
+                Path, "glob", side_effect=AssertionError("glob should not be called")
+            ):
                 memory.append_confirmed_fact("fact one", ["ev-1"])
 
     def test_next_fact_detail_id_uses_details_dir_not_compacted_index(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
-            memory.facts_path.write_text("# Facts\n\n- [fact-001] compacted\n", encoding="utf-8")
-            (memory.details_dir / "fact-042.md").write_text("# fact-042\n\nbody\n", encoding="utf-8")
+            memory.facts_path.write_text(
+                "# Facts\n\n- [fact-001] compacted\n", encoding="utf-8"
+            )
+            (memory.details_dir / "fact-042.md").write_text(
+                "# fact-042\n\nbody\n", encoding="utf-8"
+            )
             memory = MemoryManager(case)
 
             self.assertEqual(43, memory._next_fact_id)
@@ -213,7 +299,9 @@ class MemoryAndIngestTests(unittest.TestCase):
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
 
-            with patch.object(Path, "glob", side_effect=AssertionError("glob should not be called")):
+            with patch.object(
+                Path, "glob", side_effect=AssertionError("glob should not be called")
+            ):
                 self.assertEqual("fact-001", memory._alloc_fact_detail_id())
                 self.assertEqual("fact-002", memory._alloc_fact_detail_id())
 
@@ -221,7 +309,9 @@ class MemoryAndIngestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             (case.memory_dir / "details").mkdir(parents=True, exist_ok=True)
-            (case.memory_dir / "details" / "fact-042.md").write_text("# fact-042\n\nbody\n", encoding="utf-8")
+            (case.memory_dir / "details" / "fact-042.md").write_text(
+                "# fact-042\n\nbody\n", encoding="utf-8"
+            )
             original_glob = Path.glob
             fact_glob_calls = 0
 
@@ -264,12 +354,19 @@ class MemoryAndIngestTests(unittest.TestCase):
             reopened = MemoryManager(case)
             reopened.append_confirmed_fact("first line\nsecond line", ["ev-1", "ev-2"])
 
-            lines = [line for line in reopened.facts_path.read_text(encoding="utf-8").splitlines() if line.startswith("- ")]
+            lines = [
+                line
+                for line in reopened.facts_path.read_text(encoding="utf-8").splitlines()
+                if line.startswith("- ")
+            ]
             self.assertEqual(1, len(lines))
 
     def test_facts_are_not_compacted_when_oversized(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "128"}):
-            clear_llm_settings_cache()
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "128"}),
+        ):
+            reload_settings()
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
             original = "# Facts\n\n" + ("x" * 512) + "\n"
@@ -293,8 +390,12 @@ class MemoryAndIngestTests(unittest.TestCase):
                 )
 
             timeline_text = memory.timeline_path.read_text(encoding="utf-8")
-            timeline_lines = [line for line in timeline_text.splitlines() if line.startswith("- ")]
-            archive_text = (memory.archive_dir / "timeline_archive.md").read_text(encoding="utf-8")
+            timeline_lines = [
+                line for line in timeline_text.splitlines() if line.startswith("- ")
+            ]
+            archive_text = (memory.archive_dir / "timeline_archive.md").read_text(
+                encoding="utf-8"
+            )
 
             self.assertEqual(80, len(timeline_lines))
             self.assertIn("anchor-0", archive_text)
@@ -324,12 +425,17 @@ class MemoryAndIngestTests(unittest.TestCase):
             self.assertNotIn(memory.suspicious_path, targets)
 
     def test_suspicious_table_is_compacted_without_breaking_header(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "256"}):
-            clear_llm_settings_cache()
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "256"}),
+        ):
+            reload_settings()
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
             header = "# Suspicious Evidence\n\n| evidence_id | reason | confidence |\n|---|---|---|\n"
-            rows = "\n".join(f"| ev-{index:03d} | reason-{index} | 0.5 |" for index in range(100))
+            rows = "\n".join(
+                f"| ev-{index:03d} | reason-{index} | 0.5 |" for index in range(100)
+            )
             memory.suspicious_path.write_text(header + rows + "\n", encoding="utf-8")
 
             changed = memory.compact_if_oversized(memory.suspicious_path)
@@ -338,23 +444,39 @@ class MemoryAndIngestTests(unittest.TestCase):
             content = memory.suspicious_path.read_text(encoding="utf-8")
             self.assertIn("| evidence_id | reason | confidence |", content)
             self.assertIn("|---|---|---|", content)
-            self.assertLessEqual(memory.suspicious_path.stat().st_size, memory.max_bytes)
+            self.assertLessEqual(
+                memory.suspicious_path.stat().st_size, memory.max_bytes
+            )
 
     def test_overview_is_compacted_via_llm_summary(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "64"}):
-            clear_llm_settings_cache()
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "64"}),
+        ):
+            reload_settings()
             case = Case.init(tmpdir)
             mock_chat = Mock(return_value="compressed overview")
             memory = MemoryManager(case, summarize=mock_chat)
-            memory.overview_path.write_text("# Overview\n\n" + ("x" * 512), encoding="utf-8")
+            memory.overview_path.write_text(
+                "# Overview\n\n" + ("x" * 512), encoding="utf-8"
+            )
 
-            changed = memory.compact_overview_if_needed(self._llm_base_url(), "test-model")
+            changed = memory.compact_overview_if_needed(
+                self._llm_base_url(), "test-model"
+            )
 
             self.assertTrue(changed)
-            self.assertEqual("compressed overview\n", memory.overview_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                "compressed overview\n",
+                memory.overview_path.read_text(encoding="utf-8"),
+            )
             messages = mock_chat.call_args[0][0]
-            self.assertIn("Compress the following investigation overview", messages[0]["content"])
-            self.assertIn("Write the compressed overview in ja.", messages[0]["content"])
+            self.assertIn(
+                "Compress the following investigation overview", messages[0]["content"]
+            )
+            self.assertIn(
+                "Write the compressed overview in ja.", messages[0]["content"]
+            )
 
     def test_overview_default_template_uses_new_sections(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -371,31 +493,45 @@ class MemoryAndIngestTests(unittest.TestCase):
             self.assertNotIn("## Active Hypotheses", overview)
 
     def test_overview_compaction_prompt_stays_english_for_english_output(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
-            os.environ,
-            {"LLM_MEMORY_MAX_BYTES": "64", "LLM_OUTPUT_LANGUAGE": "en"},
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.dict(
+                os.environ,
+                {"LLM_MEMORY_MAX_BYTES": "64", "LLM_OUTPUT_LANGUAGE": "en"},
+            ),
         ):
-            clear_llm_settings_cache()
+            reload_settings()
             case = Case.init(tmpdir)
             mock_chat = Mock(return_value="compressed overview")
             memory = MemoryManager(case, summarize=mock_chat)
-            memory.overview_path.write_text("# Overview\n\n" + ("x" * 512), encoding="utf-8")
+            memory.overview_path.write_text(
+                "# Overview\n\n" + ("x" * 512), encoding="utf-8"
+            )
 
             memory.compact_overview_if_needed(self._llm_base_url(), "test-model")
 
             messages = mock_chat.call_args[0][0]
-            self.assertIn("Write the compressed overview in en.", messages[0]["content"])
+            self.assertIn(
+                "Write the compressed overview in en.", messages[0]["content"]
+            )
             self.assertNotRegex(messages[0]["content"], r"[ぁ-んァ-ン一-龥]")
 
     def test_overview_compaction_failure_keeps_existing_file(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "64"}):
-            clear_llm_settings_cache()
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "64"}),
+        ):
+            reload_settings()
             case = Case.init(tmpdir)
-            memory = MemoryManager(case, summarize=Mock(side_effect=RuntimeError("timeout")))
+            memory = MemoryManager(
+                case, summarize=Mock(side_effect=RuntimeError("timeout"))
+            )
             original = "# Overview\n\n" + ("x" * 512)
             memory.overview_path.write_text(original, encoding="utf-8")
 
-            changed = memory.compact_overview_if_needed(self._llm_base_url(), "test-model")
+            changed = memory.compact_overview_if_needed(
+                self._llm_base_url(), "test-model"
+            )
 
             self.assertFalse(changed)
             self.assertEqual(original, memory.overview_path.read_text(encoding="utf-8"))
@@ -427,30 +563,48 @@ class MemoryAndIngestTests(unittest.TestCase):
             self.assertFalse((memory.keypoints_dir / "KP-0003.md").exists())
 
     def test_hypothesis_memory_is_llm_compacted_when_oversized(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "96"}):
-            clear_llm_settings_cache()
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "96"}),
+        ):
+            reload_settings()
             case = Case.init(tmpdir)
             mock_chat = Mock(return_value="# Hypothesis H-1\n\n- compacted")
             memory = MemoryManager(case, summarize=mock_chat)
             memory.update_overview("# Overview\n\n" + ("x" * 512))
-            memory.upsert_hypothesis("H-1", "oversized", "# Hypothesis H-1\n\n" + ("y" * 512))
+            memory.upsert_hypothesis(
+                "H-1", "oversized", "# Hypothesis H-1\n\n" + ("y" * 512)
+            )
 
-            changed = memory.compact_oversized_with_llm(self._llm_base_url(), "test-model")
+            changed = memory.compact_oversized_with_llm(
+                self._llm_base_url(), "test-model"
+            )
 
             self.assertEqual([str(memory.hypotheses_dir / "H-1.md")], changed)
-            self.assertEqual("# Overview\n\n" + ("x" * 512), memory.overview_path.read_text(encoding="utf-8"))
-            self.assertEqual("# Hypothesis H-1\n\n- compacted\n", (memory.hypotheses_dir / "H-1.md").read_text(encoding="utf-8"))
+            self.assertEqual(
+                "# Overview\n\n" + ("x" * 512),
+                memory.overview_path.read_text(encoding="utf-8"),
+            )
+            self.assertEqual(
+                "# Hypothesis H-1\n\n- compacted\n",
+                (memory.hypotheses_dir / "H-1.md").read_text(encoding="utf-8"),
+            )
             mock_chat.assert_called_once()
 
     def test_entity_memory_is_llm_compacted_when_oversized(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "96"}):
-            clear_llm_settings_cache()
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "96"}),
+        ):
+            reload_settings()
             case = Case.init(tmpdir)
             mock_chat = Mock(return_value="- compacted entity")
             memory = MemoryManager(case, summarize=mock_chat)
             memory.upsert_entity("ip", "10.0.0.5", "# ip: 10.0.0.5\n\n" + ("z" * 512))
 
-            changed = memory.compact_oversized_with_llm(self._llm_base_url(), "test-model")
+            changed = memory.compact_oversized_with_llm(
+                self._llm_base_url(), "test-model"
+            )
 
             self.assertEqual([str(memory.entities_ip_dir / "10.0.0.5.md")], changed)
             self.assertEqual(
@@ -464,12 +618,18 @@ class MemoryAndIngestTests(unittest.TestCase):
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
 
-            memory.upsert_hypothesis("H-1", "first-description", "# Hypothesis H-1\n\nfirst\n")
-            memory.upsert_hypothesis("H-1", "second-description", "# Hypothesis H-1\n\nsecond\n")
+            memory.upsert_hypothesis(
+                "H-1", "first-description", "# Hypothesis H-1\n\nfirst\n"
+            )
+            memory.upsert_hypothesis(
+                "H-1", "second-description", "# Hypothesis H-1\n\nsecond\n"
+            )
 
             hyp_path = memory.hypotheses_dir / "H-1.md"
             self.assertTrue(hyp_path.exists())
-            self.assertEqual("# Hypothesis H-1\n\nsecond\n", hyp_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                "# Hypothesis H-1\n\nsecond\n", hyp_path.read_text(encoding="utf-8")
+            )
             self.assertEqual([hyp_path], sorted(memory.hypotheses_dir.glob("*.md")))
 
     def test_hypothesis_upsert_removes_legacy_slug_named_file_for_same_id(self) -> None:
@@ -479,7 +639,9 @@ class MemoryAndIngestTests(unittest.TestCase):
             legacy_path = memory.hypotheses_dir / "h-1-old-description.md"
             legacy_path.write_text("# Hypothesis H-1\n\nlegacy\n", encoding="utf-8")
 
-            memory.upsert_hypothesis("H-1", "new-description", "# Hypothesis H-1\n\ncurrent\n")
+            memory.upsert_hypothesis(
+                "H-1", "new-description", "# Hypothesis H-1\n\ncurrent\n"
+            )
 
             self.assertFalse(legacy_path.exists())
             self.assertEqual(
@@ -488,25 +650,32 @@ class MemoryAndIngestTests(unittest.TestCase):
             )
 
     def test_oversized_memory_llm_compaction_failure_keeps_existing_file(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "64"}):
-            clear_llm_settings_cache()
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "64"}),
+        ):
+            reload_settings()
             case = Case.init(tmpdir)
-            memory = MemoryManager(case, summarize=Mock(side_effect=RuntimeError("timeout")))
+            memory = MemoryManager(
+                case, summarize=Mock(side_effect=RuntimeError("timeout"))
+            )
             original = "# Overview\n\n" + ("x" * 512)
             memory.update_overview(original)
 
-            changed = memory.compact_oversized_with_llm(self._llm_base_url(), "test-model")
+            changed = memory.compact_oversized_with_llm(
+                self._llm_base_url(), "test-model"
+            )
 
             self.assertEqual([], changed)
             self.assertEqual(original, memory.overview_path.read_text(encoding="utf-8"))
 
     def test_get_llm_settings_cache_can_be_cleared(self) -> None:
         with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "ja"}):
-            clear_llm_settings_cache()
+            reload_settings()
             first = get_llm_settings()
         with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "en"}):
             second_before_clear = get_llm_settings()
-            clear_llm_settings_cache()
+            reload_settings()
             second_after_clear = get_llm_settings()
 
         self.assertEqual("ja", first["output_language"])
@@ -565,9 +734,11 @@ class MemoryAndIngestTests(unittest.TestCase):
     def test_progress_pusher_writes_progress_snapshot_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
-            with CaseDB(case) as db, patch("forensia.cli.write_progress_snapshot") as mock_progress, patch(
-                "forensia.cli.write_api_snapshots"
-            ) as mock_full:
+            with (
+                CaseDB(case) as db,
+                patch("forensia.cli.write_progress_snapshot") as mock_progress,
+                patch("forensia.cli.write_api_snapshots") as mock_full,
+            ):
                 push = _progress_pusher(
                     db,
                     {
@@ -655,15 +826,38 @@ class MemoryAndIngestTests(unittest.TestCase):
 
                 _reset_case_tables(db)
 
-                self.assertEqual(0, db.execute("SELECT COUNT(*) FROM ingested_files").fetchone()[0])
-                self.assertEqual(0, db.execute("SELECT COUNT(*) FROM claims").fetchone()[0])
-                self.assertEqual(0, db.execute("SELECT COUNT(*) FROM prefetch_timeline").fetchone()[0])
-                self.assertEqual(0, db.execute("SELECT COUNT(*) FROM section_facts").fetchone()[0])
-                self.assertEqual(0, db.execute("SELECT COUNT(*) FROM section_evidence").fetchone()[0])
-                self.assertEqual(0, db.execute("SELECT COUNT(*) FROM query_cache").fetchone()[0])
-                self.assertEqual(0, db.execute("SELECT COUNT(*) FROM section_runs").fetchone()[0])
-                self.assertEqual(0, db.execute("SELECT COUNT(*) FROM section_questions").fetchone()[0])
-                self.assertEqual(0, db.execute("SELECT COUNT(*) FROM hypothesis_reasoning").fetchone()[0])
+                self.assertEqual(
+                    0, db.execute("SELECT COUNT(*) FROM ingested_files").fetchone()[0]
+                )
+                self.assertEqual(
+                    0, db.execute("SELECT COUNT(*) FROM claims").fetchone()[0]
+                )
+                self.assertEqual(
+                    0,
+                    db.execute("SELECT COUNT(*) FROM prefetch_timeline").fetchone()[0],
+                )
+                self.assertEqual(
+                    0, db.execute("SELECT COUNT(*) FROM section_facts").fetchone()[0]
+                )
+                self.assertEqual(
+                    0, db.execute("SELECT COUNT(*) FROM section_evidence").fetchone()[0]
+                )
+                self.assertEqual(
+                    0, db.execute("SELECT COUNT(*) FROM query_cache").fetchone()[0]
+                )
+                self.assertEqual(
+                    0, db.execute("SELECT COUNT(*) FROM section_runs").fetchone()[0]
+                )
+                self.assertEqual(
+                    0,
+                    db.execute("SELECT COUNT(*) FROM section_questions").fetchone()[0],
+                )
+                self.assertEqual(
+                    0,
+                    db.execute("SELECT COUNT(*) FROM hypothesis_reasoning").fetchone()[
+                        0
+                    ],
+                )
 
     def test_run_renders_report_once_via_render_written_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -672,28 +866,37 @@ class MemoryAndIngestTests(unittest.TestCase):
             (input_dir / "a.evtx").write_text("alpha", encoding="utf-8")
             output_dir = Path(tmpdir) / "case"
 
-            with patch(
-                "forensia.cli.ingest_all",
-                return_value={
-                    "new_files": 1,
-                    "skipped_files": 0,
-                    "evtx_files": 1,
-                    "mft_files": 0,
-                    "prefetch_files": 0,
-                },
-            ), patch(
-                "forensia.cli.normalize_all",
-                return_value={
-                    "evtx_rows": 1,
-                    "mft_entries": 0,
-                    "mft_timeline_rows": 0,
-                    "prefetch_executions": 0,
-                },
-            ), patch("forensia.cli.resolve_llm_config", return_value=(None, None)), patch("forensia.cli.load_rules_from_dir", return_value=[]), patch(
-                "forensia.cli.render_written_report",
-                return_value=(output_dir / "reports" / "report.md", output_dir / "reports" / "report.html"),
-            ) as mock_render_written, patch("forensia.cli.render_html_report") as mock_render_html, patch(
-                "forensia.cli.write_api_snapshots"
+            with (
+                patch(
+                    "forensia.cli.ingest_all",
+                    return_value={
+                        "new_files": 1,
+                        "skipped_files": 0,
+                        "evtx_files": 1,
+                        "mft_files": 0,
+                        "prefetch_files": 0,
+                    },
+                ),
+                patch(
+                    "forensia.cli.normalize_all",
+                    return_value={
+                        "evtx_rows": 1,
+                        "mft_entries": 0,
+                        "mft_timeline_rows": 0,
+                        "prefetch_executions": 0,
+                    },
+                ),
+                patch("forensia.cli.resolve_llm_config", return_value=(None, None)),
+                patch("forensia.cli.load_rules_from_dir", return_value=[]),
+                patch(
+                    "forensia.cli.render_written_report",
+                    return_value=(
+                        output_dir / "reports" / "report.md",
+                        output_dir / "reports" / "report.html",
+                    ),
+                ) as mock_render_written,
+                patch("forensia.cli.render_html_report") as mock_render_html,
+                patch("forensia.cli.write_api_snapshots"),
             ):
                 cli_module.investigate(
                     case_dir=str(output_dir),
@@ -720,7 +923,11 @@ class MemoryAndIngestTests(unittest.TestCase):
                 )
                 _apply_memory_updates(
                     memory=memory,
-                    active_hypotheses=[Hypothesis(id="H-1", description="desc", status="active", summary="sum")],
+                    active_hypotheses=[
+                        Hypothesis(
+                            id="H-1", description="desc", status="active", summary="sum"
+                        )
+                    ],
                     resolved_hypotheses=[],
                     check_output={"memory_updates": {}},
                     db=db,
@@ -735,19 +942,47 @@ class MemoryAndIngestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
-            with CaseDB(case) as db, patch("forensia.ai.hypothesis_manager._recent_reasoning_rows") as mock_reasoning:
-                mock_reasoning.return_value = [{"phase": "check", "verdict": "confirmed", "query_id": "Q-1", "body": "body"}]
+            with (
+                CaseDB(case) as db,
+                patch(
+                    "forensia.ai.hypothesis_manager._recent_reasoning_rows"
+                ) as mock_reasoning,
+            ):
+                mock_reasoning.return_value = [
+                    {
+                        "phase": "check",
+                        "verdict": "confirmed",
+                        "query_id": "Q-1",
+                        "body": "body",
+                    }
+                ]
                 _apply_memory_updates(
                     memory=memory,
-                    active_hypotheses=[Hypothesis(id="H-1", description="active desc", status="active", summary="sum")],
-                    resolved_hypotheses=[Hypothesis(id="H-2", description="resolved desc", status="confirmed", summary="done")],
+                    active_hypotheses=[
+                        Hypothesis(
+                            id="H-1",
+                            description="active desc",
+                            status="active",
+                            summary="sum",
+                        )
+                    ],
+                    resolved_hypotheses=[
+                        Hypothesis(
+                            id="H-2",
+                            description="resolved desc",
+                            status="confirmed",
+                            summary="done",
+                        )
+                    ],
                     check_output={"memory_updates": {}},
                     db=db,
                 )
 
             mock_reasoning.assert_called_once_with(db, "H-1")
             active_text = (memory.hypotheses_dir / "H-1.md").read_text(encoding="utf-8")
-            resolved_text = (memory.hypotheses_dir / "H-2.md").read_text(encoding="utf-8")
+            resolved_text = (memory.hypotheses_dir / "H-2.md").read_text(
+                encoding="utf-8"
+            )
             self.assertIn("## Reasoning", active_text)
             self.assertNotIn("## Reasoning", resolved_text)
 
@@ -763,15 +998,25 @@ class MemoryAndIngestTests(unittest.TestCase):
             ):
                 (input_dir / name).write_text(content, encoding="utf-8")
 
-            def fake_ingest(case_obj: Case, source_path: str | Path, source_sha: str | None = None, progress_callback=None):
+            def fake_ingest(
+                case_obj: Case,
+                source_path: str | Path,
+                source_sha: str | None = None,
+                progress_callback=None,
+            ):
                 suffix = Path(source_path).suffix.lower()
-                output = case_obj.raw_dir / f"{(source_sha or 'x')[:12]}{suffix or '.jsonl'}"
+                output = (
+                    case_obj.raw_dir / f"{(source_sha or 'x')[:12]}{suffix or '.jsonl'}"
+                )
                 output.write_text("{}", encoding="utf-8")
                 return output, None
 
-            with patch("forensia.ingest.evtx.ingest_evtx_file", side_effect=fake_ingest), patch(
-                "forensia.ingest.mft.ingest_mft_file",
-                side_effect=fake_ingest,
+            with (
+                patch("forensia.ingest.evtx.ingest_evtx_file", side_effect=fake_ingest),
+                patch(
+                    "forensia.ingest.mft.ingest_mft_file",
+                    side_effect=fake_ingest,
+                ),
             ):
                 first = ingest_all(case, input_dir)
                 second = ingest_all(case, input_dir)
@@ -780,7 +1025,9 @@ class MemoryAndIngestTests(unittest.TestCase):
                 forced = ingest_all(case, input_dir, force=True)
 
             with CaseDB(case) as db:
-                ingested_count = db.execute("SELECT COUNT(*) FROM ingested_files").fetchone()[0]
+                ingested_count = db.execute(
+                    "SELECT COUNT(*) FROM ingested_files"
+                ).fetchone()[0]
 
             self.assertEqual(3, first["new_files"])
             self.assertEqual(0, first["skipped_files"])
@@ -797,12 +1044,22 @@ class MemoryAndIngestTests(unittest.TestCase):
             input_dir.mkdir(parents=True, exist_ok=True)
             (input_dir / "APP.EXE-12345678.pf").write_text("prefetch", encoding="utf-8")
 
-            def fake_ingest(case_obj: Case, source_path: str | Path, source_sha: str | None = None, progress_callback=None):
-                output = case_obj.raw_dir / f"prefetch-entries-{(source_sha or 'x')[:12]}.jsonl"
+            def fake_ingest(
+                case_obj: Case,
+                source_path: str | Path,
+                source_sha: str | None = None,
+                progress_callback=None,
+            ):
+                output = (
+                    case_obj.raw_dir
+                    / f"prefetch-entries-{(source_sha or 'x')[:12]}.jsonl"
+                )
                 output.write_text("{}", encoding="utf-8")
                 return output, None
 
-            with patch("forensia.ingest.prefetch.ingest_prefetch_file", side_effect=fake_ingest):
+            with patch(
+                "forensia.ingest.prefetch.ingest_prefetch_file", side_effect=fake_ingest
+            ):
                 counts = ingest_all(case, input_dir)
 
             self.assertEqual(1, counts["new_files"])
@@ -828,10 +1085,18 @@ class MemoryAndIngestTests(unittest.TestCase):
     def test_normalize_all_includes_prefetch_execution_counts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
-            with CaseDB(case) as db, patch("forensia.normalize.evtx.normalize_evtx", return_value=0), patch(
-                "forensia.normalize.mft.normalize_mft",
-                return_value=(0, 0),
-            ), patch("forensia.normalize.prefetch.normalize_prefetch", return_value=(3, 0)):
+            with (
+                CaseDB(case) as db,
+                patch("forensia.normalize.evtx.normalize_evtx", return_value=0),
+                patch(
+                    "forensia.normalize.mft.normalize_mft",
+                    return_value=(0, 0),
+                ),
+                patch(
+                    "forensia.normalize.prefetch.normalize_prefetch",
+                    return_value=(3, 0),
+                ),
+            ):
                 counts = normalize_all(case, db)
 
             self.assertEqual(3, counts["prefetch_executions"])
@@ -895,7 +1160,9 @@ class MemoryAndIngestTests(unittest.TestCase):
                 "source_file": "sample/cfreds/MFT_C",
                 "evidence_id": "mft-000000000042-00",
             }
-            (case.raw_dir / "mft-entries-test.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+            (case.raw_dir / "mft-entries-test.jsonl").write_text(
+                json.dumps(record) + "\n", encoding="utf-8"
+            )
 
             with CaseDB(case) as db:
                 entries, timeline = normalize_mft(case, db)
@@ -924,42 +1191,55 @@ class MemoryAndIngestTests(unittest.TestCase):
                     "prefetch_files": 1,
                 },
             ):
-                add_result = runner.invoke(cli_module.app, ["add", str(case.path), str(input_dir)])
+                add_result = runner.invoke(
+                    cli_module.app, ["add", str(case.path), str(input_dir)]
+                )
 
             self.assertEqual(0, add_result.exit_code, add_result.output)
             self.assertIn("prefetch=1", add_result.output)
 
             output_dir = Path(tmpdir) / "case-run"
-            with patch(
-                "forensia.cli.ingest_all",
-                return_value={
-                    "new_files": 1,
-                    "skipped_files": 0,
-                    "evtx_files": 0,
-                    "mft_files": 0,
-                    "prefetch_files": 1,
-                },
-            ), patch(
-                "forensia.cli.normalize_all",
-                return_value={
-                    "evtx_rows": 0,
-                    "mft_entries": 0,
-                    "mft_timeline_rows": 0,
-                    "prefetch_executions": 2,
-                },
-            ), patch("forensia.cli.resolve_llm_config", return_value=(None, None)), patch(
-                "forensia.cli.load_rules_from_dir",
-                return_value=[],
-            ), patch(
-                "forensia.cli.render_written_report",
-                return_value=(output_dir / "reports" / "report.md", output_dir / "reports" / "report.html"),
-            ), patch("forensia.cli.write_api_snapshots"):
-                run_result = runner.invoke(cli_module.app, ["investigate", str(output_dir), str(input_dir)])
+            with (
+                patch(
+                    "forensia.cli.ingest_all",
+                    return_value={
+                        "new_files": 1,
+                        "skipped_files": 0,
+                        "evtx_files": 0,
+                        "mft_files": 0,
+                        "prefetch_files": 1,
+                    },
+                ),
+                patch(
+                    "forensia.cli.normalize_all",
+                    return_value={
+                        "evtx_rows": 0,
+                        "mft_entries": 0,
+                        "mft_timeline_rows": 0,
+                        "prefetch_executions": 2,
+                    },
+                ),
+                patch("forensia.cli.resolve_llm_config", return_value=(None, None)),
+                patch(
+                    "forensia.cli.load_rules_from_dir",
+                    return_value=[],
+                ),
+                patch(
+                    "forensia.cli.render_written_report",
+                    return_value=(
+                        output_dir / "reports" / "report.md",
+                        output_dir / "reports" / "report.html",
+                    ),
+                ),
+                patch("forensia.cli.write_api_snapshots"),
+            ):
+                run_result = runner.invoke(
+                    cli_module.app, ["investigate", str(output_dir), str(input_dir)]
+                )
 
             self.assertEqual(0, run_result.exit_code, run_result.output)
             self.assertIn("prefetch_files=1", run_result.output)
             self.assertIn("prefetch_executions=2", run_result.output)
-
 
     # ─── R2-10 tests ───────────────────────────────────────────────────────────
 
@@ -967,14 +1247,20 @@ class MemoryAndIngestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
-            memory.update_overview("# Investigation Overview\n\n## Key Findings\n- none\n")
+            memory.update_overview(
+                "# Investigation Overview\n\n## Key Findings\n- none\n"
+            )
             overview_before = memory.load_overview()
 
             # 5 inconclusive checks → overview unchanged
             for i in range(5):
                 _apply_memory_updates(
                     memory=memory,
-                    active_hypotheses=[Hypothesis(id="H-1", description="desc", status="active", summary="")],
+                    active_hypotheses=[
+                        Hypothesis(
+                            id="H-1", description="desc", status="active", summary=""
+                        )
+                    ],
                     resolved_hypotheses=[],
                     check_output={
                         "verdict": "inconclusive",
@@ -985,13 +1271,20 @@ class MemoryAndIngestTests(unittest.TestCase):
                     },
                     db=None,
                 )
-            self.assertEqual(overview_before, memory.load_overview(),
-                             "overview should not grow after 5 inconclusive checks")
+            self.assertEqual(
+                overview_before,
+                memory.load_overview(),
+                "overview should not grow after 5 inconclusive checks",
+            )
 
             # 1 confirmed → overview grows
             _apply_memory_updates(
                 memory=memory,
-                active_hypotheses=[Hypothesis(id="H-1", description="desc", status="active", summary="")],
+                active_hypotheses=[
+                    Hypothesis(
+                        id="H-1", description="desc", status="active", summary=""
+                    )
+                ],
                 resolved_hypotheses=[],
                 check_output={
                     "verdict": "confirmed",
@@ -1002,53 +1295,83 @@ class MemoryAndIngestTests(unittest.TestCase):
                 },
                 db=None,
             )
-            self.assertIn("confirmed finding", memory.load_overview(),
-                          "overview should grow after confirmed verdict")
+            self.assertIn(
+                "confirmed finding",
+                memory.load_overview(),
+                "overview should grow after confirmed verdict",
+            )
 
     def test_r2_10_new_nonobserved_entity_triggers_overview(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
-            memory.update_overview("# Investigation Overview\n\n## Key Findings\n- none\n")
+            memory.update_overview(
+                "# Investigation Overview\n\n## Key Findings\n- none\n"
+            )
 
             # Inconclusive but with a new entity (role ≠ observed_user)
             _apply_memory_updates(
                 memory=memory,
-                active_hypotheses=[Hypothesis(id="H-1", description="desc", status="active", summary="")],
+                active_hypotheses=[
+                    Hypothesis(
+                        id="H-1", description="desc", status="active", summary=""
+                    )
+                ],
                 resolved_hypotheses=[],
                 check_output={
                     "verdict": "inconclusive",
                     "memory_updates": {
                         "overview": ["new entity discovered"],
-                        "entities": [{"entity_type": "src_ip", "name": "10.0.0.99", "role": "source_ip", "notes": "new"}],
+                        "entities": [
+                            {
+                                "entity_type": "src_ip",
+                                "name": "10.0.0.99",
+                                "role": "source_ip",
+                                "notes": "new",
+                            }
+                        ],
                     },
                 },
                 db=None,
             )
-            self.assertIn("new entity discovered", memory.load_overview(),
-                          "new entity with role ≠ observed_user triggers overview")
+            self.assertIn(
+                "new entity discovered",
+                memory.load_overview(),
+                "new entity with role ≠ observed_user triggers overview",
+            )
 
     def test_r2_10_first_artifact_family_triggers_overview(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
-            memory.update_overview("# Investigation Overview\n\n## Key Findings\n- none\n")
+            memory.update_overview(
+                "# Investigation Overview\n\n## Key Findings\n- none\n"
+            )
 
             _apply_memory_updates(
                 memory=memory,
-                active_hypotheses=[Hypothesis(id="H-1", description="desc", status="active", summary="")],
+                active_hypotheses=[
+                    Hypothesis(
+                        id="H-1", description="desc", status="active", summary=""
+                    )
+                ],
                 resolved_hypotheses=[],
                 check_output={
                     "verdict": "inconclusive",
                     "memory_updates": {
                         "overview": ["mft evidence found"],
-                        "facts": [{"text": "mft activity", "evidence_ids": ["mft-000001"]}],
+                        "facts": [
+                            {"text": "mft activity", "evidence_ids": ["mft-000001"]}
+                        ],
                     },
                 },
                 db=None,
             )
-            self.assertIn("mft evidence found", memory.load_overview(),
-                          "first artifact family triggers overview")
+            self.assertIn(
+                "mft evidence found",
+                memory.load_overview(),
+                "first artifact family triggers overview",
+            )
 
     def test_r2_10_fact_truncation_at_word_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1060,14 +1383,18 @@ class MemoryAndIngestTests(unittest.TestCase):
             memory.append_confirmed_fact(long_body, ["ev-1"])
             detail_id = "fact-001"
             self.assertTrue((memory.details_dir / f"{detail_id}.md").exists())
-            detail_content = (memory.details_dir / f"{detail_id}.md").read_text(encoding="utf-8")
-            self.assertIn(long_body, detail_content,
-                          "detail file has full body")
+            detail_content = (memory.details_dir / f"{detail_id}.md").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn(long_body, detail_content, "detail file has full body")
 
             facts_text = memory.facts_path.read_text(encoding="utf-8")
-            line_with_preview = [l for l in facts_text.splitlines() if l.startswith("- [fact-001]")][0]
-            self.assertIn("[fact-001]", line_with_preview,
-                          "fact line references detail link")
+            line_with_preview = [
+                l for l in facts_text.splitlines() if l.startswith("- [fact-001]")
+            ][0]
+            self.assertIn(
+                "[fact-001]", line_with_preview, "fact line references detail link"
+            )
             # Extract preview text between [fact-001] and metadata brackets
             after_link = line_with_preview.split("[fact-001] ", 1)[-1]
             if " [" in after_link:
@@ -1075,15 +1402,15 @@ class MemoryAndIngestTests(unittest.TestCase):
             else:
                 preview = after_link
             if "…" in preview:
-                self.assertLessEqual(len(preview.replace("…", "")), 160,
-                                     "truncated text ≤ 160 chars")
-                self.assertFalse(preview.endswith(" "),
-                                 "no trailing space")
-                self.assertFalse(preview.endswith("… "),
-                                 "no space before …")
+                self.assertLessEqual(
+                    len(preview.replace("…", "")), 160, "truncated text ≤ 160 chars"
+                )
+                self.assertFalse(preview.endswith(" "), "no trailing space")
+                self.assertFalse(preview.endswith("… "), "no space before …")
             else:
-                self.assertLessEqual(len(preview), 160,
-                                     "untruncated preview ≤ 160 chars")
+                self.assertLessEqual(
+                    len(preview), 160, "untruncated preview ≤ 160 chars"
+                )
 
     def test_r2_10_fact_truncation_never_mid_word(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1094,7 +1421,9 @@ class MemoryAndIngestTests(unittest.TestCase):
             body = "a " + "supercalifragilisticexpialidocious " * 5 + "zzz trailing"
             memory.append_confirmed_fact(body, ["ev-1"])
             facts_text = memory.facts_path.read_text(encoding="utf-8")
-            line_with_preview = [l for l in facts_text.splitlines() if l.startswith("- [fact-001]")][0]
+            line_with_preview = [
+                l for l in facts_text.splitlines() if l.startswith("- [fact-001]")
+            ][0]
             after_link = line_with_preview.split("[fact-001] ", 1)[-1]
             if " [" in after_link:
                 preview = after_link.split(" [")[0]
@@ -1109,7 +1438,8 @@ class MemoryAndIngestTests(unittest.TestCase):
                 original_prefix = body[:160]
                 if chars_before:
                     self.assertEqual(
-                        original_prefix[len(chars_before)], " ",
+                        original_prefix[len(chars_before)],
+                        " ",
                         "truncation should occur at a space word boundary",
                     )
 
@@ -1119,18 +1449,32 @@ class MemoryAndIngestTests(unittest.TestCase):
             memory = MemoryManager(case)
 
             # Add first task
-            memory.append_task("Investigate the context of logon events on host", "human_decision")
+            memory.append_task(
+                "Investigate the context of logon events on host", "human_decision"
+            )
             # Near-paraphrase (≥0.6 Jaccard) → should be deduped
-            memory.append_task("Investigate the context of logon events on host machine", "human_decision")
+            memory.append_task(
+                "Investigate the context of logon events on host machine",
+                "human_decision",
+            )
             # Different task → should be added
-            memory.append_task("Check network connections from suspicious IP", "human_decision")
+            memory.append_task(
+                "Check network connections from suspicious IP", "human_decision"
+            )
             # Identical to the third → deduped (exact match via existing logic)
-            memory.append_task("Check network connections from suspicious IP", "human_decision")
+            memory.append_task(
+                "Check network connections from suspicious IP", "human_decision"
+            )
 
             tasks_text = memory.tasks_memory_path.read_text(encoding="utf-8")
-            task_lines = [l for l in tasks_text.splitlines() if l.startswith("- [human_decision]")]
-            self.assertEqual(2, len(task_lines),
-                             "only 2 unique tasks after dedup (2 paraphrased → 1, + 1 unique)")
+            task_lines = [
+                l for l in tasks_text.splitlines() if l.startswith("- [human_decision]")
+            ]
+            self.assertEqual(
+                2,
+                len(task_lines),
+                "only 2 unique tasks after dedup (2 paraphrased → 1, + 1 unique)",
+            )
 
     def test_r2_10_task_human_decision_cap_at_10(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1155,12 +1499,14 @@ class MemoryAndIngestTests(unittest.TestCase):
                 memory.append_task(task, "human_decision")
 
             tasks_text = memory.tasks_memory_path.read_text(encoding="utf-8")
-            task_lines = [l for l in tasks_text.splitlines() if l.startswith("- [human_decision]")]
-            self.assertLessEqual(len(task_lines), 10,
-                                 "at most 10 human_decision tasks")
+            task_lines = [
+                l for l in tasks_text.splitlines() if l.startswith("- [human_decision]")
+            ]
+            self.assertLessEqual(len(task_lines), 10, "at most 10 human_decision tasks")
             task_texts = [l.split("] ", 1)[-1] for l in task_lines]
-            self.assertNotIn(distinct_tasks[0], task_texts,
-                             "oldest human_decision task evicted")
+            self.assertNotIn(
+                distinct_tasks[0], task_texts, "oldest human_decision task evicted"
+            )
 
     def test_append_overview_routes_to_key_findings_section(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1191,7 +1537,7 @@ class MemoryAndIngestTests(unittest.TestCase):
             kf_idx = overview.index("## Key Findings")
             scope_idx = overview.index("## Case Scope")
             policy_idx = overview.index("## Investigation Policy")
-            tasks_idx = overview.index("## Active Tasks")
+            assert "## Active Tasks" in overview
             finding1_idx = overview.index("Key finding: suspicious logon from 10.0.0.5")
             finding2_idx = overview.index("Finding: anomalous service install detected")
             self.assertGreater(finding1_idx, kf_idx)
@@ -1227,7 +1573,9 @@ class MemoryAndIngestTests(unittest.TestCase):
             # Content should be under ## Active Tasks, not under ## Key Findings
             tasks_idx = overview.index("## Active Tasks")
             kf_idx = overview.index("## Key Findings")
-            task_idx = overview.index("Task: correlate 4625 logon failures by source ip")
+            task_idx = overview.index(
+                "Task: correlate 4625 logon failures by source ip"
+            )
             inv_idx = overview.index("Investigate network connections from 10.0.0.5")
             self.assertGreater(task_idx, tasks_idx)
             self.assertGreater(inv_idx, tasks_idx)
@@ -1266,7 +1614,9 @@ class MemoryAndIngestTests(unittest.TestCase):
 
             overview = memory.load_overview()
             notes_idx = overview.index("## Notes")
-            prose_idx = overview.index("Some generic prose without a Key Findings heading")
+            prose_idx = overview.index(
+                "Some generic prose without a Key Findings heading"
+            )
             self.assertGreater(prose_idx, notes_idx)
 
     def test_append_overview_clears_seed_placeholder_in_active_tasks(self) -> None:
@@ -1281,11 +1631,15 @@ class MemoryAndIngestTests(unittest.TestCase):
                 "## Active Tasks\n- 初回調査待ち\n"
             )
 
-            memory.append_overview("Verify logon type distribution for host informant-PC")
+            memory.append_overview(
+                "Verify logon type distribution for host informant-PC"
+            )
 
             overview = memory.load_overview()
             self.assertNotIn("初回調査待ち", overview)
-            self.assertIn("Verify logon type distribution for host informant-PC", overview)
+            self.assertIn(
+                "Verify logon type distribution for host informant-PC", overview
+            )
             tasks_idx = overview.index("## Active Tasks")
             task_idx = overview.index("Verify logon type distribution")
             self.assertGreater(task_idx, tasks_idx)
@@ -1319,13 +1673,19 @@ class MemoryAndIngestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
-            memory.update_overview("# Investigation Overview\n\n## Key Findings\n- none\n")
+            memory.update_overview(
+                "# Investigation Overview\n\n## Key Findings\n- none\n"
+            )
             overview_before = memory.load_overview()
 
             # Inconclusive with no new entities, no new families
             _apply_memory_updates(
                 memory=memory,
-                active_hypotheses=[Hypothesis(id="H-1", description="desc", status="active", summary="")],
+                active_hypotheses=[
+                    Hypothesis(
+                        id="H-1", description="desc", status="active", summary=""
+                    )
+                ],
                 resolved_hypotheses=[],
                 check_output={
                     "verdict": "inconclusive",
@@ -1336,8 +1696,11 @@ class MemoryAndIngestTests(unittest.TestCase):
                 },
                 db=None,
             )
-            self.assertEqual(overview_before, memory.load_overview(),
-                             "plain inconclusive without transition writes nothing to overview")
+            self.assertEqual(
+                overview_before,
+                memory.load_overview(),
+                "plain inconclusive without transition writes nothing to overview",
+            )
 
 
 if __name__ == "__main__":

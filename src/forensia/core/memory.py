@@ -4,16 +4,15 @@ import hashlib
 import logging
 import re
 import shutil
+from collections.abc import Callable
 from math import ceil
 from pathlib import Path
 from re import sub
 
-from collections.abc import Callable
-from forensia.core.case import Case
 from forensia.config import get_llm_settings
-from forensia.core.session import ENTITY_TYPE_ALIASES, ENTITY_ROLES
+from forensia.core.case import Case
+from forensia.core.session import ENTITY_TYPE_ALIASES
 from forensia.core.textutil import jaccard_similarity, normalize_text, slugify
-
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +205,9 @@ class MemoryManager:
         if hypothesis_id:
             meta.append(f"hypothesis: {str(hypothesis_id).strip()}")
         meta.append("provisional" if provisional else "confirmed")
-        normalized_ids = [str(item).strip() for item in evidence_ids if str(item).strip()]
+        normalized_ids = [
+            str(item).strip() for item in evidence_ids if str(item).strip()
+        ]
         if normalized_ids:
             meta.append(f"evidence: {', '.join(normalized_ids)}")
         if meta:
@@ -216,7 +217,9 @@ class MemoryManager:
     def _append_markdown_entry(self, path: Path, heading: str, line: str) -> bool:
         """Append a line under a heading in a Markdown file, skipping if the line is already present."""
         path.parent.mkdir(parents=True, exist_ok=True)
-        existing = path.read_text(encoding="utf-8").rstrip() if path.exists() else heading
+        existing = (
+            path.read_text(encoding="utf-8").rstrip() if path.exists() else heading
+        )
         if not existing:
             existing = heading
         existing_lines = set(existing.splitlines())
@@ -248,7 +251,9 @@ class MemoryManager:
         if include_scratch:
             files.extend(self._markdown_files(self.scratch_global_dir))
             if hypothesis_id:
-                files.extend(self._markdown_files(self._hypothesis_scratch_dir(hypothesis_id)))
+                files.extend(
+                    self._markdown_files(self._hypothesis_scratch_dir(hypothesis_id))
+                )
         deduped: list[str] = []
         seen: set[str] = set()
         for item in files:
@@ -282,7 +287,9 @@ class MemoryManager:
             max_bytes=max_bytes,
         )
 
-    def load_compact_context(self, files: list[str], max_bytes: int | None = None) -> str:
+    def load_compact_context(
+        self, files: list[str], max_bytes: int | None = None
+    ) -> str:
         """Load context from files but truncate from the front if the byte budget is exceeded."""
         budget = max_bytes if max_bytes is not None else self.max_bytes
         text = self.load_context(files)
@@ -300,8 +307,15 @@ class MemoryManager:
 
     # Placeholder bullets cleared when real content lands in a section
     # (includes the Active Tasks seed lines from _initialize_overview).
-    _OVERVIEW_PLACEHOLDERS = ("- none", "- 初回調査待ち", "- Awaiting initial investigation")
-    _TASK_VERB_RE = re.compile(r"^(?:task:|todo:|(?:investigate|verify|check|review|correlate|confirm)\b)", re.IGNORECASE)
+    _OVERVIEW_PLACEHOLDERS = (
+        "- none",
+        "- 初回調査待ち",
+        "- Awaiting initial investigation",
+    )
+    _TASK_VERB_RE = re.compile(
+        r"^(?:task:|todo:|(?:investigate|verify|check|review|correlate|confirm)\b)",
+        re.IGNORECASE,
+    )
 
     def append_overview(self, content: str) -> bool:
         """Insert content as a bullet under the matching overview heading.
@@ -317,28 +331,30 @@ class MemoryManager:
         existing = self.load_overview()
         lowered = content.lower()
         if self._TASK_VERB_RE.match(lowered):
-            target_heading = '## Active Tasks'
-        elif lowered.startswith('scope') or 'case scope' in lowered:
-            target_heading = '## Case Scope'
+            target_heading = "## Active Tasks"
+        elif lowered.startswith("scope") or "case scope" in lowered:
+            target_heading = "## Case Scope"
         else:
-            target_heading = '## Key Findings'
-        bullet = content if content.startswith('- ') else f'- {content}'
+            target_heading = "## Key Findings"
+        bullet = content if content.startswith("- ") else f"- {content}"
 
         if target_heading in existing:
-            sections = re.split(r'(?=^## )', existing, flags=re.MULTILINE)
+            sections = re.split(r"(?=^## )", existing, flags=re.MULTILINE)
             for index, section in enumerate(sections):
                 if not section.startswith(target_heading):
                     continue
                 for placeholder in self._OVERVIEW_PLACEHOLDERS:
-                    section = section.replace(placeholder + '\n', '').replace(placeholder, '')
-                stripped = section.rstrip('\n')
-                trailing = section[len(stripped):] or '\n'
-                sections[index] = stripped + '\n' + bullet + trailing
-                self.update_overview(''.join(sections))
+                    section = section.replace(placeholder + "\n", "").replace(
+                        placeholder, ""
+                    )
+                stripped = section.rstrip("\n")
+                trailing = section[len(stripped) :] or "\n"
+                sections[index] = stripped + "\n" + bullet + trailing
+                self.update_overview("".join(sections))
                 return True
 
         # Fall back: target heading missing — append to end
-        self.update_overview(existing.rstrip() + '\n\n' + content + '\n')
+        self.update_overview(existing.rstrip() + "\n\n" + content + "\n")
         return True
 
     _R3_REFUTED_RE = re.compile(
@@ -372,7 +388,9 @@ class MemoryManager:
 
     def upsert_hypothesis(self, hyp_id: str, slug: str, content: str) -> None:
         """Write hypothesis content, removing any stale legacy files with the same slug prefix."""
-        stable_id = sub(r"[^a-zA-Z0-9._-]+", "-", str(hyp_id).strip()).strip("-") or "unknown"
+        stable_id = (
+            sub(r"[^a-zA-Z0-9._-]+", "-", str(hyp_id).strip()).strip("-") or "unknown"
+        )
         path = self.hypotheses_dir / f"{stable_id}.md"
         for legacy_path in self.hypotheses_dir.glob(f"{slugify(hyp_id)}-*.md"):
             if legacy_path != path:
@@ -399,7 +417,9 @@ class MemoryManager:
         if re.search(r"\{\w+\}", body):
             logger.warning("dropped fact with placeholder tokens: %s", body[:60])
             return
-        normalized_ids = sorted({str(item).strip() for item in evidence_ids if str(item).strip()})
+        normalized_ids = sorted(
+            {str(item).strip() for item in evidence_ids if str(item).strip()}
+        )
         line = self._memory_line(
             body,
             normalized_ids,
@@ -458,7 +478,9 @@ class MemoryManager:
             provisional=provisional,
         )
         if line and self._append_markdown_entry(
-            self._hypothesis_scratch_path(hypothesis_id, "timeline") if provisional else self.timeline_path,
+            self._hypothesis_scratch_path(hypothesis_id, "timeline")
+            if provisional
+            else self.timeline_path,
             "# Timeline",
             line,
         ):
@@ -474,7 +496,11 @@ class MemoryManager:
         """Append a task entry to the tasks file (or scratch if provisional), compacting when oversized."""
         task_text = str(text).strip()
         normalized_kind = str(kind).strip()
-        if normalized_kind not in {"internal_db_check", "external_lookup", "human_decision"}:
+        if normalized_kind not in {
+            "internal_db_check",
+            "external_lookup",
+            "human_decision",
+        }:
             normalized_kind = "human_decision"
         if not task_text:
             return
@@ -501,21 +527,31 @@ class MemoryManager:
 
                 # R2-10: Cap open [human_decision] tasks at 10, evict oldest
                 if normalized_kind == "human_decision":
-                    human_lines = [(i, l) for i, l in enumerate(existing_lines) if l.startswith("- [human_decision]")]
+                    human_lines = [
+                        (i, l)
+                        for i, l in enumerate(existing_lines)
+                        if l.startswith("- [human_decision]")
+                    ]
                     if len(human_lines) >= 10:
                         oldest_idx = human_lines[0][0]
                         existing_lines.pop(oldest_idx)
-                        path.write_text("\n".join(existing_lines) + "\n", encoding="utf-8")
+                        path.write_text(
+                            "\n".join(existing_lines) + "\n", encoding="utf-8"
+                        )
 
         self._append_markdown_entry(
-            self._hypothesis_scratch_path(hypothesis_id, "tasks") if provisional else self.tasks_memory_path,
+            self._hypothesis_scratch_path(hypothesis_id, "tasks")
+            if provisional
+            else self.tasks_memory_path,
             "# Tasks",
             line,
         )
         if not provisional:
             self.compact_if_oversized(self.tasks_memory_path)
 
-    def append_refuted_hypothesis(self, hypothesis_id: str, description: str, reason: str) -> None:
+    def append_refuted_hypothesis(
+        self, hypothesis_id: str, description: str, reason: str
+    ) -> None:
         """Log a refuted hypothesis to the archive with its reasoning."""
         hyp_id = str(hypothesis_id).strip()
         description_text = str(description).strip()
@@ -525,7 +561,9 @@ class MemoryManager:
         line = f"- {hyp_id}: {description_text}"
         if reason_text:
             line += f" | reason: {reason_text}"
-        self._append_markdown_entry(self.refuted_hypotheses_path, "# Refuted Hypotheses", line)
+        self._append_markdown_entry(
+            self.refuted_hypotheses_path, "# Refuted Hypotheses", line
+        )
 
     def append_resolved_gap(self, text: str, evidence_ids: list[str]) -> None:
         """Record a resolved gap in the archive."""
@@ -534,7 +572,9 @@ class MemoryManager:
             return
         line = self._memory_line(body, evidence_ids)
         if line:
-            self._append_markdown_entry(self.resolved_gaps_path, "# Resolved Gaps", line)
+            self._append_markdown_entry(
+                self.resolved_gaps_path, "# Resolved Gaps", line
+            )
 
     @staticmethod
     def _split_claim(body: str) -> tuple[str, str]:
@@ -567,7 +607,10 @@ class MemoryManager:
         text = f"{observation} — {verdict} (query {query_id})"
         # R2-03: Reject confirmed hypothesis fact with placeholder tokens
         if re.search(r"\{\w+\}", text):
-            logger.warning("dropped confirmed hypothesis fact with placeholder tokens: %s", text[:60])
+            logger.warning(
+                "dropped confirmed hypothesis fact with placeholder tokens: %s",
+                text[:60],
+            )
             return
         self.append_confirmed_fact(text, evidence_ids, provisional=False)
         if interpretation:
@@ -583,7 +626,11 @@ class MemoryManager:
         if self.suspicious_path.exists():
             existing = self.suspicious_path.read_text(encoding="utf-8")
             for line in existing.splitlines():
-                if line.startswith("|") and not line.startswith("| evidence_id ") and not line.startswith("|---"):
+                if (
+                    line.startswith("|")
+                    and not line.startswith("| evidence_id ")
+                    and not line.startswith("|---")
+                ):
                     parts = [item.strip() for item in line.strip("|").split("|")]
                     if parts:
                         seen.add(parts[0])
@@ -612,12 +659,16 @@ class MemoryManager:
         self._next_fact_id += 1
         return detail_id
 
-    def _write_fact_detail(self, detail_id: str, text: str, evidence_ids: list[str]) -> None:
+    def _write_fact_detail(
+        self, detail_id: str, text: str, evidence_ids: list[str]
+    ) -> None:
         """Write a detailed fact record with evidence references to the details directory."""
         lines = [f"# {detail_id}", "", text.strip()]
         if evidence_ids:
             lines.extend(["", "## Evidence", *[f"- {item}" for item in evidence_ids]])
-        (self.details_dir / f"{detail_id}.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+        (self.details_dir / f"{detail_id}.md").write_text(
+            "\n".join(lines).rstrip() + "\n", encoding="utf-8"
+        )
 
     def _fact_hash(self, text: str, evidence_ids: list[str]) -> str:
         """Generate a SHA-256 hash for deduplicating fact entries."""
@@ -655,7 +706,9 @@ class MemoryManager:
                 max_n = max(max_n, int(path.stem[5:]))
             except ValueError:
                 continue
-            parsed = self._parse_fact_detail(path.read_text(encoding="utf-8").splitlines())
+            parsed = self._parse_fact_detail(
+                path.read_text(encoding="utf-8").splitlines()
+            )
             if parsed is None:
                 continue
             text, evidence_ids = parsed
@@ -699,7 +752,9 @@ class MemoryManager:
         shutil.move(str(scratch_dir), str(target_dir))
         return [str(target_dir)]
 
-    def archive_untestable_hypothesis_scratch(self, hypothesis_id: str | None) -> list[str]:
+    def archive_untestable_hypothesis_scratch(
+        self, hypothesis_id: str | None
+    ) -> list[str]:
         """Append hypothesis scratch content to archive/untestable.md instead of full directory move."""
         scratch_dir = self._hypothesis_scratch_dir(hypothesis_id)
         if not scratch_dir.exists():
@@ -715,7 +770,9 @@ class MemoryManager:
                 lines.append(content)
                 lines.append("")
         entry = "\n".join(lines).strip()
-        self._append_markdown_entry(self.untestable_hypotheses_path, "# Untestable Hypotheses", entry)
+        self._append_markdown_entry(
+            self.untestable_hypotheses_path, "# Untestable Hypotheses", entry
+        )
         shutil.rmtree(scratch_dir, ignore_errors=True)
         return [str(self.untestable_hypotheses_path)]
 
@@ -753,11 +810,18 @@ class MemoryManager:
         archived = anchor_lines[:-keep_lines]
         retained = anchor_lines[-keep_lines:]
         archive_path = self.archive_dir / "timeline_archive.md"
-        archive_existing = archive_path.read_text(encoding="utf-8").rstrip() if archive_path.exists() else "# Timeline Archive"
+        archive_existing = (
+            archive_path.read_text(encoding="utf-8").rstrip()
+            if archive_path.exists()
+            else "# Timeline Archive"
+        )
         archive_lines = set(archive_existing.splitlines())
         appendable = [line for line in archived if line not in archive_lines]
         if appendable:
-            archive_path.write_text(archive_existing + "\n\n" + "\n".join(appendable) + "\n", encoding="utf-8")
+            archive_path.write_text(
+                archive_existing + "\n\n" + "\n".join(appendable) + "\n",
+                encoding="utf-8",
+            )
         rebuilt = "# Timeline"
         if retained:
             rebuilt += "\n\n" + "\n".join(retained)
@@ -765,7 +829,10 @@ class MemoryManager:
 
     def compact_overview_if_needed(self, base_url: str, model: str) -> bool:
         """Compress the overview via LLM if it exceeds the byte budget."""
-        if not self.overview_path.exists() or self.overview_path.stat().st_size <= self.max_bytes:
+        if (
+            not self.overview_path.exists()
+            or self.overview_path.stat().st_size <= self.max_bytes
+        ):
             return False
         current = self.overview_path.read_text(encoding="utf-8").strip()
         if not current:
@@ -799,7 +866,9 @@ class MemoryManager:
             if not current:
                 continue
             output_language = str(get_llm_settings()["output_language"]).lower()
-            language_instruction = f"Write the compressed markdown in {output_language}."
+            language_instruction = (
+                f"Write the compressed markdown in {output_language}."
+            )
             body = self._call_llm_compact(
                 text=current,
                 system_prompt=(
@@ -818,7 +887,10 @@ class MemoryManager:
             compacted = self._ensure_markdown_heading(body, current)
             encoded = compacted.encode("utf-8")
             if len(encoded) > self.max_bytes:
-                compacted = encoded[: self.max_bytes].decode("utf-8", errors="ignore").rstrip() + "\n"
+                compacted = (
+                    encoded[: self.max_bytes].decode("utf-8", errors="ignore").rstrip()
+                    + "\n"
+                )
                 compacted = self._ensure_markdown_heading(compacted, current)
             path.write_text(compacted, encoding="utf-8")
             changed_paths.append(str(path))
@@ -840,7 +912,14 @@ class MemoryManager:
         """Ensure the compacted body retains the original markdown heading."""
         compacted = body.strip()
         if not compacted.startswith("# "):
-            original_heading = next((line.strip() for line in original.splitlines() if line.strip().startswith("# ")), "")
+            original_heading = next(
+                (
+                    line.strip()
+                    for line in original.splitlines()
+                    if line.strip().startswith("# ")
+                ),
+                "",
+            )
             if original_heading:
                 compacted = f"{original_heading}\n\n{compacted}".strip()
             else:
@@ -885,7 +964,9 @@ class MemoryManager:
         while keep_lines:
             remove_count = max(1, ceil(len(keep_lines) * 0.2))
             keep_lines = keep_lines[remove_count:]
-            rebuilt = "\n".join(prefix_lines + separator_lines + keep_lines).strip() + "\n"
+            rebuilt = (
+                "\n".join(prefix_lines + separator_lines + keep_lines).strip() + "\n"
+            )
             path.write_text(rebuilt, encoding="utf-8")
             if path.stat().st_size <= self.max_bytes or len(keep_lines) <= 1:
                 return True
@@ -904,7 +985,9 @@ class MemoryManager:
             if line.startswith("- ["):
                 break
             prefix_lines.append(line)
-        return self._trim_rows_to_budget(path, prefix_lines, task_lines, separator_lines=[""])
+        return self._trim_rows_to_budget(
+            path, prefix_lines, task_lines, separator_lines=[""]
+        )
 
     def _compact_suspicious(self, path: Path) -> bool:
         """Trim the suspicious evidence table by removing oldest rows until it fits the byte budget."""
@@ -914,7 +997,9 @@ class MemoryManager:
         data_lines = [
             line
             for line in lines
-            if line.startswith("|") and not line.startswith("| evidence_id ") and not line.startswith("|---")
+            if line.startswith("|")
+            and not line.startswith("| evidence_id ")
+            and not line.startswith("|---")
         ]
         if not data_lines:
             return False
@@ -931,7 +1016,6 @@ class MemoryManager:
         Reads all rows ordered by timestamp ASC, groups into per-day sections,
         and writes the result to timeline.md. Returns True when content changed.
         """
-        from forensia.db.database import CaseDB
         from forensia.db.query import fetch_records
 
         rows = fetch_records(
@@ -945,7 +1029,9 @@ class MemoryManager:
         )
         if not rows:
             if self.timeline_path.exists():
-                self.timeline_path.write_text("# Timeline\n\n_No timeline entries yet._\n", encoding="utf-8")
+                self.timeline_path.write_text(
+                    "# Timeline\n\n_No timeline entries yet._\n", encoding="utf-8"
+                )
             return False
         date_groups: dict[str, list[dict]] = {}
         for row in rows:
@@ -967,7 +1053,11 @@ class MemoryManager:
                 lines.append(f"- {ts} {summary}{meta}")
             lines.append("")
         content = "\n".join(lines).strip() + "\n"
-        existing = self.timeline_path.read_text(encoding="utf-8") if self.timeline_path.exists() else ""
+        existing = (
+            self.timeline_path.read_text(encoding="utf-8")
+            if self.timeline_path.exists()
+            else ""
+        )
         if content.strip() == existing.strip():
             return False
         self.timeline_path.write_text(content, encoding="utf-8")

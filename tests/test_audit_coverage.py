@@ -4,10 +4,10 @@ import unittest
 from pathlib import Path
 
 from scripts.audit_schema_coverage import (
-    _extract_event_ids_from_sql,
-    _collect_rule_event_ids,
     _audit_question_routing_eval,
     _audit_question_specs,
+    _collect_rule_event_ids,
+    _extract_event_ids_from_sql,
 )
 
 
@@ -32,7 +32,13 @@ class AuditCoverageTests(unittest.TestCase):
         self.assertEqual(ids, set())
 
     def test_collect_rule_ids_finds_known_events(self) -> None:
-        rules_dir = Path(__file__).resolve().parent.parent / "src" / "forensia" / "rulepacks" / "windows"
+        rules_dir = (
+            Path(__file__).resolve().parent.parent
+            / "src"
+            / "forensia"
+            / "rulepacks"
+            / "windows"
+        )
         ids = _collect_rule_event_ids(rules_dir)
         self.assertIn(4624, ids, "Security 4624 (logon) should be found")
         self.assertIn(4688, ids, "Security 4688 (process creation) should be found")
@@ -49,28 +55,39 @@ class AuditCoverageTests(unittest.TestCase):
 class VerdictEnforcementTests(unittest.TestCase):
     def test_hypothesis_rejects_invalid_verdict(self) -> None:
         from pydantic import ValidationError
+
         from forensia.core.session import Hypothesis
+
         with self.assertRaises(ValidationError):
             Hypothesis(id="H-TEST", description="test", verdict="invalid_value")
 
     def test_history_entry_rejects_invalid_verdict(self) -> None:
         from pydantic import ValidationError
+
         from forensia.core.session import HistoryEntry
+
         with self.assertRaises(ValidationError):
-            HistoryEntry(iteration=1, query_id="Q-TEST", summary="test", verdict="bogus")
+            HistoryEntry(
+                iteration=1, query_id="Q-TEST", summary="test", verdict="bogus"
+            )
 
     def test_hypothesis_accepts_valid_verdict(self) -> None:
         from forensia.core.session import Hypothesis
+
         h = Hypothesis(id="H-TEST", description="test", verdict="confirmed")
         self.assertEqual(h.verdict, "confirmed")
 
     def test_history_entry_accepts_valid_verdict(self) -> None:
         from forensia.core.session import HistoryEntry
-        h = HistoryEntry(iteration=1, query_id="Q-TEST", summary="test", verdict="confirmed")
+
+        h = HistoryEntry(
+            iteration=1, query_id="Q-TEST", summary="test", verdict="confirmed"
+        )
         self.assertEqual(h.verdict, "confirmed")
 
     def test_assert_valid_verdict_accepts_valid(self) -> None:
         from forensia.core.verdicts import assert_valid_verdict
+
         assert_valid_verdict("confirmed", "hypothesis_verdict")  # no error
         assert_valid_verdict("block_supported", "section_verdict")  # no error
         assert_valid_verdict("answered", "structured_status")  # no error
@@ -78,11 +95,13 @@ class VerdictEnforcementTests(unittest.TestCase):
 
     def test_store_section_run_rejects_invalid(self) -> None:
         from forensia.core.verdicts import assert_valid_verdict
+
         with self.assertRaises(ValueError):
             assert_valid_verdict("bogus_verdict", "section_verdict")
 
     def test_benchmark_answer_normalization_enforces_taxonomy(self) -> None:
         from forensia.report.writer import _normalize_benchmark_answer
+
         result = _normalize_benchmark_answer(
             {"status": "bogus_status"},
             section_key="6_appendix",

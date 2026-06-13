@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-import atexit
-from collections.abc import Callable
-from typing import Any
 import asyncio
+import atexit
 import threading
 import time
-
-import os
+from collections.abc import Callable
+from typing import Any
 
 import httpx
 
-from forensia.config import get_llm_settings
+from forensia.config import get_llm_settings, settings
 
 
 class LLMServerUnavailableError(RuntimeError):
@@ -20,6 +18,7 @@ class LLMServerUnavailableError(RuntimeError):
 
 class LLMOutputTruncatedError(RuntimeError):
     """Raised when LLM response is truncated (finish_reason=length or empty content with non-empty reasoning)."""
+
 
 _LLM_HTTP_RETRY_MAX = 3
 _LLM_HTTP_RETRY_BACKOFF = [2.0, 4.0, 8.0]
@@ -139,7 +138,9 @@ async def async_chat_completion(
 ) -> str:
     """Send a chat completion request to the LLM server (async). Returns the response text."""
     settings = get_llm_settings()
-    resolved_max_tokens = (max_tokens if max_tokens is not None else settings["max_tokens"]) + settings.get("reasoning_reserve_tokens", 0)
+    resolved_max_tokens = (
+        max_tokens if max_tokens is not None else settings["max_tokens"]
+    ) + settings.get("reasoning_reserve_tokens", 0)
 
     url = base_url.rstrip("/") + "/v1/chat/completions"
     body: dict[str, Any] = {
@@ -174,10 +175,14 @@ async def async_chat_completion(
                         schema_mode = next_schema_mode
                         continue
                 if attempt == _LLM_HTTP_RETRY_MAX:
-                    raise LLMServerUnavailableError(f"LLM server returned {response.status_code} after {_LLM_HTTP_RETRY_MAX} retries")
+                    raise LLMServerUnavailableError(
+                        f"LLM server returned {response.status_code} after {_LLM_HTTP_RETRY_MAX} retries"
+                    )
                 wait = _LLM_HTTP_RETRY_BACKOFF[attempt - 1]
                 if status_callback:
-                    status_callback(f"LLM server {response.status_code} — retry {attempt}/{_LLM_HTTP_RETRY_MAX}")
+                    status_callback(
+                        f"LLM server {response.status_code} — retry {attempt}/{_LLM_HTTP_RETRY_MAX}"
+                    )
                 await asyncio.sleep(wait)
                 continue
             while response.status_code == 400 and json_schema:
@@ -195,14 +200,25 @@ async def async_chat_completion(
                     continue
                 break
             response.raise_for_status()
-        except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as exc:
-            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
+        except (
+            httpx.HTTPStatusError,
+            httpx.ConnectError,
+            httpx.TimeoutException,
+        ) as exc:
+            if (
+                isinstance(exc, httpx.HTTPStatusError)
+                and exc.response.status_code < 500
+            ):
                 raise
             if attempt == _LLM_HTTP_RETRY_MAX:
-                raise LLMServerUnavailableError(f"LLM server error after {_LLM_HTTP_RETRY_MAX} retries: {exc}") from exc
+                raise LLMServerUnavailableError(
+                    f"LLM server error after {_LLM_HTTP_RETRY_MAX} retries: {exc}"
+                ) from exc
             wait = _LLM_HTTP_RETRY_BACKOFF[attempt - 1]
             if status_callback:
-                status_callback(f"LLM server error {exc} — retry {attempt}/{_LLM_HTTP_RETRY_MAX}")
+                status_callback(
+                    f"LLM server error {exc} — retry {attempt}/{_LLM_HTTP_RETRY_MAX}"
+                )
             await asyncio.sleep(wait)
             continue
         data = response.json()
@@ -228,7 +244,9 @@ def chat_completion(
 ) -> str:
     """Send a chat completion request to the LLM server (sync). Returns the response text."""
     settings = get_llm_settings()
-    resolved_max_tokens = (max_tokens if max_tokens is not None else settings["max_tokens"]) + settings.get("reasoning_reserve_tokens", 0)
+    resolved_max_tokens = (
+        max_tokens if max_tokens is not None else settings["max_tokens"]
+    ) + settings.get("reasoning_reserve_tokens", 0)
 
     url = base_url.rstrip("/") + "/v1/chat/completions"
     body: dict[str, Any] = {
@@ -262,10 +280,14 @@ def chat_completion(
                         schema_mode = next_schema_mode
                         continue
                 if attempt == _LLM_HTTP_RETRY_MAX:
-                    raise LLMServerUnavailableError(f"LLM server returned {response.status_code} after {_LLM_HTTP_RETRY_MAX} retries")
+                    raise LLMServerUnavailableError(
+                        f"LLM server returned {response.status_code} after {_LLM_HTTP_RETRY_MAX} retries"
+                    )
                 wait = _LLM_HTTP_RETRY_BACKOFF[attempt - 1]
                 if status_callback:
-                    status_callback(f"LLM server {response.status_code} — retry {attempt}/{_LLM_HTTP_RETRY_MAX}")
+                    status_callback(
+                        f"LLM server {response.status_code} — retry {attempt}/{_LLM_HTTP_RETRY_MAX}"
+                    )
                 time.sleep(wait)
                 continue
             while response.status_code == 400 and json_schema:
@@ -283,14 +305,25 @@ def chat_completion(
                     continue
                 break
             response.raise_for_status()
-        except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as exc:
-            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
+        except (
+            httpx.HTTPStatusError,
+            httpx.ConnectError,
+            httpx.TimeoutException,
+        ) as exc:
+            if (
+                isinstance(exc, httpx.HTTPStatusError)
+                and exc.response.status_code < 500
+            ):
                 raise
             if attempt == _LLM_HTTP_RETRY_MAX:
-                raise LLMServerUnavailableError(f"LLM server error after {_LLM_HTTP_RETRY_MAX} retries: {exc}") from exc
+                raise LLMServerUnavailableError(
+                    f"LLM server error after {_LLM_HTTP_RETRY_MAX} retries: {exc}"
+                ) from exc
             wait = _LLM_HTTP_RETRY_BACKOFF[attempt - 1]
             if status_callback:
-                status_callback(f"LLM server error {exc} — retry {attempt}/{_LLM_HTTP_RETRY_MAX}")
+                status_callback(
+                    f"LLM server error {exc} — retry {attempt}/{_LLM_HTTP_RETRY_MAX}"
+                )
             time.sleep(wait)
             continue
         data = response.json()
@@ -311,24 +344,35 @@ async def outage_wait_until_recovered(
     model: str,
     progress_callback: Callable[[dict], None] | None = None,
 ) -> None:
-    budget_s = int(os.getenv("LLM_OUTAGE_WALL_CLOCK_BUDGET_S", "28800"))
-    interval_s = int(os.getenv("LLM_OUTAGE_PROBE_INTERVAL_S", "60"))
+    budget_s = settings.llm_outage_wall_clock_budget_s
+    interval_s = settings.llm_outage_probe_interval_s
     started = time.monotonic()
     while True:
         waited = int(time.monotonic() - started)
         if waited > budget_s:
             raise LLMServerUnavailableError(f"LLM outage budget exceeded ({budget_s}s)")
         if progress_callback:
-            progress_callback({"stage": "waiting_for_llm", "status": "running",
-                               "summary": f"LLM server unavailable (waited {waited}s of {budget_s}s budget)"})
+            progress_callback(
+                {
+                    "stage": "waiting_for_llm",
+                    "status": "running",
+                    "summary": f"LLM server unavailable (waited {waited}s of {budget_s}s budget)",
+                }
+            )
         try:
             client = await _get_async_client()
             r = await client.get(f"{base_url.rstrip('/')}/v1/models", timeout=10.0)
             if r.status_code == 200:
-                ping = await client.post(f"{base_url.rstrip('/')}/v1/chat/completions",
-                    json={"model": model, "messages": [{"role":"user","content":"ping"}], "max_tokens": 4})
+                ping = await client.post(
+                    f"{base_url.rstrip('/')}/v1/chat/completions",
+                    json={
+                        "model": model,
+                        "messages": [{"role": "user", "content": "ping"}],
+                        "max_tokens": 4,
+                    },
+                )
                 if ping.status_code < 500:
                     return
-        except (httpx.HTTPError, httpx.RequestError):
+        except httpx.HTTPError, httpx.RequestError:
             pass
         await asyncio.sleep(interval_s)

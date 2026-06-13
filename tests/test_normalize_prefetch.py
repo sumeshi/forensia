@@ -152,9 +152,7 @@ class NormalizePrefetchTests(unittest.TestCase):
                     "SELECT executable_name FROM prefetch_executions ORDER BY executable_name"
                 ).fetchall()
             self.assertEqual(3, inserted)
-            self.assertEqual(
-                [("APP1.EXE",), ("APP2.EXE",), ("APP3.EXE",)], names
-            )
+            self.assertEqual([("APP1.EXE",), ("APP2.EXE",), ("APP3.EXE",)], names)
 
     def test_reingest_same_source_file_clears_old_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 from itertools import chain
 from pathlib import Path
-from typing import Callable
 
 from mft2es.models.Mft2es import Mft2es
 
@@ -27,9 +27,13 @@ def ingest_mft_file(
     if progress_callback:
         progress_callback(f"Parsing MFT records from {mft_path}")
     parser = Mft2es(mft_path)
-    records = list(chain.from_iterable(
-        parser.gen_timeline_records(multiprocess=False, chunk_size=500, timeline_mode=False)
-    ))
+    records = list(
+        chain.from_iterable(
+            parser.gen_timeline_records(
+                multiprocess=False, chunk_size=500, timeline_mode=False
+            )
+        )
+    )
     if progress_callback:
         progress_callback(f"Parsed {len(records)} MFT records from {mft_path}")
 
@@ -53,9 +57,13 @@ def ingest_mft_file(
     if progress_callback:
         progress_callback(f"Parsing MFT timeline records from {mft_path}")
     timeline_parser = Mft2es(mft_path)
-    timeline_records = list(chain.from_iterable(
-        timeline_parser.gen_timeline_records(multiprocess=False, chunk_size=500, timeline_mode=True)
-    ))
+    timeline_records = list(
+        chain.from_iterable(
+            timeline_parser.gen_timeline_records(
+                multiprocess=False, chunk_size=500, timeline_mode=True
+            )
+        )
+    )
     with timeline_path.open("w", encoding="utf-8") as handle:
         for record in timeline_records:
             # mft2es timeline_mode=True emits ECS-shaped records (@timestamp, event.action,
@@ -69,7 +77,9 @@ def ingest_mft_file(
             event_action = str((record.get("event", {}) or {}).get("action") or "")
             timestamp_type = _TIMESTAMP_TYPE_MAP.get(event_action, event_action)
             evidence_id = make_mft_evidence_id(record_number, sequence_number)
-            timeline_id = f"{evidence_id}-{timestamp_type}" if timestamp_type else evidence_id
+            timeline_id = (
+                f"{evidence_id}-{timestamp_type}" if timestamp_type else evidence_id
+            )
             file_path = rec_meta.get("path") or ""
             file_name = rec_meta.get("name") or ""
             enriched = {

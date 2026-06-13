@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from forensia.core.evidence import _slugify
-from forensia.core.evidence import make_evtx_evidence_id
-from forensia.core.evidence import make_mft_evidence_id
-from forensia.core.evidence import make_prefetch_evidence_id
+from forensia.core.evidence import (
+    _slugify,
+    make_evtx_evidence_id,
+    make_mft_evidence_id,
+    make_prefetch_evidence_id,
+)
 
 
 class SlugifyTests(unittest.TestCase):

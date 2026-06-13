@@ -1,14 +1,13 @@
 from __future__ import annotations
 
+import shutil
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-import shutil
 from typing import Any
 
 import yaml
-
-from collections import defaultdict
 
 from forensia.core.timeutil import parse_timestamp
 from forensia.report_templates import export_packaged_report_templates
@@ -45,11 +44,13 @@ def _days_between(ts1: str, ts2: str) -> float:
         dt1 = _parse_dt(ts1)
         dt2 = _parse_dt(ts2)
         return abs((dt1 - dt2).total_seconds()) / 86400.0
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return 0.0
 
 
-def detect_epochs(conn, epoch_gap_days: int = EPOCH_GAP_DAYS) -> dict[str, list[dict[str, Any]]]:
+def detect_epochs(
+    conn, epoch_gap_days: int = EPOCH_GAP_DAYS
+) -> dict[str, list[dict[str, Any]]]:
     """Cluster each host's event timestamps and label pre-deployment epochs.
 
     Returns a dict keyed by canonical host name (UPPER(TRIM(computer))) with
@@ -102,7 +103,7 @@ def detect_epochs(conn, epoch_gap_days: int = EPOCH_GAP_DAYS) -> dict[str, list[
         current_cluster: list[tuple[str, str, str]] = [entries[0]]
 
         for i in range(1, len(entries)):
-            gap = _days_between(entries[i-1][2], entries[i][2])
+            gap = _days_between(entries[i - 1][2], entries[i][2])
             if gap > epoch_gap_days:
                 clusters.append(current_cluster)
                 current_cluster = [entries[i]]
@@ -117,13 +118,15 @@ def detect_epochs(conn, epoch_gap_days: int = EPOCH_GAP_DAYS) -> dict[str, list[
             first = cl[0][2]
             last = cl[-1][2]
             count = len(cl)
-            host_clusters.append({
-                "label": "active",
-                "display_name": display_name,
-                "first_seen": first,
-                "last_seen": last,
-                "event_count": count,
-            })
+            host_clusters.append(
+                {
+                    "label": "active",
+                    "display_name": display_name,
+                    "first_seen": first,
+                    "last_seen": last,
+                    "event_count": count,
+                }
+            )
 
         # The latest cluster (by last_seen) is the active anchor
         if host_clusters:
@@ -135,7 +138,10 @@ def detect_epochs(conn, epoch_gap_days: int = EPOCH_GAP_DAYS) -> dict[str, list[
                 # If this cluster ends before the latest cluster begins
                 # (with gap > epoch_gap_days), it's pre-deployment
                 if cluster["last_seen"] < latest["first_seen"]:
-                    if _days_between(cluster["last_seen"], latest["first_seen"]) > epoch_gap_days:
+                    if (
+                        _days_between(cluster["last_seen"], latest["first_seen"])
+                        > epoch_gap_days
+                    ):
                         cluster["label"] = "pre-deployment"
                     else:
                         cluster["label"] = "active"
@@ -166,25 +172,40 @@ class Case:
         dominant epoch has been computed.
         """
         if self._dominant_time_range_earliest and self._dominant_time_range_latest:
-            return {"earliest": self._dominant_time_range_earliest, "latest": self._dominant_time_range_latest}
+            return {
+                "earliest": self._dominant_time_range_earliest,
+                "latest": self._dominant_time_range_latest,
+            }
         if self._time_range_earliest and self._time_range_latest:
-            return {"earliest": self._time_range_earliest, "latest": self._time_range_latest}
+            return {
+                "earliest": self._time_range_earliest,
+                "latest": self._time_range_latest,
+            }
         return {}
 
     @property
     def full_time_range(self) -> dict[str, str]:
         """Return the full evidence time range including pre-deployment epochs."""
         if self._time_range_earliest and self._time_range_latest:
-            return {"earliest": self._time_range_earliest, "latest": self._time_range_latest}
+            return {
+                "earliest": self._time_range_earliest,
+                "latest": self._time_range_latest,
+            }
         return {}
 
     def extract_time_range(self, conn) -> None:
         """Query evtx_events MIN/MAX and compute the dominant epoch via detect_epochs()."""
         try:
-            row = conn.execute("SELECT MIN(timestamp) AS earliest, MAX(timestamp) AS latest FROM evtx_events").fetchone()
+            row = conn.execute(
+                "SELECT MIN(timestamp) AS earliest, MAX(timestamp) AS latest FROM evtx_events"
+            ).fetchone()
             if row:
-                self._time_range_earliest = str(row[0] or "") if row[0] is not None else ""
-                self._time_range_latest = str(row[1] or "") if row[1] is not None else ""
+                self._time_range_earliest = (
+                    str(row[0] or "") if row[0] is not None else ""
+                )
+                self._time_range_latest = (
+                    str(row[1] or "") if row[1] is not None else ""
+                )
         except Exception:
             pass
 
@@ -192,12 +213,18 @@ class Case:
         try:
             self._epoch_info = detect_epochs(conn)
             active_clusters = [
-                c for clusters in self._epoch_info.values() for c in clusters
+                c
+                for clusters in self._epoch_info.values()
+                for c in clusters
                 if c["label"] == "active"
             ]
             if active_clusters:
-                self._dominant_time_range_earliest = min(c["first_seen"] for c in active_clusters)
-                self._dominant_time_range_latest = max(c["last_seen"] for c in active_clusters)
+                self._dominant_time_range_earliest = min(
+                    c["first_seen"] for c in active_clusters
+                )
+                self._dominant_time_range_latest = max(
+                    c["last_seen"] for c in active_clusters
+                )
             else:
                 self._dominant_time_range_earliest = ""
                 self._dominant_time_range_latest = ""
@@ -259,7 +286,9 @@ class Case:
     def ensure_report_templates(self, overwrite: bool = False) -> list[Path]:
         """Export packaged report templates into the case directory."""
         self.report_template_dir.mkdir(parents=True, exist_ok=True)
-        return export_packaged_report_templates(self.report_template_dir, overwrite=overwrite)
+        return export_packaged_report_templates(
+            self.report_template_dir, overwrite=overwrite
+        )
 
     def clear_runtime_outputs(
         self,
@@ -300,7 +329,7 @@ class Case:
             self.memory_dir.mkdir(parents=True, exist_ok=True)
 
     @classmethod
-    def init(cls, path: str | Path, source_timezone: str = "UTC") -> "Case":
+    def init(cls, path: str | Path, source_timezone: str = "UTC") -> Case:
         """Create a new case directory with all required subdirectories and default files."""
         case = cls(Path(path).resolve(), source_timezone=source_timezone)
         case.path.mkdir(parents=True, exist_ok=True)
@@ -328,7 +357,9 @@ class Case:
                     "ai_logs": str(case.ai_logs_dir.relative_to(case.path)),
                     "reports": str(case.reports_dir.relative_to(case.path)),
                     "memory": str(case.memory_dir.relative_to(case.path)),
-                    "report_template": str(case.report_template_dir.relative_to(case.path)),
+                    "report_template": str(
+                        case.report_template_dir.relative_to(case.path)
+                    ),
                 },
             }
             case.manifest_path.write_text(
@@ -340,13 +371,15 @@ class Case:
         return case
 
     @classmethod
-    def open(cls, path: str | Path) -> "Case":
+    def open(cls, path: str | Path) -> Case:
         """Open an existing case by verifying its manifest file exists."""
         case = cls(Path(path).resolve())
         if not case.manifest_path.exists():
             raise FileNotFoundError(f"Case manifest not found: {case.manifest_path}")
         try:
-            manifest = yaml.safe_load(case.manifest_path.read_text(encoding="utf-8")) or {}
+            manifest = (
+                yaml.safe_load(case.manifest_path.read_text(encoding="utf-8")) or {}
+            )
             case.source_timezone = str(manifest.get("source_timezone") or "UTC")
         except Exception:
             case.source_timezone = "UTC"

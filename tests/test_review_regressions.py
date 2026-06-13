@@ -46,7 +46,11 @@ class ResolveHypothesisSampleRowsTests(unittest.TestCase):
                     session_id="S-1",
                     iteration=1,
                     active_hypotheses=[
-                        Hypothesis(id="H-1", description="logon activity on host", status="active")
+                        Hypothesis(
+                            id="H-1",
+                            description="logon activity on host",
+                            status="active",
+                        )
                     ],
                 )
                 rows = [
@@ -74,7 +78,10 @@ class ResolveHypothesisSampleRowsTests(unittest.TestCase):
                     "SELECT source, ref_id, host, evidence_id FROM case_timeline"
                 ).fetchall()
                 self.assertEqual(1, len(timeline))
-                self.assertEqual(("verdict", "H-1", "PC-01", "evtx-security-000000000001"), timeline[0])
+                self.assertEqual(
+                    ("verdict", "H-1", "PC-01", "evtx-security-000000000001"),
+                    timeline[0],
+                )
 
 
 class FollowUpInterpolationTests(unittest.TestCase):
@@ -83,7 +90,9 @@ class FollowUpInterpolationTests(unittest.TestCase):
         rendered = _interpolate_follow_up(
             "Is {src_ip} consistent with the session source on {computer}?", rows
         )
-        self.assertEqual("Is 10.0.0.5 consistent with the session source on PC-01?", rendered)
+        self.assertEqual(
+            "Is 10.0.0.5 consistent with the session source on PC-01?", rendered
+        )
 
     def test_unresolvable_placeholder_returns_none(self) -> None:
         rows = [{"computer": "PC-01", "src_ip": None}]
@@ -98,7 +107,9 @@ class FollowUpInterpolationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                _feed_verdict_to_timeline(db, "H-9", "confirmed", "desc", [{"computer": "PC"}])
+                _feed_verdict_to_timeline(
+                    db, "H-9", "confirmed", "desc", [{"computer": "PC"}]
+                )
                 count = db.execute("SELECT COUNT(*) FROM case_timeline").fetchone()[0]
                 self.assertEqual(0, count)
 
@@ -123,9 +134,7 @@ class CoalesceValidationRegressionTests(unittest.TestCase):
 
     def test_mixed_coalesce_literals_rejected(self) -> None:
         with self.assertRaises(ValueError):
-            validate_select_sql(
-                "SELECT COALESCE('a', 1) FROM evtx_events"
-            )
+            validate_select_sql("SELECT COALESCE('a', 1) FROM evtx_events")
 
 
 class BenignGateRequiredEntitiesTests(unittest.TestCase):
@@ -138,15 +147,27 @@ class BenignGateRequiredEntitiesTests(unittest.TestCase):
             required_entities=["target_user", "computer"],
         )
         rows = [
-            {"subject_user": "PC-01$", "target_user": "alice", "computer": "PC-01", "evidence_id": "ev1"},
-            {"subject_user": "PC-01$", "target_user": "bob", "computer": "PC-01", "evidence_id": "ev2"},
+            {
+                "subject_user": "PC-01$",
+                "target_user": "alice",
+                "computer": "PC-01",
+                "evidence_id": "ev1",
+            },
+            {
+                "subject_user": "PC-01$",
+                "target_user": "bob",
+                "computer": "PC-01",
+                "evidence_id": "ev2",
+            },
         ]
         result_summary: dict[str, Any] = {
             "sample_rows": rows,
             "event_id_set": [4624],
             "evidence_ids": ["ev1", "ev2"],
         }
-        verdict, reason = _verify_verdict_consistency("confirmed", "", hypothesis, result_summary)
+        verdict, reason = _verify_verdict_consistency(
+            "confirmed", "", hypothesis, result_summary
+        )
         self.assertEqual("confirmed", verdict)
         self.assertIsNone(reason)
 
@@ -164,7 +185,9 @@ class BenignGateRequiredEntitiesTests(unittest.TestCase):
             "event_id_set": [4648],
             "evidence_ids": ["ev1"],
         }
-        verdict, reason = _verify_verdict_consistency("confirmed", "", hypothesis, result_summary)
+        verdict, reason = _verify_verdict_consistency(
+            "confirmed", "", hypothesis, result_summary
+        )
         self.assertEqual("inconclusive", verdict)
         self.assertIsNotNone(reason)
         self.assertIn("benign-context", reason)
@@ -177,14 +200,30 @@ class CoObservationSlidingWindowTests(unittest.TestCase):
         base = datetime.datetime(2025, 1, 1, 10, 0, 0)
         rows = [
             # Noise: required-id rows days apart
-            {"event_id": 25, "computer": "PC-01", "timestamp": (base - datetime.timedelta(days=2)).isoformat()},
-            {"event_id": 4624, "computer": "PC-01", "timestamp": (base + datetime.timedelta(days=3)).isoformat()},
+            {
+                "event_id": 25,
+                "computer": "PC-01",
+                "timestamp": (base - datetime.timedelta(days=2)).isoformat(),
+            },
+            {
+                "event_id": 4624,
+                "computer": "PC-01",
+                "timestamp": (base + datetime.timedelta(days=3)).isoformat(),
+            },
             # The valid pair: 2 minutes apart
             {"event_id": 25, "computer": "PC-01", "timestamp": base.isoformat()},
-            {"event_id": 4624, "computer": "PC-01", "timestamp": (base + datetime.timedelta(minutes=2)).isoformat()},
+            {
+                "event_id": 4624,
+                "computer": "PC-01",
+                "timestamp": (base + datetime.timedelta(minutes=2)).isoformat(),
+            },
         ]
         satisfied, reason = _co_observation_satisfied(
-            {"co_observed_event_ids": [25, 4624], "same_host": True, "within_minutes": 5},
+            {
+                "co_observed_event_ids": [25, 4624],
+                "same_host": True,
+                "within_minutes": 5,
+            },
             rows,
         )
         self.assertTrue(satisfied, reason)
@@ -193,10 +232,18 @@ class CoObservationSlidingWindowTests(unittest.TestCase):
         base = datetime.datetime(2025, 1, 1, 10, 0, 0)
         rows = [
             {"event_id": 25, "computer": "PC-01", "timestamp": base.isoformat()},
-            {"event_id": 4624, "computer": "PC-01", "timestamp": (base + datetime.timedelta(hours=2)).isoformat()},
+            {
+                "event_id": 4624,
+                "computer": "PC-01",
+                "timestamp": (base + datetime.timedelta(hours=2)).isoformat(),
+            },
         ]
         satisfied, _reason = _co_observation_satisfied(
-            {"co_observed_event_ids": [25, 4624], "same_host": True, "within_minutes": 5},
+            {
+                "co_observed_event_ids": [25, 4624],
+                "same_host": True,
+                "within_minutes": 5,
+            },
             rows,
         )
         self.assertFalse(satisfied)
@@ -243,7 +290,13 @@ class RowWithEvidenceIdsCitableTests(unittest.TestCase):
     def test_row_with_evidence_ids_list_does_not_get_citable_false(self) -> None:
         from forensia.report.keypoints import _row_with_evidence_ids
 
-        row = {"src_ip": "10.0.0.5", "evidence_ids": ["evtx-security-000000000001", "evtx-security-000000000002"]}
+        row = {
+            "src_ip": "10.0.0.5",
+            "evidence_ids": [
+                "evtx-security-000000000001",
+                "evtx-security-000000000002",
+            ],
+        }
         normalized = _row_with_evidence_ids(row)
         self.assertNotIn("citable", normalized)
         self.assertIn("evtx-security-000000000001", normalized.get("evidence_ids", []))
@@ -256,12 +309,22 @@ class VerdictLabeledKeyPointsTests(unittest.TestCase):
         from forensia.ai.section_agent import _label_key_points_with_verdicts
 
         outline = [
-            {"heading": "Logon Activity", "key_points": ["Suspicious logon from WIN-PC"], "evidence_ids": ["evtx-001"]},
+            {
+                "heading": "Logon Activity",
+                "key_points": ["Suspicious logon from WIN-PC"],
+                "evidence_ids": ["evtx-001"],
+            },
         ]
         collected = [
-            {"evidence_ids": ["evtx-001"], "source_verdict": "block_contradicted", "finding_ids": []},
+            {
+                "evidence_ids": ["evtx-001"],
+                "source_verdict": "block_contradicted",
+                "finding_ids": [],
+            },
         ]
-        labeled = _label_key_points_with_verdicts(outline, collected, "block_contradicted")
+        labeled = _label_key_points_with_verdicts(
+            outline, collected, "block_contradicted"
+        )
         self.assertEqual(1, len(labeled))
         self.assertTrue(labeled[0].startswith("[refuted]"), labeled[0])
 
@@ -269,10 +332,18 @@ class VerdictLabeledKeyPointsTests(unittest.TestCase):
         from forensia.ai.section_agent import _label_key_points_with_verdicts
 
         outline = [
-            {"heading": "Execution", "key_points": ["Eraser.exe was launched"], "evidence_ids": ["evtx-002"]},
+            {
+                "heading": "Execution",
+                "key_points": ["Eraser.exe was launched"],
+                "evidence_ids": ["evtx-002"],
+            },
         ]
         collected = [
-            {"evidence_ids": ["evtx-002"], "source_verdict": "block_supported", "finding_ids": []},
+            {
+                "evidence_ids": ["evtx-002"],
+                "source_verdict": "block_supported",
+                "finding_ids": [],
+            },
         ]
         labeled = _label_key_points_with_verdicts(outline, collected, "block_supported")
         self.assertEqual(1, len(labeled))
@@ -282,10 +353,18 @@ class VerdictLabeledKeyPointsTests(unittest.TestCase):
         from forensia.ai.section_agent import _label_key_points_with_verdicts
 
         outline = [
-            {"heading": "Services", "key_points": ["Service install detected"], "evidence_ids": ["evtx-003"]},
+            {
+                "heading": "Services",
+                "key_points": ["Service install detected"],
+                "evidence_ids": ["evtx-003"],
+            },
         ]
         collected = [
-            {"evidence_ids": ["evtx-003"], "finding_ids": ["finding-1"], "confidence": 0.85},
+            {
+                "evidence_ids": ["evtx-003"],
+                "finding_ids": ["finding-1"],
+                "confidence": 0.85,
+            },
         ]
         labeled = _label_key_points_with_verdicts(outline, collected, "block_supported")
         self.assertEqual(1, len(labeled))
@@ -296,7 +375,11 @@ class VerdictLabeledKeyPointsTests(unittest.TestCase):
         from forensia.ai.section_agent import _label_key_points_with_verdicts
 
         outline = [
-            {"heading": "Misc", "key_points": ["Generic observation"], "evidence_ids": []},
+            {
+                "heading": "Misc",
+                "key_points": ["Generic observation"],
+                "evidence_ids": [],
+            },
         ]
         labeled = _label_key_points_with_verdicts(outline, [], "")
         self.assertEqual(["Generic observation"], labeled)
@@ -305,7 +388,11 @@ class VerdictLabeledKeyPointsTests(unittest.TestCase):
         from forensia.ai.section_agent import _label_key_points_with_verdicts
 
         outline = [
-            {"heading": "Seed", "key_points": ["Seed observation"], "evidence_ids": ["evtx-004"]},
+            {
+                "heading": "Seed",
+                "key_points": ["Seed observation"],
+                "evidence_ids": ["evtx-004"],
+            },
         ]
         collected = [
             {"evidence_ids": ["evtx-004"], "finding_ids": [], "confidence": None},
@@ -327,7 +414,9 @@ class VerdictLabeledKeyPointsTests(unittest.TestCase):
         self.assertIn("[confirmed]", system_content)
         self.assertIn("[refuted]", system_content)
         self.assertIn("[finding, confidence=N]", system_content)
-        self.assertIn("Refuted items may only be mentioned as ruled-out", system_content)
+        self.assertIn(
+            "Refuted items may only be mentioned as ruled-out", system_content
+        )
 
 
 if __name__ == "__main__":
@@ -342,18 +431,17 @@ from pathlib import Path
 
 from forensia.ai.section_agent import _insufficient_evidence_placeholder
 from forensia.report.writer import (
-    _GateCtx,
     _build_host_note,
     _catalog_exe_globs,
     _catalog_path_terms,
     _check_failure_spam,
     _exe_glob_sql,
+    _GateCtx,
     _matches_exe_globs,
 )
 from forensia.rules.engine import (
     _annotate_finding_benign_context,
     _co_occurs_satisfied,
-    build_co_occur_index,
 )
 from forensia.rules.models import Finding
 
@@ -362,7 +450,9 @@ class InsufficientEvidencePlaceholderTests(unittest.TestCase):
     """The skip placeholder must not trip the section quality gates."""
 
     def test_placeholder_passes_failure_spam_gate(self) -> None:
-        ctx = _GateCtx(section_key="2_timeline", title="t", evidence_results=None, db=None)
+        ctx = _GateCtx(
+            section_key="2_timeline", title="t", evidence_results=None, db=None
+        )
         body = _insufficient_evidence_placeholder()
         note, cap = _check_failure_spam(body, ctx)
         self.assertIsNone(note)
@@ -418,30 +508,38 @@ class CoOccursProximityTests(unittest.TestCase):
             severity="critical",
             confidence=0.9,
             tags=["persistence"],
-            evidence=[{
-                "service_name": service_name,
-                "timestamp": timestamp,
-                "computer": "PC-01",
-                "evidence_id": "evtx-system-000000000001",
-            }],
+            evidence=[
+                {
+                    "service_name": service_name,
+                    "timestamp": timestamp,
+                    "computer": "PC-01",
+                    "evidence_id": "evtx-system-000000000001",
+                }
+            ],
         )
 
     def test_boot_proximate_install_downgraded(self) -> None:
-        finding = self._make_finding("Microsoft Memory Module Driver", "2015-03-25 10:15:00")
+        finding = self._make_finding(
+            "Microsoft Memory Module Driver", "2015-03-25 10:15:00"
+        )
         index = {6005: [(datetime.datetime(2015, 3, 25, 10, 14, 0), "PC-01")]}
         _annotate_finding_benign_context(finding, index)
         self.assertTrue(any(t.startswith("benign-context:") for t in finding.tags))
         self.assertLess(finding.confidence, 0.5)
 
     def test_install_far_from_boot_not_downgraded_by_boot_rule(self) -> None:
-        finding = self._make_finding("Microsoft Memory Module Driver", "2015-03-25 14:00:00")
+        finding = self._make_finding(
+            "Microsoft Memory Module Driver", "2015-03-25 14:00:00"
+        )
         index = {6005: [(datetime.datetime(2015, 3, 25, 10, 14, 0), "PC-01")]}
         _annotate_finding_benign_context(finding, index)
         self.assertNotIn("benign-context:boot-window-service-install", finding.tags)
 
     def test_missing_timestamp_is_conservative(self) -> None:
         condition = {"co_occurs_event_ids": [6005], "within_minutes": 10}
-        self.assertFalse(_co_occurs_satisfied(condition, {"computer": "PC-01"}, {6005: []}))
+        self.assertFalse(
+            _co_occurs_satisfied(condition, {"computer": "PC-01"}, {6005: []})
+        )
 
     def test_different_host_does_not_match(self) -> None:
         condition = {"co_occurs_event_ids": [6005], "within_minutes": 10}
@@ -453,8 +551,20 @@ class CoOccursProximityTests(unittest.TestCase):
 class HostNoteTests(unittest.TestCase):
     def test_multi_epoch_note_summarizes_both(self) -> None:
         clusters = [
-            {"label": "pre-deployment", "display_name": "H", "first_seen": "2010-11-21 03:00:00", "last_seen": "2010-11-21 05:00:00", "event_count": 700},
-            {"label": "active", "display_name": "H", "first_seen": "2015-03-25 10:00:00", "last_seen": "2015-03-25 10:20:00", "event_count": 5},
+            {
+                "label": "pre-deployment",
+                "display_name": "H",
+                "first_seen": "2010-11-21 03:00:00",
+                "last_seen": "2010-11-21 05:00:00",
+                "event_count": 700,
+            },
+            {
+                "label": "active",
+                "display_name": "H",
+                "first_seen": "2015-03-25 10:00:00",
+                "last_seen": "2015-03-25 10:20:00",
+                "event_count": 5,
+            },
         ]
         note = _build_host_note(clusters)
         self.assertIn("pre-deployment bulk (2010", note)
@@ -462,7 +572,13 @@ class HostNoteTests(unittest.TestCase):
 
     def test_single_active_epoch(self) -> None:
         clusters = [
-            {"label": "active", "display_name": "H", "first_seen": "2015-03-22 10:00:00", "last_seen": "2015-03-25 10:00:00", "event_count": 4000},
+            {
+                "label": "active",
+                "display_name": "H",
+                "first_seen": "2015-03-22 10:00:00",
+                "last_seen": "2015-03-25 10:00:00",
+                "event_count": 4000,
+            },
         ]
         self.assertEqual("active", _build_host_note(clusters))
 
@@ -480,7 +596,9 @@ class SectionReviewerTests(unittest.TestCase):
     def test_check_pseudo_citations_flags_labels(self) -> None:
         from forensia.report.narrative_review import check_pseudo_citations
 
-        body = "The analysis shows (antiforensic_activity) and (STRUCTURED_OBSERVATIONS)."
+        body = (
+            "The analysis shows (antiforensic_activity) and (STRUCTURED_OBSERVATIONS)."
+        )
         problems = check_pseudo_citations(body)
         self.assertEqual(2, len(problems), problems)
 
@@ -511,8 +629,8 @@ class SectionReviewerTests(unittest.TestCase):
         self.assertTrue(any("H-010" in p for p in problems), problems)
 
     def test_review_and_rewrite_narrative_runs_at_most_one_rewrite(self) -> None:
-        """R7-01 contract: one review call, at most one rewrite call, and a
-        worse rewrite is rejected in favour of the original body."""
+        """R7-01 contract: dirty text gets at most one rewrite; clean text
+        bypasses the LLM reviewer."""
         import tempfile
         from unittest import mock
 
@@ -527,18 +645,39 @@ class SectionReviewerTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 ctx = section_agent._prepare_block_context(
-                    case=case, db=db, section_key="1_overview", title="Overview",
-                    block_heading="Executive Summary", template_body="<!-- mode: narrative; x -->",
-                    base_url="http://127.0.0.1:1", model="none", memory=None,
-                    max_queries=1, evidence_keypoints=None, benchmark_mode=False,
+                    case=case,
+                    db=db,
+                    section_key="1_overview",
+                    title="Overview",
+                    block_heading="Executive Summary",
+                    template_body="<!-- mode: narrative; x -->",
+                    base_url="http://127.0.0.1:1",
+                    model="none",
+                    memory=None,
+                    max_queries=1,
+                    evidence_keypoints=None,
+                    benchmark_mode=False,
                 )
                 narrate_calls = []
-                with mock.patch.object(section_agent, "request_llm_json",
-                                       return_value={"verdict": "rewrite", "problems": ["dump"], "guidance": "summarize"}) as review_call, \
-                     mock.patch.object(section_agent, "_narrate_paragraph_with_retry",
-                                       side_effect=lambda **kw: narrate_calls.append(kw) or clean_body):
+                with (
+                    mock.patch.object(
+                        section_agent,
+                        "request_llm_json",
+                        return_value={
+                            "verdict": "rewrite",
+                            "problems": ["dump"],
+                            "guidance": "summarize",
+                        },
+                    ) as review_call,
+                    mock.patch.object(
+                        section_agent,
+                        "_narrate_paragraph_with_retry",
+                        side_effect=lambda **kw: narrate_calls.append(kw) or clean_body,
+                    ),
+                ):
                     result = section_agent._review_and_rewrite_narrative(
-                        ctx, dirty_body,
+                        ctx,
+                        dirty_body,
                         narrate_messages=[{"role": "system", "content": "narrate"}],
                         narrate_schema={"type": "object"},
                     )
@@ -546,19 +685,36 @@ class SectionReviewerTests(unittest.TestCase):
                 self.assertEqual(1, review_call.call_count)
                 self.assertEqual(1, len(narrate_calls), "exactly one rewrite call")
                 rewrite_prompt = str(narrate_calls[0]["narrate_messages"])
-                self.assertIn(dirty_body, rewrite_prompt, "rewrite must see the previous body")
+                self.assertIn(
+                    dirty_body, rewrite_prompt, "rewrite must see the previous body"
+                )
 
-                # A rewrite that is WORSE than the original is rejected.
-                with mock.patch.object(section_agent, "request_llm_json",
-                                       return_value={"verdict": "rewrite", "problems": [], "guidance": ""}), \
-                     mock.patch.object(section_agent, "_narrate_paragraph_with_retry",
-                                       return_value=dirty_body):
+                # Clean output passes the deterministic review without LLM calls.
+                with (
+                    mock.patch.object(
+                        section_agent,
+                        "request_llm_json",
+                        return_value={
+                            "verdict": "rewrite",
+                            "problems": [],
+                            "guidance": "",
+                        },
+                    ) as clean_review_call,
+                    mock.patch.object(
+                        section_agent,
+                        "_narrate_paragraph_with_retry",
+                        return_value=dirty_body,
+                    ) as clean_rewrite_call,
+                ):
                     kept = section_agent._review_and_rewrite_narrative(
-                        ctx, clean_body,
+                        ctx,
+                        clean_body,
                         narrate_messages=[{"role": "system", "content": "narrate"}],
                         narrate_schema={"type": "object"},
                     )
-                self.assertEqual(clean_body, kept, "a worse rewrite must be rejected")
+                self.assertEqual(clean_body, kept)
+                clean_review_call.assert_not_called()
+                clean_rewrite_call.assert_not_called()
 
     def test_check_internal_ids_flags_gap_h(self) -> None:
         from forensia.report.narrative_review import check_internal_ids
@@ -573,7 +729,9 @@ class SectionReviewerTests(unittest.TestCase):
             build_section_review_messages,
         )
 
-        msgs, schema = build_section_review_messages("test", "body text", None, ["Citation overload"])
+        msgs, schema = build_section_review_messages(
+            "test", "body text", None, ["Citation overload"]
+        )
         self.assertIn("Citation overload", msgs[1]["content"])
         self.assertTrue(schema == SECTION_REVIEW_SCHEMA or "verdict" in str(schema))
 

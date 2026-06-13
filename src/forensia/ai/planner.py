@@ -6,8 +6,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from forensia.ai.json_response import request_llm_json
 from forensia.ai.hypothesis_manager import _recent_reasoning_rows
+from forensia.ai.json_response import request_llm_json
 from forensia.ai.prompts import (
     _build_schema_guidance,
     _trim_dynamic_content,
@@ -25,7 +25,6 @@ from forensia.ai.sql_templates import (
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.db.database import CaseDB
-
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +64,6 @@ class HypothesisPlanResult:
     raw_response: dict[str, Any]
 
 
-
 def _retry_sql_composer(
     base_messages: list[dict[str, str]],
     hypothesis_id: str,
@@ -73,7 +71,8 @@ def _retry_sql_composer(
     base_url: str,
     model: str,
     status_callback: Callable[[str], None] | None = None,
-    audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
+    audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None]
+    | None = None,
     db: CaseDB | None = None,
 ) -> dict[str, Any]:
     """Retry SQL composition up to _PLANNER_SQL_MAX_RETRIES times when SQL validation fails.
@@ -111,7 +110,9 @@ def _retry_sql_composer(
             # R2-03: check for placeholder literals in rejected SQL
             sql_text = str(parsed.get("sql", "") or "")
             placeholder_note = ""
-            if re.search(r"\[\w*placeholder\w*\]|\[(start|end)_time\]|\{\w+\}", sql_text):
+            if re.search(
+                r"\[\w*placeholder\w*\]|\[(start|end)_time\]|\{\w+\}", sql_text
+            ):
                 placeholder_note = " Your SQL contained an unresolved placeholder literal. Use real values from the hypothesis/case profile, or omit that filter."
                 err_msg += placeholder_note
             if status_callback:
@@ -120,17 +121,19 @@ def _retry_sql_composer(
                 )
             if attempt >= _PLANNER_SQL_MAX_RETRIES:
                 return parsed
-            messages.append({
-                "role": "user",
-                "content": (
-                    f"Attempt {attempt}/{_PLANNER_SQL_MAX_RETRIES}: the previous SQL was rejected. "
-                    f"Error: {err_msg}. "
-                    "MUST return corrected JSON with template_id (or null), sql (raw SELECT), params, purpose. "
-                    "Do NOT leave both template_id and sql blank. "
-                    "Use a valid SELECT statement against evtx_events / mft_entries / mft_timeline / prefetch_executions / findings. "
-                    "Use simple SELECT cols FROM table WHERE event_id = N style if unsure."
-                ),
-            })
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"Attempt {attempt}/{_PLANNER_SQL_MAX_RETRIES}: the previous SQL was rejected. "
+                        f"Error: {err_msg}. "
+                        "MUST return corrected JSON with template_id (or null), sql (raw SELECT), params, purpose. "
+                        "Do NOT leave both template_id and sql blank. "
+                        "Use a valid SELECT statement against evtx_events / mft_entries / mft_timeline / prefetch_executions / findings. "
+                        "Use simple SELECT cols FROM table WHERE event_id = N style if unsure."
+                    ),
+                }
+            )
     return parsed
 
 
@@ -141,7 +144,8 @@ def _request_with_optional_context(
     model: str,
     initial_context: str | None = None,
     status_callback: Callable[[str], None] | None = None,
-    audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
+    audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None]
+    | None = None,
 ) -> dict[str, Any]:
     """Request LLM with optional read_more context expansion.
 
@@ -215,7 +219,11 @@ def _compute_uncovered_keypoints(
 
     groups: dict[str, list[str]] = {}
     for item in observed:
-        name = item.split(" (")[0].strip().lower() if " (" in item else item.strip().lower()
+        name = (
+            item.split(" (")[0].strip().lower()
+            if " (" in item
+            else item.strip().lower()
+        )
         if not name or name in covered or name in exhausted:
             continue
         family = name.split("_")[0] if "_" in name else name
@@ -274,9 +282,7 @@ def _build_hypothesis_history(
         if item.hypothesis_id == hypothesis.id
     ]
     seen_query_ids = {
-        str(item.get("query_id"))
-        for item in hypothesis_history
-        if item.get("query_id")
+        str(item.get("query_id")) for item in hypothesis_history if item.get("query_id")
     }
     if db is not None:
         for row in _recent_reasoning_rows(db, hypothesis.id, limit=limit):
@@ -289,7 +295,9 @@ def _build_hypothesis_history(
     return hypothesis_history, seen_query_ids
 
 
-def _parse_planner_output(parsed: dict[str, Any]) -> tuple[Hypothesis | None, PlannedQuery | None]:
+def _parse_planner_output(
+    parsed: dict[str, Any],
+) -> tuple[Hypothesis | None, PlannedQuery | None]:
     """Parse LLM planner output into optional Hypothesis and PlannedQuery."""
     parsed_hypothesis = None
     if isinstance(parsed.get("hypothesis"), dict):
@@ -320,7 +328,8 @@ def plan_hypothesis_query(
     overview_md: str | None = None,
     default_context_md: str | None = None,
     status_callback: Callable[[str], None] | None = None,
-    audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
+    audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None]
+    | None = None,
     query_index: int = 1,
     time_range: dict[str, str] | None = None,
     case_profile: str | None = None,
@@ -335,20 +344,29 @@ def plan_hypothesis_query(
     SQL validation retry."""
 
     overview_md = overview_md if overview_md is not None else memory.load_overview()
-    default_context_md = _resolve_planner_context(memory, hypothesis, default_context_md, initial_context=None)
+    default_context_md = _resolve_planner_context(
+        memory, hypothesis, default_context_md, initial_context=None
+    )
     extra_context_holder = {"value": ""}
-    hypothesis_history, seen_query_ids = _build_hypothesis_history(state, hypothesis, db, limit=10)
+    hypothesis_history, seen_query_ids = _build_hypothesis_history(
+        state, hypothesis, db, limit=10
+    )
     schema_card = _build_schema_guidance("evtx_events", db=db)
 
     prior_check_feedback = ""
     if db is not None and hypothesis.id:
-        recent_checks = db.execute("""
+        recent_checks = db.execute(
+            """
             SELECT body FROM hypothesis_reasoning
             WHERE hypothesis_id = ? AND phase = 'check'
             ORDER BY created_at DESC LIMIT 2
-        """, (hypothesis.id,)).fetchall()
+        """,
+            (hypothesis.id,),
+        ).fetchall()
         if recent_checks:
-            prior_check_feedback = "\n".join(f"- {row[0][:300]}" for row in recent_checks)
+            prior_check_feedback = "\n".join(
+                f"- {row[0][:300]}" for row in recent_checks
+            )
 
     execution_error_block = ""
     if state.last_execution_error:
@@ -393,19 +411,25 @@ def plan_hypothesis_query(
         intent_response, composer_schema_card
     )
     self_check = request_llm_json(
-        messages=self_check_messages, model=model, base_url=base_url,
+        messages=self_check_messages,
+        model=model,
+        base_url=base_url,
         json_schema=self_check_schema,
         status_callback=status_callback,
         audit_callback=audit_callback,
     )
     if not self_check.get("ready_to_compose", False):
         if status_callback:
-            status_callback(f"SQL self-check blocked: {self_check.get('blockers', '')}. Retrying intent...")
+            status_callback(
+                f"SQL self-check blocked: {self_check.get('blockers', '')}. Retrying intent..."
+            )
         intent_response = _request_with_optional_context(
             memory=memory,
             messages_builder=intent_messages_builder,
-            base_url=base_url, model=model,
-            initial_context=default_context_md + f"\n\n<SCHEMA_SELFCHECK_BLOCKERS>\n{self_check.get('blockers', '')}\n</SCHEMA_SELFCHECK_BLOCKERS>\n",
+            base_url=base_url,
+            model=model,
+            initial_context=default_context_md
+            + f"\n\n<SCHEMA_SELFCHECK_BLOCKERS>\n{self_check.get('blockers', '')}\n</SCHEMA_SELFCHECK_BLOCKERS>\n",
             status_callback=status_callback,
             audit_callback=audit_callback,
         )
@@ -419,7 +443,9 @@ def plan_hypothesis_query(
         prior_check_feedback=prior_check_feedback,
     )
     if execution_error_block:
-        composer_messages.append({"role": "user", "content": execution_error_block.strip()})
+        composer_messages.append(
+            {"role": "user", "content": execution_error_block.strip()}
+        )
     composer_messages = _trim_dynamic_content(composer_messages)
 
     composer_response = _retry_sql_composer(
@@ -443,7 +469,9 @@ def plan_hypothesis_query(
             "template_id": composer_response.get("template_id"),
             "params": composer_response.get("params", {}),
             "sql": composer_response.get("sql", ""),
-        } if composer_response.get("template_id") or composer_response.get("sql") else None,
+        }
+        if composer_response.get("template_id") or composer_response.get("sql")
+        else None,
     }
     _, planned_query = _parse_planner_output(wrapper)
 

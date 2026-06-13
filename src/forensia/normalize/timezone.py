@@ -57,12 +57,16 @@ def infer_timezone(db) -> tuple[int | None, str]:
         if not message:
             continue
         try:
-            utc_dt = datetime.fromisoformat(str(utc_ts).replace("Z", "+00:00")).replace(tzinfo=None)
-        except (ValueError, TypeError, AttributeError):
+            utc_dt = datetime.fromisoformat(str(utc_ts).replace("Z", "+00:00")).replace(
+                tzinfo=None
+            )
+        except ValueError, TypeError, AttributeError:
             continue
         for match in iso_pattern.finditer(str(message)):
             try:
-                embedded_dt = datetime.strptime(f"{match.group(1)} {match.group(2)}", "%Y-%m-%d %H:%M:%S")
+                embedded_dt = datetime.strptime(
+                    f"{match.group(1)} {match.group(2)}", "%Y-%m-%d %H:%M:%S"
+                )
             except ValueError:
                 continue
             if embedded_dt.year < 2000 or embedded_dt.year > 2100:
@@ -97,10 +101,12 @@ def infer_timezone(db) -> tuple[int | None, str]:
         if not m:
             continue
         try:
-            boot_6013 = datetime.fromisoformat(str(utc_ts).replace("Z", "+00:00")).replace(tzinfo=None)
+            boot_6013 = datetime.fromisoformat(
+                str(utc_ts).replace("Z", "+00:00")
+            ).replace(tzinfo=None)
             uptime_sec = int(m.group(1))
             boot_calculated = boot_6013.replace(tzinfo=None)
-        except (ValueError, TypeError, AttributeError):
+        except ValueError, TypeError, AttributeError:
             continue
         # Compare with 6005 (EventLog service start) within a short time window
         nearby = db.execute(
@@ -122,11 +128,14 @@ def infer_timezone(db) -> tuple[int | None, str]:
         if not nearby:
             continue
         try:
-            boot_6005 = datetime.fromisoformat(str(nearby[0]).replace("Z", "+00:00")).replace(tzinfo=None)
-        except (ValueError, TypeError, AttributeError):
+            boot_6005 = datetime.fromisoformat(
+                str(nearby[0]).replace("Z", "+00:00")
+            ).replace(tzinfo=None)
+        except ValueError, TypeError, AttributeError:
             continue
-        diff_sec = (boot_calculated - boot_6005).total_seconds()
-        expected_boot = boot_calculated - __import__("datetime").timedelta(seconds=uptime_sec)
+        expected_boot = boot_calculated - __import__("datetime").timedelta(
+            seconds=uptime_sec
+        )
         gap_sec = abs((expected_boot - boot_6005).total_seconds())
         if gap_sec > 3600:
             offset_hours = round(gap_sec / 3600)
@@ -142,19 +151,27 @@ def infer_timezone(db) -> tuple[int | None, str]:
     #   a) ≥2 methods agree on the same offset → strong signal.
     #   b) Single method with ≥2 agreeing raw data points → accepted.
     method_offsets = [o for o, _ in observations]
-    agreed_method = _all_agree(method_offsets, tolerance=30) if len(method_offsets) >= 2 else None
+    agreed_method = (
+        _all_agree(method_offsets, tolerance=30) if len(method_offsets) >= 2 else None
+    )
     if agreed_method is not None:
         source_set: set[str] = set()
         for obs_offset, obs_src in observations:
             if abs(obs_offset - agreed_method) <= 30:
                 source_set.add(obs_src)
-        return (agreed_method, f"Inferred from {len(source_set)} sources: {', '.join(sorted(source_set))}")
+        return (
+            agreed_method,
+            f"Inferred from {len(source_set)} sources: {', '.join(sorted(source_set))}",
+        )
 
     # Single-method: message body timestamps with ≥2 agreeing data points
     if len(msg_offsets) >= 2:
         agreed = _most_common_agreeing(msg_offsets, tolerance=30)
         if agreed is not None:
-            return (agreed, f"Inferred from {len(msg_offsets)} event message timestamps")
+            return (
+                agreed,
+                f"Inferred from {len(msg_offsets)} event message timestamps",
+            )
 
     return (None, "Could not determine timezone from available events")
 
@@ -182,18 +199,20 @@ def _extract_4616_bias(data: dict[str, Any]) -> int | None:
     if isinstance(data_list, list):
         for item in data_list:
             if isinstance(item, dict) and str(item.get("Name", "")).lower() in {
-                "newtimezonebias", "timezonebias", "bias",
+                "newtimezonebias",
+                "timezonebias",
+                "bias",
             }:
                 try:
                     return int(item.get("Text", item.get("#text", 0)))
-                except (ValueError, TypeError):
+                except ValueError, TypeError:
                     return None
     for key in ("NewTimeZoneBias", "TimeZoneBias", "Bias"):
         val = event_data.get(key)
         if val is not None:
             try:
                 return int(val)
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 return None
     return None
 
@@ -211,4 +230,5 @@ def _most_common_agreeing(values: list[int], tolerance: int = 30) -> int | None:
 
 def json_loads(s: str) -> Any:
     import json
+
     return json.loads(s)

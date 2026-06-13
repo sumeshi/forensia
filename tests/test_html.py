@@ -30,7 +30,9 @@ class RenderInlineMarkdownTests(unittest.TestCase):
         self.assertEqual(_render_inline_markdown("<script>"), "&lt;script&gt;")
 
     def test_code_backticks(self):
-        self.assertEqual(_render_inline_markdown("run `cmd.exe`"), "run <code>cmd.exe</code>")
+        self.assertEqual(
+            _render_inline_markdown("run `cmd.exe`"), "run <code>cmd.exe</code>"
+        )
 
     def test_bold_asterisks(self):
         self.assertEqual(_render_inline_markdown("**alert**"), "<strong>alert</strong>")
@@ -515,6 +517,7 @@ class RenderMarkdownFragmentTests(unittest.TestCase):
 
     def test_markup_return_type(self):
         from markupsafe import Markup
+
         result = render_markdown_fragment("# Hello")
         self.assertIsInstance(result, Markup)
 
@@ -523,9 +526,11 @@ class EvidenceMapTests(unittest.TestCase):
     def test_evidence_map_builds_from_body(self):
         import json
         import tempfile
+
         from forensia.core.case import Case
         from forensia.db.database import CaseDB
         from forensia.report.evidence_map import build_evidence_map
+
         body = "See evtx-security-000000000001 for details."
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -533,8 +538,12 @@ class EvidenceMapTests(unittest.TestCase):
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, raw_json) "
                     "VALUES (?, ?, ?, ?)",
-                    ("evtx-security-000000000001", 4624, "2015-03-22T14:34:28",
-                     json.dumps({"event_id": 4624, "target_user": "informant"})),
+                    (
+                        "evtx-security-000000000001",
+                        4624,
+                        "2015-03-22T14:34:28",
+                        json.dumps({"event_id": 4624, "target_user": "informant"}),
+                    ),
                 )
                 emap = build_evidence_map(db, body)
         self.assertIn("evtx-security-000000000001", emap)
@@ -544,8 +553,13 @@ class EvidenceMapTests(unittest.TestCase):
 
     def test_evidence_references_renders_markdown(self):
         from forensia.report.evidence_map import render_evidence_references
+
         emap = {
-            "evtx-security-000000000001": {"source": "evtx_events", "timestamp": "2015-03-22T14:34:28", "summary": "4624 logon"},
+            "evtx-security-000000000001": {
+                "source": "evtx_events",
+                "timestamp": "2015-03-22T14:34:28",
+                "summary": "4624 logon",
+            },
         }
         md = render_evidence_references(emap)
         self.assertIn("## Evidence References", md)
@@ -554,9 +568,11 @@ class EvidenceMapTests(unittest.TestCase):
     def test_evidence_map_summarizes_mft_and_prefetch_rows(self):
         """mft/prefetch references must show file/executable details, not '?'."""
         import tempfile
+
         from forensia.core.case import Case
         from forensia.db.database import CaseDB
         from forensia.report.evidence_map import build_evidence_map
+
         body = "Files mft-000000078080-01 and runs prefetch-ccleaner64.exe-779bd542."
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -571,13 +587,17 @@ class EvidenceMapTests(unittest.TestCase):
                 )
                 emap = build_evidence_map(db, body)
         self.assertIn("Task List.ersy", emap["mft-000000078080-01"]["summary"])
-        self.assertIn("CCLEANER64.EXE", emap["prefetch-ccleaner64.exe-779bd542"]["summary"])
+        self.assertIn(
+            "CCLEANER64.EXE", emap["prefetch-ccleaner64.exe-779bd542"]["summary"]
+        )
 
     def test_evidence_map_marks_unknown_ids_unresolved(self):
         import tempfile
+
         from forensia.core.case import Case
         from forensia.db.database import CaseDB
         from forensia.report.evidence_map import build_evidence_map
+
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -598,29 +618,41 @@ class EvidenceTooltipInjectionTests(unittest.TestCase):
 
     def test_inline_citation_gets_summary_tooltip(self):
         from forensia.report.html import _inject_evidence_interactivity
-        html = str(render_markdown_fragment("Logon observed (evtx-security-000000000001)."))
+
+        html = str(
+            render_markdown_fragment("Logon observed (evtx-security-000000000001).")
+        )
         injected = _inject_evidence_interactivity(html, self.EMAP)
         self.assertIn("4624 Security informant@informant-PC", injected)
-        self.assertNotIn('title="evtx-security-000000000001"', injected,
-                         "placeholder title must be replaced by the record summary")
+        self.assertNotIn(
+            'title="evtx-security-000000000001"',
+            injected,
+            "placeholder title must be replaced by the record summary",
+        )
 
     def test_full_document_keeps_in_page_anchor_for_inline_citation(self):
         """With a references section present, inline citations stay two-hop
         (claim → reference entry → record viewer)."""
         from forensia.report.html import _inject_evidence_interactivity
+
         md = (
             "Logon observed (evtx-security-000000000001).\n\n"
             "## Evidence References\n\n"
             "- `evtx-security-000000000001` 2015-03-22T14:34:28 evtx_events — 4624 logon\n"
         )
-        injected = _inject_evidence_interactivity(str(render_markdown_fragment(md)), self.EMAP)
+        injected = _inject_evidence_interactivity(
+            str(render_markdown_fragment(md)), self.EMAP
+        )
         self.assertIn('href="#ev-evtx-security-000000000001"', injected)
 
     def test_fragment_without_references_links_straight_to_record(self):
         """A section fragment (web UI) has no references section, so a "#ev-"
         anchor would be dead — inline citations must open the record viewer."""
         from forensia.report.html import _inject_evidence_interactivity
-        html = str(render_markdown_fragment("Logon observed (evtx-security-000000000001)."))
+
+        html = str(
+            render_markdown_fragment("Logon observed (evtx-security-000000000001).")
+        )
         injected = _inject_evidence_interactivity(html, self.EMAP)
         self.assertIn('href="/evidence/evtx-security-000000000001"', injected)
         self.assertIn('target="_blank"', injected)
@@ -628,12 +660,15 @@ class EvidenceTooltipInjectionTests(unittest.TestCase):
 
     def test_reference_entry_gets_anchor_target(self):
         from forensia.report.html import _inject_evidence_interactivity
+
         md = (
             "Logon observed (evtx-security-000000000001).\n\n"
             "## Evidence References\n\n"
             "- `evtx-security-000000000001` 2015-03-22T14:34:28 evtx_events — 4624 logon\n"
         )
-        injected = _inject_evidence_interactivity(str(render_markdown_fragment(md)), self.EMAP)
+        injected = _inject_evidence_interactivity(
+            str(render_markdown_fragment(md)), self.EMAP
+        )
         self.assertIn('id="ev-evtx-security-000000000001"', injected)
         # the anchor target sits after the references heading, not on the inline citation
         refs_idx = injected.index("Evidence References")
@@ -642,28 +677,37 @@ class EvidenceTooltipInjectionTests(unittest.TestCase):
 
     def test_no_map_leaves_html_untouched(self):
         from forensia.report.html import _inject_evidence_interactivity
-        html = str(render_markdown_fragment("Logon observed (evtx-security-000000000001)."))
+
+        html = str(
+            render_markdown_fragment("Logon observed (evtx-security-000000000001).")
+        )
         self.assertEqual(html, _inject_evidence_interactivity(html, {}))
 
     def test_reference_entry_gets_open_record_button(self):
         from forensia.report.html import _inject_evidence_interactivity
+
         md = (
             "Some text.\n\n"
             "## Evidence References\n\n"
             "- `evtx-security-000000000001` 2015-03-22T14:34:28 evtx_events — 4624 logon\n"
         )
-        injected = _inject_evidence_interactivity(str(render_markdown_fragment(md)), self.EMAP)
-        self.assertIn('/evidence/evtx-security-000000000001', injected)
+        injected = _inject_evidence_interactivity(
+            str(render_markdown_fragment(md)), self.EMAP
+        )
+        self.assertIn("/evidence/evtx-security-000000000001", injected)
         self.assertIn('target="_blank"', injected)
         self.assertIn('rel="noopener"', injected)
         self.assertIn('aria-label="記録を開く"', injected)
-        self.assertIn('>⧉</a>', injected)
+        self.assertIn(">⧉</a>", injected)
 
     def test_inline_citation_does_not_get_open_record_button(self):
         """Inline citations never become open-record buttons — only
         references entries do (fragments get a plain direct link instead)."""
         from forensia.report.html import _inject_evidence_interactivity
-        html = str(render_markdown_fragment("Logon observed (evtx-security-000000000001)."))
+
+        html = str(
+            render_markdown_fragment("Logon observed (evtx-security-000000000001).")
+        )
         injected = _inject_evidence_interactivity(html, self.EMAP)
         self.assertNotIn("記録を開く", injected)
         self.assertNotIn("evidence-open", injected)
@@ -674,6 +718,7 @@ class ReportTocTests(unittest.TestCase):
 
     def test_build_report_toc_assigns_ids_and_levels(self):
         from forensia.report.html import build_report_toc
+
         html = (
             "<h2>Investigation Overview</h2><p>x</p>"
             "<h3>Executive Summary</h3><p>y</p>"
@@ -682,17 +727,23 @@ class ReportTocTests(unittest.TestCase):
         body, toc = build_report_toc(html)
         self.assertIn('<h2 id="sec-0">Investigation Overview</h2>', body)
         self.assertIn('<h3 id="sec-1">Executive Summary</h3>', body)
-        self.assertIn('<li class="toc-h2"><a href="#sec-0">Investigation Overview</a></li>', toc)
-        self.assertIn('<li class="toc-h3"><a href="#sec-1">Executive Summary</a></li>', toc)
+        self.assertIn(
+            '<li class="toc-h2"><a href="#sec-0">Investigation Overview</a></li>', toc
+        )
+        self.assertIn(
+            '<li class="toc-h3"><a href="#sec-1">Executive Summary</a></li>', toc
+        )
 
     def test_build_report_toc_strips_inline_tags_from_labels(self):
         from forensia.report.html import build_report_toc
+
         body, toc = build_report_toc("<h2><code>1.</code> Endpoint identity</h2>")
         self.assertIn(">1. Endpoint identity</a>", toc)
         self.assertNotIn("<code>", toc)
 
     def test_build_report_toc_empty_body(self):
         from forensia.report.html import build_report_toc
+
         body, toc = build_report_toc("<p>no headings</p>")
         self.assertEqual("<p>no headings</p>", body)
         self.assertEqual("", toc)

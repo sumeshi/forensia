@@ -24,6 +24,7 @@ PLAYBOOK_DIR = SCHEMA_DIR / "playbook"
 
 def _load_yaml(path: Path) -> dict:
     import yaml
+
     if not path.exists():
         return {}
     try:
@@ -64,7 +65,9 @@ def _generate_app_catalog_narrative() -> str:
     for exe in sorted(mappings):
         info = mappings[exe]
         if isinstance(info, dict):
-            parts.append(f"- {exe}: {info.get('category', '?')} — {info.get('description', '')}")
+            parts.append(
+                f"- {exe}: {info.get('category', '?')} — {info.get('description', '')}"
+            )
     return "\n".join(parts)
 
 
@@ -82,7 +85,9 @@ def _process_playbook_file(path: Path, check_only: bool) -> bool:
         start_tag = f"<!-- AUTO-FROM: {marker} -->"
         end_tag = "<!-- END-AUTO -->"
         if start_tag not in content:
-            new_content += f"\n{start_tag}\n<!-- Generated content below -->\n{end_tag}\n"
+            new_content += (
+                f"\n{start_tag}\n<!-- Generated content below -->\n{end_tag}\n"
+            )
         start_idx = new_content.find(start_tag)
         end_idx = new_content.find(end_tag, start_idx)
         if start_idx >= 0 and end_idx >= 0:
@@ -90,7 +95,11 @@ def _process_playbook_file(path: Path, check_only: bool) -> bool:
             after = new_content[end_idx:]
             generated = "\n" + generator() + "\n"
             replacement = before + generated + after
-            new_content = new_content[:start_idx] + replacement[len(new_content[:start_idx]):] if False else replacement
+            new_content = (
+                new_content[:start_idx] + replacement[len(new_content[:start_idx]) :]
+                if False
+                else replacement
+            )
     if new_content != content:
         if check_only:
             print(f"  DRIFT: {path.name}")
@@ -103,7 +112,9 @@ def _process_playbook_file(path: Path, check_only: bool) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Regenerate playbook auto-sections")
-    parser.add_argument("--check", action="store_true", help="Check-only: report drift without writing")
+    parser.add_argument(
+        "--check", action="store_true", help="Check-only: report drift without writing"
+    )
     args = parser.parse_args()
 
     if not PLAYBOOK_DIR.exists():

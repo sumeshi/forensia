@@ -31,7 +31,9 @@ class LLMCallLogger:
             result[phase] = result.get(phase, 0) + count
         return result
 
-    def log_prompt_budget(self, phase: str, section_key: str, total_chars: int, part_sizes: dict[str, int]) -> None:
+    def log_prompt_budget(
+        self, phase: str, section_key: str, total_chars: int, part_sizes: dict[str, int]
+    ) -> None:
         """Log system prompt budget telemetry."""
         entry = {
             "event": "prompt_budget",

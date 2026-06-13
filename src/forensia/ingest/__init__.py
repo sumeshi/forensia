@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable
 
 from tqdm import tqdm
 
@@ -83,14 +83,20 @@ def ingest_all(
                 if existing is not None:
                     counts["skipped_files"] += 1
                     if progress_callback:
-                        progress_callback(f"Skipping already ingested {adapter.name.upper()}: {path}")
+                        progress_callback(
+                            f"Skipping already ingested {adapter.name.upper()}: {path}"
+                        )
                     continue
 
-            result = adapter.ingest(case, path, source_sha=sha256, progress_callback=adapter_callback)
+            result = adapter.ingest(
+                case, path, source_sha=sha256, progress_callback=adapter_callback
+            )
             if result.raw_path is None:
                 counts["skipped_files"] += 1
                 if progress_callback:
-                    progress_callback(f"WARNING: {adapter.name} produced no records: {path}")
+                    progress_callback(
+                        f"WARNING: {adapter.name} produced no records: {path}"
+                    )
                 continue
             counts[f"{adapter.name}_files"] += 1
 

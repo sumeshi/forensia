@@ -2,14 +2,11 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from pathlib import Path
-from unittest.mock import patch
 
 import duckdb
 
 from forensia.core.case import Case, detect_epochs
 from forensia.db.database import CaseDB
-from forensia.db.schema import CORE_SCHEMA_SQL
 from forensia.report.writer import _host_summary_rows
 
 
@@ -71,7 +68,13 @@ class HostEpochDetectionTests(unittest.TestCase):
             [
                 ("evtx-001", 4624, "2026-03-01 10:00:00", "informant-PC", "Security"),
                 ("evtx-002", 4624, "2026-03-02 10:00:00", "INFORMANT-PC", "Security"),
-                ("evtx-003", 4624, "2026-03-03 10:00:00", "  informant-PC  ", "Security"),
+                (
+                    "evtx-003",
+                    4624,
+                    "2026-03-03 10:00:00",
+                    "  informant-PC  ",
+                    "Security",
+                ),
             ]
         )
         epochs = detect_epochs(conn)

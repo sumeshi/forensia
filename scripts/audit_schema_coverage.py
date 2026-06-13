@@ -9,7 +9,6 @@ Usage:
 import argparse
 import sys
 from pathlib import Path
-from typing import Any
 
 try:
     import sqlglot
@@ -28,6 +27,7 @@ TEMPLATES_DIR = REPO_ROOT / "src" / "forensia" / "report" / "templates"
 
 def _load_yaml(path: Path) -> dict:
     import yaml
+
     if not path.exists():
         return {}
     try:
@@ -48,19 +48,26 @@ def _extract_event_ids_from_sql(sql: str) -> set[int]:
             if isinstance(node, sqlglot.exp.EQ):
                 col = node.left
                 right = node.right
-                if isinstance(col, sqlglot.exp.Column) and col.name.lower() == "event_id" and isinstance(right, sqlglot.exp.Literal):
+                if (
+                    isinstance(col, sqlglot.exp.Column)
+                    and col.name.lower() == "event_id"
+                    and isinstance(right, sqlglot.exp.Literal)
+                ):
                     try:
                         ids.add(int(right.this))
-                    except (ValueError, TypeError):
+                    except ValueError, TypeError:
                         pass
             if isinstance(node, sqlglot.exp.In):
                 col = node.this
-                if isinstance(col, sqlglot.exp.Column) and col.name.lower() == "event_id":
+                if (
+                    isinstance(col, sqlglot.exp.Column)
+                    and col.name.lower() == "event_id"
+                ):
                     for expr in node.expressions:
                         if isinstance(expr, sqlglot.exp.Literal):
                             try:
                                 ids.add(int(expr.this))
-                            except (ValueError, TypeError):
+                            except ValueError, TypeError:
                                 pass
     except Exception:
         pass
@@ -89,7 +96,7 @@ def _list_schema_event_ids(schema_file: str) -> set[int]:
     for key in events:
         try:
             ids.add(int(key))
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             pass
     return ids
 
@@ -98,7 +105,11 @@ def _list_schema_questions(schema_file: str) -> set[str]:
     """Return question_type names from question_routing.yaml."""
     data = _load_yaml(SCHEMA_DIR / schema_file)
     qtypes = data.get("question_types", [])
-    return {str(item["name"]) for item in qtypes if isinstance(item, dict) and "name" in item}
+    return {
+        str(item["name"])
+        for item in qtypes
+        if isinstance(item, dict) and "name" in item
+    }
 
 
 def _schema_table_columns() -> dict[str, set[str]]:
@@ -179,6 +190,7 @@ def _validate_question_sql(sql: str, table_columns: dict[str, set[str]]) -> list
 def _structured_builder_specs() -> set[str]:
     try:
         from forensia.report.writer import _STRUCTURED_ANSWER_BUILDERS
+
         return set(_STRUCTURED_ANSWER_BUILDERS)
     except Exception:
         return set()
@@ -218,7 +230,9 @@ def _audit_question_specs() -> list[str]:
         seen_specs.add(normalized_spec)
         evidence_chain = item.get("evidence_chain")
         if normalized_spec not in builder_specs and not evidence_chain:
-            issues.append(f"{label}: answer_spec {answer_spec} has no Python builder and no evidence_chain")
+            issues.append(
+                f"{label}: answer_spec {answer_spec} has no Python builder and no evidence_chain"
+            )
         for field in ("required_fields", "render_columns", "keywords", "keypoints"):
             value = item.get(field)
             if field in {"required_fields", "render_columns"} and not value:
@@ -229,29 +243,45 @@ def _audit_question_specs() -> list[str]:
         if not isinstance(status_rules, dict):
             issues.append(f"{label}: status_rules must be an object")
         elif status_rules.get("empty_status") and status_rules["empty_status"] not in {
-            "answered", "partial", "not_found", "not_searched", "insufficient_evidence", "wrong_query",
+            "answered",
+            "partial",
+            "not_found",
+            "not_searched",
+            "insufficient_evidence",
+            "wrong_query",
         }:
-            issues.append(f"{label}: invalid empty_status {status_rules['empty_status']}")
+            issues.append(
+                f"{label}: invalid empty_status {status_rules['empty_status']}"
+            )
         output_names: set[str] = set()
         if isinstance(evidence_chain, list):
             for chain_index, chain in enumerate(evidence_chain, start=1):
                 if not isinstance(chain, dict):
-                    issues.append(f"{label}: evidence_chain[{chain_index}] must be an object")
+                    issues.append(
+                        f"{label}: evidence_chain[{chain_index}] must be an object"
+                    )
                     continue
                 query = str(chain.get("query") or "")
                 source = str(chain.get("source") or f"chain[{chain_index}]")
                 for sql_issue in _validate_question_sql(query, table_columns):
                     issues.append(f"{label}:{source}: {sql_issue}")
                 output_names.update(_select_output_names(query))
-        if normalized_spec not in builder_specs and output_names and "*" not in output_names:
+        if (
+            normalized_spec not in builder_specs
+            and output_names
+            and "*" not in output_names
+        ):
             declared = {
                 str(field)
-                for field in (item.get("required_fields") or []) + (item.get("render_columns") or [])
+                for field in (item.get("required_fields") or [])
+                + (item.get("render_columns") or [])
                 if str(field).strip()
             }
             missing = declared - output_names
             if missing:
-                issues.append(f"{label}: generic evidence_chain does not output declared fields {sorted(missing)}")
+                issues.append(
+                    f"{label}: generic evidence_chain does not output declared fields {sorted(missing)}"
+                )
     return sorted(set(issues))
 
 
@@ -285,15 +315,21 @@ def _audit_question_routing_eval() -> list[str]:
         actual = spec.answer_spec if spec is not None else ""
         min_confidence = float(case.get("min_confidence") or 0.2)
         if actual != expected:
-            issues.append(f"eval case {index}: expected {expected}, got {actual or '<none>'}")
+            issues.append(
+                f"eval case {index}: expected {expected}, got {actual or '<none>'}"
+            )
         if confidence < min_confidence:
-            issues.append(f"eval case {index}: confidence {confidence:.2f} below {min_confidence:.2f}")
+            issues.append(
+                f"eval case {index}: confidence {confidence:.2f} below {min_confidence:.2f}"
+            )
     return issues
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Audit schema coverage")
-    parser.add_argument("--strict", action="store_true", help="Exit 1 on any uncovered entry")
+    parser.add_argument(
+        "--strict", action="store_true", help="Exit 1 on any uncovered entry"
+    )
     args = parser.parse_args()
 
     if sqlglot is None:
@@ -309,7 +345,9 @@ def main() -> None:
     unused_schema = schema_event_ids - rule_event_ids
 
     if uncovered_rules:
-        print(f"\n⚠  Event IDs in rules but NOT in _schema/event_ids.yaml ({len(uncovered_rules)} uncovered):")
+        print(
+            f"\n⚠  Event IDs in rules but NOT in _schema/event_ids.yaml ({len(uncovered_rules)} uncovered):"
+        )
         for eid in sorted(uncovered_rules):
             print(f"   - {eid}")
         coverage_issues += len(uncovered_rules)
@@ -321,7 +359,9 @@ def main() -> None:
 
     schema_questions = _list_schema_questions("question_routing.yaml")
     if schema_questions:
-        print(f"\n✓ Question routing defines {len(schema_questions)} types: {sorted(schema_questions)}")
+        print(
+            f"\n✓ Question routing defines {len(schema_questions)} types: {sorted(schema_questions)}"
+        )
     else:
         print("\n⚠  No question types found in _schema/question_routing.yaml")
         coverage_issues += 1

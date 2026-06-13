@@ -9,13 +9,16 @@ from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records, normalize_value
 
-
 # ── SQL helpers used by keypoint lambdas ──
 
 
 def _sql_like_any(column: str, *patterns: str) -> str:
     lowered = f"LOWER(COALESCE({column}, ''))"
-    return "(" + " OR ".join(f"{lowered} LIKE '{pattern.lower()}'" for pattern in patterns) + ")"
+    return (
+        "("
+        + " OR ".join(f"{lowered} LIKE '{pattern.lower()}'" for pattern in patterns)
+        + ")"
+    )
 
 
 def _path_like_any(column: str, *segments: str) -> str:
@@ -173,7 +176,7 @@ def _extract_needed_evidence(latest_reasoning: str | None) -> str:
         if isinstance(missing, list) and missing:
             items = [str(q).strip() for q in missing if q]
             return "; ".join(items[:2])
-    except (json.JSONDecodeError, TypeError):
+    except json.JSONDecodeError, TypeError:
         pass
     return ""
 
@@ -841,30 +844,39 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
     ),
     "structured_last_shutdown": (
         "Last shutdown/startup event from System event log (event 1074/6006/6008/6013).",
-        lambda db: _report_keypoint_rows(db, """
+        lambda db: _report_keypoint_rows(
+            db,
+            """
             SELECT timestamp, event_id, computer, message
             FROM evtx_events
             WHERE (event_id = 1074)
                OR (event_id IN (6006, 6008, 6013) AND (channel IS NULL OR LOWER(channel) LIKE '%system%'))
             ORDER BY timestamp DESC LIMIT 1
-        """),
+        """,
+        ),
     ),
     "structured_daily_session_activity": (
         "Daily user activity: logon/logoff/shutdown counts per date.",
-        lambda db: _report_keypoint_rows(db, """
+        lambda db: _report_keypoint_rows(
+            db,
+            """
             SELECT DATE(timestamp) AS date, event_id, COUNT(*) AS n
             FROM evtx_events
             WHERE (event_id IN (4624, 4634, 4647))
                OR (event_id IN (6005, 6006) AND (channel IS NULL OR LOWER(channel) LIKE '%system%'))
             GROUP BY 1, 2 ORDER BY 1
-        """),
+        """,
+        ),
     ),
     "structured_browser_artifacts": (
         "Browser executable names from prefetch/mft.",
-        lambda db: _report_keypoint_rows(db, """
+        lambda db: _report_keypoint_rows(
+            db,
+            """
             SELECT DISTINCT executable_name FROM prefetch_executions
             WHERE LOWER(executable_name) IN ('chrome.exe','firefox.exe','msedge.exe','iexplore.exe','brave.exe','opera.exe')
-        """),
+        """,
+        ),
     ),
     "structured_email_artifacts": (
         "OST/PST file paths from MFT entries (email client artifacts).",
@@ -915,56 +927,71 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
     ),
     "structured_antiforensics": (
         "Anti-forensic activity on the last day: log clearing, tool execution, prefetch deletion.",
-        lambda db: _report_keypoint_rows(db, """
+        lambda db: _report_keypoint_rows(
+            db,
+            """
             SELECT timestamp, event_id, computer, target_user, message
             FROM evtx_events
             WHERE (event_id = 1102 AND (channel IS NULL OR LOWER(channel) LIKE '%security%'))
                OR (event_id = 1100 AND (channel IS NULL OR LOWER(channel) LIKE '%security%'))
                OR (event_id = 104 AND LOWER(COALESCE(json_extract_string(raw_json, '$.winlog.provider.name'), '')) = 'microsoft-windows-eventlog')
             ORDER BY timestamp DESC LIMIT 50
-        """),
+        """,
+        ),
     ),
     "system_shutdown_events": (
         "System shutdown events (event 1074/6006/6008).",
-        lambda db: _report_keypoint_rows(db, """
+        lambda db: _report_keypoint_rows(
+            db,
+            """
             SELECT timestamp, event_id, computer, message, evidence_id
             FROM evtx_events
             WHERE (event_id = 1074)
                OR (event_id IN (6006, 6008) AND (channel IS NULL OR LOWER(channel) LIKE '%system%'))
             ORDER BY timestamp DESC
             LIMIT 50
-        """),
+        """,
+        ),
     ),
     "system_startup_events": (
         "System startup events (event 6005).",
-        lambda db: _report_keypoint_rows(db, """
+        lambda db: _report_keypoint_rows(
+            db,
+            """
             SELECT timestamp, event_id, computer, evidence_id
             FROM evtx_events
             WHERE (channel IS NULL OR LOWER(channel) LIKE '%system%')
                AND event_id = 6005
             ORDER BY timestamp
             LIMIT 50
-        """),
+        """,
+        ),
     ),
     "interactive_logon_events": (
         "Interactive and remote-interactive logon events (4624 logon_type=2/10).",
-        lambda db: _report_keypoint_rows(db, """
+        lambda db: _report_keypoint_rows(
+            db,
+            """
             SELECT timestamp, computer, target_user, logon_type, src_ip, evidence_id
             FROM evtx_events
             WHERE event_id = 4624 AND logon_type IN ('2', '10')
             ORDER BY timestamp
             LIMIT 80
-        """),
+        """,
+        ),
     ),
     "logoff_events": (
         "Logoff and session-disconnect events (4634/4647).",
-        lambda db: _report_keypoint_rows(db, """
+        lambda db: _report_keypoint_rows(
+            db,
+            """
             SELECT timestamp, computer, target_user, evidence_id
             FROM evtx_events
             WHERE event_id IN (4634, 4647)
             ORDER BY timestamp
             LIMIT 80
-        """),
+        """,
+        ),
     ),
     "mft_user_desktop_artifacts": (
         "Files found under any user Desktop path in MFT.",
@@ -1023,24 +1050,30 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
     ),
     "evtx_network_connections": (
         "Network-related EVTX events (firewall, filtering platform, DHCP).",
-        lambda db: _report_keypoint_rows(db, """
+        lambda db: _report_keypoint_rows(
+            db,
+            """
             SELECT timestamp, computer, event_id, src_ip, process_name, message, evidence_id
             FROM evtx_events
             WHERE event_id IN (5152, 5154, 5156, 5157, 5158, 5031, 5140, 5145)
                OR channel LIKE '%dhcp%' OR channel LIKE '%dns%'
             ORDER BY timestamp
             LIMIT 80
-        """),
+        """,
+        ),
     ),
     "evtx_firewall_events": (
         "Windows Firewall allowed/blocked connection events.",
-        lambda db: _report_keypoint_rows(db, """
+        lambda db: _report_keypoint_rows(
+            db,
+            """
             SELECT timestamp, computer, src_ip, process_name, event_id, evidence_id
             FROM evtx_events
             WHERE event_id IN (5156, 5157)
             ORDER BY timestamp
             LIMIT 80
-        """),
+        """,
+        ),
     ),
     "unresolved_hypotheses_summary": (
         "Open or unresolved hypotheses from the investigation.",
@@ -1052,7 +1085,9 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
                 "verdict": row["verdict"],
                 "summary": row["summary"],
                 "updated_at": row["updated_at"],
-                "needed_evidence": _extract_needed_evidence(row.get("latest_reasoning")),
+                "needed_evidence": _extract_needed_evidence(
+                    row.get("latest_reasoning")
+                ),
             }
             for row in _report_keypoint_rows(
                 db,
@@ -1121,7 +1156,9 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
                 "verdict": row["verdict"],
                 "summary": row["summary"],
                 "updated_at": row["updated_at"],
-                "needed_evidence": _extract_needed_evidence(row.get("latest_reasoning")),
+                "needed_evidence": _extract_needed_evidence(
+                    row.get("latest_reasoning")
+                ),
             }
             for row in _report_keypoint_rows(
                 db,
@@ -1176,13 +1213,16 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
     ),
     "report_sections_with_gaps": (
         "Report sections that have outstanding gaps or low confidence.",
-        lambda db: _report_keypoint_rows(db, """
+        lambda db: _report_keypoint_rows(
+            db,
+            """
             SELECT section_key, title, confidence, gaps, status
             FROM report_sections
             WHERE confidence < 0.7 OR gaps IS NOT NULL
             ORDER BY confidence
             LIMIT 20
-        """),
+        """,
+        ),
     ),
 }
 
@@ -1269,16 +1309,59 @@ def _default_keypoints_for_section(
     # Block-heading-level overrides take precedence over family defaults.
     # Keys are lowercase partial matches against block_heading.
     _heading_overrides: dict[str, tuple[str, ...]] = {
-        "log integrity": ("timeline_log_clearing", "gaps_log_integrity_events", "timeline_system_events"),
-        "network": ("evtx_network_connections", "ioc_source_ips", "evtx_firewall_events"),
-        "lateral": ("account_logon_patterns", "account_explicit_credentials", "ioc_source_ips"),
-        "evidence gap": ("unresolved_hypotheses_summary", "untestable_hypotheses_summary", "gaps_event_coverage", "gaps_channel_coverage"),
-        "gap": ("unresolved_hypotheses_summary", "untestable_hypotheses_summary", "gaps_event_coverage", "gaps_channel_coverage"),
-        "execution": ("host_execution_activity", "persistence_lolbas_execution", "persistence_service_installs"),
-        "persistence": ("host_persistence_activity", "persistence_service_installs", "persistence_scheduled_tasks"),
-        "authentication": ("account_logon_patterns", "account_bruteforce_clusters", "account_explicit_credentials"),
-        "overview": ("overview_top_findings", "resolved_hypotheses_with_evidence", "overview_hosts"),
-        "chronological": ("timeline_high_signal_events", "timeline_system_events", "timeline_log_clearing", "timeline_case_assembled"),
+        "log integrity": (
+            "timeline_log_clearing",
+            "gaps_log_integrity_events",
+            "timeline_system_events",
+        ),
+        "network": (
+            "evtx_network_connections",
+            "ioc_source_ips",
+            "evtx_firewall_events",
+        ),
+        "lateral": (
+            "account_logon_patterns",
+            "account_explicit_credentials",
+            "ioc_source_ips",
+        ),
+        "evidence gap": (
+            "unresolved_hypotheses_summary",
+            "untestable_hypotheses_summary",
+            "gaps_event_coverage",
+            "gaps_channel_coverage",
+        ),
+        "gap": (
+            "unresolved_hypotheses_summary",
+            "untestable_hypotheses_summary",
+            "gaps_event_coverage",
+            "gaps_channel_coverage",
+        ),
+        "execution": (
+            "host_execution_activity",
+            "persistence_lolbas_execution",
+            "persistence_service_installs",
+        ),
+        "persistence": (
+            "host_persistence_activity",
+            "persistence_service_installs",
+            "persistence_scheduled_tasks",
+        ),
+        "authentication": (
+            "account_logon_patterns",
+            "account_bruteforce_clusters",
+            "account_explicit_credentials",
+        ),
+        "overview": (
+            "overview_top_findings",
+            "resolved_hypotheses_with_evidence",
+            "overview_hosts",
+        ),
+        "chronological": (
+            "timeline_high_signal_events",
+            "timeline_system_events",
+            "timeline_log_clearing",
+            "timeline_case_assembled",
+        ),
     }
     if block_heading:
         heading_lower = block_heading.lower()
@@ -1288,10 +1371,29 @@ def _default_keypoints_for_section(
 
     family = section_key.split("_", 1)[0] if "_" in section_key else section_key
     mapping = {
-        "1": ("overview_top_findings", "resolved_hypotheses_with_evidence", "overview_hosts", "overview_event_range"),
-        "2": ("timeline_high_signal_events", "timeline_system_events", "timeline_log_clearing", "timeline_case_assembled"),
-        "3": ("host_execution_activity", "host_persistence_activity", "account_logon_patterns", "ioc_source_ips"),
-        "4": ("unresolved_hypotheses_summary", "gaps_event_coverage", "gaps_channel_coverage"),
+        "1": (
+            "overview_top_findings",
+            "resolved_hypotheses_with_evidence",
+            "overview_hosts",
+            "overview_event_range",
+        ),
+        "2": (
+            "timeline_high_signal_events",
+            "timeline_system_events",
+            "timeline_log_clearing",
+            "timeline_case_assembled",
+        ),
+        "3": (
+            "host_execution_activity",
+            "host_persistence_activity",
+            "account_logon_patterns",
+            "ioc_source_ips",
+        ),
+        "4": (
+            "unresolved_hypotheses_summary",
+            "gaps_event_coverage",
+            "gaps_channel_coverage",
+        ),
         "5": ("recommendations_findings", "recommendations_recent_reviews"),
         "6": ("appendix_findings_catalog", "appendix_claims_needing_review"),
     }
@@ -1301,7 +1403,9 @@ def _default_keypoints_for_section(
 # ── Keypoint cards ──
 
 
-def _load_keypoint_cards(case: Case, max_cards: int = 8, max_chars: int = 1200) -> list[dict[str, str]]:
+def _load_keypoint_cards(
+    case: Case, max_cards: int = 8, max_chars: int = 1200
+) -> list[dict[str, str]]:
     """Load keypoint card markdown files from the case memory directory."""
     cards: list[dict[str, str]] = []
     for path in sorted(case.memory_dir.glob("keypoints/KP-*.md"))[:max_cards]:
@@ -1324,7 +1428,7 @@ def _resolve_evidence_results(
     """Resolve named keypoints against the database and return structured evidence result dicts."""
     results: list[dict[str, Any]] = []
     seen_keypoints: set[str] = set()
-    for keypoint in (keypoints or []):
+    for keypoint in keypoints or []:
         normalized = str(keypoint or "").strip()
         if not normalized or normalized in seen_keypoints:
             continue

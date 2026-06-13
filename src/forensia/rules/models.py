@@ -13,7 +13,7 @@ class FindingTemplate(BaseModel):
 
 class HypothesisDeclaration(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    
+
     id: str
     segment: str
     description: str
@@ -37,7 +37,7 @@ class CorrelateEvent(BaseModel):
 
 class RulePackMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    
+
     id: str
     title: str
     applies_when: dict = Field(default_factory=dict)
@@ -45,7 +45,7 @@ class RulePackMetadata(BaseModel):
 
 class Rule(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    
+
     id: str
     title: str
     severity: str = "medium"

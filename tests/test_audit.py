@@ -12,8 +12,13 @@ class LLMCallLoggerTests(unittest.TestCase):
         self.case.ai_logs_dir = MagicMock()
         self.logger = LLMCallLogger(self.case, "test-session")
 
-    def _write(self, iteration: int = 1, phase: str = "plan",
-               suffix: str = "main", **kwargs: object) -> None:
+    def _write(
+        self,
+        iteration: int = 1,
+        phase: str = "plan",
+        suffix: str = "main",
+        **kwargs: object,
+    ) -> None:
         defaults = dict(
             input_messages=[{"role": "user", "content": "hi"}],
             output="ok",
@@ -42,12 +47,16 @@ class LLMCallLoggerTests(unittest.TestCase):
         self._write(iteration=1, phase="broad_plan")
         self._write(iteration=2, phase="broad_plan")
         self._write(iteration=1, phase="check")
-        self.assertEqual(self.logger.count_by_phase(), {"broad_plan-main": 2, "check-main": 1})
+        self.assertEqual(
+            self.logger.count_by_phase(), {"broad_plan-main": 2, "check-main": 1}
+        )
 
     def test_count_by_phase_same_phase_different_suffixes(self) -> None:
         self._write(iteration=1, phase="section", suffix="plan")
         self._write(iteration=1, phase="section", suffix="check")
-        self.assertEqual(self.logger.count_by_phase(), {"section-plan": 1, "section-check": 1})
+        self.assertEqual(
+            self.logger.count_by_phase(), {"section-plan": 1, "section-check": 1}
+        )
 
     def test_total_calls_after_many_calls(self) -> None:
         for i in range(100):
@@ -58,7 +67,9 @@ class LLMCallLoggerTests(unittest.TestCase):
         for i in range(50):
             self._write(iteration=i, phase="plan")
             self._write(iteration=i, phase="check")
-        self.assertEqual(self.logger.count_by_phase(), {"plan-main": 50, "check-main": 50})
+        self.assertEqual(
+            self.logger.count_by_phase(), {"plan-main": 50, "check-main": 50}
+        )
 
     def test_write_with_suffix_uses_suffix_in_stem(self) -> None:
         logger = LLMCallLogger(self.case, "stem-test")
@@ -104,4 +115,6 @@ class LLMCallLoggerTests(unittest.TestCase):
             )
         self.assertEqual(logger.total_calls, 3)
         self.assertEqual(logger.count_by_phase(), {"plan-analyse": 3})
-        self.assertEqual(logger.base_dir.__truediv__.return_value.write_text.call_count, 3)
+        self.assertEqual(
+            logger.base_dir.__truediv__.return_value.write_text.call_count, 3
+        )

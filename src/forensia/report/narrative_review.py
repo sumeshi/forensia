@@ -4,12 +4,12 @@ These run before the LLM section_reviewer: anything code can decide is
 decided here, and the resulting problem list is handed to the reviewer as
 ground truth (Rule 5).
 """
+
 from __future__ import annotations
 
 import re
 
 from forensia.report.keypoints import EVIDENCE_ID_PATTERN
-
 
 _INTERNAL_ID_RE = re.compile(r"\bgap-[0-9a-f]{6,}\b|\bH-\d{3}\b|\bKP-\d{4}\b")
 
@@ -44,7 +44,10 @@ def check_pseudo_citations(body: str) -> list[str]:
 def check_internal_ids(body: str) -> list[str]:
     """Flag internal IDs (gap-*, H-*, KP-*) leaking into prose."""
     found = dict.fromkeys(_INTERNAL_ID_RE.findall(body))
-    return [f"Internal ID '{token}' in prose — replace with a human-readable description" for token in found]
+    return [
+        f"Internal ID '{token}' in prose — replace with a human-readable description"
+        for token in found
+    ]
 
 
 def review_narrative_body(body: str, max_citations: int = 3) -> list[str]:

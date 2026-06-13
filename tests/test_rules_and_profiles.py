@@ -11,11 +11,9 @@ import yaml
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.normalize.evtx import normalize_evtx
-from forensia.rules.engine import save_findings
-from forensia.rules.engine import generate_findings
+from forensia.rules.engine import generate_findings, save_findings
 from forensia.rules.loader import load_rules_from_dir
 from forensia.rules.models import Finding, Rule
-
 
 JP_CHAR_PATTERN = r"[ぁ-んァ-ン一-龥]"
 
@@ -58,7 +56,9 @@ class RuleProfileTests(unittest.TestCase):
             "finding": {"title": "Test", "summary": "Test"},
             "attack": ["T1078"],
         }
-        with pytest.warns(DeprecationWarning, match=r"rule test-rule: attack uses short-form"):
+        with pytest.warns(
+            DeprecationWarning, match=r"rule test-rule: attack uses short-form"
+        ):
             Rule.model_validate(data)
 
     def test_full_form_attack_no_warning(self) -> None:
@@ -67,32 +67,93 @@ class RuleProfileTests(unittest.TestCase):
             "title": "Test Rule",
             "query": "SELECT 1",
             "finding": {"title": "Test", "summary": "Test"},
-            "attack": [{"tactic": "initial-access", "technique_id": "T1078", "technique_name": "Valid Accounts"}],
+            "attack": [
+                {
+                    "tactic": "initial-access",
+                    "technique_id": "T1078",
+                    "technique_name": "Valid Accounts",
+                }
+            ],
         }
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             Rule.model_validate(data)
-            deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            deprecation_warnings = [
+                x for x in w if issubclass(x.category, DeprecationWarning)
+            ]
             self.assertEqual(0, len(deprecation_warnings))
 
     def test_major_windows_rules_define_required_fields(self) -> None:
         expected = {
-            "security_4624_network_logon.yaml": {"target_user", "computer", "src_ip", "logon_type"},
-            "security_4624_rdp_logon.yaml": {"target_user", "computer", "src_ip", "logon_type"},
-            "security_4624_interactive_logon.yaml": {"target_user", "computer", "logon_type"},
-            "security_4625_failed_logon.yaml": {"src_ip", "computer", "target_user", "fail_count"},
-            "security_4648_logon_explicit_creds.yaml": {"subject_user", "target_user", "computer", "process_name"},
-            "security_4688_powershell.yaml": {"target_user", "computer", "process_name", "command_line"},
-            "security_4688_suspicious_tools.yaml": {"target_user", "computer", "process_name", "command_line"},
-            "security_4697_service_install.yaml": {"subject_user", "service_name", "computer"},
-            "system_7045_service_installed.yaml": {"service_name", "computer", "subject_user"},
-            "security_4720_account_lifecycle_consolidated.yaml": {"target_user", "computer", "subject_user"},
-            "security_4728_group_change_consolidated.yaml": {"target_user", "computer", "subject_user", "message"},
+            "security_4624_network_logon.yaml": {
+                "target_user",
+                "computer",
+                "src_ip",
+                "logon_type",
+            },
+            "security_4624_rdp_logon.yaml": {
+                "target_user",
+                "computer",
+                "src_ip",
+                "logon_type",
+            },
+            "security_4624_interactive_logon.yaml": {
+                "target_user",
+                "computer",
+                "logon_type",
+            },
+            "security_4625_failed_logon.yaml": {
+                "src_ip",
+                "computer",
+                "target_user",
+                "fail_count",
+            },
+            "security_4648_logon_explicit_creds.yaml": {
+                "subject_user",
+                "target_user",
+                "computer",
+                "process_name",
+            },
+            "security_4688_powershell.yaml": {
+                "target_user",
+                "computer",
+                "process_name",
+                "command_line",
+            },
+            "security_4688_suspicious_tools.yaml": {
+                "target_user",
+                "computer",
+                "process_name",
+                "command_line",
+            },
+            "security_4697_service_install.yaml": {
+                "subject_user",
+                "service_name",
+                "computer",
+            },
+            "system_7045_service_installed.yaml": {
+                "service_name",
+                "computer",
+                "subject_user",
+            },
+            "security_4720_account_lifecycle_consolidated.yaml": {
+                "target_user",
+                "computer",
+                "subject_user",
+            },
+            "security_4728_group_change_consolidated.yaml": {
+                "target_user",
+                "computer",
+                "subject_user",
+                "message",
+            },
         }
         rules_dir = Path("src/forensia/rulepacks/windows")
         for filename, fields in expected.items():
             parsed = yaml.safe_load((rules_dir / filename).read_text(encoding="utf-8"))
-            self.assertTrue(fields.issubset(set(parsed.get("required_fields") or [])), filename)
+            self.assertTrue(
+                fields.issubset(set(parsed.get("required_fields") or [])), filename
+            )
 
     def test_windows_allowlist_metadata_is_not_loaded_as_rule(self) -> None:
         rules_dir = Path("src/forensia/rulepacks")
@@ -238,7 +299,9 @@ class AllowlistTests(unittest.TestCase):
             self.assertLessEqual(float(row[2]), 0.2)
             self.assertIn("built-in benign allowlist", row[3])
 
-    def test_builtin_benign_allowlist_does_not_suppress_suspicious_process_rule(self) -> None:
+    def test_builtin_benign_allowlist_does_not_suppress_suspicious_process_rule(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             finding = Finding(
@@ -317,10 +380,22 @@ class RuleExecutionTests(unittest.TestCase):
                 computer, target_user, subject_user, src_ip, logon_type, message
             ) VALUES (?, 'security.evtx', 'Security', ?, 1, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (evidence_id, event_id, timestamp, computer, target_user, subject_user, src_ip, logon_type, message),
+            (
+                evidence_id,
+                event_id,
+                timestamp,
+                computer,
+                target_user,
+                subject_user,
+                src_ip,
+                logon_type,
+                message,
+            ),
         )
 
-    def test_4624_network_logon_filters_builtin_noise_accounts_and_loopback(self) -> None:
+    def test_4624_network_logon_filters_builtin_noise_accounts_and_loopback(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -386,7 +461,9 @@ class RuleExecutionTests(unittest.TestCase):
             self.assertEqual("alice", rows[0]["target_user"])
             self.assertEqual("10.0.0.5", rows[0]["src_ip"])
 
-    def test_4625_failed_logon_uses_short_time_window_and_stricter_threshold(self) -> None:
+    def test_4625_failed_logon_uses_short_time_window_and_stricter_threshold(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -428,7 +505,9 @@ class RuleExecutionTests(unittest.TestCase):
             self.assertEqual("alice", rows[0]["target_user"])
             self.assertEqual(5, rows[0]["fail_count"])
 
-    def test_4624_interactive_logon_keeps_user_logons_and_excludes_noise_accounts(self) -> None:
+    def test_4624_interactive_logon_keeps_user_logons_and_excludes_noise_accounts(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -480,9 +559,13 @@ class RuleExecutionTests(unittest.TestCase):
                 rows = self._run_rule_query(db, "security_4624_interactive_logon.yaml")
 
             self.assertEqual(2, len(rows))
-            self.assertEqual({"informant", "alice"}, {row["target_user"] for row in rows})
+            self.assertEqual(
+                {"informant", "alice"}, {row["target_user"] for row in rows}
+            )
 
-    def test_5140_admin_share_access_parses_share_name_and_excludes_ipc_noise(self) -> None:
+    def test_5140_admin_share_access_parses_share_name_and_excludes_ipc_noise(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -531,7 +614,9 @@ class RuleExecutionTests(unittest.TestCase):
 
             self.assertEqual(2, len(rows))
             self.assertEqual({"ADMIN$", "C$"}, {row["share_name"] for row in rows})
-            self.assertEqual({"share-1", "share-2"}, {row["evidence_id"] for row in rows})
+            self.assertEqual(
+                {"share-1", "share-2"}, {row["evidence_id"] for row in rows}
+            )
 
     def test_system_104_log_cleared_requires_eventlog_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -637,17 +722,25 @@ class RuleExecutionTests(unittest.TestCase):
                 )
                 result = db.execute(rule.query)
                 columns = [item[0] for item in result.description]
-                rows = [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
+                rows = [
+                    dict(zip(columns, row, strict=False)) for row in result.fetchall()
+                ]
                 findings = generate_findings(rule, rows)
 
             self.assertEqual(1, len(findings))
             ev = findings[0].evidence[0]
-            self.assertIn("evidence_id", ev, "correlation finding must carry source evidence_id")
-            self.assertIn("evidence_ids", ev, "correlation finding must carry evidence_ids list")
+            self.assertIn(
+                "evidence_id", ev, "correlation finding must carry source evidence_id"
+            )
+            self.assertIn(
+                "evidence_ids", ev, "correlation finding must carry evidence_ids list"
+            )
             self.assertIn("evtx-security-000000000001", str(ev.get("evidence_ids")))
             self.assertIn("evtx-security-000000000002", str(ev.get("evidence_ids")))
 
-    def test_generate_findings_degrades_confidence_when_key_fields_are_missing(self) -> None:
+    def test_generate_findings_degrades_confidence_when_key_fields_are_missing(
+        self,
+    ) -> None:
         rule = Rule.model_validate(
             {
                 "id": "test-rule",
@@ -661,7 +754,13 @@ class RuleExecutionTests(unittest.TestCase):
                     "summary": "Source IP: {src_ip}",
                 },
                 "tags": ["windows"],
-                "attack": [{"tactic": "initial-access", "technique_id": "T1078", "technique_name": "Valid Accounts"}],
+                "attack": [
+                    {
+                        "tactic": "initial-access",
+                        "technique_id": "T1078",
+                        "technique_name": "Valid Accounts",
+                    }
+                ],
             }
         )
 

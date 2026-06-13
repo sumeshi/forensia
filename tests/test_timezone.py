@@ -1,34 +1,37 @@
 """Tests for R2-14 timezone identification and dual-timestamp rendering."""
+
 from __future__ import annotations
 
 import json
 import tempfile
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import patch
 
 import yaml
-import pytest
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.normalize.timezone import infer_timezone
+from forensia.questions import extract_time_qualifiers
 from forensia.report.writer import (
-    _render_timestamp_with_timezone,
-    _tz_offset_str,
-    _local_time_from_utc as _wt_local_time_from_utc,
     _add_local_time_columns,
     _build_report_brief,
+    _render_timestamp_with_timezone,
+    _tz_offset_str,
 )
-from forensia.questions import extract_time_qualifiers
-
+from forensia.report.writer import (
+    _local_time_from_utc as _wt_local_time_from_utc,
+)
 
 # ── Case timezone persistence ──────────────────────────────────────────────
+
 
 class TestCaseTimezonePersistence:
     def test_init_manifest_contains_source_timezone(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(str(Path(tmpdir) / "case"), source_timezone="America/New_York")
+            case = Case.init(
+                str(Path(tmpdir) / "case"), source_timezone="America/New_York"
+            )
             manifest = yaml.safe_load(case.manifest_path.read_text(encoding="utf-8"))
             assert manifest.get("source_timezone") == "America/New_York"
 
@@ -65,6 +68,7 @@ class TestCaseTimezonePersistence:
 
 
 # ── Timestamp rendering ────────────────────────────────────────────────────
+
 
 class TestTimestampRendering:
     def test_render_utc_only(self):
@@ -103,6 +107,7 @@ class TestTimestampRendering:
 
 # ── Local time conversion ──────────────────────────────────────────────────
 
+
 class TestLocalTimeConversion:
     def test_utc_to_ny(self):
         result = _wt_local_time_from_utc("2026-03-25 15:31:00", "America/New_York")
@@ -120,6 +125,7 @@ class TestLocalTimeConversion:
 
 
 # ── Structured answer local columns ────────────────────────────────────────
+
 
 class TestStructuredAnswerLocalColumns:
     def test_local_columns_added_for_known_tz(self):
@@ -145,19 +151,19 @@ class TestStructuredAnswerLocalColumns:
 
 # ── Report brief timezone info ─────────────────────────────────────────────
 
+
 class TestReportBriefTimezone:
     def test_report_brief_contains_timezone(self, tmp_path):
         case = Case(path=tmp_path, source_timezone="America/New_York")
-        with tempfile.TemporaryDirectory() as tmpdb:
-            db_path = Path(tmpdb) / "test.duckdb"
-            with CaseDB(case) as db:
-                db.execute("CREATE TABLE IF NOT EXISTS evtx_events (timestamp TIMESTAMP)")
-                brief = _build_report_brief(db, case)
-                assert brief.get("source_timezone") == "America/New_York"
-                assert "timezone_offset" in brief
+        with CaseDB(case) as db:
+            db.execute("CREATE TABLE IF NOT EXISTS evtx_events (timestamp TIMESTAMP)")
+            brief = _build_report_brief(db, case)
+            assert brief.get("source_timezone") == "America/New_York"
+            assert "timezone_offset" in brief
 
 
 # ── Time qualifiers with timezone ──────────────────────────────────────────
+
 
 class TestExtractTimeQualifiers:
     def test_hour_filter_with_tz(self):
@@ -188,13 +194,17 @@ class TestExtractTimeQualifiers:
 
 # ── Timezone inference (minimal) ──────────────────────────────────────────
 
+
 class TestTimezoneInference:
     def test_infer_timezone_no_data(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             from forensia.db.database import CaseDB
+
             case = Case(path=Path(tmpdir))
             with CaseDB(case) as db:
-                db.execute("CREATE TABLE IF NOT EXISTS evtx_events (timestamp TIMESTAMP, message VARCHAR, event_id INTEGER, raw_json VARCHAR, computer VARCHAR)")
+                db.execute(
+                    "CREATE TABLE IF NOT EXISTS evtx_events (timestamp TIMESTAMP, message VARCHAR, event_id INTEGER, raw_json VARCHAR, computer VARCHAR)"
+                )
                 offset, basis = infer_timezone(db)
                 assert offset is None
 
@@ -202,19 +212,28 @@ class TestTimezoneInference:
         """Test that Event 4616 with bias field is parsed."""
         with tempfile.TemporaryDirectory() as tmpdir:
             from forensia.db.database import CaseDB
+
             case = Case(path=Path(tmpdir))
             with CaseDB(case) as db:
-                db.execute("CREATE TABLE IF NOT EXISTS evtx_events (timestamp TIMESTAMP, message VARCHAR, event_id INTEGER, raw_json VARCHAR, computer VARCHAR)")
+                db.execute(
+                    "CREATE TABLE IF NOT EXISTS evtx_events (timestamp TIMESTAMP, message VARCHAR, event_id INTEGER, raw_json VARCHAR, computer VARCHAR)"
+                )
                 # Insert one Event 4616 with timezone bias
-                raw = json.dumps({
-                    "Event": {"EventData": {"Data": [
-                        {"Name": "SubjectUserSid", "Text": "S-1-5-18"},
-                        {"Name": "TimeZoneBias", "Text": "-300"},
-                    ]}}
-                })
+                raw = json.dumps(
+                    {
+                        "Event": {
+                            "EventData": {
+                                "Data": [
+                                    {"Name": "SubjectUserSid", "Text": "S-1-5-18"},
+                                    {"Name": "TimeZoneBias", "Text": "-300"},
+                                ]
+                            }
+                        }
+                    }
+                )
                 db.execute(
                     "INSERT INTO evtx_events (event_id, raw_json, timestamp) VALUES (4616, ?, ?)",
-                    (raw, datetime.now(timezone.utc)),
+                    (raw, datetime.now(UTC)),
                 )
                 offset, basis = infer_timezone(db)
                 # Only 1 observation - should return None (needs ≥2)
@@ -224,14 +243,20 @@ class TestTimezoneInference:
         """Test that consistent message timestamps produce an offset."""
         with tempfile.TemporaryDirectory() as tmpdir:
             from forensia.db.database import CaseDB
+
             case = Case(path=Path(tmpdir))
             with CaseDB(case) as db:
-                db.execute("CREATE TABLE IF NOT EXISTS evtx_events (timestamp TIMESTAMP, message VARCHAR, event_id INTEGER, raw_json VARCHAR, computer VARCHAR)")
+                db.execute(
+                    "CREATE TABLE IF NOT EXISTS evtx_events (timestamp TIMESTAMP, message VARCHAR, event_id INTEGER, raw_json VARCHAR, computer VARCHAR)"
+                )
                 # Insert 2 events where message contains a timestamp 5 hours behind UTC
                 for _ in range(2):
                     db.execute(
                         "INSERT INTO evtx_events (timestamp, message, event_id) VALUES (?, ?, 1)",
-                        ("2026-03-25 15:00:00", "Event occurred at 2026-03-25 10:00:00"),
+                        (
+                            "2026-03-25 15:00:00",
+                            "Event occurred at 2026-03-25 10:00:00",
+                        ),
                     )
                 offset, basis = infer_timezone(db)
                 # -300 minutes = UTC-5
@@ -241,13 +266,19 @@ class TestTimezoneInference:
         """Test that ≥2 agreeing observations return the offset."""
         with tempfile.TemporaryDirectory() as tmpdir:
             from forensia.db.database import CaseDB
+
             case = Case(path=Path(tmpdir))
             with CaseDB(case) as db:
-                db.execute("CREATE TABLE IF NOT EXISTS evtx_events (timestamp TIMESTAMP, message VARCHAR, event_id INTEGER, raw_json VARCHAR, computer VARCHAR)")
+                db.execute(
+                    "CREATE TABLE IF NOT EXISTS evtx_events (timestamp TIMESTAMP, message VARCHAR, event_id INTEGER, raw_json VARCHAR, computer VARCHAR)"
+                )
                 for _ in range(3):
                     db.execute(
                         "INSERT INTO evtx_events (timestamp, message, event_id) VALUES (?, ?, 1)",
-                        ("2026-03-25 15:00:00", "Event occurred at 2026-03-25 10:00:00 (local)"),
+                        (
+                            "2026-03-25 15:00:00",
+                            "Event occurred at 2026-03-25 10:00:00 (local)",
+                        ),
                     )
                 offset, basis = infer_timezone(db)
                 assert offset is not None

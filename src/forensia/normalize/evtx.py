@@ -11,8 +11,9 @@ def normalize_evtx(case: Case, db: CaseDB) -> int:
     replaces rather than duplicates data. Returns total rows inserted.
     """
     inserted = 0
-    for path in sorted({*case.raw_dir.glob("evtx.jsonl"), *case.raw_dir.glob("evtx-*.jsonl")}):
-
+    for path in sorted(
+        {*case.raw_dir.glob("evtx.jsonl"), *case.raw_dir.glob("evtx-*.jsonl")}
+    ):
         source_file = db.execute(
             """
             SELECT json_extract_string(json, '$.source_file')
@@ -22,9 +23,13 @@ def normalize_evtx(case: Case, db: CaseDB) -> int:
             (str(path),),
         ).fetchone()
         if source_file and source_file[0]:
-            db.execute("DELETE FROM evtx_events WHERE source_file = ?", (source_file[0],))
+            db.execute(
+                "DELETE FROM evtx_events WHERE source_file = ?", (source_file[0],)
+            )
 
-        row_count = db.execute("SELECT COUNT(*) FROM read_ndjson_objects(?)", (str(path),)).fetchone()[0]
+        row_count = db.execute(
+            "SELECT COUNT(*) FROM read_ndjson_objects(?)", (str(path),)
+        ).fetchone()[0]
         db.execute(
             """
             INSERT INTO evtx_events (

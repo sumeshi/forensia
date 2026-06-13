@@ -1,4 +1,5 @@
 """Tests for db/evidence_lookup.py — shared evidence-record lookup."""
+
 from __future__ import annotations
 
 import json
@@ -31,22 +32,32 @@ class EvidenceLookupTest(unittest.TestCase):
             "INSERT INTO evtx_events (evidence_id, event_id, timestamp, channel, computer, raw_json) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (
-                "evtx-security-000000000001", 4624, "2015-03-22T14:34:28",
-                "Security", "DESKTOP-01",
+                "evtx-security-000000000001",
+                4624,
+                "2015-03-22T14:34:28",
+                "Security",
+                "DESKTOP-01",
                 json.dumps({"event_id": 4624, "target_user": "informant"}),
             ),
         )
         self.db.execute(
             "INSERT INTO mft_entries (evidence_id, file_name, file_path, si_modified) VALUES (?, ?, ?, ?)",
-            ("mft-000000078080-01", "Task List.ersy",
-             "Users/informant/AppData/Local/Eraser 6/Task List.ersy",
-             "2015-03-25 15:29:37"),
+            (
+                "mft-000000078080-01",
+                "Task List.ersy",
+                "Users/informant/AppData/Local/Eraser 6/Task List.ersy",
+                "2015-03-25 15:29:37",
+            ),
         )
         self.db.execute(
             "INSERT INTO prefetch_executions (evidence_id, executable_name, exec_count, last_exec_time) "
             "VALUES (?, ?, ?, ?)",
-            ("prefetch-ccleaner64.exe-779bd542", "CCLEANER64.EXE", 2,
-             "2015-03-25 15:15:50"),
+            (
+                "prefetch-ccleaner64.exe-779bd542",
+                "CCLEANER64.EXE",
+                2,
+                "2015-03-25 15:15:50",
+            ),
         )
         self.db.execute(
             "INSERT INTO prefetch_timeline (evidence_id, executable_name, exec_time) VALUES (?, ?, ?)",
@@ -127,8 +138,11 @@ class EvidenceLookupTest(unittest.TestCase):
         self.assertEqual(rec["file_name"], "Task List.ersy")
 
     def test_duplicate_ids_not_doubled(self):
-        result = fetch_evidence_records(self.db, [
-            "evtx-security-000000000001",
-            "evtx-security-000000000001",
-        ])
+        result = fetch_evidence_records(
+            self.db,
+            [
+                "evtx-security-000000000001",
+                "evtx-security-000000000001",
+            ],
+        )
         self.assertEqual(len(result), 1)

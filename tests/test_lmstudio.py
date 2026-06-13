@@ -26,18 +26,24 @@ class _FakeClient:
         return self._responses.pop(0)
 
 
-def _response(status_code: int, *, text: str = "", content: str = "{}") -> httpx.Response:
+def _response(
+    status_code: int, *, text: str = "", content: str = "{}"
+) -> httpx.Response:
     request = httpx.Request("POST", "http://llama.test/v1/chat/completions")
     if status_code == 200:
         return httpx.Response(
             status_code,
-            json={"choices": [{"message": {"content": content}, "finish_reason": "stop"}]},
+            json={
+                "choices": [{"message": {"content": content}, "finish_reason": "stop"}]
+            },
             request=request,
         )
     return httpx.Response(status_code, text=text, request=request)
 
 
-def test_chat_completion_retries_llama_strict_schema_failure_with_compatible_schema() -> None:
+def test_chat_completion_retries_llama_strict_schema_failure_with_compatible_schema() -> (
+    None
+):
     client = _FakeClient(
         [
             _response(500, text="Failed to parse input: grammar rejected"),
@@ -45,7 +51,11 @@ def test_chat_completion_retries_llama_strict_schema_failure_with_compatible_sch
         ]
     )
     messages: list[str] = []
-    schema = {"title": "TestOutput", "type": "object", "properties": {"ok": {"type": "boolean"}}}
+    schema = {
+        "title": "TestOutput",
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+    }
 
     with patch.object(llm_client, "_get_http_client", return_value=client):
         result = llm_client.chat_completion(
@@ -72,7 +82,11 @@ def test_chat_completion_skips_strict_after_server_rejected_it_once() -> None:
             _response(200, content='{"ok": true}'),
         ]
     )
-    schema = {"title": "TestOutput", "type": "object", "properties": {"ok": {"type": "boolean"}}}
+    schema = {
+        "title": "TestOutput",
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+    }
 
     with patch.object(llm_client, "_get_http_client", return_value=client):
         llm_client.chat_completion(
@@ -93,7 +107,9 @@ def test_chat_completion_skips_strict_after_server_rejected_it_once() -> None:
     assert client.requests[2]["response_format"]["json_schema"].get("schema") == schema
 
 
-def test_chat_completion_removes_schema_only_after_compatible_schema_is_rejected() -> None:
+def test_chat_completion_removes_schema_only_after_compatible_schema_is_rejected() -> (
+    None
+):
     client = _FakeClient(
         [
             _response(400, text="strict schema unsupported"),
@@ -101,7 +117,11 @@ def test_chat_completion_removes_schema_only_after_compatible_schema_is_rejected
             _response(200, content='{"ok": true}'),
         ]
     )
-    schema = {"title": "TestOutput", "type": "object", "properties": {"ok": {"type": "boolean"}}}
+    schema = {
+        "title": "TestOutput",
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+    }
 
     with patch.object(llm_client, "_get_http_client", return_value=client):
         result = llm_client.chat_completion(

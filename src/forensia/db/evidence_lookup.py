@@ -3,6 +3,7 @@
 Table routing by id prefix (evtx-/mft-/prefetch-). Returns full record rows
 (all columns) plus parsed raw_json merged under a ``raw`` key.
 """
+
 from __future__ import annotations
 
 import json
@@ -10,7 +11,6 @@ from typing import Any
 
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
-
 
 # Prefix-to-table routing: prefetch IDs may live in either table.
 _PREFIX_TABLES: dict[str, tuple[str, ...]] = {
@@ -59,9 +59,7 @@ def _lookup_table(
         result[eid] = row
 
 
-def fetch_evidence_records(
-    db: CaseDB, ids: list[str]
-) -> dict[str, dict[str, Any]]:
+def fetch_evidence_records(db: CaseDB, ids: list[str]) -> dict[str, dict[str, Any]]:
     """Bulk lookup: return {evidence_id: full_record} for all given IDs.
 
     Queries evtx_events, mft_entries, prefetch_executions, and
@@ -80,9 +78,7 @@ def fetch_evidence_records(
     return result
 
 
-def lookup_evidence_record(
-    db: CaseDB, evidence_id: str
-) -> dict[str, Any] | None:
+def lookup_evidence_record(db: CaseDB, evidence_id: str) -> dict[str, Any] | None:
     """Single ID lookup via fetch_evidence_records."""
     result = fetch_evidence_records(db, [evidence_id])
     return result.get(evidence_id)

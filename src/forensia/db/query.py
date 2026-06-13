@@ -8,7 +8,9 @@ from typing import Any
 from forensia.db.database import CaseDB
 
 
-def fetch_records(db: CaseDB, query: str, params: Sequence[Any] | None = None) -> list[dict[str, Any]]:
+def fetch_records(
+    db: CaseDB, query: str, params: Sequence[Any] | None = None
+) -> list[dict[str, Any]]:
     """Execute a query and return results as a list of dicts (column name → value)."""
     result = db.execute(query, params)
     columns = [item[0] for item in result.description]

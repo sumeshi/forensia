@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 from itertools import chain
 from pathlib import Path
-from typing import Callable
 
 from prefetch2es.models.Prefetch2es import Prefetch2es
 
@@ -25,12 +25,14 @@ def ingest_prefetch_file(
     ingested_at = datetime.now(UTC).isoformat()
 
     parser = Prefetch2es(prefetch_path)
-    records = list(chain.from_iterable(
-        parser.gen_records(multiprocess=False, chunk_size=500)
-    ))
+    records = list(
+        chain.from_iterable(parser.gen_records(multiprocess=False, chunk_size=500))
+    )
     if not records:
         if progress_callback:
-            progress_callback(f"WARNING: prefetch parser returned 0 records for {prefetch_path}")
+            progress_callback(
+                f"WARNING: prefetch parser returned 0 records for {prefetch_path}"
+            )
         return None, None
 
     with entries_path.open("w", encoding="utf-8") as handle:
@@ -41,14 +43,18 @@ def ingest_prefetch_file(
                 **record,
                 "source_type": "prefetch",
                 "ingested_at": ingested_at,
-                "evidence_id": make_prefetch_evidence_id(executable_name, prefetch_hash),
+                "evidence_id": make_prefetch_evidence_id(
+                    executable_name, prefetch_hash
+                ),
             }
             handle.write(json.dumps(enriched, ensure_ascii=False) + "\n")
 
     timeline_parser = Prefetch2es(prefetch_path)
-    timeline_records = list(chain.from_iterable(
-        timeline_parser.gen_timeline_records(multiprocess=False, chunk_size=500)
-    ))
+    timeline_records = list(
+        chain.from_iterable(
+            timeline_parser.gen_timeline_records(multiprocess=False, chunk_size=500)
+        )
+    )
     # Records are returned in descending exec_time order per file (most recent first).
     with timeline_path.open("w", encoding="utf-8") as handle:
         for idx, record in enumerate(timeline_records):
@@ -77,7 +83,9 @@ def ingest_prefetch_file(
             handle.write(json.dumps(enriched, ensure_ascii=False) + "\n")
     if not timeline_records:
         if progress_callback:
-            progress_callback(f"WARNING: prefetch timeline parser returned 0 records for {prefetch_path}")
+            progress_callback(
+                f"WARNING: prefetch timeline parser returned 0 records for {prefetch_path}"
+            )
     if progress_callback:
         progress_callback(f"Wrote JSONL: {timeline_path}")
 

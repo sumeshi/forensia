@@ -3,6 +3,7 @@
 
 Usage: python scripts/debug_prefetch.py /path/to/file.pf
 """
+
 from __future__ import annotations
 
 import sys

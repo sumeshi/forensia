@@ -15,6 +15,7 @@ class CaseEvidenceProfile:
     MFT-only case). Callers such as the drafter event-ID filter and the
     untestable detector rely on that distinction.
     """
+
     profile_name: str = ""
     event_ids: set[int] | None = None
 
@@ -48,7 +49,9 @@ def _build_profile_queries(conn) -> dict[str, Any]:
         rows = conn.execute(
             "SELECT event_id, COUNT(*) AS cnt FROM evtx_events GROUP BY event_id ORDER BY cnt DESC"
         ).fetchall()
-        evtx_event_ids = [{"event_id": r[0], "count": r[1]} for r in rows if r[0] is not None]
+        evtx_event_ids = [
+            {"event_id": r[0], "count": r[1]} for r in rows if r[0] is not None
+        ]
     except Exception:
         pass
 
@@ -62,7 +65,13 @@ def _build_profile_queries(conn) -> dict[str, Any]:
         pass
 
     table_row_counts: dict[str, int] = {}
-    for tbl in ("evtx_events", "mft_entries", "mft_timeline", "prefetch_executions", "prefetch_timeline"):
+    for tbl in (
+        "evtx_events",
+        "mft_entries",
+        "mft_timeline",
+        "prefetch_executions",
+        "prefetch_timeline",
+    ):
         try:
             row = conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()
             table_row_counts[tbl] = row[0] if row and row[0] is not None else 0
@@ -154,13 +163,13 @@ def profile_advisor(profile_name: str, db) -> str:
       executables in prefetch, .ost/.pst in MFT) and maps them to profiles that
       include the matching rulepacks.
     """
-    import yaml
     from pathlib import Path
+
+    import yaml
 
     rulepacks_dir = Path(__file__).parent.parent / "rulepacks"
     all_packs = sorted(
-        d.name for d in rulepacks_dir.iterdir()
-        if d.is_dir() and d.name != "_schema"
+        d.name for d in rulepacks_dir.iterdir() if d.is_dir() and d.name != "_schema"
     )
     profile_path = Path(__file__).parent.parent / "profiles" / f"{profile_name}.yaml"
     if not profile_path.exists():
@@ -186,16 +195,22 @@ def profile_advisor(profile_name: str, db) -> str:
         ).fetchall()
         detected = [str(r[0]) for r in rows if r[0]]
         if detected:
-            hints.append(f"Cloud sync executables detected in prefetch: {', '.join(detected[:3])}")
+            hints.append(
+                f"Cloud sync executables detected in prefetch: {', '.join(detected[:3])}"
+            )
     except Exception:
         pass
 
     # Detect email cache files in MFT
     try:
-        row = db.execute("SELECT COUNT(*) FROM mft_entries WHERE extension IN ('ost', 'pst')").fetchone()
+        row = db.execute(
+            "SELECT COUNT(*) FROM mft_entries WHERE extension IN ('ost', 'pst')"
+        ).fetchone()
         count = int(row[0]) if row else 0
         if count > 0:
-            hints.append(f"Email cache files (.ost/.pst) found in MFT ({count} entries)")
+            hints.append(
+                f"Email cache files (.ost/.pst) found in MFT ({count} entries)"
+            )
     except Exception:
         pass
 
@@ -211,7 +226,8 @@ def profile_advisor(profile_name: str, db) -> str:
             continue
 
     covering = sorted(
-        pf_name for pf_name, pf_packs in profile_pack_map.items()
+        pf_name
+        for pf_name, pf_packs in profile_pack_map.items()
         if pf_name != profile_name and any(p in pf_packs for p in uncovered)
     )
 

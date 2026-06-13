@@ -13,15 +13,14 @@ import tempfile
 import unittest
 
 from forensia.ai.hypothesis_manager import (
+    _MAX_SECTION_UPDATES,
     _mark_section_stale,
     _resolve_hypothesis,
     _sections_for_keypoint,
-    _MAX_SECTION_UPDATES,
 )
 from forensia.core.case import Case
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
-from forensia.report.keypoints import _default_keypoints_for_section
 
 
 def _insert_section(db: CaseDB, section_key: str, update_count: int = 0) -> None:
@@ -36,7 +35,8 @@ def _insert_section(db: CaseDB, section_key: str, update_count: int = 0) -> None
 
 def _stale_status(db: CaseDB, section_key: str) -> bool:
     row = db.execute(
-        "SELECT stale FROM report_sections WHERE section_key = ?", (section_key,),
+        "SELECT stale FROM report_sections WHERE section_key = ?",
+        (section_key,),
     ).fetchone()
     return bool(row[0]) if row else False
 
@@ -50,15 +50,19 @@ class StalePropagationViaTargetKeypointTests(unittest.TestCase):
         keypoint = "host_execution_activity"
         # Expect family "3" which maps to section key 3_technical
         owning_sections = _sections_for_keypoint(keypoint)
-        self.assertIn("3_technical", owning_sections,
-                       f"{keypoint} should map to section 3_technical, got {owning_sections}")
+        self.assertIn(
+            "3_technical",
+            owning_sections,
+            f"{keypoint} should map to section 3_technical, got {owning_sections}",
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 _insert_section(db, "3_technical")
                 state = SessionState(
-                    session_id="S-1", iteration=1,
+                    session_id="S-1",
+                    iteration=1,
                     active_hypotheses=[
                         Hypothesis(
                             id="H-1",
@@ -69,14 +73,17 @@ class StalePropagationViaTargetKeypointTests(unittest.TestCase):
                     ],
                 )
                 _resolve_hypothesis(
-                    db=db, state=state,
+                    db=db,
+                    state=state,
                     hypothesis_id="H-1",
                     verdict="confirmed",
                     summary="confirmed by query",
                     session_id="S-1",
                 )
-                self.assertTrue(_stale_status(db, "3_technical"),
-                                "section 3_technical should be marked stale")
+                self.assertTrue(
+                    _stale_status(db, "3_technical"),
+                    "section 3_technical should be marked stale",
+                )
 
     def test_target_keypoint_marks_correct_section_only(self) -> None:
         """A timeline keypoint should only mark 2_timeline stale, not 3_technical."""
@@ -91,7 +98,8 @@ class StalePropagationViaTargetKeypointTests(unittest.TestCase):
                 _insert_section(db, "2_timeline")
                 _insert_section(db, "3_technical")
                 state = SessionState(
-                    session_id="S-1", iteration=1,
+                    session_id="S-1",
+                    iteration=1,
                     active_hypotheses=[
                         Hypothesis(
                             id="H-2",
@@ -102,7 +110,8 @@ class StalePropagationViaTargetKeypointTests(unittest.TestCase):
                     ],
                 )
                 _resolve_hypothesis(
-                    db=db, state=state,
+                    db=db,
+                    state=state,
                     hypothesis_id="H-2",
                     verdict="refuted",
                     summary="no log clearing found",
@@ -118,7 +127,8 @@ class StalePropagationViaTargetKeypointTests(unittest.TestCase):
             with CaseDB(case) as db:
                 _insert_section(db, "3_technical")
                 state = SessionState(
-                    session_id="S-1", iteration=1,
+                    session_id="S-1",
+                    iteration=1,
                     active_hypotheses=[
                         Hypothesis(
                             id="H-3",
@@ -129,7 +139,8 @@ class StalePropagationViaTargetKeypointTests(unittest.TestCase):
                     ],
                 )
                 _resolve_hypothesis(
-                    db=db, state=state,
+                    db=db,
+                    state=state,
                     hypothesis_id="H-3",
                     verdict="confirmed",
                     summary="confirmed",
@@ -148,7 +159,8 @@ class StalePropagationViaDescriptionTests(unittest.TestCase):
                 _insert_section(db, "3_technical")
                 _insert_section(db, "4_gaps")
                 state = SessionState(
-                    session_id="S-1", iteration=1,
+                    session_id="S-1",
+                    iteration=1,
                     active_hypotheses=[
                         Hypothesis(
                             id="H-4",
@@ -158,7 +170,8 @@ class StalePropagationViaDescriptionTests(unittest.TestCase):
                     ],
                 )
                 _resolve_hypothesis(
-                    db=db, state=state,
+                    db=db,
+                    state=state,
                     hypothesis_id="H-4",
                     verdict="refuted",
                     summary="no persistence found",
@@ -177,7 +190,8 @@ class StalePropagationUpdateCountCapTests(unittest.TestCase):
             with CaseDB(case) as db:
                 _insert_section(db, "3_technical", update_count=_MAX_SECTION_UPDATES)
                 state = SessionState(
-                    session_id="S-1", iteration=1,
+                    session_id="S-1",
+                    iteration=1,
                     active_hypotheses=[
                         Hypothesis(
                             id="H-5",
@@ -188,22 +202,28 @@ class StalePropagationUpdateCountCapTests(unittest.TestCase):
                     ],
                 )
                 _resolve_hypothesis(
-                    db=db, state=state,
+                    db=db,
+                    state=state,
                     hypothesis_id="H-5",
                     verdict="confirmed",
                     summary="confirmed",
                     session_id="S-1",
                 )
-                self.assertFalse(_stale_status(db, "3_technical"),
-                                 "section at update_count cap should NOT be marked stale")
+                self.assertFalse(
+                    _stale_status(db, "3_technical"),
+                    "section at update_count cap should NOT be marked stale",
+                )
 
     def test_section_below_cap_marked_stale(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                _insert_section(db, "3_technical", update_count=_MAX_SECTION_UPDATES - 1)
+                _insert_section(
+                    db, "3_technical", update_count=_MAX_SECTION_UPDATES - 1
+                )
                 state = SessionState(
-                    session_id="S-1", iteration=1,
+                    session_id="S-1",
+                    iteration=1,
                     active_hypotheses=[
                         Hypothesis(
                             id="H-6",
@@ -214,14 +234,17 @@ class StalePropagationUpdateCountCapTests(unittest.TestCase):
                     ],
                 )
                 _resolve_hypothesis(
-                    db=db, state=state,
+                    db=db,
+                    state=state,
                     hypothesis_id="H-6",
                     verdict="confirmed",
                     summary="confirmed",
                     session_id="S-1",
                 )
-                self.assertTrue(_stale_status(db, "3_technical"),
-                                "section below cap should be marked stale")
+                self.assertTrue(
+                    _stale_status(db, "3_technical"),
+                    "section below cap should be marked stale",
+                )
 
 
 class StalePropagationRulepackDeclTests(unittest.TestCase):
@@ -236,7 +259,8 @@ class StalePropagationRulepackDeclTests(unittest.TestCase):
                 _insert_section(db, "2_timeline")
                 _insert_section(db, "3_technical")
                 state = SessionState(
-                    session_id="S-1", iteration=1,
+                    session_id="S-1",
+                    iteration=1,
                     active_hypotheses=[
                         Hypothesis(
                             id="H-7",
@@ -247,14 +271,17 @@ class StalePropagationRulepackDeclTests(unittest.TestCase):
                     ],
                 )
                 _resolve_hypothesis(
-                    db=db, state=state,
+                    db=db,
+                    state=state,
                     hypothesis_id="H-7",
                     verdict="confirmed",
                     summary="log clear confirmed",
                     session_id="S-1",
                 )
-                self.assertTrue(_stale_status(db, "2_timeline"),
-                                "rulepack declaration should mark 2_timeline stale")
+                self.assertTrue(
+                    _stale_status(db, "2_timeline"),
+                    "rulepack declaration should mark 2_timeline stale",
+                )
 
 
 class MarkSectionStaleTests(unittest.TestCase):
@@ -274,8 +301,10 @@ class MarkSectionStaleTests(unittest.TestCase):
             with CaseDB(case) as db:
                 _insert_section(db, "4_gaps", update_count=_MAX_SECTION_UPDATES)
                 _mark_section_stale(db, "4_gaps")
-                self.assertFalse(_stale_status(db, "4_gaps"),
-                                 "at-cap section must not be marked stale")
+                self.assertFalse(
+                    _stale_status(db, "4_gaps"),
+                    "at-cap section must not be marked stale",
+                )
 
 
 class CollectSectionRequestsTests(unittest.TestCase):
@@ -313,9 +342,16 @@ class CollectSectionRequestsTests(unittest.TestCase):
                     "INSERT INTO report_sections (section_key, title, body, confidence, status, update_count, stale) "
                     "VALUES ('4_gaps', 'Gaps', 'old gap body', 0.5, 'draft', 1, TRUE)"
                 )
-                prior_filled = {"1_overview": "filled body text", "4_gaps": "old gap body"}
+                prior_filled = {
+                    "1_overview": "filled body text",
+                    "4_gaps": "old gap body",
+                }
                 requests = _collect_section_requests(
-                    case, db, sorted(template_dir.glob("[0-9]*_*.md")), prior_filled, report_brief={},
+                    case,
+                    db,
+                    sorted(template_dir.glob("[0-9]*_*.md")),
+                    prior_filled,
+                    report_brief={},
                 )
 
         keys = [str(r.get("section_key")) for r in requests]
@@ -350,9 +386,16 @@ class CollectSectionRequestsTests(unittest.TestCase):
                     "INSERT INTO report_sections (section_key, title, body, confidence, status, update_count, stale) "
                     "VALUES ('4_gaps', 'Gaps', 'old gap body', 0.5, 'draft', 5, FALSE)"
                 )
-                prior_filled = {"1_overview": "filled body text", "4_gaps": "old gap body"}
+                prior_filled = {
+                    "1_overview": "filled body text",
+                    "4_gaps": "old gap body",
+                }
                 requests = _collect_section_requests(
-                    case, db, sorted(template_dir.glob("[0-9]*_*.md")), prior_filled, report_brief={},
+                    case,
+                    db,
+                    sorted(template_dir.glob("[0-9]*_*.md")),
+                    prior_filled,
+                    report_brief={},
                     force_all=True,
                 )
 
@@ -360,5 +403,10 @@ class CollectSectionRequestsTests(unittest.TestCase):
         self.assertIn("1_overview", keys, "force_all must include fresh sections")
         self.assertIn("4_gaps", keys, "force_all must include at-cap sections")
         for r in requests:
-            self.assertTrue(r["is_stale"], f"force_all must mark {r['section_key']} as stale")
-            self.assertTrue(r["needs_refresh"], f"force_all must mark {r['section_key']} as needs_refresh")
+            self.assertTrue(
+                r["is_stale"], f"force_all must mark {r['section_key']} as stale"
+            )
+            self.assertTrue(
+                r["needs_refresh"],
+                f"force_all must mark {r['section_key']} as needs_refresh",
+            )

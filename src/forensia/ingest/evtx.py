@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 from itertools import chain
 from pathlib import Path
-from typing import Callable
 
 from evtx2es.models.Evtx2es import Evtx2es
 
@@ -30,15 +30,23 @@ def ingest_evtx_file(
     if progress_callback:
         progress_callback(f"Parsing EVTX records from {evtx_path}")
     parser = Evtx2es(evtx_path)
-    records = list(chain.from_iterable(
-        parser.gen_records(shift="0", multiprocess=False, chunk_size=500)
-    ))
+    records = list(
+        chain.from_iterable(
+            parser.gen_records(shift="0", multiprocess=False, chunk_size=500)
+        )
+    )
     if progress_callback:
         progress_callback(f"Parsed {len(records)} EVTX records from {evtx_path}")
 
     # Use channel from first record to name the output file; fall back to stem
-    first_channel = records[0].get("winlog", {}).get("channel", evtx_path.stem) if records else evtx_path.stem
-    safe_name = first_channel.lower().replace("/", "_").replace(" ", "_").replace("\\", "_")
+    first_channel = (
+        records[0].get("winlog", {}).get("channel", evtx_path.stem)
+        if records
+        else evtx_path.stem
+    )
+    safe_name = (
+        first_channel.lower().replace("/", "_").replace(" ", "_").replace("\\", "_")
+    )
     sha_prefix = (source_sha or "unknown")[:12]
     output_path = case.raw_dir / f"evtx-{sha_prefix}-{safe_name}.jsonl"
 

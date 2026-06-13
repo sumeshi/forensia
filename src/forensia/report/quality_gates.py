@@ -14,14 +14,24 @@ from forensia.report.keypoints import EVIDENCE_ID_PATTERN
 # Patterns used by quality gates
 # ====================================================================
 
-PLACEHOLDER_ENTITY_PATTERN = re.compile(r"(?<![\w/.-])(none|n/?a|null)(?![\w/.-])", re.IGNORECASE)
+PLACEHOLDER_ENTITY_PATTERN = re.compile(
+    r"(?<![\w/.-])(none|n/?a|null)(?![\w/.-])", re.IGNORECASE
+)
 HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.*)$")
 HTML_FILL_PATTERN = re.compile(r"<!--\s*fill(?:[^>]*)-->", re.IGNORECASE)
 FINDING_ID_PATTERN = re.compile(r"\b[A-Za-z][A-Za-z0-9-]*-\d{4}\b")
-_OPEN_QUESTION_RE = re.compile(r"(?:^|[\s\(])(\?|？|TBD|TODO|FIXME|要確認|要調査|未確認|未調査|未特定|不明瞭|未解明|XXX|N\/A\?)")
-_CITATION_TOKENS_RE = re.compile(r"(?:証拠|証拠ID|finding[_\s]?id|evidence|根拠は|に基づく|according to|based on the)", re.IGNORECASE)
+_OPEN_QUESTION_RE = re.compile(
+    r"(?:^|[\s\(])(\?|？|TBD|TODO|FIXME|要確認|要調査|未確認|未調査|未特定|不明瞭|未解明|XXX|N\/A\?)"
+)
+_CITATION_TOKENS_RE = re.compile(
+    r"(?:証拠|証拠ID|finding[_\s]?id|evidence|根拠は|に基づく|according to|based on the)",
+    re.IGNORECASE,
+)
 _FINDING_ID_RE = re.compile(r"\b[a-z]+-[a-z0-9]+-[0-9]+-[a-z0-9-]+\b")
-_PURE_HEDGE_RE = re.compile(r"(?:may|might|could|possibly|perhaps|seem(?:s|ed)?|appears? to|思われる|可能性が|かもしれない)", re.IGNORECASE)
+_PURE_HEDGE_RE = re.compile(
+    r"(?:may|might|could|possibly|perhaps|seem(?:s|ed)?|appears? to|思われる|可能性が|かもしれない)",
+    re.IGNORECASE,
+)
 _TIMESTAMP_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}([T\s]\d{2}:\d{2})?")
 _ENGLISH_PARAGRAPH_RE = re.compile(r"^[\x20-\x7e]{120,}$", re.MULTILINE)
 _JAPANESE_CHAR_RE = re.compile(r"[぀-ヿ一-鿿]")
@@ -90,7 +100,13 @@ def _detect_body_language(text: str) -> str:
     if en_chars == 0 and ja_chars > 0:
         return "ja"
     if ja_chars > 0 and en_chars > 0:
-        return "ja" if ja_chars * 2 > en_chars else "en" if en_chars > ja_chars * 4 else "mixed"
+        return (
+            "ja"
+            if ja_chars * 2 > en_chars
+            else "en"
+            if en_chars > ja_chars * 4
+            else "mixed"
+        )
     return "unknown"
 
 
@@ -116,7 +132,9 @@ QualityCheck = Callable[[str, _GateCtx], tuple[str | None, float | None]]
 # ====================================================================
 
 
-def _check_placeholder_entity(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+def _check_placeholder_entity(
+    body: str, ctx: _GateCtx
+) -> tuple[str | None, float | None]:
     if PLACEHOLDER_ENTITY_PATTERN.search(body):
         return "Placeholder entity values detected; additional review is required.", 0.5
     return None, None
@@ -128,19 +146,34 @@ def _check_template_marker(body: str, ctx: _GateCtx) -> tuple[str | None, float 
     return None, None
 
 
-def _check_heading_mismatch(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+def _check_heading_mismatch(
+    body: str, ctx: _GateCtx
+) -> tuple[str | None, float | None]:
     if not _title_matches_body_heading(ctx.title, body):
-        return "Section heading does not match the expected section title; review for claim/title consistency.", 0.65
+        return (
+            "Section heading does not match the expected section title; review for claim/title consistency.",
+            0.65,
+        )
     return None, None
 
 
-def _check_timeline_ordering(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
-    if "require_chronological_table" in ctx.behaviors and not _timeline_rows_are_chronological(body):
-        return "Timeline ordering requires review; events are not strictly chronological.", 0.6
+def _check_timeline_ordering(
+    body: str, ctx: _GateCtx
+) -> tuple[str | None, float | None]:
+    if (
+        "require_chronological_table" in ctx.behaviors
+        and not _timeline_rows_are_chronological(body)
+    ):
+        return (
+            "Timeline ordering requires review; events are not strictly chronological.",
+            0.6,
+        )
     return None, None
 
 
-def _check_recommendations_strength(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+def _check_recommendations_strength(
+    body: str, ctx: _GateCtx
+) -> tuple[str | None, float | None]:
     if "require_recommendations_strength" in ctx.behaviors:
         lowered = body.lower()
         strength_markers = (
@@ -158,12 +191,21 @@ def _check_recommendations_strength(body: str, ctx: _GateCtx) -> tuple[str | Non
             "高信頼",
         )
         if not any(marker in lowered for marker in strength_markers):
-            return "Recommendations should state evidence strength or verification-first wording.", 0.65
+            return (
+                "Recommendations should state evidence strength or verification-first wording.",
+                0.65,
+            )
     return None, None
 
 
-def _check_verdict_inflation(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
-    source_verdicts = {str(result.get("source_verdict") or "").strip().lower() for result in ctx.evidence_results or [] if str(result.get("source_verdict") or "").strip()}
+def _check_verdict_inflation(
+    body: str, ctx: _GateCtx
+) -> tuple[str | None, float | None]:
+    source_verdicts = {
+        str(result.get("source_verdict") or "").strip().lower()
+        for result in ctx.evidence_results or []
+        if str(result.get("source_verdict") or "").strip()
+    }
     if source_verdicts and "confirmed" not in source_verdicts:
         lowered = body.casefold()
         strong_markers = (
@@ -176,11 +218,16 @@ def _check_verdict_inflation(body: str, ctx: _GateCtx) -> tuple[str | None, floa
             "確認された",
         )
         if any(marker in lowered for marker in strong_markers):
-            return "Section language is stronger than the evidence verdicts support; rewrite with cautious wording.", 0.6
+            return (
+                "Section language is stronger than the evidence verdicts support; rewrite with cautious wording.",
+                0.6,
+            )
     return None, None
 
 
-def _check_raw_evidence_dump(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+def _check_raw_evidence_dump(
+    body: str, ctx: _GateCtx
+) -> tuple[str | None, float | None]:
     raw_evidence_patterns = (
         "#### raw evidence",
         "### raw evidence",
@@ -190,78 +237,126 @@ def _check_raw_evidence_dump(body: str, ctx: _GateCtx) -> tuple[str | None, floa
     lowered_body = body.casefold()
     if any(pattern in lowered_body for pattern in raw_evidence_patterns):
         raw_row_dump = any(
-            token in lowered_body for token in ("| none |", "| null |", "| - |", ": none", ": null", ": -")
+            token in lowered_body
+            for token in ("| none |", "| null |", "| - |", ": none", ": null", ": -")
         )
         if raw_row_dump:
-            return "Raw evidence rows should be moved to the appendix evidence export or reports/evidence JSON, not copied into the narrative body.", 0.55
+            return (
+                "Raw evidence rows should be moved to the appendix evidence export or reports/evidence JSON, not copied into the narrative body.",
+                0.55,
+            )
     return None, None
 
 
 def _check_output_language(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
     expected_lang = str(get_llm_settings().get("output_language", "ja")).lower()
-    body_for_lang = re.sub(r"`[^`]+`|```.*?```|\[[^\]]+\]\([^)]+\)|\|[^\n]+\|", " ", body, flags=re.DOTALL)
+    body_for_lang = re.sub(
+        r"`[^`]+`|```.*?```|\[[^\]]+\]\([^)]+\)|\|[^\n]+\|", " ", body, flags=re.DOTALL
+    )
     detected_lang = _detect_body_language(body_for_lang)
     if expected_lang in {"ja", "japanese"} and detected_lang == "en":
-        return f"Section body appears to be in English but LLM_OUTPUT_LANGUAGE='{expected_lang}'. LLM ignored language constraint.", 0.4
+        return (
+            f"Section body appears to be in English but LLM_OUTPUT_LANGUAGE='{expected_lang}'. LLM ignored language constraint.",
+            0.4,
+        )
     elif expected_lang in {"en", "english"} and detected_lang == "ja":
-        return f"Section body appears to be in Japanese but LLM_OUTPUT_LANGUAGE='{expected_lang}'.", 0.4
+        return (
+            f"Section body appears to be in Japanese but LLM_OUTPUT_LANGUAGE='{expected_lang}'.",
+            0.4,
+        )
     return None, None
 
 
 def _check_open_questions(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
     question_hits = _OPEN_QUESTION_RE.findall(body)
     if question_hits:
-        return f"Unresolved-question markers remain in body ({sorted(set(question_hits))[:3]}); investigate or remove before finalizing.", 0.55
+        return (
+            f"Unresolved-question markers remain in body ({sorted(set(question_hits))[:3]}); investigate or remove before finalizing.",
+            0.55,
+        )
     return None, None
 
 
 def _check_empty_body(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
-    stripped_body = re.sub(r"```.*?```|\|[^\n]+\||^[#\->\s]+$", "", body, flags=re.DOTALL | re.MULTILINE)
+    stripped_body = re.sub(
+        r"```.*?```|\|[^\n]+\||^[#\->\s]+$", "", body, flags=re.DOTALL | re.MULTILINE
+    )
     if len(stripped_body.strip()) < 80:
-        return "Section body has no substantive narrative (< 80 chars after stripping tables / headings).", 0.3
+        return (
+            "Section body has no substantive narrative (< 80 chars after stripping tables / headings).",
+            0.3,
+        )
     return None, None
 
 
 def _check_bullet_only(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
-    non_bullet_lines = [ln for ln in body.splitlines() if ln.strip() and not ln.strip().startswith(("-", "*", "#", "|", ">"))]
-    if not non_bullet_lines and len([ln for ln in body.splitlines() if ln.strip().startswith(("-", "*"))]) >= 3:
-        return "Section has only bullet list, no narrative paragraph. Add a short prose summary.", 0.6
+    non_bullet_lines = [
+        ln
+        for ln in body.splitlines()
+        if ln.strip() and not ln.strip().startswith(("-", "*", "#", "|", ">"))
+    ]
+    if (
+        not non_bullet_lines
+        and len([ln for ln in body.splitlines() if ln.strip().startswith(("-", "*"))])
+        >= 3
+    ):
+        return (
+            "Section has only bullet list, no narrative paragraph. Add a short prose summary.",
+            0.6,
+        )
     return None, None
 
 
 def _check_kp_citation(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
     if re.search(r"KP-\d{4}", body):
-        return "Body contains KP-NNNN identifiers that should not appear as evidence citations.", 0.65
+        return (
+            "Body contains KP-NNNN identifiers that should not appear as evidence citations.",
+            0.65,
+        )
     return None, None
 
 
-def _check_hedge_no_citation(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+def _check_hedge_no_citation(
+    body: str, ctx: _GateCtx
+) -> tuple[str | None, float | None]:
     if (
         _PURE_HEDGE_RE.search(body)
         and not EVIDENCE_ID_PATTERN.search(body)
         and not _FINDING_ID_RE.search(body)
         and not _TIMESTAMP_RE.search(body)
     ):
-        return "Section uses hedge language (may/could/possibly) without any timestamp, evidence_id, or finding_id citation.", 0.5
+        return (
+            "Section uses hedge language (may/could/possibly) without any timestamp, evidence_id, or finding_id citation.",
+            0.5,
+        )
     return None, None
 
 
-def _check_citation_token_no_finding_id(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+def _check_citation_token_no_finding_id(
+    body: str, ctx: _GateCtx
+) -> tuple[str | None, float | None]:
     if EVIDENCE_ID_PATTERN.search(body) or FINDING_ID_PATTERN.search(body):
         return None, None
     if not _CITATION_TOKENS_RE.search(body):
         return None, None
-    return "Body references evidence/finding language without evidence_id or finding_id citation.", 0.75
+    return (
+        "Body references evidence/finding language without evidence_id or finding_id citation.",
+        0.75,
+    )
 
 
-def _check_duplicate_paragraph(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+def _check_duplicate_paragraph(
+    body: str, ctx: _GateCtx
+) -> tuple[str | None, float | None]:
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", body) if len(p.strip()) > 40]
     if len(paragraphs) != len(set(paragraphs)):
         return "Section contains duplicate paragraphs (LLM likely looped).", 0.5
     return None, None
 
 
-def _check_out_of_range_timestamp(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+def _check_out_of_range_timestamp(
+    body: str, ctx: _GateCtx
+) -> tuple[str | None, float | None]:
     for match in _TIMESTAMP_RE.finditer(body):
         ts = match.group(0)
         try:
@@ -269,11 +364,16 @@ def _check_out_of_range_timestamp(body: str, ctx: _GateCtx) -> tuple[str | None,
         except ValueError:
             continue
         if year > date.today().year + 1 or year < 1990:
-            return f"Body contains out-of-range timestamp '{ts}' — likely fabricated or NTFS overflow.", 0.4
+            return (
+                f"Body contains out-of-range timestamp '{ts}' — likely fabricated or NTFS overflow.",
+                0.4,
+            )
     return None, None
 
 
-def _check_overused_evidence_id(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+def _check_overused_evidence_id(
+    body: str, ctx: _GateCtx
+) -> tuple[str | None, float | None]:
     if ctx.db is None:
         return None, None
     used_ids = set(EVIDENCE_ID_PATTERN.findall(body))
@@ -292,9 +392,14 @@ def _check_overused_evidence_id(body: str, ctx: _GateCtx) -> tuple[str | None, f
     return None, None
 
 
-def _check_json_object_leak(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
+def _check_json_object_leak(
+    body: str, ctx: _GateCtx
+) -> tuple[str | None, float | None]:
     if re.search(r'^\s*\{.*"body"\s*:', body, re.DOTALL):
-        return "Section body contains JSON object leak (raw LLM response not parsed correctly).", 0.3
+        return (
+            "Section body contains JSON object leak (raw LLM response not parsed correctly).",
+            0.3,
+        )
     return None, None
 
 
@@ -346,7 +451,13 @@ def _quality_gate_section(
     behaviors: tuple[str, ...] = (),
 ) -> tuple[list[str], float]:
     """Apply quality-gating checks to a section body, returning augmented gaps and adjusted confidence."""
-    ctx = _GateCtx(section_key=section_key, title=title, evidence_results=evidence_results, db=db, behaviors=behaviors)
+    ctx = _GateCtx(
+        section_key=section_key,
+        title=title,
+        evidence_results=evidence_results,
+        db=db,
+        behaviors=behaviors,
+    )
     gated_gaps = list(gaps)
     gated_confidence = confidence
     for check in _QUALITY_CHECKS:

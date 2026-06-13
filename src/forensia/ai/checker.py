@@ -14,13 +14,16 @@ from forensia.ai.prompts import (
     build_finding_extractor_messages,
     build_memory_updater_messages,
     build_verdict_review_messages,
-    resolve_rule_context,
 )
-from forensia.config import get_llm_settings
 from forensia.core.case import Case
-from forensia.core.timeutil import parse_epoch_seconds
 from forensia.core.memory import MemoryManager
-from forensia.core.session import ENTITY_ROLES, ENTITY_TYPE_ALIASES, Hypothesis, PlannedQuery
+from forensia.core.session import (
+    ENTITY_ROLES,
+    ENTITY_TYPE_ALIASES,
+    Hypothesis,
+    PlannedQuery,
+)
+from forensia.core.timeutil import parse_epoch_seconds
 from forensia.db.database import CaseDB
 from forensia.db.query import normalize_value
 
@@ -99,7 +102,9 @@ def _parse_new_hypotheses(items: Any) -> list[Hypothesis]:
     return hypotheses
 
 
-def summarize_query_result(rows: list[dict[str, Any]], sample_size: int = 10) -> dict[str, Any]:
+def summarize_query_result(
+    rows: list[dict[str, Any]], sample_size: int = 10
+) -> dict[str, Any]:
     """Build a structured summary of SQL query rows for LLM consumption.
 
     Extracts evidence IDs, head/tail sample rows, and distinct counts for key
@@ -138,7 +143,7 @@ def summarize_query_result(rows: list[dict[str, Any]], sample_size: int = 10) ->
         try:
             eid = int(row.get("event_id"))
             event_id_set.add(eid)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             pass
 
     return {
@@ -177,7 +182,9 @@ def _collect_observed_evidence_ids(result_summary: dict[str, Any]) -> set[str]:
     return observed
 
 
-def _has_zero_evidence(result_summary: dict[str, Any], observed_evidence_ids: set[str]) -> bool:
+def _has_zero_evidence(
+    result_summary: dict[str, Any], observed_evidence_ids: set[str]
+) -> bool:
     row_count = int(result_summary.get("row_count") or 0)
     sample_rows = result_summary.get("sample_rows") or []
     return row_count == 0 and not observed_evidence_ids and not sample_rows
@@ -191,7 +198,7 @@ def _normalize_status(value: Any, fallback: str = "accepted") -> str:
 def _coerce_float(value: Any) -> float:
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0.0
 
 
@@ -200,7 +207,9 @@ def _parse_timestamp(ts: Any) -> float | None:
     return parse_epoch_seconds(ts)
 
 
-def _co_observation_satisfied(confirm_when: dict, rows: list[dict[str, Any]]) -> tuple[bool, str]:
+def _co_observation_satisfied(
+    confirm_when: dict, rows: list[dict[str, Any]]
+) -> tuple[bool, str]:
     """Check if co-observed event IDs satisfy correlation constraints.
 
     Supports `same_host`, `within_minutes`, and `co_observed_event_ids`.
@@ -211,7 +220,7 @@ def _co_observation_satisfied(confirm_when: dict, rows: list[dict[str, Any]]) ->
     for eid in co_ids:
         try:
             required_ids.add(int(eid))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
     if not required_ids:
         return (True, "no co_observed_event_ids to verify")
@@ -227,11 +236,17 @@ def _co_observation_satisfied(confirm_when: dict, rows: list[dict[str, Any]]) ->
             if eid is not None:
                 try:
                     observed_ids.add(int(eid))
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     pass
         if required_ids.issubset(observed_ids):
-            return (True, f"all co_observed_event_ids {sorted(required_ids)} present in rows")
-        return (False, f"not all co_observed_event_ids found: missing {sorted(required_ids - observed_ids)}")
+            return (
+                True,
+                f"all co_observed_event_ids {sorted(required_ids)} present in rows",
+            )
+        return (
+            False,
+            f"not all co_observed_event_ids found: missing {sorted(required_ids - observed_ids)}",
+        )
 
     # Group rows by computer when same_host
     if same_host:
@@ -252,7 +267,7 @@ def _co_observation_satisfied(confirm_when: dict, rows: list[dict[str, Any]]) ->
             if eid is not None:
                 try:
                     host_event_ids.add(int(eid))
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     pass
 
         if not required_ids.issubset(host_event_ids):
@@ -273,7 +288,7 @@ def _co_observation_satisfied(confirm_when: dict, rows: list[dict[str, Any]]) ->
                             ts = _parse_timestamp(row.get("timestamp"))
                             if ts is not None:
                                 events.append((ts, eid_int))
-                    except (TypeError, ValueError):
+                    except TypeError, ValueError:
                         pass
 
             if not events:
@@ -296,10 +311,16 @@ def _co_observation_satisfied(confirm_when: dict, rows: list[dict[str, Any]]) ->
                     break
             if found:
                 host_label = f" on host={host}" if same_host else ""
-                return (True, f"co-observed event_ids {sorted(required_ids)} within {within_minutes}min{host_label}")
+                return (
+                    True,
+                    f"co-observed event_ids {sorted(required_ids)} within {within_minutes}min{host_label}",
+                )
         else:
             host_label = f" on host={host}" if same_host else ""
-            return (True, f"co-observed event_ids {sorted(required_ids)} present{host_label}")
+            return (
+                True,
+                f"co-observed event_ids {sorted(required_ids)} present{host_label}",
+            )
 
     parts = [f"co-observation not satisfied: required={sorted(required_ids)}"]
     if same_host:
@@ -357,7 +378,9 @@ def _normalize_finding_updates(
     return normalized
 
 
-def _filter_evidence_references(items: Any, observed_evidence_ids: set[str]) -> list[dict[str, Any]]:
+def _filter_evidence_references(
+    items: Any, observed_evidence_ids: set[str]
+) -> list[dict[str, Any]]:
     """Keep only evidence references whose IDs appear in the observed set."""
     filtered: list[dict[str, Any]] = []
     if not isinstance(items, list):
@@ -391,9 +414,15 @@ def _filter_memory_updates(
     entity_value_blob = ""
     if sample_rows:
         identity_cols = {
-            "user_name", "target_user", "computer", "src_ip",
-            "process_name", "service_name", "executable_name",
-            "file_name", "file_path",
+            "user_name",
+            "target_user",
+            "computer",
+            "src_ip",
+            "process_name",
+            "service_name",
+            "executable_name",
+            "file_name",
+            "file_path",
         }
         entity_name_set = set()
         blob_parts: list[str] = []
@@ -402,7 +431,11 @@ def _filter_memory_updates(
                 continue
             for col in identity_cols:
                 val = row.get(col)
-                if val and isinstance(val, str) and val.strip().lower() not in _ENTITY_PLACEHOLDER_VALUES:
+                if (
+                    val
+                    and isinstance(val, str)
+                    and val.strip().lower() not in _ENTITY_PLACEHOLDER_VALUES
+                ):
                     entity_name_set.add(val.strip().casefold())
                     blob_parts.append(val.casefold())
         entity_value_blob = "\n".join(blob_parts)
@@ -425,20 +458,28 @@ def _filter_memory_updates(
                 payload["evidence_ids"] = [
                     evidence_id
                     for evidence_id in (
-                        str(evidence_id).strip() for evidence_id in (payload.get("evidence_ids") or [])
+                        str(evidence_id).strip()
+                        for evidence_id in (payload.get("evidence_ids") or [])
                     )
                     if evidence_id and evidence_id in observed_evidence_ids
                 ]
             if key in _DURABLE_MEMORY_KEYS and not payload.get("evidence_ids"):
                 continue
             if key == "entities":
-                normalized_type = ENTITY_TYPE_ALIASES.get(str(payload.get("entity_type") or "").strip().lower())
+                normalized_type = ENTITY_TYPE_ALIASES.get(
+                    str(payload.get("entity_type") or "").strip().lower()
+                )
                 if normalized_type is None:
                     continue
                 normalized_name = str(payload.get("name") or "").strip()
-                if not normalized_name or normalized_name.lower() in _ENTITY_PLACEHOLDER_VALUES:
+                if (
+                    not normalized_name
+                    or normalized_name.lower() in _ENTITY_PLACEHOLDER_VALUES
+                ):
                     continue
-                normalized_role = str(payload.get("role") or "unknown").strip().lower() or "unknown"
+                normalized_role = (
+                    str(payload.get("role") or "unknown").strip().lower() or "unknown"
+                )
                 if normalized_role not in ENTITY_ROLES:
                     normalized_role = "unknown"
                 payload["entity_type"] = normalized_type
@@ -449,7 +490,9 @@ def _filter_memory_updates(
                     # Accept exact value matches, or containment within observed
                     # values (e.g. a user name inside a file_path) for names
                     # long enough not to match by accident.
-                    if name_cf not in entity_name_set and not (len(name_cf) >= 3 and name_cf in entity_value_blob):
+                    if name_cf not in entity_name_set and not (
+                        len(name_cf) >= 3 and name_cf in entity_value_blob
+                    ):
                         continue
             filtered_items.append(payload)
         filtered[key] = filtered_items
@@ -480,10 +523,14 @@ def _validate_extracted_findings(
         if severity not in VALID_SEVERITIES:
             continue
         if not observed_evidence_ids or not evidence_ids:
-            validated.append({"title": title, "severity": severity, "evidence_ids": evidence_ids})
+            validated.append(
+                {"title": title, "severity": severity, "evidence_ids": evidence_ids}
+            )
             continue
         if all(eid in observed_evidence_ids for eid in evidence_ids):
-            validated.append({"title": title, "severity": severity, "evidence_ids": evidence_ids})
+            validated.append(
+                {"title": title, "severity": severity, "evidence_ids": evidence_ids}
+            )
     return validated
 
 
@@ -507,7 +554,7 @@ def _verify_verdict_consistency(
         for eid in co_ids:
             try:
                 claimed_event_ids.add(int(eid))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 pass
     # Bare numbers in the rationale are usually counts, years, or row totals,
     # not event-id claims. Treat a number as a claimed event id only when it is
@@ -516,7 +563,9 @@ def _verify_verdict_consistency(
     from forensia.ai.prompts import _load_event_id_hints
 
     rationale_lower = rationale.lower()
-    framed = {int(m) for m in re.findall(r"event[^0-9]{0,8}(\d{2,5})\b", rationale_lower)}
+    framed = {
+        int(m) for m in re.findall(r"event[^0-9]{0,8}(\d{2,5})\b", rationale_lower)
+    }
     bare = {int(m) for m in re.findall(r"\b(\d{4,5})\b", rationale_lower)}
     known_event_ids = set(_load_event_id_hints().keys())
     if known_event_ids:
@@ -529,7 +578,7 @@ def _verify_verdict_consistency(
     for eid in result_summary.get("event_id_set") or []:
         try:
             observed_event_ids.add(int(eid))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             pass
 
     missing_ids = claimed_event_ids - observed_event_ids
@@ -541,14 +590,27 @@ def _verify_verdict_consistency(
         )
 
     # -- Check 2: required_entities columns are non-NULL in sample rows --
-    if hypothesis and hasattr(hypothesis, "required_entities") and hypothesis.required_entities:
+    if (
+        hypothesis
+        and hasattr(hypothesis, "required_entities")
+        and hypothesis.required_entities
+    ):
         sample_rows = result_summary.get("sample_rows") or []
         if sample_rows:
             all_null = True
             for col in hypothesis.required_entities:
                 for row in sample_rows:
                     val = row.get(col)
-                    if val not in (None, "", "-", "n/a", "na", "none", "null", "unknown"):
+                    if val not in (
+                        None,
+                        "",
+                        "-",
+                        "n/a",
+                        "na",
+                        "none",
+                        "null",
+                        "unknown",
+                    ):
                         all_null = False
                         break
                 if not all_null:
@@ -576,10 +638,15 @@ def _verify_verdict_consistency(
     sample_rows = result_summary.get("sample_rows") or []
     if sample_rows:
         benign_rules = _load_benign_context_rules()
-        required_entities = set(getattr(hypothesis, "required_entities", None) or []) if hypothesis else set()
+        required_entities = (
+            set(getattr(hypothesis, "required_entities", None) or [])
+            if hypothesis
+            else set()
+        )
         if required_entities:
             benign_rules = [
-                rule for rule in benign_rules
+                rule
+                for rule in benign_rules
                 if isinstance(rule, dict)
                 and isinstance(rule.get("when"), dict)
                 and rule["when"].get("column") in required_entities
@@ -620,7 +687,9 @@ def _guardrail_check_payload(
         verdict = "newlead"
         phase = fallback_info.get("phase", "unknown")
         existing_notes = str(parsed.get("notes") or "")
-        veto_note = f"downgraded from confirmed to newlead: rows from fallback search ({phase})"
+        veto_note = (
+            f"downgraded from confirmed to newlead: rows from fallback search ({phase})"
+        )
         if existing_notes:
             veto_note = existing_notes + "; " + veto_note
         parsed["notes"] = veto_note
@@ -667,7 +736,7 @@ def _upsert_ai_review(
     confidence_adjustment: float,
     notes: str,
     raw_response: dict[str, Any],
-    ) -> None:
+) -> None:
     """Replace the ai_review record for a finding with a new one (delete + insert)."""
     db.execute("DELETE FROM ai_reviews WHERE finding_id = ?", (finding_id,))
     review_id = f"review-{finding_id}"
@@ -701,7 +770,11 @@ def _record_hypothesis_assessment(
     raw_response: dict[str, Any],
 ) -> None:
     """Record a hypothesis/query assessment as an ai_review entry."""
-    finding_id = f"hypothesis:{hypothesis.id}" if hypothesis else f"query:{planned_query.query_id}"
+    finding_id = (
+        f"hypothesis:{hypothesis.id}"
+        if hypothesis
+        else f"query:{planned_query.query_id}"
+    )
     missing_checks = raw_response.get("missing_checks") or []
     notes = str(raw_response.get("notes") or "")
     _upsert_ai_review(
@@ -728,7 +801,6 @@ def _insert_investigation_finding(
     Returns the generated finding_id.
     """
     finding_id = f"{session_id}-{planned_query.query_id}-finding"
-    language = str(get_llm_settings()["output_language"]).lower()
     prefix = "Investigation"
     title = f"{prefix}: {planned_query.purpose}"
     summary = report_text
@@ -870,12 +942,17 @@ def apply_check_result(
                 try:
                     existing_evidence_ids = set()
                     existing_evidence = json.loads(existing_by_content[2] or "[]")
-                    for ev_row in existing_evidence if isinstance(existing_evidence, list) else []:
+                    for ev_row in (
+                        existing_evidence if isinstance(existing_evidence, list) else []
+                    ):
                         if isinstance(ev_row, dict):
                             eid = str(ev_row.get("evidence_id") or "").strip()
                             if eid:
                                 existing_evidence_ids.add(eid)
-                    if existing_evidence_ids and set(evidence_ids) == existing_evidence_ids:
+                    if (
+                        existing_evidence_ids
+                        and set(evidence_ids) == existing_evidence_ids
+                    ):
                         continue
                 except Exception:
                     pass
@@ -897,7 +974,9 @@ def apply_check_result(
                     "accepted",
                     json.dumps(["investigation", hypothesis.id], ensure_ascii=False),
                     json.dumps([], ensure_ascii=False),
-                    json.dumps(normalized_evidence_rows, ensure_ascii=False, default=str),
+                    json.dumps(
+                        normalized_evidence_rows, ensure_ascii=False, default=str
+                    ),
                     check_result.report_text,
                     json.dumps([], ensure_ascii=False),
                     datetime.now(UTC).replace(tzinfo=None),
@@ -924,7 +1003,9 @@ def apply_check_result(
         )
         new_leads += 1
 
-    progress = new_leads > 0 or significant_delta or len(check_result.new_hypotheses) > 0
+    progress = (
+        new_leads > 0 or significant_delta or len(check_result.new_hypotheses) > 0
+    )
     return new_leads, progress
 
 
@@ -944,7 +1025,8 @@ def check_query_result(
     status_callback: Callable[[str], None] | None = None,
     time_range: dict[str, str] | None = None,
     fallback_info: dict | None = None,
-    audit_callback: Callable[[str, list[dict[str, str]], str, dict[str, Any]], None] | None = None,
+    audit_callback: Callable[[str, list[dict[str, str]], str, dict[str, Any]], None]
+    | None = None,
 ) -> CheckResult:
     """Run the LLM-based query result check: verdict + memory + suspicious evidence.
 
@@ -953,16 +1035,17 @@ def check_query_result(
     and persists results via apply_check_result.
     """
     overview_md = overview_md if overview_md is not None else memory.load_overview()
-    memory_context_md = memory_context_md if memory_context_md is not None else memory.load_compact_context(
-        memory.investigation_context_files(
-            hypothesis.id if hypothesis else None,
-            include_overview=False,
-        ),
-        max_bytes=max(1024, memory.max_bytes // 2),
+    memory_context_md = (
+        memory_context_md
+        if memory_context_md is not None
+        else memory.load_compact_context(
+            memory.investigation_context_files(
+                hypothesis.id if hypothesis else None,
+                include_overview=False,
+            ),
+            max_bytes=max(1024, memory.max_bytes // 2),
+        )
     )
-    observed_evidence_ids = list(_collect_observed_evidence_ids(result_summary))
-    rule_context = resolve_rule_context(hypothesis)
-
     benign_rules = _load_benign_context_rules()
     benign_annotations = (
         annotate_benign_context(result_summary.get("sample_rows") or [], benign_rules)
@@ -985,7 +1068,13 @@ def check_query_result(
         base_url=base_url,
         json_schema=verdict_schema,
         status_callback=status_callback,
-        audit_callback=(lambda msgs, out, parsed, _p="check-verdict": audit_callback(_p, msgs, out, parsed)) if audit_callback else None,
+        audit_callback=(
+            lambda msgs, out, parsed, _p="check-verdict": audit_callback(
+                _p, msgs, out, parsed
+            )
+        )
+        if audit_callback
+        else None,
     )
     verdict = _normalize_verdict(verdict_parsed.get("verdict"))
 
@@ -1024,7 +1113,13 @@ def check_query_result(
             base_url=base_url,
             json_schema=finding_schema,
             status_callback=status_callback,
-            audit_callback=(lambda msgs, out, parsed, _p="check-finding-extract": audit_callback(_p, msgs, out, parsed)) if audit_callback else None,
+            audit_callback=(
+                lambda msgs, out, parsed, _p="check-finding-extract": audit_callback(
+                    _p, msgs, out, parsed
+                )
+            )
+            if audit_callback
+            else None,
         )
         extracted_findings = finding_parsed.get("findings") or []
 
@@ -1042,7 +1137,13 @@ def check_query_result(
         base_url=base_url,
         json_schema=memory_schema,
         status_callback=status_callback,
-        audit_callback=(lambda msgs, out, parsed, _p="check-memory-update": audit_callback(_p, msgs, out, parsed)) if audit_callback else None,
+        audit_callback=(
+            lambda msgs, out, parsed, _p="check-memory-update": audit_callback(
+                _p, msgs, out, parsed
+            )
+        )
+        if audit_callback
+        else None,
     )
 
     merged = {
@@ -1058,7 +1159,9 @@ def check_query_result(
         "notes": "",
         "extracted_findings": extracted_findings,
     }
-    guarded = _guardrail_check_payload(merged, finding_candidates, result_summary, fallback_info=fallback_info)
+    guarded = _guardrail_check_payload(
+        merged, finding_candidates, result_summary, fallback_info=fallback_info
+    )
 
     result = CheckResult(
         query_id=guarded.get("query_id") or planned_query.query_id,

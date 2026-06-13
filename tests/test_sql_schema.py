@@ -37,7 +37,9 @@ class SqlSchemaYamlLoadingTests(unittest.TestCase):
         self.assertIn("mappings", cat)
         self.assertIn("benign_known", cat)
         self.assertIn("SCHTASKS.EXE", cat["mappings"])
-        self.assertEqual(cat["mappings"]["SCHTASKS.EXE"]["category"], "persistence_tool")
+        self.assertEqual(
+            cat["mappings"]["SCHTASKS.EXE"]["category"], "persistence_tool"
+        )
 
     def test_load_app_catalog_common_patterns(self):
         cat = _load_app_catalog()

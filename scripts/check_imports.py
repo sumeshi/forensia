@@ -49,9 +49,7 @@ def _import_targets(tree: ast.AST) -> list[str]:
     return targets
 
 
-def _check_forbidden(
-    source_pkg: str, file_name: str, targets: list[str]
-) -> list[str]:
+def _check_forbidden(source_pkg: str, file_name: str, targets: list[str]) -> list[str]:
     errors: list[str] = []
     for src, tgt in FORBIDDEN:
         if source_pkg == src and tgt in targets:
@@ -96,7 +94,7 @@ def main() -> int:
         errors.extend(_check_forbidden(source_pkg, file_name, targets))
 
     if warnings:
-        print("Soft warnings (files > {} lines):".format(MAX_LINES))
+        print(f"Soft warnings (files > {MAX_LINES} lines):")
         for w in warnings:
             print(w)
         print()

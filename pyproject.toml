@@ -9,23 +9,23 @@ description = "Incident response helper for ingesting Windows artefacts and gene
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "duckdb",
-    "pydantic",
-    "pyyaml",
-    "jinja2",
-    "httpx",
-    "orjson",
-    "typer",
-    "rich",
-    "python-dateutil",
-    "pyarrow",
-    "python-dotenv",
-    "fastapi",
-    "uvicorn",
-    "sqlglot",
-    "evtx2es>=1.9.0",
-    "mft2es>=1.7.2",
+    "duckdb==1.5.3",
+    "evtx2es==1.10.0",
+    "fastapi==0.136.3",
+    "httpx==0.28.1",
+    "jinja2==3.1.6",
+    "mft2es==1.8.0",
+    "orjson==3.11.9",
     "prefetch2es==2.4.1",
+    "pyarrow==24.0.0",
+    "pydantic==2.13.4",
+    "python-dateutil==2.9.0.post0",
+    "python-dotenv==1.2.2",
+    "pyyaml==6.0.3",
+    "rich==15.0.0",
+    "sqlglot==30.11.0",
+    "typer==0.26.7",
+    "uvicorn==0.49.0"
 ]
 
 [project.scripts]
@@ -49,4 +49,21 @@ forensia = [
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
+    "ruff>=0.15",
 ]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 88
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+# F = pyflakes (undefined names, unused imports/locals, redefinitions)
+# I = import sorting, UP = pyupgrade (modernize for the py314 baseline).
+# E501 (line-too-long) is owned by `ruff format`; E402 is intentional in
+# modules that call load_dotenv()/lazy-import before their top-level imports.
+select = ["F", "I", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# scripts/ are standalone audit tools, not part of the package import graph.
+"scripts/*" = ["E402"]

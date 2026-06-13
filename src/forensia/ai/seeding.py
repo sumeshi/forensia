@@ -5,8 +5,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-import yaml
-
+from forensia.ai.hypothesis_manager import _merge_active_hypotheses
 from forensia.core.case import Case
 from forensia.core.log import log as _log
 from forensia.core.session import Hypothesis, SessionState
@@ -15,10 +14,11 @@ from forensia.db.query import fetch_records
 from forensia.report.writer import REPORT_KEYPOINTS, _resolve_evidence_results
 from forensia.rules.engine import generate_findings, run_rule, save_findings
 from forensia.rules.loader import _get_pack_map, _get_rule_cache, load_rules_from_dir
-from forensia.ai.hypothesis_manager import _merge_active_hypotheses
 
 
-def _seed_findings(case: Case, db: CaseDB, profile: str, active_pack_ids: set[str] | None = None) -> int:
+def _seed_findings(
+    case: Case, db: CaseDB, profile: str, active_pack_ids: set[str] | None = None
+) -> int:
     """Run all rules once to seed initial findings, unless already populated."""
     existing = db.execute("SELECT COUNT(*) FROM findings").fetchone()[0]
     if existing:
@@ -29,7 +29,8 @@ def _seed_findings(case: Case, db: CaseDB, profile: str, active_pack_ids: set[st
     if active_pack_ids is not None:
         pack_map = _get_pack_map()
         rules = [
-            r for r in load_rules_from_dir(rules_dir, profile_path)
+            r
+            for r in load_rules_from_dir(rules_dir, profile_path)
             if pack_map.get(r.id) in active_pack_ids
         ]
     else:
@@ -42,7 +43,12 @@ def _seed_findings(case: Case, db: CaseDB, profile: str, active_pack_ids: set[st
     return total
 
 
-def _seed_rule_hypotheses(db: CaseDB, state: SessionState, session_id: str, active_pack_ids: set[str] | None = None) -> None:
+def _seed_rule_hypotheses(
+    db: CaseDB,
+    state: SessionState,
+    session_id: str,
+    active_pack_ids: set[str] | None = None,
+) -> None:
     """Seed hypotheses declared in rulepacks into active hypotheses.
 
     For each rule with hypotheses[] that produced at least one finding,
@@ -76,7 +82,7 @@ def _seed_rule_hypotheses(db: CaseDB, state: SessionState, session_id: str, acti
         if isinstance(evidence_json, str):
             try:
                 evidence_rows = json.loads(evidence_json)
-            except (json.JSONDecodeError, TypeError):
+            except json.JSONDecodeError, TypeError:
                 evidence_rows = []
         elif isinstance(evidence_json, list):
             evidence_rows = evidence_json
@@ -84,7 +90,10 @@ def _seed_rule_hypotheses(db: CaseDB, state: SessionState, session_id: str, acti
         seeds_from_rule = 0
         for decl in rule.hypotheses:
             if seeds_from_rule >= 2:
-                _log("HYPOTHESIS", f"[seed] cap per rule reached for {rule.id} (max 2), skipping decl {decl.id}")
+                _log(
+                    "HYPOTHESIS",
+                    f"[seed] cap per rule reached for {rule.id} (max 2), skipping decl {decl.id}",
+                )
                 break
             rendered_desc = decl.description
             # R2-03: resolve placeholders from evidence rows
@@ -99,21 +108,32 @@ def _seed_rule_hypotheses(db: CaseDB, state: SessionState, session_id: str, acti
                             value = v
                             break
                     if value is not None:
-                        rendered_desc = rendered_desc.replace("{" + key + "}", str(value))
+                        rendered_desc = rendered_desc.replace(
+                            "{" + key + "}", str(value)
+                        )
                     else:
                         unresolved.append(key)
                 if unresolved:
                     has_fallback = bool(getattr(rule, "fallback_search", None))
                     if has_fallback:
                         for key in unresolved:
-                            rendered_desc = rendered_desc.replace("{" + key + "}", f"unknown {key}")
+                            rendered_desc = rendered_desc.replace(
+                                "{" + key + "}", f"unknown {key}"
+                            )
                         required_entities = [
-                            e for e in (list(decl.required_entities or []))
+                            e
+                            for e in (list(decl.required_entities or []))
                             if e not in unresolved
                         ]
-                        _log("HYPOTHESIS", f"[seed] unresolved {unresolved} for {rule.id}/{decl.id}, rendered as unknown")
+                        _log(
+                            "HYPOTHESIS",
+                            f"[seed] unresolved {unresolved} for {rule.id}/{decl.id}, rendered as unknown",
+                        )
                     else:
-                        _log("HYPOTHESIS", f"[seed] skipped {rule.id}/{decl.id}: unresolved placeholders {unresolved}")
+                        _log(
+                            "HYPOTHESIS",
+                            f"[seed] skipped {rule.id}/{decl.id}: unresolved placeholders {unresolved}",
+                        )
                         continue
                 else:
                     required_entities = list(decl.required_entities or [])
@@ -135,10 +155,17 @@ def _seed_rule_hypotheses(db: CaseDB, state: SessionState, session_id: str, acti
 
     if seeded:
         state.active_hypotheses = _merge_active_hypotheses(
-            db=db, current=state.active_hypotheses, updates=seeded,
-            resolved=state.resolved_hypotheses, session_id=session_id, origin="rule",
+            db=db,
+            current=state.active_hypotheses,
+            updates=seeded,
+            resolved=state.resolved_hypotheses,
+            session_id=session_id,
+            origin="rule",
         )
-        _log("HYPOTHESIS", f"seeded {len(seeded)} rule-declared hypotheses (active={len(state.active_hypotheses)})")
+        _log(
+            "HYPOTHESIS",
+            f"seeded {len(seeded)} rule-declared hypotheses (active={len(state.active_hypotheses)})",
+        )
 
 
 def _family_interleaved_keypoint_names() -> list[str]:
@@ -161,10 +188,14 @@ def _family_interleaved_keypoint_names() -> list[str]:
     return ordered
 
 
-def _scan_report_keypoints(case: Case, db: CaseDB, *, limit: int = 80) -> list[dict[str, Any]]:
+def _scan_report_keypoints(
+    case: Case, db: CaseDB, *, limit: int = 80
+) -> list[dict[str, Any]]:
     """Run each report keypoint once and keep only the ones that produced rows."""
     observed: list[dict[str, Any]] = []
-    for index, keypoint_name in enumerate(_family_interleaved_keypoint_names(), start=1):
+    for index, keypoint_name in enumerate(
+        _family_interleaved_keypoint_names(), start=1
+    ):
         try:
             result = _resolve_evidence_results(case, db, keypoints=[keypoint_name])[0]
         except Exception as exc:

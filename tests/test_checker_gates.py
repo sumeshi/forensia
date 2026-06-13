@@ -12,8 +12,7 @@ from forensia.ai.checker import (
     _verify_verdict_consistency,
     annotate_benign_context,
 )
-from forensia.core.session import ENTITY_ROLES, ENTITY_TYPE_ALIASES, Hypothesis
-
+from forensia.core.session import Hypothesis
 
 # ==============================================================
 # T-01: _verify_verdict_consistency
@@ -49,7 +48,9 @@ class TestVerifyVerdictConsistency:
                 {"target_user": "bob", "evidence_id": "ev-2"},
             ],
         }
-        verdict, reason = _verify_verdict_consistency("confirmed", "", h, result_summary)
+        verdict, reason = _verify_verdict_consistency(
+            "confirmed", "", h, result_summary
+        )
         assert verdict == "confirmed"
         assert reason is None
 
@@ -60,7 +61,9 @@ class TestVerifyVerdictConsistency:
             "event_id_set": [2004],
             "sample_rows": [{"target_user": "alice", "evidence_id": "ev-1"}],
         }
-        verdict, reason = _verify_verdict_consistency("confirmed", "", h, result_summary)
+        verdict, reason = _verify_verdict_consistency(
+            "confirmed", "", h, result_summary
+        )
         assert verdict == "inconclusive"
         assert reason is not None
         assert "4625" in reason
@@ -77,7 +80,9 @@ class TestVerifyVerdictConsistency:
         """inconclusive verdict passes through regardless of event IDs."""
         h = self._make_hypothesis(confirm_when_co=[4625])
         result_summary: dict[str, Any] = {"event_id_set": [], "sample_rows": []}
-        verdict, reason = _verify_verdict_consistency("inconclusive", "", h, result_summary)
+        verdict, reason = _verify_verdict_consistency(
+            "inconclusive", "", h, result_summary
+        )
         assert verdict == "inconclusive"
         assert reason is None
 
@@ -93,7 +98,9 @@ class TestVerifyVerdictConsistency:
                 {"target_user": "n/a", "src_ip": "-", "evidence_id": "ev-2"},
             ],
         }
-        verdict, reason = _verify_verdict_consistency("confirmed", "", h, result_summary)
+        verdict, reason = _verify_verdict_consistency(
+            "confirmed", "", h, result_summary
+        )
         assert verdict == "inconclusive"
         assert reason is not None
         assert "required_entities" in reason.lower() or "null/absent" in reason.lower()
@@ -107,7 +114,9 @@ class TestVerifyVerdictConsistency:
                 {"target_user": "alice", "evidence_id": "ev-1"},
             ],
         }
-        verdict, reason = _verify_verdict_consistency("confirmed", "", h, result_summary)
+        verdict, reason = _verify_verdict_consistency(
+            "confirmed", "", h, result_summary
+        )
         assert verdict == "confirmed"
         assert reason is None
 
@@ -154,7 +163,6 @@ class TestGuardrailCheckPayload:
             fallback_info=fallback_info,
         )
         assert guarded["verdict"] == "newlead"
-        notes: str = guarded.get("report_text", "") or ""
         # The downgrade note is injected into parsed["notes"] which is not
         # directly mapped to guarded output keys in this minimal path.
         # Instead verify that verdict changed.
@@ -370,8 +378,16 @@ class TestValidateExtractedFindings:
     def test_validate_findings_valid(self) -> None:
         """valid entries pass through unchanged."""
         items = [
-            {"title": "Scheduled Task Created", "severity": "high", "evidence_ids": ["ev-1"]},
-            {"title": "User Added to Admin Group", "severity": "critical", "evidence_ids": ["ev-2"]},
+            {
+                "title": "Scheduled Task Created",
+                "severity": "high",
+                "evidence_ids": ["ev-1"],
+            },
+            {
+                "title": "User Added to Admin Group",
+                "severity": "critical",
+                "evidence_ids": ["ev-2"],
+            },
         ]
         observed = {"ev-1", "ev-2"}
         result = _validate_extracted_findings(items, observed)
@@ -456,10 +472,16 @@ class TestVerdictConsistencyCorrelation:
             "event_id_set": [25, 4624],
             "sample_rows": [
                 {"event_id": 25, "computer": "PC-01", "timestamp": base.isoformat()},
-                {"event_id": 4624, "computer": "PC-01", "timestamp": (base + datetime.timedelta(hours=3)).isoformat()},
+                {
+                    "event_id": 4624,
+                    "computer": "PC-01",
+                    "timestamp": (base + datetime.timedelta(hours=3)).isoformat(),
+                },
             ],
         }
-        verdict, reason = _verify_verdict_consistency("confirmed", "", h, result_summary)
+        verdict, reason = _verify_verdict_consistency(
+            "confirmed", "", h, result_summary
+        )
         assert verdict == "inconclusive"
         assert reason is not None
 
@@ -471,10 +493,16 @@ class TestVerdictConsistencyCorrelation:
             "event_id_set": [25, 4624],
             "sample_rows": [
                 {"event_id": 25, "computer": "PC-01", "timestamp": base.isoformat()},
-                {"event_id": 4624, "computer": "PC-01", "timestamp": (base + datetime.timedelta(minutes=2)).isoformat()},
+                {
+                    "event_id": 4624,
+                    "computer": "PC-01",
+                    "timestamp": (base + datetime.timedelta(minutes=2)).isoformat(),
+                },
             ],
         }
-        verdict, reason = _verify_verdict_consistency("confirmed", "", h, result_summary)
+        verdict, reason = _verify_verdict_consistency(
+            "confirmed", "", h, result_summary
+        )
         assert verdict == "confirmed"
         assert reason is None
 
@@ -486,10 +514,16 @@ class TestVerdictConsistencyCorrelation:
             "event_id_set": [25, 4624],
             "sample_rows": [
                 {"event_id": 25, "computer": "PC-01", "timestamp": base.isoformat()},
-                {"event_id": 4624, "computer": "PC-02", "timestamp": (base + datetime.timedelta(minutes=2)).isoformat()},
+                {
+                    "event_id": 4624,
+                    "computer": "PC-02",
+                    "timestamp": (base + datetime.timedelta(minutes=2)).isoformat(),
+                },
             ],
         }
-        verdict, reason = _verify_verdict_consistency("confirmed", "", h, result_summary)
+        verdict, reason = _verify_verdict_consistency(
+            "confirmed", "", h, result_summary
+        )
         assert verdict == "inconclusive"
         assert reason is not None
 
@@ -503,13 +537,28 @@ class TestAnnotateBenignContext:
     """annotate_benign_context: row-level benign-context rule matching."""
 
     _MACHINE_ACCOUNT_RULES = [
-        {"id": "machine-account-subject", "when": {"column": "subject_user", "regex": "\\$$"}, "note": "test"},
+        {
+            "id": "machine-account-subject",
+            "when": {"column": "subject_user", "regex": "\\$$"},
+            "note": "test",
+        },
     ]
     _LOOPBACK_RULES = [
-        {"id": "loopback-source", "when": {"column": "src_ip", "regex": r"^(127\.0\.0\.1|::1)$"}, "note": "test"},
+        {
+            "id": "loopback-source",
+            "when": {"column": "src_ip", "regex": r"^(127\.0\.0\.1|::1)$"},
+            "note": "test",
+        },
     ]
     _OS_PROCESS_RULES = [
-        {"id": "os-servicing-process", "when": {"column": "process_name", "regex": r"(?i)(winlogon|poqexec|services|svchost|taskhost|lsass)\.exe$"}, "note": "test"},
+        {
+            "id": "os-servicing-process",
+            "when": {
+                "column": "process_name",
+                "regex": r"(?i)(winlogon|poqexec|services|svchost|taskhost|lsass)\.exe$",
+            },
+            "note": "test",
+        },
     ]
 
     def test_machine_account_subject(self) -> None:
@@ -578,7 +627,9 @@ class TestBenignContextGate:
             "event_id_set": [4624],
             "evidence_ids": ["ev1", "ev2"],
         }
-        verdict, reason = _verify_verdict_consistency("confirmed", "", h, result_summary)
+        verdict, reason = _verify_verdict_consistency(
+            "confirmed", "", h, result_summary
+        )
         assert verdict == "inconclusive"
         assert reason is not None
         assert "benign-context" in reason
@@ -588,14 +639,20 @@ class TestBenignContextGate:
         h = self._make_hypothesis()
         rows = [
             {"subject_user": "PC-01$", "target_user": "alice", "evidence_id": "ev1"},
-            {"subject_user": "administrator", "target_user": "bob", "evidence_id": "ev2"},
+            {
+                "subject_user": "administrator",
+                "target_user": "bob",
+                "evidence_id": "ev2",
+            },
         ]
         result_summary: dict[str, Any] = {
             "sample_rows": rows,
             "event_id_set": [4624],
             "evidence_ids": ["ev1", "ev2"],
         }
-        verdict, reason = _verify_verdict_consistency("confirmed", "", h, result_summary)
+        verdict, reason = _verify_verdict_consistency(
+            "confirmed", "", h, result_summary
+        )
         assert verdict == "confirmed"
         assert reason is None
 
@@ -603,14 +660,20 @@ class TestBenignContextGate:
         """No rows match any benign rule → confirmed unchanged."""
         h = self._make_hypothesis()
         rows = [
-            {"subject_user": "administrator", "target_user": "bob", "evidence_id": "ev1"},
+            {
+                "subject_user": "administrator",
+                "target_user": "bob",
+                "evidence_id": "ev1",
+            },
         ]
         result_summary: dict[str, Any] = {
             "sample_rows": rows,
             "event_id_set": [4624],
             "evidence_ids": ["ev1"],
         }
-        verdict, reason = _verify_verdict_consistency("confirmed", "", h, result_summary)
+        verdict, reason = _verify_verdict_consistency(
+            "confirmed", "", h, result_summary
+        )
         assert verdict == "confirmed"
         assert reason is None
 
@@ -622,7 +685,9 @@ class TestBenignContextGate:
             "event_id_set": [4624],
             "evidence_ids": [],
         }
-        verdict, reason = _verify_verdict_consistency("confirmed", "", h, result_summary)
+        verdict, reason = _verify_verdict_consistency(
+            "confirmed", "", h, result_summary
+        )
         assert verdict == "confirmed"
         assert reason is None
 

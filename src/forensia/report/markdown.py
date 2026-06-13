@@ -15,7 +15,6 @@ from zoneinfo import ZoneInfo
 from forensia.core.case import Case
 from forensia.db.query import normalize_value
 
-
 # ====================================================================
 # Markdown table sorting
 # ====================================================================
@@ -28,7 +27,11 @@ def _sort_markdown_table_by_first_column(body: str) -> str:
     index = 0
     while index < len(lines):
         line = lines[index]
-        if not line.startswith("|") or index + 1 >= len(lines) or not lines[index + 1].startswith("|---"):
+        if (
+            not line.startswith("|")
+            or index + 1 >= len(lines)
+            or not lines[index + 1].startswith("|---")
+        ):
             sorted_lines.append(line)
             index += 1
             continue
@@ -65,7 +68,7 @@ def _tz_offset_str(tz_name: str, at_time_str: str | None = None) -> str:
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=ZoneInfo("UTC"))
                 offset = dt.astimezone(tz).utcoffset()
-            except (ValueError, TypeError, OSError):
+            except ValueError, TypeError, OSError:
                 offset = tz.utcoffset(datetime.now(UTC))
         else:
             offset = tz.utcoffset(datetime.now(UTC))
@@ -79,7 +82,7 @@ def _tz_offset_str(tz_name: str, at_time_str: str | None = None) -> str:
         if minutes:
             return f"UTC{sign}{hours}:{minutes:02d}"
         return f"UTC{sign}{hours}"
-    except (OSError, KeyError):
+    except OSError, KeyError:
         return tz_name
 
 
@@ -93,7 +96,7 @@ def _local_time_from_utc(utc_str: str, tz_name: str) -> str | None:
         tz = ZoneInfo(tz_name)
         local_dt = utc_dt.astimezone(tz)
         return local_dt.strftime("%Y-%m-%d %H:%M:%S")
-    except (ValueError, TypeError, OSError, KeyError):
+    except ValueError, TypeError, OSError, KeyError:
         return None
 
 
@@ -106,7 +109,7 @@ def _render_timestamp_with_timezone(timestamp_str: str, case: Case) -> str:
     """
     if not timestamp_str:
         return "unknown"
-    tz = getattr(case, 'source_timezone', 'UTC')
+    tz = getattr(case, "source_timezone", "UTC")
     if tz == "UTC":
         return f"{timestamp_str} UTC"
     local_time = _local_time_from_utc(timestamp_str, tz)
@@ -140,7 +143,11 @@ def _strip_hidden_markdown_table_columns(table_lines: list[str]) -> list[str]:
     headers = _split_markdown_table_cells(table_lines[0])
     if not headers:
         return table_lines
-    keep_indexes = [index for index, header in enumerate(headers) if not _is_human_report_hidden_column(header)]
+    keep_indexes = [
+        index
+        for index, header in enumerate(headers)
+        if not _is_human_report_hidden_column(header)
+    ]
     if len(keep_indexes) == len(headers):
         return table_lines
     if not keep_indexes:
@@ -151,10 +158,16 @@ def _strip_hidden_markdown_table_columns(table_lines: list[str]) -> list[str]:
         if len(cells) != len(headers):
             stripped_lines.append(line)
             continue
-        if line_index == 1 and all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells):
-            stripped_lines.append(_join_markdown_table_cells(["---"] * len(keep_indexes)))
+        if line_index == 1 and all(
+            re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells
+        ):
+            stripped_lines.append(
+                _join_markdown_table_cells(["---"] * len(keep_indexes))
+            )
         else:
-            stripped_lines.append(_join_markdown_table_cells([cells[index] for index in keep_indexes]))
+            stripped_lines.append(
+                _join_markdown_table_cells([cells[index] for index in keep_indexes])
+            )
     return stripped_lines
 
 
@@ -185,7 +198,9 @@ def _strip_hidden_report_columns_from_markdown_tables(body: str) -> str:
 # ====================================================================
 
 
-_HUMAN_REPORT_HIDDEN_COLUMNS = frozenset({"evidence_id", "evidence_ids", "reference", "references", "source_file"})
+_HUMAN_REPORT_HIDDEN_COLUMNS = frozenset(
+    {"evidence_id", "evidence_ids", "reference", "references", "source_file"}
+)
 
 
 def _is_human_report_hidden_column(column: Any) -> bool:
@@ -204,7 +219,9 @@ def _compact_cell(value: Any, max_chars: int = 110) -> str:
     if isinstance(value, list):
         text = "; ".join(str(item) for item in value if str(item).strip())
     elif isinstance(value, dict):
-        text = ", ".join(f"{key}={val}" for key, val in value.items() if val not in (None, "", []))
+        text = ", ".join(
+            f"{key}={val}" for key, val in value.items() if val not in (None, "", [])
+        )
     else:
         text = str(value if value is not None else "")
     text = " ".join(text.replace("\n", " ").split())
@@ -214,7 +231,9 @@ def _compact_cell(value: Any, max_chars: int = 110) -> str:
     return text or "-"
 
 
-def _markdown_table(rows: list[dict[str, Any]], columns: list[tuple[str, str]], *, max_rows: int = 0) -> str:
+def _markdown_table(
+    rows: list[dict[str, Any]], columns: list[tuple[str, str]], *, max_rows: int = 0
+) -> str:
     """Build a compact Markdown table for deterministic report sections.
 
     When ``max_rows`` is ``0`` (or negative), all rows are rendered (unlimited).

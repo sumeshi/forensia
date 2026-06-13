@@ -29,7 +29,9 @@ def _count_by_field(events: list[dict], field: str, pattern: str) -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Cycle delta summary for forensia cases")
+    parser = argparse.ArgumentParser(
+        description="Cycle delta summary for forensia cases"
+    )
     parser.add_argument("case_dir", type=str, help="Path to forensia case directory")
     args = parser.parse_args()
 
@@ -53,19 +55,37 @@ def main() -> None:
             key = int(iteration)
             cycle_events.setdefault(key, []).append(event)
 
-    print("| Cycle | New Hyp | Resolved | Refuted | LLM Calls | Queries Run | Benchmark Progress |")
+    print(
+        "| Cycle | New Hyp | Resolved | Refuted | LLM Calls | Queries Run | Benchmark Progress |"
+    )
     print("|---|---|---|---|---|---|---|")
 
     for cycle in sorted(cycle_events):
         evts = cycle_events[cycle]
 
-        hypothesis_reasoning_events = [e for e in evts if e.get("stage") == "hypothesis_reasoning"]
-        new_hyp = _count_by_field(hypothesis_reasoning_events, "hypothesis_status", "new")
-        resolved = _count_by_field(hypothesis_reasoning_events, "hypothesis_status", "resolved")
-        refuted = _count_by_field(hypothesis_reasoning_events, "hypothesis_status", "refuted")
+        hypothesis_reasoning_events = [
+            e for e in evts if e.get("stage") == "hypothesis_reasoning"
+        ]
+        new_hyp = _count_by_field(
+            hypothesis_reasoning_events, "hypothesis_status", "new"
+        )
+        resolved = _count_by_field(
+            hypothesis_reasoning_events, "hypothesis_status", "resolved"
+        )
+        refuted = _count_by_field(
+            hypothesis_reasoning_events, "hypothesis_status", "refuted"
+        )
 
-        section_events = [e for e in evts if e.get("stage", "").startswith("investigate/report-section")]
-        benchmark_events = [e for e in section_events if "appendix" in str(e.get("current_report_section", "")).lower()]
+        section_events = [
+            e
+            for e in evts
+            if e.get("stage", "").startswith("investigate/report-section")
+        ]
+        benchmark_events = [
+            e
+            for e in section_events
+            if "appendix" in str(e.get("current_report_section", "")).lower()
+        ]
         benchmark_done = len(benchmark_events)
 
         llm_calls = 0
@@ -79,6 +99,7 @@ def main() -> None:
 
         if db_path.exists():
             import duckdb
+
             try:
                 conn = duckdb.connect(str(db_path), read_only=True)
                 row = conn.execute(
@@ -91,7 +112,9 @@ def main() -> None:
         else:
             benchmark_progress = benchmark_done
 
-        print(f"| {cycle} | {new_hyp} | {resolved} | {refuted} | {llm_calls} | {queries_run} | {benchmark_progress} |")
+        print(
+            f"| {cycle} | {new_hyp} | {resolved} | {refuted} | {llm_calls} | {queries_run} | {benchmark_progress} |"
+        )
 
 
 if __name__ == "__main__":

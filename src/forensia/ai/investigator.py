@@ -3,14 +3,15 @@ from __future__ import annotations
 import asyncio
 import functools
 import hashlib
+import inspect
 import json
+import re
 import signal
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-import re
 from re import sub
 from typing import Any
 from uuid import uuid4
@@ -18,37 +19,56 @@ from uuid import uuid4
 import httpx
 import yaml
 from rich import print
+
 from forensia.ai.audit import LLMCallLogger
-from forensia.ai.memory_sync import _apply_memory_updates, _has_multi_source_evidence
-from forensia.ai.progress import HypothesisProgressTracker, _query_fingerprint
-from forensia.ai.seeding import _seed_findings, _seed_rule_hypotheses, _scan_report_keypoints
-from forensia.ai.case_profile import build_case_profile, get_case_profile, get_profile_event_ids, set_case_profile, _format_case_profile
+from forensia.ai.case_profile import (
+    _format_case_profile,
+    build_case_profile,
+    get_profile_event_ids,
+    set_case_profile,
+)
 from forensia.ai.checker import check_query_result, summarize_query_result
 from forensia.ai.hypothesis_manager import (
+    MAX_ACTIVE_HYPOTHESES,
     _all_hypotheses,
+    _guess_related_sections,
     _hypothesis_similarity,
     _load_persisted_hypotheses,
     _merge_active_hypotheses,
     _resolve_hypothesis,
     _upsert_hypothesis,
-    MAX_ACTIVE_HYPOTHESES,
 )
 from forensia.ai.json_response import request_llm_json
-from forensia.ai.llm_client import LLMServerUnavailableError, chat_completion, outage_wait_until_recovered
+from forensia.ai.llm_client import (
+    LLMServerUnavailableError,
+    chat_completion,
+    outage_wait_until_recovered,
+)
+from forensia.ai.memory_sync import _apply_memory_updates
 from forensia.ai.planner import _compute_uncovered_keypoints, plan_hypothesis_query
-from forensia.ai.prompts import _slim_hypothesis_dump, build_gap_identifier_messages, build_hypothesis_drafter_messages, resolve_rule_context
+from forensia.ai.progress import HypothesisProgressTracker, _query_fingerprint
+from forensia.ai.prompts import (
+    build_gap_identifier_messages,
+    build_hypothesis_drafter_messages,
+    resolve_rule_context,
+)
 from forensia.ai.report_gap import (
     _build_report_status,
-    _guess_related_sections,
     _inject_gap_hypotheses,
     _overlay_report_status,
     _report_cycle_progress,
 )
 from forensia.ai.section_refresher import async_refresh_report_sections
+from forensia.ai.seeding import (
+    _scan_report_keypoints,
+    _seed_findings,
+    _seed_rule_hypotheses,
+)
 from forensia.config import get_llm_settings
 from forensia.core.case import Case
+from forensia.core.log import log as _log
 from forensia.core.memory import MemoryManager
-from forensia.core.session import HistoryEntry, Hypothesis, PlannedQuery, SessionState
+from forensia.core.session import HistoryEntry, Hypothesis, SessionState
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
 from forensia.report.writer import (
@@ -61,19 +81,16 @@ from forensia.rules.engine import (
     execute_fallback_search,
 )
 from forensia.rules.loader import _get_rule_cache, load_rule_by_id, resolve_active_packs
-from forensia.core.log import log as _log
 
 
 def _to_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
 
 
-
-
-
 @dataclass
 class _Ctx:
     """Mutable per-session state shared across investigate() helpers."""
+
     interrupted: bool = False
     report_status: dict = field(default_factory=dict)
     memory_overview: str = ""
@@ -93,10 +110,12 @@ async def _call_with_outage_recovery(
 ):
     for attempt in range(1, _MAX_OUTAGE_RETRIES_PER_CALL + 1):
         try:
-            if asyncio.iscoroutinefunction(call_fn):
+            if inspect.iscoroutinefunction(call_fn):
                 return await call_fn(base_url=base_url, model=model, **kwargs)
             else:
-                return await asyncio.to_thread(call_fn, base_url=base_url, model=model, **kwargs)
+                return await asyncio.to_thread(
+                    call_fn, base_url=base_url, model=model, **kwargs
+                )
         except LLMServerUnavailableError:
             if attempt >= _MAX_OUTAGE_RETRIES_PER_CALL:
                 raise
@@ -105,8 +124,8 @@ async def _call_with_outage_recovery(
 
 
 def _ctx_get_report_status(
-    ctx: "_Ctx",
-    db: "CaseDB",
+    ctx: _Ctx,
+    db: CaseDB,
     *,
     current_section: str | None = None,
     focus_sections: list[str] | None = None,
@@ -115,19 +134,25 @@ def _ctx_get_report_status(
     """Return the current or refreshed report status, optionally filtered to specific sections."""
     if refresh:
         ctx.report_status = _build_report_status(db)
-    return _overlay_report_status(ctx.report_status, current_section=current_section, focus_sections=focus_sections)
+    return _overlay_report_status(
+        ctx.report_status,
+        current_section=current_section,
+        focus_sections=focus_sections,
+    )
 
 
 def _ctx_refresh_caches(
-    ctx: "_Ctx",
-    memory: "MemoryManager",
+    ctx: _Ctx,
+    memory: MemoryManager,
     base_url: str,
     model: str,
     current_hypothesis_id: str | None = None,
 ) -> None:
     """Reload memory context caches and compact overview if needed."""
     memory.compact_overview_if_needed(base_url=base_url, model=model)
-    ctx.memory_overview = memory.load_compact_context(["overview.md"], max_bytes=memory.max_bytes)
+    ctx.memory_overview = memory.load_compact_context(
+        ["overview.md"], max_bytes=memory.max_bytes
+    )
     ctx.current_hypothesis_id = current_hypothesis_id
     ctx.memory_plan = memory.load_investigation_context(
         current_hypothesis_id,
@@ -150,7 +175,11 @@ def _has_zero_rows_refute_condition(hypothesis: Hypothesis) -> bool:
         rule = load_rule_by_id(source_rule_id)
         if rule and rule.hypotheses:
             for decl in rule.hypotheses:
-                if decl.id == hypothesis.id and decl.refute_when and decl.refute_when.get("zero_rows"):
+                if (
+                    decl.id == hypothesis.id
+                    and decl.refute_when
+                    and decl.refute_when.get("zero_rows")
+                ):
                     return True
     return False
 
@@ -177,12 +206,16 @@ def _unavailable_missing_event_ids(
     if not vocabulary:
         return []
     missing_text = " ".join(str(q).lower() for q in missing_questions if q)
-    referenced = {int(m) for m in re.findall(r"\b(\d{3,5})\b", missing_text)} & vocabulary
+    referenced = {
+        int(m) for m in re.findall(r"\b(\d{3,5})\b", missing_text)
+    } & vocabulary
     if not referenced:
         return []
     if referenced & available_event_ids:
         return []
-    if any(t in missing_text for t in ("mft_entries", "mft_timeline", "prefetch", "mft ")):
+    if any(
+        t in missing_text for t in ("mft_entries", "mft_timeline", "prefetch", "mft ")
+    ):
         return []
     return sorted(referenced)
 
@@ -279,7 +312,9 @@ def _load_profile_config(profile: str) -> dict[str, Any]:
     return yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
 
 
-def _initialize_overview(memory: MemoryManager, case: Case, profile_config: dict[str, Any] | None = None) -> None:
+def _initialize_overview(
+    memory: MemoryManager, case: Case, profile_config: dict[str, Any] | None = None
+) -> None:
     """Create the initial investigation overview memory file if it doesn't exist yet."""
     objective = str((profile_config or {}).get("objective") or "").strip()
     if memory.has_overview():
@@ -294,21 +329,21 @@ def _initialize_overview(memory: MemoryManager, case: Case, profile_config: dict
         "en": "Establish the evidence-backed incident narrative.",
     }.get(output_language, "Establish the evidence-backed incident narrative.")
     memory.update_overview(
-        (
-            f"# Investigation Overview\n\n"
-            f"Case: {case.path.name}\n\n"
-            f"## Investigation Objective\n- {objective_line}\n\n"
-            "## Memory Details\n"
-            "- Detailed fact records can be stored under memory/details/fact-NNN.md and loaded on demand.\n\n"
-            "## Case Scope\n- none\n\n"
-            "## Key Findings\n- none\n\n"
-            "## Investigation Policy\n- preserve evidence fidelity\n\n"
-            f"## Active Tasks\n- {open_question_seed}\n"
-        )
+        f"# Investigation Overview\n\n"
+        f"Case: {case.path.name}\n\n"
+        f"## Investigation Objective\n- {objective_line}\n\n"
+        "## Memory Details\n"
+        "- Detailed fact records can be stored under memory/details/fact-NNN.md and loaded on demand.\n\n"
+        "## Case Scope\n- none\n\n"
+        "## Key Findings\n- none\n\n"
+        "## Investigation Policy\n- preserve evidence fidelity\n\n"
+        f"## Active Tasks\n- {open_question_seed}\n"
     )
 
 
-def _ensure_profile_objective(memory: MemoryManager, profile_config: dict[str, Any] | None = None) -> None:
+def _ensure_profile_objective(
+    memory: MemoryManager, profile_config: dict[str, Any] | None = None
+) -> None:
     """Patch the investigation objective from profile config into overview and tasks."""
     objective = str((profile_config or {}).get("objective") or "").strip()
     if not objective:
@@ -320,7 +355,11 @@ def _ensure_profile_objective(memory: MemoryManager, profile_config: dict[str, A
         )
     elif objective not in overview:
         memory.update_overview(
-            overview.replace("## Investigation Objective\n", f"## Investigation Objective\n- {objective}\n", 1)
+            overview.replace(
+                "## Investigation Objective\n",
+                f"## Investigation Objective\n- {objective}\n",
+                1,
+            )
             if "## Investigation Objective\n- " not in overview
             else overview
         )
@@ -351,7 +390,9 @@ def _keypoint_card_id(index: int) -> str:
     return f"KP-{index:04d}"
 
 
-def _sync_keypoint_cards(memory: MemoryManager, findings_snapshot: list[dict[str, Any]]) -> None:
+def _sync_keypoint_cards(
+    memory: MemoryManager, findings_snapshot: list[dict[str, Any]]
+) -> None:
     """Reconcile findings → keypoint-memory cards, removing stale entries."""
     for index, finding in enumerate(findings_snapshot, start=1):
         evidence_ids: list[str] = []
@@ -382,8 +423,12 @@ def _sync_keypoint_cards(memory: MemoryManager, findings_snapshot: list[dict[str
             "## Evidence IDs",
         ]
         lines.extend([f"- {evidence_id}" for evidence_id in evidence_ids] or ["- none"])
-        memory.upsert_keypoint(_keypoint_card_id(index), "\n".join(lines).rstrip() + "\n")
-    active_ids = {_keypoint_card_id(index) for index in range(1, len(findings_snapshot) + 1)}
+        memory.upsert_keypoint(
+            _keypoint_card_id(index), "\n".join(lines).rstrip() + "\n"
+        )
+    active_ids = {
+        _keypoint_card_id(index) for index in range(1, len(findings_snapshot) + 1)
+    }
     for path in memory.keypoints_dir.glob("KP-*.md"):
         if path.stem not in active_ids:
             path.unlink(missing_ok=True)
@@ -404,11 +449,15 @@ def _sync_hypothesis_cards(
             path.unlink(missing_ok=True)
 
 
-def _matching_findings(snapshot: list[dict[str, Any]], hypothesis: Hypothesis | None) -> list[dict[str, Any]]:
+def _matching_findings(
+    snapshot: list[dict[str, Any]], hypothesis: Hypothesis | None
+) -> list[dict[str, Any]]:
     """Return findings whose title/summary/severity share tokens with the hypothesis description."""
     if hypothesis is None:
         return snapshot[:10]
-    words = {token.lower() for token in hypothesis.description.split() if len(token) >= 3}
+    words = {
+        token.lower() for token in hypothesis.description.split() if len(token) >= 3
+    }
     if not words:
         return snapshot[:10]
     matched = []
@@ -422,7 +471,9 @@ def _matching_findings(snapshot: list[dict[str, Any]], hypothesis: Hypothesis | 
     return matched[:10] if matched else snapshot[:10]
 
 
-def _observed_keypoints_from_findings(snapshot: list[dict[str, Any]], limit: int = 20) -> list[str]:
+def _observed_keypoints_from_findings(
+    snapshot: list[dict[str, Any]], limit: int = 20
+) -> list[str]:
     """Format findings as human-readable keypoint labels for LLM context."""
     keypoints: list[str] = []
     for item in snapshot[:limit]:
@@ -440,7 +491,11 @@ def _observed_keypoints_from_findings(snapshot: list[dict[str, Any]], limit: int
 def _normalize_hypothesis_tokens(text: str) -> set[str]:
     import re
 
-    return {token for token in re.findall(r"[a-z0-9]+", str(text).lower()) if len(token) >= 3}
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", str(text).lower())
+        if len(token) >= 3
+    }
 
 
 def _audit_broad_plan_hypotheses(
@@ -483,7 +538,9 @@ def _audit_broad_plan_hypotheses(
     return audits
 
 
-def _hypothesis_focus_score(state: SessionState, hypothesis: Hypothesis) -> tuple[int, int, int, int]:
+def _hypothesis_focus_score(
+    state: SessionState, hypothesis: Hypothesis
+) -> tuple[int, int, int, int]:
     """Rank hypotheses by fairness first, then rough confidence.
 
     Newly drafted hypotheses must get at least one investigation pass. Otherwise
@@ -495,15 +552,28 @@ def _hypothesis_focus_score(state: SessionState, hypothesis: Hypothesis) -> tupl
         if entry.hypothesis_id == hypothesis.id:
             recent_iteration = int(entry.iteration)
             break
-    confidence_proxy = len(hypothesis.source_rule_ids) + (1 if hypothesis.required_entities else 0)
+    confidence_proxy = len(hypothesis.source_rule_ids) + (
+        1 if hypothesis.required_entities else 0
+    )
     never_investigated = 1 if recent_iteration < 0 else 0
     least_recent_first = -recent_iteration if recent_iteration >= 0 else 0
-    return (never_investigated, least_recent_first, confidence_proxy, -len(hypothesis.description))
+    return (
+        never_investigated,
+        least_recent_first,
+        confidence_proxy,
+        -len(hypothesis.description),
+    )
 
 
-def _select_focus_hypotheses(state: SessionState, max_items: int = 2) -> list[Hypothesis]:
-    ranked = sorted(state.active_hypotheses, key=lambda item: _hypothesis_focus_score(state, item), reverse=True)
-    return ranked[:max(1, max_items)] if ranked else []
+def _select_focus_hypotheses(
+    state: SessionState, max_items: int = 2
+) -> list[Hypothesis]:
+    ranked = sorted(
+        state.active_hypotheses,
+        key=lambda item: _hypothesis_focus_score(state, item),
+        reverse=True,
+    )
+    return ranked[: max(1, max_items)] if ranked else []
 
 
 def _final_summary(state: SessionState) -> str:
@@ -512,7 +582,9 @@ def _final_summary(state: SessionState) -> str:
         lines = []
         for item in state.resolved_hypotheses[-5:]:
             verdict = item.verdict or item.status
-            lines.append(f"[{verdict}] {item.description}: {item.summary or 'summary unavailable'}")
+            lines.append(
+                f"[{verdict}] {item.description}: {item.summary or 'summary unavailable'}"
+            )
         return "\n".join(lines)
     if state.history:
         return "\n".join(entry.summary for entry in state.history[-5:] if entry.summary)
@@ -553,14 +625,27 @@ async def _investigate_one_hypothesis(
         state.focus_depth = query_index
         try:
             hypothesis_plan = await _call_with_outage_recovery(
-                plan_hypothesis_query, base_url=base_url, model=model,
-                state=state, hypothesis=hypothesis,
-                memory=memory, db=db,
-                overview_md=ctx.memory_overview, default_context_md=ctx.memory_plan,
-                status_callback=llm_status_fn or (lambda msg: print(f"[yellow]{msg}[/yellow]")),
-                audit_callback=lambda msgs, out, parsed, hid=hypothesis.id, qi=query_index: llm_logger.write(
-                    iteration=plan_cycle, phase="plan-hypothesis", input_messages=msgs,
-                    output=parsed, model=model, base_url=base_url, suffix=f"{hid}-{qi:02d}",
+                plan_hypothesis_query,
+                base_url=base_url,
+                model=model,
+                state=state,
+                hypothesis=hypothesis,
+                memory=memory,
+                db=db,
+                overview_md=ctx.memory_overview,
+                default_context_md=ctx.memory_plan,
+                status_callback=llm_status_fn
+                or (lambda msg: print(f"[yellow]{msg}[/yellow]")),
+                audit_callback=lambda msgs, out, parsed, hid=hypothesis.id, qi=query_index: (
+                    llm_logger.write(
+                        iteration=plan_cycle,
+                        phase="plan-hypothesis",
+                        input_messages=msgs,
+                        output=parsed,
+                        model=model,
+                        base_url=base_url,
+                        suffix=f"{hid}-{qi:02d}",
+                    )
                 ),
                 query_index=query_index,
                 time_range=case.time_range,
@@ -569,31 +654,61 @@ async def _investigate_one_hypothesis(
         except Exception as exc:
             err_msg = f"[plan-hypothesis] LLM failed for {hypothesis.id}: {exc}"
             print(f"[red]{err_msg}[/red]")
-            _append_hypothesis_reasoning(db=db, hypothesis_id=hypothesis.id, session_id=session_id,
-                                         iteration=plan_cycle, phase="error", body=f"[internal-error] {err_msg}")
+            _append_hypothesis_reasoning(
+                db=db,
+                hypothesis_id=hypothesis.id,
+                session_id=session_id,
+                iteration=plan_cycle,
+                phase="error",
+                body=f"[internal-error] {err_msg}",
+            )
             break
-        _save_step(db=db, session_id=session_id, iteration=plan_cycle, phase="plan-hypothesis",
-                   hypothesis_id=hypothesis.id,
-                   input_json={"hypothesis": hypothesis.model_dump(), "query_index": query_index},
-                   output_json=hypothesis_plan.raw_response, suffix=f"{hypothesis.id}-{query_index:02d}")
+        _save_step(
+            db=db,
+            session_id=session_id,
+            iteration=plan_cycle,
+            phase="plan-hypothesis",
+            hypothesis_id=hypothesis.id,
+            input_json={
+                "hypothesis": hypothesis.model_dump(),
+                "query_index": query_index,
+            },
+            output_json=hypothesis_plan.raw_response,
+            suffix=f"{hypothesis.id}-{query_index:02d}",
+        )
         if hypothesis_plan.hypothesis is not None:
             hypothesis = hypothesis_plan.hypothesis
-            _upsert_hypothesis(db, hypothesis, origin="broad_plan", session_id=session_id)
+            _upsert_hypothesis(
+                db, hypothesis, origin="broad_plan", session_id=session_id
+            )
         if not hypothesis_plan.query:
             if not hypothesis_plan.needs_more:
                 break
             continue
         planned_query = hypothesis_plan.query
         reasoning_entry_id = _append_hypothesis_reasoning(
-            db=db, hypothesis_id=hypothesis.id, session_id=session_id,
-            iteration=plan_cycle, phase="plan", body=planned_query.purpose, query_id=planned_query.query_id,
+            db=db,
+            hypothesis_id=hypothesis.id,
+            session_id=session_id,
+            iteration=plan_cycle,
+            phase="plan",
+            body=planned_query.purpose,
+            query_id=planned_query.query_id,
         )
-        _log("QUERY", f"{hypothesis.id} {planned_query.query_id} — {planned_query.purpose}")
+        _log(
+            "QUERY",
+            f"{hypothesis.id} {planned_query.query_id} — {planned_query.purpose}",
+        )
         if emit_fn:
-            emit_fn("investigate/do", f"[do] {planned_query.query_id}: {planned_query.purpose}",
-                    iteration=plan_cycle, report_kw={"focus_sections": focus_sections},
-                    current_query=planned_query.query_id, hypothesis_id=hypothesis.id,
-                    reasoning_entry_id=reasoning_entry_id)
+            emit_fn(
+                "investigate/do",
+                f"[do] {planned_query.query_id}: {planned_query.purpose}",
+                iteration=plan_cycle,
+                report_kw={"focus_sections": focus_sections},
+                current_query=planned_query.query_id,
+                hypothesis_id=hypothesis.id,
+                reasoning_entry_id=reasoning_entry_id,
+            )
         query_fp = _query_fingerprint(planned_query.sql)
         try:
             rows = fetch_records(db, planned_query.sql)
@@ -606,22 +721,36 @@ async def _investigate_one_hypothesis(
                         for fallback in rule.fallback_search:
                             if isinstance(fallback, dict):
                                 ph = fallback.get("phase")
-                                if ph not in {"keyword_in_raw_json", "related_event_ids", "artifact_table"}:
+                                if ph not in {
+                                    "keyword_in_raw_json",
+                                    "related_event_ids",
+                                    "artifact_table",
+                                }:
                                     continue
                                 fb_rows = execute_fallback_search(db, fallback)
                                 if fb_rows:
-                                    _log("FALLBACK", f"{hypothesis.id} — found {len(fb_rows)} rows via {ph}")
+                                    _log(
+                                        "FALLBACK",
+                                        f"{hypothesis.id} — found {len(fb_rows)} rows via {ph}",
+                                    )
                                     for r in fb_rows[:20]:
                                         if isinstance(r, dict):
                                             r["_fallback_phase"] = ph
-                                            r["_fallback_source_rule_id"] = source_rule_id
+                                            r["_fallback_source_rule_id"] = (
+                                                source_rule_id
+                                            )
                                     rows = fb_rows[:20]
-                                    fallback_info = {"phase": ph, "source_rule_id": source_rule_id}
+                                    fallback_info = {
+                                        "phase": ph,
+                                        "source_rule_id": source_rule_id,
+                                    }
                                     break
                         if fallback_info:
                             break
             if len(rows) == 0 and fallback_info is None:
-                fb_rows, fb_info = execute_event_keyword_fallback_search(db, planned_query.sql)
+                fb_rows, fb_info = execute_event_keyword_fallback_search(
+                    db, planned_query.sql
+                )
                 if fb_rows:
                     _log(
                         "FALLBACK",
@@ -637,17 +766,33 @@ async def _investigate_one_hypothesis(
                             r["_fallback_phase"] = "keyword_in_raw_json"
                             r["_fallback_source_rule_id"] = "event_id_schema"
                     rows = fb_rows[:20]
-                    fallback_info = fb_info or {"phase": "keyword_in_raw_json", "source_rule_id": "event_id_schema"}
+                    fallback_info = fb_info or {
+                        "phase": "keyword_in_raw_json",
+                        "source_rule_id": "event_id_schema",
+                    }
                     fallback_info["query_sql"] = planned_query.sql
         except Exception as exc:
             err_msg = str(exc)
             tracker.record(query_fp, verdict="exec_error", row_count=0)
-            print(f"[red]SQL execution error — {planned_query.query_id}: {err_msg}[/red]")
+            print(
+                f"[red]SQL execution error — {planned_query.query_id}: {err_msg}[/red]"
+            )
             if emit_fn:
-                emit_fn("investigate/do", f"[do] SQL execution error — {planned_query.query_id}: {err_msg}", iteration=plan_cycle, hypothesis_id=hypothesis.id)
-            _append_hypothesis_reasoning(db=db, hypothesis_id=hypothesis.id, session_id=session_id,
-                                         iteration=plan_cycle, phase="error", body=f"[internal-error] SQL execution error: {err_msg}",
-                                         query_id=planned_query.query_id)
+                emit_fn(
+                    "investigate/do",
+                    f"[do] SQL execution error — {planned_query.query_id}: {err_msg}",
+                    iteration=plan_cycle,
+                    hypothesis_id=hypothesis.id,
+                )
+            _append_hypothesis_reasoning(
+                db=db,
+                hypothesis_id=hypothesis.id,
+                session_id=session_id,
+                iteration=plan_cycle,
+                phase="error",
+                body=f"[internal-error] SQL execution error: {err_msg}",
+                query_id=planned_query.query_id,
+            )
             state.last_execution_error = {
                 "query_id": planned_query.query_id,
                 "sql": planned_query.sql,
@@ -655,80 +800,161 @@ async def _investigate_one_hypothesis(
             }
             continue
         result_summary = summarize_query_result(rows)
-        _save_step(db=db, session_id=session_id, iteration=plan_cycle, phase="do",
-                   hypothesis_id=hypothesis.id,
-                   input_json={"planned_query": planned_query.model_dump(), "query_index": query_index},
-                   output_json=result_summary, suffix=f"{planned_query.query_id}-{query_index:02d}")
+        _save_step(
+            db=db,
+            session_id=session_id,
+            iteration=plan_cycle,
+            phase="do",
+            hypothesis_id=hypothesis.id,
+            input_json={
+                "planned_query": planned_query.model_dump(),
+                "query_index": query_index,
+            },
+            output_json=result_summary,
+            suffix=f"{planned_query.query_id}-{query_index:02d}",
+        )
         try:
             check_result = check_query_result(
-                case=case, db=db, session_id=session_id,
-                planned_query=planned_query, hypothesis=hypothesis,
-                finding_candidates=candidates, result_summary=result_summary,
-                memory=memory, base_url=base_url, model=model,
-                overview_md=ctx.memory_overview, memory_context_md=ctx.memory_check,
-                status_callback=llm_status_fn or (lambda msg: print(f"[yellow]{msg}[/yellow]")),
+                case=case,
+                db=db,
+                session_id=session_id,
+                planned_query=planned_query,
+                hypothesis=hypothesis,
+                finding_candidates=candidates,
+                result_summary=result_summary,
+                memory=memory,
+                base_url=base_url,
+                model=model,
+                overview_md=ctx.memory_overview,
+                memory_context_md=ctx.memory_check,
+                status_callback=llm_status_fn
+                or (lambda msg: print(f"[yellow]{msg}[/yellow]")),
                 fallback_info=fallback_info,
                 audit_callback=lambda phase, msgs, out, parsed: llm_logger.write(
-                    iteration=plan_cycle, phase=phase, input_messages=msgs,
-                    output=parsed, model=model, base_url=base_url,
+                    iteration=plan_cycle,
+                    phase=phase,
+                    input_messages=msgs,
+                    output=parsed,
+                    model=model,
+                    base_url=base_url,
                 ),
             )
         except Exception as exc:
             err_msg = f"[check] LLM failed for {hypothesis.id}/{planned_query.query_id}: {exc}"
             print(f"[red]{err_msg}[/red]")
-            _append_hypothesis_reasoning(db=db, hypothesis_id=hypothesis.id, session_id=session_id,
-                                         iteration=plan_cycle, phase="error", body=f"[internal-error] {err_msg}",
-                                         query_id=planned_query.query_id)
+            _append_hypothesis_reasoning(
+                db=db,
+                hypothesis_id=hypothesis.id,
+                session_id=session_id,
+                iteration=plan_cycle,
+                phase="error",
+                body=f"[internal-error] {err_msg}",
+                query_id=planned_query.query_id,
+            )
             continue
-        _save_step(db=db, session_id=session_id, iteration=plan_cycle, phase="check",
-                   hypothesis_id=hypothesis.id,
-                   input_json={"planned_query": planned_query.model_dump(),
-                               "hypothesis": hypothesis.model_dump(), "result_summary": result_summary},
-                   output_json=check_result.raw_response, suffix=f"{planned_query.query_id}-{query_index:02d}")
+        _save_step(
+            db=db,
+            session_id=session_id,
+            iteration=plan_cycle,
+            phase="check",
+            hypothesis_id=hypothesis.id,
+            input_json={
+                "planned_query": planned_query.model_dump(),
+                "hypothesis": hypothesis.model_dump(),
+                "result_summary": result_summary,
+            },
+            output_json=check_result.raw_response,
+            suffix=f"{planned_query.query_id}-{query_index:02d}",
+        )
         reasoning_entry_id = _append_hypothesis_reasoning(
-            db=db, hypothesis_id=hypothesis.id, session_id=session_id,
-            iteration=plan_cycle, phase="check", body=check_result.report_text,
-            verdict=check_result.verdict, query_id=planned_query.query_id,
+            db=db,
+            hypothesis_id=hypothesis.id,
+            session_id=session_id,
+            iteration=plan_cycle,
+            phase="check",
+            body=check_result.report_text,
+            verdict=check_result.verdict,
+            query_id=planned_query.query_id,
         )
         chk_txt = (check_result.report_text or "").strip().replace("\n", " ")
         if len(chk_txt) > 120:
             chk_txt = chk_txt[:117] + "..."
-        _log("CHECK", f"{hypothesis.id} {planned_query.query_id} — verdict={check_result.verdict}" + (f": {chk_txt}" if chk_txt else ""))
+        _log(
+            "CHECK",
+            f"{hypothesis.id} {planned_query.query_id} — verdict={check_result.verdict}"
+            + (f": {chk_txt}" if chk_txt else ""),
+        )
         if emit_fn:
-            emit_fn("investigate/check", f"[check] {hypothesis.id}: verdict={check_result.verdict} query={planned_query.query_id}",
-                    iteration=plan_cycle, report_kw={"focus_sections": focus_sections},
-                    current_query=planned_query.query_id, hypothesis_id=hypothesis.id, reasoning_entry_id=reasoning_entry_id)
-        state.history.append(HistoryEntry(
-            iteration=plan_cycle, query_id=planned_query.query_id, hypothesis_id=hypothesis.id,
-            verdict=check_result.verdict, summary=check_result.report_text,
-            evidence_ids=result_summary.get("evidence_ids", []),
-            template_id=planned_query.template_id,
-            params=planned_query.params,
-            purpose=planned_query.purpose,
-        ))
+            emit_fn(
+                "investigate/check",
+                f"[check] {hypothesis.id}: verdict={check_result.verdict} query={planned_query.query_id}",
+                iteration=plan_cycle,
+                report_kw={"focus_sections": focus_sections},
+                current_query=planned_query.query_id,
+                hypothesis_id=hypothesis.id,
+                reasoning_entry_id=reasoning_entry_id,
+            )
+        state.history.append(
+            HistoryEntry(
+                iteration=plan_cycle,
+                query_id=planned_query.query_id,
+                hypothesis_id=hypothesis.id,
+                verdict=check_result.verdict,
+                summary=check_result.report_text,
+                evidence_ids=result_summary.get("evidence_ids", []),
+                template_id=planned_query.template_id,
+                params=planned_query.params,
+                purpose=planned_query.purpose,
+            )
+        )
         state.history = state.history[-50:]
         if check_result.new_hypotheses:
             state.active_hypotheses = _merge_active_hypotheses(
-                db=db, current=state.active_hypotheses, updates=check_result.new_hypotheses,
-                resolved=state.resolved_hypotheses, session_id=session_id, origin="check_new",
+                db=db,
+                current=state.active_hypotheses,
+                updates=check_result.new_hypotheses,
+                resolved=state.resolved_hypotheses,
+                session_id=session_id,
+                origin="check_new",
             )
         if check_result.verdict in {"confirmed", "refuted", "untestable"}:
-            _resolve_hypothesis(db=db, state=state, hypothesis_id=hypothesis.id,
-                                verdict=check_result.verdict, summary=check_result.report_text,
-                                session_id=session_id, sample_rows=rows)
-            _log("RESOLVE", f"{hypothesis.id} — {check_result.verdict} (resolved={len(state.resolved_hypotheses)})")
+            _resolve_hypothesis(
+                db=db,
+                state=state,
+                hypothesis_id=hypothesis.id,
+                verdict=check_result.verdict,
+                summary=check_result.report_text,
+                session_id=session_id,
+                sample_rows=rows,
+            )
+            _log(
+                "RESOLVE",
+                f"{hypothesis.id} — {check_result.verdict} (resolved={len(state.resolved_hypotheses)})",
+            )
             cycle_progress = True
         elif check_result.verdict == "newlead" or check_result.progress:
             cycle_progress = True
-            _upsert_hypothesis(db=db, hypothesis=Hypothesis(
-                id=hypothesis.id, description=hypothesis.description,
-                status="active", verdict=None, summary=check_result.report_text,
-            ), origin="check_new", session_id=session_id)
+            _upsert_hypothesis(
+                db=db,
+                hypothesis=Hypothesis(
+                    id=hypothesis.id,
+                    description=hypothesis.description,
+                    status="active",
+                    verdict=None,
+                    summary=check_result.report_text,
+                ),
+                origin="check_new",
+                session_id=session_id,
+            )
         _apply_memory_updates(
-            memory=memory, active_hypotheses=state.active_hypotheses,
+            memory=memory,
+            active_hypotheses=state.active_hypotheses,
             resolved_hypotheses=state.resolved_hypotheses,
-            check_output={**check_result.raw_response, "memory_updates": check_result.memory_updates,
-                          "suspicious_evidence": check_result.suspicious_evidence},
+            check_output={
+                **check_result.raw_response,
+                "memory_updates": check_result.memory_updates,
+                "suspicious_evidence": check_result.suspicious_evidence,
+            },
             current_hypothesis_id=hypothesis.id,
             db=db,
             query_id=planned_query.query_id,
@@ -747,64 +973,134 @@ async def _investigate_one_hypothesis(
             memory.archive_hypothesis_scratch(hypothesis.id)
         elif check_result.verdict == "untestable":
             memory.archive_untestable_hypothesis_scratch(hypothesis.id)
-        _ctx_refresh_caches(ctx, memory, base_url, model, current_hypothesis_id=hypothesis.id)
-        _save_step(db=db, session_id=session_id, iteration=plan_cycle, phase="act",
-                   hypothesis_id=hypothesis.id,
-                   input_json={"hypothesis_id": hypothesis.id, "query_id": planned_query.query_id},
-                   output_json={"verdict": check_result.verdict,
-                                "active_hypotheses": [h.model_dump() for h in state.active_hypotheses],
-                                "resolved_hypotheses": [h.model_dump() for h in state.resolved_hypotheses]},
-                   suffix=f"{planned_query.query_id}-{query_index:02d}")
+        _ctx_refresh_caches(
+            ctx, memory, base_url, model, current_hypothesis_id=hypothesis.id
+        )
+        _save_step(
+            db=db,
+            session_id=session_id,
+            iteration=plan_cycle,
+            phase="act",
+            hypothesis_id=hypothesis.id,
+            input_json={
+                "hypothesis_id": hypothesis.id,
+                "query_id": planned_query.query_id,
+            },
+            output_json={
+                "verdict": check_result.verdict,
+                "active_hypotheses": [h.model_dump() for h in state.active_hypotheses],
+                "resolved_hypotheses": [
+                    h.model_dump() for h in state.resolved_hypotheses
+                ],
+            },
+            suffix=f"{planned_query.query_id}-{query_index:02d}",
+        )
         if emit_fn:
-            emit_fn("investigate/act", f"[act] {hypothesis.id}: verdict={check_result.verdict} resolved={len(state.resolved_hypotheses)}",
-                    iteration=plan_cycle, report_kw={"focus_sections": focus_sections})
+            emit_fn(
+                "investigate/act",
+                f"[act] {hypothesis.id}: verdict={check_result.verdict} resolved={len(state.resolved_hypotheses)}",
+                iteration=plan_cycle,
+                report_kw={"focus_sections": focus_sections},
+            )
         if check_result.verdict in {"confirmed", "refuted", "untestable"}:
             break
         row_count = int(result_summary.get("row_count") or 0)
         query_fp = _query_fingerprint(planned_query.sql)
         tracker.record(query_fp, check_result.verdict, row_count)
+
         def _rationale_signature(rationale: str) -> str:
-            eids = sorted(set(re.findall(r"\b(?:event\s*id\s*)?(\d{3,5})\b", rationale.lower())))
-            keywords = sorted(set(re.findall(r"\b(missing|requires|correlation|not\s+present|absent)\b", rationale.lower())))
+            eids = sorted(
+                set(re.findall(r"\b(?:event\s*id\s*)?(\d{3,5})\b", rationale.lower()))
+            )
+            keywords = sorted(
+                set(
+                    re.findall(
+                        r"\b(missing|requires|correlation|not\s+present|absent)\b",
+                        rationale.lower(),
+                    )
+                )
+            )
             return "eid:" + ",".join(eids) + "|kw:" + ",".join(keywords)
-        missing_checks_raw = check_result.raw_response.get("missing_questions") or check_result.raw_response.get("missing_checks") or []
-        missing_signature = (
-            "|".join(sorted(str(q).lower().strip() for q in missing_checks_raw if q))
-            or _rationale_signature(str(check_result.report_text or check_result.raw_response.get("rationale", "")))
+
+        missing_checks_raw = (
+            check_result.raw_response.get("missing_questions")
+            or check_result.raw_response.get("missing_checks")
+            or []
+        )
+        missing_signature = "|".join(
+            sorted(str(q).lower().strip() for q in missing_checks_raw if q)
+        ) or _rationale_signature(
+            str(
+                check_result.report_text
+                or check_result.raw_response.get("rationale", "")
+            )
         )
         tracker.register_check(check_result.verdict, row_count, missing_signature)
         # T-05b: when the only missing evidence is event IDs the case telemetry
         # cannot contain, resolve untestable now instead of looping 3 cycles.
         if check_result.verdict == "inconclusive":
-            unavailable_ids = _unavailable_missing_event_ids(missing_checks_raw, get_profile_event_ids())
+            unavailable_ids = _unavailable_missing_event_ids(
+                missing_checks_raw, get_profile_event_ids()
+            )
             if unavailable_ids:
                 id_list = ", ".join(str(eid) for eid in unavailable_ids)
-                _log("RESOLVE", f"{hypothesis.id} — untestable: missing event IDs [{id_list}] are not in case telemetry")
-                _resolve_hypothesis(db=db, state=state, hypothesis_id=hypothesis.id, verdict="untestable",
-                                    summary=f"Untestable: verification requires event IDs [{id_list}] which are not present in the available telemetry — absence of telemetry is not a disproof.",
-                                    session_id=session_id)
+                _log(
+                    "RESOLVE",
+                    f"{hypothesis.id} — untestable: missing event IDs [{id_list}] are not in case telemetry",
+                )
+                _resolve_hypothesis(
+                    db=db,
+                    state=state,
+                    hypothesis_id=hypothesis.id,
+                    verdict="untestable",
+                    summary=f"Untestable: verification requires event IDs [{id_list}] which are not present in the available telemetry — absence of telemetry is not a disproof.",
+                    session_id=session_id,
+                )
                 cycle_progress = True
                 break
         if tracker.should_pivot():
-            _log("PIVOT", f"{hypothesis.id} — duplicate query fingerprint detected, auto-exhausted")
+            _log(
+                "PIVOT",
+                f"{hypothesis.id} — duplicate query fingerprint detected, auto-exhausted",
+            )
             break
         rule_context = resolve_rule_context(hypothesis)
-        partial_confirm_signal = tracker.has_partial_confirm_signal(rule_context, rows, hypothesis)
-        if tracker.should_auto_refute(consecutive_threshold=3) and not partial_confirm_signal:
+        partial_confirm_signal = tracker.has_partial_confirm_signal(
+            rule_context, rows, hypothesis
+        )
+        if (
+            tracker.should_auto_refute(consecutive_threshold=3)
+            and not partial_confirm_signal
+        ):
             has_rule_refute = _has_zero_rows_refute_condition(hypothesis)
             if has_rule_refute:
                 verdict = "refuted"
                 summary = "Auto-refuted: repeated 0-row inconclusive results, consistent with rule-declared refute_when.zero_rows condition."
             else:
                 verdict = "untestable"
-                missing_eids = sorted(set(
-                    re.findall(r"event(?:\s+)?[iI][dD]\s*(\d{3,5})", hypothesis.description)
-                ))
-                telemetry_hint = f" (event IDs: {', '.join(missing_eids)})" if missing_eids else ""
+                missing_eids = sorted(
+                    set(
+                        re.findall(
+                            r"event(?:\s+)?[iI][dD]\s*(\d{3,5})", hypothesis.description
+                        )
+                    )
+                )
+                telemetry_hint = (
+                    f" (event IDs: {', '.join(missing_eids)})" if missing_eids else ""
+                )
                 summary = f"Untestable: repeated 0-row inconclusive results — available telemetry does not contain the event types required to verify this hypothesis{telemetry_hint}."
-            _log("RESOLVE", f"{hypothesis.id} — auto-{verdict} after 3+ consecutive 0-row inconclusive")
-            _resolve_hypothesis(db=db, state=state, hypothesis_id=hypothesis.id, verdict=verdict,
-                                summary=summary, session_id=session_id)
+            _log(
+                "RESOLVE",
+                f"{hypothesis.id} — auto-{verdict} after 3+ consecutive 0-row inconclusive",
+            )
+            _resolve_hypothesis(
+                db=db,
+                state=state,
+                hypothesis_id=hypothesis.id,
+                verdict=verdict,
+                summary=summary,
+                session_id=session_id,
+            )
             cycle_progress = True
             break
         if tracker.should_auto_refute_due_to_unobserved_events():
@@ -815,17 +1111,34 @@ async def _investigate_one_hypothesis(
             else:
                 verdict = "untestable"
                 summary = "Untestable: hypothesis requires evidence not present in current dataset (3+ consecutive same-missing check) — absence of telemetry is not a disproof."
-            _log("RESOLVE", f"{hypothesis.id} — auto-{verdict} after {tracker.consecutive_same_missing}+ consecutive same-missing checks")
-            _resolve_hypothesis(db=db, state=state, hypothesis_id=hypothesis.id, verdict=verdict,
-                                summary=summary, session_id=session_id)
+            _log(
+                "RESOLVE",
+                f"{hypothesis.id} — auto-{verdict} after {tracker.consecutive_same_missing}+ consecutive same-missing checks",
+            )
+            _resolve_hypothesis(
+                db=db,
+                state=state,
+                hypothesis_id=hypothesis.id,
+                verdict=verdict,
+                summary=summary,
+                session_id=session_id,
+            )
             cycle_progress = True
             break
         if check_result.verdict == "inconclusive":
             if tracker.should_auto_confirm(rule_context, rows, hypothesis):
-                _log("RESOLVE", f"{hypothesis.id} — auto-confirmed via co_observed_event_ids")
-                _resolve_hypothesis(db=db, state=state, hypothesis_id=hypothesis.id, verdict="confirmed",
-                                    summary="Auto-confirmed: all co_observed_event_ids from rule context were found in query results.",
-                                    session_id=session_id)
+                _log(
+                    "RESOLVE",
+                    f"{hypothesis.id} — auto-confirmed via co_observed_event_ids",
+                )
+                _resolve_hypothesis(
+                    db=db,
+                    state=state,
+                    hypothesis_id=hypothesis.id,
+                    verdict="confirmed",
+                    summary="Auto-confirmed: all co_observed_event_ids from rule context were found in query results.",
+                    session_id=session_id,
+                )
                 cycle_progress = True
                 break
         if query_index >= limit:
@@ -834,59 +1147,20 @@ async def _investigate_one_hypothesis(
     return cycle_progress, state, focus_sections
 
 
-def _hypothesis_actually_changed(original: Hypothesis, returned: Hypothesis) -> bool:
-    """Detect a real planner update vs the LLM echoing the input hypothesis back."""
-    if original.id != returned.id:
-        return True
-    if (original.description or "").strip() != (returned.description or "").strip():
-        return True
-    orig_cw = original.confirm_when or {}
-    ret_cw = returned.confirm_when or {}
-    if sorted(map(str, orig_cw.get("co_observed_event_ids", []) or [])) != sorted(map(str, ret_cw.get("co_observed_event_ids", []) or [])):
-        return True
-    if sorted(map(str, original.required_entities or [])) != sorted(map(str, returned.required_entities or [])):
-        return True
-    return False
-
-
-def _fallback_planned_query_from_hypothesis(hypothesis: Hypothesis, query_index: int) -> PlannedQuery | None:
-    """When the planner LLM fails to emit a runnable query, synthesize one from
-    the hypothesis's confirm_when.co_observed_event_ids. This guarantees the
-    check phase fires at least once per cycle instead of looping forever.
-    """
-    confirm_when = hypothesis.confirm_when or {}
-    ids = confirm_when.get("co_observed_event_ids") or []
-    event_ids: list[int] = []
-    for entry in ids:
-        try:
-            event_ids.append(int(str(entry).strip()))
-        except (TypeError, ValueError):
-            continue
-    if not event_ids:
-        return None
-    id_list = ", ".join(str(eid) for eid in event_ids)
-    sql = (
-        "SELECT event_id, timestamp, computer, channel, raw_json "
-        f"FROM evtx_events WHERE event_id IN ({id_list}) "
-        "ORDER BY timestamp LIMIT 500"
-    )
-    return PlannedQuery(
-        query_id=f"Q-{hypothesis.id}-fb{query_index}",
-        hypothesis_id=hypothesis.id,
-        purpose=f"Fallback: enumerate evidence rows for event_ids {event_ids} (planner did not emit SQL).",
-        template_id=None,
-        params={},
-        sql=sql,
-    )
-
-
-def _dedup_new_hypotheses(new_hypotheses: list[Hypothesis], active_hypotheses: list[Hypothesis], threshold: float = 0.85) -> list[Hypothesis]:
+def _dedup_new_hypotheses(
+    new_hypotheses: list[Hypothesis],
+    active_hypotheses: list[Hypothesis],
+    threshold: float = 0.85,
+) -> list[Hypothesis]:
     """Filter out hypotheses that are too similar to existing active ones."""
     accepted = []
     for new_h in new_hypotheses:
         is_duplicate = False
         for existing in active_hypotheses:
-            if _hypothesis_similarity(new_h.description, existing.description) > threshold:
+            if (
+                _hypothesis_similarity(new_h.description, existing.description)
+                > threshold
+            ):
                 is_duplicate = True
                 break
         if not is_duplicate:
@@ -902,12 +1176,28 @@ def _known_db_columns() -> frozenset[str]:
     'computer_name') that pass the snake_case regex but are not real columns.
     """
     from forensia.ai.prompts import _load_schema_hints
+
     cols: set[str] = set()
     for hint in _load_schema_hints().values():
         for col in (hint.get("columns") or []) + (hint.get("core_columns") or []):
             cols.add(str(col).strip())
     # Augment with synonyms that drafter commonly emits and we accept as aliases
-    cols.update({"src_ip", "dst_ip", "target_user", "subject_user", "logon_type", "process_name", "file_path", "computer", "event_id", "timestamp", "command_line", "service_name"})
+    cols.update(
+        {
+            "src_ip",
+            "dst_ip",
+            "target_user",
+            "subject_user",
+            "logon_type",
+            "process_name",
+            "file_path",
+            "computer",
+            "event_id",
+            "timestamp",
+            "command_line",
+            "service_name",
+        }
+    )
     return frozenset(c for c in cols if c)
 
 
@@ -950,7 +1240,10 @@ def _parse_hypothesis_from_drafter(parsed: dict[str, Any]) -> Hypothesis | None:
             hyp_raw[key] = {"_llm_note": val} if val.strip() else None
     entities = _filter_valid_entities(hyp_raw.get("required_entities") or [])
     if not entities:
-        _log("PLAN", f"drafter output dropped: invalid required_entities {hyp_raw.get('required_entities')}")
+        _log(
+            "PLAN",
+            f"drafter output dropped: invalid required_entities {hyp_raw.get('required_entities')}",
+        )
         return None
     hyp_raw["required_entities"] = entities
     # Filter co_observed_event_ids to only include event IDs available in the case profile
@@ -964,19 +1257,27 @@ def _parse_hypothesis_from_drafter(parsed: dict[str, Any]) -> Hypothesis | None:
                 for eid in co_ids:
                     try:
                         numeric_ids.append(int(str(eid).strip()))
-                    except (TypeError, ValueError):
+                    except TypeError, ValueError:
                         continue
                 filtered = [eid for eid in numeric_ids if eid in available_ids]
                 if len(filtered) < len(numeric_ids) or len(numeric_ids) < len(co_ids):
                     dropped = sorted(set(numeric_ids) - available_ids)
-                    _log("PLAN", f"drafter co_observed_event_ids filtered: dropped {dropped} (not in case evidence profile)")
+                    _log(
+                        "PLAN",
+                        f"drafter co_observed_event_ids filtered: dropped {dropped} (not in case evidence profile)",
+                    )
                     cw["co_observed_event_ids"] = filtered
                     if not filtered:
-                        cw["_llm_note"] = "All co_observed_event_ids were removed (not in case evidence). This hypothesis may be untestable via event IDs."
+                        cw["_llm_note"] = (
+                            "All co_observed_event_ids were removed (not in case evidence). This hypothesis may be untestable via event IDs."
+                        )
     try:
         return Hypothesis.model_validate(hyp_raw)
     except Exception as exc:
-        _log("PLAN", f"drafter output dropped (validation failed): {str(exc).splitlines()[0][:160]}")
+        _log(
+            "PLAN",
+            f"drafter output dropped (validation failed): {str(exc).splitlines()[0][:160]}",
+        )
         return None
 
 
@@ -995,18 +1296,25 @@ async def _run_broad_plan_step(
 ) -> bool:
     """Execute broad planning step (2-stage: gap_identifier → hypothesis_drafter). Returns stop flag."""
     observed_keypoint_labels = [
-        f"{item['keypoint']} (rows={item['row_count']})"
-        for item in observed_keypoints
+        f"{item['keypoint']} (rows={item['row_count']})" for item in observed_keypoints
     ]
     plan_input = state.model_dump()
     try:
         # 1) gap_identifier — identify which keypoints lack hypothesis coverage
-        observed_kp_strs = observed_keypoint_labels or _observed_keypoints_from_findings(state.findings_snapshot)
+        observed_kp_strs = (
+            observed_keypoint_labels
+            or _observed_keypoints_from_findings(state.findings_snapshot)
+        )
         uncovered_keypoints = _compute_uncovered_keypoints(
-            observed_kp_strs, state.active_hypotheses, state.resolved_hypotheses,
+            observed_kp_strs,
+            state.active_hypotheses,
+            state.resolved_hypotheses,
             proposed_counts=state.proposed_keypoints,
         )
-        active_hypotheses_slim = [{"id": h.id, "description": h.description, "verdict": h.verdict} for h in state.active_hypotheses[:10]]
+        active_hypotheses_slim = [
+            {"id": h.id, "description": h.description, "verdict": h.verdict}
+            for h in state.active_hypotheses[:10]
+        ]
         gap_msgs, gap_schema = build_gap_identifier_messages(
             observed_keypoints=observed_keypoints,
             uncovered_keypoints=uncovered_keypoints,
@@ -1014,13 +1322,19 @@ async def _run_broad_plan_step(
             case_profile=case_profile_str,
         )
         gap_parsed = await _call_with_outage_recovery(
-            request_llm_json, base_url=base_url, model=model,
+            request_llm_json,
+            base_url=base_url,
+            model=model,
             messages=gap_msgs,
             json_schema=gap_schema,
             status_callback=llm_status_fn,
             audit_callback=lambda msgs, out, parsed: llm_logger.write(
-                iteration=plan_cycle, phase="plan-broad-gap", input_messages=msgs,
-                output=parsed, model=model, base_url=base_url,
+                iteration=plan_cycle,
+                phase="plan-broad-gap",
+                input_messages=msgs,
+                output=parsed,
+                model=model,
+                base_url=base_url,
             ),
         )
         gap_areas = gap_parsed.get("gap_areas", [])
@@ -1028,10 +1342,17 @@ async def _run_broad_plan_step(
         for gap in gap_areas:
             kpid = gap.get("keypoint_id", "")
             if kpid:
-                state.proposed_keypoints[kpid] = state.proposed_keypoints.get(kpid, 0) + 1
-        valid_gap_areas = [g for g in gap_areas if g.get("keypoint_id") in REPORT_KEYPOINTS]
+                state.proposed_keypoints[kpid] = (
+                    state.proposed_keypoints.get(kpid, 0) + 1
+                )
+        valid_gap_areas = [
+            g for g in gap_areas if g.get("keypoint_id") in REPORT_KEYPOINTS
+        ]
         if len(valid_gap_areas) < len(gap_areas):
-            _log("PLAN", f"gap_identifier invented {len(gap_areas) - len(valid_gap_areas)} non-existent keypoint names, dropped")
+            _log(
+                "PLAN",
+                f"gap_identifier invented {len(gap_areas) - len(valid_gap_areas)} non-existent keypoint names, dropped",
+            )
         gap_areas = valid_gap_areas
 
         # R3-08: Cap gap_areas to match investigation throughput. Drafting more
@@ -1048,11 +1369,14 @@ async def _run_broad_plan_step(
         all_rule_models = list(rule_cache.values())
         # T-09: Deterministic relevance ranking — score rules by token overlap with
         # all gap keypoint names and event ID intersection with case profile
-        _all_gap_kp_text = " ".join(
-            str(g.get("keypoint_id", "")) for g in gap_areas
+        _all_gap_kp_text = " ".join(str(g.get("keypoint_id", "")) for g in gap_areas)
+        _all_gap_tokens: set[str] = (
+            set(re.findall(r"[a-z0-9]+", _all_gap_kp_text.lower()))
+            if _all_gap_kp_text
+            else set()
         )
-        _all_gap_tokens: set[str] = set(re.findall(r"[a-z0-9]+", _all_gap_kp_text.lower())) if _all_gap_kp_text else set()
         _profile_eids = get_profile_event_ids() or set()
+
         def _rule_relevance_score(rule: Any) -> float:
             score = 0.0
             rule_text = f"{rule.id} {rule.title} {' '.join(rule.tags)}".lower()
@@ -1067,19 +1391,28 @@ async def _run_broad_plan_step(
                 intersection = len(rule_event_ids & _profile_eids)
                 score += intersection / max(len(rule_event_ids), 1) * 0.5
             return score
+
         scored = sorted(all_rule_models, key=_rule_relevance_score, reverse=True)
         available_rules = [r.model_dump() for r in scored[:5]]
         drafted_hypotheses: list[Hypothesis] = []
         for gap in gap_areas:
-            h_msgs, h_schema = build_hypothesis_drafter_messages(gap, available_rules, case_profile=case_profile_str)
+            h_msgs, h_schema = build_hypothesis_drafter_messages(
+                gap, available_rules, case_profile=case_profile_str
+            )
             h_parsed = await _call_with_outage_recovery(
-                request_llm_json, base_url=base_url, model=model,
+                request_llm_json,
+                base_url=base_url,
+                model=model,
                 messages=h_msgs,
                 json_schema=h_schema,
                 status_callback=llm_status_fn,
                 audit_callback=lambda msgs, out, parsed: llm_logger.write(
-                    iteration=plan_cycle, phase="plan-broad-draft", input_messages=msgs,
-                    output=parsed, model=model, base_url=base_url,
+                    iteration=plan_cycle,
+                    phase="plan-broad-draft",
+                    input_messages=msgs,
+                    output=parsed,
+                    model=model,
+                    base_url=base_url,
                 ),
             )
             hyp = _parse_hypothesis_from_drafter(h_parsed)
@@ -1096,25 +1429,49 @@ async def _run_broad_plan_step(
         # 3) dedup + merge
         deduped = _dedup_new_hypotheses(drafted_hypotheses, state.active_hypotheses)
         state.active_hypotheses = _merge_active_hypotheses(
-            db=db, current=state.active_hypotheses, updates=deduped,
-            resolved=state.resolved_hypotheses, session_id=session_id, origin="broad_plan",
+            db=db,
+            current=state.active_hypotheses,
+            updates=deduped,
+            resolved=state.resolved_hypotheses,
+            session_id=session_id,
+            origin="broad_plan",
         )
         stop_flag = not bool(gap_areas)
-        _save_step(db=db, session_id=session_id, iteration=plan_cycle, phase="plan-broad",
-                   hypothesis_id=None, input_json=plan_input,
-                   output_json={"gap_areas": gap_areas, "hypotheses": [h.model_dump() for h in drafted_hypotheses]})
+        _save_step(
+            db=db,
+            session_id=session_id,
+            iteration=plan_cycle,
+            phase="plan-broad",
+            hypothesis_id=None,
+            input_json=plan_input,
+            output_json={
+                "gap_areas": gap_areas,
+                "hypotheses": [h.model_dump() for h in drafted_hypotheses],
+            },
+        )
         _save_step(
             db=db,
             session_id=session_id,
             iteration=plan_cycle,
             phase="plan-broad-audit",
             hypothesis_id=None,
-            input_json={"hypotheses": [item.model_dump() for item in drafted_hypotheses]},
-            output_json={"audits": _audit_broad_plan_hypotheses(state, drafted_hypotheses)},
+            input_json={
+                "hypotheses": [item.model_dump() for item in drafted_hypotheses]
+            },
+            output_json={
+                "audits": _audit_broad_plan_hypotheses(state, drafted_hypotheses)
+            },
         )
-        _log("PLAN", f"+{len(drafted_hypotheses)} new hypotheses (active={len(state.active_hypotheses)}, stop={stop_flag})")
+        _log(
+            "PLAN",
+            f"+{len(drafted_hypotheses)} new hypotheses (active={len(state.active_hypotheses)}, stop={stop_flag})",
+        )
         if emit_fn:
-            emit_fn("investigate/plan", f"[plan] new_hypotheses={len(drafted_hypotheses)} active={len(state.active_hypotheses)}", iteration=plan_cycle)
+            emit_fn(
+                "investigate/plan",
+                f"[plan] new_hypotheses={len(drafted_hypotheses)} active={len(state.active_hypotheses)}",
+                iteration=plan_cycle,
+            )
         return stop_flag
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code >= 500:
@@ -1140,15 +1497,15 @@ async def _run_broad_plan_step(
 
 async def _run_cycle_body(
     *,
-    state: "SessionState",
-    ctx: "_Ctx",
-    db: "CaseDB",
-    case: "Case",
+    state: SessionState,
+    ctx: _Ctx,
+    db: CaseDB,
+    case: Case,
     session_id: str,
     base_url: str,
     model: str,
-    memory: "MemoryManager",
-    llm_logger: "LLMCallLogger",
+    memory: MemoryManager,
+    llm_logger: LLMCallLogger,
     progress_callback: Callable[[dict[str, Any]], None] | None,
     max_queries_per_hypothesis: int,
     plan_cycle: int,
@@ -1160,13 +1517,23 @@ async def _run_cycle_body(
 
     Returns (broad_plan_stop, cycle_progress, focus_sections, report_before).
     """
-    def _emit(stage: str, summary: str, *, report_kw: dict | None = None, iteration: int | None = None, **extras: Any) -> None:
+
+    def _emit(
+        stage: str,
+        summary: str,
+        *,
+        report_kw: dict | None = None,
+        iteration: int | None = None,
+        **extras: Any,
+    ) -> None:
         if not progress_callback:
             return
         payload = {
-            "stage": stage, "status": "running",
+            "stage": stage,
+            "status": "running",
             "iteration": state.iteration if iteration is None else iteration,
-            "summary": summary, "focus_hypothesis_id": state.focus_hypothesis_id,
+            "summary": summary,
+            "focus_hypothesis_id": state.focus_hypothesis_id,
             "hypotheses": [h.model_dump() for h in _all_hypotheses(state)],
             "report_sections": _ctx_get_report_status(ctx, db, **(report_kw or {})),
         }
@@ -1194,36 +1561,62 @@ async def _run_cycle_body(
 
     if not report_only:
         if len(state.active_hypotheses) >= MAX_ACTIVE_HYPOTHESES:
-            _log("PLAN", f"active cap reached ({len(state.active_hypotheses)} >= {MAX_ACTIVE_HYPOTHESES}); skipping broad_plan this cycle")
+            _log(
+                "PLAN",
+                f"active cap reached ({len(state.active_hypotheses)} >= {MAX_ACTIVE_HYPOTHESES}); skipping broad_plan this cycle",
+            )
         else:
             broad_plan_stop = await _call_with_outage_recovery(
-                _run_broad_plan_step, base_url=base_url, model=model,
-                state=state, db=db, session_id=session_id,
+                _run_broad_plan_step,
+                base_url=base_url,
+                model=model,
+                state=state,
+                db=db,
+                session_id=session_id,
                 llm_logger=llm_logger,
-                plan_cycle=plan_cycle, observed_keypoints=observed_keypoints,
-                emit_fn=_emit, llm_status_fn=llm_status,
+                plan_cycle=plan_cycle,
+                observed_keypoints=observed_keypoints,
+                emit_fn=_emit,
+                llm_status_fn=llm_status,
                 case_profile_str=case_profile_str,
             )
         remaining_cycles = max(1, max_iter - plan_cycle + 1)
-        focus_max = max(2, (len(state.active_hypotheses) + remaining_cycles - 1) // remaining_cycles)
+        focus_max = max(
+            2, (len(state.active_hypotheses) + remaining_cycles - 1) // remaining_cycles
+        )
         focus_hypotheses = _select_focus_hypotheses(state, max_items=focus_max)
         for hypothesis in focus_hypotheses:
             if ctx.interrupted:
                 break
             state.focus_hypothesis_id = hypothesis.id
             state.focus_depth = 0
-            _ctx_refresh_caches(ctx, memory, base_url, model, current_hypothesis_id=hypothesis.id)
+            _ctx_refresh_caches(
+                ctx, memory, base_url, model, current_hypothesis_id=hypothesis.id
+            )
             focus_sections = _guess_related_sections(hypothesis.description)
             _log("HYPOTHESIS", f"{hypothesis.id} — {hypothesis.description}")
-            _emit("investigate/hypothesis", f"[hypothesis] {hypothesis.id}: {hypothesis.description}",
-                  iteration=plan_cycle, report_kw={"focus_sections": focus_sections})
+            _emit(
+                "investigate/hypothesis",
+                f"[hypothesis] {hypothesis.id}: {hypothesis.description}",
+                iteration=plan_cycle,
+                report_kw={"focus_sections": focus_sections},
+            )
             progress, state, sections = await _investigate_one_hypothesis(
-                hypothesis=hypothesis, state=state, ctx=ctx, memory=memory, db=db,
-                base_url=base_url, model=model, plan_cycle=plan_cycle,
-                llm_logger=llm_logger, session_id=session_id,
-                max_queries_per_hypothesis=max_queries_per_hypothesis, case=case,
+                hypothesis=hypothesis,
+                state=state,
+                ctx=ctx,
+                memory=memory,
+                db=db,
+                base_url=base_url,
+                model=model,
+                plan_cycle=plan_cycle,
+                llm_logger=llm_logger,
+                session_id=session_id,
+                max_queries_per_hypothesis=max_queries_per_hypothesis,
+                case=case,
                 query_limit=max_queries_per_hypothesis,
-                emit_fn=_emit, llm_status_fn=llm_status,
+                emit_fn=_emit,
+                llm_status_fn=llm_status,
                 case_profile_str=case_profile_str,
             )
             if progress:
@@ -1242,13 +1635,13 @@ async def _run_report_phase(
     template_root: Path,
     base_url: str,
     model: str,
-    llm_logger: "LLMCallLogger",
+    llm_logger: LLMCallLogger,
     progress_callback: Callable[[dict[str, Any]], None] | None,
     focus_sections: list[str],
     report_max_queries_per_section: int,
-    state: "SessionState",
+    state: SessionState,
     report_before: dict[str, Any],
-    memory: "MemoryManager",
+    memory: MemoryManager,
 ) -> tuple[dict[str, Any], bool, str]:
     """Run the report refresh phase.
 
@@ -1265,10 +1658,16 @@ async def _run_report_phase(
         # investigation loop (unattended multi-day runs must survive them);
         # only an exhausted outage budget propagates and stops the session.
         report_result = await _call_with_outage_recovery(
-            async_refresh_report_sections, base_url=base_url, model=model,
-            case=case, db=db, session_id=session_id, iteration=plan_cycle,
+            async_refresh_report_sections,
+            base_url=base_url,
+            model=model,
+            case=case,
+            db=db,
+            session_id=session_id,
+            iteration=plan_cycle,
             template_paths=template_paths,
-            llm_logger=llm_logger, progress_callback=progress_callback,
+            llm_logger=llm_logger,
+            progress_callback=progress_callback,
             focus_sections=focus_sections,
             max_queries_per_section=report_max_queries_per_section,
         )
@@ -1283,9 +1682,14 @@ async def _run_report_phase(
         print(f"[red][report] section refresh failed: {error_label}[/red]")
         print(traceback.format_exc())
         if progress_callback:
-            progress_callback({"stage": "investigate/report-cycle-done", "status": "running",
-                               "iteration": plan_cycle,
-                               "summary": f"[report] refresh failed: {error_label}"})
+            progress_callback(
+                {
+                    "stage": "investigate/report-cycle-done",
+                    "status": "running",
+                    "iteration": plan_cycle,
+                    "summary": f"[report] refresh failed: {error_label}",
+                }
+            )
         try:
             render_written_report(case, db)
         except Exception as render_exc:
@@ -1295,7 +1699,11 @@ async def _run_report_phase(
         return report_before, cycle_progress, "ok"
     report_after = report_result["report_status"]
     gap_new_hypotheses = _inject_gap_hypotheses(
-        db=db, state=state, gaps=report_result["gaps"], session_id=session_id, memory=memory,
+        db=db,
+        state=state,
+        gaps=report_result["gaps"],
+        session_id=session_id,
+        memory=memory,
     )
     if gap_new_hypotheses:
         cycle_progress = True
@@ -1330,13 +1738,23 @@ def _check_termination(
 
 
 def _init_session(
-    case: Case, db: CaseDB, profile: str, base_url: str, model: str,
-    template_root: Path | None, active_pack_ids: set[str] | None = None,
-) -> tuple["SessionState", "_Ctx", "MemoryManager", "LLMCallLogger", str, datetime, Path]:
+    case: Case,
+    db: CaseDB,
+    profile: str,
+    base_url: str,
+    model: str,
+    template_root: Path | None,
+    active_pack_ids: set[str] | None = None,
+) -> tuple[SessionState, _Ctx, MemoryManager, LLMCallLogger, str, datetime, Path]:
     """Initialize a new investigation session. Returns (state, ctx, memory, llm_logger, session_id, started_at, template_root)."""
     session_id = f"session-{uuid4().hex[:12]}"
     started_at = datetime.now(UTC).replace(tzinfo=None)
-    memory = MemoryManager(case, summarize=lambda messages, m: chat_completion(messages=messages, model=m, base_url=base_url))
+    memory = MemoryManager(
+        case,
+        summarize=lambda messages, m: chat_completion(
+            messages=messages, model=m, base_url=base_url
+        ),
+    )
     profile_config = _load_profile_config(profile)
     if template_root is None:
         case.ensure_report_templates()
@@ -1347,8 +1765,11 @@ def _init_session(
     llm_logger = LLMCallLogger(case, session_id)
     active_hypotheses, resolved_hypotheses = _load_persisted_hypotheses(db)
     state = SessionState(
-        session_id=session_id, iteration=0, findings_snapshot=_finding_snapshot(db),
-        active_hypotheses=active_hypotheses, resolved_hypotheses=resolved_hypotheses,
+        session_id=session_id,
+        iteration=0,
+        findings_snapshot=_finding_snapshot(db),
+        active_hypotheses=active_hypotheses,
+        resolved_hypotheses=resolved_hypotheses,
     )
     _seed_rule_hypotheses(db, state, session_id, active_pack_ids=active_pack_ids)
     _sync_keypoint_cards(memory, state.findings_snapshot)
@@ -1381,29 +1802,53 @@ async def investigate(
 ) -> dict[str, Any]:
     """Run the full investigation loop: broad plan → hypothesis loop → report refresh, with termination checks and LLM budget enforcement."""
     profile_path = Path(__file__).parent.parent / "profiles" / f"{profile}.yaml"
-    active_pack_ids = resolve_active_packs(profile_path if profile_path.exists() else None, db, auto_rulepacks=auto_rulepacks)
+    active_pack_ids = resolve_active_packs(
+        profile_path if profile_path.exists() else None,
+        db,
+        auto_rulepacks=auto_rulepacks,
+    )
     if auto_rulepacks and active_pack_ids:
         expected = set()
         if profile_path.exists():
             import yaml
-            profile_data = yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
+
+            profile_data = (
+                yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
+            )
             expected = set(profile_data.get("rulepacks") or [])
         auto_enabled = active_pack_ids - expected
         if auto_enabled:
-            _log("PLAN", f"auto-rulepacks enabled: {sorted(auto_enabled)} (detected families trigger pack activation)")
-    state, ctx, memory, llm_logger, session_id, started_at, template_root = _init_session(
-        case, db, profile, base_url, model, template_root, active_pack_ids=active_pack_ids if auto_rulepacks else None,
+            _log(
+                "PLAN",
+                f"auto-rulepacks enabled: {sorted(auto_enabled)} (detected families trigger pack activation)",
+            )
+    state, ctx, memory, llm_logger, session_id, started_at, template_root = (
+        _init_session(
+            case,
+            db,
+            profile,
+            base_url,
+            model,
+            template_root,
+            active_pack_ids=active_pack_ids if auto_rulepacks else None,
+        )
     )
     case.extract_time_range(db.conn)
     case_profile_dict = build_case_profile(db)
     case_profile_str = _format_case_profile(case_profile_dict)
-    profile_event_ids = {e["event_id"] for e in case_profile_dict.get("event_ids", []) if isinstance(e.get("event_id"), int)}
+    profile_event_ids = {
+        e["event_id"]
+        for e in case_profile_dict.get("event_ids", [])
+        if isinstance(e.get("event_id"), int)
+    }
     set_case_profile(case_profile_str, profile_event_ids)
     status = "running"
     no_progress_count = 0
     report_refresh_failures = 0
     previous_sigint = signal.getsignal(signal.SIGINT)
-    signal.signal(signal.SIGINT, lambda signum, frame: setattr(ctx, "interrupted", True))
+    signal.signal(
+        signal.SIGINT, lambda signum, frame: setattr(ctx, "interrupted", True)
+    )
 
     def _check_llm_budget() -> None:
         if max_llm_calls > 0 and llm_logger.total_calls >= max_llm_calls:
@@ -1419,28 +1864,58 @@ async def investigate(
             state.iteration = plan_cycle
             state.findings_snapshot = _finding_snapshot(db)
             _sync_keypoint_cards(memory, state.findings_snapshot)
-            _log("PLAN", f"Cycle {plan_cycle}/{max_iter} — broad planning (active={len(state.active_hypotheses)} resolved={len(state.resolved_hypotheses)})")
+            _log(
+                "PLAN",
+                f"Cycle {plan_cycle}/{max_iter} — broad planning (active={len(state.active_hypotheses)} resolved={len(state.resolved_hypotheses)})",
+            )
             if ctx.interrupted:
                 status = "stopped"
                 break
-            broad_plan_stop, cycle_progress, focus_sections, report_before = await _run_cycle_body(
-                state=state, ctx=ctx, db=db, case=case, session_id=session_id,
-                base_url=base_url, model=model, memory=memory, llm_logger=llm_logger,
+            (
+                broad_plan_stop,
+                cycle_progress,
+                focus_sections,
+                report_before,
+            ) = await _run_cycle_body(
+                state=state,
+                ctx=ctx,
+                db=db,
+                case=case,
+                session_id=session_id,
+                base_url=base_url,
+                model=model,
+                memory=memory,
+                llm_logger=llm_logger,
                 progress_callback=progress_callback,
                 max_queries_per_hypothesis=max_queries_per_hypothesis,
-                plan_cycle=plan_cycle, max_iter=max_iter, report_only=report_only,
+                plan_cycle=plan_cycle,
+                max_iter=max_iter,
+                report_only=report_only,
                 case_profile_str=case_profile_str,
             )
             if ctx.interrupted:
                 status = "stopped"
                 break
-            report_after, report_cycle_progress, refresh_status = await _run_report_phase(
-                case=case, db=db, session_id=session_id, plan_cycle=plan_cycle,
-                report_every_n_cycles=report_every_n_cycles, template_root=template_root,
-                base_url=base_url, model=model, llm_logger=llm_logger,
-                progress_callback=progress_callback, focus_sections=focus_sections,
+            (
+                report_after,
+                report_cycle_progress,
+                refresh_status,
+            ) = await _run_report_phase(
+                case=case,
+                db=db,
+                session_id=session_id,
+                plan_cycle=plan_cycle,
+                report_every_n_cycles=report_every_n_cycles,
+                template_root=template_root,
+                base_url=base_url,
+                model=model,
+                llm_logger=llm_logger,
+                progress_callback=progress_callback,
+                focus_sections=focus_sections,
                 report_max_queries_per_section=report_max_queries_per_section,
-                state=state, report_before=report_before, memory=memory,
+                state=state,
+                report_before=report_before,
+                memory=memory,
             )
             if refresh_status.startswith("failed"):
                 report_refresh_failures += 1
@@ -1448,10 +1923,14 @@ async def investigate(
             cycle_progress = cycle_progress or report_cycle_progress
             memory.regenerate_timeline_from_db(db)
             terminal_status, no_progress_count = _check_termination(
-                report_only=report_only, broad_plan_stop=broad_plan_stop,
-                active_hypotheses=state.active_hypotheses, db=db,
-                report_after=report_after, no_progress_count=no_progress_count,
-                no_progress_limit=no_progress_limit, cycle_progress=cycle_progress,
+                report_only=report_only,
+                broad_plan_stop=broad_plan_stop,
+                active_hypotheses=state.active_hypotheses,
+                db=db,
+                report_after=report_after,
+                no_progress_count=no_progress_count,
+                no_progress_limit=no_progress_limit,
+                cycle_progress=cycle_progress,
             )
             if terminal_status is not None:
                 status = terminal_status
@@ -1468,17 +1947,26 @@ async def investigate(
             try:
                 template_paths = sorted(template_root.glob("[0-9]*_*.md"))
                 await async_refresh_report_sections(
-                    case=case, db=db, session_id=session_id, iteration=max_iter + 1,
-                    base_url=base_url, model=model, template_paths=template_paths,
-                    llm_logger=llm_logger, progress_callback=progress_callback,
-                    focus_sections=[], max_queries_per_section=report_max_queries_per_section,
+                    case=case,
+                    db=db,
+                    session_id=session_id,
+                    iteration=max_iter + 1,
+                    base_url=base_url,
+                    model=model,
+                    template_paths=template_paths,
+                    llm_logger=llm_logger,
+                    progress_callback=progress_callback,
+                    focus_sections=[],
+                    max_queries_per_section=report_max_queries_per_section,
                     force_all=True,
                 )
                 render_written_report(case, db)
                 memory.regenerate_timeline_from_db(db)
             except Exception as exc:
                 report_refresh_failures += 1
-                print(f"[yellow][final-refresh] failed: {type(exc).__name__}: {exc}[/yellow]")
+                print(
+                    f"[yellow][final-refresh] failed: {type(exc).__name__}: {exc}[/yellow]"
+                )
                 print(traceback.format_exc())
     except Exception:
         status = "failed"
@@ -1500,9 +1988,12 @@ async def investigate(
         )
     summary = _final_summary(state)
     return {
-        "session_id": session_id, "status": status,
-        "iteration": state.iteration, "depth": state.focus_depth,
-        "focus_hypothesis_id": state.focus_hypothesis_id, "summary": summary,
+        "session_id": session_id,
+        "status": status,
+        "iteration": state.iteration,
+        "depth": state.focus_depth,
+        "focus_hypothesis_id": state.focus_hypothesis_id,
+        "summary": summary,
         "hypotheses": [item.model_dump() for item in _all_hypotheses(state)],
         "report_sections": _ctx_get_report_status(ctx, db, refresh=True),
         "report_refresh_failures": report_refresh_failures,

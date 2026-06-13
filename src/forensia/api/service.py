@@ -17,9 +17,9 @@ from forensia.api.dto import (
     EventVolumePointDTO,
     EvidenceRecordDTO,
     FindingDTO,
+    HypothesesResponseDTO,
     HypothesisDTO,
     HypothesisReasoningEntryDTO,
-    HypothesesResponseDTO,
     InvestigationStepDTO,
     MftTimelineDTO,
     ReportSectionDTO,
@@ -31,7 +31,10 @@ from forensia.db.database import CaseDB
 from forensia.db.evidence_lookup import lookup_evidence_record
 from forensia.db.query import fetch_records, normalize_value
 from forensia.report.evidence_map import build_evidence_map
-from forensia.report.html import render_markdown_fragment, _inject_evidence_interactivity
+from forensia.report.html import (
+    _inject_evidence_interactivity,
+    render_markdown_fragment,
+)
 
 
 def _evidence_ids_from_payload(value: Any) -> list[str]:
@@ -70,7 +73,9 @@ def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:
 def get_case_dto(case: Case) -> CaseDTO:
     """Build a CaseDTO from the case manifest YAML."""
     manifest = yaml.safe_load(case.manifest_path.read_text(encoding="utf-8")) or {}
-    paths = {str(key): str(value) for key, value in (manifest.get("paths") or {}).items()}
+    paths = {
+        str(key): str(value) for key, value in (manifest.get("paths") or {}).items()
+    }
     return CaseDTO(case_name=case.path.name, paths=paths, manifest=manifest)
 
 
@@ -215,7 +220,9 @@ def list_hypothesis_reasoning_dto(
         """,
         (hypothesis_id, limit),
     )
-    return [HypothesisReasoningEntryDTO.model_validate(_normalize_row(row)) for row in rows]
+    return [
+        HypothesisReasoningEntryDTO.model_validate(_normalize_row(row)) for row in rows
+    ]
 
 
 def list_hypothesis_reasoning_map_dto(
@@ -246,7 +253,9 @@ def list_hypothesis_reasoning_map_dto(
     for row in rows:
         normalized = _normalize_row(row)
         hypothesis_id = str(normalized.get("hypothesis_id") or "")
-        items.setdefault(hypothesis_id, []).append(HypothesisReasoningEntryDTO.model_validate(normalized))
+        items.setdefault(hypothesis_id, []).append(
+            HypothesisReasoningEntryDTO.model_validate(normalized)
+        )
     return items
 
 
@@ -277,7 +286,9 @@ def list_latest_hypothesis_reasoning_dto(
         """,
         (*params, limit),
     )
-    return [HypothesisReasoningEntryDTO.model_validate(_normalize_row(row)) for row in rows]
+    return [
+        HypothesisReasoningEntryDTO.model_validate(_normalize_row(row)) for row in rows
+    ]
 
 
 def list_hypotheses_dto(db: CaseDB) -> HypothesesResponseDTO:
@@ -319,7 +330,7 @@ def list_hypotheses_dto(db: CaseDB) -> HypothesesResponseDTO:
         FROM ranked
         WHERE row_num <= 3
         ORDER BY hypothesis_id, created_at DESC, entry_id DESC
-        """
+        """,
     )
     latest_by_hypothesis: dict[str, list[HypothesisReasoningEntryDTO]] = {}
     reasoning_count_by_hypothesis: dict[str, int] = {}
@@ -331,9 +342,13 @@ def list_hypotheses_dto(db: CaseDB) -> HypothesesResponseDTO:
         latest_by_hypothesis.setdefault(hypothesis_id, []).append(
             HypothesisReasoningEntryDTO.model_validate(normalized)
         )
-        reasoning_count_by_hypothesis[hypothesis_id] = int(normalized.get("reasoning_count") or 0)
+        reasoning_count_by_hypothesis[hypothesis_id] = int(
+            normalized.get("reasoning_count") or 0
+        )
         latest_iteration_by_hypothesis[hypothesis_id] = (
-            int(normalized["latest_iteration"]) if normalized.get("latest_iteration") is not None else None
+            int(normalized["latest_iteration"])
+            if normalized.get("latest_iteration") is not None
+            else None
         )
         latest_reasoning_at_by_hypothesis.setdefault(
             hypothesis_id,
@@ -355,11 +370,18 @@ def list_hypotheses_dto(db: CaseDB) -> HypothesesResponseDTO:
         normalized = _normalize_row(row)
         hypothesis_id = str(normalized.get("hypothesis_id") or "")
         normalized["latest_reasoning"] = [
-            item.model_dump(mode="json") for item in latest_by_hypothesis.get(hypothesis_id, [])
+            item.model_dump(mode="json")
+            for item in latest_by_hypothesis.get(hypothesis_id, [])
         ]
-        normalized["reasoning_count"] = reasoning_count_by_hypothesis.get(hypothesis_id, 0)
-        normalized["latest_iteration"] = latest_iteration_by_hypothesis.get(hypothesis_id)
-        normalized["latest_reasoning_at"] = latest_reasoning_at_by_hypothesis.get(hypothesis_id)
+        normalized["reasoning_count"] = reasoning_count_by_hypothesis.get(
+            hypothesis_id, 0
+        )
+        normalized["latest_iteration"] = latest_iteration_by_hypothesis.get(
+            hypothesis_id
+        )
+        normalized["latest_reasoning_at"] = latest_reasoning_at_by_hypothesis.get(
+            hypothesis_id
+        )
         dto = HypothesisDTO.model_validate(normalized)
         if dto.status == "active":
             active.append(dto)
@@ -456,7 +478,9 @@ def list_report_sections_dto(db: CaseDB) -> list[ReportSectionDTO]:
     return items
 
 
-def list_section_questions_dto(db: CaseDB, section_key: str | None = None) -> list[SectionQuestionDTO]:
+def list_section_questions_dto(
+    db: CaseDB, section_key: str | None = None
+) -> list[SectionQuestionDTO]:
     """Return resolved QuestionSpec rows for report sections and case-wide probes."""
     params: tuple[Any, ...] | None = None
     where = ""
@@ -619,9 +643,7 @@ def aggregate_event_volume(
     return result
 
 
-def _build_range_filter(
-    start: str | None, end: str | None
-) -> tuple[str, list[Any]]:
+def _build_range_filter(start: str | None, end: str | None) -> tuple[str, list[Any]]:
     """Build SQL range filter clause and parameters for volume queries."""
     range_clauses: list[str] = [
         f"EXTRACT(year FROM timestamp) BETWEEN {_VOLUME_MIN_YEAR} AND {_VOLUME_MAX_YEAR}",
@@ -748,7 +770,9 @@ def list_event_volume_dto(
     if source in {"evtx", "all"}:
         rows.extend(_evtx_volume_points(db, bucket_expr, range_sql, range_params))
     if source in {"mft", "all"}:
-        rows.extend(_mft_volume_points(db, bucket_expr, range_sql, range_params, source))
+        rows.extend(
+            _mft_volume_points(db, bucket_expr, range_sql, range_params, source)
+        )
     return _normalize_volume_rows(rows)
 
 
@@ -774,16 +798,20 @@ def list_entity_cards_dto(case: Case) -> list[EntityCardDTO]:
             continue
         kind = kind_dir.name
         for path in sorted(kind_dir.glob("*.md")):
-            result.append(EntityCardDTO(
-                kind=kind,
-                name=path.stem,
-                mention_count=None,
-                summary=_entity_card_summary(path),
-            ))
+            result.append(
+                EntityCardDTO(
+                    kind=kind,
+                    name=path.stem,
+                    mention_count=None,
+                    summary=_entity_card_summary(path),
+                )
+            )
     return result
 
 
-def _entity_card_summary(path: Path, max_lines: int = 3, max_chars: int = 240) -> str | None:
+def _entity_card_summary(
+    path: Path, max_lines: int = 3, max_chars: int = 240
+) -> str | None:
     """Extract a short human-readable preview from an entity card markdown file.
 
     The investigator writes cards as a `- role: ...` / `- notes: ...` bullet list under an H1.
@@ -837,9 +865,18 @@ def list_attack_coverage_dto(db: CaseDB) -> list[AttackCoverageRowDTO]:
         """,
     )
     tactic_order = [
-        "initial-access", "execution", "persistence", "privilege-escalation",
-        "defense-evasion", "credential-access", "discovery", "lateral-movement",
-        "collection", "command-and-control", "exfiltration", "impact",
+        "initial-access",
+        "execution",
+        "persistence",
+        "privilege-escalation",
+        "defense-evasion",
+        "credential-access",
+        "discovery",
+        "lateral-movement",
+        "collection",
+        "command-and-control",
+        "exfiltration",
+        "impact",
     ]
     coverage: dict[str, dict[str, dict[str, int]]] = {}
     for row in rows:
@@ -858,7 +895,15 @@ def list_attack_coverage_dto(db: CaseDB) -> list[AttackCoverageRowDTO]:
             if tactic not in tactic_order:
                 tactic_order.append(tactic)
             tech_map = coverage.setdefault(tactic, {})
-            tech_entry = tech_map.setdefault(technique_id, {"count": 0, "accepted": 0, "suppressed": 0, "technique_name": technique_name})
+            tech_entry = tech_map.setdefault(
+                technique_id,
+                {
+                    "count": 0,
+                    "accepted": 0,
+                    "suppressed": 0,
+                    "technique_name": technique_name,
+                },
+            )
             tech_entry["count"] += 1
             if status == "suppressed":
                 tech_entry["suppressed"] += 1
@@ -873,12 +918,14 @@ def list_attack_coverage_dto(db: CaseDB) -> list[AttackCoverageRowDTO]:
         if not tech_map:
             continue
         for technique_id, stats in sorted(tech_map.items()):
-            result.append(AttackCoverageRowDTO(
-                tactic=tactic,
-                technique_id=technique_id,
-                technique_name=stats.get("technique_name"),
-                count=stats["count"],
-                accepted=stats["accepted"],
-                suppressed=stats["suppressed"],
-            ))
+            result.append(
+                AttackCoverageRowDTO(
+                    tactic=tactic,
+                    technique_id=technique_id,
+                    technique_name=stats.get("technique_name"),
+                    count=stats["count"],
+                    accepted=stats["accepted"],
+                    suppressed=stats["suppressed"],
+                )
+            )
     return result

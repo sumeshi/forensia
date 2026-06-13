@@ -62,9 +62,14 @@ def normalize_prefetch(case: Case, db: CaseDB) -> tuple[int, int]:
             (str(path),),
         ).fetchone()
         if source_file and source_file[0]:
-            db.execute("DELETE FROM prefetch_executions WHERE source_file = ?", (source_file[0],))
+            db.execute(
+                "DELETE FROM prefetch_executions WHERE source_file = ?",
+                (source_file[0],),
+            )
 
-        row_count = db.execute("SELECT COUNT(*) FROM read_ndjson_objects(?)", (str(path),)).fetchone()[0]
+        row_count = db.execute(
+            "SELECT COUNT(*) FROM read_ndjson_objects(?)", (str(path),)
+        ).fetchone()[0]
         db.execute(
             """
             INSERT INTO prefetch_executions (
@@ -97,6 +102,8 @@ def normalize_prefetch(case: Case, db: CaseDB) -> tuple[int, int]:
         db.execute(_build_timeline_stage_sql(path_sql))
         db.execute(_delete_existing_timeline_entries())
         db.execute(_insert_timeline_sql())
-        total_timeline += db.execute("SELECT COUNT(*) FROM prefetch_timeline_stage").fetchone()[0]
+        total_timeline += db.execute(
+            "SELECT COUNT(*) FROM prefetch_timeline_stage"
+        ).fetchone()[0]
 
     return inserted, total_timeline

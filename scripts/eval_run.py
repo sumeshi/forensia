@@ -24,13 +24,13 @@ import argparse
 import json
 import re
 import sys
-from pathlib import Path
 from collections import Counter
-
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
 
 def _read(path: Path) -> str:
     try:
@@ -42,7 +42,14 @@ def _read(path: Path) -> str:
 def _parse_hypothesis_file(path: Path) -> dict:
     text = _read(path)
     lines = text.splitlines()
-    meta = {"id": path.stem, "path": str(path), "status": "", "verdict": "", "description": "", "summary": ""}
+    meta = {
+        "id": path.stem,
+        "path": str(path),
+        "status": "",
+        "verdict": "",
+        "description": "",
+        "summary": "",
+    }
     in_section = None
     for line in lines:
         stripped = line.strip()
@@ -83,19 +90,49 @@ def _load_hypotheses(memory_dir: Path) -> list[dict]:
 
 def _family_from_description(desc: str) -> str:
     lower = desc.lower()
-    if any(w in lower for w in ("logon", "log in", "log-in", "rdp", "credential", "authentication", "password", "4648", "4624", "4625")):
+    if any(
+        w in lower
+        for w in (
+            "logon",
+            "log in",
+            "log-in",
+            "rdp",
+            "credential",
+            "authentication",
+            "password",
+            "4648",
+            "4624",
+            "4625",
+        )
+    ):
         return "account"
     if any(w in lower for w in ("service", "driver", "installation", "7045", "7040")):
         return "persistence"
     if any(w in lower for w in ("timeline", "time", "date", "sequence", "chornolog")):
         return "timeline"
-    if any(w in lower for w in ("mft", "file", "rename", "desktop", "document", "folder", "directory")):
+    if any(
+        w in lower
+        for w in ("mft", "file", "rename", "desktop", "document", "folder", "directory")
+    ):
         return "mft"
     if any(w in lower for w in ("prefetch", "execut", "process", "binary", "program")):
         return "host"
-    if any(w in lower for w in ("cloud", "email", "mail", "browser", "internet", "sync", "drive")):
+    if any(
+        w in lower
+        for w in ("cloud", "email", "mail", "browser", "internet", "sync", "drive")
+    ):
         return "ioc"
-    if any(w in lower for w in ("antiforensic", "anti-forensic", "log clear", "tamper", "eraser", "ccleaner")):
+    if any(
+        w in lower
+        for w in (
+            "antiforensic",
+            "anti-forensic",
+            "log clear",
+            "tamper",
+            "eraser",
+            "ccleaner",
+        )
+    ):
         return "gaps"
     if any(w in lower for w in ("ip", "network", "connect", "external", "remote")):
         return "ioc"
@@ -138,7 +175,9 @@ def _jaccard(a: set, b: set) -> float:
 
 
 def _find_placeholder_lines(text: str) -> list[str]:
-    pattern = re.compile(r"\{[a-z_]+}|\[[a-z_]*placeholder[a-z_]*]|\[start_time]|\[end_time]")
+    pattern = re.compile(
+        r"\{[a-z_]+}|\[[a-z_]*placeholder[a-z_]*]|\[start_time]|\[end_time]"
+    )
     return [line for line in text.splitlines() if pattern.search(line)]
 
 
@@ -186,10 +225,12 @@ def ui_file_consistency(report_sections_path: str, report_md_path: str) -> dict:
         body = str(section.get("body", "")).strip()
         body_preview = body[:200]
         if body_preview and body_preview not in md_text:
-            mismatches.append({
-                "section_key": key,
-                "body_preview": body_preview[:100],
-            })
+            mismatches.append(
+                {
+                    "section_key": key,
+                    "body_preview": body_preview[:100],
+                }
+            )
 
     return {
         "status": "ok" if not mismatches else "mismatch",
@@ -198,7 +239,9 @@ def ui_file_consistency(report_sections_path: str, report_md_path: str) -> dict:
     }
 
 
-def block_language_conformity(report_sections_path: str, target_language: str = "ja") -> dict:
+def block_language_conformity(
+    report_sections_path: str, target_language: str = "ja"
+) -> dict:
     """Check per-block language conformity from report_sections.json."""
     sections_path = Path(report_sections_path)
     if not sections_path.exists():
@@ -223,11 +266,13 @@ def block_language_conformity(report_sections_path: str, target_language: str = 
         detected = _detect_body_language(clean)
         if detected == target_language:
             conforming += 1
-        block_results.append({
-            "section_key": section.get("section_key", ""),
-            "detected": detected,
-            "target": target_language,
-        })
+        block_results.append(
+            {
+                "section_key": section.get("section_key", ""),
+                "detected": detected,
+                "target": target_language,
+            }
+        )
 
     return {
         "blocks": total_blocks,
@@ -272,7 +317,9 @@ def count_invalid_evidence_ids(report_sections_path: str, db_path: str) -> dict:
             invalid.append(eid)
             continue
         try:
-            row = conn.execute(f"SELECT 1 FROM {table} WHERE evidence_id = ? LIMIT 1", (eid,)).fetchone()
+            row = conn.execute(
+                f"SELECT 1 FROM {table} WHERE evidence_id = ? LIMIT 1", (eid,)
+            ).fetchone()
             if row:
                 valid.append(eid)
             else:
@@ -363,7 +410,12 @@ def placeholder_leak_count(memory_dir: Path, ai_logs_dir: Path | None) -> dict:
 
 def memory_duplication_ratio(overview_lines: list[str]) -> dict:
     if len(overview_lines) < 2:
-        return {"pairwise_comparisons": 0, "high_similarity_pairs": 0, "duplication_ratio": 0.0, "flag_high_duplication": False}
+        return {
+            "pairwise_comparisons": 0,
+            "high_similarity_pairs": 0,
+            "duplication_ratio": 0.0,
+            "flag_high_duplication": False,
+        }
 
     token_sets = [_token_set(line) for line in overview_lines]
     high_sim = 0
@@ -399,8 +451,6 @@ def report_hygiene(case_dir: Path, hypotheses: list[dict]) -> dict:
     bare_id_hits = bare_id_pattern.findall(report_text)
 
     # 3. Days with findings vs days in timeline
-    report_lower = report_text.lower()
-    days_in_timeline = len(re.findall(r"\|\s*\d{4}-\d{2}-\d{2}\s*\|", report_text))
     finding_dates = set()
     findings_dir = case_dir / "findings"
     if findings_dir.is_dir():
@@ -427,14 +477,18 @@ def report_hygiene(case_dir: Path, hypotheses: list[dict]) -> dict:
         "bare_id_count": len(bare_id_hits),
         "days_with_findings": len(finding_dates),
         "days_in_timeline_coverage": len(timeline_dates),
-        "day_coverage_ratio": round(len(timeline_dates) / max(len(finding_dates), 1), 3),
+        "day_coverage_ratio": round(
+            len(timeline_dates) / max(len(finding_dates), 1), 3
+        ),
     }
 
 
 def evidence_traceability(case_dir: Path) -> dict:
     report_text = _load_report(case_dir)
     finding_ids = re.findall(r"finding_id['\"]?\s*[:=]\s*['\"]?([\w\-]+)", report_text)
-    evidence_ids_in_report = re.findall(r"evidence_id['\"]?\s*[:=]\s*['\"]?([\w\-]+)", report_text)
+    evidence_ids_in_report = re.findall(
+        r"evidence_id['\"]?\s*[:=]\s*['\"]?([\w\-]+)", report_text
+    )
 
     findings_dir = case_dir / "findings"
     registered_evidence_ids: set[str] = set()
@@ -455,7 +509,9 @@ def evidence_traceability(case_dir: Path) -> dict:
                     pass
 
     resolvable_findings = sum(1 for fid in finding_ids if fid in registered_finding_ids)
-    resolvable_evidence = sum(1 for eid in evidence_ids_in_report if eid in registered_evidence_ids)
+    resolvable_evidence = sum(
+        1 for eid in evidence_ids_in_report if eid in registered_evidence_ids
+    )
     total_claims_in_report = len(finding_ids) + len(evidence_ids_in_report) or 1
 
     return {
@@ -479,7 +535,7 @@ def per_phase_llm_call_counts(ai_logs_dir: Path) -> dict:
             try:
                 data = json.loads(_read(f))
                 phase = data.get("meta", {}).get("phase", "unknown")
-            except (json.JSONDecodeError, KeyError):
+            except json.JSONDecodeError, KeyError:
                 phase = "unknown"
             counts[phase] += 1
 
@@ -518,7 +574,10 @@ def evaluate(case_dir: Path) -> dict:
     report_sections_path = reports_dir / "report_sections.json"
     if report_sections_path.exists():
         report_sections = json.loads(_read(report_sections_path))
-        section_texts = {s.get("section_key", f"block_{i}"): str(s.get("body", "")) for i, s in enumerate(report_sections)}
+        section_texts = {
+            s.get("section_key", f"block_{i}"): str(s.get("body", ""))
+            for i, s in enumerate(report_sections)
+        }
     else:
         section_texts = {}
         report_sections = []
@@ -528,13 +587,23 @@ def evaluate(case_dir: Path) -> dict:
         ir[section_key] = instruction_tone_ratio(text)
 
     report_md_path = reports_dir / "report.md"
-    blc = block_language_conformity(str(report_sections_path)) if report_sections_path.exists() else {"status": "missing_file"}
+    blc = (
+        block_language_conformity(str(report_sections_path))
+        if report_sections_path.exists()
+        else {"status": "missing_file"}
+    )
     db_path = db_dir / "case.duckdb"
-    inv = count_invalid_evidence_ids(str(report_sections_path), str(db_path)) if report_sections_path.exists() else {"status": "missing_files"}
+    inv = (
+        count_invalid_evidence_ids(str(report_sections_path), str(db_path))
+        if report_sections_path.exists()
+        else {"status": "missing_files"}
+    )
 
     metrics["r3_metrics"] = {
         "instruction_tone_ratio": ir,
-        "ui_file_consistency": ui_file_consistency(str(report_sections_path), str(report_md_path)),
+        "ui_file_consistency": ui_file_consistency(
+            str(report_sections_path), str(report_md_path)
+        ),
         "block_language_conformity": blc,
         "invalid_evidence_ids": inv,
     }
@@ -562,13 +631,17 @@ def _format_markdown(metrics: dict) -> str:
     lines.append(f"- Total hypotheses: {d['total_hypotheses']}")
     lines.append(f"- Families: {d['families']}")
     lines.append(f"- Dominant family share: {d['dominant_family_share']:.1%}")
-    lines.append(f"- ⚠️ **Flag (>70% single-family):** {d['flag_single_family_over_70pct']}")
+    lines.append(
+        f"- ⚠️ **Flag (>70% single-family):** {d['flag_single_family_over_70pct']}"
+    )
     lines.append("")
 
     lines.append("## 2. Confirmed-while-Benign Rate")
     d = metrics["confirmed_while_benign_rate"]
     lines.append(f"- Total confirmed hypotheses: {d['total_confirmed']}")
-    lines.append(f"- Confirmed-while-benign: {d['confirmed_while_benign_count']} ({d['confirmed_while_benign_rate']})")
+    lines.append(
+        f"- Confirmed-while-benign: {d['confirmed_while_benign_count']} ({d['confirmed_while_benign_rate']})"
+    )
     lines.append(f"- Note: {d['note']}")
     lines.append("")
 
@@ -589,7 +662,9 @@ def _format_markdown(metrics: dict) -> str:
     d = metrics["memory_duplication_ratio"]
     lines.append(f"- Overview lines: {d['total_lines']}")
     lines.append(f"- Pairwise comparisons: {d['pairwise_comparisons']}")
-    lines.append(f"- High-similarity pairs (≥0.7 Jaccard): {d['high_similarity_pairs']}")
+    lines.append(
+        f"- High-similarity pairs (≥0.7 Jaccard): {d['high_similarity_pairs']}"
+    )
     lines.append(f"- Duplication ratio: {d['duplication_ratio']}")
     lines.append(f"- ⚠️ **Flag (ratio >0.3):** {d['flag_high_duplication']}")
     lines.append("")
@@ -671,10 +746,22 @@ def _format_markdown(metrics: dict) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate investigation quality metrics for a forensia case")
+    parser = argparse.ArgumentParser(
+        description="Evaluate investigation quality metrics for a forensia case"
+    )
     parser.add_argument("case_dir", type=str, help="Path to forensia case directory")
-    parser.add_argument("--output", type=str, default=None, help="Output JSON path (default: <case_dir>/eval_report.json)")
-    parser.add_argument("--markdown", type=str, default=None, help="Output Markdown path (default: stdout)")
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Output JSON path (default: <case_dir>/eval_report.json)",
+    )
+    parser.add_argument(
+        "--markdown",
+        type=str,
+        default=None,
+        help="Output Markdown path (default: stdout)",
+    )
     args = parser.parse_args()
 
     case_path = Path(args.case_dir).resolve()
@@ -688,7 +775,9 @@ def main() -> None:
         output_path = Path(args.output)
     else:
         output_path = case_path / "eval_report.json"
-    output_path.write_text(json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8")
+    output_path.write_text(
+        json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
     print(f"JSON report saved to {output_path}", file=sys.stderr)
 
     md = _format_markdown(metrics)

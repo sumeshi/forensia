@@ -8,10 +8,13 @@ from typing import Any
 @lru_cache(maxsize=1)
 def _load_taxonomy() -> dict[str, Any]:
     """Load the verdict taxonomy YAML file (cached after first call)."""
-    path = Path(__file__).parent.parent / "rulepacks" / "_schema" / "verdict_taxonomy.yaml"
+    path = (
+        Path(__file__).parent.parent / "rulepacks" / "_schema" / "verdict_taxonomy.yaml"
+    )
     if not path.exists():
         return {}
     import yaml
+
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
@@ -31,7 +34,9 @@ def assert_valid_verdict(verdict: str, category: str) -> None:
     """Raise ValueError if the verdict is not in the allowed set for the category."""
     allowed = valid_verdicts(category)
     if allowed and verdict not in allowed:
-        raise ValueError(f"Invalid verdict '{verdict}' for {category}. Allowed: {allowed}")
+        raise ValueError(
+            f"Invalid verdict '{verdict}' for {category}. Allowed: {allowed}"
+        )
 
 
 def map_verdict(verdict: str, mapping_name: str) -> str | None:

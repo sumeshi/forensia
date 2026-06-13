@@ -48,7 +48,18 @@ class WebApiTests(unittest.TestCase):
                         created_session, resolved_session, created_at, updated_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    ("H-1", "Investigate service persistence", "active", None, "", "broad_plan", "S-1", None, now, now),
+                    (
+                        "H-1",
+                        "Investigate service persistence",
+                        "active",
+                        None,
+                        "",
+                        "broad_plan",
+                        "S-1",
+                        None,
+                        now,
+                        now,
+                    ),
                 )
                 db.execute(
                     """
@@ -75,7 +86,17 @@ class WebApiTests(unittest.TestCase):
                         support_status, created_at, updated_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    ("C-1", "1_overview", "Service install observed", '["F-1"]', '["H-1"]', '["ev-1"]', "supported", now, now),
+                    (
+                        "C-1",
+                        "1_overview",
+                        "Service install observed",
+                        '["F-1"]',
+                        '["H-1"]',
+                        '["ev-1"]',
+                        "supported",
+                        now,
+                        now,
+                    ),
                 )
                 db.execute(
                     """
@@ -108,7 +129,17 @@ class WebApiTests(unittest.TestCase):
                         entry_id, hypothesis_id, session_id, iteration, phase, verdict, query_id, body, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    ("HR-1", "H-1", "S-1", 1, "check", "inconclusive", "q-1", "Need more evidence", now),
+                    (
+                        "HR-1",
+                        "H-1",
+                        "S-1",
+                        1,
+                        "check",
+                        "inconclusive",
+                        "q-1",
+                        "Need more evidence",
+                        now,
+                    ),
                 )
                 db.execute(
                     """
@@ -117,7 +148,16 @@ class WebApiTests(unittest.TestCase):
                         timestamp_type, description, tags
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    ("T-1", "mft-1", 1, "C:/Temp/a.exe", now, "fn_created", "Created", "[]"),
+                    (
+                        "T-1",
+                        "mft-1",
+                        1,
+                        "C:/Temp/a.exe",
+                        now,
+                        "fn_created",
+                        "Created",
+                        "[]",
+                    ),
                 )
                 db.execute(
                     """
@@ -156,7 +196,10 @@ class WebApiTests(unittest.TestCase):
                         "status": "running",
                         "iteration": 1,
                         "summary": "[report] 1_overview writing...",
-                        "report_sections": {"items": [], "current_section": "1_overview"},
+                        "report_sections": {
+                            "items": [],
+                            "current_section": "1_overview",
+                        },
                     },
                 )
             report_path = case.reports_dir / "report.html"
@@ -167,7 +210,9 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(200, client.get("/api/case").status_code)
             self.assertEqual(1, client.get("/api/stats").json()["findings_accepted"])
             self.assertEqual(1, len(client.get("/api/findings").json()))
-            self.assertEqual("F-1", client.get("/api/findings/F-1").json()["finding_id"])
+            self.assertEqual(
+                "F-1", client.get("/api/findings/F-1").json()["finding_id"]
+            )
             self.assertEqual(1, len(client.get("/api/hypotheses").json()["active"]))
             self.assertEqual(1, len(client.get("/api/sessions").json()))
             self.assertEqual(1, len(client.get("/api/sessions/S-1/steps").json()))
@@ -177,7 +222,10 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(2, report_section["update_count"])
             markdown_response = client.get("/api/report-markdown")
             self.assertEqual(200, markdown_response.status_code)
-            self.assertEqual("text/markdown; charset=utf-8", markdown_response.headers["content-type"])
+            self.assertEqual(
+                "text/markdown; charset=utf-8",
+                markdown_response.headers["content-type"],
+            )
             self.assertIn("# Overview", markdown_response.text)
             html_response = client.get("/api/report-html")
             self.assertEqual(200, html_response.status_code)
@@ -193,10 +241,22 @@ class WebApiTests(unittest.TestCase):
             self.assertIn("<th>A</th>", html_response.text)
             self.assertEqual(1, len(client.get("/api/claims").json()))
             self.assertEqual(1, len(client.get("/api/mft-timeline").json()))
-            self.assertEqual(2, len(client.get("/api/event-volume?bucket=hour&source=all").json()))
-            self.assertEqual(1, len(client.get("/api/event-volume?bucket=hour&source=detected").json()))
+            self.assertEqual(
+                2, len(client.get("/api/event-volume?bucket=hour&source=all").json())
+            )
+            self.assertEqual(
+                1,
+                len(client.get("/api/event-volume?bucket=hour&source=detected").json()),
+            )
             self.assertEqual(1, len(client.get("/api/ai-reviews").json()))
-            self.assertEqual(1, len(client.get("/api/ai-reviews?finding_id=F-1&hypothesis_id=H-1").json()))
+            self.assertEqual(
+                1,
+                len(
+                    client.get(
+                        "/api/ai-reviews?finding_id=F-1&hypothesis_id=H-1"
+                    ).json()
+                ),
+            )
             stats_payload = client.get("/api/stats").json()
             self.assertEqual(1, stats_payload["total_iterations"])
             self.assertEqual(1, stats_payload["sessions"])
@@ -204,12 +264,21 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(0, stats_payload["report_human_reviewed"])
             self.assertEqual(1, stats_payload["report_ai_exhausted"])
             hypotheses_payload = client.get("/api/hypotheses").json()
-            self.assertEqual(1, len(hypotheses_payload["active"][0]["latest_reasoning"]))
-            self.assertEqual("Need more evidence", hypotheses_payload["active"][0]["latest_reasoning"][0]["body"])
+            self.assertEqual(
+                1, len(hypotheses_payload["active"][0]["latest_reasoning"])
+            )
+            self.assertEqual(
+                "Need more evidence",
+                hypotheses_payload["active"][0]["latest_reasoning"][0]["body"],
+            )
             self.assertEqual(1, hypotheses_payload["active"][0]["reasoning_count"])
-            self.assertEqual(1, len(client.get("/api/hypotheses/H-1/reasoning?limit=20").json()))
+            self.assertEqual(
+                1, len(client.get("/api/hypotheses/H-1/reasoning?limit=20").json())
+            )
             self.assertEqual(1, len(client.get("/api/hypotheses-reasoning").json()))
-            updated_section = client.post("/api/report-sections/1_overview/status?status=human_reviewed").json()
+            updated_section = client.post(
+                "/api/report-sections/1_overview/status?status=human_reviewed"
+            ).json()
             self.assertEqual("human_reviewed", updated_section["status"])
 
             with client.stream("GET", "/api/stream?once=true") as response:
@@ -236,7 +305,6 @@ class WebApiTests(unittest.TestCase):
                 count = db.execute("SELECT COUNT(*) FROM progress_events").fetchone()[0]
             self.assertTrue(case.trace_database_path.exists())
             self.assertEqual(1000, count)
-
 
     def test_evidence_record_api_returns_record(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -290,34 +358,39 @@ class WebApiTests(unittest.TestCase):
             resp404 = client.get("/api/evidence/nonexistent")
             self.assertEqual(404, resp404.status_code)
 
-
-
     def test_evidence_routes_degrade_gracefully_when_db_locked(self) -> None:
         """While an investigation holds the DuckDB write lock, the record
         viewer must not 500: API returns 503 + Retry-After, and the HTML page
         falls back to the evidence_map summary with an auto-retry notice."""
         import json as json_module
+        from unittest import mock
 
         import duckdb
-        from unittest import mock
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             (case.reports_dir).mkdir(parents=True, exist_ok=True)
             (case.reports_dir / "evidence_map.json").write_text(
-                json_module.dumps({
-                    "evtx-security-000000000032": {
-                        "source": "evtx_events",
-                        "timestamp": "2015-03-25 10:15:54",
-                        "summary": "4624 Security ANONYMOUS LOGON@37L4247F27-25",
+                json_module.dumps(
+                    {
+                        "evtx-security-000000000032": {
+                            "source": "evtx_events",
+                            "timestamp": "2015-03-25 10:15:54",
+                            "summary": "4624 Security ANONYMOUS LOGON@37L4247F27-25",
+                        }
                     }
-                }),
+                ),
                 encoding="utf-8",
             )
             app = create_app(case)
             client = TestClient(app)
             import forensia.web as web_module
-            with mock.patch.object(web_module, "CaseDB", side_effect=duckdb.IOException("Could not set lock")):
+
+            with mock.patch.object(
+                web_module,
+                "CaseDB",
+                side_effect=duckdb.IOException("Could not set lock"),
+            ):
                 api = client.get("/api/evidence/evtx-security-000000000032")
                 self.assertEqual(503, api.status_code)
                 self.assertEqual("30", api.headers.get("retry-after"))
@@ -335,7 +408,7 @@ class WebApiTests(unittest.TestCase):
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, channel, computer, timestamp, raw_json) VALUES "
                     "('evtx-security-000000000666', 4688, 'Security', 'victim-PC', TIMESTAMP '2015-03-22 14:34:28', "
-                    "'{\"command_line\": \"<script>alert(1)</script>\"}')"
+                    '\'{"command_line": "<script>alert(1)</script>"}\')'
                 )
             client = TestClient(create_app(case))
             page = client.get("/evidence/evtx-security-000000000666")

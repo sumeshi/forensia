@@ -1,13 +1,21 @@
-import unittest
+import datetime
 import tempfile
+import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-import datetime
-
+from forensia.ai.prompts import (
+    _slim_report_brief_for_section,
+    build_paragraph_narrate_messages,
+)
 from forensia.ai.schemas import PARAGRAPH_NARRATE_SCHEMA
-from forensia.ai.prompts import _slim_report_brief_for_section, build_paragraph_narrate_messages
-from forensia.ai.section_agent import _build_daily_session_timeline, _coerce_plan_action, _extract_answer_by_shape, _format_benchmark_answer, _load_event_class_definitions
+from forensia.ai.section_agent import (
+    _build_daily_session_timeline,
+    _coerce_plan_action,
+    _extract_answer_by_shape,
+    _format_benchmark_answer,
+    _load_event_class_definitions,
+)
 from forensia.report.writer import (
     EVIDENCE_ID_PATTERN,
     _check_json_object_leak,
@@ -44,7 +52,11 @@ class TestRegressionRQ(unittest.TestCase):
     def test_benchmark_missing_reason_string_not_split_by_formatter(self):
         case = SimpleNamespace(reports_dir=Path(tempfile.mkdtemp()))
         body = _format_benchmark_answer(
-            {"status": "answered", "picked_row_indices": [], "rationale": "empty answer rationale"},
+            {
+                "status": "answered",
+                "picked_row_indices": [],
+                "rationale": "empty answer rationale",
+            },
             [],
             {"fields": ["host_id"]},
             "6_appendix",
@@ -58,10 +70,17 @@ class TestRegressionRQ(unittest.TestCase):
         self.assertNotIn("- e\n- m", body)
 
     def test_extract_answer_by_shape_does_not_make_empty_rows(self):
-        rows = [{"summary": "file_path=Windows/Prefetch/GOOGLEDRIVESYNC.EXE-841A0D94.pf evidence_id=mft-000000005619-00"}]
+        rows = [
+            {
+                "summary": "file_path=Windows/Prefetch/GOOGLEDRIVESYNC.EXE-841A0D94.pf evidence_id=mft-000000005619-00"
+            }
+        ]
         result = _extract_answer_by_shape(
             rows,
-            {"format": "enumerated_services", "fields": ["service_name", "exe_found", "paths_found", "config_found"]},
+            {
+                "format": "enumerated_services",
+                "fields": ["service_name", "exe_found", "paths_found", "config_found"],
+            },
             "enumerated_services",
         )
         self.assertEqual(result[0]["service_name"], "Google Drive")
@@ -155,13 +174,17 @@ Substantive narrative claim with evidence evtx-security-000000000122.
                     "verdict": "confirmed",
                 }
             ],
-            "active_hypotheses": [{"hypothesis_id": "H-002", "description": "Missing collection gap."}],
+            "active_hypotheses": [
+                {"hypothesis_id": "H-002", "description": "Missing collection gap."}
+            ],
         }
 
         technical = _slim_report_brief_for_section(brief, "3_technical")
         gaps = _slim_report_brief_for_section(brief, "4_gaps")
 
-        self.assertEqual("Explicit credential logon", technical["top_findings"][0]["title"])
+        self.assertEqual(
+            "Explicit credential logon", technical["top_findings"][0]["title"]
+        )
         self.assertIn("confirmed_hypotheses", technical)
         self.assertNotIn("large_unused_field", technical["top_findings"][0])
         self.assertEqual("H-002", gaps["active_hypotheses"][0]["hypothesis_id"])
@@ -183,7 +206,7 @@ class TestDailySessionTimelineBuilder(unittest.TestCase):
 
     def test_builder_with_empty_db_returns_empty_list(self):
         import tempfile
-        from pathlib import Path
+
         from forensia.core.case import Case
         from forensia.db.database import CaseDB
 
@@ -195,7 +218,7 @@ class TestDailySessionTimelineBuilder(unittest.TestCase):
 
     def test_builder_returns_correct_shape_over_two_days(self):
         import tempfile
-        from pathlib import Path
+
         from forensia.core.case import Case
         from forensia.db.database import CaseDB
 
@@ -205,41 +228,104 @@ class TestDailySessionTimelineBuilder(unittest.TestCase):
                 # Day 1: 2015-03-22
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-e1", 6005, datetime.datetime(2015, 3, 22, 8, 0, 0), "HOST1", None, None),
+                    (
+                        "evtx-e1",
+                        6005,
+                        datetime.datetime(2015, 3, 22, 8, 0, 0),
+                        "HOST1",
+                        None,
+                        None,
+                    ),
                 )
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-e2", 4624, datetime.datetime(2015, 3, 22, 8, 15, 0), "HOST1", "alice", "2"),
+                    (
+                        "evtx-e2",
+                        4624,
+                        datetime.datetime(2015, 3, 22, 8, 15, 0),
+                        "HOST1",
+                        "alice",
+                        "2",
+                    ),
                 )
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-e3", 4624, datetime.datetime(2015, 3, 22, 9, 0, 0), "HOST1", "bob", "10"),
+                    (
+                        "evtx-e3",
+                        4624,
+                        datetime.datetime(2015, 3, 22, 9, 0, 0),
+                        "HOST1",
+                        "bob",
+                        "10",
+                    ),
                 )
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-e4", 4634, datetime.datetime(2015, 3, 22, 17, 0, 0), "HOST1", "alice", "2"),
+                    (
+                        "evtx-e4",
+                        4634,
+                        datetime.datetime(2015, 3, 22, 17, 0, 0),
+                        "HOST1",
+                        "alice",
+                        "2",
+                    ),
                 )
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-e5", 1074, datetime.datetime(2015, 3, 22, 17, 30, 0), "HOST1", None, None),
+                    (
+                        "evtx-e5",
+                        1074,
+                        datetime.datetime(2015, 3, 22, 17, 30, 0),
+                        "HOST1",
+                        None,
+                        None,
+                    ),
                 )
 
                 # Day 2: 2015-03-23
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-e6", 12, datetime.datetime(2015, 3, 23, 7, 45, 0), "HOST1", None, None),
+                    (
+                        "evtx-e6",
+                        12,
+                        datetime.datetime(2015, 3, 23, 7, 45, 0),
+                        "HOST1",
+                        None,
+                        None,
+                    ),
                 )
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-e7", 4624, datetime.datetime(2015, 3, 23, 8, 5, 0), "HOST1", "charlie", "2"),
+                    (
+                        "evtx-e7",
+                        4624,
+                        datetime.datetime(2015, 3, 23, 8, 5, 0),
+                        "HOST1",
+                        "charlie",
+                        "2",
+                    ),
                 )
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-e8", 4647, datetime.datetime(2015, 3, 23, 16, 45, 0), "HOST1", "charlie", "2"),
+                    (
+                        "evtx-e8",
+                        4647,
+                        datetime.datetime(2015, 3, 23, 16, 45, 0),
+                        "HOST1",
+                        "charlie",
+                        "2",
+                    ),
                 )
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-e9", 6006, datetime.datetime(2015, 3, 23, 17, 0, 0), "HOST1", None, None),
+                    (
+                        "evtx-e9",
+                        6006,
+                        datetime.datetime(2015, 3, 23, 17, 0, 0),
+                        "HOST1",
+                        None,
+                        None,
+                    ),
                 )
 
                 rows = _build_daily_session_timeline(db)
@@ -267,7 +353,7 @@ class TestDailySessionTimelineBuilder(unittest.TestCase):
 
     def test_builder_respects_hour_qualifiers(self):
         import tempfile
-        from pathlib import Path
+
         from forensia.core.case import Case
         from forensia.db.database import CaseDB
 
@@ -276,17 +362,38 @@ class TestDailySessionTimelineBuilder(unittest.TestCase):
             with CaseDB(case) as db:
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-e1", 6005, datetime.datetime(2015, 3, 22, 9, 5, 0), "HOST1", None, None),
+                    (
+                        "evtx-e1",
+                        6005,
+                        datetime.datetime(2015, 3, 22, 9, 5, 0),
+                        "HOST1",
+                        None,
+                        None,
+                    ),
                 )
                 # This logon is outside qualifier window (before 09:00) so should be excluded
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-e2", 4624, datetime.datetime(2015, 3, 22, 8, 0, 0), "HOST1", "bob", "2"),
+                    (
+                        "evtx-e2",
+                        4624,
+                        datetime.datetime(2015, 3, 22, 8, 0, 0),
+                        "HOST1",
+                        "bob",
+                        "2",
+                    ),
                 )
                 # This logon is within the window (09:00-18:00)
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-e3", 4624, datetime.datetime(2015, 3, 22, 9, 0, 0), "HOST1", "alice", "2"),
+                    (
+                        "evtx-e3",
+                        4624,
+                        datetime.datetime(2015, 3, 22, 9, 0, 0),
+                        "HOST1",
+                        "alice",
+                        "2",
+                    ),
                 )
 
                 qualifiers = {"hour_from": "09:00", "hour_to": "18:00"}

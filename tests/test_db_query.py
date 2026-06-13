@@ -4,8 +4,7 @@ import unittest
 from datetime import datetime
 from unittest.mock import MagicMock
 
-from forensia.db.query import fetch_records
-from forensia.db.query import normalize_value
+from forensia.db.query import fetch_records, normalize_value
 
 
 class NormalizeValueTests(unittest.TestCase):
@@ -45,7 +44,7 @@ class NormalizeValueTests(unittest.TestCase):
         self.assertEqual(normalize_value("   "), "   ")
 
     def test_string_json_array_parsed(self) -> None:
-        result = normalize_value('[1, 2, 3]')
+        result = normalize_value("[1, 2, 3]")
         self.assertEqual(result, [1, 2, 3])
 
     def test_string_json_object_parsed(self) -> None:

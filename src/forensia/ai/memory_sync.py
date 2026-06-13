@@ -33,11 +33,18 @@ def _has_multi_source_evidence(evidence_ids: list[str], min_sources: int = 2) ->
     return len(sources) >= min_sources
 
 
-def _render_entity_memory(entity_type: str, name: str, notes: str, role: str = "") -> str:
+def _render_entity_memory(
+    entity_type: str, name: str, notes: str, role: str = ""
+) -> str:
     """Generate a Markdown entity memory block from type, name, role, and notes."""
     normalized_type = str(entity_type).strip().lower() or "entity"
     normalized_name = str(name).strip()
-    lines = [f"# {normalized_type}: {normalized_name}", "", f"- type: {normalized_type}", f"- name: {normalized_name}"]
+    lines = [
+        f"# {normalized_type}: {normalized_name}",
+        "",
+        f"- type: {normalized_type}",
+        f"- name: {normalized_name}",
+    ]
     normalized_role = str(role).strip().lower()
     if normalized_role in ENTITY_ROLES and normalized_role != "unknown":
         lines.append(f"- role: {normalized_role}")
@@ -58,7 +65,14 @@ def _apply_memory_updates(
     hypothesis_description: str | None = None,
 ) -> None:
     """Persist facts, timeline, tasks, entities, and hypothesis cards from a check output."""
-    _HARD_CLAIM_WORDS = {"confirmed", "attack", "compromised", "breach", "intrusion", "exfiltration"}
+    _HARD_CLAIM_WORDS = {
+        "confirmed",
+        "attack",
+        "compromised",
+        "breach",
+        "intrusion",
+        "exfiltration",
+    }
 
     updates = check_output.get("memory_updates") or {}
     verdict = str(check_output.get("verdict") or "confirmed").strip().lower()
@@ -122,7 +136,7 @@ def _apply_memory_updates(
 
     for item in updates.get("facts") or []:
         if isinstance(item, dict):
-            for eid in (item.get("evidence_ids") or []):
+            for eid in item.get("evidence_ids") or []:
                 family = str(eid).split("-")[0] if "-" in str(eid) else str(eid)
                 if family:
                     _artifact_overview_families.add(family)
@@ -145,24 +159,34 @@ def _apply_memory_updates(
                 break
 
     overview_items = updates.get("overview") or []
-    if overview_items and (_is_resolution or _has_new_nonobserved_entity or _has_new_family):
+    if overview_items and (
+        _is_resolution or _has_new_nonobserved_entity or _has_new_family
+    ):
         for item in overview_items[:1]:
             item_str = str(item)
             item_lower = item_str.lower()
             # R3-09: Skip refuted-template lines (already in archive/refuted.md)
-            if verdict == "refuted" and re.search(r"the hypothesis regarding .* was refuted", item_str, re.IGNORECASE):
+            if verdict == "refuted" and re.search(
+                r"the hypothesis regarding .* was refuted", item_str, re.IGNORECASE
+            ):
                 _log("MEMORY", "R3-09: skipped refuted-template overview line")
                 continue
             has_hard_claim = any(w in item_lower for w in _HARD_CLAIM_WORDS)
             if has_hard_claim and not is_confirmed:
                 memory.append_confirmed_fact(
-                    item_str, [],
+                    item_str,
+                    [],
                     hypothesis_id=current_hypothesis_id,
                     provisional=True,
                 )
-            elif "could not be confirmed" in item_lower or "inconclusive" in item_lower or "no evidence" in item_lower:
+            elif (
+                "could not be confirmed" in item_lower
+                or "inconclusive" in item_lower
+                or "no evidence" in item_lower
+            ):
                 memory.append_confirmed_fact(
-                    item_str, [],
+                    item_str,
+                    [],
                     hypothesis_id=current_hypothesis_id,
                     provisional=True,
                 )
@@ -170,7 +194,9 @@ def _apply_memory_updates(
                 overview_text = memory.load_overview()
                 # Scan all lines: items now land under their heading (mid-file),
                 # so a tail window would miss previously inserted facts.
-                recent_lines = [ln.strip() for ln in overview_text.split("\n") if ln.strip()]
+                recent_lines = [
+                    ln.strip() for ln in overview_text.split("\n") if ln.strip()
+                ]
                 item_tokens = set(item_str.lower().split())
                 is_duplicate = False
                 if item_tokens:
@@ -191,7 +217,9 @@ def _apply_memory_updates(
         evidence_ids: list[str] = []
         for item in updates.get("facts") or []:
             if isinstance(item, dict):
-                evidence_ids.extend(str(e) for e in (item.get("evidence_ids") or []) if str(e).strip())
+                evidence_ids.extend(
+                    str(e) for e in (item.get("evidence_ids") or []) if str(e).strip()
+                )
         memory.append_confirmed_hypothesis_fact(
             hypothesis_description=hypothesis_description,
             verdict=verdict,
@@ -223,7 +251,9 @@ def _apply_memory_updates(
         entity_name = str(item.get("name") or "")
         entity_role = str(item.get("role") or "")
         notes = str(item.get("notes") or "")
-        content = str(item.get("content") or "").strip() or _render_entity_memory(entity_type, entity_name, notes, entity_role)
+        content = str(item.get("content") or "").strip() or _render_entity_memory(
+            entity_type, entity_name, notes, entity_role
+        )
         memory.upsert_entity(
             entity_type,
             entity_name,

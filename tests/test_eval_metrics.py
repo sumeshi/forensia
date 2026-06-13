@@ -5,34 +5,28 @@ without any LLM or DB dependency.
 """
 
 import json
-import shutil
-import tempfile
 from pathlib import Path
-from unittest import mock
 
 import pytest
-
 from scripts.eval_run import (
     _family_from_description,
     _find_placeholder_lines,
-    _INSTRUCTION_TONE_RE,
     _jaccard,
+    _load_facts,
     _load_hypotheses,
     _load_overview,
-    _load_facts,
     _load_report,
     _parse_hypothesis_file,
     _token_set,
     evaluate,
+    evidence_traceability,
     hypothesis_family_diversity,
     instruction_tone_ratio,
-    placeholder_leak_count,
     memory_duplication_ratio,
-    report_hygiene,
-    evidence_traceability,
     per_phase_llm_call_counts,
+    placeholder_leak_count,
+    report_hygiene,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -49,16 +43,36 @@ def synthetic_case(tmp_path: Path) -> Path:
     hyp_dir = case / "memory" / "hypotheses"
     hyp_dir.mkdir(parents=True)
 
-    _write_hypothesis(hyp_dir / "H-001.md", "refuted", "refuted",
-        "RDP session from external IP may indicate lateral movement")
-    _write_hypothesis(hyp_dir / "H-002.md", "active", "confirmed",
-        "Credential reuse via service logon observed on workstation")
-    _write_hypothesis(hyp_dir / "H-003.md", "refuted", "refuted",
-        "Scheduled task creation for persistence")
-    _write_hypothesis(hyp_dir / "H-004.md", "active", "confirmed",
-        "Cloud sync tool accessing sensitive files")
-    _write_hypothesis(hyp_dir / "gap-a1b2c3d4.md", "active", "confirmed",
-        "Is {src_ip} consistent with the original session on {computer}?")
+    _write_hypothesis(
+        hyp_dir / "H-001.md",
+        "refuted",
+        "refuted",
+        "RDP session from external IP may indicate lateral movement",
+    )
+    _write_hypothesis(
+        hyp_dir / "H-002.md",
+        "active",
+        "confirmed",
+        "Credential reuse via service logon observed on workstation",
+    )
+    _write_hypothesis(
+        hyp_dir / "H-003.md",
+        "refuted",
+        "refuted",
+        "Scheduled task creation for persistence",
+    )
+    _write_hypothesis(
+        hyp_dir / "H-004.md",
+        "active",
+        "confirmed",
+        "Cloud sync tool accessing sensitive files",
+    )
+    _write_hypothesis(
+        hyp_dir / "gap-a1b2c3d4.md",
+        "active",
+        "confirmed",
+        "Is {src_ip} consistent with the original session on {computer}?",
+    )
 
     # memory/overview.md — includes near-duplicate lines
     overview_lines = [
@@ -73,7 +87,9 @@ def synthetic_case(tmp_path: Path) -> Path:
         "Two password resets were observed involving users informant and admin.",
         "Findings related to cloud sync were identified.",
     ]
-    (case / "memory" / "overview.md").write_text("\n".join(overview_lines), encoding="utf-8")
+    (case / "memory" / "overview.md").write_text(
+        "\n".join(overview_lines), encoding="utf-8"
+    )
 
     # memory/facts.md — includes a placeholder leak
     facts_lines = [
@@ -94,7 +110,11 @@ def synthetic_case(tmp_path: Path) -> Path:
     # findings/
     find_dir = case / "findings"
     find_dir.mkdir()
-    _write_finding(find_dir / "rule-001.json", "rule-001-finding", ["evtx-host-001", "evtx-host-002"])
+    _write_finding(
+        find_dir / "rule-001.json",
+        "rule-001-finding",
+        ["evtx-host-001", "evtx-host-002"],
+    )
     _write_finding(find_dir / "rule-002.json", "rule-002-finding", ["evtx-host-003"])
 
     # reports/report.md — with some traceable and some bare IDs
@@ -147,7 +167,10 @@ def _write_finding(path: Path, finding_id: str, evidence_ids: list[str]):
         "title": "Test finding",
         "severity": "high",
         "confidence": 0.75,
-        "evidence": [{"evidence_id": eid, "timestamp": "2024-01-15T10:00:00"} for eid in evidence_ids],
+        "evidence": [
+            {"evidence_id": eid, "timestamp": "2024-01-15T10:00:00"}
+            for eid in evidence_ids
+        ],
     }
     path.write_text(json.dumps(data), encoding="utf-8")
 
@@ -191,7 +214,12 @@ class TestHelpers:
 
     def test_token_set(self):
         assert _token_set("Hello World") == {"hello", "world"}
-        assert _token_set("Multiple   spaces and-dashes") == {"multiple", "spaces", "and", "dashes"}
+        assert _token_set("Multiple   spaces and-dashes") == {
+            "multiple",
+            "spaces",
+            "and",
+            "dashes",
+        }
         assert _token_set("") == set()
 
     def test_jaccard(self):
@@ -203,7 +231,9 @@ class TestHelpers:
 
     def test_parse_hypothesis_file(self, tmp_path: Path):
         hyp_file = tmp_path / "H-999.md"
-        _write_hypothesis(hyp_file, "active", "confirmed", "Test hypothesis for lateral movement")
+        _write_hypothesis(
+            hyp_file, "active", "confirmed", "Test hypothesis for lateral movement"
+        )
         meta = _parse_hypothesis_file(hyp_file)
         assert meta["id"] == "H-999"
         assert meta["status"] == "active"
@@ -270,8 +300,12 @@ class TestMetrics:
 
     def test_evidence_traceability(self, synthetic_case: Path):
         result = evidence_traceability(synthetic_case)
-        assert result["finding_ids_in_report"] >= 3  # rule-001-finding, rule-002-finding, nonexistent-finding
-        assert result["resolvable_finding_ids"] >= 2  # rule-001-finding and rule-002-finding
+        assert (
+            result["finding_ids_in_report"] >= 3
+        )  # rule-001-finding, rule-002-finding, nonexistent-finding
+        assert (
+            result["resolvable_finding_ids"] >= 2
+        )  # rule-001-finding and rule-002-finding
         assert result["traceability_ratio"] > 0
 
     def test_per_phase_llm_call_counts(self, synthetic_case: Path):
@@ -297,7 +331,9 @@ class TestMetrics:
         assert "report_hygiene" in metrics
         assert "evidence_traceability" in metrics
         assert "per_phase_llm_call_counts" in metrics
-        assert metrics["confirmed_while_benign_rate"]["total_confirmed"] == 3  # H-002, H-004, gap-a1b2c3d4
+        assert (
+            metrics["confirmed_while_benign_rate"]["total_confirmed"] == 3
+        )  # H-002, H-004, gap-a1b2c3d4
 
     def test_flag_single_family(self):
         # all hypotheses in same family → flagged
@@ -323,7 +359,9 @@ class TestR311Metrics:
 
     def test_instruction_tone_ratio_clean(self):
         assert instruction_tone_ratio("") == 0.0
-        assert instruction_tone_ratio("Clean normal text without any instructions.") == 0.0
+        assert (
+            instruction_tone_ratio("Clean normal text without any instructions.") == 0.0
+        )
         assert instruction_tone_ratio("通常の日本語テキストです。") == 0.0
 
     def test_instruction_tone_ratio_flagged(self):
@@ -345,17 +383,22 @@ class TestR311Metrics:
 
     def test_invalid_evidence_ids_no_db(self, tmp_path: Path):
         from scripts.eval_run import count_invalid_evidence_ids
-        result = count_invalid_evidence_ids(str(tmp_path / "nonexistent.json"), str(tmp_path / "nonexistent.duckdb"))
+
+        result = count_invalid_evidence_ids(
+            str(tmp_path / "nonexistent.json"), str(tmp_path / "nonexistent.duckdb")
+        )
         assert result["status"] == "missing_files"
         assert result["invalid_count"] == 0
 
     def test_block_language_conformity_no_file(self, tmp_path: Path):
         from scripts.eval_run import block_language_conformity
+
         result = block_language_conformity(str(tmp_path / "nonexistent.json"))
         assert result["status"] == "missing_file"
         assert result["blocks"] == 0
 
     def test_ui_file_consistency_missing_files(self, tmp_path: Path):
         from scripts.eval_run import ui_file_consistency
+
         result = ui_file_consistency(str(tmp_path / "a.json"), str(tmp_path / "b.md"))
         assert result["status"] == "missing_files"

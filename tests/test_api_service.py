@@ -4,7 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import ANY, MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import yaml
 
@@ -14,9 +14,8 @@ from forensia.api.dto import (
     CaseStatsDTO,
     EventVolumePointDTO,
     FindingDTO,
-    HypothesisDTO,
-    HypothesisReasoningEntryDTO,
     HypothesesResponseDTO,
+    HypothesisReasoningEntryDTO,
     ReportSectionDTO,
     SectionQuestionDTO,
 )
@@ -50,17 +49,42 @@ def _make_mock_result(columns, rows):
 
 
 _EVTX_COLS = [
-    "finding_id", "rule_id", "title", "summary", "severity", "confidence",
-    "status", "tags", "attack", "evidence", "ai_summary", "missing_checks",
+    "finding_id",
+    "rule_id",
+    "title",
+    "summary",
+    "severity",
+    "confidence",
+    "status",
+    "tags",
+    "attack",
+    "evidence",
+    "ai_summary",
+    "missing_checks",
     "created_at",
 ]
 _HYP_COLS = [
-    "hypothesis_id", "description", "status", "verdict", "summary",
-    "origin", "created_session", "resolved_session", "created_at", "updated_at",
+    "hypothesis_id",
+    "description",
+    "status",
+    "verdict",
+    "summary",
+    "origin",
+    "created_session",
+    "resolved_session",
+    "created_at",
+    "updated_at",
 ]
 _REASON_COLS = [
-    "entry_id", "hypothesis_id", "session_id", "iteration", "phase",
-    "verdict", "query_id", "body", "created_at",
+    "entry_id",
+    "hypothesis_id",
+    "session_id",
+    "iteration",
+    "phase",
+    "verdict",
+    "query_id",
+    "body",
+    "created_at",
 ]
 _REASON_WITH_COLS = _REASON_COLS + ["reasoning_count", "latest_iteration"]
 _STATS_COLS = ["evtx_rows", "mft_entries", "channel_count", "host_count"]
@@ -84,7 +108,9 @@ class TestGetCaseDto(unittest.TestCase):
         case = MagicMock(spec=Case)
         case.path = MagicMock()
         case.path.name = "empty_case"
-        case.manifest_path.read_text.return_value = yaml.safe_dump({"case_name": "empty_case"})
+        case.manifest_path.read_text.return_value = yaml.safe_dump(
+            {"case_name": "empty_case"}
+        )
         result = get_case_dto(case)
         self.assertEqual(result.paths, {})
         self.assertEqual(result.manifest, {"case_name": "empty_case"})
@@ -106,7 +132,10 @@ class TestGetCaseStatsDto(unittest.TestCase):
             _make_mock_result(_STATS_COLS, [(100, 50, 5, 3)]),
             _make_mock_result(_FINDINGS_STATS_COLS, [(30, 2)]),
             _make_mock_result(["active_hypotheses", "resolved_hypotheses"], [(10, 5)]),
-            _make_mock_result(["open_gaps", "report_human_reviewed", "report_ai_exhausted"], [(3, 1, 0)]),
+            _make_mock_result(
+                ["open_gaps", "report_human_reviewed", "report_ai_exhausted"],
+                [(3, 1, 0)],
+            ),
             _make_mock_result(["sessions", "total_iterations"], [(2, 15)]),
         ]
         result = get_case_stats_dto(db)
@@ -130,8 +159,13 @@ class TestGetCaseStatsDto(unittest.TestCase):
         db.execute.side_effect = [
             _make_mock_result(_STATS_COLS, [(None, None, None, None)]),
             _make_mock_result(_FINDINGS_STATS_COLS, [(None, None)]),
-            _make_mock_result(["active_hypotheses", "resolved_hypotheses"], [(None, None)]),
-            _make_mock_result(["open_gaps", "report_human_reviewed", "report_ai_exhausted"], [(None, None, None)]),
+            _make_mock_result(
+                ["active_hypotheses", "resolved_hypotheses"], [(None, None)]
+            ),
+            _make_mock_result(
+                ["open_gaps", "report_human_reviewed", "report_ai_exhausted"],
+                [(None, None, None)],
+            ),
             _make_mock_result(["sessions", "total_iterations"], [(None, None)]),
         ]
         result = get_case_stats_dto(db)
@@ -153,8 +187,21 @@ class TestGetCaseStatsDto(unittest.TestCase):
 class TestListFindingsDto(unittest.TestCase):
     def test_returns_findings(self):
         db = MagicMock(spec=CaseDB)
-        row = ("F1", "R1", "Logon", "Admin logon", "high", 0.9,
-               "accepted", None, None, None, None, None, "2024-01-01T00:00:00")
+        row = (
+            "F1",
+            "R1",
+            "Logon",
+            "Admin logon",
+            "high",
+            0.9,
+            "accepted",
+            None,
+            None,
+            None,
+            None,
+            None,
+            "2024-01-01T00:00:00",
+        )
         db.execute.return_value = _make_mock_result(_EVTX_COLS, [row])
         result = list_findings_dto(db)
         self.assertEqual(len(result), 1)
@@ -203,13 +250,71 @@ class TestListHypothesesDto(unittest.TestCase):
     def test_returns_partitioned_hypotheses(self):
         db = MagicMock(spec=CaseDB)
         reason_rows = [
-            ("R1", "H-001", "S1", 1, "plan", "confirmed", "Q1", "body1", "2024-01-01T00:00:00", 5, 2),
-            ("R2", "H-001", "S1", 2, "check", "confirmed", "Q2", "body2", "2024-01-01T01:00:00", 5, 2),
-            ("R3", "H-002", "S1", 1, "plan", "inconclusive", "Q3", "body3", "2024-01-02T00:00:00", 2, 1),
+            (
+                "R1",
+                "H-001",
+                "S1",
+                1,
+                "plan",
+                "confirmed",
+                "Q1",
+                "body1",
+                "2024-01-01T00:00:00",
+                5,
+                2,
+            ),
+            (
+                "R2",
+                "H-001",
+                "S1",
+                2,
+                "check",
+                "confirmed",
+                "Q2",
+                "body2",
+                "2024-01-01T01:00:00",
+                5,
+                2,
+            ),
+            (
+                "R3",
+                "H-002",
+                "S1",
+                1,
+                "plan",
+                "inconclusive",
+                "Q3",
+                "body3",
+                "2024-01-02T00:00:00",
+                2,
+                1,
+            ),
         ]
         hyp_rows = [
-            ("H-001", "Suspicious logon", "active", None, "summary1", "broad_plan", "S1", None, "2024-01-01T00:00:00", "2024-01-01T02:00:00"),
-            ("H-002", "Lateral move", "confirmed", "confirmed", "summary2", "broad_plan", "S1", "S1", "2024-01-02T00:00:00", "2024-01-02T01:00:00"),
+            (
+                "H-001",
+                "Suspicious logon",
+                "active",
+                None,
+                "summary1",
+                "broad_plan",
+                "S1",
+                None,
+                "2024-01-01T00:00:00",
+                "2024-01-01T02:00:00",
+            ),
+            (
+                "H-002",
+                "Lateral move",
+                "confirmed",
+                "confirmed",
+                "summary2",
+                "broad_plan",
+                "S1",
+                "S1",
+                "2024-01-02T00:00:00",
+                "2024-01-02T01:00:00",
+            ),
         ]
         db.execute.side_effect = [
             _make_mock_result(_REASON_WITH_COLS, reason_rows),
@@ -248,8 +353,28 @@ class TestListHypothesisReasoningDto(unittest.TestCase):
     def test_returns_reasoning_entries(self):
         db = MagicMock(spec=CaseDB)
         rows = [
-            ("E1", "H-001", "S1", 1, "plan", "confirmed", "Q1", "body1", "2024-01-01T00:00:00"),
-            ("E2", "H-001", "S1", 2, "check", "confirmed", "Q2", "body2", "2024-01-01T01:00:00"),
+            (
+                "E1",
+                "H-001",
+                "S1",
+                1,
+                "plan",
+                "confirmed",
+                "Q1",
+                "body1",
+                "2024-01-01T00:00:00",
+            ),
+            (
+                "E2",
+                "H-001",
+                "S1",
+                2,
+                "check",
+                "confirmed",
+                "Q2",
+                "body2",
+                "2024-01-01T01:00:00",
+            ),
         ]
         db.execute.return_value = _make_mock_result(_REASON_COLS, rows)
         result = list_hypothesis_reasoning_dto(db, "H-001")
@@ -268,7 +393,7 @@ class TestListHypothesisReasoningDto(unittest.TestCase):
     def test_passes_hypothesis_id_and_limit(self):
         db = MagicMock(spec=CaseDB)
         db.execute.return_value = _make_mock_result(_REASON_COLS, [])
-        result = list_hypothesis_reasoning_dto(db, "H-001", limit=5)
+        list_hypothesis_reasoning_dto(db, "H-001", limit=5)
         actual_sql = db.execute.call_args[0][0]
         self.assertIn("WHERE hypothesis_id = ?", actual_sql)
         self.assertIn("LIMIT ?", actual_sql)
@@ -377,7 +502,9 @@ class TestListEventVolumeDto(unittest.TestCase):
     def test_passes_start_end_to_range_filter(self):
         db = MagicMock(spec=CaseDB)
         db.execute.return_value = _make_mock_result(["bucket", "series", "count"], [])
-        list_event_volume_dto(db, bucket="day", source="evtx", start="2024-01-01", end="2024-02-01")
+        list_event_volume_dto(
+            db, bucket="day", source="evtx", start="2024-01-01", end="2024-02-01"
+        )
         actual_sql = db.execute.call_args[0][0]
         self.assertIn("timestamp >= ?", actual_sql)
         self.assertIn("timestamp < ?", actual_sql)
@@ -436,7 +563,9 @@ class TestAggregateEventVolume(unittest.TestCase):
             EventVolumePointDTO(bucket="2024-01-02T10:00:00", series="a", count=4),
             EventVolumePointDTO(bucket="2024-01-03T10:00:00", series="a", count=5),
         ]
-        result = aggregate_event_volume(items, "hour", start="2024-01-02T00:00:00", end="2024-01-03T00:00:00")
+        result = aggregate_event_volume(
+            items, "hour", start="2024-01-02T00:00:00", end="2024-01-03T00:00:00"
+        )
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].bucket, "2024-01-02T10:00:00")
 
@@ -476,7 +605,9 @@ class TestAggregateEventVolume(unittest.TestCase):
 
 class TestNormalizeVolumeRows(unittest.TestCase):
     def test_normalizes_and_strips_timezone_suffix(self):
-        rows = [{"bucket": "2024-01-01 00:00:00+00:00", "series": "Security", "count": 10}]
+        rows = [
+            {"bucket": "2024-01-01 00:00:00+00:00", "series": "Security", "count": 10}
+        ]
         result = _normalize_volume_rows(rows)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].bucket, "2024-01-01 00:00:00")
@@ -520,25 +651,43 @@ class TestBuildRangeFilter(unittest.TestCase):
 
 class TestTruncKey(unittest.TestCase):
     def test_year(self):
-        self.assertEqual(_trunc_key("2024-06-15T10:30:00", "year"), "2024-01-01T00:00:00")
+        self.assertEqual(
+            _trunc_key("2024-06-15T10:30:00", "year"), "2024-01-01T00:00:00"
+        )
 
     def test_month(self):
-        self.assertEqual(_trunc_key("2024-06-15T10:30:00", "month"), "2024-06-01T00:00:00")
+        self.assertEqual(
+            _trunc_key("2024-06-15T10:30:00", "month"), "2024-06-01T00:00:00"
+        )
 
     def test_day(self):
-        self.assertEqual(_trunc_key("2024-06-15T10:30:00", "day"), "2024-06-15T00:00:00")
+        self.assertEqual(
+            _trunc_key("2024-06-15T10:30:00", "day"), "2024-06-15T00:00:00"
+        )
 
     def test_hour(self):
-        self.assertEqual(_trunc_key("2024-06-15T10:30:00", "hour"), "2024-06-15T10:00:00")
+        self.assertEqual(
+            _trunc_key("2024-06-15T10:30:00", "hour"), "2024-06-15T10:00:00"
+        )
 
     def test_replaces_space_with_t(self):
-        self.assertEqual(_trunc_key("2024-06-15 10:30:00", "hour"), "2024-06-15T10:00:00")
+        self.assertEqual(
+            _trunc_key("2024-06-15 10:30:00", "hour"), "2024-06-15T10:00:00"
+        )
 
 
 class TestListAttackCoverageDto(unittest.TestCase):
     def test_returns_coverage_rows(self):
         db = MagicMock(spec=CaseDB)
-        attack_json = json.dumps([{"tactic": "execution", "technique_id": "T1059", "technique_name": "PowerShell"}])
+        attack_json = json.dumps(
+            [
+                {
+                    "tactic": "execution",
+                    "technique_id": "T1059",
+                    "technique_name": "PowerShell",
+                }
+            ]
+        )
         db.execute.return_value = _make_mock_result(
             ["attack", "status"],
             [(attack_json, "accepted")],
@@ -554,7 +703,15 @@ class TestListAttackCoverageDto(unittest.TestCase):
 
     def test_aggregates_multiple_entries(self):
         db = MagicMock(spec=CaseDB)
-        attack_json = json.dumps([{"tactic": "execution", "technique_id": "T1059", "technique_name": "PowerShell"}])
+        attack_json = json.dumps(
+            [
+                {
+                    "tactic": "execution",
+                    "technique_id": "T1059",
+                    "technique_name": "PowerShell",
+                }
+            ]
+        )
         db.execute.return_value = _make_mock_result(
             ["attack", "status"],
             [(attack_json, "accepted"), (attack_json, "suppressed")],
@@ -582,8 +739,30 @@ class TestListReportSectionsDto(unittest.TestCase):
     def test_returns_sections(self):
         db = MagicMock(spec=CaseDB)
         db.execute.return_value = _make_mock_result(
-            ["section_key", "title", "body", "confidence", "status", "update_count", "gaps", "last_filled_session", "last_filled_at"],
-            [("overview", "Overview", "body text", 0.8, "human_reviewed", 3, '["gap1"]', "S1", "2024-01-01T00:00:00")],
+            [
+                "section_key",
+                "title",
+                "body",
+                "confidence",
+                "status",
+                "update_count",
+                "gaps",
+                "last_filled_session",
+                "last_filled_at",
+            ],
+            [
+                (
+                    "overview",
+                    "Overview",
+                    "body text",
+                    0.8,
+                    "human_reviewed",
+                    3,
+                    '["gap1"]',
+                    "S1",
+                    "2024-01-01T00:00:00",
+                )
+            ],
         )
         result = list_report_sections_dto(db)
         self.assertEqual(len(result), 1)
@@ -596,7 +775,17 @@ class TestListReportSectionsDto(unittest.TestCase):
     def test_empty_list(self):
         db = MagicMock(spec=CaseDB)
         db.execute.return_value = _make_mock_result(
-            ["section_key", "title", "body", "confidence", "status", "update_count", "gaps", "last_filled_session", "last_filled_at"],
+            [
+                "section_key",
+                "title",
+                "body",
+                "confidence",
+                "status",
+                "update_count",
+                "gaps",
+                "last_filled_session",
+                "last_filled_at",
+            ],
             [],
         )
         result = list_report_sections_dto(db)
@@ -614,8 +803,30 @@ class TestListReportSectionsDtoBodyHtml(unittest.TestCase):
         db = MagicMock(spec=CaseDB)
         body = "| Col1 | Col2 |\n|------|------|\n| A    | B    |"
         db.execute.return_value = _make_mock_result(
-            ["section_key", "title", "body", "confidence", "status", "update_count", "gaps", "last_filled_session", "last_filled_at"],
-            [("overview", "Overview", body, 0.8, "human_reviewed", 3, '[]', "S1", "2024-01-01T00:00:00")],
+            [
+                "section_key",
+                "title",
+                "body",
+                "confidence",
+                "status",
+                "update_count",
+                "gaps",
+                "last_filled_session",
+                "last_filled_at",
+            ],
+            [
+                (
+                    "overview",
+                    "Overview",
+                    body,
+                    0.8,
+                    "human_reviewed",
+                    3,
+                    "[]",
+                    "S1",
+                    "2024-01-01T00:00:00",
+                )
+            ],
         )
         result = list_report_sections_dto(db)
         self.assertIn("<table>", result[0].body_html)
@@ -625,8 +836,30 @@ class TestListReportSectionsDtoBodyHtml(unittest.TestCase):
     def test_body_html_empty_when_body_empty(self):
         db = MagicMock(spec=CaseDB)
         db.execute.return_value = _make_mock_result(
-            ["section_key", "title", "body", "confidence", "status", "update_count", "gaps", "last_filled_session", "last_filled_at"],
-            [("overview", "Overview", "", 0.8, "human_reviewed", 3, '[]', "S1", "2024-01-01T00:00:00")],
+            [
+                "section_key",
+                "title",
+                "body",
+                "confidence",
+                "status",
+                "update_count",
+                "gaps",
+                "last_filled_session",
+                "last_filled_at",
+            ],
+            [
+                (
+                    "overview",
+                    "Overview",
+                    "",
+                    0.8,
+                    "human_reviewed",
+                    3,
+                    "[]",
+                    "S1",
+                    "2024-01-01T00:00:00",
+                )
+            ],
         )
         result = list_report_sections_dto(db)
         self.assertEqual(result[0].body_html, "")
@@ -643,8 +876,30 @@ class TestListReportSectionsDtoBodyHtml(unittest.TestCase):
         db = MagicMock(spec=CaseDB)
         body = "Suspicious logon detected: evtx-security-000000000120"
         db.execute.return_value = _make_mock_result(
-            ["section_key", "title", "body", "confidence", "status", "update_count", "gaps", "last_filled_session", "last_filled_at"],
-            [("overview", "Overview", body, 0.8, "human_reviewed", 3, '[]', "S1", "2024-01-01T00:00:00")],
+            [
+                "section_key",
+                "title",
+                "body",
+                "confidence",
+                "status",
+                "update_count",
+                "gaps",
+                "last_filled_session",
+                "last_filled_at",
+            ],
+            [
+                (
+                    "overview",
+                    "Overview",
+                    body,
+                    0.8,
+                    "human_reviewed",
+                    3,
+                    "[]",
+                    "S1",
+                    "2024-01-01T00:00:00",
+                )
+            ],
         )
         result = list_report_sections_dto(db)
         self.assertIn('class="evidence-ref"', result[0].body_html)
@@ -656,16 +911,35 @@ class TestListSectionQuestionsDto(unittest.TestCase):
         db = MagicMock(spec=CaseDB)
         db.execute.return_value = _make_mock_result(
             [
-                "question_id", "section_key", "block_heading", "question_text", "question_type",
-                "answer_spec", "intent", "confidence", "matched_rule", "required_evidence",
-                "status", "created_at", "updated_at",
+                "question_id",
+                "section_key",
+                "block_heading",
+                "question_text",
+                "question_type",
+                "answer_spec",
+                "intent",
+                "confidence",
+                "matched_rule",
+                "required_evidence",
+                "status",
+                "created_at",
+                "updated_at",
             ],
             [
                 (
-                    "q1", "6_appendix", "Last shutdown", "When was shutdown?",
-                    "investigation_window", "last_shutdown_event", "Return latest shutdown",
-                    0.9, "investigation_window", '{"required_fields":["shutdown_time"]}',
-                    "answered", "2024-01-01T00:00:00", "2024-01-01T00:01:00",
+                    "q1",
+                    "6_appendix",
+                    "Last shutdown",
+                    "When was shutdown?",
+                    "investigation_window",
+                    "last_shutdown_event",
+                    "Return latest shutdown",
+                    0.9,
+                    "investigation_window",
+                    '{"required_fields":["shutdown_time"]}',
+                    "answered",
+                    "2024-01-01T00:00:00",
+                    "2024-01-01T00:01:00",
                 )
             ],
         )
@@ -673,15 +947,27 @@ class TestListSectionQuestionsDto(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertIsInstance(result[0], SectionQuestionDTO)
         self.assertEqual(result[0].answer_spec, "last_shutdown_event")
-        self.assertEqual(result[0].required_evidence["required_fields"], ["shutdown_time"])
+        self.assertEqual(
+            result[0].required_evidence["required_fields"], ["shutdown_time"]
+        )
 
     def test_applies_section_filter(self):
         db = MagicMock(spec=CaseDB)
         db.execute.return_value = _make_mock_result(
             [
-                "question_id", "section_key", "block_heading", "question_text", "question_type",
-                "answer_spec", "intent", "confidence", "matched_rule", "required_evidence",
-                "status", "created_at", "updated_at",
+                "question_id",
+                "section_key",
+                "block_heading",
+                "question_text",
+                "question_type",
+                "answer_spec",
+                "intent",
+                "confidence",
+                "matched_rule",
+                "required_evidence",
+                "status",
+                "created_at",
+                "updated_at",
             ],
             [],
         )
@@ -695,7 +981,9 @@ class TestEntityCardSummary(unittest.TestCase):
     """Entity cards drive the Top Entities UI tile; the summary is what makes the panel useful at a glance."""
 
     def _write(self, body: str) -> Path:
-        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8")
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".md", delete=False, encoding="utf-8"
+        )
         tmp.write(body)
         tmp.close()
         return Path(tmp.name)
@@ -715,8 +1003,12 @@ class TestEntityCardSummary(unittest.TestCase):
         )
 
     def test_falls_back_to_body_when_role_and_notes_missing(self):
-        path = self._write("# host: WIN10\n\nSeen on 4624 logon spike\nSecondary line\n")
-        self.assertEqual(_entity_card_summary(path), "Seen on 4624 logon spike · Secondary line")
+        path = self._write(
+            "# host: WIN10\n\nSeen on 4624 logon spike\nSecondary line\n"
+        )
+        self.assertEqual(
+            _entity_card_summary(path), "Seen on 4624 logon spike · Secondary line"
+        )
 
     def test_returns_none_for_card_with_only_heading(self):
         path = self._write("# user: alice\n\n- type: user\n- name: alice\n")

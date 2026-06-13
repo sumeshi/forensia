@@ -27,18 +27,20 @@ def parse_timestamp(value: Any) -> datetime | None:
     try:
         dt = datetime.fromisoformat(text)
         return dt.replace(tzinfo=None)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         pass
     # Try float string
     try:
         return datetime.fromtimestamp(float(text), tz=UTC).replace(tzinfo=None)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         pass
     # Try YYYY-MM-DD HH:MM:SS after stripping T/Z/offset
     try:
-        cleaned = text.replace("T", " ").split("+")[0].split("Z")[0].split(".")[0].strip()
+        cleaned = (
+            text.replace("T", " ").split("+")[0].split("Z")[0].split(".")[0].strip()
+        )
         return datetime.strptime(cleaned, "%Y-%m-%d %H:%M:%S")
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None
 
 
@@ -59,8 +61,8 @@ def parse_epoch_seconds(value: Any) -> float | None:
         return None
     try:
         return datetime.fromisoformat(text).timestamp()
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         try:
             return float(text)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return None

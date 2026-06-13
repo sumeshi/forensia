@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from html import escape as html_escape
 from pathlib import Path
 from typing import Annotated
@@ -40,15 +39,15 @@ from forensia.api.service import (
     get_case_stats_dto,
     get_evidence_record_dto,
     get_finding_dto,
+    list_ai_reviews_dto,
     list_attack_coverage_dto,
+    list_claims_dto,
     list_entity_cards_dto,
     list_event_volume_dto,
-    list_ai_reviews_dto,
-    list_claims_dto,
     list_findings_dto,
-    list_latest_hypothesis_reasoning_dto,
-    list_hypothesis_reasoning_dto,
     list_hypotheses_dto,
+    list_hypothesis_reasoning_dto,
+    list_latest_hypothesis_reasoning_dto,
     list_mft_timeline_dto,
     list_report_sections_dto,
     list_sessions_dto,
@@ -57,8 +56,10 @@ from forensia.api.service import (
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.report.html import render_html_report
-from forensia.report.writer import build_report_markdown_from_db
-from forensia.report.writer import set_report_section_status
+from forensia.report.writer import (
+    build_report_markdown_from_db,
+    set_report_section_status,
+)
 
 load_dotenv()
 
@@ -81,7 +82,9 @@ def _resolve_spa_dir() -> Path | None:
 
 def _resolve_ui_origins() -> list[str]:
     """Resolve allowed CORS origins from env or return development defaults."""
-    raw = os.getenv("FORENSIA_UI_ORIGINS", "")
+    from forensia.config import settings
+
+    raw = settings.forensia_ui_origins
     if raw.strip():
         origins = [item.strip() for item in raw.split(",") if item.strip()]
         if origins:
@@ -126,7 +129,9 @@ def _register_finding_routes(app: FastAPI, case: Case, cached):
                 rows = [row for row in rows if row.severity == severity]
             return rows[offset : offset + limit]
         with CaseDB(case) as db:
-            return list_findings_dto(db, status=status, severity=severity, limit=limit, offset=offset)
+            return list_findings_dto(
+                db, status=status, severity=severity, limit=limit, offset=offset
+            )
 
     @app.get("/api/findings/{finding_id}", response_model=FindingDTO)
     def api_finding(finding_id: str) -> FindingDTO:
@@ -135,11 +140,15 @@ def _register_finding_routes(app: FastAPI, case: Case, cached):
             for item in snapshot:
                 if item.get("finding_id") == finding_id:
                     return FindingDTO.model_validate(item)
-            raise HTTPException(status_code=404, detail=f"finding not found: {finding_id}")
+            raise HTTPException(
+                status_code=404, detail=f"finding not found: {finding_id}"
+            )
         with CaseDB(case) as db:
             finding = get_finding_dto(db, finding_id)
         if finding is None:
-            raise HTTPException(status_code=404, detail=f"finding not found: {finding_id}")
+            raise HTTPException(
+                status_code=404, detail=f"finding not found: {finding_id}"
+            )
         return finding
 
 
@@ -152,7 +161,10 @@ def _register_hypothesis_routes(app: FastAPI, case: Case, cached):
         with CaseDB(case) as db:
             return list_hypotheses_dto(db)
 
-    @app.get("/api/hypotheses/{hypothesis_id}/reasoning", response_model=list[HypothesisReasoningEntryDTO])
+    @app.get(
+        "/api/hypotheses/{hypothesis_id}/reasoning",
+        response_model=list[HypothesisReasoningEntryDTO],
+    )
     def api_hypothesis_reasoning(
         hypothesis_id: str,
         limit: Annotated[int, Query(ge=1, le=100)] = 20,
@@ -160,18 +172,25 @@ def _register_hypothesis_routes(app: FastAPI, case: Case, cached):
         snapshot = cached("hypothesis_reasoning.json")
         if snapshot is not None:
             rows = snapshot.get(hypothesis_id, []) if isinstance(snapshot, dict) else []
-            return [HypothesisReasoningEntryDTO.model_validate(item) for item in rows[:limit]]
+            return [
+                HypothesisReasoningEntryDTO.model_validate(item)
+                for item in rows[:limit]
+            ]
         with CaseDB(case) as db:
             return list_hypothesis_reasoning_dto(db, hypothesis_id, limit=limit)
 
-    @app.get("/api/hypotheses-reasoning", response_model=list[HypothesisReasoningEntryDTO])
+    @app.get(
+        "/api/hypotheses-reasoning", response_model=list[HypothesisReasoningEntryDTO]
+    )
     def api_hypotheses_reasoning(
         since: str | None = None,
         limit: Annotated[int, Query(ge=1, le=500)] = 100,
     ) -> list[HypothesisReasoningEntryDTO]:
         snapshot = cached("hypotheses_reasoning_latest.json")
         if snapshot is not None:
-            rows = [HypothesisReasoningEntryDTO.model_validate(item) for item in snapshot]
+            rows = [
+                HypothesisReasoningEntryDTO.model_validate(item) for item in snapshot
+            ]
             if since:
                 for index, item in enumerate(rows):
                     if item.entry_id == since:
@@ -190,11 +209,16 @@ def _register_session_routes(app: FastAPI, case: Case, cached):
         with CaseDB(case) as db:
             return list_sessions_dto(db)
 
-    @app.get("/api/sessions/{session_id}/steps", response_model=list[InvestigationStepDTO])
+    @app.get(
+        "/api/sessions/{session_id}/steps", response_model=list[InvestigationStepDTO]
+    )
     def api_session_steps(session_id: str) -> list[InvestigationStepDTO]:
         snapshot = cached("session_steps.json")
         if snapshot is not None:
-            return [InvestigationStepDTO.model_validate(item) for item in snapshot.get(session_id, [])]
+            return [
+                InvestigationStepDTO.model_validate(item)
+                for item in snapshot.get(session_id, [])
+            ]
         with CaseDB(case) as db:
             return list_steps_dto(db, session_id)
 
@@ -212,12 +236,18 @@ def _register_report_routes(app: FastAPI, case: Case, cached):
     def api_report_markdown() -> Response:
         report_path = case.reports_dir / "report.md"
         if report_path.exists():
-            return Response(content=report_path.read_text(encoding="utf-8"), media_type="text/markdown; charset=utf-8")
+            return Response(
+                content=report_path.read_text(encoding="utf-8"),
+                media_type="text/markdown; charset=utf-8",
+            )
         with CaseDB(case) as db:
             markdown = build_report_markdown_from_db(db, case=case)
             # Read-only GET: build the references in memory, never write
             # reports/ artifacts from an API request.
-            from forensia.report.evidence_map import build_evidence_map, render_evidence_references
+            from forensia.report.evidence_map import (
+                build_evidence_map,
+                render_evidence_references,
+            )
 
             ref_section = render_evidence_references(build_evidence_map(db, markdown))
             if ref_section:
@@ -233,16 +263,26 @@ def _register_report_routes(app: FastAPI, case: Case, cached):
             rendered_path = render_html_report(case, db)
         return HTMLResponse(rendered_path.read_text(encoding="utf-8"))
 
-    @app.post("/api/report-sections/{section_key}/status", response_model=ReportSectionDTO)
-    def api_update_report_section_status(section_key: str, status: str) -> ReportSectionDTO:
+    @app.post(
+        "/api/report-sections/{section_key}/status", response_model=ReportSectionDTO
+    )
+    def api_update_report_section_status(
+        section_key: str, status: str
+    ) -> ReportSectionDTO:
         with CaseDB(case) as db:
             try:
                 set_report_section_status(db, section_key, status)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-            rows = [item for item in list_report_sections_dto(db) if item.section_key == section_key]
+            rows = [
+                item
+                for item in list_report_sections_dto(db)
+                if item.section_key == section_key
+            ]
             if not rows:
-                raise HTTPException(status_code=404, detail=f"report section not found: {section_key}")
+                raise HTTPException(
+                    status_code=404, detail=f"report section not found: {section_key}"
+                )
             write_api_snapshots(case, db)
             return rows[0]
 
@@ -271,7 +311,7 @@ def _register_evidence_record_routes(app: FastAPI, case: Case):
             return None
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except json.JSONDecodeError, OSError:
             return None
         entry = data.get(evidence_id) if isinstance(data, dict) else None
         return entry if isinstance(entry, dict) else None
@@ -286,7 +326,9 @@ def _register_evidence_record_routes(app: FastAPI, case: Case):
                 headers={"Retry-After": "30"},
             )
         if dto is None:
-            raise HTTPException(status_code=404, detail=f"Evidence record not found: {evidence_id}")
+            raise HTTPException(
+                status_code=404, detail=f"Evidence record not found: {evidence_id}"
+            )
         return dto
 
     @app.get("/evidence/{evidence_id}", response_class=HTMLResponse)
@@ -301,19 +343,23 @@ def _register_evidence_record_routes(app: FastAPI, case: Case):
             if summary:
                 line = " · ".join(
                     html_escape(str(part))
-                    for part in (summary.get("timestamp"), summary.get("source"), summary.get("summary"))
+                    for part in (
+                        summary.get("timestamp"),
+                        summary.get("source"),
+                        summary.get("summary"),
+                    )
                     if part
                 )
                 summary_html = f"<pre>{line}</pre>"
             return HTMLResponse(
-                "<!DOCTYPE html><html lang=\"ja\"><head><meta charset=\"utf-8\">"
-                "<meta http-equiv=\"refresh\" content=\"30\">"
+                '<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">'
+                '<meta http-equiv="refresh" content="30">'
                 f"<title>{safe_id} — Forensia Evidence</title>"
                 "<style>body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 24px; }"
                 " h1 { font-size: 18px; color: #b4befe; } .meta { color: #a6adc8; font-size: 13px; }"
                 " pre { background: #181825; padding: 16px; border-radius: 8px; white-space: pre-wrap; }</style></head>"
                 f"<body><h1>{safe_id}</h1>"
-                "<p class=\"meta\">調査実行中のためデータベースがロックされています。全文は実行終了後に表示できます(このページは30秒ごとに自動再試行します)。</p>"
+                '<p class="meta">調査実行中のためデータベースがロックされています。全文は実行終了後に表示できます(このページは30秒ごとに自動再試行します)。</p>'
                 f"{summary_html}</body></html>",
                 status_code=503,
             )
@@ -322,9 +368,11 @@ def _register_evidence_record_routes(app: FastAPI, case: Case):
                 f"<!DOCTYPE html><html><body><h1>404 - Not Found</h1><p>Evidence ID: {safe_id}</p></body></html>",
                 status_code=404,
             )
-        pretty_json = html_escape(json.dumps(dto.record, indent=2, ensure_ascii=False, default=str))
+        pretty_json = html_escape(
+            json.dumps(dto.record, indent=2, ensure_ascii=False, default=str)
+        )
         return HTMLResponse(
-                f"""<!DOCTYPE html>
+            f"""<!DOCTYPE html>
 <html lang="ja">
 <head><meta charset="utf-8"><title>{safe_id} — Forensia Evidence</title>
 <style>
@@ -344,7 +392,9 @@ def _register_evidence_record_routes(app: FastAPI, case: Case):
         )
 
 
-def _register_evidence_routes(app: FastAPI, case: Case, cached, aggregate_event_volume_func):
+def _register_evidence_routes(
+    app: FastAPI, case: Case, cached, aggregate_event_volume_func
+):
     @app.get("/api/mft-timeline", response_model=list[MftTimelineDTO])
     def api_mft_timeline(
         from_timestamp: Annotated[str | None, Query(alias="from")] = None,
@@ -360,7 +410,12 @@ def _register_evidence_routes(app: FastAPI, case: Case, cached, aggregate_event_
                 rows = [row for row in rows if (row.timestamp or "") <= to_timestamp]
             return rows[:limit]
         with CaseDB(case) as db:
-            return list_mft_timeline_dto(db, from_timestamp=from_timestamp, to_timestamp=to_timestamp, limit=limit)
+            return list_mft_timeline_dto(
+                db,
+                from_timestamp=from_timestamp,
+                to_timestamp=to_timestamp,
+                limit=limit,
+            )
 
     @app.get("/api/entities", response_model=list[EntityCardDTO])
     def api_entities() -> list[EntityCardDTO]:
@@ -390,7 +445,9 @@ def _register_evidence_routes(app: FastAPI, case: Case, cached, aggregate_event_
                 return [EventVolumePointDTO.model_validate(item) for item in snapshot]
         try:
             with CaseDB(case) as db:
-                return list_event_volume_dto(db, bucket=bucket, source=source, start=start, end=end)
+                return list_event_volume_dto(
+                    db, bucket=bucket, source=source, start=start, end=end
+                )
         except Exception:
             pass
         for finer in ("hour", "day"):
@@ -404,17 +461,25 @@ def _register_evidence_routes(app: FastAPI, case: Case, cached, aggregate_event_
         return []
 
     @app.get("/api/ai-reviews", response_model=list[AIReviewDTO])
-    def api_ai_reviews(finding_id: str | None = None, hypothesis_id: str | None = None) -> list[AIReviewDTO]:
+    def api_ai_reviews(
+        finding_id: str | None = None, hypothesis_id: str | None = None
+    ) -> list[AIReviewDTO]:
         snapshot = cached("ai_reviews.json")
         if snapshot is not None:
             rows = [AIReviewDTO.model_validate(item) for item in snapshot]
             if finding_id:
                 rows = [row for row in rows if row.finding_id == finding_id]
             if hypothesis_id:
-                rows = [row for row in rows if row.finding_id == f"hypothesis:{hypothesis_id}"]
+                rows = [
+                    row
+                    for row in rows
+                    if row.finding_id == f"hypothesis:{hypothesis_id}"
+                ]
             return rows
         with CaseDB(case) as db:
-            return list_ai_reviews_dto(db, finding_id=finding_id, hypothesis_id=hypothesis_id)
+            return list_ai_reviews_dto(
+                db, finding_id=finding_id, hypothesis_id=hypothesis_id
+            )
 
 
 def _register_stream_routes(app: FastAPI, case: Case):
@@ -431,10 +496,16 @@ def _register_stream_routes(app: FastAPI, case: Case):
             while True:
                 snapshot = cached("progress_events.json")
                 if snapshot is not None:
-                    events = [item for item in snapshot if int(item.get("event_index", 0)) > last_index][:100]
+                    events = [
+                        item
+                        for item in snapshot
+                        if int(item.get("event_index", 0)) > last_index
+                    ][:100]
                 else:
                     with CaseDB(case) as db:
-                        events = list_progress_events(db, after_index=last_index, limit=100)
+                        events = list_progress_events(
+                            db, after_index=last_index, limit=100
+                        )
                 if events:
                     for event in events:
                         dto = ProgressEventDTO.model_validate(event)
@@ -495,11 +566,15 @@ def create_app(case: Case) -> FastAPI:
     )
 
     @app.exception_handler(duckdb.IOException)
-    async def duckdb_lock_handler(request: Request, exc: duckdb.IOException) -> JSONResponse:
+    async def duckdb_lock_handler(
+        request: Request, exc: duckdb.IOException
+    ) -> JSONResponse:
         """Return 503 when DuckDB is locked by an ongoing investigation."""
         return JSONResponse(
             status_code=503,
-            content={"detail": "database locked by investigation process — retry after run completes"},
+            content={
+                "detail": "database locked by investigation process — retry after run completes"
+            },
         )
 
     spa_dir = _resolve_spa_dir()

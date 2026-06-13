@@ -5,6 +5,7 @@ from pathlib import Path
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 
+
 def _duckdb_path_literal(path: Path) -> str:
     return path.as_posix().replace("'", "''")
 
@@ -168,5 +169,7 @@ def normalize_mft(case: Case, db: CaseDB) -> tuple[int, int]:
         db.execute(_build_timeline_stage_sql(path_sql))
         db.execute(_delete_existing_timeline_entries())
         db.execute(_insert_timeline_sql())
-        total_timeline += db.execute("SELECT COUNT(*) FROM mft_timeline_stage").fetchone()[0]
+        total_timeline += db.execute(
+            "SELECT COUNT(*) FROM mft_timeline_stage"
+        ).fetchone()[0]
     return total_entries, total_timeline

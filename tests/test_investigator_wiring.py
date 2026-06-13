@@ -2,9 +2,9 @@
 
 Runs one full report_only cycle against an empty case. This exercises session
 init (rule seeding, case profile, memory), the cycle body, termination, and
-session bookkeeping WITHOUT any LLM call (report refresh is skipped by setting
-report_every_n_cycles > max_iter). A missing/renamed argument anywhere in the
-investigate() -> _run_cycle_body -> _run_report_phase chain fails this test.
+session bookkeeping WITHOUT any LLM call. The periodic report refresh is
+skipped and the mandatory final refresh is mocked. A missing or renamed
+argument in the investigate() wiring fails this test.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import tempfile
 import unittest
+from unittest import mock
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
@@ -26,22 +27,28 @@ class InvestigateWiringTests(unittest.TestCase):
         set_case_profile(None, None)
 
     def test_report_only_cycle_completes_without_llm(self) -> None:
-        from forensia.ai.investigator import investigate
+        from forensia.ai import investigator as investigator_module
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                result = asyncio.run(
-                    investigate(
-                        case=case,
-                        db=db,
-                        base_url="http://127.0.0.1:9",  # never contacted on this path
-                        model="dummy-model",
-                        max_iter=1,
-                        report_only=True,
-                        report_every_n_cycles=2,  # 1 % 2 != 0 -> report refresh skipped
+                with mock.patch.object(
+                    investigator_module,
+                    "async_refresh_report_sections",
+                    new=mock.AsyncMock(return_value={}),
+                ) as refresh_sections:
+                    result = asyncio.run(
+                        investigator_module.investigate(
+                            case=case,
+                            db=db,
+                            base_url="http://127.0.0.1:9",
+                            model="dummy-model",
+                            max_iter=1,
+                            report_only=True,
+                            report_every_n_cycles=2,
+                        )
                     )
-                )
+                refresh_sections.assert_awaited_once()
                 self.assertEqual(result["status"], "completed")
                 self.assertEqual(result["iteration"], 1)
                 row = db.execute(
@@ -78,25 +85,39 @@ class ReportRefreshFailureTests(unittest.TestCase):
             with CaseDB(case) as db:
                 state = SessionState(session_id="S-1", iteration=1)
                 buffer = io.StringIO()
-                with mock.patch.object(investigator_module, "async_refresh_report_sections", _boom):
+                with mock.patch.object(
+                    investigator_module, "async_refresh_report_sections", _boom
+                ):
                     with redirect_stdout(buffer):
                         report_after, progress, refresh_status = asyncio.run(
                             investigator_module._run_report_phase(
-                                case=case, db=db, session_id="S-1", plan_cycle=1,
-                                report_every_n_cycles=1, template_root=Path(tmpdir),
-                                base_url="http://127.0.0.1:1", model="none",
-                                llm_logger=None, progress_callback=events.append,
-                                focus_sections=[], report_max_queries_per_section=1,
-                                state=state, report_before={"total_gaps": 0},
+                                case=case,
+                                db=db,
+                                session_id="S-1",
+                                plan_cycle=1,
+                                report_every_n_cycles=1,
+                                template_root=Path(tmpdir),
+                                base_url="http://127.0.0.1:1",
+                                model="none",
+                                llm_logger=None,
+                                progress_callback=events.append,
+                                focus_sections=[],
+                                report_max_queries_per_section=1,
+                                state=state,
+                                report_before={"total_gaps": 0},
                                 memory=MemoryManager(case),
                             )
                         )
         self.assertTrue(refresh_status.startswith("failed: TypeError"), refresh_status)
         self.assertFalse(progress)
         output = buffer.getvalue()
-        self.assertIn("Traceback", output, "full traceback must be printed, not just str(exc)")
-        self.assertTrue(any("TypeError" in str(e.get("summary")) for e in events),
-                        "progress event must carry the exception type")
+        self.assertIn(
+            "Traceback", output, "full traceback must be printed, not just str(exc)"
+        )
+        self.assertTrue(
+            any("TypeError" in str(e.get("summary")) for e in events),
+            "progress event must carry the exception type",
+        )
 
     def test_run_report_phase_skipped_off_cycle(self) -> None:
         from pathlib import Path
@@ -111,12 +132,20 @@ class ReportRefreshFailureTests(unittest.TestCase):
                 state = SessionState(session_id="S-1", iteration=1)
                 _, _, refresh_status = asyncio.run(
                     investigator_module._run_report_phase(
-                        case=case, db=db, session_id="S-1", plan_cycle=1,
-                        report_every_n_cycles=3, template_root=Path(tmpdir),
-                        base_url="http://127.0.0.1:1", model="none",
-                        llm_logger=None, progress_callback=None,
-                        focus_sections=[], report_max_queries_per_section=1,
-                        state=state, report_before={},
+                        case=case,
+                        db=db,
+                        session_id="S-1",
+                        plan_cycle=1,
+                        report_every_n_cycles=3,
+                        template_root=Path(tmpdir),
+                        base_url="http://127.0.0.1:1",
+                        model="none",
+                        llm_logger=None,
+                        progress_callback=None,
+                        focus_sections=[],
+                        report_max_queries_per_section=1,
+                        state=state,
+                        report_before={},
                         memory=MemoryManager(case),
                     )
                 )
@@ -144,21 +173,36 @@ class ReportRefreshFailureTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 state = SessionState(session_id="S-1", iteration=1)
-                with mock.patch.object(investigator_module, "async_refresh_report_sections", _outage), \
-                     mock.patch.object(investigator_module, "outage_wait_until_recovered", _instant_recovery_probe):
+                with (
+                    mock.patch.object(
+                        investigator_module, "async_refresh_report_sections", _outage
+                    ),
+                    mock.patch.object(
+                        investigator_module,
+                        "outage_wait_until_recovered",
+                        _instant_recovery_probe,
+                    ),
+                ):
                     with self.assertRaises(LLMServerUnavailableError):
                         asyncio.run(
                             investigator_module._run_report_phase(
-                                case=case, db=db, session_id="S-1", plan_cycle=1,
-                                report_every_n_cycles=1, template_root=Path(tmpdir),
-                                base_url="http://127.0.0.1:1", model="none",
-                                llm_logger=None, progress_callback=None,
-                                focus_sections=[], report_max_queries_per_section=1,
-                                state=state, report_before={},
+                                case=case,
+                                db=db,
+                                session_id="S-1",
+                                plan_cycle=1,
+                                report_every_n_cycles=1,
+                                template_root=Path(tmpdir),
+                                base_url="http://127.0.0.1:1",
+                                model="none",
+                                llm_logger=None,
+                                progress_callback=None,
+                                focus_sections=[],
+                                report_max_queries_per_section=1,
+                                state=state,
+                                report_before={},
                                 memory=MemoryManager(case),
                             )
                         )
-
 
 
 if __name__ == "__main__":

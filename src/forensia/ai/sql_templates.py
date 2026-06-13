@@ -115,8 +115,12 @@ FORBIDDEN_SQL = re.compile(
     r"\b(insert|update|delete|drop|alter|create|attach|detach|copy|pragma|truncate|merge|replace)\b",
     re.IGNORECASE,
 )
-TABLE_NAME_PATTERN = re.compile(r"\b(?:from|join)\s+([a-zA-Z_][a-zA-Z0-9_]*)", re.IGNORECASE)
-CTE_NAME_PATTERN = re.compile(r"(?:with|,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s+as\s*\(", re.IGNORECASE)
+TABLE_NAME_PATTERN = re.compile(
+    r"\b(?:from|join)\s+([a-zA-Z_][a-zA-Z0-9_]*)", re.IGNORECASE
+)
+CTE_NAME_PATTERN = re.compile(
+    r"(?:with|,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s+as\s*\(", re.IGNORECASE
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,7 +135,7 @@ def _sql_int(value: Any, default: int) -> int:
     """Safely cast value to int, returning default on failure."""
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
@@ -268,7 +272,9 @@ def validate_select_sql(sql: str) -> str:
     forbidden keywords, and verifies all referenced table names are known.
     """
     fence_match = _SQL_FENCE_RE.search(sql.strip())
-    normalized = fence_match.group(1).strip() if fence_match else sql.strip().rstrip(";").strip()
+    normalized = (
+        fence_match.group(1).strip() if fence_match else sql.strip().rstrip(";").strip()
+    )
     normalized = normalized.rstrip(";").strip()
     lowered = normalized.lower()
     if not normalized:
@@ -283,12 +289,15 @@ def validate_select_sql(sql: str) -> str:
     cte_names = {match.group(1) for match in CTE_NAME_PATTERN.finditer(normalized)}
     table_names = {match.group(1) for match in TABLE_NAME_PATTERN.finditer(normalized)}
     unknown_tables = sorted(
-        name for name in table_names if name not in ALLOWED_IDENTIFIER_REFERENCES and name not in cte_names
+        name
+        for name in table_names
+        if name not in ALLOWED_IDENTIFIER_REFERENCES and name not in cte_names
     )
     if unknown_tables:
         raise ValueError(f"Unknown table(s) referenced: {', '.join(unknown_tables)}")
     try:
         import sqlglot
+
         tree = sqlglot.parse_one(normalized)
         for coalesce_node in tree.find_all(sqlglot.exp.Coalesce):
             arg_types = set()
@@ -304,7 +313,9 @@ def validate_select_sql(sql: str) -> str:
                 elif isinstance(arg, sqlglot.exp.Cast):
                     has_cast = True
                 elif isinstance(arg, sqlglot.exp.Literal):
-                    arg_types.add("string_literal" if arg.is_string else "number_literal")
+                    arg_types.add(
+                        "string_literal" if arg.is_string else "number_literal"
+                    )
                 else:
                     arg_types.add(type(arg).__name__)
             if len(arg_types) > 1 and not has_column and not has_cast:
@@ -324,7 +335,9 @@ def validate_select_sql(sql: str) -> str:
     # R2-03: Reject SQL with unresolved placeholder literals
     _PLACEHOLDER_RE = re.compile(r"\[\w*placeholder\w*\]|\[(start|end)_time\]|\{\w+\}")
     if _PLACEHOLDER_RE.search(normalized):
-        raise ValueError("SQL contains unresolved placeholder literal; use real values from the hypothesis/case profile, or omit that filter")
+        raise ValueError(
+            "SQL contains unresolved placeholder literal; use real values from the hypothesis/case profile, or omit that filter"
+        )
     return normalized
 
 
@@ -367,5 +380,7 @@ def render_query_template(template_id: str, params: dict[str, Any]) -> str:
         raise ValueError(f"Unknown query template: {template_id}")
     missing = [key for key in spec.required_params if params.get(key) in (None, "")]
     if missing:
-        raise ValueError(f"Missing template params for {template_id}: {', '.join(missing)}")
+        raise ValueError(
+            f"Missing template params for {template_id}: {', '.join(missing)}"
+        )
     return validate_select_sql(spec.sql_builder(params))

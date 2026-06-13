@@ -1,32 +1,42 @@
 import asyncio
 import sys
 import time
-
+from collections.abc import Callable
 from pathlib import Path
 
 import typer
-from rich import print
 import uvicorn
+from rich import print
 
-from forensia.api.cache import (
-    VOLATILE_SNAPSHOT_INTERVAL_S, clear_api_snapshots, write_api_snapshots,
-    write_progress_snapshot, write_volatile_api_snapshots,
-)
-from forensia.api.progress import clear_progress_events, record_progress_event
 from forensia.ai.case_profile import profile_advisor
 from forensia.ai.investigator import investigate as investigate_loop
 from forensia.ai.llm_client import LLMServerUnavailableError
+from forensia.api.cache import (
+    VOLATILE_SNAPSHOT_INTERVAL_S,
+    clear_api_snapshots,
+    write_api_snapshots,
+    write_progress_snapshot,
+    write_volatile_api_snapshots,
+)
+from forensia.api.progress import clear_progress_events, record_progress_event
 from forensia.config import get_llm_settings, resolve_llm_config
 from forensia.core.case import Case
 from forensia.core.case_tasks import CaseTasks
 from forensia.db.database import CaseDB
-from forensia.db.query import fetch_records
 from forensia.ingest import ingest_all
 from forensia.normalize import normalize_all
 from forensia.report.html import render_html_report
 from forensia.report.writer import render_written_report
-from forensia.report_templates import export_packaged_report_templates, has_report_templates
-from forensia.rules.engine import clear_rule_findings, generate_findings, run_rule, save_findings
+from forensia.report_templates import (
+    export_packaged_report_templates,
+    has_report_templates,
+)
+from forensia.rules.engine import (
+    clear_rule_findings,
+    generate_findings,
+    run_rule,
+    save_findings,
+)
 from forensia.rules.loader import load_rules_from_dir
 from forensia.web import create_app
 
@@ -125,7 +135,9 @@ def _resolve_template_dir(case: Case, template_dir: str | None) -> Path:
             )
         return path
     case.ensure_report_templates()
-    if case.report_template_dir.exists() and has_report_templates(case.report_template_dir):
+    if case.report_template_dir.exists() and has_report_templates(
+        case.report_template_dir
+    ):
         return case.report_template_dir
     raise typer.BadParameter("no report templates are available")
 
@@ -141,12 +153,18 @@ def _resolve_profile_path(profile: str) -> Path:
     if path.exists():
         return path
     available = ", ".join(_available_profiles()) or "none"
-    raise typer.BadParameter(f"unknown profile: {profile_name}. Available profiles: {available}")
+    raise typer.BadParameter(
+        f"unknown profile: {profile_name}. Available profiles: {available}"
+    )
+
+
 def _resolve_llm_or_die(base_url: str | None, model: str | None) -> tuple[str, str]:
     """Resolve LLM endpoint and model, raising an error if either is missing."""
     resolved_base_url, resolved_model = resolve_llm_config(base_url, model)
     if not resolved_base_url or not resolved_model:
-        raise typer.BadParameter("Set LLM_BASE_URL and LLM_MODEL via .env file or CLI flags.")
+        raise typer.BadParameter(
+            "Set LLM_BASE_URL and LLM_MODEL via .env file or CLI flags."
+        )
     return resolved_base_url, resolved_model
 
 
@@ -175,7 +193,6 @@ def _open_case_or_die(case_dir: str, timezone: str | None = None) -> Case:
             f"missing: {target / 'manifest.yaml'}\n"
             f"initialize with: forensia investigate {target} <input_dir>"
         ) from exc
-
 
 
 def _progress_pusher(db: CaseDB, initial_state: dict) -> Callable[..., None]:
@@ -214,7 +231,11 @@ def _seed_api_snapshots_if_possible(case: Case) -> None:
 @app.command("templates-export", hidden=True)
 def templates_export(
     output_dir: str,
-    force: bool = typer.Option(False, "--force", help="Overwrite existing packaged template files in the target directory"),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Overwrite existing packaged template files in the target directory",
+    ),
 ) -> None:
     written = export_packaged_report_templates(output_dir, overwrite=force)
     target = Path(output_dir).resolve()
@@ -222,7 +243,6 @@ def templates_export(
         print(f"Exported {len(written)} template files to {target}")
     else:
         print(f"No template files were written to {target} (files already exist)")
-
 
 
 @app.command()
@@ -248,14 +268,15 @@ def add(case_dir: str, input_dir: str) -> None:
     )
 
 
-
-
-
 @app.command()
 def report(
     case_dir: str,
     output: str | None = typer.Option(None, "--output"),
-    write: bool = typer.Option(False, "--write", help="Regenerate report sections using LLM-driven agentic writing"),
+    write: bool = typer.Option(
+        False,
+        "--write",
+        help="Regenerate report sections using LLM-driven agentic writing",
+    ),
     template_dir: str | None = typer.Option(None, "--template-dir"),
     llm_base_url: str | None = typer.Option(None, "--llm-base-url"),
     model: str | None = typer.Option(None, "--model"),
@@ -269,10 +290,14 @@ def report(
     with CaseDB(case) as db:
         if write:
             llm_base_url, model = _resolve_llm_or_die(llm_base_url, model)
-            tasks = CaseTasks.for_case(case)
             template_root = _resolve_template_dir(case, template_dir)
-            max_queries = report_max_queries_per_section or get_llm_settings()["report_max_queries_per_section"]
-            _status(f"Writing report from templates: {template_root} (max_queries={max_queries})")
+            max_queries = (
+                report_max_queries_per_section
+                or get_llm_settings()["report_max_queries_per_section"]
+            )
+            _status(
+                f"Writing report from templates: {template_root} (max_queries={max_queries})"
+            )
             asyncio.run(
                 investigate_loop(
                     case=case,
@@ -289,18 +314,19 @@ def report(
                 )
             )
         report_md, report_path = render_written_report(case, db)
-        path = render_html_report(case, db, output_path=output) if output else report_path
+        path = (
+            render_html_report(case, db, output_path=output) if output else report_path
+        )
         write_api_snapshots(case, db)
     print(f"Markdown report written to {report_md}")
     print(f"HTML report written to {path}")
 
 
-
-
-
 def _make_initial_progress_state(
-    model: str | None, llm_base_url: str | None,
-    stage: str = "init", summary: str = "Case initialized",
+    model: str | None,
+    llm_base_url: str | None,
+    stage: str = "init",
+    summary: str = "Case initialized",
 ) -> dict:
     return {
         "stage": stage,
@@ -323,25 +349,41 @@ def _make_initial_progress_state(
 
 
 def _run_init_stage(
-    case: Case, db: CaseDB, out: str, llm_base_url: str | None, model: str | None,
-    template_dir: str | None, init: bool,
+    case: Case,
+    db: CaseDB,
+    out: str,
+    llm_base_url: str | None,
+    model: str | None,
+    template_dir: str | None,
+    init: bool,
 ) -> tuple[Case, CaseTasks, Path | None]:
     """Initialize case, tasks, resolve template root and profile path."""
     tasks = CaseTasks.for_case(case)
-    template_root = _resolve_template_dir(case, template_dir) if (llm_base_url and model) else None
+    template_root = (
+        _resolve_template_dir(case, template_dir) if (llm_base_url and model) else None
+    )
 
     if init:
         _reset_case_tables(db)
-        case.clear_runtime_outputs(preserve_memory=True, preserve_ai_logs=True, drop_database=False)
+        case.clear_runtime_outputs(
+            preserve_memory=True, preserve_ai_logs=True, drop_database=False
+        )
         case = Case.init(out)
         tasks = CaseTasks.for_case(case)
-        template_root = _resolve_template_dir(case, template_dir) if (llm_base_url and model) else None
+        template_root = (
+            _resolve_template_dir(case, template_dir)
+            if (llm_base_url and model)
+            else None
+        )
 
     return case, tasks, template_root
 
 
 def _run_ingest_stage(
-    case: Case, db: CaseDB, tasks: CaseTasks, input_dir: str,
+    case: Case,
+    db: CaseDB,
+    tasks: CaseTasks,
+    input_dir: str,
     push_progress,
 ) -> dict:
     """Ingest evidence files (EVTX, MFT, Prefetch) into the case."""
@@ -365,13 +407,22 @@ def _run_ingest_stage(
 
 
 def _run_normalize_stage(
-    case: Case, db: CaseDB, tasks: CaseTasks,
-    init: bool, ingest_counts: dict, push_progress,
+    case: Case,
+    db: CaseDB,
+    tasks: CaseTasks,
+    init: bool,
+    ingest_counts: dict,
+    push_progress,
 ) -> bool:
     """Normalize raw evidence into structured DuckDB tables."""
     existing_rows = int(db.execute("SELECT COUNT(*) FROM evtx_events").fetchone()[0])
     normalized_this_run = True
-    if not init and ingest_counts["new_files"] == 0 and tasks.is_done("normalize") and existing_rows > 0:
+    if (
+        not init
+        and ingest_counts["new_files"] == 0
+        and tasks.is_done("normalize")
+        and existing_rows > 0
+    ):
         normalized_this_run = False
         _status(f"Stage 2/4: normalize - already done ({existing_rows} rows), skipping")
         push_progress(
@@ -385,20 +436,33 @@ def _run_normalize_stage(
         normalized = normalize_all(case, db)
         note = _normalize_counts_summary(normalized)
         tasks.mark_done("normalize", note)
-        _status(f"Normalize complete: {note}, mft_timeline_rows={normalized['mft_timeline_rows']}")
-        push_progress(f"[normalize] {note}", stage="normalize", status="running", summary=note)
+        _status(
+            f"Normalize complete: {note}, mft_timeline_rows={normalized['mft_timeline_rows']}"
+        )
+        push_progress(
+            f"[normalize] {note}", stage="normalize", status="running", summary=note
+        )
     return normalized_this_run
 
 
 def _run_analyze_stage(
-    case: Case, db: CaseDB, tasks: CaseTasks,
-    profile: str, profile_path: Path, init: bool,
-    normalized_this_run: bool, push_progress,
+    case: Case,
+    db: CaseDB,
+    tasks: CaseTasks,
+    profile: str,
+    profile_path: Path,
+    init: bool,
+    normalized_this_run: bool,
+    push_progress,
 ) -> int:
     """Run rule-based analysis to generate findings."""
     if not init and not normalized_this_run and tasks.is_done("analyze"):
-        existing_findings = int(db.execute("SELECT COUNT(*) FROM findings").fetchone()[0])
-        _status(f"Stage 3/4: analyze - already done ({existing_findings} findings), skipping")
+        existing_findings = int(
+            db.execute("SELECT COUNT(*) FROM findings").fetchone()[0]
+        )
+        _status(
+            f"Stage 3/4: analyze - already done ({existing_findings} findings), skipping"
+        )
         push_progress(
             f"[analyze] skipped ({existing_findings} findings already exist)",
             stage="analyze",
@@ -434,22 +498,39 @@ def _run_analyze_stage(
 
 
 def _run_investigate_stage(
-    case: Case, db: CaseDB, tasks: CaseTasks,
-    llm_base_url: str | None, model: str | None,
-    template_root: Path | None, profile: str, push_progress,
-    *, max_iter: int, max_queries_per_hypothesis: int,
-    no_progress_limit: int, report_every_n_cycles: int,
-    report_max_queries_per_section: int, max_llm_calls: int,
+    case: Case,
+    db: CaseDB,
+    tasks: CaseTasks,
+    llm_base_url: str | None,
+    model: str | None,
+    template_root: Path | None,
+    profile: str,
+    push_progress,
+    *,
+    max_iter: int,
+    max_queries_per_hypothesis: int,
+    no_progress_limit: int,
+    report_every_n_cycles: int,
+    report_max_queries_per_section: int,
+    max_llm_calls: int,
     auto_rulepacks: bool = True,
 ) -> None:
     """Run LLM-driven investigation loop (or skip if LLM not configured)."""
     if not (llm_base_url and model):
-        _status("Stage 4/4: LLM not configured - skipping investigate (set LLM_BASE_URL and LLM_MODEL in .env)")
-        push_progress("[investigate] skipped - LLM not configured", stage="investigate", status="running")
+        _status(
+            "Stage 4/4: LLM not configured - skipping investigate (set LLM_BASE_URL and LLM_MODEL in .env)"
+        )
+        push_progress(
+            "[investigate] skipped - LLM not configured",
+            stage="investigate",
+            status="running",
+        )
         return
 
     _status(f"Stage 4/4: investigate with model={model}")
-    push_progress(f"[investigate] starting - model={model}", stage="investigate", status="running")
+    push_progress(
+        f"[investigate] starting - model={model}", stage="investigate", status="running"
+    )
     write_api_snapshots(case, db)
     try:
         result = asyncio.run(
@@ -464,7 +545,8 @@ def _run_investigate_stage(
                 no_progress_limit=no_progress_limit,
                 profile=profile,
                 report_every_n_cycles=report_every_n_cycles,
-                report_max_queries_per_section=report_max_queries_per_section or get_llm_settings()["report_max_queries_per_section"],
+                report_max_queries_per_section=report_max_queries_per_section
+                or get_llm_settings()["report_max_queries_per_section"],
                 max_llm_calls=max_llm_calls,
                 auto_rulepacks=auto_rulepacks,
                 progress_callback=lambda payload: push_progress(
@@ -486,7 +568,9 @@ def _run_investigate_stage(
         "investigate",
         f"session={result['session_id']}, status={result['status']}, iterations={result['iteration']}",
     )
-    _status(f"Investigation complete: session={result['session_id']} status={result['status']}")
+    _status(
+        f"Investigation complete: session={result['session_id']} status={result['status']}"
+    )
     push_progress(
         f"[investigate] done - session={result['session_id']} status={result['status']}",
         stage="investigate",
@@ -499,7 +583,10 @@ def _run_investigate_stage(
 
 
 def _run_report_stage(
-    case: Case, db: CaseDB, tasks: CaseTasks, push_progress,
+    case: Case,
+    db: CaseDB,
+    tasks: CaseTasks,
+    push_progress,
 ) -> Path:
     """Render the final written report."""
     report_md, report_path = render_written_report(case, db)
@@ -514,19 +601,20 @@ def _run_report_stage(
     return report_path
 
 
-
-
-
 @app.command()
 def investigate(
     case_dir: str,
-    input_dir: str | None = typer.Argument(None, help="Evidence input directory (required for new cases)"),
+    input_dir: str | None = typer.Argument(
+        None, help="Evidence input directory (required for new cases)"
+    ),
     profile: str = typer.Option("windows-basic", "--profile"),
     llm_base_url: str | None = typer.Option(None, "--llm-base-url"),
     model: str | None = typer.Option(None, "--model"),
     template_dir: str | None = typer.Option(None, "--template-dir"),
     rerun: bool = typer.Option(False, "--rerun", help="Reset case tables before rerun"),
-    report_only: bool = typer.Option(False, "--report-only", help="Skip investigation, just write report"),
+    report_only: bool = typer.Option(
+        False, "--report-only", help="Skip investigation, just write report"
+    ),
     max_iter: int = typer.Option(20, "--max-iter"),
     max_queries_per_hypothesis: int = typer.Option(5, "--max-queries-per-hypothesis"),
     no_progress_limit: int = typer.Option(3, "--no-progress-limit"),
@@ -536,9 +624,21 @@ def investigate(
         "--report-max-queries-per-section",
         help="Max iterative agent queries per report block. 0 = use LLM_REPORT_MAX_QUERIES_PER_SECTION env (default 3)",
     ),
-    max_llm_calls: int = typer.Option(0, "--max-llm-calls", help="Hard cap on total LLM calls per investigation session. 0 = unlimited (default for local LLM)."),
-    auto_rulepacks: bool = typer.Option(True, "--auto-rulepacks/--no-auto-rulepacks", help="Automatically enable rulepacks whose applies_when artifact_families are detected in case data"),
-    timezone: str = typer.Option("", "--timezone", help="IANA timezone name (e.g. America/New_York). Overrides manifest value."),
+    max_llm_calls: int = typer.Option(
+        0,
+        "--max-llm-calls",
+        help="Hard cap on total LLM calls per investigation session. 0 = unlimited (default for local LLM).",
+    ),
+    auto_rulepacks: bool = typer.Option(
+        True,
+        "--auto-rulepacks/--no-auto-rulepacks",
+        help="Automatically enable rulepacks whose applies_when artifact_families are detected in case data",
+    ),
+    timezone: str = typer.Option(
+        "",
+        "--timezone",
+        help="IANA timezone name (e.g. America/New_York). Overrides manifest value.",
+    ),
 ) -> None:
     """Run full investigation pipeline: ingest, normalize, analyze, investigate, and report."""
     llm_base_url, model = resolve_llm_config(llm_base_url, model)
@@ -560,7 +660,12 @@ def investigate(
         _status("Resetting case tables for rerun (preserving raw/ for re-normalize)")
         with CaseDB(case) as db:
             _reset_case_tables(db)
-        case.clear_runtime_outputs(preserve_memory=True, preserve_ai_logs=True, drop_database=False, preserve_raw=True)
+        case.clear_runtime_outputs(
+            preserve_memory=True,
+            preserve_ai_logs=True,
+            drop_database=False,
+            preserve_raw=True,
+        )
         # Preserve the manifest timezone across rerun unless --timezone overrides it.
         tz_val = _resolve_timezone(timezone, case)
         case = Case.init(case_dir, source_timezone=tz_val)
@@ -570,12 +675,17 @@ def investigate(
     with CaseDB(case) as db:
         clear_progress_events(db)
         push_progress = _progress_pusher(
-            db, _make_initial_progress_state(model, llm_base_url),
+            db,
+            _make_initial_progress_state(model, llm_base_url),
         )
         push_progress("Case ready", stage="init", summary=f"Case: {case.path}")
 
         tasks = CaseTasks.for_case(case)
-        template_root = _resolve_template_dir(case, template_dir) if (llm_base_url and model) else None
+        template_root = (
+            _resolve_template_dir(case, template_dir)
+            if (llm_base_url and model)
+            else None
+        )
 
         # Determine if we need to (re)build evidence tables.
         # - `input_dir` given: full ingest from input_dir, then normalize + analyze
@@ -586,19 +696,42 @@ def investigate(
         if input_dir is not None and not report_only:
             profile_path = _resolve_profile_path(profile)
             ingest_counts = _run_ingest_stage(case, db, tasks, input_dir, push_progress)
-            normalized_this_run = _run_normalize_stage(case, db, tasks, rerun, ingest_counts, push_progress)
-            _run_analyze_stage(case, db, tasks, profile, profile_path, rerun, normalized_this_run, push_progress)
+            normalized_this_run = _run_normalize_stage(
+                case, db, tasks, rerun, ingest_counts, push_progress
+            )
+            _run_analyze_stage(
+                case,
+                db,
+                tasks,
+                profile,
+                profile_path,
+                rerun,
+                normalized_this_run,
+                push_progress,
+            )
         elif needs_normalize_from_raw and not report_only:
             profile_path = _resolve_profile_path(profile)
             _status("Re-normalizing from existing raw/ (no input_dir provided)")
-            normalized_this_run = _run_normalize_stage(case, db, tasks, True, {}, push_progress)
-            _run_analyze_stage(case, db, tasks, profile, profile_path, True, normalized_this_run, push_progress)
+            normalized_this_run = _run_normalize_stage(
+                case, db, tasks, True, {}, push_progress
+            )
+            _run_analyze_stage(
+                case,
+                db,
+                tasks,
+                profile,
+                profile_path,
+                True,
+                normalized_this_run,
+                push_progress,
+            )
 
         if not report_only:
             advice = profile_advisor(profile, db)
             if advice:
                 # rich's print would swallow [bracketed] pack names as markup tags.
                 from rich.markup import escape
+
                 print(escape(advice))
             if case.source_timezone == "UTC":
                 # R2-14: surface a conservative timezone hint when no explicit
@@ -606,6 +739,7 @@ def investigate(
                 # analyst confirms via --timezone.
                 try:
                     from forensia.normalize.timezone import infer_timezone
+
                     offset_minutes, basis = infer_timezone(db)
                     if offset_minutes is not None:
                         sign = "+" if offset_minutes >= 0 else "-"
@@ -618,7 +752,14 @@ def investigate(
                 except Exception:
                     pass
             _run_investigate_stage(
-                case, db, tasks, llm_base_url, model, template_root, profile, push_progress,
+                case,
+                db,
+                tasks,
+                llm_base_url,
+                model,
+                template_root,
+                profile,
+                push_progress,
                 max_iter=max_iter,
                 max_queries_per_hypothesis=max_queries_per_hypothesis,
                 no_progress_limit=no_progress_limit,
@@ -641,9 +782,20 @@ def doctor() -> None:
     _status("Schema coverage audit...")
     try:
         import subprocess
+
         result = subprocess.run(
-            [sys.executable, str(Path(__file__).parent.parent.parent / "scripts" / "audit_schema_coverage.py"), "--strict"],
-            capture_output=True, text=True, timeout=60,
+            [
+                sys.executable,
+                str(
+                    Path(__file__).parent.parent.parent
+                    / "scripts"
+                    / "audit_schema_coverage.py"
+                ),
+                "--strict",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         ok = result.returncode == 0
         checks.append(("Schema coverage", ok))
@@ -658,8 +810,18 @@ def doctor() -> None:
     _status("Playbook MD/YAML drift check...")
     try:
         result = subprocess.run(
-            [sys.executable, str(Path(__file__).parent.parent.parent / "scripts" / "regenerate_playbook.py"), "--check"],
-            capture_output=True, text=True, timeout=30,
+            [
+                sys.executable,
+                str(
+                    Path(__file__).parent.parent.parent
+                    / "scripts"
+                    / "regenerate_playbook.py"
+                ),
+                "--check",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         ok = result.returncode == 0
         checks.append(("Playbook drift", ok))
@@ -674,8 +836,15 @@ def doctor() -> None:
     _status("Import layer contract (R4)...")
     try:
         result = subprocess.run(
-            [sys.executable, str(Path(__file__).parent.parent.parent / "scripts" / "check_imports.py")],
-            capture_output=True, text=True, timeout=30,
+            [
+                sys.executable,
+                str(
+                    Path(__file__).parent.parent.parent / "scripts" / "check_imports.py"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         ok = result.returncode == 0
         checks.append(("Import layers", ok))
@@ -690,12 +859,17 @@ def doctor() -> None:
     _status("Verdict taxonomy enforcement...")
     try:
         from forensia.core.verdicts import valid_verdicts
+
         h_count = len(valid_verdicts("hypothesis_verdict"))
         s_count = len(valid_verdicts("section_verdict"))
         q_count = len(valid_verdicts("structured_status"))
-        print(f"  ✓ {h_count} hypothesis, {s_count} section, {q_count} structured-question verdicts defined")
+        print(
+            f"  ✓ {h_count} hypothesis, {s_count} section, {q_count} structured-question verdicts defined"
+        )
 
-        import ast, os
+        import ast
+        import os
+
         enforcement_files = []
         for root, dirs, files in os.walk(Path(__file__).parent.parent):
             for f in files:
@@ -706,18 +880,30 @@ def doctor() -> None:
                         for node in ast.walk(tree):
                             if isinstance(node, ast.Call):
                                 callee = node.func
-                                name = callee.attr if isinstance(callee, ast.Attribute) else (
-                                    callee.id if isinstance(callee, ast.Name) else ""
+                                name = (
+                                    callee.attr
+                                    if isinstance(callee, ast.Attribute)
+                                    else (
+                                        callee.id
+                                        if isinstance(callee, ast.Name)
+                                        else ""
+                                    )
                                 )
                                 if name == "assert_valid_verdict":
-                                    enforcement_files.append(os.path.relpath(path, Path(__file__).parent.parent.parent))
+                                    enforcement_files.append(
+                                        os.path.relpath(
+                                            path, Path(__file__).parent.parent.parent
+                                        )
+                                    )
                                     break
                     except Exception:
                         pass
         enforcement_count = len(enforcement_files)
         ok = enforcement_count >= 4
         checks.append(("Verdict enforcement", ok))
-        print(f"  {'✓' if ok else '✗'} {enforcement_count} files use assert_valid_verdict: {enforcement_files}")
+        print(
+            f"  {'✓' if ok else '✗'} {enforcement_count} files use assert_valid_verdict: {enforcement_files}"
+        )
     except Exception as exc:
         checks.append(("Verdict enforcement", False))
         print(f"  ✗ Error: {exc}")
@@ -725,13 +911,24 @@ def doctor() -> None:
     _status("Test suite...")
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "pytest", "tests/", "-q", "--no-header",
-             "--ignore=tests/test_memory_and_ingest.py",
-             "--ignore=tests/test_persistence.py",
-             "--ignore=tests/test_web_api.py"],
-            capture_output=True, text=True, timeout=120,
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "tests/",
+                "-q",
+                "--no-header",
+                "--ignore=tests/test_memory_and_ingest.py",
+                "--ignore=tests/test_persistence.py",
+                "--ignore=tests/test_web_api.py",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
         )
-        last_line = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+        last_line = (
+            result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+        )
         ok = result.returncode == 0
         checks.append(("Test suite", ok))
         if ok:

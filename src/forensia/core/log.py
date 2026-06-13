@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from rich import print as _rich_print
 
-
 _LOG_COLORS = {
     "PLAN": "bold cyan",
     "HYPOTHESIS": "bold magenta",
@@ -24,7 +23,7 @@ def log(tag: str, message: str) -> None:
     This function reproduces the exact print format used by
     ai/investigator.py's _log function::
         [{color}][{tag}[/{color}] {message}
-    
+
     The tag must be one of the keys in _LOG_COLORS.
     """
     color = _LOG_COLORS.get(tag, "white")

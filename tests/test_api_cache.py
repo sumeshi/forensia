@@ -13,7 +13,6 @@ from forensia.api.cache import (
     load_snapshot,
     write_api_snapshots,
 )
-from forensia.core.case import Case
 
 
 class _MockDTO:
@@ -74,7 +73,9 @@ class TestWriteJson(unittest.TestCase):
             path = Path(td) / "test.json"
             path.write_text('"old"', encoding="utf-8")
             _write_json(path, {"new": "data"})
-            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"new": "data"})
+            self.assertEqual(
+                json.loads(path.read_text(encoding="utf-8")), {"new": "data"}
+            )
 
 
 class TestLoadSnapshot(unittest.TestCase):
@@ -175,7 +176,9 @@ class TestWriteApiSnapshots(unittest.TestCase):
                 session.model_dump = lambda mode="json": {"session_id": "s1"}
                 mocks["list_sessions_dto"].return_value = [session]
                 mocks["list_hypothesis_reasoning_map_dto"].return_value = {"H1": []}
-                mocks["list_latest_hypothesis_reasoning_dto"].return_value = _mock_dto_list(1)
+                mocks[
+                    "list_latest_hypothesis_reasoning_dto"
+                ].return_value = _mock_dto_list(1)
                 mocks["list_steps_dto"].return_value = _mock_dto_list(1)
                 mocks["list_report_sections_dto"].return_value = _mock_dto_list(1)
                 mocks["list_section_questions_dto"].return_value = _mock_dto_list(1)

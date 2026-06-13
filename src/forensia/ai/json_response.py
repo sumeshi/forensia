@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 from collections.abc import Callable
 from typing import Any
 
-from forensia.ai.llm_client import LLMServerUnavailableError, LLMOutputTruncatedError, chat_completion, async_chat_completion
+from forensia.ai.llm_client import (
+    LLMOutputTruncatedError,
+    LLMServerUnavailableError,
+    async_chat_completion,
+    chat_completion,
+)
 from forensia.config import get_llm_settings
 
 CODE_BLOCK_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
@@ -33,7 +37,7 @@ def _extract_candidate(text: str) -> str:
     first_brace = stripped.find("{")
     last_brace = stripped.rfind("}")
     if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
-        return stripped[first_brace:last_brace + 1]
+        return stripped[first_brace : last_brace + 1]
     return stripped
 
 
@@ -134,10 +138,14 @@ def parse_llm_json(
             )
             continue
         if not isinstance(parsed, dict):
-            raise RuntimeError("LLM returned JSON, but top-level value was not an object")
+            raise RuntimeError(
+                "LLM returned JSON, but top-level value was not an object"
+            )
         return parsed
 
-    raise RuntimeError(f"LLM returned invalid JSON after {MAX_JSON_REPAIR_ATTEMPTS} repair attempts: {current_error}")
+    raise RuntimeError(
+        f"LLM returned invalid JSON after {MAX_JSON_REPAIR_ATTEMPTS} repair attempts: {current_error}"
+    )
 
 
 async def async_parse_llm_json(
@@ -165,10 +173,14 @@ async def async_parse_llm_json(
             )
             continue
         if not isinstance(parsed, dict):
-            raise RuntimeError("LLM returned JSON, but top-level value was not an object")
+            raise RuntimeError(
+                "LLM returned JSON, but top-level value was not an object"
+            )
         return parsed
 
-    raise RuntimeError(f"LLM returned invalid JSON after {MAX_JSON_REPAIR_ATTEMPTS} repair attempts: {current_error}")
+    raise RuntimeError(
+        f"LLM returned invalid JSON after {MAX_JSON_REPAIR_ATTEMPTS} repair attempts: {current_error}"
+    )
 
 
 def request_llm_json(
@@ -176,7 +188,8 @@ def request_llm_json(
     base_url: str,
     model: str,
     status_callback: Callable[[str], None] | None = None,
-    audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
+    audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None]
+    | None = None,
     json_schema: dict | None = None,
     max_tokens: int | None = None,
 ) -> dict[str, Any]:
@@ -201,19 +214,27 @@ def request_llm_json(
                         json_schema=json_schema,
                     )
                     break
-                except LLMOutputTruncatedError as exc:
-                    first_max_tokens = (first_max_tokens or get_llm_settings()["max_tokens"]) * 2
+                except LLMOutputTruncatedError:
+                    first_max_tokens = (
+                        first_max_tokens or get_llm_settings()["max_tokens"]
+                    ) * 2
                     if status_callback:
-                        status_callback(f"LLM output truncated, retrying with max_tokens={first_max_tokens}")
+                        status_callback(
+                            f"LLM output truncated, retrying with max_tokens={first_max_tokens}"
+                        )
             else:
-                raise LLMServerUnavailableError(f"LLM output truncated after 3 attempts (max_tokens={first_max_tokens})")
+                raise LLMServerUnavailableError(
+                    f"LLM output truncated after 3 attempts (max_tokens={first_max_tokens})"
+                )
             if not output or not output.strip():
                 raise LLMServerUnavailableError("LLM returned empty response")
         except LLMServerUnavailableError:
             raise
         except Exception as exc:
             if audit_callback:
-                audit_callback(messages, output="<HTTP_ERROR>", parsed={"error": str(exc)})
+                audit_callback(
+                    messages, output="<HTTP_ERROR>", parsed={"error": str(exc)}
+                )
             raise
         try:
             parsed = parse_llm_json(
@@ -240,7 +261,8 @@ async def async_request_llm_json(
     base_url: str,
     model: str,
     status_callback: Callable[[str], None] | None = None,
-    audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None = None,
+    audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None]
+    | None = None,
     json_schema: dict | None = None,
     max_tokens: int | None = None,
 ) -> dict[str, Any]:
@@ -265,19 +287,27 @@ async def async_request_llm_json(
                         json_schema=json_schema,
                     )
                     break
-                except LLMOutputTruncatedError as exc:
-                    first_max_tokens = (first_max_tokens or get_llm_settings()["max_tokens"]) * 2
+                except LLMOutputTruncatedError:
+                    first_max_tokens = (
+                        first_max_tokens or get_llm_settings()["max_tokens"]
+                    ) * 2
                     if status_callback:
-                        status_callback(f"LLM output truncated, retrying with max_tokens={first_max_tokens}")
+                        status_callback(
+                            f"LLM output truncated, retrying with max_tokens={first_max_tokens}"
+                        )
             else:
-                raise LLMServerUnavailableError(f"LLM output truncated after 3 attempts (max_tokens={first_max_tokens})")
+                raise LLMServerUnavailableError(
+                    f"LLM output truncated after 3 attempts (max_tokens={first_max_tokens})"
+                )
             if not output or not output.strip():
                 raise LLMServerUnavailableError("LLM returned empty response")
         except LLMServerUnavailableError:
             raise
         except Exception as exc:
             if audit_callback:
-                audit_callback(messages, output="<HTTP_ERROR>", parsed={"error": str(exc)})
+                audit_callback(
+                    messages, output="<HTTP_ERROR>", parsed={"error": str(exc)}
+                )
             raise
         try:
             parsed = await async_parse_llm_json(

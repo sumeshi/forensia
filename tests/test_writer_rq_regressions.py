@@ -7,7 +7,6 @@ import unittest
 from datetime import UTC, datetime
 from unittest.mock import patch
 
-from forensia.core.case import Case
 from forensia.ai.section_agent import (
     _fallback_narrative_body,
     _is_effectively_empty_body,
@@ -17,23 +16,24 @@ from forensia.ai.section_agent import (
     _structured_digest_from_answers,
     run_section_block_agent,
 )
-from forensia.questions import resolve_question_spec
-from forensia.config import clear_llm_settings_cache
+from forensia.config import clear_llm_settings_cache, reload_settings
+from forensia.core.case import Case
 from forensia.db.database import CaseDB
+from forensia.questions import resolve_question_spec
 from forensia.report.writer import (
-    _GateCtx,
     _assemble_section_body,
-    _check_recommendations_strength,
-    _extract_needed_evidence,
-    _hypothesis_rows,
-    build_structured_answer,
     _check_citation_token_no_finding_id,
     _check_hedge_no_citation,
+    _check_recommendations_strength,
     _dump_section_questions_json,
+    _extract_needed_evidence,
+    _GateCtx,
+    _hypothesis_rows,
     _render_structured_answer_markdown,
     _resolve_evidence_results,
     _validate_body_evidence_ids,
     _validate_section_evidence_ids,
+    build_structured_answer,
 )
 
 
@@ -41,7 +41,7 @@ class WriterRQRegressionTests(unittest.TestCase):
     def test_status_only_narration_gets_deterministic_fallback(self) -> None:
         self.assertTrue(_is_effectively_empty_body("**Status:** answered"))
         with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "en"}):
-            clear_llm_settings_cache()
+            reload_settings()
             body = _fallback_narrative_body(
                 heading="Executive Summary",
                 status="partial",
@@ -74,7 +74,7 @@ class WriterRQRegressionTests(unittest.TestCase):
                 actual_query_count=1,
                 actual_query_row_counts=[2],
             )
-            clear_llm_settings_cache()
+            reload_settings()
 
         self.assertIn("Additional correlation is still needed", body)
         self.assertIn("evtx-security-000000000122", body)
@@ -82,18 +82,23 @@ class WriterRQRegressionTests(unittest.TestCase):
 
     def test_not_found_fallback_does_not_emit_block_skipped_marker(self) -> None:
         with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "en"}):
-            clear_llm_settings_cache()
+            reload_settings()
             body = _fallback_narrative_body(
                 heading="Network Activity",
                 status="not_found",
                 collected_results=[
-                    {"kind": "rows", "keypoint": "evtx_network_connections", "row_count": 0, "sample_rows": []}
+                    {
+                        "kind": "rows",
+                        "keypoint": "evtx_network_connections",
+                        "row_count": 0,
+                        "sample_rows": [],
+                    }
                 ],
                 flat_evidence=[],
                 actual_query_count=1,
                 actual_query_row_counts=[0],
             )
-            clear_llm_settings_cache()
+            reload_settings()
 
         self.assertIn("returned no matching rows", body)
         self.assertNotIn("Block skipped", body)
@@ -114,16 +119,26 @@ class WriterRQRegressionTests(unittest.TestCase):
                     """
                 )
                 normal = _load_reusable_section_facts(db, "1_overview")
-                with_case_probe = _load_reusable_section_facts(db, "1_overview", include_case_probe=True)
+                with_case_probe = _load_reusable_section_facts(
+                    db, "1_overview", include_case_probe=True
+                )
 
             self.assertEqual(["section_fact"], [item["fact_key"] for item in normal])
-            self.assertIn("last_human_logon", [item["fact_key"] for item in with_case_probe])
+            self.assertIn(
+                "last_human_logon", [item["fact_key"] for item in with_case_probe]
+            )
 
     def test_assemble_section_body_preserves_template_preamble(self) -> None:
-        body = _assemble_section_body("# Investigation Overview", ["## Executive Summary\n\nBody"])
-        self.assertTrue(body.startswith("# Investigation Overview\n\n## Executive Summary"))
+        body = _assemble_section_body(
+            "# Investigation Overview", ["## Executive Summary\n\nBody"]
+        )
+        self.assertTrue(
+            body.startswith("# Investigation Overview\n\n## Executive Summary")
+        )
 
-    def test_recommendation_strength_accepts_japanese_verification_wording(self) -> None:
+    def test_recommendation_strength_accepts_japanese_verification_wording(
+        self,
+    ) -> None:
         ctx = _GateCtx(
             section_key="5_recommendations",
             title="Recommendations",
@@ -139,21 +154,37 @@ class WriterRQRegressionTests(unittest.TestCase):
         self.assertIsNone(cap)
 
     def test_question_routing_resolves_specific_shutdown_and_logon_specs(self) -> None:
-        self.assertEqual("last_shutdown_event", _question_routing_answer_spec("Last recorded shutdown time", ""))
-        self.assertEqual("last_human_logon", _question_routing_answer_spec("Last logged-on user", ""))
-        self.assertEqual("daily_session_activity", _question_routing_answer_spec("Startup, shutdown, logon, and logoff history", ""))
+        self.assertEqual(
+            "last_shutdown_event",
+            _question_routing_answer_spec("Last recorded shutdown time", ""),
+        )
+        self.assertEqual(
+            "last_human_logon", _question_routing_answer_spec("Last logged-on user", "")
+        )
+        self.assertEqual(
+            "daily_session_activity",
+            _question_routing_answer_spec(
+                "Startup, shutdown, logon, and logoff history", ""
+            ),
+        )
 
     def test_question_spec_registry_resolves_template_variants(self) -> None:
         samples = [
             ("Last recorded shutdown time", "", "last_shutdown_event"),
-            ("Most recent shutdown", "When did the endpoint last shut down?", "last_shutdown_event"),
+            (
+                "Most recent shutdown",
+                "When did the endpoint last shut down?",
+                "last_shutdown_event",
+            ),
             ("最後のシャットダウン時刻", "", "last_shutdown_event"),
             ("Last user", "Who was the last logged-on user?", "last_human_logon"),
             ("最終ログオンユーザー", "", "last_human_logon"),
             ("Evidence Scope", "case time range and event window", "case_event_window"),
         ]
         for heading, body, expected in samples:
-            spec, confidence = resolve_question_spec(block_heading=heading, template_body=body)
+            spec, confidence = resolve_question_spec(
+                block_heading=heading, template_body=body
+            )
             self.assertIsNotNone(spec, heading)
             self.assertEqual(expected, spec.answer_spec)
             self.assertGreater(confidence, 0.0)
@@ -169,8 +200,14 @@ class WriterRQRegressionTests(unittest.TestCase):
             },
             "Q-TEST",
         )
-        section = markdown.split("### Missing Reason", 1)[1].split("### Queries Run", 1)[0]
-        bullets = [line.strip() for line in section.splitlines() if line.strip().startswith("-")]
+        section = markdown.split("### Missing Reason", 1)[1].split(
+            "### Queries Run", 1
+        )[0]
+        bullets = [
+            line.strip()
+            for line in section.splitlines()
+            if line.strip().startswith("-")
+        ]
         self.assertEqual(["- single reason string"], bullets)
 
     def test_narrate_retries_once_when_first_body_is_empty(self) -> None:
@@ -182,11 +219,15 @@ class WriterRQRegressionTests(unittest.TestCase):
         """
         calls: list[list[dict[str, str]]] = []
 
-        def fake_llm(*, messages, model, base_url, json_schema, audit_callback=None, **kwargs):
+        def fake_llm(
+            *, messages, model, base_url, json_schema, audit_callback=None, **kwargs
+        ):
             calls.append([dict(m) for m in messages])
             if len(calls) == 1:
                 return {"body": ""}
-            return {"body": "A concrete narrative paragraph that cites evtx-security-000000000122."}
+            return {
+                "body": "A concrete narrative paragraph that cites evtx-security-000000000122."
+            }
 
         base_messages = [
             {"role": "system", "content": "narrate system"},
@@ -212,7 +253,9 @@ class WriterRQRegressionTests(unittest.TestCase):
 
         def fake_llm(**kwargs):
             calls.append(1)
-            return {"body": "A concrete paragraph long enough to pass the empty-body check."}
+            return {
+                "body": "A concrete paragraph long enough to pass the empty-body check."
+            }
 
         with patch("forensia.ai.section_agent.request_llm_json", side_effect=fake_llm):
             _narrate_paragraph_with_retry(
@@ -230,7 +273,15 @@ class WriterRQRegressionTests(unittest.TestCase):
         Codex's earlier fix handled `missing_reason=[]` but kept emitting the section for
         sentinel values (`["none"]`, `["該当なし"]`) that mean the same thing.
         """
-        for missing in ([], ["none"], ["None"], ["該当なし"], ["なし"], ["-"], ["", "  "]):
+        for missing in (
+            [],
+            ["none"],
+            ["None"],
+            ["該当なし"],
+            ["なし"],
+            ["-"],
+            ["", "  "],
+        ):
             with self.subTest(missing=missing):
                 markdown = _render_structured_answer_markdown(
                     {
@@ -275,9 +326,21 @@ class WriterRQRegressionTests(unittest.TestCase):
                         "row_count": 13,
                         "evidence_ids": ["evtx-security-000000001166"],
                         "sample_rows": [
-                            {"timestamp": "2015-03-25T14:45:59", "event_id": 4624, "evidence_id": "evtx-security-000000001166"},
-                            {"timestamp": "2015-03-25T15:31:00", "event_id": 6006, "evidence_id": "evtx-system-000000001624"},
-                            {"timestamp": "2015-03-25T15:28:47", "event_id": 4688, "evidence_id": "evtx-security-000000001200"},
+                            {
+                                "timestamp": "2015-03-25T14:45:59",
+                                "event_id": 4624,
+                                "evidence_id": "evtx-security-000000001166",
+                            },
+                            {
+                                "timestamp": "2015-03-25T15:31:00",
+                                "event_id": 6006,
+                                "evidence_id": "evtx-system-000000001624",
+                            },
+                            {
+                                "timestamp": "2015-03-25T15:28:47",
+                                "event_id": 4688,
+                                "evidence_id": "evtx-security-000000001200",
+                            },
                         ],
                     },
                     {
@@ -285,19 +348,36 @@ class WriterRQRegressionTests(unittest.TestCase):
                         "keypoint": "overview_hosts",
                         "row_count": 3,
                         "evidence_ids": [],
-                        "sample_rows": [{"host_id": "informant-PC", "evidence_id": "evtx-security-000000000001"}],
+                        "sample_rows": [
+                            {
+                                "host_id": "informant-PC",
+                                "evidence_id": "evtx-security-000000000001",
+                            }
+                        ],
                     },
                 ],
                 flat_evidence=[
-                    {"timestamp": "2015-03-25T14:45:59", "event_id": 4624, "evidence_id": "evtx-security-000000001166"},
-                    {"timestamp": "2015-03-25T15:31:00", "event_id": 6006, "evidence_id": "evtx-system-000000001624"},
+                    {
+                        "timestamp": "2015-03-25T14:45:59",
+                        "event_id": 4624,
+                        "evidence_id": "evtx-security-000000001166",
+                    },
+                    {
+                        "timestamp": "2015-03-25T15:31:00",
+                        "event_id": 6006,
+                        "evidence_id": "evtx-system-000000001624",
+                    },
                 ],
                 actual_query_count=2,
                 actual_query_row_counts=[13, 3],
             )
             clear_llm_settings_cache()
 
-        self.assertLess(len(body), 280, msg=f"fallback paragraph too long ({len(body)} chars): {body!r}")
+        self.assertLess(
+            len(body),
+            280,
+            msg=f"fallback paragraph too long ({len(body)} chars): {body!r}",
+        )
         self.assertNotIn("overview_top_findings", body)
         self.assertNotIn("overview_hosts", body)
         self.assertNotIn("=10", body)
@@ -308,7 +388,10 @@ class WriterRQRegressionTests(unittest.TestCase):
             {
                 "id": "Q-BIG",
                 "status": "answered",
-                "answer": [{"value": index, "paths": [f"path-{sub}" for sub in range(8)]} for index in range(30)],
+                "answer": [
+                    {"value": index, "paths": [f"path-{sub}" for sub in range(8)]}
+                    for index in range(30)
+                ],
                 "missing_reason": [],
                 "queries_run": ["structured:test"],
                 "json_path": "structured/answers.json",
@@ -346,7 +429,14 @@ class WriterRQRegressionTests(unittest.TestCase):
             {
                 "id": "Q-EVIDENCE",
                 "status": "answered",
-                "answer": [{"name": "row", "evidence_id": "evtx-security-000000000001", "evidence_ids": ["mft-000000000001-00"], "source_file": "raw.evtx"}],
+                "answer": [
+                    {
+                        "name": "row",
+                        "evidence_id": "evtx-security-000000000001",
+                        "evidence_ids": ["mft-000000000001-00"],
+                        "source_file": "raw.evtx",
+                    }
+                ],
                 "columns": ["name", "evidence_id", "evidence_ids", "source_file"],
                 "missing_reason": [],
                 "queries_run": ["structured:test"],
@@ -396,14 +486,25 @@ class WriterRQRegressionTests(unittest.TestCase):
                 results = _resolve_evidence_results(
                     case,
                     db,
-                    keypoints=["structured_cloud_artifacts", "structured_resignation_files"],
+                    keypoints=[
+                        "structured_cloud_artifacts",
+                        "structured_resignation_files",
+                    ],
                 )
 
             keypoints = {result["keypoint"] for result in results}
             self.assertIn("structured_cloud_artifacts", keypoints)
             self.assertIn("structured_resignation_files", keypoints)
-            cloud = next(result for result in results if result["keypoint"] == "structured_cloud_artifacts")
-            resignation = next(result for result in results if result["keypoint"] == "structured_resignation_files")
+            cloud = next(
+                result
+                for result in results
+                if result["keypoint"] == "structured_cloud_artifacts"
+            )
+            resignation = next(
+                result
+                for result in results
+                if result["keypoint"] == "structured_resignation_files"
+            )
             self.assertGreaterEqual(cloud["row_count"], 1)
             self.assertGreaterEqual(resignation["row_count"], 1)
 
@@ -439,24 +540,51 @@ class WriterRQRegressionTests(unittest.TestCase):
 
             self.assertIsNotNone(answer)
             self.assertEqual("answered", answer["status"])
-            self.assertEqual(["logon_time", "computer", "user_name", "logon_type", "process_name", "src_ip", "evidence_id"], answer["columns"])
+            self.assertEqual(
+                [
+                    "logon_time",
+                    "computer",
+                    "user_name",
+                    "logon_type",
+                    "process_name",
+                    "src_ip",
+                    "evidence_id",
+                ],
+                answer["columns"],
+            )
             self.assertEqual("informant", answer["answer"][0]["user_name"])
             self.assertIn("2015-03-22T14:34:28", answer["answer"][0]["logon_time"])
             self.assertTrue((case.reports_dir / "structured" / "Q8.csv").exists())
-            answers = json.loads((case.reports_dir / "structured" / "answers.json").read_text(encoding="utf-8"))
+            answers = json.loads(
+                (case.reports_dir / "structured" / "answers.json").read_text(
+                    encoding="utf-8"
+                )
+            )
             self.assertEqual("Q8", answers[0]["id"])
 
-    def test_structured_benchmark_last_shutdown_ignores_overall_last_event(self) -> None:
+    def test_structured_benchmark_last_shutdown_ignores_overall_last_event(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer) VALUES (?, ?, ?, ?)",
-                    ("evtx-system-000000000001", 6006, datetime(2015, 3, 22, 14, 38, 16), "informant-PC"),
+                    (
+                        "evtx-system-000000000001",
+                        6006,
+                        datetime(2015, 3, 22, 14, 38, 16),
+                        "informant-PC",
+                    ),
                 )
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer) VALUES (?, ?, ?, ?)",
-                    ("evtx-security-000000000002", 4624, datetime(2015, 3, 25, 15, 31, 0), "informant-PC"),
+                    (
+                        "evtx-security-000000000002",
+                        4624,
+                        datetime(2015, 3, 25, 15, 31, 0),
+                        "informant-PC",
+                    ),
                 )
                 answer = build_structured_answer(
                     case,
@@ -477,7 +605,12 @@ class WriterRQRegressionTests(unittest.TestCase):
             with CaseDB(case) as db:
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer) VALUES (?, ?, ?, ?)",
-                    ("evtx-system-000000000001", 6006, datetime(2015, 3, 22, 14, 38, 16), "informant-PC"),
+                    (
+                        "evtx-system-000000000001",
+                        6006,
+                        datetime(2015, 3, 22, 14, 38, 16),
+                        "informant-PC",
+                    ),
                 )
                 result = run_section_block_agent(
                     case=case,
@@ -505,7 +638,12 @@ class WriterRQRegressionTests(unittest.TestCase):
             with CaseDB(case) as db:
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer) VALUES (?, ?, ?, ?)",
-                    ("evtx-system-000000000001", 6006, datetime(2015, 3, 22, 14, 38, 16), "informant-PC"),
+                    (
+                        "evtx-system-000000000001",
+                        6006,
+                        datetime(2015, 3, 22, 14, 38, 16),
+                        "informant-PC",
+                    ),
                 )
                 run_section_block_agent(
                     case=case,
@@ -534,7 +672,9 @@ class WriterRQRegressionTests(unittest.TestCase):
                 _dump_section_questions_json(case, db, "6_appendix")
 
             self.assertIsNotNone(row)
-            self.assertEqual(("last_shutdown_event", "investigation_window", "resolved"), tuple(row))
+            self.assertEqual(
+                ("last_shutdown_event", "investigation_window", "resolved"), tuple(row)
+            )
             debug_path = case.reports_dir / "debug" / "6_appendix_questions.json"
             self.assertTrue(debug_path.exists())
             self.assertIn("last_shutdown_event", debug_path.read_text(encoding="utf-8"))
@@ -545,7 +685,12 @@ class WriterRQRegressionTests(unittest.TestCase):
             with CaseDB(case) as db:
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer) VALUES (?, ?, ?, ?)",
-                    ("evtx-security-000000000001", 4624, datetime(2015, 3, 22, 14, 34, 28), "informant-PC"),
+                    (
+                        "evtx-security-000000000001",
+                        4624,
+                        datetime(2015, 3, 22, 14, 34, 28),
+                        "informant-PC",
+                    ),
                 )
                 answer = build_structured_answer(
                     case,
@@ -558,24 +703,46 @@ class WriterRQRegressionTests(unittest.TestCase):
 
             self.assertIsNotNone(answer)
             self.assertEqual("answered", answer["status"])
-            self.assertEqual(["first_event", "last_event", "event_count"], answer["columns"])
+            self.assertEqual(
+                ["first_event", "last_event", "event_count"], answer["columns"]
+            )
             self.assertEqual(1, answer["answer"][0]["event_count"])
 
-    def test_structured_benchmark_antiforensics_excludes_plain_eventlog_shutdown(self) -> None:
+    def test_structured_benchmark_antiforensics_excludes_plain_eventlog_shutdown(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, channel, event_id, timestamp, computer) VALUES (?, ?, ?, ?, ?)",
-                    ("evtx-system-000000000001", "System", 1100, datetime(2015, 3, 25, 15, 31, 0), "informant-PC"),
+                    (
+                        "evtx-system-000000000001",
+                        "System",
+                        1100,
+                        datetime(2015, 3, 25, 15, 31, 0),
+                        "informant-PC",
+                    ),
                 )
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, channel, event_id, timestamp, computer) VALUES (?, ?, ?, ?, ?)",
-                    ("evtx-security-000000000002", "Security", 1102, datetime(2015, 3, 25, 15, 32, 0), "informant-PC"),
+                    (
+                        "evtx-security-000000000002",
+                        "Security",
+                        1102,
+                        datetime(2015, 3, 25, 15, 32, 0),
+                        "informant-PC",
+                    ),
                 )
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, channel, event_id, timestamp, computer) VALUES (?, ?, ?, ?, ?)",
-                    ("evtx-security-000000000003", "Security", 1100, datetime(2015, 3, 25, 15, 33, 0), "informant-PC"),
+                    (
+                        "evtx-security-000000000003",
+                        "Security",
+                        1100,
+                        datetime(2015, 3, 25, 15, 33, 0),
+                        "informant-PC",
+                    ),
                 )
                 answer = build_structured_answer(
                     case,
@@ -592,7 +759,9 @@ class WriterRQRegressionTests(unittest.TestCase):
             evidence_ids = {row.get("evidence_id") for row in answer["answer"]}
             self.assertNotIn("evtx-system-000000000001", evidence_ids)
 
-    def test_structured_benchmark_antiforensics_filters_installed_noise_files(self) -> None:
+    def test_structured_benchmark_antiforensics_filters_installed_noise_files(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -679,7 +848,9 @@ class WriterRQRegressionTests(unittest.TestCase):
 
             self.assertIsNotNone(answer)
             self.assertEqual("partial", answer["status"])
-            self.assertEqual(["WINWORD.EXE"], [row["executable_name"] for row in answer["answer"]])
+            self.assertEqual(
+                ["WINWORD.EXE"], [row["executable_name"] for row in answer["answer"]]
+            )
 
     def test_structured_desktop_rename_uses_recent_lnk_alias_pairs(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -716,7 +887,10 @@ class WriterRQRegressionTests(unittest.TestCase):
 
             self.assertEqual("partial", answer["status"])
             self.assertEqual("pricing decision", answer["answer"][0]["original_name"])
-            self.assertEqual("(secret_project)_pricing_decision.xlsx", answer["answer"][0]["new_name"])
+            self.assertEqual(
+                "(secret_project)_pricing_decision.xlsx",
+                answer["answer"][0]["new_name"],
+            )
 
     def test_citation_gate_accepts_evtx_and_mft_evidence_ids(self) -> None:
         ctx = _GateCtx(section_key="test", title="test", evidence_results=None, db=None)
@@ -768,7 +942,12 @@ class WriterRQRegressionTests(unittest.TestCase):
             with CaseDB(case) as db:
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer) VALUES (?, ?, ?, ?)",
-                    ("evtx-security-000000000001", 4624, datetime(2015, 3, 22, 14, 34, 28), "informant-PC"),
+                    (
+                        "evtx-security-000000000001",
+                        4624,
+                        datetime(2015, 3, 22, 14, 34, 28),
+                        "informant-PC",
+                    ),
                 )
                 body = (
                     "The real event evtx-security-000000000001 is supported by evidence. "
@@ -788,12 +967,23 @@ class WriterRQRegressionTests(unittest.TestCase):
             self.assertNotIn("()", cleaned)
             self.assertNotIn("（,", cleaned)
             # Gap lists the removed full IDs
-            self.assertTrue(any("evtx-security-0001" in g for g in gaps), msg=f"gap missing fabricated ID: {gaps}")
-            self.assertTrue(any("evtx-mft-9999" in g for g in gaps), msg=f"gap missing fabricated ID: {gaps}")
+            self.assertTrue(
+                any("evtx-security-0001" in g for g in gaps),
+                msg=f"gap missing fabricated ID: {gaps}",
+            )
+            self.assertTrue(
+                any("evtx-mft-9999" in g for g in gaps),
+                msg=f"gap missing fabricated ID: {gaps}",
+            )
             # Real ID is NOT in the gap list
-            self.assertFalse(any("evtx-security-000000000001" in g for g in gaps), msg=f"real ID in gaps: {gaps}")
+            self.assertFalse(
+                any("evtx-security-000000000001" in g for g in gaps),
+                msg=f"real ID in gaps: {gaps}",
+            )
 
-    def test_validate_section_evidence_ids_keeps_valid_id_sharing_parens_with_invalid(self) -> None:
+    def test_validate_section_evidence_ids_keeps_valid_id_sharing_parens_with_invalid(
+        self,
+    ) -> None:
         """R5-01 follow-up: removing an invalid ID must not delete a valid ID
         cited in the same citation group. A naive "(, debris)" cleanup regex
         deleted the whole group, silently destroying real citations."""
@@ -802,7 +992,12 @@ class WriterRQRegressionTests(unittest.TestCase):
             with CaseDB(case) as db:
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer) VALUES (?, ?, ?, ?)",
-                    ("evtx-security-000000000122", 4648, datetime(2015, 3, 22, 15, 57, 54), "informant-PC"),
+                    (
+                        "evtx-security-000000000122",
+                        4648,
+                        datetime(2015, 3, 22, 15, 57, 54),
+                        "informant-PC",
+                    ),
                 )
                 body = (
                     "Invalid first （evtx-security-0001, evtx-security-000000000122） here. "
@@ -823,11 +1018,15 @@ class WriterRQRegressionTests(unittest.TestCase):
         silently never fired for any template that used it."""
         from forensia.report.writer import _parse_block_hints
 
-        hints = _parse_block_hints("<!-- mode: table; builder: overview_evidence_scope -->")
+        hints = _parse_block_hints(
+            "<!-- mode: table; builder: overview_evidence_scope -->"
+        )
         self.assertEqual("table", hints["mode"])
         self.assertEqual("overview_evidence_scope", hints["builder"])
 
-        narrative = _parse_block_hints("<!-- mode: narrative; Write an executive summary -->")
+        narrative = _parse_block_hints(
+            "<!-- mode: narrative; Write an executive summary -->"
+        )
         self.assertEqual("narrative", narrative["mode"])
         self.assertEqual("", narrative["builder"])
 
@@ -878,16 +1077,21 @@ class WriterRQRegressionTests(unittest.TestCase):
                 # LLM agent path, this test fails loudly instead of passing.
                 _, body = asyncio.run(
                     _render_section_blocks(
-                        request, case, db, memory,
-                        base_url="http://127.0.0.1:1", model="none",
+                        request,
+                        case,
+                        db,
+                        memory,
+                        base_url="http://127.0.0.1:1",
+                        model="none",
                         max_queries_per_section=1,
-                        llm_logger=None, iteration=1,
-                        progress_callback=None, focus_sections=None,
+                        llm_logger=None,
+                        iteration=1,
+                        progress_callback=None,
+                        focus_sections=None,
                     )
                 )
         self.assertIn("## Evidence Scope", body)
         self.assertIn("| Metric | Value |", body)
-
 
     def test_render_rows_template_grammar(self) -> None:
         """R6-03: shared placeholder grammar for captions and interpretations."""
@@ -898,7 +1102,8 @@ class WriterRQRegressionTests(unittest.TestCase):
             {"host": "beta", "events": 3},
         ]
         out = render_rows_template(
-            "{row_count} hosts ({sample(host, 3)}); first={first.host} last={last.host}", rows,
+            "{row_count} hosts ({sample(host, 3)}); first={first.host} last={last.host}",
+            rows,
         )
         self.assertEqual("2 hosts (alpha、beta); first=alpha last=beta", out)
 
@@ -912,7 +1117,10 @@ class WriterRQRegressionTests(unittest.TestCase):
                 body = render_table_block(db, "overview_evidence_scope")
         self.assertIsNotNone(body)
         caption, _, rest = body.partition("\n\n")
-        self.assertFalse(caption.startswith("|"), f"caption paragraph expected, got table first: {caption!r}")
+        self.assertFalse(
+            caption.startswith("|"),
+            f"caption paragraph expected, got table first: {caption!r}",
+        )
         self.assertIn("指標", caption)
         self.assertIn("| Metric | Value |", rest)
 
@@ -961,7 +1169,9 @@ class WriterRQRegressionTests(unittest.TestCase):
                 )
                 rows = _execution_rows(db)
         names = [str(r.get("executable_name")) for r in rows]
-        self.assertEqual(len(names), len(set(names)), f"duplicate executables in {names}")
+        self.assertEqual(
+            len(names), len(set(names)), f"duplicate executables in {names}"
+        )
         iexplore = next(r for r in rows if r["executable_name"] == "IEXPLORE.EXE")
         self.assertEqual(16, int(iexplore["exec_count"]))
         self.assertIn("15:22:07", str(iexplore["last_exec_time"]))
@@ -974,18 +1184,26 @@ class WriterRQRegressionTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 ctx = _prepare_block_context(
-                    case=case, db=db, section_key="2_timeline", title="Activity Timeline",
-                    block_heading="Log Integrity", template_body="<!-- mode: narrative; x -->",
-                    base_url="http://127.0.0.1:1", model="none", memory=None,
-                    max_queries=1, evidence_keypoints=None, benchmark_mode=False,
+                    case=case,
+                    db=db,
+                    section_key="2_timeline",
+                    title="Activity Timeline",
+                    block_heading="Log Integrity",
+                    template_body="<!-- mode: narrative; x -->",
+                    base_url="http://127.0.0.1:1",
+                    model="none",
+                    memory=None,
+                    max_queries=1,
+                    evidence_keypoints=None,
+                    benchmark_mode=False,
                     section_table_digest="<SECTION_TABLES>\n### Phase Summary\n| Date |\n</SECTION_TABLES>",
                 )
         self.assertIn("<SECTION_TABLES>", ctx.structured_digest)
         self.assertIn("Phase Summary", ctx.structured_digest)
 
-
-
-    def test_async_render_blocks_feed_table_digest_to_narrative_in_template_order(self) -> None:
+    def test_async_render_blocks_feed_table_digest_to_narrative_in_template_order(
+        self,
+    ) -> None:
         """R6-05: tables render first and feed the narrative agent; the
         assembled body keeps template order (narrative before table here)."""
         import asyncio
@@ -999,7 +1217,12 @@ class WriterRQRegressionTests(unittest.TestCase):
 
         async def _stub_agent(**kwargs):
             captured.update(kwargs)
-            return SectionBlockResult(body="narrative body", evidence_results=[], iterations=1, status="answered")
+            return SectionBlockResult(
+                body="narrative body",
+                evidence_results=[],
+                iterations=1,
+                status="answered",
+            )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -1028,26 +1251,36 @@ class WriterRQRegressionTests(unittest.TestCase):
                         },
                     ],
                 }
-                with mock.patch.object(section_refresher, "async_run_section_block_agent", _stub_agent):
+                with mock.patch.object(
+                    section_refresher, "async_run_section_block_agent", _stub_agent
+                ):
                     _, body = asyncio.run(
                         section_refresher._render_section_blocks(
-                            request, case, db, MemoryManager(case),
-                            base_url="http://127.0.0.1:1", model="none",
+                            request,
+                            case,
+                            db,
+                            MemoryManager(case),
+                            base_url="http://127.0.0.1:1",
+                            model="none",
                             max_queries_per_section=1,
-                            llm_logger=None, iteration=1,
-                            progress_callback=None, focus_sections=None,
+                            llm_logger=None,
+                            iteration=1,
+                            progress_callback=None,
+                            focus_sections=None,
                         )
                     )
 
         digest = str(captured.get("section_table_digest") or "")
-        self.assertIn("<SECTION_TABLES>", digest, "narrative agent must receive the table digest")
+        self.assertIn(
+            "<SECTION_TABLES>", digest, "narrative agent must receive the table digest"
+        )
         self.assertIn("Evidence Scope", digest)
         self.assertIn("| Metric | Value |", digest)
         self.assertLess(
-            body.index("## Executive Summary"), body.index("## Evidence Scope"),
+            body.index("## Executive Summary"),
+            body.index("## Evidence Scope"),
             "assembly must keep template order even though tables render first",
         )
-
 
     def test_log_integrity_keypoints_ignore_non_eventlog_104(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1087,11 +1320,21 @@ class WriterRQRegressionTests(unittest.TestCase):
                     keypoints=["timeline_log_clearing", "gaps_log_integrity_events"],
                 )
 
-            timeline = next(result for result in results if result["keypoint"] == "timeline_log_clearing")
-            gaps = next(result for result in results if result["keypoint"] == "gaps_log_integrity_events")
+            timeline = next(
+                result
+                for result in results
+                if result["keypoint"] == "timeline_log_clearing"
+            )
+            gaps = next(
+                result
+                for result in results
+                if result["keypoint"] == "gaps_log_integrity_events"
+            )
             self.assertEqual(["evtx-eventlog-000000000104"], timeline["evidence_ids"])
             self.assertEqual(1, timeline["row_count"])
-            self.assertEqual([{"event_id": 104, "count": 1, "citable": False}], gaps["sample_rows"])
+            self.assertEqual(
+                [{"event_id": 104, "count": 1, "citable": False}], gaps["sample_rows"]
+            )
 
     def test_error_reasoning_rows_excluded_from_latest(self) -> None:
         """R2-05: error-phase reasoning entries must not appear as latest_reasoning."""
@@ -1112,7 +1355,14 @@ class WriterRQRegressionTests(unittest.TestCase):
                         entry_id, hypothesis_id, session_id, iteration, phase, body, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, now())
                     """,
-                    ("err-entry", "H-001", "s1", 1, "error", "[internal-error] SQL execution error: Binder Error",),
+                    (
+                        "err-entry",
+                        "H-001",
+                        "s1",
+                        1,
+                        "error",
+                        "[internal-error] SQL execution error: Binder Error",
+                    ),
                 )
                 db.execute(
                     """
@@ -1120,17 +1370,33 @@ class WriterRQRegressionTests(unittest.TestCase):
                         entry_id, hypothesis_id, session_id, iteration, phase, body, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, now() + INTERVAL '1 minute')
                     """,
-                    ("normal-entry", "H-001", "s1", 1, "plan", "Checked for logon events",),
+                    (
+                        "normal-entry",
+                        "H-001",
+                        "s1",
+                        1,
+                        "plan",
+                        "Checked for logon events",
+                    ),
                 )
                 rows = _hypothesis_rows(db, "active")
                 self.assertEqual(1, len(rows))
                 self.assertEqual("H-001", rows[0]["hypothesis_id"])
-                self.assertEqual("Checked for logon events", rows[0]["latest_reasoning"])
+                self.assertEqual(
+                    "Checked for logon events", rows[0]["latest_reasoning"]
+                )
                 self.assertEqual(2, rows[0]["reasoning_count"])
 
     def test_extract_needed_evidence_parses_missing_questions(self) -> None:
-        body = json.dumps({"verdict": "inconclusive", "missing_questions": ["event_id 4663", "process creation 4688"]})
-        self.assertEqual("event_id 4663; process creation 4688", _extract_needed_evidence(body))
+        body = json.dumps(
+            {
+                "verdict": "inconclusive",
+                "missing_questions": ["event_id 4663", "process creation 4688"],
+            }
+        )
+        self.assertEqual(
+            "event_id 4663; process creation 4688", _extract_needed_evidence(body)
+        )
 
     def test_extract_needed_evidence_returns_first_two_only(self) -> None:
         body = json.dumps({"missing_questions": ["a", "b", "c", "d"]})
@@ -1163,15 +1429,30 @@ class WriterRQRegressionTests(unittest.TestCase):
                     """,
                     (
                         "reason-099",
-                        "H-099", "s1", 1, "check",
-                        json.dumps({"verdict": "inconclusive", "missing_questions": ["event_id 4625", "source IP correlation"]}),
+                        "H-099",
+                        "s1",
+                        1,
+                        "check",
+                        json.dumps(
+                            {
+                                "verdict": "inconclusive",
+                                "missing_questions": [
+                                    "event_id 4625",
+                                    "source IP correlation",
+                                ],
+                            }
+                        ),
                     ),
                 )
                 _, resolver = REPORT_KEYPOINTS["unresolved_hypotheses_summary"]
                 rows = resolver(db)
                 self.assertEqual(1, len(rows))
-                self.assertEqual("event_id 4625; source IP correlation", rows[0]["needed_evidence"])
-                self.assertEqual("Suspicious logon pattern detected", rows[0]["description"])
+                self.assertEqual(
+                    "event_id 4625; source IP correlation", rows[0]["needed_evidence"]
+                )
+                self.assertEqual(
+                    "Suspicious logon pattern detected", rows[0]["description"]
+                )
 
     def test_untestable_resolver_includes_needed_evidence(self) -> None:
         from forensia.report.writer import REPORT_KEYPOINTS
@@ -1185,7 +1466,13 @@ class WriterRQRegressionTests(unittest.TestCase):
                         hypothesis_id, status, verdict, description, summary, created_at, updated_at
                     ) VALUES (?, ?, ?, ?, ?, now(), now())
                     """,
-                    ("H-100", "active", "untestable", "Missing EDR telemetry for process tree", "test"),
+                    (
+                        "H-100",
+                        "active",
+                        "untestable",
+                        "Missing EDR telemetry for process tree",
+                        "test",
+                    ),
                 )
                 db.execute(
                     """
@@ -1195,15 +1482,31 @@ class WriterRQRegressionTests(unittest.TestCase):
                     """,
                     (
                         "reason-100",
-                        "H-100", "s1", 1, "check",
-                        json.dumps({"verdict": "inconclusive", "missing_questions": ["Sysmon event_id 1 not available", "no EDR process tree"]}),
+                        "H-100",
+                        "s1",
+                        1,
+                        "check",
+                        json.dumps(
+                            {
+                                "verdict": "inconclusive",
+                                "missing_questions": [
+                                    "Sysmon event_id 1 not available",
+                                    "no EDR process tree",
+                                ],
+                            }
+                        ),
                     ),
                 )
                 _, resolver = REPORT_KEYPOINTS["untestable_hypotheses_summary"]
                 rows = resolver(db)
                 self.assertEqual(1, len(rows))
-                self.assertEqual("Sysmon event_id 1 not available; no EDR process tree", rows[0]["needed_evidence"])
-                self.assertEqual("Missing EDR telemetry for process tree", rows[0]["description"])
+                self.assertEqual(
+                    "Sysmon event_id 1 not available; no EDR process tree",
+                    rows[0]["needed_evidence"],
+                )
+                self.assertEqual(
+                    "Missing EDR telemetry for process tree", rows[0]["description"]
+                )
 
     def test_structured_digest_empty_case(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1222,8 +1525,16 @@ class WriterRQRegressionTests(unittest.TestCase):
                     "answer_spec": "host_identity",
                     "status": "answered",
                     "answer": [
-                        {"host": "HOST-A", "evidence_id": "E1", "timestamp": "2024-01-15T10:00:00"},
-                        {"host": "HOST-B", "evidence_id": "E2", "timestamp": "2024-01-15T11:00:00"},
+                        {
+                            "host": "HOST-A",
+                            "evidence_id": "E1",
+                            "timestamp": "2024-01-15T10:00:00",
+                        },
+                        {
+                            "host": "HOST-B",
+                            "evidence_id": "E2",
+                            "timestamp": "2024-01-15T11:00:00",
+                        },
                     ],
                     "columns": ["host", "timestamp"],
                 },
@@ -1247,7 +1558,9 @@ class WriterRQRegressionTests(unittest.TestCase):
                     "columns": ["tool_name", "timestamp"],
                 },
             ]
-            answers_path.write_text(json.dumps(synthetic, ensure_ascii=False), encoding="utf-8")
+            answers_path.write_text(
+                json.dumps(synthetic, ensure_ascii=False), encoding="utf-8"
+            )
             digest = _structured_digest_from_answers(case)
             self.assertIn("host_identity", digest)
             self.assertIn("antiforensic_activity", digest)
@@ -1273,7 +1586,9 @@ class WriterRQRegressionTests(unittest.TestCase):
         combined = "\n".join(m.get("content", "") for m in messages)
         self.assertIn("STRUCTURED_OBSERVATIONS", combined)
         self.assertIn("test_spec", combined)
-        self.assertIn("Write what the evidence shows, not instructions to the reader", combined)
+        self.assertIn(
+            "Write what the evidence shows, not instructions to the reader", combined
+        )
 
     def test_structured_digest_not_in_prompt_for_appendix(self) -> None:
         """Verify appendix blocks get no STRUCTURED_OBSERVATIONS."""
@@ -1296,29 +1611,54 @@ class WriterRQRegressionTests(unittest.TestCase):
             case = Case.init(tmpdir)
             answers_path = case.reports_dir / "structured" / "answers.json"
             answers_path.parent.mkdir(parents=True, exist_ok=True)
-            answers_path.write_text(json.dumps([
-                {
-                    "id": "probe_host",
-                    "answer_spec": "host_identity",
-                    "status": "answered",
-                    "answer": [{"host": "HOST-A", "timestamp": "2024-01-15T10:00:00"}],
-                    "columns": ["host", "timestamp"],
-                },
-            ]), encoding="utf-8")
+            answers_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "id": "probe_host",
+                            "answer_spec": "host_identity",
+                            "status": "answered",
+                            "answer": [
+                                {"host": "HOST-A", "timestamp": "2024-01-15T10:00:00"}
+                            ],
+                            "columns": ["host", "timestamp"],
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
             with CaseDB(case) as db:
                 ctx_overview = _prepare_block_context(
-                    case=case, db=db, section_key="1_overview", title="Overview",
-                    block_heading="Test", template_body="## Test",
-                    base_url="", model="test", memory=None, max_queries=3,
-                    evidence_keypoints=None, benchmark_mode=False,
-                    audit_callback=None, report_brief={},
+                    case=case,
+                    db=db,
+                    section_key="1_overview",
+                    title="Overview",
+                    block_heading="Test",
+                    template_body="## Test",
+                    base_url="",
+                    model="test",
+                    memory=None,
+                    max_queries=3,
+                    evidence_keypoints=None,
+                    benchmark_mode=False,
+                    audit_callback=None,
+                    report_brief={},
                 )
                 ctx_appendix = _prepare_block_context(
-                    case=case, db=db, section_key="6_appendix", title="Appendix",
-                    block_heading="Test", template_body="## Test",
-                    base_url="", model="test", memory=None, max_queries=3,
-                    evidence_keypoints=None, benchmark_mode=False,
-                    audit_callback=None, report_brief={},
+                    case=case,
+                    db=db,
+                    section_key="6_appendix",
+                    title="Appendix",
+                    block_heading="Test",
+                    template_body="## Test",
+                    base_url="",
+                    model="test",
+                    memory=None,
+                    max_queries=3,
+                    evidence_keypoints=None,
+                    benchmark_mode=False,
+                    audit_callback=None,
+                    report_brief={},
                 )
                 self.assertIn("host_identity", ctx_overview.structured_digest)
                 self.assertEqual(ctx_appendix.structured_digest, "")
@@ -1327,6 +1667,7 @@ class WriterRQRegressionTests(unittest.TestCase):
 class HtmlEvidenceIdAnchorTests(unittest.TestCase):
     def test_html_evidence_id_anchor_rendering(self):
         from forensia.report.html import _render_inline_markdown
+
         html = _render_inline_markdown("See evtx-security-000000000001.")
         self.assertIn('href="#ev-evtx-security-000000000001"', html)
         # Placeholder title (bare id); _inject_evidence_interactivity swaps in the

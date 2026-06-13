@@ -13,20 +13,32 @@ import yaml
 from forensia.core.case import Case
 from forensia.core.timeutil import parse_timestamp
 from forensia.db.database import CaseDB
-from forensia.rules.models import Finding, FindingTemplate, Rule
 from forensia.knowledge import (
-    clear_caches as _knowledge_clear_caches,
     load_event_id_hints as _load_event_id_hints,
+)
+from forensia.knowledge import (
     load_finding_benign_context_rules as _load_finding_benign_context_rules,
 )
+from forensia.rules.models import Finding, FindingTemplate, Rule
 
 _MISSING_TEXT_VALUES = {"", "-", "n/a", "na", "none", "null", "unknown"}
-_BUILTIN_ALLOWLIST_PATH = Path(__file__).resolve().parent.parent / "rulepacks" / "_schema" / "suppression" / "allowlist_services.yaml"
+_BUILTIN_ALLOWLIST_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "rulepacks"
+    / "_schema"
+    / "suppression"
+    / "allowlist_services.yaml"
+)
 
 FALLBACK_PHASES = {"keyword_in_raw_json", "related_event_ids", "artifact_table"}
 
 # Allowed tables for fallback search - validated against schema
-_ALLOWED_FALLBACK_TABLES = {"evtx_events", "mft_entries", "mft_timeline", "prefetch_executions"}
+_ALLOWED_FALLBACK_TABLES = {
+    "evtx_events",
+    "mft_entries",
+    "mft_timeline",
+    "prefetch_executions",
+}
 
 
 def run_rule(db: CaseDB, rule: Rule) -> list[dict[str, Any]]:
@@ -60,7 +72,9 @@ def _render_template(template: str, row: dict[str, Any]) -> str:
     return output
 
 
-def _confidence_with_missing_fields(base_confidence: float, missing_fields: list[str]) -> float:
+def _confidence_with_missing_fields(
+    base_confidence: float, missing_fields: list[str]
+) -> float:
     penalty = min(0.45, 0.15 * len(missing_fields))
     return max(0.0, min(1.0, base_confidence - penalty))
 
@@ -75,10 +89,16 @@ def generate_findings(rule: Rule, rows: list[dict[str, Any]]) -> list[Finding]:
     findings = []
     for index, row in enumerate(rows, start=1):
         referenced_fields = rule.required_fields or [
-            * _template_fields(rule.finding.title),
-            * [field for field in _template_fields(rule.finding.summary) if field not in _template_fields(rule.finding.title)],
+            *_template_fields(rule.finding.title),
+            *[
+                field
+                for field in _template_fields(rule.finding.summary)
+                if field not in _template_fields(rule.finding.title)
+            ],
         ]
-        missing_fields = [field for field in referenced_fields if _is_missing_value(row.get(field))]
+        missing_fields = [
+            field for field in referenced_fields if _is_missing_value(row.get(field))
+        ]
         findings.append(
             Finding(
                 finding_id=f"{rule.id}-{index:04d}",
@@ -86,12 +106,16 @@ def generate_findings(rule: Rule, rows: list[dict[str, Any]]) -> list[Finding]:
                 title=_render_template(rule.finding.title, row),
                 summary=_render_template(rule.finding.summary, row),
                 severity=rule.severity,
-                confidence=_confidence_with_missing_fields(rule.confidence, missing_fields),
+                confidence=_confidence_with_missing_fields(
+                    rule.confidence, missing_fields
+                ),
                 tags=rule.tags,
                 attack=[item.model_dump() for item in (rule.attack or [])],
                 evidence=[row],
                 missing_checks=(
-                    [f"Missing key fields for this finding: {', '.join(missing_fields)}"]
+                    [
+                        f"Missing key fields for this finding: {', '.join(missing_fields)}"
+                    ]
                     if missing_fields
                     else []
                 ),
@@ -115,10 +139,26 @@ def _load_builtin_benign_allowlist() -> dict[str, list[str]]:
         return {"service_names": [], "process_names": [], "title_keywords": []}
     data = yaml.safe_load(_BUILTIN_ALLOWLIST_PATH.read_text(encoding="utf-8")) or {}
     return {
-        "rule_ids": [str(item).strip() for item in data.get("rule_ids") or [] if str(item).strip()],
-        "service_names": [str(item).strip().lower() for item in data.get("service_names") or [] if str(item).strip()],
-        "process_names": [str(item).strip().lower() for item in data.get("process_names") or [] if str(item).strip()],
-        "title_keywords": [str(item).strip().lower() for item in data.get("title_keywords") or [] if str(item).strip()],
+        "rule_ids": [
+            str(item).strip()
+            for item in data.get("rule_ids") or []
+            if str(item).strip()
+        ],
+        "service_names": [
+            str(item).strip().lower()
+            for item in data.get("service_names") or []
+            if str(item).strip()
+        ],
+        "process_names": [
+            str(item).strip().lower()
+            for item in data.get("process_names") or []
+            if str(item).strip()
+        ],
+        "title_keywords": [
+            str(item).strip().lower()
+            for item in data.get("title_keywords") or []
+            if str(item).strip()
+        ],
     }
 
 
@@ -135,25 +175,38 @@ def _is_suppressed(finding: Finding, allowlist_rules: list[dict[str, Any]]) -> b
     A finding is suppressed when all field-value pairs in the allowlist rule's
     'when' clause match the finding's first evidence row for the same rule_id.
     """
-    row = finding.evidence[0] if finding.evidence and isinstance(finding.evidence[0], dict) else {}
+    row = (
+        finding.evidence[0]
+        if finding.evidence and isinstance(finding.evidence[0], dict)
+        else {}
+    )
     for item in allowlist_rules:
         if str(item.get("rule_id") or "") != finding.rule_id:
             continue
         when = item.get("when") or {}
         if not isinstance(when, dict) or not when:
             continue
-        if all(_value_matches(row.get(field), expected_values) for field, expected_values in when.items()):
+        if all(
+            _value_matches(row.get(field), expected_values)
+            for field, expected_values in when.items()
+        ):
             return True
     return False
 
 
-def _builtin_benign_match(finding: Finding, allowlist_data: dict[str, list[str]]) -> str | None:
+def _builtin_benign_match(
+    finding: Finding, allowlist_data: dict[str, list[str]]
+) -> str | None:
     """Return a description string if the finding matches built-in benign allowlists.
 
     Checks service_name, process_name, and title/summary keywords in that order.
     Returns a description of the first match (e.g. 'service_name=wuauserv') or None.
     """
-    row = finding.evidence[0] if finding.evidence and isinstance(finding.evidence[0], dict) else {}
+    row = (
+        finding.evidence[0]
+        if finding.evidence and isinstance(finding.evidence[0], dict)
+        else {}
+    )
     scoped_rule_ids = set(allowlist_data.get("rule_ids") or [])
     if scoped_rule_ids and finding.rule_id not in scoped_rule_ids:
         return None
@@ -173,7 +226,9 @@ def _builtin_benign_match(finding: Finding, allowlist_data: dict[str, list[str]]
     return None
 
 
-def _downgrade_builtin_benign_finding(finding: Finding, allowlist_data: dict[str, list[str]]) -> None:
+def _downgrade_builtin_benign_finding(
+    finding: Finding, allowlist_data: dict[str, list[str]]
+) -> None:
     """Downgrade severity and confidence for findings matching built-in benign allowlists.
 
     Sets status to 'suppressed', caps confidence at 0.2, and reduces severity to 'low'.
@@ -196,7 +251,9 @@ def _parse_event_ts(value: Any) -> datetime | None:
     return parse_timestamp(value)
 
 
-def build_co_occur_index(db: CaseDB, rules: list[dict[str, Any]] | None = None) -> dict[int, list[tuple[datetime, str]]]:
+def build_co_occur_index(
+    db: CaseDB, rules: list[dict[str, Any]] | None = None
+) -> dict[int, list[tuple[datetime, str]]]:
     """Prefetch timestamps of every event ID referenced by co_occurs_event_ids conditions.
 
     Returns {event_id: [(timestamp, canonical_computer), ...]} so that
@@ -209,7 +266,7 @@ def build_co_occur_index(db: CaseDB, rules: list[dict[str, Any]] | None = None) 
             for eid in condition.get("co_occurs_event_ids") or []:
                 try:
                     event_ids.add(int(eid))
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     continue
     if not event_ids:
         return {}
@@ -225,7 +282,9 @@ def build_co_occur_index(db: CaseDB, rules: list[dict[str, Any]] | None = None) 
         parsed = _parse_event_ts(ts)
         if parsed is None:
             continue
-        index.setdefault(int(eid), []).append((parsed, str(computer or "").strip().upper()))
+        index.setdefault(int(eid), []).append(
+            (parsed, str(computer or "").strip().upper())
+        )
     return index
 
 
@@ -249,7 +308,7 @@ def _co_occurs_satisfied(
     for eid in condition.get("co_occurs_event_ids") or []:
         try:
             entries = co_occur_index.get(int(eid)) or []
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         for ts, host in entries:
             if row_host and host and row_host != host:
@@ -274,7 +333,11 @@ def _annotate_finding_benign_context(
     if not rules:
         return
 
-    row = finding.evidence[0] if finding.evidence and isinstance(finding.evidence[0], dict) else {}
+    row = (
+        finding.evidence[0]
+        if finding.evidence and isinstance(finding.evidence[0], dict)
+        else {}
+    )
     if not row:
         return
 
@@ -285,7 +348,9 @@ def _annotate_finding_benign_context(
 
         # Check if finding tags overlap with applies_to_tags
         finding_tags_lower = {t.lower() for t in (finding.tags or [])}
-        if applies_to_tags and not any(t.lower() in finding_tags_lower for t in applies_to_tags):
+        if applies_to_tags and not any(
+            t.lower() in finding_tags_lower for t in applies_to_tags
+        ):
             continue
 
         # Check when_all conditions — every condition must positively match.
@@ -314,7 +379,9 @@ def _annotate_finding_benign_context(
         benign_tag = f"benign-context:{rule_id}"
         if benign_tag not in finding.tags:
             finding.tags = list(finding.tags or []) + [benign_tag]
-        finding.confidence = min(float(finding.confidence), float(finding.confidence) * 0.4)
+        finding.confidence = min(
+            float(finding.confidence), float(finding.confidence) * 0.4
+        )
         note = f"Matched benign-context rule: {rule_id} — {rule.get('note', '')}"
         if note not in finding.missing_checks:
             finding.missing_checks = list(finding.missing_checks or []) + [note]
@@ -387,7 +454,9 @@ def save_findings(case: Case, db: CaseDB, findings: list[Finding]) -> None:
                 finding.confidence,
                 finding.status,
                 json.dumps(finding.tags, ensure_ascii=False),
-                json.dumps([a.model_dump() for a in finding.attack], ensure_ascii=False),
+                json.dumps(
+                    [a.model_dump() for a in finding.attack], ensure_ascii=False
+                ),
                 json.dumps(finding.evidence, ensure_ascii=False, default=str),
                 finding.ai_summary,
                 json.dumps(finding.missing_checks, ensure_ascii=False),
@@ -399,7 +468,7 @@ def save_findings(case: Case, db: CaseDB, findings: list[Finding]) -> None:
 
 def _escape_like_pattern(keyword: str) -> str:
     """Escape SQL LIKE wildcards in keyword pattern.
-    
+
     Uses '!' as escape character to avoid backslash conflicts.
     """
     escaped = str(keyword).replace("!", "!!")  # Escape escape char itself
@@ -427,7 +496,7 @@ def _extract_event_ids_from_sql(sql: str) -> list[int]:
         for candidate in candidates:
             try:
                 event_id = int(candidate)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
             if event_id in seen:
                 continue
@@ -482,7 +551,9 @@ def _execute_keyword_search(db: CaseDB, keywords: list[str]) -> list[dict[str, A
     return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
 
 
-def execute_event_keyword_fallback_search(db: CaseDB, sql: str) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+def execute_event_keyword_fallback_search(
+    db: CaseDB, sql: str
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Fallback for queries that explicitly reference event_ids but return no rows.
 
     Looks up event-specific string search keywords in rulepacks/_schema/event_ids.yaml,
@@ -505,9 +576,11 @@ def execute_event_keyword_fallback_search(db: CaseDB, sql: str) -> tuple[list[di
     }
 
 
-def execute_fallback_search(db: CaseDB, fallback: dict[str, Any]) -> list[dict[str, Any]]:
+def execute_fallback_search(
+    db: CaseDB, fallback: dict[str, Any]
+) -> list[dict[str, Any]]:
     """Execute a fallback search phase based on phase type and parameters.
-    
+
     Returns empty list for invalid phase or missing required fields.
     Logs warnings for unknown phases or invalid table names.
     """
@@ -527,7 +600,15 @@ def execute_fallback_search(db: CaseDB, fallback: dict[str, Any]) -> list[dict[s
             for kw in valid_keywords
         )
         sql = f"SELECT * FROM evtx_events WHERE {like_clauses} LIMIT 100"
-        return run_rule(db, Rule(id="fallback-keyword", title="", query=sql, finding=FindingTemplate(title="", summary="")))
+        return run_rule(
+            db,
+            Rule(
+                id="fallback-keyword",
+                title="",
+                query=sql,
+                finding=FindingTemplate(title="", summary=""),
+            ),
+        )
     if phase == "related_event_ids":
         event_ids = fallback.get("event_ids") or []
         if not event_ids:
@@ -537,15 +618,24 @@ def execute_fallback_search(db: CaseDB, fallback: dict[str, Any]) -> list[dict[s
         for eid in event_ids:
             try:
                 valid_event_ids.append(int(eid))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 import logging
+
                 logging.warning(f"Invalid event_id in fallback: {eid}")
                 continue
         if not valid_event_ids:
             return []
         event_list = ",".join(str(eid) for eid in valid_event_ids)
         sql = f"SELECT * FROM evtx_events WHERE event_id IN ({event_list}) LIMIT 100"
-        return run_rule(db, Rule(id="fallback-correlation", title="", query=sql, finding=FindingTemplate(title="", summary="")))
+        return run_rule(
+            db,
+            Rule(
+                id="fallback-correlation",
+                title="",
+                query=sql,
+                finding=FindingTemplate(title="", summary=""),
+            ),
+        )
     if phase == "artifact_table":
         table = fallback.get("table")
         if not table:
@@ -554,11 +644,25 @@ def execute_fallback_search(db: CaseDB, fallback: dict[str, Any]) -> list[dict[s
         table_name = str(table).strip().lower()
         if table_name not in _ALLOWED_FALLBACK_TABLES:
             import logging
-            logging.warning(f"Invalid fallback table '{table}'; allowed: {_ALLOWED_FALLBACK_TABLES}")
+
+            logging.warning(
+                f"Invalid fallback table '{table}'; allowed: {_ALLOWED_FALLBACK_TABLES}"
+            )
             return []
         sql = f"SELECT * FROM {table_name} LIMIT 100"
-        return run_rule(db, Rule(id="fallback-artifact", title="", query=sql, finding=FindingTemplate(title="", summary="")))
+        return run_rule(
+            db,
+            Rule(
+                id="fallback-artifact",
+                title="",
+                query=sql,
+                finding=FindingTemplate(title="", summary=""),
+            ),
+        )
     if phase and phase not in FALLBACK_PHASES:
         import logging
-        logging.warning(f"Unknown fallback phase '{phase}'; valid phases: {FALLBACK_PHASES}")
+
+        logging.warning(
+            f"Unknown fallback phase '{phase}'; valid phases: {FALLBACK_PHASES}"
+        )
     return []

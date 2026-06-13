@@ -3,18 +3,19 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-import os
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from forensia.core.case import Case, detect_epochs
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records, normalize_value
+from forensia.knowledge import (
+    load_event_class_definitions as _load_event_class_definitions,
+)
 from forensia.questions import (
     evaluate_question_spec_status,
     extract_time_qualifiers,
@@ -22,9 +23,13 @@ from forensia.questions import (
     question_spec_for_answer_spec,
 )
 from forensia.report.keypoints import _report_keypoint_rows
-from forensia.report.markdown import _build_host_note, render_rows_template
-from forensia.knowledge import load_event_class_definitions as _load_event_class_definitions
-from forensia.report.markdown import _HUMAN_REPORT_HIDDEN_COLUMNS, _is_human_report_hidden_column, _local_time_from_utc
+from forensia.report.markdown import (
+    _HUMAN_REPORT_HIDDEN_COLUMNS,
+    _build_host_note,
+    _is_human_report_hidden_column,
+    _local_time_from_utc,
+    render_rows_template,
+)
 
 __all__ = [
     "_add_local_time_columns",
@@ -91,7 +96,6 @@ __all__ = [
 ]
 
 
-
 def _structured_block_id(block_heading: str) -> str:
     match = re.match(r"\s*(\d+)", str(block_heading or ""))
     if match:
@@ -144,7 +148,6 @@ def _answer_columns(items: list[Any], preferred: Any = None) -> list[str]:
     return columns
 
 
-
 def _normalize_benchmark_answer(
     answer: dict[str, Any],
     *,
@@ -152,9 +155,14 @@ def _normalize_benchmark_answer(
     block_heading: str,
     status: str,
 ) -> dict[str, Any]:
-    normalized_id = str(answer.get("id") or _structured_block_id(block_heading)).strip() or _structured_block_id(block_heading)
-    normalized_status = str(answer.get("status") or status or "insufficient_evidence").strip().lower()
+    normalized_id = str(
+        answer.get("id") or _structured_block_id(block_heading)
+    ).strip() or _structured_block_id(block_heading)
+    normalized_status = (
+        str(answer.get("status") or status or "insufficient_evidence").strip().lower()
+    )
     from forensia.core.verdicts import assert_valid_verdict
+
     try:
         assert_valid_verdict(normalized_status, "structured_status")
     except ValueError:
@@ -225,7 +233,11 @@ def _write_structured_answer_csv(case: Case, answer: dict[str, Any]) -> str:
     columns = _answer_columns(items, answer.get("columns"))
     if not columns:
         return ""
-    path = case.reports_dir / "structured" / f"{_safe_answer_filename(str(answer.get('id') or 'answer'))}.csv"
+    path = (
+        case.reports_dir
+        / "structured"
+        / f"{_safe_answer_filename(str(answer.get('id') or 'answer'))}.csv"
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
@@ -235,9 +247,13 @@ def _write_structured_answer_csv(case: Case, answer: dict[str, Any]) -> str:
             for key in columns:
                 value = item.get(key, "")
                 if isinstance(value, (list, tuple)):
-                    row[key] = "; ".join(str(part) for part in value if str(part).strip())
+                    row[key] = "; ".join(
+                        str(part) for part in value if str(part).strip()
+                    )
                 elif isinstance(value, dict):
-                    row[key] = json.dumps(value, ensure_ascii=False, default=str, sort_keys=True)
+                    row[key] = json.dumps(
+                        value, ensure_ascii=False, default=str, sort_keys=True
+                    )
                 else:
                     row[key] = "" if value is None else str(value)
             writer.writerow(row)
@@ -252,23 +268,24 @@ def _persist_structured_answer(case: Case, answer: dict[str, Any]) -> None:
     if csv_path:
         answer["csv_path"] = csv_path
     answers = _load_structured_answers(case)
-    answers = [item for item in answers if str(item.get("id") or "") != str(answer.get("id") or "")]
+    answers = [
+        item
+        for item in answers
+        if str(item.get("id") or "") != str(answer.get("id") or "")
+    ]
     answers.append(answer)
     answers.sort(key=lambda item: str(item.get("id") or ""))
-    path.write_text(json.dumps(answers, ensure_ascii=False, default=str, indent=2), encoding="utf-8")
+    path.write_text(
+        json.dumps(answers, ensure_ascii=False, default=str, indent=2), encoding="utf-8"
+    )
 
-
-_STRUCTURED_MARKDOWN_MAX_ROWS_DEFAULT = 200
 
 def _resolve_max_rows() -> int:
-    """Return STRUCTURED_MARKDOWN_MAX_ROWS, overridable via env var."""
-    env = os.environ.get("STRUCTURED_MARKDOWN_MAX_ROWS")
-    if env is not None:
-        try:
-            return max(1, int(env))
-        except (TypeError, ValueError):
-            pass
-    return _STRUCTURED_MARKDOWN_MAX_ROWS_DEFAULT
+    """Return STRUCTURED_MARKDOWN_MAX_ROWS from config."""
+    from forensia.config import settings
+
+    return max(1, settings.structured_markdown_max_rows)
+
 
 STRUCTURED_MARKDOWN_MAX_ROWS = _resolve_max_rows()
 STRUCTURED_MARKDOWN_MAX_LIST_ITEMS = 5
@@ -284,18 +301,37 @@ def _render_answer_cell(value: Any) -> str:
             value = f"{value}; ... (+{extra} more)" if value else f"... (+{extra} more)"
     elif isinstance(value, dict):
         value = json.dumps(value, ensure_ascii=False, default=str, sort_keys=True)
-    text = str(value if value is not None else "").replace("|", "\\|").replace("\n", " ").strip()
+    text = (
+        str(value if value is not None else "")
+        .replace("|", "\\|")
+        .replace("\n", " ")
+        .strip()
+    )
     if len(text) > STRUCTURED_MARKDOWN_MAX_CELL_CHARS:
-        return text[: STRUCTURED_MARKDOWN_MAX_CELL_CHARS - 15].rstrip() + " ... [truncated]"
+        return (
+            text[: STRUCTURED_MARKDOWN_MAX_CELL_CHARS - 15].rstrip()
+            + " ... [truncated]"
+        )
     return text
 
 
-def _render_answer_block(items: list[Any], columns: Any = None, *, max_rows: int = STRUCTURED_MARKDOWN_MAX_ROWS) -> list[str]:
+def _render_answer_block(
+    items: list[Any],
+    columns: Any = None,
+    *,
+    max_rows: int | None = None,
+) -> list[str]:
+    if max_rows is None:
+        max_rows = _resolve_max_rows()
     if not items:
         return ["- no answer"]
     dicts = [item for item in items if isinstance(item, dict)]
     if dicts and len(dicts) == len(items):
-        keys = [key for key in _answer_columns(dicts, columns) if not _is_human_report_hidden_column(key)]
+        keys = [
+            key
+            for key in _answer_columns(dicts, columns)
+            if not _is_human_report_hidden_column(key)
+        ]
         if not keys:
             return ["- no answer"]
         header = "| " + " | ".join(keys) + " |"
@@ -307,22 +343,41 @@ def _render_answer_block(items: list[Any], columns: Any = None, *, max_rows: int
         ]
         lines = [header, divider, *body_rows]
         if len(dicts) > len(preview):
-            lines.extend(["", f"_Showing {len(preview)} of {len(dicts)} rows. Full data is available in the structured JSON/CSV export._"])
+            lines.extend(
+                [
+                    "",
+                    f"_Showing {len(preview)} of {len(dicts)} rows. Full data is available in the structured JSON/CSV export._",
+                ]
+            )
         return lines
-    return [f"- {str(item).strip()}" for item in items if not isinstance(item, dict) and str(item).strip()]
+    return [
+        f"- {str(item).strip()}"
+        for item in items
+        if not isinstance(item, dict) and str(item).strip()
+    ]
 
 
 _MISSING_REASON_NOOP_VALUES = frozenset({"none", "n/a", "na", "-", "該当なし", "なし"})
 
 
 def _meaningful_missing_reason_items(value: Any) -> list[str]:
-    return [item for item in _coerce_string_list(value) if item.strip().lower() not in _MISSING_REASON_NOOP_VALUES]
+    return [
+        item
+        for item in _coerce_string_list(value)
+        if item.strip().lower() not in _MISSING_REASON_NOOP_VALUES
+    ]
 
 
 @lru_cache(maxsize=1)
 def _load_interpretation_templates() -> dict[str, str]:
     import yaml
-    path = Path(__file__).resolve().parent.parent / "rulepacks" / "_schema" / "question_routing.yaml"
+
+    path = (
+        Path(__file__).resolve().parent.parent
+        / "rulepacks"
+        / "_schema"
+        / "question_routing.yaml"
+    )
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except Exception:
@@ -350,7 +405,9 @@ def _render_interpretation_template(template: str, answer: dict[str, Any]) -> st
     return render_rows_template(template, rows)
 
 
-def _structured_answer_interpretation(answer: dict[str, Any], block_heading: str, tz_name: str | None = None) -> str:
+def _structured_answer_interpretation(
+    answer: dict[str, Any], block_heading: str, tz_name: str | None = None
+) -> str:
     rows = [item for item in list(answer.get("answer") or []) if isinstance(item, dict)]
     status = str(answer.get("status") or "").strip().lower()
     tz_basis = ""
@@ -359,7 +416,11 @@ def _structured_answer_interpretation(answer: dict[str, Any], block_heading: str
     elif tz_name == "UTC":
         tz_basis = " (UTC、タイムゾーン未確定のため)"
     if not rows:
-        base = "この設問に直接対応する行は見つかっていません。該当なしと断定する前に、取り込み対象ログと時刻範囲が十分か確認してください。" if status == "not_found" else "この設問は十分な行が得られていないため、表の欠落理由を確認したうえで追加証拠の有無を判断してください。"
+        base = (
+            "この設問に直接対応する行は見つかっていません。該当なしと断定する前に、取り込み対象ログと時刻範囲が十分か確認してください。"
+            if status == "not_found"
+            else "この設問は十分な行が得られていないため、表の欠落理由を確認したうえで追加証拠の有無を判断してください。"
+        )
         return base + tz_basis
 
     row_count = len(rows)
@@ -371,12 +432,25 @@ def _structured_answer_interpretation(answer: dict[str, Any], block_heading: str
     return f"この設問では {row_count} 行の構造化証拠を確認しています。表は回答の根拠ですが、結論は時刻・ホスト・ユーザー・関連成果物の相関で評価してください。{tz_basis}"
 
 
-def _render_structured_answer_markdown(answer: dict[str, Any], block_heading: str, tz_name: str | None = None) -> str:
-    answer_block = _render_answer_block(list(answer.get("answer") or []), answer.get("columns"))
-    interpretation = _structured_answer_interpretation(answer, block_heading, tz_name=tz_name)
-    missing_lines = [f"- {item}" for item in _meaningful_missing_reason_items(answer.get("missing_reason"))]
-    query_lines = [f"- {item}" for item in _coerce_string_list(answer.get("queries_run"))]
-    data_lines = [f"- JSON: {answer.get('json_path')}"] if answer.get("json_path") else []
+def _render_structured_answer_markdown(
+    answer: dict[str, Any], block_heading: str, tz_name: str | None = None
+) -> str:
+    answer_block = _render_answer_block(
+        list(answer.get("answer") or []), answer.get("columns")
+    )
+    interpretation = _structured_answer_interpretation(
+        answer, block_heading, tz_name=tz_name
+    )
+    missing_lines = [
+        f"- {item}"
+        for item in _meaningful_missing_reason_items(answer.get("missing_reason"))
+    ]
+    query_lines = [
+        f"- {item}" for item in _coerce_string_list(answer.get("queries_run"))
+    ]
+    data_lines = (
+        [f"- JSON: {answer.get('json_path')}"] if answer.get("json_path") else []
+    )
     if answer.get("csv_path"):
         data_lines.append(f"- CSV: {answer.get('csv_path')}")
     if not data_lines:
@@ -401,13 +475,15 @@ def _render_structured_answer_markdown(answer: dict[str, Any], block_heading: st
         lines.append("### Missing Reason")
         lines.extend(missing_lines if missing_lines else ["- none"])
         lines.append("")
-    lines.extend([
-        "### Queries Run",
-        *query_lines,
-        "",
-        "### Structured Data",
-        *data_lines,
-    ])
+    lines.extend(
+        [
+            "### Queries Run",
+            *query_lines,
+            "",
+            "### Structured Data",
+            *data_lines,
+        ]
+    )
     return "\n".join(lines).strip() + "\n"
 
 
@@ -423,7 +499,9 @@ def _persist_benchmark_answer(case: Case, answer: dict[str, Any]) -> None:
     _persist_structured_answer(case, answer)
 
 
-def _render_benchmark_answer_markdown(answer: dict[str, Any], block_heading: str, tz_name: str | None = None) -> str:
+def _render_benchmark_answer_markdown(
+    answer: dict[str, Any], block_heading: str, tz_name: str | None = None
+) -> str:
     return _render_structured_answer_markdown(answer, block_heading, tz_name=tz_name)
 
 
@@ -436,10 +514,14 @@ def _text(value: Any) -> str:
 
 
 def _lower_blob(row: dict[str, Any]) -> str:
-    return " ".join(_text(value).casefold() for value in row.values() if value is not None)
+    return " ".join(
+        _text(value).casefold() for value in row.values() if value is not None
+    )
 
 
-def _dedupe_dict_rows(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> list[dict[str, Any]]:
+def _dedupe_dict_rows(
+    rows: list[dict[str, Any]], keys: tuple[str, ...]
+) -> list[dict[str, Any]]:
     seen: set[tuple[str, ...]] = set()
     out: list[dict[str, Any]] = []
     for row in rows:
@@ -454,12 +536,20 @@ def _dedupe_dict_rows(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> list
 _TIMESTAMP_COLUMN_SUFFIXES = ("_time", "_Time", "timestamp", "Timestamp")
 
 
-def _add_local_time_columns(rows: list[dict[str, Any]], columns: list[str], case: Case) -> tuple[list[dict[str, Any]], list[str]]:
+def _add_local_time_columns(
+    rows: list[dict[str, Any]], columns: list[str], case: Case
+) -> tuple[list[dict[str, Any]], list[str]]:
     tz_name = getattr(case, "source_timezone", "UTC")
     if tz_name == "UTC":
         return rows, columns
     local_columns: list[str] = []
-    ts_cols = [c for c in columns if any(c.endswith(s) or c == s for s in _TIMESTAMP_COLUMN_SUFFIXES) or c in ("date", "logon_time", "shutdown_time", "last_exec_time", "artifact_time")]
+    ts_cols = [
+        c
+        for c in columns
+        if any(c.endswith(s) or c == s for s in _TIMESTAMP_COLUMN_SUFFIXES)
+        or c
+        in ("date", "logon_time", "shutdown_time", "last_exec_time", "artifact_time")
+    ]
     for col in ts_cols:
         local_col = f"{col}_local"
         if local_col not in columns:
@@ -498,7 +588,8 @@ def _structured_answer(
             "status": resolved_status,
             "answer": rows,
             "columns": columns,
-            "missing_reason": missing_reason or ([] if rows else ["No matching structured database rows were found."]),
+            "missing_reason": missing_reason
+            or ([] if rows else ["No matching structured database rows were found."]),
             "queries_run": queries_run,
             "source": source,
         },
@@ -534,7 +625,9 @@ def _human_user_predicate(column: str = "target_user") -> str:
 # ── Builder functions for deterministic structured answers ──────────────────
 
 
-def _build_host_identity(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+def _build_host_identity(
+    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+) -> dict[str, Any]:
     rows = _structured_rows(
         db,
         """
@@ -568,7 +661,11 @@ def _build_host_identity(case: Case, db: CaseDB, answer_id: str, section_key: st
                 row["note"] = _build_host_note(host_epochs)
     except Exception:
         pass
-    columns = ["host_id", "note", "evidence_count", "first_seen", "last_seen"] if any("note" in r for r in rows) else ["host_id", "evidence_count", "first_seen", "last_seen"]
+    columns = (
+        ["host_id", "note", "evidence_count", "first_seen", "last_seen"]
+        if any("note" in r for r in rows)
+        else ["host_id", "evidence_count", "first_seen", "last_seen"]
+    )
     return _structured_answer(
         case,
         answer_id=answer_id,
@@ -580,7 +677,9 @@ def _build_host_identity(case: Case, db: CaseDB, answer_id: str, section_key: st
     )
 
 
-def _build_last_human_logon(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+def _build_last_human_logon(
+    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+) -> dict[str, Any]:
     interactive_rows = _structured_rows(
         db,
         f"""
@@ -627,7 +726,9 @@ def _build_last_human_logon(case: Case, db: CaseDB, answer_id: str, section_key:
         status = "partial" if rows else "not_found"
         missing = [] if rows else ["No human-user 4624 logon events were found."]
         if rows:
-            missing = ["No interactive logon type was found; returned the latest human-user 4624 logon event."]
+            missing = [
+                "No interactive logon type was found; returned the latest human-user 4624 logon event."
+            ]
         label = "structured:last_human_logon:last_human_user_logon_fallback"
     return _structured_answer(
         case,
@@ -635,14 +736,24 @@ def _build_last_human_logon(case: Case, db: CaseDB, answer_id: str, section_key:
         section_key=section_key,
         block_heading=block_heading,
         rows=rows,
-        columns=["logon_time", "computer", "user_name", "logon_type", "process_name", "src_ip", "evidence_id"],
+        columns=[
+            "logon_time",
+            "computer",
+            "user_name",
+            "logon_type",
+            "process_name",
+            "src_ip",
+            "evidence_id",
+        ],
         queries_run=[label],
         status=status,
         missing_reason=missing,
     )
 
 
-def _build_last_shutdown_event(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+def _build_last_shutdown_event(
+    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+) -> dict[str, Any]:
     rows = _structured_rows(
         db,
         """
@@ -670,7 +781,9 @@ def _build_last_shutdown_event(case: Case, db: CaseDB, answer_id: str, section_k
     )
 
 
-def _build_application_execution_history(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+def _build_application_execution_history(
+    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+) -> dict[str, Any]:
     rows = _structured_rows(
         db,
         """
@@ -700,8 +813,17 @@ def _build_application_execution_history(case: Case, db: CaseDB, answer_id: str,
             section_key=section_key,
             block_heading=block_heading,
             rows=rows,
-            columns=["executable_name", "exec_count", "last_exec_time", "prefetch_records", "executable_path", "prefetch_file"],
-            queries_run=["structured:application_execution_history:prefetch_executions"],
+            columns=[
+                "executable_name",
+                "exec_count",
+                "last_exec_time",
+                "prefetch_records",
+                "executable_path",
+                "prefetch_file",
+            ],
+            queries_run=[
+                "structured:application_execution_history:prefetch_executions"
+            ],
         )
 
     mft_rows = _structured_rows(
@@ -740,14 +862,32 @@ def _build_application_execution_history(case: Case, db: CaseDB, answer_id: str,
         section_key=section_key,
         block_heading=block_heading,
         rows=rows,
-        columns=["executable_name", "exec_count", "last_exec_time", "prefetch_records", "executable_path", "prefetch_file", "artifact_time", "artifact_path", "evidence_id"],
-        queries_run=["structured:application_execution_history:mft_prefetch_file_fallback"],
+        columns=[
+            "executable_name",
+            "exec_count",
+            "last_exec_time",
+            "prefetch_records",
+            "executable_path",
+            "prefetch_file",
+            "artifact_time",
+            "artifact_path",
+            "evidence_id",
+        ],
+        queries_run=[
+            "structured:application_execution_history:mft_prefetch_file_fallback"
+        ],
         status="partial" if rows else "not_found",
-        missing_reason=[] if not rows else ["prefetch_executions was empty; returned MFT Prefetch files without execution counts."],
+        missing_reason=[]
+        if not rows
+        else [
+            "prefetch_executions was empty; returned MFT Prefetch files without execution counts."
+        ],
     )
 
 
-def _build_daily_session_activity(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+def _build_daily_session_activity(
+    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+) -> dict[str, Any]:
     rows = _structured_rows(
         db,
         """
@@ -884,7 +1024,9 @@ def _build_daily_session_timeline_rows(
     return result
 
 
-def _build_daily_session_timeline(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+def _build_daily_session_timeline(
+    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+) -> dict[str, Any]:
     qualifiers = extract_time_qualifiers(block_heading)
     rows = _build_daily_session_timeline_rows(db, qualifiers)
     return _structured_answer(
@@ -893,7 +1035,15 @@ def _build_daily_session_timeline(case: Case, db: CaseDB, answer_id: str, sectio
         section_key=section_key,
         block_heading=block_heading,
         rows=rows,
-        columns=["date", "first_startup", "first_logon", "last_logoff", "last_shutdown", "logon_users", "interactive_logon_count"],
+        columns=[
+            "date",
+            "first_startup",
+            "first_logon",
+            "last_logoff",
+            "last_shutdown",
+            "logon_users",
+            "interactive_logon_count",
+        ],
         queries_run=["structured:daily_session_timeline:per_day_session_timeline"],
     )
 
@@ -916,7 +1066,9 @@ def _browser_name_for_row(row: dict[str, Any]) -> str:
     return ""
 
 
-def _build_browser_usage(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+def _build_browser_usage(
+    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+) -> dict[str, Any]:
     prefetch_rows = _structured_rows(
         db,
         """
@@ -959,17 +1111,20 @@ def _build_browser_usage(case: Case, db: CaseDB, answer_id: str, section_key: st
     grouped: dict[str, dict[str, Any]] = {}
 
     def group_for(browser_name: str) -> dict[str, Any]:
-        return grouped.setdefault(browser_name, {
-            "browser_name": browser_name,
-            "prefetch_records": 0,
-            "total_exec_count": 0,
-            "last_exec_time": "",
-            "mft_artifacts": 0,
-            "first_artifact_time": "",
-            "last_artifact_time": "",
-            "sample_paths": [],
-            "evidence_ids": [],
-        })
+        return grouped.setdefault(
+            browser_name,
+            {
+                "browser_name": browser_name,
+                "prefetch_records": 0,
+                "total_exec_count": 0,
+                "last_exec_time": "",
+                "mft_artifacts": 0,
+                "first_artifact_time": "",
+                "last_artifact_time": "",
+                "sample_paths": [],
+                "evidence_ids": [],
+            },
+        )
 
     def append_unique(values: list[Any], value: Any, limit: int) -> None:
         text = _text(value)
@@ -979,12 +1134,20 @@ def _build_browser_usage(case: Case, db: CaseDB, answer_id: str, section_key: st
     def max_text_time(left: Any, right: Any) -> str:
         left_text = _text(left)
         right_text = _text(right)
-        return max(left_text, right_text) if left_text and right_text else (left_text or right_text)
+        return (
+            max(left_text, right_text)
+            if left_text and right_text
+            else (left_text or right_text)
+        )
 
     def min_text_time(left: Any, right: Any) -> str:
         left_text = _text(left)
         right_text = _text(right)
-        return min(left_text, right_text) if left_text and right_text else (left_text or right_text)
+        return (
+            min(left_text, right_text)
+            if left_text and right_text
+            else (left_text or right_text)
+        )
 
     for row in prefetch_rows:
         browser_name = _browser_name_for_row(row)
@@ -993,11 +1156,19 @@ def _build_browser_usage(case: Case, db: CaseDB, answer_id: str, section_key: st
         item = group_for(browser_name)
         item["prefetch_records"] = int(item.get("prefetch_records") or 0) + 1
         try:
-            item["total_exec_count"] = int(item.get("total_exec_count") or 0) + int(row.get("exec_count") or 0)
-        except (TypeError, ValueError):
+            item["total_exec_count"] = int(item.get("total_exec_count") or 0) + int(
+                row.get("exec_count") or 0
+            )
+        except TypeError, ValueError:
             pass
-        item["last_exec_time"] = max_text_time(item.get("last_exec_time"), row.get("last_exec_time"))
-        append_unique(item["sample_paths"], row.get("source_file") or row.get("executable_name"), 10)
+        item["last_exec_time"] = max_text_time(
+            item.get("last_exec_time"), row.get("last_exec_time")
+        )
+        append_unique(
+            item["sample_paths"],
+            row.get("source_file") or row.get("executable_name"),
+            10,
+        )
         append_unique(item["evidence_ids"], row.get("evidence_id"), 20)
     for row in mft_rows:
         browser_name = _browser_name_for_row(row)
@@ -1005,19 +1176,40 @@ def _build_browser_usage(case: Case, db: CaseDB, answer_id: str, section_key: st
             continue
         item = group_for(browser_name)
         item["mft_artifacts"] = int(item.get("mft_artifacts") or 0) + 1
-        item["first_artifact_time"] = min_text_time(item.get("first_artifact_time"), row.get("artifact_time"))
-        item["last_artifact_time"] = max_text_time(item.get("last_artifact_time"), row.get("artifact_time"))
-        append_unique(item["sample_paths"], row.get("file_path") or row.get("file_name"), 10)
+        item["first_artifact_time"] = min_text_time(
+            item.get("first_artifact_time"), row.get("artifact_time")
+        )
+        item["last_artifact_time"] = max_text_time(
+            item.get("last_artifact_time"), row.get("artifact_time")
+        )
+        append_unique(
+            item["sample_paths"], row.get("file_path") or row.get("file_name"), 10
+        )
         append_unique(item["evidence_ids"], row.get("evidence_id"), 20)
-    rows = sorted(grouped.values(), key=lambda item: str(item.get("browser_name") or ""))
+    rows = sorted(
+        grouped.values(), key=lambda item: str(item.get("browser_name") or "")
+    )
     return _structured_answer(
         case,
         answer_id=answer_id,
         section_key=section_key,
         block_heading=block_heading,
         rows=rows,
-        columns=["browser_name", "prefetch_records", "total_exec_count", "last_exec_time", "mft_artifacts", "first_artifact_time", "last_artifact_time", "sample_paths", "evidence_ids"],
-        queries_run=["structured:browser_usage:browser_prefetch", "structured:browser_usage:browser_mft_artifacts"],
+        columns=[
+            "browser_name",
+            "prefetch_records",
+            "total_exec_count",
+            "last_exec_time",
+            "mft_artifacts",
+            "first_artifact_time",
+            "last_artifact_time",
+            "sample_paths",
+            "evidence_ids",
+        ],
+        queries_run=[
+            "structured:browser_usage:browser_prefetch",
+            "structured:browser_usage:browser_mft_artifacts",
+        ],
     )
 
 
@@ -1030,7 +1222,9 @@ def _mail_application_name(row: dict[str, Any]) -> str:
     return ""
 
 
-def _build_email_application_usage(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+def _build_email_application_usage(
+    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+) -> dict[str, Any]:
     rows_raw = _structured_rows(
         db,
         """
@@ -1055,14 +1249,16 @@ def _build_email_application_usage(case: Case, db: CaseDB, answer_id: str, secti
         app = _mail_application_name(row)
         if not app:
             continue
-        rows.append({
-            "application_name": app,
-            "version": "",
-            "evidence_type": "mft",
-            "artifact_path": row.get("file_path"),
-            "artifact_time": row.get("artifact_time"),
-            "evidence_id": row.get("evidence_id"),
-        })
+        rows.append(
+            {
+                "application_name": app,
+                "version": "",
+                "evidence_type": "mft",
+                "artifact_path": row.get("file_path"),
+                "artifact_time": row.get("artifact_time"),
+                "evidence_id": row.get("evidence_id"),
+            }
+        )
     rows = _dedupe_dict_rows(rows, ("application_name", "artifact_path", "evidence_id"))
     return _structured_answer(
         case,
@@ -1070,12 +1266,21 @@ def _build_email_application_usage(case: Case, db: CaseDB, answer_id: str, secti
         section_key=section_key,
         block_heading=block_heading,
         rows=rows,
-        columns=["application_name", "version", "evidence_type", "artifact_path", "artifact_time", "evidence_id"],
+        columns=[
+            "application_name",
+            "version",
+            "evidence_type",
+            "artifact_path",
+            "artifact_time",
+            "evidence_id",
+        ],
         queries_run=["structured:email_application_usage:mail_application_artifacts"],
     )
 
 
-def _build_email_data_files(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+def _build_email_data_files(
+    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+) -> dict[str, Any]:
     rows = _structured_rows(
         db,
         """
@@ -1105,7 +1310,18 @@ def _build_email_data_files(case: Case, db: CaseDB, answer_id: str, section_key:
         section_key=section_key,
         block_heading=block_heading,
         rows=rows,
-        columns=["file_name", "file_path", "extension", "si_created", "si_modified", "si_accessed", "fn_created", "fn_modified", "fn_accessed", "evidence_id"],
+        columns=[
+            "file_name",
+            "file_path",
+            "extension",
+            "si_created",
+            "si_modified",
+            "si_accessed",
+            "fn_created",
+            "fn_modified",
+            "fn_accessed",
+            "evidence_id",
+        ],
         queries_run=["structured:email_data_files:mft"],
     )
 
@@ -1142,14 +1358,16 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
         return None
 
 
-def _infer_recent_lnk_rename_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _infer_recent_lnk_rename_candidates(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for left_index, left in enumerate(rows):
         left_tokens = _recent_lnk_tokens(left.get("file_name"))
         left_time = _parse_iso_datetime(_row_time_text(left))
         if not left_tokens or left_time is None:
             continue
-        for right in rows[left_index + 1:]:
+        for right in rows[left_index + 1 :]:
             right_tokens = _recent_lnk_tokens(right.get("file_name"))
             right_time = _parse_iso_datetime(_row_time_text(right))
             if not right_tokens or right_time is None:
@@ -1162,24 +1380,38 @@ def _infer_recent_lnk_rename_candidates(rows: list[dict[str, Any]]) -> list[dict
                 continue
             shorter, longer = (left, right)
             shorter_tokens, longer_tokens = left_tokens, right_tokens
-            if len(_recent_lnk_base_name(left.get("file_name"))) > len(_recent_lnk_base_name(right.get("file_name"))):
+            if len(_recent_lnk_base_name(left.get("file_name"))) > len(
+                _recent_lnk_base_name(right.get("file_name"))
+            ):
                 shorter, longer = right, left
                 shorter_tokens, longer_tokens = right_tokens, left_tokens
             if not shorter_tokens <= longer_tokens:
                 continue
-            candidates.append({
-                "original_name": _recent_lnk_base_name(shorter.get("file_name")),
-                "new_name": _recent_lnk_base_name(longer.get("file_name")),
-                "timestamp": max(_row_time_text(left), _row_time_text(right)),
-                "basis": "Windows Recent LNK files created/modified within 120 seconds with overlapping filename tokens",
-                "source_paths": [_text(shorter.get("file_path")), _text(longer.get("file_path"))],
-                "evidence_ids": [_text(shorter.get("evidence_id")), _text(longer.get("evidence_id"))],
-            })
+            candidates.append(
+                {
+                    "original_name": _recent_lnk_base_name(shorter.get("file_name")),
+                    "new_name": _recent_lnk_base_name(longer.get("file_name")),
+                    "timestamp": max(_row_time_text(left), _row_time_text(right)),
+                    "basis": "Windows Recent LNK files created/modified within 120 seconds with overlapping filename tokens",
+                    "source_paths": [
+                        _text(shorter.get("file_path")),
+                        _text(longer.get("file_path")),
+                    ],
+                    "evidence_ids": [
+                        _text(shorter.get("evidence_id")),
+                        _text(longer.get("evidence_id")),
+                    ],
+                }
+            )
     deduped = _dedupe_dict_rows(candidates, ("original_name", "new_name", "timestamp"))
-    return sorted(deduped, key=lambda row: str(row.get("timestamp") or ""), reverse=True)[:50]
+    return sorted(
+        deduped, key=lambda row: str(row.get("timestamp") or ""), reverse=True
+    )[:50]
 
 
-def _build_desktop_rename_candidates(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+def _build_desktop_rename_candidates(
+    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+) -> dict[str, Any]:
     rows = _structured_rows(
         db,
         """
@@ -1225,17 +1457,30 @@ def _build_desktop_rename_candidates(case: Case, db: CaseDB, answer_id: str, sec
             """,
         )
         rows = _infer_recent_lnk_rename_candidates(recent_rows)
-        queries_run.append("structured:desktop_rename_candidates:recent_lnk_temporal_alias_pairs")
+        queries_run.append(
+            "structured:desktop_rename_candidates:recent_lnk_temporal_alias_pairs"
+        )
     return _structured_answer(
         case,
         answer_id=answer_id,
         section_key=section_key,
         block_heading=block_heading,
         rows=rows,
-        columns=["original_name", "new_name", "timestamp", "basis", "source_paths", "evidence_ids"],
+        columns=[
+            "original_name",
+            "new_name",
+            "timestamp",
+            "basis",
+            "source_paths",
+            "evidence_ids",
+        ],
         queries_run=queries_run,
         status="partial" if rows else "not_found",
-        missing_reason=[] if not rows else ["MFT filename-pair evidence was not available; returned Recent LNK temporal alias candidates."],
+        missing_reason=[]
+        if not rows
+        else [
+            "MFT filename-pair evidence was not available; returned Recent LNK temporal alias candidates."
+        ],
     )
 
 
@@ -1247,7 +1492,9 @@ _CLOUD_MARKERS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _build_cloud_service_traces(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+def _build_cloud_service_traces(
+    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+) -> dict[str, Any]:
     mft_rows = _structured_rows(
         db,
         """
@@ -1285,32 +1532,77 @@ def _build_cloud_service_traces(case: Case, db: CaseDB, answer_id: str, section_
     )
     rows: list[dict[str, Any]] = []
     for service_name, markers in _CLOUD_MARKERS.items():
-        service_mft = [row for row in mft_rows if any(marker in _lower_blob(row).replace("\\", "/") for marker in markers)]
-        service_prefetch = [row for row in prefetch_rows if any(marker in _lower_blob(row).replace("\\", "/") for marker in markers)]
+        service_mft = [
+            row
+            for row in mft_rows
+            if any(marker in _lower_blob(row).replace("\\", "/") for marker in markers)
+        ]
+        service_prefetch = [
+            row
+            for row in prefetch_rows
+            if any(marker in _lower_blob(row).replace("\\", "/") for marker in markers)
+        ]
         if not service_mft and not service_prefetch:
             continue
-        paths = [_text(row.get("file_path")) for row in service_mft if _text(row.get("file_path"))]
-        paths.extend(_text(row.get("source_file")) for row in service_prefetch if _text(row.get("source_file")))
-        evidence_ids = [_text(row.get("evidence_id")) for row in [*service_mft, *service_prefetch] if _text(row.get("evidence_id"))]
-        rows.append({
-            "service_name": service_name,
-            "exe_found": "yes" if service_prefetch or any(".exe" in _lower_blob(row) or ".pf" in _lower_blob(row) for row in service_mft) else "no",
-            "paths_found": paths[:20],
-            "config_found": "yes" if any(marker in _lower_blob(row) for row in service_mft for marker in ("config", ".db", "snapshot")) else "no",
-            "evidence_ids": evidence_ids[:20],
-        })
+        paths = [
+            _text(row.get("file_path"))
+            for row in service_mft
+            if _text(row.get("file_path"))
+        ]
+        paths.extend(
+            _text(row.get("source_file"))
+            for row in service_prefetch
+            if _text(row.get("source_file"))
+        )
+        evidence_ids = [
+            _text(row.get("evidence_id"))
+            for row in [*service_mft, *service_prefetch]
+            if _text(row.get("evidence_id"))
+        ]
+        rows.append(
+            {
+                "service_name": service_name,
+                "exe_found": "yes"
+                if service_prefetch
+                or any(
+                    ".exe" in _lower_blob(row) or ".pf" in _lower_blob(row)
+                    for row in service_mft
+                )
+                else "no",
+                "paths_found": paths[:20],
+                "config_found": "yes"
+                if any(
+                    marker in _lower_blob(row)
+                    for row in service_mft
+                    for marker in ("config", ".db", "snapshot")
+                )
+                else "no",
+                "evidence_ids": evidence_ids[:20],
+            }
+        )
     return _structured_answer(
         case,
         answer_id=answer_id,
         section_key=section_key,
         block_heading=block_heading,
         rows=rows,
-        columns=["service_name", "exe_found", "paths_found", "config_found", "evidence_ids"],
-        queries_run=["structured:cloud_service_traces:mft_artifacts", "structured:cloud_service_traces:prefetch"],
+        columns=[
+            "service_name",
+            "exe_found",
+            "paths_found",
+            "config_found",
+            "evidence_ids",
+        ],
+        queries_run=[
+            "structured:cloud_service_traces:mft_artifacts",
+            "structured:cloud_service_traces:prefetch",
+        ],
     )
 
 
-def _build_resignation_file_timestamps(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+def _build_resignation_file_timestamps(
+    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+) -> dict[str, Any]:
     rows = _structured_rows(
         db,
         """
@@ -1343,12 +1635,26 @@ def _build_resignation_file_timestamps(case: Case, db: CaseDB, answer_id: str, s
         section_key=section_key,
         block_heading=block_heading,
         rows=rows,
-        columns=["file_name", "file_path", "extension", "is_deleted", "si_created", "si_modified", "si_accessed", "fn_created", "fn_modified", "fn_accessed", "evidence_id"],
+        columns=[
+            "file_name",
+            "file_path",
+            "extension",
+            "is_deleted",
+            "si_created",
+            "si_modified",
+            "si_accessed",
+            "fn_created",
+            "fn_modified",
+            "fn_accessed",
+            "evidence_id",
+        ],
         queries_run=["structured:resignation_file_timestamps:mft"],
     )
 
 
-def _build_antiforensic_activity(case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str) -> dict[str, Any]:
+def _build_antiforensic_activity(
+    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+) -> dict[str, Any]:
     event_rows = _structured_rows(
         db,
         """
@@ -1436,8 +1742,26 @@ def _build_antiforensic_activity(case: Case, db: CaseDB, answer_id: str, section
         section_key=section_key,
         block_heading=block_heading,
         rows=rows,
-        columns=["evidence_type", "timestamp", "event_id", "channel", "computer", "target_user", "file_name", "file_path", "is_deleted", "si_created", "si_modified", "evidence_id", "message"],
-        queries_run=["structured:antiforensic_activity:event_log_clear_events", "structured:antiforensic_activity:prefetch_tool_execution", "structured:antiforensic_activity:tool_artifacts"],
+        columns=[
+            "evidence_type",
+            "timestamp",
+            "event_id",
+            "channel",
+            "computer",
+            "target_user",
+            "file_name",
+            "file_path",
+            "is_deleted",
+            "si_created",
+            "si_modified",
+            "evidence_id",
+            "message",
+        ],
+        queries_run=[
+            "structured:antiforensic_activity:event_log_clear_events",
+            "structured:antiforensic_activity:prefetch_tool_execution",
+            "structured:antiforensic_activity:tool_artifacts",
+        ],
     )
 
 
@@ -1618,7 +1942,9 @@ def ensure_universal_question_probes(case: Case, db: CaseDB) -> None:
               AND status = 'case_probe'
             """
         ).fetchone()
-        if existing is not None and int(existing[0] or 0) >= len(UNIVERSAL_QUESTION_SPECS):
+        if existing is not None and int(existing[0] or 0) >= len(
+            UNIVERSAL_QUESTION_SPECS
+        ):
             return
     except Exception:
         return
@@ -1639,7 +1965,9 @@ def ensure_universal_question_probes(case: Case, db: CaseDB) -> None:
             )
         except Exception:
             answer = None
-        question_id = hashlib.sha1(f"__case_probe__\n{answer_spec}".encode("utf-8")).hexdigest()[:20]
+        question_id = hashlib.sha1(
+            f"__case_probe__\n{answer_spec}".encode()
+        ).hexdigest()[:20]
         required_evidence = {
             "required_fields": list(spec.required_fields),
             "required_sources": list(spec.required_sources),
@@ -1684,7 +2012,9 @@ def ensure_universal_question_probes(case: Case, db: CaseDB) -> None:
                 "columns": answer.get("columns"),
                 "evidence_ids": evidence_ids,
             }
-            fact_id = hashlib.sha1(f"universal_question:{answer_spec}".encode("utf-8")).hexdigest()[:20]
+            fact_id = hashlib.sha1(
+                f"universal_question:{answer_spec}".encode()
+            ).hexdigest()[:20]
             db.execute(
                 """
                 INSERT INTO section_facts (
@@ -1710,21 +2040,48 @@ def ensure_universal_question_probes(case: Case, db: CaseDB) -> None:
                     now,
                 ),
             )
-        if answer is not None and answer.get("status") in {"answered", "partial"} and spec.timeline:
+        if (
+            answer is not None
+            and answer.get("status") in {"answered", "partial"}
+            and spec.timeline
+        ):
             _feed_structured_to_timeline(db, answer_spec, answer)
 
 
-def _feed_structured_to_timeline(db: CaseDB, spec_name: str, answer: dict[str, Any]) -> None:
-    answer_rows = [item for item in (answer.get("answer") or []) if isinstance(item, dict)]
+def _feed_structured_to_timeline(
+    db: CaseDB, spec_name: str, answer: dict[str, Any]
+) -> None:
+    answer_rows = [
+        item for item in (answer.get("answer") or []) if isinstance(item, dict)
+    ]
     if not answer_rows:
         return
     for index, row in enumerate(answer_rows[:3]):
-        ts = row.get("timestamp") or row.get("logon_time") or row.get("shutdown_time") or row.get("last_exec_time") or row.get("artifact_time") or row.get("si_modified") or row.get("date")
+        ts = (
+            row.get("timestamp")
+            or row.get("logon_time")
+            or row.get("shutdown_time")
+            or row.get("last_exec_time")
+            or row.get("artifact_time")
+            or row.get("si_modified")
+            or row.get("date")
+        )
         if not ts:
             continue
         host = row.get("computer") or row.get("host") or ""
         evidence_id = row.get("evidence_id") or ""
-        summary_parts = [str(row.get(k) or "") for k in ("event_id", "executable_name", "file_name", "service_name", "target_user", "message") if row.get(k)]
+        summary_parts = [
+            str(row.get(k) or "")
+            for k in (
+                "event_id",
+                "executable_name",
+                "file_name",
+                "service_name",
+                "target_user",
+                "message",
+            )
+            if row.get(k)
+        ]
         summary = " ".join(summary_parts)[:200] or spec_name
         entry_id = f"tl-structured-{spec_name}-{index}"
         db.execute(

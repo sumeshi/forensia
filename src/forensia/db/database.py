@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
-from pathlib import Path
 import re
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
 import duckdb
@@ -25,7 +24,9 @@ class CaseDB:
         self.conn.execute(CORE_SCHEMA_SQL)
         self.conn.execute(TRACE_SCHEMA_SQL)
         for table_name in sorted(TRACE_TABLES):
-            self.conn.execute(f"CREATE OR REPLACE TEMP VIEW {table_name} AS SELECT * FROM trace.{table_name}")
+            self.conn.execute(
+                f"CREATE OR REPLACE TEMP VIEW {table_name} AS SELECT * FROM trace.{table_name}"
+            )
         self.conn.execute(
             """
             CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -34,14 +35,27 @@ class CaseDB:
             )
             """
         )
-        self._apply_migration_once("legacy_schema_backfill", self._apply_legacy_schema_backfill)
-        self._apply_migration_once("investigation_steps_hypothesis_id", self._apply_investigation_steps_hypothesis_id)
-        self._apply_migration_once("hypotheses_target_keypoint_id", self._apply_hypotheses_target_keypoint_id)
+        self._apply_migration_once(
+            "legacy_schema_backfill", self._apply_legacy_schema_backfill
+        )
+        self._apply_migration_once(
+            "investigation_steps_hypothesis_id",
+            self._apply_investigation_steps_hypothesis_id,
+        )
+        self._apply_migration_once(
+            "hypotheses_target_keypoint_id", self._apply_hypotheses_target_keypoint_id
+        )
         self._apply_migration_once("section_questions", self._apply_section_questions)
-        self._apply_migration_once("hypotheses_source_decl_id", self._apply_hypotheses_source_decl_id)
-        self._apply_migration_once("mft_entries_fn_name", self._apply_mft_entries_fn_name)
+        self._apply_migration_once(
+            "hypotheses_source_decl_id", self._apply_hypotheses_source_decl_id
+        )
+        self._apply_migration_once(
+            "mft_entries_fn_name", self._apply_mft_entries_fn_name
+        )
 
-    def _apply_migration_once(self, migration_key: str, callback: Callable[[], None]) -> None:
+    def _apply_migration_once(
+        self, migration_key: str, callback: Callable[[], None]
+    ) -> None:
         """Execute a migration callback only if it has not been applied before."""
         existing = self.conn.execute(
             "SELECT 1 FROM schema_migrations WHERE migration_key = ? LIMIT 1",
@@ -58,8 +72,12 @@ class CaseDB:
     def _apply_legacy_schema_backfill(self) -> None:
         """Backfill legacy columns for evtx_events and migrate old status/verdict values."""
         self.conn.execute("ALTER TABLE findings ADD COLUMN IF NOT EXISTS attack JSON")
-        self.conn.execute("ALTER TABLE report_sections ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'draft'")
-        self.conn.execute("ALTER TABLE report_sections ADD COLUMN IF NOT EXISTS update_count INTEGER DEFAULT 0")
+        self.conn.execute(
+            "ALTER TABLE report_sections ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'draft'"
+        )
+        self.conn.execute(
+            "ALTER TABLE report_sections ADD COLUMN IF NOT EXISTS update_count INTEGER DEFAULT 0"
+        )
         for column_name, column_type in (
             ("dst_ip", "VARCHAR"),
             ("dst_port", "VARCHAR"),
@@ -88,27 +106,45 @@ class CaseDB:
             ("clear_event_id", "INTEGER"),
             ("reason", "VARCHAR"),
         ):
-            self.conn.execute(f"ALTER TABLE evtx_events ADD COLUMN IF NOT EXISTS {column_name} {column_type}")
-        self.conn.execute("UPDATE report_sections SET status = 'ai_exhausted' WHERE status = 'approved'")
+            self.conn.execute(
+                f"ALTER TABLE evtx_events ADD COLUMN IF NOT EXISTS {column_name} {column_type}"
+            )
+        self.conn.execute(
+            "UPDATE report_sections SET status = 'ai_exhausted' WHERE status = 'approved'"
+        )
         legacy_verdict = "new" + "_finding"
-        self.conn.execute("UPDATE trace.ai_reviews SET verdict = 'newlead' WHERE verdict = ?", (legacy_verdict,))
-        self.conn.execute("UPDATE hypotheses SET verdict = 'newlead' WHERE verdict = ?", (legacy_verdict,))
+        self.conn.execute(
+            "UPDATE trace.ai_reviews SET verdict = 'newlead' WHERE verdict = ?",
+            (legacy_verdict,),
+        )
+        self.conn.execute(
+            "UPDATE hypotheses SET verdict = 'newlead' WHERE verdict = ?",
+            (legacy_verdict,),
+        )
 
     def _apply_investigation_steps_hypothesis_id(self) -> None:
         """Add hypothesis_id column to the investigation_steps trace table."""
-        self.conn.execute("ALTER TABLE trace.investigation_steps ADD COLUMN IF NOT EXISTS hypothesis_id VARCHAR")
+        self.conn.execute(
+            "ALTER TABLE trace.investigation_steps ADD COLUMN IF NOT EXISTS hypothesis_id VARCHAR"
+        )
 
     def _apply_hypotheses_target_keypoint_id(self) -> None:
         """Add target_keypoint_id column to the hypotheses table."""
-        self.conn.execute("ALTER TABLE hypotheses ADD COLUMN IF NOT EXISTS target_keypoint_id VARCHAR")
+        self.conn.execute(
+            "ALTER TABLE hypotheses ADD COLUMN IF NOT EXISTS target_keypoint_id VARCHAR"
+        )
 
     def _apply_hypotheses_source_decl_id(self) -> None:
         """Add source_decl_id column to the hypotheses table."""
-        self.conn.execute("ALTER TABLE hypotheses ADD COLUMN IF NOT EXISTS source_decl_id VARCHAR")
+        self.conn.execute(
+            "ALTER TABLE hypotheses ADD COLUMN IF NOT EXISTS source_decl_id VARCHAR"
+        )
 
     def _apply_mft_entries_fn_name(self) -> None:
         """Add fn_name column to the mft_entries table."""
-        self.conn.execute("ALTER TABLE mft_entries ADD COLUMN IF NOT EXISTS fn_name VARCHAR")
+        self.conn.execute(
+            "ALTER TABLE mft_entries ADD COLUMN IF NOT EXISTS fn_name VARCHAR"
+        )
 
     def _apply_section_questions(self) -> None:
         """Create semantic question registry table for report blocks."""
@@ -131,8 +167,12 @@ class CaseDB:
             )
             """
         )
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_section_questions_section ON section_questions(section_key, block_heading)")
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_section_questions_spec ON section_questions(answer_spec)")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_section_questions_section ON section_questions(section_key, block_heading)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_section_questions_spec ON section_questions(answer_spec)"
+        )
 
     def _route_trace_write(self, query: str) -> str:
         """Rewrite unqualified INSERT/UPDATE/DELETE to use the trace schema prefix."""
@@ -154,7 +194,9 @@ class CaseDB:
                     )
         return query
 
-    def execute(self, query: str, params: Sequence[Any] | None = None) -> duckdb.DuckDBPyConnection:
+    def execute(
+        self, query: str, params: Sequence[Any] | None = None
+    ) -> duckdb.DuckDBPyConnection:
         """Execute a SQL query, routing trace writes automatically."""
         routed_query = self._route_trace_write(query)
         if params is None:
@@ -171,7 +213,7 @@ class CaseDB:
     def close(self) -> None:
         self.conn.close()
 
-    def __enter__(self) -> "CaseDB":
+    def __enter__(self) -> CaseDB:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:

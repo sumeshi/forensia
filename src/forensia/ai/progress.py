@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-import re
 from collections import Counter
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -16,7 +14,6 @@ except ImportError:  # pragma: no cover - optional until dependency is installed
     normalize_identifiers = None
 
 from forensia.ai.checker import _co_observation_satisfied
-from forensia.core.session import Hypothesis
 
 
 def _query_fingerprint(sql: str | None) -> str:
@@ -30,7 +27,7 @@ def _query_fingerprint(sql: str | None) -> str:
         return "generic"
 
     if parse_one is None or exp is None:
-        return hashlib.sha1(f"raw:{sql.lower()}".encode("utf-8")).hexdigest()[:8]
+        return hashlib.sha1(f"raw:{sql.lower()}".encode()).hexdigest()[:8]
 
     try:
         expression = parse_one(sql, read="duckdb")
@@ -38,7 +35,7 @@ def _query_fingerprint(sql: str | None) -> str:
         try:
             expression = parse_one(sql)
         except Exception:
-            return hashlib.sha1(f"raw:{sql.lower()}".encode("utf-8")).hexdigest()[:8]
+            return hashlib.sha1(f"raw:{sql.lower()}".encode()).hexdigest()[:8]
 
     try:
         if normalize_identifiers is not None:
@@ -85,7 +82,10 @@ def _query_fingerprint(sql: str | None) -> str:
                     value = _literal_value(predicate.this)
                     if value is not None:
                         values.append(value)
-            elif isinstance(predicate, exp.In) and _column_name(predicate.this) == column_name:
+            elif (
+                isinstance(predicate, exp.In)
+                and _column_name(predicate.this) == column_name
+            ):
                 for item in predicate.expressions:
                     value = _literal_value(item)
                     if value is not None:
@@ -107,20 +107,20 @@ def _query_fingerprint(sql: str | None) -> str:
             return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:8]
 
         canonical_sql = expression.sql(dialect="duckdb", pretty=False)
-        return hashlib.sha1(f"sql:{canonical_sql}".encode("utf-8")).hexdigest()[:8]
+        return hashlib.sha1(f"sql:{canonical_sql}".encode()).hexdigest()[:8]
     except Exception:
-        return hashlib.sha1(f"raw:{sql.lower()}".encode("utf-8")).hexdigest()[:8]
+        return hashlib.sha1(f"raw:{sql.lower()}".encode()).hexdigest()[:8]
 
 
 @dataclass(slots=True)
 class HypothesisProgressTracker:
     """Tracks hypothesis investigation progress for auto-refute/auto-confirm decisions."""
-    
+
     zero_row_inconclusive_count: int = 0
     query_fingerprints: list[str] = field(default_factory=list)
     _last_missing_signature: str = ""
     consecutive_same_missing: int = 0
-    
+
     def record(self, query_fingerprint: str, verdict: str, row_count: int) -> None:
         """Record a query execution result."""
         self.query_fingerprints.append(query_fingerprint)
@@ -128,8 +128,10 @@ class HypothesisProgressTracker:
             self.zero_row_inconclusive_count += 1
         else:
             self.zero_row_inconclusive_count = 0
-    
-    def register_check(self, verdict: str, row_count: int, missing_signature: str = "") -> None:
+
+    def register_check(
+        self, verdict: str, row_count: int, missing_signature: str = ""
+    ) -> None:
         """Track consecutive same-missing checks for auto-refute detection."""
         if verdict == "inconclusive" and missing_signature:
             if missing_signature == self._last_missing_signature:
@@ -140,15 +142,15 @@ class HypothesisProgressTracker:
         elif verdict != "inconclusive":
             self.consecutive_same_missing = 0
             self._last_missing_signature = ""
-    
+
     def should_auto_refute_due_to_unobserved_events(self, threshold: int = 3) -> bool:
         """Return True after threshold consecutive same-missing inconclusive results."""
         return self.consecutive_same_missing >= threshold
-    
+
     def should_auto_refute(self, consecutive_threshold: int = 3) -> bool:
         """Return True after consecutive_threshold consecutive 0-row inconclusive results."""
         return self.zero_row_inconclusive_count >= consecutive_threshold
-    
+
     def should_pivot(self, threshold: int = 2) -> bool:
         """Detect if any query fingerprint appears >= threshold times."""
         fp_counts = Counter(self.query_fingerprints)
@@ -156,7 +158,7 @@ class HypothesisProgressTracker:
         if most_common and most_common[0][1] >= threshold:
             return True
         return False
-    
+
     @staticmethod
     def _extract_observed_event_ids(rows: list[dict[str, Any]]) -> set[int]:
         """Extract unique event_ids from query result rows."""
@@ -166,10 +168,10 @@ class HypothesisProgressTracker:
             if event_id is not None:
                 try:
                     observed.add(int(event_id))
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     pass
         return observed
-    
+
     def _confirm_set_from(self, rule_context: Any, hypothesis: Any = None) -> set[int]:
         """Pull co_observed_event_ids from rule_context first, falling back to the
         hypothesis itself (broad_plan-derived hypotheses have no rule_context)."""
@@ -180,18 +182,24 @@ class HypothesisProgressTracker:
             confirm_when = getattr(hypothesis, "confirm_when", None)
         if not confirm_when:
             return set()
-        required_event_ids = confirm_when.get("co_observed_event_ids") if isinstance(confirm_when, dict) else None
+        required_event_ids = (
+            confirm_when.get("co_observed_event_ids")
+            if isinstance(confirm_when, dict)
+            else None
+        )
         if not required_event_ids:
             return set()
         out: set[int] = set()
         for eid in required_event_ids:
             try:
                 out.add(int(str(eid).strip()))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
         return out
 
-    def should_auto_confirm(self, rule_context: Any, rows: list[dict[str, Any]], hypothesis: Any = None) -> bool:
+    def should_auto_confirm(
+        self, rule_context: Any, rows: list[dict[str, Any]], hypothesis: Any = None
+    ) -> bool:
         """Return True if all co-observation constraints are satisfied.
 
         Uses _co_observation_satisfied to check co_observed_event_ids along
@@ -207,10 +215,14 @@ class HypothesisProgressTracker:
         satisfied, _ = _co_observation_satisfied(confirm_when, rows)
         return satisfied
 
-    def has_partial_confirm_signal(self, rule_context: Any, rows: list[dict[str, Any]], hypothesis: Any = None) -> bool:
+    def has_partial_confirm_signal(
+        self, rule_context: Any, rows: list[dict[str, Any]], hypothesis: Any = None
+    ) -> bool:
         """Return True when some, but not all, confirm_when event IDs are present."""
         required_set = self._confirm_set_from(rule_context, hypothesis)
         if not required_set:
             return False
         observed_event_ids = self._extract_observed_event_ids(rows)
-        return bool(required_set & observed_event_ids) and not required_set.issubset(observed_event_ids)
+        return bool(required_set & observed_event_ids) and not required_set.issubset(
+            observed_event_ids
+        )

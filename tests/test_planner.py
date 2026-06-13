@@ -5,10 +5,12 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from forensia.ai.checker import check_query_result
-from forensia.ai.checker import _parse_new_hypotheses
-from forensia.ai.investigator import HypothesisProgressTracker, _query_fingerprint, _select_focus_hypotheses
-from forensia.ai.section_agent import _benchmark_report_brief
+from forensia.ai.checker import _parse_new_hypotheses, check_query_result
+from forensia.ai.investigator import (
+    HypothesisProgressTracker,
+    _query_fingerprint,
+    _select_focus_hypotheses,
+)
 from forensia.ai.planner import (
     _request_with_optional_context,
     plan_hypothesis_query,
@@ -20,9 +22,14 @@ from forensia.ai.prompts import (
     build_report_section_messages,
     build_structured_classify_messages,
 )
+from forensia.ai.section_agent import _benchmark_report_brief
 from forensia.ai.sql_schema import build_investigation_framework
 from forensia.ai.sql_templates import _template_failed_logon_by_ip_window, coerce_list
-from forensia.config import clear_llm_settings_cache, resolve_llm_config
+from forensia.config import (
+    clear_llm_settings_cache,
+    reload_settings,
+    resolve_llm_config,
+)
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import HistoryEntry, Hypothesis, PlannedQuery, SessionState
@@ -38,7 +45,9 @@ class _MemoryStub:
     def load_context(self, files: list[str]) -> str:
         return ""
 
-    def load_compact_context(self, files: list[str], max_bytes: int | None = None) -> str:
+    def load_compact_context(
+        self, files: list[str], max_bytes: int | None = None
+    ) -> str:
         return "# facts.md\n\n- fact\n\n# tasks.md\n\n- question"
 
 
@@ -48,9 +57,7 @@ def _llm_base_url() -> str:
 
 class PlannerRetryTests(unittest.TestCase):
     def tearDown(self) -> None:
-        clear_llm_settings_cache()
-
-
+        reload_settings()
 
     def test_truncate_context_sections_keeps_text_within_1500_chars(self) -> None:
         sections = {"2_timeline": "x" * 1500, "3_technical": "y" * 1501}
@@ -219,7 +226,7 @@ class PlannerRetryTests(unittest.TestCase):
         with patch("forensia.ai.planner.request_llm_json", side_effect=responses):
             result = plan_hypothesis_query(
                 state=state,
-hypothesis=hypothesis,
+                hypothesis=hypothesis,
                 memory=_MemoryStub(),
                 base_url=_llm_base_url(),
                 model="test-model",
@@ -259,10 +266,12 @@ hypothesis=hypothesis,
             },
         ]
 
-        with patch("forensia.ai.planner.request_llm_json", side_effect=responses) as mock_request:
+        with patch(
+            "forensia.ai.planner.request_llm_json", side_effect=responses
+        ) as mock_request:
             result = plan_hypothesis_query(
                 state=state,
-hypothesis=hypothesis,
+                hypothesis=hypothesis,
                 memory=_MemoryStub(),
                 base_url=_llm_base_url(),
                 model="test-model",
@@ -288,24 +297,42 @@ hypothesis=hypothesis,
                 "ready_to_compose": True,
                 "blockers": "",
             },
-            {"template_id": "missing-template", "sql": "", "params": {}, "purpose": "broken"},
-            {"template_id": "missing-template", "sql": "", "params": {}, "purpose": "broken"},
-            {"template_id": "missing-template", "sql": "", "params": {}, "purpose": "broken"},
+            {
+                "template_id": "missing-template",
+                "sql": "",
+                "params": {},
+                "purpose": "broken",
+            },
+            {
+                "template_id": "missing-template",
+                "sql": "",
+                "params": {},
+                "purpose": "broken",
+            },
+            {
+                "template_id": "missing-template",
+                "sql": "",
+                "params": {},
+                "purpose": "broken",
+            },
         ]
 
-        with patch("forensia.ai.planner.request_llm_json", side_effect=responses), self.assertLogs(
-            "forensia.ai.planner", level="DEBUG"
-        ) as logs:
+        with (
+            patch("forensia.ai.planner.request_llm_json", side_effect=responses),
+            self.assertLogs("forensia.ai.planner", level="DEBUG") as logs,
+        ):
             result = plan_hypothesis_query(
                 state=state,
-hypothesis=hypothesis,
+                hypothesis=hypothesis,
                 memory=_MemoryStub(),
                 base_url=_llm_base_url(),
                 model="test-model",
             )
 
         self.assertIsNone(result.query)
-        self.assertTrue(any("hypothesis/query parse failed" in line for line in logs.output))
+        self.assertTrue(
+            any("hypothesis/query parse failed" in line for line in logs.output)
+        )
 
     def test_plan_hypothesis_query_includes_recent_db_history_on_resume(self) -> None:
         state = SessionState(session_id="session-db", iteration=2)
@@ -326,10 +353,12 @@ hypothesis=hypothesis,
                     ) VALUES ('HR-1', 'H1', 'S-1', 1, 'check', 'inconclusive', 'Q-old', 'already tested', now())
                     """
                 )
-                with patch("forensia.ai.planner.request_llm_json", side_effect=responses) as mock_request:
+                with patch(
+                    "forensia.ai.planner.request_llm_json", side_effect=responses
+                ) as mock_request:
                     plan_hypothesis_query(
                         state=state,
-hypothesis=hypothesis,
+                        hypothesis=hypothesis,
                         memory=_MemoryStub(),
                         base_url=_llm_base_url(),
                         model="test-model",
@@ -337,7 +366,9 @@ hypothesis=hypothesis,
                     )
 
         # Check the intent-phase call (first call) for DB history
-        first_call_system = mock_request.call_args_list[0].kwargs["messages"][0]["content"]
+        first_call_system = mock_request.call_args_list[0].kwargs["messages"][0][
+            "content"
+        ]
         self.assertIn('"query_id": "Q-old"', first_call_system)
 
     def test_plan_hypothesis_query_dedupes_local_and_db_query_ids(self) -> None:
@@ -372,10 +403,12 @@ hypothesis=hypothesis,
                     ) VALUES ('HR-1', 'H1', 'S-1', 1, 'check', 'inconclusive', 'Q-local', 'duplicate row', now())
                     """
                 )
-                with patch("forensia.ai.planner.request_llm_json", side_effect=responses) as mock_request:
+                with patch(
+                    "forensia.ai.planner.request_llm_json", side_effect=responses
+                ) as mock_request:
                     plan_hypothesis_query(
                         state=state,
-hypothesis=hypothesis,
+                        hypothesis=hypothesis,
                         memory=_MemoryStub(),
                         base_url=_llm_base_url(),
                         model="test-model",
@@ -383,7 +416,9 @@ hypothesis=hypothesis,
                     )
 
         # Check the intent-phase call (first call) for deduplication
-        first_call_system = mock_request.call_args_list[0].kwargs["messages"][0]["content"]
+        first_call_system = mock_request.call_args_list[0].kwargs["messages"][0][
+            "content"
+        ]
         self.assertEqual(1, first_call_system.count("Q-local"))
 
     def test_query_template_uses_dataset_max_timestamp_not_now(self) -> None:
@@ -398,8 +433,14 @@ hypothesis=hypothesis,
 
     def test_investigation_framework_lists_missing_columns(self) -> None:
         framework = build_investigation_framework()
-        self.assertIn("evtx_events columns: evidence_id, source_file, channel, event_id, record_id, timestamp", framework)
-        self.assertIn("hypotheses columns: hypothesis_id, description, status, verdict, summary, origin", framework)
+        self.assertIn(
+            "evtx_events columns: evidence_id, source_file, channel, event_id, record_id, timestamp",
+            framework,
+        )
+        self.assertIn(
+            "hypotheses columns: hypothesis_id, description, status, verdict, summary, origin",
+            framework,
+        )
         self.assertIn("event_id = 4624 AND logon_type IN ('2','10')", framework)
         self.assertIn("4728/4732", framework)
 
@@ -419,15 +460,30 @@ hypothesis=hypothesis,
                 "ready_to_compose": True,
                 "blockers": "",
             },
-            {"template_id": None, "sql": "SELECT * FROM nope", "params": {}, "purpose": "test"},
-            {"template_id": None, "sql": "DELETE FROM findings", "params": {}, "purpose": "retry1"},
-            {"template_id": None, "sql": "DELETE FROM findings", "params": {}, "purpose": "retry2"},
+            {
+                "template_id": None,
+                "sql": "SELECT * FROM nope",
+                "params": {},
+                "purpose": "test",
+            },
+            {
+                "template_id": None,
+                "sql": "DELETE FROM findings",
+                "params": {},
+                "purpose": "retry1",
+            },
+            {
+                "template_id": None,
+                "sql": "DELETE FROM findings",
+                "params": {},
+                "purpose": "retry2",
+            },
         ]
 
         with patch("forensia.ai.planner.request_llm_json", side_effect=responses):
             result = plan_hypothesis_query(
                 state=state,
-hypothesis=hypothesis,
+                hypothesis=hypothesis,
                 memory=_MemoryStub(),
                 base_url=_llm_base_url(),
                 model="test-model",
@@ -438,7 +494,10 @@ hypothesis=hypothesis,
     def test_route_trace_write_skips_regex_for_select(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
-            with CaseDB(case) as db, patch("forensia.db.database.re.search") as mock_search:
+            with (
+                CaseDB(case) as db,
+                patch("forensia.db.database.re.search") as mock_search,
+            ):
                 routed = db._route_trace_write("SELECT * FROM progress_events")
         self.assertEqual("SELECT * FROM progress_events", routed)
         mock_search.assert_not_called()
@@ -450,7 +509,9 @@ hypothesis=hypothesis,
             seen.append(extra_context)
             return [{"role": "user", "content": extra_context}]
 
-        with patch("forensia.ai.planner.request_llm_json", return_value={"read_more": []}):
+        with patch(
+            "forensia.ai.planner.request_llm_json", return_value={"read_more": []}
+        ):
             _request_with_optional_context(
                 memory=_MemoryStub(),
                 messages_builder=builder,
@@ -462,11 +523,18 @@ hypothesis=hypothesis,
         self.assertIn("facts.md", seen[0])
         self.assertIn("tasks.md", seen[0])
 
-    def test_request_with_optional_context_uses_compact_context_for_read_more(self) -> None:
+    def test_request_with_optional_context_uses_compact_context_for_read_more(
+        self,
+    ) -> None:
         memory = _MemoryStub()
-        with patch.object(memory, "load_compact_context", return_value="# compact extra") as mock_compact, patch(
-            "forensia.ai.planner.request_llm_json",
-            side_effect=[{"read_more": ["archive/refuted.md"]}, {"read_more": []}],
+        with (
+            patch.object(
+                memory, "load_compact_context", return_value="# compact extra"
+            ) as mock_compact,
+            patch(
+                "forensia.ai.planner.request_llm_json",
+                side_effect=[{"read_more": ["archive/refuted.md"]}, {"read_more": []}],
+            ),
         ):
             _request_with_optional_context(
                 memory=memory,
@@ -481,18 +549,37 @@ hypothesis=hypothesis,
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
-            with CaseDB(case) as db, patch(
-                "forensia.ai.checker.request_llm_json",
-                return_value={"query_id": "Q1", "verdict": "unclear", "report_text": "text"},
-            ), patch("forensia.ai.checker.apply_check_result", return_value=(0, False)):
+            with (
+                CaseDB(case) as db,
+                patch(
+                    "forensia.ai.checker.request_llm_json",
+                    return_value={
+                        "query_id": "Q1",
+                        "verdict": "unclear",
+                        "report_text": "text",
+                    },
+                ),
+                patch(
+                    "forensia.ai.checker.apply_check_result", return_value=(0, False)
+                ),
+            ):
                 result = check_query_result(
                     case=case,
                     db=db,
                     session_id="S-1",
-                    planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
+                    planned_query=PlannedQuery(
+                        query_id="Q1",
+                        hypothesis_id="H1",
+                        purpose="purpose",
+                        sql="SELECT 1",
+                    ),
                     hypothesis=Hypothesis(id="H1", description="desc"),
                     finding_candidates=[],
-                    result_summary={"row_count": 1, "sample_rows": [], "evidence_ids": []},
+                    result_summary={
+                        "row_count": 1,
+                        "sample_rows": [],
+                        "evidence_ids": [],
+                    },
                     memory=memory,
                     base_url=_llm_base_url(),
                     model="test-model",
@@ -512,20 +599,39 @@ hypothesis=hypothesis,
             memory = MemoryManager(case)
             responses = [
                 {"verdict": "refuted", "rationale": "No evidence found"},
-                {"memory_updates": {"refuted_hypotheses": [{"hypothesis_id": "H1", "reason": "No evidence"}]}},
+                {
+                    "memory_updates": {
+                        "refuted_hypotheses": [
+                            {"hypothesis_id": "H1", "reason": "No evidence"}
+                        ]
+                    }
+                },
             ]
-            with CaseDB(case) as db, patch(
-                "forensia.ai.checker.request_llm_json",
-                side_effect=responses,
-            ), patch("forensia.ai.checker.apply_check_result", side_effect=_capture):
+            with (
+                CaseDB(case) as db,
+                patch(
+                    "forensia.ai.checker.request_llm_json",
+                    side_effect=responses,
+                ),
+                patch("forensia.ai.checker.apply_check_result", side_effect=_capture),
+            ):
                 check_query_result(
                     case=case,
                     db=db,
                     session_id="S-1",
-                    planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
+                    planned_query=PlannedQuery(
+                        query_id="Q1",
+                        hypothesis_id="H1",
+                        purpose="purpose",
+                        sql="SELECT 1",
+                    ),
                     hypothesis=Hypothesis(id="H1", description="desc"),
                     finding_candidates=[{"finding_id": "F-1"}],
-                    result_summary={"row_count": 1, "sample_rows": [], "evidence_ids": []},
+                    result_summary={
+                        "row_count": 1,
+                        "sample_rows": [],
+                        "evidence_ids": [],
+                    },
                     memory=memory,
                     base_url=_llm_base_url(),
                     model="test-model",
@@ -545,21 +651,42 @@ hypothesis=hypothesis,
             memory = MemoryManager(case)
             responses = [
                 {"verdict": "confirmed", "rationale": "Seems confirmed"},
-                {"findings": [{"title": "Test", "severity": "medium", "evidence_ids": ["ev-1"]}]},
+                {
+                    "findings": [
+                        {
+                            "title": "Test",
+                            "severity": "medium",
+                            "evidence_ids": ["ev-1"],
+                        }
+                    ]
+                },
                 {"memory_updates": {}},
             ]
-            with CaseDB(case) as db, patch(
-                "forensia.ai.checker.request_llm_json",
-                side_effect=responses,
-            ), patch("forensia.ai.checker.apply_check_result", side_effect=_capture):
+            with (
+                CaseDB(case) as db,
+                patch(
+                    "forensia.ai.checker.request_llm_json",
+                    side_effect=responses,
+                ),
+                patch("forensia.ai.checker.apply_check_result", side_effect=_capture),
+            ):
                 check_query_result(
                     case=case,
                     db=db,
                     session_id="S-1",
-                    planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
+                    planned_query=PlannedQuery(
+                        query_id="Q1",
+                        hypothesis_id="H1",
+                        purpose="purpose",
+                        sql="SELECT 1",
+                    ),
                     hypothesis=Hypothesis(id="H1", description="desc"),
                     finding_candidates=[{"finding_id": "F-1"}],
-                    result_summary={"row_count": 0, "sample_rows": [], "evidence_ids": []},
+                    result_summary={
+                        "row_count": 0,
+                        "sample_rows": [],
+                        "evidence_ids": [],
+                    },
                     memory=memory,
                     base_url=_llm_base_url(),
                     model="test-model",
@@ -579,24 +706,39 @@ hypothesis=hypothesis,
             memory = MemoryManager(case)
             responses = [
                 {"verdict": "inconclusive", "rationale": "Missing src_ip"},
-                {"memory_updates": {
-                    "facts": [{"text": "fact", "evidence_ids": ["ev-1"]}],
-                    "resolved_gaps": [{"text": "gap", "evidence_ids": ["ev-2"]}],
-                    "overview": ["story"],
-                }},
+                {
+                    "memory_updates": {
+                        "facts": [{"text": "fact", "evidence_ids": ["ev-1"]}],
+                        "resolved_gaps": [{"text": "gap", "evidence_ids": ["ev-2"]}],
+                        "overview": ["story"],
+                    }
+                },
             ]
-            with CaseDB(case) as db, patch(
-                "forensia.ai.checker.request_llm_json",
-                side_effect=responses,
-            ), patch("forensia.ai.checker.apply_check_result", side_effect=_capture):
+            with (
+                CaseDB(case) as db,
+                patch(
+                    "forensia.ai.checker.request_llm_json",
+                    side_effect=responses,
+                ),
+                patch("forensia.ai.checker.apply_check_result", side_effect=_capture),
+            ):
                 check_query_result(
                     case=case,
                     db=db,
                     session_id="S-1",
-                    planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
+                    planned_query=PlannedQuery(
+                        query_id="Q1",
+                        hypothesis_id="H1",
+                        purpose="purpose",
+                        sql="SELECT 1",
+                    ),
                     hypothesis=Hypothesis(id="H1", description="desc"),
                     finding_candidates=[],
-                    result_summary={"row_count": 1, "sample_rows": [], "evidence_ids": ["ev-1"]},
+                    result_summary={
+                        "row_count": 1,
+                        "sample_rows": [],
+                        "evidence_ids": ["ev-1"],
+                    },
                     memory=memory,
                     base_url=_llm_base_url(),
                     model="test-model",
@@ -608,7 +750,9 @@ hypothesis=hypothesis,
             captured["result"].memory_updates.get("facts"),
         )
 
-    def test_checker_phased_drops_durable_memory_updates_when_evidence_ids_empty(self) -> None:
+    def test_checker_phased_drops_durable_memory_updates_when_evidence_ids_empty(
+        self,
+    ) -> None:
         captured = {}
 
         def _capture(*args, **kwargs):
@@ -620,26 +764,49 @@ hypothesis=hypothesis,
             memory = MemoryManager(case)
             responses = [
                 {"verdict": "inconclusive", "rationale": "Insufficient data"},
-                {"memory_updates": {
-                    "facts": [{"text": "fact", "evidence_ids": ["ev-x"]}],
-                    "timeline": [{"timestamp": "2026-05-24T01:02:03Z", "description": "event", "evidence_ids": ["ev-y"]}],
-                    "resolved_gaps": [{"text": "gap", "evidence_ids": []}],
-                    "tasks": [{"text": "still investigate", "kind": "internal_db_check"}],
-                    "overview": ["keep storyline"],
-                }},
+                {
+                    "memory_updates": {
+                        "facts": [{"text": "fact", "evidence_ids": ["ev-x"]}],
+                        "timeline": [
+                            {
+                                "timestamp": "2026-05-24T01:02:03Z",
+                                "description": "event",
+                                "evidence_ids": ["ev-y"],
+                            }
+                        ],
+                        "resolved_gaps": [{"text": "gap", "evidence_ids": []}],
+                        "tasks": [
+                            {"text": "still investigate", "kind": "internal_db_check"}
+                        ],
+                        "overview": ["keep storyline"],
+                    }
+                },
             ]
-            with CaseDB(case) as db, patch(
-                "forensia.ai.checker.request_llm_json",
-                side_effect=responses,
-            ), patch("forensia.ai.checker.apply_check_result", side_effect=_capture):
+            with (
+                CaseDB(case) as db,
+                patch(
+                    "forensia.ai.checker.request_llm_json",
+                    side_effect=responses,
+                ),
+                patch("forensia.ai.checker.apply_check_result", side_effect=_capture),
+            ):
                 check_query_result(
                     case=case,
                     db=db,
                     session_id="S-1",
-                    planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
+                    planned_query=PlannedQuery(
+                        query_id="Q1",
+                        hypothesis_id="H1",
+                        purpose="purpose",
+                        sql="SELECT 1",
+                    ),
                     hypothesis=Hypothesis(id="H1", description="desc"),
                     finding_candidates=[],
-                    result_summary={"row_count": 1, "sample_rows": [], "evidence_ids": ["ev-1"]},
+                    result_summary={
+                        "row_count": 1,
+                        "sample_rows": [],
+                        "evidence_ids": ["ev-1"],
+                    },
                     memory=memory,
                     base_url=_llm_base_url(),
                     model="test-model",
@@ -656,7 +823,9 @@ hypothesis=hypothesis,
             captured["result"].memory_updates,
         )
 
-    def test_checker_phased_normalizes_entity_type_and_drops_invalid_entity_updates(self) -> None:
+    def test_checker_phased_normalizes_entity_type_and_drops_invalid_entity_updates(
+        self,
+    ) -> None:
         captured = {}
 
         def _capture(*args, **kwargs):
@@ -666,31 +835,68 @@ hypothesis=hypothesis,
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
-            with CaseDB(case) as db, patch(
-                "forensia.ai.checker.request_llm_json",
-                return_value={
-                    "query_id": "Q1",
-                    "verdict": "inconclusive",
-                    "memory_updates": {
-                        "entities": [
-                            {"entity_type": "src_ip", "name": "10.0.0.5", "role": "source_ip", "notes": "keep as ip"},
-                            {"entity_type": "username", "name": "alice", "role": "actor_user", "notes": "keep as user"},
-                            {"entity_type": "machine_account", "name": "INFORMANT-PC$", "role": "source_account", "notes": "keep as machine account"},
-                            {"entity_type": "service_name", "name": "-", "role": "service_name", "notes": "drop placeholder"},
-                            {"entity_type": "device_group", "name": "ops", "notes": "drop"},
-                        ]
+            with (
+                CaseDB(case) as db,
+                patch(
+                    "forensia.ai.checker.request_llm_json",
+                    return_value={
+                        "query_id": "Q1",
+                        "verdict": "inconclusive",
+                        "memory_updates": {
+                            "entities": [
+                                {
+                                    "entity_type": "src_ip",
+                                    "name": "10.0.0.5",
+                                    "role": "source_ip",
+                                    "notes": "keep as ip",
+                                },
+                                {
+                                    "entity_type": "username",
+                                    "name": "alice",
+                                    "role": "actor_user",
+                                    "notes": "keep as user",
+                                },
+                                {
+                                    "entity_type": "machine_account",
+                                    "name": "INFORMANT-PC$",
+                                    "role": "source_account",
+                                    "notes": "keep as machine account",
+                                },
+                                {
+                                    "entity_type": "service_name",
+                                    "name": "-",
+                                    "role": "service_name",
+                                    "notes": "drop placeholder",
+                                },
+                                {
+                                    "entity_type": "device_group",
+                                    "name": "ops",
+                                    "notes": "drop",
+                                },
+                            ]
+                        },
+                        "report_text": "text",
                     },
-                    "report_text": "text",
-                },
-            ), patch("forensia.ai.checker.apply_check_result", side_effect=_capture):
+                ),
+                patch("forensia.ai.checker.apply_check_result", side_effect=_capture),
+            ):
                 check_query_result(
                     case=case,
                     db=db,
                     session_id="S-1",
-                    planned_query=PlannedQuery(query_id="Q1", hypothesis_id="H1", purpose="purpose", sql="SELECT 1"),
+                    planned_query=PlannedQuery(
+                        query_id="Q1",
+                        hypothesis_id="H1",
+                        purpose="purpose",
+                        sql="SELECT 1",
+                    ),
                     hypothesis=Hypothesis(id="H1", description="desc"),
                     finding_candidates=[],
-                    result_summary={"row_count": 1, "sample_rows": [], "evidence_ids": ["ev-1"]},
+                    result_summary={
+                        "row_count": 1,
+                        "sample_rows": [],
+                        "evidence_ids": ["ev-1"],
+                    },
                     memory=memory,
                     base_url=_llm_base_url(),
                     model="test-model",
@@ -699,15 +905,32 @@ hypothesis=hypothesis,
         self.assertEqual(
             {
                 "entities": [
-                    {"entity_type": "ip", "name": "10.0.0.5", "role": "source_ip", "notes": "keep as ip"},
-                    {"entity_type": "user", "name": "alice", "role": "actor_user", "notes": "keep as user"},
-                    {"entity_type": "machine_account", "name": "INFORMANT-PC$", "role": "source_account", "notes": "keep as machine account"},
+                    {
+                        "entity_type": "ip",
+                        "name": "10.0.0.5",
+                        "role": "source_ip",
+                        "notes": "keep as ip",
+                    },
+                    {
+                        "entity_type": "user",
+                        "name": "alice",
+                        "role": "actor_user",
+                        "notes": "keep as user",
+                    },
+                    {
+                        "entity_type": "machine_account",
+                        "name": "INFORMANT-PC$",
+                        "role": "source_account",
+                        "notes": "keep as machine account",
+                    },
                 ]
             },
             captured["result"].memory_updates,
         )
 
-    def test_report_section_messages_include_recommendation_strength_guidance(self) -> None:
+    def test_report_section_messages_include_recommendation_strength_guidance(
+        self,
+    ) -> None:
         messages = build_report_section_messages(
             section_meta={"section": "5_recommendations"},
             evidence_results=[],
@@ -719,7 +942,9 @@ hypothesis=hypothesis,
         self.assertIn("Match wording to confidence", system)
         self.assertIn("Recommended actions must scale with evidence strength", system)
 
-    def test_report_section_messages_include_language_confidence_matrix_and_categories(self) -> None:
+    def test_report_section_messages_include_language_confidence_matrix_and_categories(
+        self,
+    ) -> None:
         messages = build_report_section_messages(
             section_meta={"section": "3_technical"},
             evidence_results=[],
@@ -730,11 +955,16 @@ hypothesis=hypothesis,
         system = messages[0]["content"]
         self.assertIn("confidence >= 0.8", system)
         self.assertIn("confidence < 0.5", system)
-        self.assertIn("Do not use 'confirmed' for findings or conclusions below 0.8 confidence", system)
+        self.assertIn(
+            "Do not use 'confirmed' for findings or conclusions below 0.8 confidence",
+            system,
+        )
         self.assertIn("GOOGLEDRIVESYNC.EXE=cloud_sync", system)
         self.assertIn("SCHTASKS.EXE=persistence_tool", system)
 
-    def test_investigation_framework_includes_machine_account_and_category_guidance(self) -> None:
+    def test_investigation_framework_includes_machine_account_and_category_guidance(
+        self,
+    ) -> None:
         framework = build_investigation_framework()
 
         self.assertIn("account names ending with '$' as machine_account", framework)
@@ -787,7 +1017,9 @@ hypothesis=hypothesis,
         self.assertIn("Event ID 4720", system)
         self.assertIn("allowed_claims", system)
 
-    def test_report_section_messages_include_strength_guidance_for_non_confirmed_sources(self) -> None:
+    def test_report_section_messages_include_strength_guidance_for_non_confirmed_sources(
+        self,
+    ) -> None:
         messages = build_report_section_messages(
             section_meta={"section": "3_technical"},
             evidence_results=[
@@ -809,8 +1041,13 @@ hypothesis=hypothesis,
         messages, _ = build_benchmark_classify_messages(
             question="## 8. メールデータファイル",
             block_heading="8. メールデータファイル",
-            evidence_rows=[{"evidence_id": "ev-1", "file_path": "C:/Users/Alice/file.ost"}],
-            expected_shape={"format": "name_with_version", "fields": ["application_name", "version", "data_files"]},
+            evidence_rows=[
+                {"evidence_id": "ev-1", "file_path": "C:/Users/Alice/file.ost"}
+            ],
+            expected_shape={
+                "format": "name_with_version",
+                "fields": ["application_name", "version", "data_files"],
+            },
         )
         system = messages[0]["content"]
         user = messages[1]["content"]
@@ -824,8 +1061,13 @@ hypothesis=hypothesis,
         messages, schema = build_structured_classify_messages(
             question="When was the last shutdown?",
             block_heading="Last shutdown",
-            evidence_rows=[{"evidence_id": "ev-1", "shutdown_time": "2015-03-22T14:38:16"}],
-            expected_shape={"format": "list", "fields": ["shutdown_time", "evidence_id"]},
+            evidence_rows=[
+                {"evidence_id": "ev-1", "shutdown_time": "2015-03-22T14:38:16"}
+            ],
+            expected_shape={
+                "format": "list",
+                "fields": ["shutdown_time", "evidence_id"],
+            },
         )
         self.assertIn("structured_classifier", messages[0]["content"])
         self.assertNotIn("benchmark_classifier", messages[0]["content"])

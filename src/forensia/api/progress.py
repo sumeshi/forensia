@@ -20,7 +20,11 @@ def clear_progress_events(db: CaseDB) -> None:
 
 def record_progress_event(db: CaseDB, payload: dict[str, Any]) -> int:
     """Insert a progress event and enforce the event count cap (oldest are pruned)."""
-    event_index = int(db.execute("SELECT COALESCE(MAX(event_index), 0) + 1 FROM progress_events").fetchone()[0])
+    event_index = int(
+        db.execute(
+            "SELECT COALESCE(MAX(event_index), 0) + 1 FROM progress_events"
+        ).fetchone()[0]
+    )
     created_at = datetime.now(UTC).replace(tzinfo=None)
     db.execute(
         """
@@ -52,7 +56,9 @@ def record_progress_event(db: CaseDB, payload: dict[str, Any]) -> int:
     return event_index
 
 
-def list_progress_events(db: CaseDB, after_index: int = 0, limit: int = 100) -> list[dict[str, Any]]:
+def list_progress_events(
+    db: CaseDB, after_index: int = 0, limit: int = 100
+) -> list[dict[str, Any]]:
     """Return progress events after a given index, with parsed payload JSON."""
     result = db.execute(
         """
@@ -70,5 +76,7 @@ def list_progress_events(db: CaseDB, after_index: int = 0, limit: int = 100) -> 
         payload = row.get("payload")
         if isinstance(payload, str):
             row["payload"] = json.loads(payload)
-        row["created_at"] = row.get("created_at").isoformat() if row.get("created_at") else None
+        row["created_at"] = (
+            row.get("created_at").isoformat() if row.get("created_at") else None
+        )
     return rows
