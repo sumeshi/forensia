@@ -5,6 +5,7 @@
   export let connection: "idle" | "connected" | "error" = "idle";
   export let currentStage = "Idle";
   export let model = "-";
+  export let llmBaseUrl = "-";
   export let updatedAt = "-";
   // 1-based index of the active pipeline phase (0 = idle / not started).
   export let phaseIndex = 0;
@@ -16,8 +17,6 @@
   const ym = (s: string | null | undefined): string => (s ?? "").slice(0, 7);
 
   const steps = ["Ingest", "Normalize", "Analyze", "Investigate"];
-  const address = typeof window !== "undefined" ? window.location.host : "";
-
   $: connClass =
     connection === "connected"
       ? "text-semantic-ok"
@@ -94,10 +93,16 @@
       <div class="rounded-lg border border-mocha-surface1 bg-semantic-bg-inset/50 px-3 py-2 text-left leading-tight">
         <div class={`flex items-center gap-1.5 text-xs font-medium ${connClass}`}>
           <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-current"></span>
-          <span class="capitalize">{connection}</span>
+          <span>
+            {connection === "connected"
+              ? "API server connected"
+              : connection === "error"
+                ? "API server disconnected"
+                : "API server connecting"}
+          </span>
         </div>
         <div class="mt-1 break-words font-mono text-xs leading-snug text-semantic-fg-muted">
-          {address}{#if model && model !== "-"}&nbsp;<span class="text-semantic-fg-faint">({model})</span>{/if}
+          {llmBaseUrl}{#if model && model !== "-"}&nbsp;<span class="text-semantic-fg-faint">({model})</span>{/if}
         </div>
         <div class="mt-1.5 font-mono text-[10px] tabular-nums text-semantic-fg-faint">Updated {updatedAt}</div>
       </div>

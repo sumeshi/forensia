@@ -114,7 +114,11 @@
   }
 
   $: payload = ($progress?.payload ?? {}) as Record<string, unknown>;
-  $: llmModel = typeof payload.llm_model === "string" ? payload.llm_model : "-";
+  $: llmModel =
+    typeof payload.llm_model === "string"
+      ? payload.llm_model
+      : ($runtimeConfig?.llm_model ?? "-");
+  $: llmBaseUrl = $runtimeConfig?.llm_base_url ?? "-";
   $: updatedAt = $progress?.created_at ?? "-";
   $: stageValue = typeof $progress?.stage === "string" ? $progress.stage : null;
   $: pipelineMeta = getPipelinePhase(stageValue);
@@ -188,6 +192,7 @@
       phaseIndex={pipelineMeta.index}
       hosts={hosts}
       model={llmModel}
+      {llmBaseUrl}
       {updatedAt}
     />
 
