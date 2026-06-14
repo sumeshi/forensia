@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -8,6 +9,7 @@ from typing import Any
 
 from forensia.config import get_llm_settings
 from forensia.db.database import CaseDB
+from forensia.db.query import fetch_records
 from forensia.report.keypoints import EVIDENCE_ID_PATTERN
 
 # ====================================================================
@@ -35,6 +37,14 @@ _PURE_HEDGE_RE = re.compile(
 _TIMESTAMP_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}([T\s]\d{2}:\d{2})?")
 _ENGLISH_PARAGRAPH_RE = re.compile(r"^[\x20-\x7e]{120,}$", re.MULTILINE)
 _JAPANESE_CHAR_RE = re.compile(r"[぀-ヿ一-鿿]")
+# RPT-02: vocabulary used to detect a narrative that asserts an external/lateral
+# intrusion storyline as the main thread, not tied to any specific benchmark
+# scenario or finding id (Rule 16).
+_STRONG_INTRUSION_THEME_RE = re.compile(
+    r"lateral movement|remote service creation|external (?:attacker|actor|intrusion)"
+    r"|横移動|侵入|不正アクセス|リモートサービスの作成|外部からの",
+    re.IGNORECASE,
+)
 
 
 # ====================================================================
@@ -223,6 +233,68 @@ def _check_verdict_inflation(
                 0.6,
             )
     return None, None
+
+
+def _strong_confirmed_hypothesis_exists(db: CaseDB) -> bool:
+    """True if any confirmed hypothesis is rule-seeded and not benign-context.
+
+    Mirrors the `narrative_strength` annotation computed for the report brief
+    (probes._annotate_confirmed_hypotheses): a confirmed hypothesis counts as
+    strong support only when it was seeded by a detection rule whose findings
+    were not themselves downgraded to a known-benign pattern.
+    """
+    rows = fetch_records(
+        db,
+        "SELECT source_rule_ids FROM hypotheses WHERE status = 'confirmed'",
+    )
+    for row in rows:
+        raw = row.get("source_rule_ids")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except json.JSONDecodeError:
+                raw = []
+        rule_ids = [str(r).strip() for r in (raw or []) if str(r or "").strip()]
+        if not rule_ids:
+            continue
+        placeholders = ", ".join("?" for _ in rule_ids)
+        finding_rows = fetch_records(
+            db,
+            f"SELECT tags FROM findings WHERE rule_id IN ({placeholders})",
+            tuple(rule_ids),
+        )
+        if not finding_rows:
+            continue
+        if not all(
+            "benign-context:" in str(r.get("tags") or "").lower()
+            for r in finding_rows
+        ):
+            return True
+    return False
+
+
+def _check_unsupported_intrusion_narrative(
+    body: str, ctx: _GateCtx
+) -> tuple[str | None, float | None]:
+    """RPT-02: narrative claiming an external/lateral-movement main thread needs
+    strong (rule-seeded, non-benign) confirmed-hypothesis support.
+
+    Confirmed verdicts derived only from generic gaps (no source_rule_ids) or
+    downgraded to benign-context are not sufficient evidence for a main
+    storyline asserting external intrusion or lateral movement.
+    """
+    if ctx.db is None:
+        return None, None
+    if not _STRONG_INTRUSION_THEME_RE.search(body):
+        return None, None
+    if _strong_confirmed_hypothesis_exists(ctx.db):
+        return None, None
+    return (
+        "Narrative asserts an external/lateral-movement main thread, but no "
+        "confirmed hypothesis is backed by rule-seeded, non-benign evidence; "
+        "treat this thread as a gap, not a confirmed storyline.",
+        0.5,
+    )
 
 
 def _check_raw_evidence_dump(
@@ -424,6 +496,7 @@ _QUALITY_CHECKS: tuple[QualityCheck, ...] = (
     _check_timeline_ordering,
     _check_recommendations_strength,
     _check_verdict_inflation,
+    _check_unsupported_intrusion_narrative,
     _check_raw_evidence_dump,
     _check_output_language,
     _check_open_questions,

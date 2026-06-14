@@ -204,7 +204,19 @@ class HypothesisProgressTracker:
 
         Uses _co_observation_satisfied to check co_observed_event_ids along
         with same_host and within_minutes correlation constraints.
+
+        Co-occurrence alone is correlation, not proof of maliciousness — it is
+        only treated as sufficient to force a "confirmed" verdict when the
+        hypothesis is rule-seeded (non-empty source_rule_ids), i.e. backed by
+        a detection rule that someone vetted. Gap/follow-up-derived hypotheses
+        (empty source_rule_ids) commonly have confirm_when filled in by a
+        heuristic safety net and can match ubiquitous baseline events
+        (e.g. 4624/4634), so they are never auto-confirmed here; the LLM
+        verdict and other gates decide their fate.
         """
+        source_rule_ids = getattr(hypothesis, "source_rule_ids", None) or []
+        if not source_rule_ids:
+            return False
         confirm_when = None
         if rule_context is not None:
             confirm_when = getattr(rule_context, "confirm_when", None)

@@ -120,6 +120,7 @@ class PlannerRetryTests(unittest.TestCase):
         hypothesis = Hypothesis(
             id="H-confirm",
             description="RDP followed by PowerShell",
+            source_rule_ids=["windows-rdp-lsm-21-logon"],
             confirm_when={"co_observed_event_ids": [4624, 4104]},
         )
 

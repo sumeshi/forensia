@@ -9,5 +9,8 @@
 ## Untestable Hypotheses
 <!-- mode: table; builder: gaps_untestable -->
 
+## Confirmed Hypotheses
+<!-- mode: table; builder: gaps_confirmed -->
+
 ## Evidence Gaps
 <!-- mode: table; builder: gaps_evidence -->

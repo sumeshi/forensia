@@ -291,7 +291,7 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             """
             SELECT timestamp, computer, event_id, channel, target_user, src_ip, evidence_id
             FROM evtx_events
-            WHERE event_id = 1102
+            WHERE (event_id IN (1100, 1102) AND (channel IS NULL OR LOWER(channel) LIKE '%security%'))
                OR (
                   event_id = 104
                   AND LOWER(COALESCE(json_extract_string(raw_json, '$.winlog.provider.name'), '')) = 'microsoft-windows-eventlog'
@@ -583,7 +583,7 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             """
             SELECT event_id, COUNT(*) AS count
             FROM evtx_events
-            WHERE (event_id IN (1102,4719) AND (channel IS NULL OR LOWER(channel) LIKE '%security%'))
+            WHERE (event_id IN (1100,1102,4719) AND (channel IS NULL OR LOWER(channel) LIKE '%security%'))
                OR (
                   event_id = 104
                   AND LOWER(COALESCE(json_extract_string(raw_json, '$.winlog.provider.name'), '')) = 'microsoft-windows-eventlog'

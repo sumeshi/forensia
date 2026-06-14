@@ -17,7 +17,7 @@ attack:
 query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    command_line,\n    message\nFROM evtx_events\nWHERE event_id = 4104\n  AND (\n      LOWER(COALESCE(message, command_line, '')) LIKE '%-encodedcommand%'\n      OR LOWER(COALESCE(message, command_line, '')) LIKE '%frombase64%'\n      OR LOWER(COALESCE(message, command_line, '')) LIKE '%iex%'\n      OR LOWER(COALESCE(message, command_line, '')) LIKE '%invoke-expression%'\n      OR LOWER(COALESCE(message, command_line, '')) LIKE '%invoke-mimikatz%'\n      OR LOWER(COALESCE(message, command_line, '')) LIKE '%downloadstring%'\n      OR LOWER(COALESCE(message, command_line, '')) LIKE '%webclient%'\n  )\n"
 finding:
   title: 'Encoded or obfuscated PowerShell script block (4104): {computer}'
-  summary: 'An encoded or obfuscated PowerShell script block was detected on {computer} at {timestamp}. Executing user: {target_user}. This strongly suggests malware download or execution.'
+  summary: 'An encoded or obfuscated PowerShell script block was detected on {computer} at {timestamp}. Executing user: {target_user}. This may indicate malware download or execution and should be corroborated with the decoded script content and any related process execution (4688).'
 hypotheses:
 - id: malicious_powershell_execution
   segment: execution

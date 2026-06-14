@@ -577,16 +577,36 @@ def _query_top_findings(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
         """,
         (max(limit * 6, limit),),
     )
+    # RPT-04: a self-referential machine account ("<COMPUTER>$") using explicit
+    # credentials (4648) locally on its own host is normal Windows behavior
+    # (e.g. winlogon.exe credential prompts), not a lateral-movement signal.
+    # Demote such rows below genuinely cross-host candidates instead of
+    # letting them dominate the top slots.
+    local_machine_rows: list[dict[str, Any]] = []
+    other_rows: list[dict[str, Any]] = []
+    for row in rows:
+        if _is_local_machine_account_4648(row):
+            local_machine_rows.append(row)
+        else:
+            other_rows.append(row)
+    rows = [*other_rows, *local_machine_rows]
+
     normalized: list[dict[str, Any]] = []
     family_counts: dict[str, int] = {}
+    seen_titles: set[str] = set()
     for row in rows:
         item = normalize_value(row)
         if isinstance(item, dict):
+            title_key = _claim_text_key(str(item.get("title") or ""))
+            if title_key and title_key in seen_titles:
+                continue
             finding_id = str(item.get("finding_id") or "")
             family = re.sub(r"-\d{3,}$", "", finding_id) or finding_id
             if family_counts.get(family, 0) >= 3:
                 continue
             family_counts[family] = family_counts.get(family, 0) + 1
+            if title_key:
+                seen_titles.add(title_key)
             evidence_ids = _extract_evidence_ids_from_value(item.get("evidence"))
             if evidence_ids:
                 item["evidence_ids"] = evidence_ids[:5]
@@ -595,6 +615,35 @@ def _query_top_findings(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
         if len(normalized) >= limit:
             break
     return normalized
+
+
+def _is_local_machine_account_4648(row: dict[str, Any]) -> bool:
+    """True when a 4648 finding's subject is the host's own machine account.
+
+    A computer authenticating to itself as "<COMPUTERNAME>$" (e.g. a
+    winlogon.exe credential prompt) is routine local activity, not a
+    lateral-movement indicator.
+    """
+    if "4648" not in str(row.get("finding_id") or "").lower() and "4648" not in str(
+        row.get("title") or ""
+    ).lower():
+        return False
+    evidence = row.get("evidence")
+    if isinstance(evidence, str):
+        try:
+            evidence = json.loads(evidence)
+        except json.JSONDecodeError:
+            evidence = []
+    if not isinstance(evidence, list):
+        return False
+    for entry in evidence:
+        if not isinstance(entry, dict):
+            continue
+        subject = str(entry.get("subject_user") or "").strip()
+        computer = str(entry.get("computer") or "").strip()
+        if subject.endswith("$") and computer and subject[:-1].casefold() == computer.casefold():
+            return True
+    return False
 
 
 def _query_hypotheses_by_status(
@@ -680,6 +729,65 @@ def _summarize_section_coverage(db: CaseDB) -> dict[str, Any]:
     }
 
 
+def _hypothesis_source_rule_ids(item: dict[str, Any]) -> list[str]:
+    raw = item.get("source_rule_ids")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            raw = []
+    if not isinstance(raw, list):
+        return []
+    return [str(rule_id).strip() for rule_id in raw if str(rule_id or "").strip()]
+
+
+def _rule_ids_have_benign_context(db: CaseDB, rule_ids: list[str]) -> bool:
+    """True when every finding produced by these rule_ids is benign-context tagged.
+
+    A hypothesis whose only rule-seeded evidence is downgraded to a known-benign
+    pattern should not be treated as strong narrative support (RPT-02).
+    """
+    if not rule_ids:
+        return False
+    placeholders = ", ".join("?" for _ in rule_ids)
+    rows = fetch_records(
+        db,
+        f"SELECT tags FROM findings WHERE rule_id IN ({placeholders})",
+        tuple(rule_ids),
+    )
+    if not rows:
+        return False
+    return all(_has_benign_context_tag(row) for row in rows)
+
+
+def _annotate_confirmed_hypotheses(
+    db: CaseDB, items: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Annotate confirmed hypotheses with provenance flags for narrative weighting.
+
+    - `rule_seeded`: the hypothesis was seeded from a detection rule
+      (`source_rule_ids` non-empty) rather than derived from a generic gap.
+    - `benign_context`: every rule-seeded finding behind this hypothesis was
+      itself downgraded to a known-benign pattern.
+    - `narrative_strength`: "strong" only when rule-seeded AND not
+      benign-context; otherwise "weak". Narrative sections should not treat
+      "weak" confirmed hypotheses as the backbone of the main storyline.
+    """
+    annotated: list[dict[str, Any]] = []
+    for item in items:
+        rule_ids = _hypothesis_source_rule_ids(item)
+        rule_seeded = bool(rule_ids)
+        benign_context = _rule_ids_have_benign_context(db, rule_ids)
+        item = dict(item)
+        item["rule_seeded"] = rule_seeded
+        item["benign_context"] = benign_context
+        item["narrative_strength"] = (
+            "strong" if rule_seeded and not benign_context else "weak"
+        )
+        annotated.append(item)
+    return annotated
+
+
 def _build_report_brief(db: CaseDB, case: Case | None = None) -> dict[str, Any]:
     """Assemble a structured brief of top findings, hypotheses, section excerpts, and coverage data for LLM context."""
     tz_name = getattr(case, "source_timezone", "UTC") if case else "UTC"
@@ -691,7 +799,9 @@ def _build_report_brief(db: CaseDB, case: Case | None = None) -> dict[str, Any]:
         ],
         "confirmed_hypotheses": [
             normalize_value(item)
-            for item in _query_hypotheses_by_status(db, "confirmed")
+            for item in _annotate_confirmed_hypotheses(
+                db, _query_hypotheses_by_status(db, "confirmed")
+            )
         ],
         "refuted_hypotheses": [
             normalize_value(item) for item in _query_hypotheses_by_status(db, "refuted")
@@ -1269,12 +1379,20 @@ def _host_summary_rows(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
 
 
 def _account_summary_rows(db: CaseDB, limit: int = 10) -> list[dict[str, Any]]:
+    """Per-account/host authentication summary.
+
+    RPT-09: 4625 (failed logon) rows commonly have a NULL actor (the target
+    account could not be resolved); these are kept as account='-' instead of
+    being dropped, so failed-logon totals are visible. Hosts are grouped
+    case-insensitively (UPPER(TRIM(computer))) since the same host can appear
+    with mixed case across event sources.
+    """
     return fetch_records(
         db,
         """
         SELECT
           COALESCE(NULLIF(target_user, ''), NULLIF(user_name, ''), NULLIF(subject_user, ''), '-') AS account,
-          computer,
+          ANY_VALUE(computer) AS computer,
           COUNT(*) FILTER (WHERE event_id = 4624) AS logons,
           COUNT(*) FILTER (WHERE event_id = 4625) AS failed_logons,
           COUNT(*) FILTER (WHERE event_id = 4648) AS explicit_credential_events,
@@ -1282,8 +1400,7 @@ def _account_summary_rows(db: CaseDB, limit: int = 10) -> list[dict[str, Any]]:
           MAX(timestamp) AS last_seen
         FROM evtx_events
         WHERE event_id IN (4624, 4625, 4648)
-          AND COALESCE(NULLIF(target_user, ''), NULLIF(user_name, ''), NULLIF(subject_user, '')) IS NOT NULL
-        GROUP BY account, computer
+        GROUP BY account, UPPER(TRIM(COALESCE(computer, '')))
         ORDER BY explicit_credential_events DESC, failed_logons DESC, logons DESC
         LIMIT ?
         """,
@@ -1305,7 +1422,35 @@ def _has_benign_context_tag(row: dict[str, Any]) -> bool:
     return False
 
 
+_FINDING_THEME_FILTER_SQL = """
+    SELECT finding_id, rule_id, title, summary, tags
+    FROM findings
+    WHERE COALESCE(status, 'accepted') != 'suppressed'
+      AND severity IN ('critical','high','medium')
+      AND confidence >= 0.5
+      AND COALESCE(title, '') != ''
+      AND title NOT LIKE '%:  @%'
+"""
+
+
+def _finding_theme_counts(db: CaseDB) -> dict[str, int]:
+    """Single-source theme counts over the same finding population as `_query_top_findings`.
+
+    Excludes benign-context tagged findings, matching `_signal_finding_rows`'s
+    existing exclusion (R3-04). Both the Key Findings table and the Action Plan
+    table read from this function so theme `(N件)` counts stay consistent.
+    """
+    counts: dict[str, int] = {}
+    for row in fetch_records(db, _FINDING_THEME_FILTER_SQL):
+        if _has_benign_context_tag(row):
+            continue
+        theme = _finding_theme(row)
+        counts[theme] = counts.get(theme, 0) + 1
+    return counts
+
+
 def _signal_finding_rows(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
+    theme_counts = _finding_theme_counts(db)
     grouped: dict[str, dict[str, Any]] = {}
     for item in _query_top_findings(db, max(limit * 4, limit)):
         # R3-04: Exclude benign-context tagged findings from top findings
@@ -1358,10 +1503,11 @@ def _signal_finding_rows(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
             confidence = f"{float(confidence):.2f}"
         except TypeError, ValueError:
             confidence = str(confidence or "-")
+        theme = str(item.get("theme") or "")
         rows.append(
             {
                 "finding": _finding_theme_title(
-                    str(item.get("theme") or ""), int(item.get("count") or 0)
+                    theme, theme_counts.get(theme, int(item.get("count") or 0))
                 ),
                 "severity": item.get("severity"),
                 "confidence": confidence,
@@ -2133,6 +2279,38 @@ def _build_gaps_untestable_table(db: CaseDB) -> list[dict[str, Any]]:
     return _hypothesis_rows(db, "untestable", 8)
 
 
+def _build_gaps_confirmed_table(db: CaseDB) -> list[dict[str, Any]]:
+    """RPT-05: surface confirmed hypotheses for audit, including their basis.
+
+    Each row shows whether the confirmation was seeded by a detection rule or
+    derived from a generic gap (`source_rule_ids` empty), and whether the
+    rule-seeded findings were themselves downgraded to a benign-context
+    pattern. This makes mis-confirmations visible to the reader instead of
+    silently driving the narrative.
+    """
+    rows: list[dict[str, Any]] = []
+    for item in _annotate_confirmed_hypotheses(
+        db, _query_hypotheses_by_status(db, "confirmed", 20)
+    ):
+        rule_ids = _hypothesis_source_rule_ids(item)
+        if rule_ids:
+            basis = "rule-seeded: " + ", ".join(rule_ids[:2])
+        else:
+            basis = "gap-derived"
+        rows.append(
+            {
+                "hypothesis": str(item.get("description") or item.get("hypothesis_id") or "")[
+                    :120
+                ],
+                "verdict": str(item.get("verdict") or item.get("status") or ""),
+                "basis": basis,
+                "benign_context": "yes" if item.get("benign_context") else "no",
+                "summary": str(item.get("summary") or "")[:160],
+            }
+        )
+    return rows
+
+
 def _build_evidence_gaps_table(db: CaseDB) -> list[dict[str, Any]]:
     return _forensic_gap_rows(db)
 
@@ -2156,20 +2334,9 @@ def _build_recommendations_table(db: CaseDB) -> list[dict[str, Any]]:
         )
 
     # Correlation actions for the top finding themes actually observed.
-    theme_counts: dict[str, int] = {}
-    for finding in fetch_records(
-        db,
-        """
-        SELECT title, tags FROM findings
-        WHERE COALESCE(status, 'new') != 'suppressed'
-          AND severity IN ('high', 'critical')
-          AND LOWER(COALESCE(tags, '')) NOT LIKE '%benign-context:%'
-        ORDER BY confidence DESC
-        LIMIT 60
-        """,
-    ):
-        theme = _finding_theme(finding)
-        theme_counts[theme] = theme_counts.get(theme, 0) + 1
+    # RPT-03: counts come from the same single-source `_finding_theme_counts`
+    # used by the Key Findings table, so `(N件)` matches across sections.
+    theme_counts = _finding_theme_counts(db)
     ranked_themes = sorted(
         (theme for theme in theme_counts if theme != "other"),
         key=lambda theme: (_finding_theme_rank(theme), -theme_counts[theme]),
@@ -2212,6 +2379,7 @@ _TABLE_BLOCK_BUILDERS: dict[str, Callable[[CaseDB], list[dict[str, Any]]]] = {
     "technical_network": _build_network_table,
     "gaps_unresolved": _build_gaps_unresolved_table,
     "gaps_untestable": _build_gaps_untestable_table,
+    "gaps_confirmed": _build_gaps_confirmed_table,
     "gaps_evidence": _build_evidence_gaps_table,
     "recommendations_action_plan": _build_recommendations_table,
 }
@@ -2295,6 +2463,13 @@ _TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("missing_telemetry", "Missing telemetry"),
         ("rationale", "Rationale"),
         ("next_step", "Next step"),
+    ],
+    "gaps_confirmed": [
+        ("hypothesis", "Hypothesis"),
+        ("verdict", "Verdict"),
+        ("basis", "Basis"),
+        ("benign_context", "Benign context"),
+        ("summary", "Summary"),
     ],
     "gaps_evidence": [
         ("gap", "Gap"),

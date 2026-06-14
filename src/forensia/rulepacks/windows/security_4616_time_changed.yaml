@@ -13,4 +13,4 @@ attack:
 query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    subject_user,\n    message\nFROM evtx_events\nWHERE event_id = 4616\n  AND COALESCE(subject_user, target_user, '') NOT IN ('SYSTEM', 'LOCAL SERVICE', 'NETWORK SERVICE')\n"
 finding:
   title: 'System time changed: {computer} ({subject_user})'
-  summary: '{subject_user} changed the system time on {computer} at {timestamp} (4616). Details: {message}. This strongly suggests timeline tampering or anti-forensics.'
+  summary: '{subject_user} changed the system time on {computer} at {timestamp} (4616). Details: {message}. A system time change may indicate timeline manipulation and should be corroborated with surrounding authentication, file, or log-clearing events.'

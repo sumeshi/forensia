@@ -17,7 +17,7 @@ attack:
 query: "WITH created AS (\n    SELECT\n        evidence_id,\n        timestamp AS created_time,\n        computer,\n        target_user,\n        subject_user AS creator\n    FROM evtx_events\n    WHERE event_id = 4720\n),\nadmin_added AS (\n    SELECT\n        evidence_id,\n        timestamp AS added_time,\n        computer,\n        target_user,\n        subject_user AS adder,\n        message\n    FROM evtx_events\n    WHERE event_id = 4732\n      AND LOWER(COALESCE(message, '')) LIKE '%administrators%'\n)\nSELECT\n    c.evidence_id,\n    LIST_VALUE(c.evidence_id, a.evidence_id) AS evidence_ids,\n    c.computer,\n    c.target_user,\n    c.creator,\n    c.created_time,\n    a.adder,\n    a.added_time\nFROM created c\nJOIN admin_added a\n  ON c.computer = a.computer\n AND c.target_user = a.target_user\n AND a.added_time BETWEEN c.created_time AND c.created_time + INTERVAL 30 MINUTE\n"
 finding:
   title: 'New account immediately added to Administrators: {target_user} @ {computer}'
-  summary: The account '{target_user}' was created by {creator} at {created_time} and then added to Administrators by {adder} at {added_time}. This strongly suggests backdoor account creation. Confirm whether the creator and adder are the same operator and review other lateral movement activity around the same time.
+  summary: The account '{target_user}' was created by {creator} at {created_time} and then added to Administrators by {adder} at {added_time}. This sequence may indicate backdoor account creation and should be corroborated by confirming whether the creator and adder are the same operator and by reviewing other lateral movement activity around the same time.
 hypotheses:
 - id: backdoor_account_admin_escalation
   segment: persistence
