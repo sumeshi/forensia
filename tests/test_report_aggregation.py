@@ -170,5 +170,73 @@ class TestLocalMachineAccount4648Demotion(unittest.TestCase):
         )
 
 
+class TestTopFindingsRankingIsCaseAgnostic(unittest.TestCase):
+    """The report's leading thesis must not be biased toward the benchmark case.
+
+    Why this matters: `top_findings` drives `report_brief.json`, which seeds the
+    report's leading thesis (CLAUDE.md Rule 17). Ranking must therefore depend on
+    case-agnostic finding attributes (severity, ATT&CK mapping, confidence), not
+    on keywords specific to one case (e.g. "4648", "outlook", "ccleaner"). This
+    test uses a ransomware-flavoured case with zero CFReDS vocabulary and asserts
+    the most severe finding leads — and that a low-severity 4648 finding, which
+    the old keyword ranking would have floated to the top, does not lead.
+    """
+
+    def _insert(self, db, *, finding_id, title, severity, confidence, attack):
+        db.execute(
+            """
+            INSERT INTO findings
+              (finding_id, rule_id, title, summary, severity, confidence, status, tags, evidence, attack)
+            VALUES (?, ?, ?, '', ?, ?, 'accepted', '[]', '[]', ?)
+            """,
+            (finding_id, finding_id, title, severity, confidence, attack),
+        )
+
+    def test_most_severe_attack_mapped_finding_leads_without_keyword_bias(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                # Critical, ATT&CK-mapped, no CFReDS keywords -> must lead.
+                self._insert(
+                    db,
+                    finding_id="ransomware-mass-encryption-0001",
+                    title="Mass file encryption consistent with ransomware",
+                    severity="critical",
+                    confidence=0.85,
+                    attack=json.dumps([{"tactic": "impact", "technique": "T1486"}]),
+                )
+                # High severity persistence, also no CFReDS keywords.
+                self._insert(
+                    db,
+                    finding_id="persistence-scheduled-task-0001",
+                    title="Suspicious scheduled task created for persistence",
+                    severity="high",
+                    confidence=0.8,
+                    attack=json.dumps(
+                        [{"tactic": "persistence", "technique": "T1053"}]
+                    ),
+                )
+                # A 4648 finding the OLD ranking hard-coded to rank 0 (top). It is
+                # only medium severity here, so a case-agnostic ranking must keep
+                # it below the critical/high findings above.
+                self._insert(
+                    db,
+                    finding_id="windows-security-4648-logon-explicit-creds-0001",
+                    title="Logon attempt with explicit credentials (4648)",
+                    severity="medium",
+                    confidence=0.7,
+                    attack="[]",
+                )
+
+                top = _query_top_findings(db, 8)
+
+        titles = [item["title"] for item in top]
+        self.assertEqual(titles[0], "Mass file encryption consistent with ransomware")
+        four648_index = titles.index("Logon attempt with explicit credentials (4648)")
+        # The low-severity 4648 finding must rank below both higher-severity ones,
+        # proving the leading thesis is no longer keyword-biased toward CFReDS.
+        self.assertEqual(four648_index, len(titles) - 1)
+
+
 if __name__ == "__main__":
     unittest.main()

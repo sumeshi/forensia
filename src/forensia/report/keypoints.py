@@ -8,6 +8,7 @@ from typing import Any
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records, normalize_value
+from forensia.report.benchmark_keypoints import BENCHMARK_KEYPOINT_ALIASES
 
 # ── SQL helpers used by keypoint lambdas ──
 
@@ -1255,37 +1256,16 @@ REPORT_KEYPOINT_ALIASES = {
     "gaps_channels": "gaps_channel_coverage",
     "gaps_log_clear": "gaps_log_integrity_events",
     "recommendations_reviews": "recommendations_recent_reviews",
-    "benchmark_window": "overview_event_range",
-    "benchmark_hosts": "overview_hosts",
-    "benchmark_logon_window": "session_activity_events",
-    "benchmark_timeline_events": "timeline_system_events",
-    "benchmark_timeline_files": "timeline_mft_activity",
-    "benchmark_prefetch_recent": "timeline_prefetch_history",
-    "benchmark_host_spans": "overview_hosts",
-    "benchmark_host_logons": "session_activity_events",
-    "benchmark_accounts_summary": "account_all_logon_summary",
-    "benchmark_accounts_events": "account_logon_events",
-    "benchmark_accounts_observed": "account_observed_users",
-    "benchmark_exec_processes": "host_execution_activity",
-    "benchmark_exec_related_mft": "mft_user_app_activity",
-    "benchmark_artifact_processes": "mft_prefetch_filenames",
-    "benchmark_artifact_paths": "ioc_user_data_files",
-    "benchmark_ost_file": "ioc_email_ost_files",
-    "benchmark_recent_lnk": "mft_recent_folder_lnk",
-    "benchmark_reco_system_events": "timeline_system_events",
-    "benchmark_reco_desktop_paths": "ioc_user_data_files",
-    "benchmark_last_shutdown": "structured_last_shutdown",
-    "benchmark_daily_logon_shutdown": "structured_daily_session_activity",
-    "benchmark_browser_artifacts": "structured_browser_artifacts",
-    "benchmark_email_ost_paths": "structured_email_artifacts",
-    "benchmark_desktop_rename_candidates": "structured_desktop_rename_candidates",
-    "benchmark_resignation_file": "structured_resignation_files",
-    "benchmark_cloud_artifacts": "structured_cloud_artifacts",
-    "benchmark_antiforensics_last_day": "structured_antiforensics",
     "untestable_hypotheses": "untestable_hypotheses_summary",
     "timeline_chronological_events": "timeline_case_assembled",
     "chronological_events": "timeline_case_assembled",
 }
+
+# Benchmark-question-oriented aliases live in a separate module so the generic
+# alias map above stays free of benchmark-specific names (CLAUDE.md Rule 16).
+# They resolve to the same generic keypoints and are only used by the optional
+# external benchmark template.
+REPORT_KEYPOINT_ALIASES.update(BENCHMARK_KEYPOINT_ALIASES)
 
 
 # ── Default keypoints for section ──

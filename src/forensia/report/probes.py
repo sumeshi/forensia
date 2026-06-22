@@ -547,19 +547,16 @@ def _query_top_findings(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
         SELECT
           finding_id, title, severity, confidence, summary, evidence,
           CASE
-            WHEN LOWER(finding_id || ' ' || COALESCE(title, '') || ' ' || COALESCE(summary, '')) LIKE '%4648%'
-              OR LOWER(finding_id || ' ' || COALESCE(title, '') || ' ' || COALESCE(summary, '')) LIKE '%explicit credential%' THEN 0
-            WHEN LOWER(finding_id || ' ' || COALESCE(title, '') || ' ' || COALESCE(summary, '')) LIKE '%4625%'
-              OR LOWER(finding_id || ' ' || COALESCE(title, '') || ' ' || COALESCE(summary, '')) LIKE '%brute%' THEN 1
-            WHEN LOWER(finding_id || ' ' || COALESCE(title, '') || ' ' || COALESCE(summary, '')) LIKE '%ost%'
-              OR LOWER(finding_id || ' ' || COALESCE(title, '') || ' ' || COALESCE(summary, '')) LIKE '%outlook%'
-              OR LOWER(finding_id || ' ' || COALESCE(title, '') || ' ' || COALESCE(summary, '')) LIKE '%browser%'
-              OR LOWER(finding_id || ' ' || COALESCE(title, '') || ' ' || COALESCE(summary, '')) LIKE '%cloud%' THEN 2
-            WHEN LOWER(finding_id || ' ' || COALESCE(title, '') || ' ' || COALESCE(summary, '')) LIKE '%ccleaner%'
-              OR LOWER(finding_id || ' ' || COALESCE(title, '') || ' ' || COALESCE(summary, '')) LIKE '%eraser%'
-              OR LOWER(finding_id || ' ' || COALESCE(title, '') || ' ' || COALESCE(summary, '')) LIKE '%anti%forensic%' THEN 3
+            -- Report-worthiness is decided generically: a finding mapped to an
+            -- ATT&CK technique leads over an unmapped one at the same severity.
+            -- There is intentionally no keyword bias toward any particular
+            -- case's event IDs, applications, or tooling, so the leading thesis
+            -- generalizes across cases. The single finding-id-specific entry
+            -- below only demotes a known-noisy correlation rule.
             WHEN finding_id LIKE 'windows-corr-logon-then-service%' THEN 9
-            ELSE 5
+            WHEN attack IS NOT NULL
+              AND TRIM(CAST(attack AS VARCHAR)) NOT IN ('', '[]', 'null', '{}') THEN 0
+            ELSE 1
           END AS signal_rank
         FROM findings
         WHERE COALESCE(status, 'accepted') != 'suppressed'
