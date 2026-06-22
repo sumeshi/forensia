@@ -10,6 +10,8 @@ from scripts.audit_schema_coverage import (
     _extract_event_ids_from_sql,
 )
 
+from forensia.knowledge import expand_catalog_sql_placeholders
+
 
 class AuditCoverageTests(unittest.TestCase):
     def test_extract_event_id_equality(self) -> None:
@@ -47,6 +49,27 @@ class AuditCoverageTests(unittest.TestCase):
 
     def test_question_specs_have_valid_contracts(self) -> None:
         self.assertEqual([], _audit_question_specs())
+
+    def test_catalog_sql_placeholders_expand_before_audit(self) -> None:
+        sql = (
+            "SELECT file_path FROM mft_entries WHERE "
+            "{{catalog_path_sql:browser_artifacts:file_path}}"
+        )
+        expanded = expand_catalog_sql_placeholders(sql)
+        self.assertNotIn("{{", expanded)
+        self.assertIn("google/chrome/application/chrome.exe", expanded.lower())
+
+    def test_catalog_label_sql_placeholder_expands_to_case_expression(self) -> None:
+        sql = (
+            "SELECT "
+            "{{catalog_label_sql:email_artifacts:client:exe_patterns,paths,data_files:"
+            "file_name,file_path:application_name}} FROM mft_entries"
+        )
+        expanded = expand_catalog_sql_placeholders(sql)
+        self.assertNotIn("{{", expanded)
+        self.assertIn("CASE WHEN", expanded)
+        self.assertIn("Microsoft Outlook", expanded)
+        self.assertIn("AS application_name", expanded)
 
     def test_question_routing_mutation_corpus_passes(self) -> None:
         self.assertEqual([], _audit_question_routing_eval())

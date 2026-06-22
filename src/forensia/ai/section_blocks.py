@@ -22,7 +22,9 @@ from forensia.core.case import Case
 from forensia.core.session import PlannedQuery
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
+from forensia.knowledge import catalog_marker_map as _catalog_marker_map
 from forensia.knowledge import catalog_names as _catalog_names
+from forensia.knowledge import expand_catalog_sql_placeholders
 from forensia.questions import (
     QuestionSpec,
     extract_time_qualifiers,
@@ -1176,6 +1178,7 @@ def _execute_evidence_chain(
             if query:
                 defaults = dict(entry.get("time_qualifiers") or {})
                 query = _substitute_placeholders(query, time_qualifiers, defaults)
+                query = expand_catalog_sql_placeholders(query)
                 try:
                     from forensia.db.query import fetch_records
 
@@ -1365,6 +1368,37 @@ def _all_values_empty(item: dict[str, Any]) -> bool:
     return not any(str(value).strip() for value in item.values() if value is not None)
 
 
+@lru_cache(maxsize=1)
+def _application_marker_map() -> dict[str, tuple[str, ...]]:
+    markers: dict[str, tuple[str, ...]] = {}
+    markers.update(
+        _catalog_marker_map(
+            "email_artifacts", "client", "exe_patterns", "paths", "data_files"
+        )
+    )
+    markers.update(
+        _catalog_marker_map(
+            "browser_artifacts",
+            "name",
+            "exe_patterns",
+            "paths",
+            "version_sources",
+        )
+    )
+    return markers
+
+
+@lru_cache(maxsize=1)
+def _cloud_service_marker_map() -> dict[str, tuple[str, ...]]:
+    return _catalog_marker_map(
+        "cloud_sync_artifacts",
+        "service",
+        "exe_patterns",
+        "paths",
+        "registry",
+    )
+
+
 def _build_daily_session_timeline(
     db: CaseDB,
     qualifiers: dict[str, str | None] | None = None,
@@ -1448,16 +1482,9 @@ def _extract_name_with_version(
     raw_rows: list[dict[str, Any]], fields: list[str]
 ) -> list[dict[str, Any]]:
     detected: dict[str, dict[str, Any]] = {}
-    app_markers = {
-        "Microsoft Outlook": ("outlook", ".ost", ".pst"),
-        "Google Chrome": ("chrome.exe", "google/chrome", "google\\chrome"),
-        "Microsoft Internet Explorer": ("iexplore.exe", "internet explorer"),
-        "Mozilla Firefox": ("firefox.exe", "mozilla/firefox", "mozilla\\firefox"),
-        "Microsoft Edge": ("msedge.exe", "microsoft/edge", "microsoft\\edge"),
-    }
     for row in raw_rows:
         text = _row_text(row)
-        for app_name, markers in app_markers.items():
+        for app_name, markers in _application_marker_map().items():
             if any(marker in text for marker in markers):
                 item = detected.setdefault(app_name, {field: "" for field in fields})
                 if "application_name" in fields:
@@ -1479,14 +1506,8 @@ def _extract_name_with_version(
 def _extract_enumerated_services(
     raw_rows: list[dict[str, Any]], fields: list[str]
 ) -> list[dict[str, Any]]:
-    services = {
-        "Google Drive": ("googledrive", "google drive", "googledrivesync"),
-        "iCloud": ("icloud",),
-        "OneDrive": ("onedrive",),
-        "Dropbox": ("dropbox",),
-    }
     rows: list[dict[str, Any]] = []
-    for service_name, markers in services.items():
+    for service_name, markers in _cloud_service_marker_map().items():
         matches = [
             row
             for row in raw_rows

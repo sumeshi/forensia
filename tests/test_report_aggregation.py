@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from pathlib import Path
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
@@ -22,6 +23,10 @@ from forensia.report.probes import (
     _finding_theme_counts,
     _query_top_findings,
     _signal_finding_rows,
+)
+from forensia.report.ranking import (
+    audit_packaged_report_templates,
+    load_top_findings_priority_keywords,
 )
 
 
@@ -236,6 +241,123 @@ class TestTopFindingsRankingIsCaseAgnostic(unittest.TestCase):
         # The low-severity 4648 finding must rank below both higher-severity ones,
         # proving the leading thesis is no longer keyword-biased toward CFReDS.
         self.assertEqual(four648_index, len(titles) - 1)
+
+
+class TestTopFindingsRankingPolicyFromTemplate(unittest.TestCase):
+    """The leading-thesis ordering policy must come from the Markdown templates.
+
+    Why this matters: different cases want different leading orders (a data-
+    exfiltration narrative vs a plain severity order). That policy must be
+    swappable by swapping templates, not hard-coded in core. A reader of the
+    overview template's frontmatter should be able to see and change how that
+    section orders its findings, and the case-specific vocabulary must live in the
+    template, never in core or the packaged generic templates.
+    """
+
+    _OVERVIEW_WITH_POLICY = (
+        "---\n"
+        "behaviors:\n"
+        "  - canonical_evidence_scope\n"
+        "brief:\n"
+        "  top_findings:\n"
+        "    ranking:\n"
+        "      policy: priority_keywords\n"
+        "      priority_keywords:\n"
+        '        - ["4648", "explicit credential"]\n'
+        "---\n"
+        "# Investigation Overview\n"
+    )
+
+    def _insert(self, db, *, finding_id, title, severity):
+        db.execute(
+            """
+            INSERT INTO findings
+              (finding_id, rule_id, title, summary, severity, confidence, status, tags, evidence, attack)
+            VALUES (?, ?, ?, '', ?, 0.7, 'accepted', '[]', '[]', '[]')
+            """,
+            (finding_id, finding_id, title, severity),
+        )
+
+    def _write_template(self, tmpdir: str, name: str, text: str) -> Path:
+        tdir = Path(tmpdir) / "templates"
+        tdir.mkdir(exist_ok=True)
+        (tdir / name).write_text(text, encoding="utf-8")
+        return tdir
+
+    def test_overview_frontmatter_drives_ranking_order(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                # A high-severity finding the generic default ranks first.
+                self._insert(
+                    db,
+                    finding_id="ransomware-mass-encryption-0001",
+                    title="Mass file encryption consistent with ransomware",
+                    severity="critical",
+                )
+                # A lower-severity finding a narrative policy wants to lead with.
+                self._insert(
+                    db,
+                    finding_id="windows-security-4648-logon-explicit-creds-0001",
+                    title="Logon attempt with explicit credentials (4648)",
+                    severity="medium",
+                )
+
+                # Core default (no policy): severity wins.
+                default_titles = [r["title"] for r in _query_top_findings(db)]
+
+                # Policy declared in the overview template's frontmatter: the 4648
+                # narrative tier leads despite being lower severity.
+                tdir = self._write_template(
+                    tmpdir, "1_overview.md", self._OVERVIEW_WITH_POLICY
+                )
+                keywords = load_top_findings_priority_keywords(tdir)
+                policy_titles = [
+                    r["title"]
+                    for r in _query_top_findings(db, priority_keywords=keywords)
+                ]
+
+        self.assertEqual(
+            default_titles[0], "Mass file encryption consistent with ransomware"
+        )
+        self.assertEqual(
+            policy_titles[0], "Logon attempt with explicit credentials (4648)"
+        )
+
+    def test_template_without_policy_yields_no_keywords(self):
+        # A template set that declares no ranking (only behaviors) must NOT pull
+        # in any benchmark ranking — core stays on its severity default.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tdir = self._write_template(
+                tmpdir,
+                "1_overview.md",
+                "---\nbehaviors:\n  - canonical_evidence_scope\n---\n# Overview\n",
+            )
+            self.assertIsNone(load_top_findings_priority_keywords(tdir))
+            # Explicit severity policy is also a no-op (use default).
+            self._write_template(
+                tmpdir,
+                "1_overview.md",
+                "---\nbrief:\n  top_findings:\n    ranking:\n      policy: severity\n---\n# Overview\n",
+            )
+            self.assertIsNone(load_top_findings_priority_keywords(tdir))
+
+    def test_malformed_policy_warns_and_falls_back(self):
+        # A declared-but-malformed policy must not silently degrade: it warns and
+        # falls back to the default (the doctor gate is the hard check).
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tdir = self._write_template(
+                tmpdir,
+                "1_overview.md",
+                "---\nbrief:\n  top_findings:\n    ranking:\n      policy: priority_keywords\n---\n# Overview\n",
+            )
+            with self.assertWarns(UserWarning):
+                self.assertIsNone(load_top_findings_priority_keywords(tdir))
+
+    def test_packaged_templates_carry_no_case_specific_policy(self):
+        # The doctor gate: bundled generic templates must parse and must not
+        # smuggle in a case-specific priority_keywords policy.
+        self.assertEqual(audit_packaged_report_templates(), [])
 
 
 if __name__ == "__main__":

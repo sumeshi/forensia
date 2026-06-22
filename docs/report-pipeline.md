@@ -39,10 +39,25 @@
 | フィールド | 役割 |
 |---|---|
 | `behaviors` | quality gate / 振る舞いフラグの list (例: `require_chronological_table`) |
+| `brief.top_findings.ranking` | `report_brief.json` の `top_findings`(= leading thesis)の並び順 policy。overview/executive summary を描くセクションに書く |
 
 `behaviors` を増やしたいときは [writer.py](../src/forensia/report/writer.py) 側の `_GateCtx.behaviors` 判定を 1 箇所だけ伸ばし、section_key にハードコードしない。
 
-現行 writer が frontmatter から読む契約フィールドは `behaviors` だけ。`section` / `title` / `prompt` / `evidence_queries` を置いても durable key や evidence access には使われない。section title は本文見出しから抽出され、block ごとの要求は `##` heading と HTML comment hints (`evidence_keypoints` / `mode` / `answer_id` / `answer_spec` / `question`、旧評価テンプレート互換の `benchmark_id`) で表現する。
+`brief.top_findings.ranking` は [report/ranking.py](../src/forensia/report/ranking.py) が解釈する。`policy: severity`(既定 = severity → ATT&CK → confidence のケース非依存順)か `policy: priority_keywords`(順序付きキーワード群で narrative 順に並べる)を選べる。**ケース固有の語彙(`4648` / `ccleaner` 等)は core ではなくこの frontmatter に置く**。同梱の汎用テンプレートは policy を宣言せず(= severity 既定)、`forensia doctor` の "Report template policy" チェックが同梱テンプレートに `priority_keywords` が混入しないことを保証する。malformed な policy は実行時に警告 + 既定へフォールバックし、同梱テンプレートでは doctor が hard-fail する。
+
+```yaml
+---
+brief:
+  top_findings:
+    ranking:
+      policy: priority_keywords
+      priority_keywords:
+        - ["4648", "explicit credential"]
+        - ["ccleaner", "eraser", "anti-forensic"]
+---
+```
+
+現行 writer が frontmatter から読む契約フィールドは `behaviors` だけ(`brief.top_findings.ranking` は report ブリーフビルダーが読む)。`section` / `title` / `prompt` / `evidence_queries` を置いても durable key や evidence access には使われない。section title は本文見出しから抽出され、block ごとの要求は `##` heading と HTML comment hints (`evidence_keypoints` / `mode` / `answer_id` / `answer_spec` / `question`、旧評価テンプレート互換の `benchmark_id`) で表現する。
 
 ### 2.3 Section の同一性と順序
 

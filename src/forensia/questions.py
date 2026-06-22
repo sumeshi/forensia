@@ -71,6 +71,7 @@ class QuestionSpec:
     negative_evidence_policy: str = ""
     status_rules: dict[str, Any] = field(default_factory=dict)
     timeline: bool = False
+    builder_policy: str = ""
 
     @property
     def semantic_id(self) -> str:
@@ -90,6 +91,9 @@ class QuestionSpec:
             status_rules = {}
         evidence_chain = _coerce_dict_list(raw.get("evidence_chain"))
         timeline = bool(raw.get("timeline", False))
+        builder_policy = str(
+            raw.get("builder_policy") or raw.get("implementation") or ""
+        ).strip()
         required_sources = _coerce_str_tuple(raw.get("required_sources"))
         if not required_sources:
             required_sources = tuple(
@@ -116,6 +120,7 @@ class QuestionSpec:
             ).strip(),
             status_rules=dict(status_rules),
             timeline=timeline,
+            builder_policy=builder_policy,
         )
 
     def to_prompt_dict(self) -> dict[str, Any]:
@@ -127,6 +132,7 @@ class QuestionSpec:
             "required_sources": list(self.required_sources),
             "render_columns": list(self.render_columns),
             "status_rules": self.status_rules,
+            "builder_policy": self.builder_policy,
         }
 
 

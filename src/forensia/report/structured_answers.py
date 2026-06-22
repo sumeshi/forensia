@@ -14,6 +14,17 @@ from forensia.core.case import Case, detect_epochs
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records, normalize_value
 from forensia.knowledge import (
+    catalog_artifact_names,
+    catalog_entries,
+    catalog_exe_globs,
+    catalog_file_patterns,
+    catalog_marker,
+    catalog_marker_map,
+    catalog_values,
+    exe_glob_sql,
+    expand_catalog_sql_placeholders,
+)
+from forensia.knowledge import (
     load_event_class_definitions as _load_event_class_definitions,
 )
 from forensia.questions import (
@@ -22,7 +33,7 @@ from forensia.questions import (
     project_rows_for_question_spec,
     question_spec_for_answer_spec,
 )
-from forensia.report.keypoints import _report_keypoint_rows
+from forensia.report.keypoints import _report_keypoint_rows, _sql_like_any
 from forensia.report.markdown import (
     _HUMAN_REPORT_HIDDEN_COLUMNS,
     _build_host_note,
@@ -44,13 +55,10 @@ __all__ = [
     "_build_daily_session_timeline",
     "_build_daily_session_timeline_rows",
     "_build_desktop_rename_candidates",
-    "_build_email_application_usage",
-    "_build_email_data_files",
     "_build_generic_question_spec_answer",
     "_build_host_identity",
     "_build_last_human_logon",
     "_build_last_shutdown_event",
-    "_build_resignation_file_timestamps",
     "_build_generic_question_spec_answer",
     "_coerce_answer_items",
     "_coerce_string_list",
@@ -517,6 +525,26 @@ def _lower_blob(row: dict[str, Any]) -> str:
     return " ".join(
         _text(value).casefold() for value in row.values() if value is not None
     )
+
+
+def _catalog_path_patterns(section: str) -> tuple[str, ...]:
+    patterns: list[str] = []
+    for entry in catalog_entries(section):
+        for raw in catalog_values(
+            entry, "paths", "mft_patterns", "version_sources", "registry"
+        ):
+            marker = catalog_marker(raw)
+            if not marker:
+                continue
+            patterns.append(f"%{marker}%")
+            if "/" in marker:
+                backslash_marker = marker.replace("/", "\\")
+                patterns.append(f"%{backslash_marker}%")
+    return tuple(dict.fromkeys(pattern for pattern in patterns if pattern))
+
+
+def _like_sql(column: str, patterns: tuple[str, ...] | list[str]) -> str:
+    return _sql_like_any(column, *patterns) if patterns else "FALSE"
 
 
 def _dedupe_dict_rows(
@@ -1048,19 +1076,20 @@ def _build_daily_session_timeline(
     )
 
 
-_BROWSER_MARKERS: dict[str, tuple[str, ...]] = {
-    "Google Chrome": ("chrome.exe", "google/chrome", "google\\chrome"),
-    "Microsoft Internet Explorer": ("iexplore.exe", "internet explorer"),
-    "Mozilla Firefox": ("firefox.exe", "mozilla/firefox", "mozilla\\firefox"),
-    "Microsoft Edge": ("msedge.exe", "microsoft/edge", "microsoft\\edge"),
-    "Brave": ("brave.exe", "bravesoftware"),
-    "Opera": ("opera.exe",),
-}
+@lru_cache(maxsize=1)
+def _browser_markers() -> dict[str, tuple[str, ...]]:
+    return catalog_marker_map(
+        "browser_artifacts",
+        "name",
+        "exe_patterns",
+        "paths",
+        "version_sources",
+    )
 
 
 def _browser_name_for_row(row: dict[str, Any]) -> str:
     text = _lower_blob(row).replace("\\", "/")
-    for name, markers in _BROWSER_MARKERS.items():
+    for name, markers in _browser_markers().items():
         if any(marker.replace("\\", "/") in text for marker in markers):
             return name
     return ""
@@ -1069,9 +1098,16 @@ def _browser_name_for_row(row: dict[str, Any]) -> str:
 def _build_browser_usage(
     case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
 ) -> dict[str, Any]:
+    browser_exe_sql = exe_glob_sql(
+        "executable_name", catalog_exe_globs("browser_artifacts")
+    )
+    browser_file_sql = exe_glob_sql("file_name", catalog_exe_globs("browser_artifacts"))
+    browser_path_sql = _like_sql(
+        "file_path", _catalog_path_patterns("browser_artifacts")
+    )
     prefetch_rows = _structured_rows(
         db,
-        """
+        f"""
         SELECT
             executable_name,
             exec_count,
@@ -1079,31 +1115,21 @@ def _build_browser_usage(
             evidence_id,
             source_file
         FROM prefetch_executions
-        WHERE LOWER(COALESCE(executable_name, '')) IN (
-            'chrome.exe', 'firefox.exe', 'msedge.exe', 'iexplore.exe', 'brave.exe', 'opera.exe'
-        )
+        WHERE {browser_exe_sql}
         ORDER BY last_exec_time DESC NULLS LAST, executable_name
         """,
     )
     mft_rows = _structured_rows(
         db,
-        """
+        f"""
         SELECT
             file_name,
             file_path,
             si_modified AS artifact_time,
             evidence_id
         FROM mft_entries
-        WHERE LOWER(COALESCE(file_name, '')) IN (
-            'chrome.exe', 'firefox.exe', 'msedge.exe', 'iexplore.exe', 'brave.exe', 'opera.exe'
-        )
-           OR LOWER(COALESCE(file_path, '')) LIKE '%google/chrome%'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%google\\chrome%'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%internet explorer%'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%mozilla/firefox%'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%mozilla\\firefox%'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%microsoft/edge%'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%microsoft\\edge%'
+        WHERE {browser_file_sql}
+           OR {browser_path_sql}
         ORDER BY si_modified DESC NULLS LAST, file_name
         LIMIT 100
         """,
@@ -1210,119 +1236,6 @@ def _build_browser_usage(
             "structured:browser_usage:browser_prefetch",
             "structured:browser_usage:browser_mft_artifacts",
         ],
-    )
-
-
-def _mail_application_name(row: dict[str, Any]) -> str:
-    text = _lower_blob(row)
-    if "outlook" in text or ".ost" in text or ".pst" in text:
-        return "Microsoft Outlook"
-    if "thunderbird" in text:
-        return "Mozilla Thunderbird"
-    return ""
-
-
-def _build_email_application_usage(
-    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
-) -> dict[str, Any]:
-    rows_raw = _structured_rows(
-        db,
-        """
-        SELECT
-            file_name,
-            file_path,
-            extension,
-            si_modified AS artifact_time,
-            evidence_id
-        FROM mft_entries
-        WHERE LOWER(COALESCE(file_name, '')) LIKE '%.ost'
-           OR LOWER(COALESCE(file_name, '')) LIKE '%.pst'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%/outlook/%'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%\\outlook\\%'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%thunderbird%'
-        ORDER BY si_modified DESC NULLS LAST, file_path
-        LIMIT 100
-        """,
-    )
-    rows: list[dict[str, Any]] = []
-    for row in rows_raw:
-        app = _mail_application_name(row)
-        if not app:
-            continue
-        rows.append(
-            {
-                "application_name": app,
-                "version": "",
-                "evidence_type": "mft",
-                "artifact_path": row.get("file_path"),
-                "artifact_time": row.get("artifact_time"),
-                "evidence_id": row.get("evidence_id"),
-            }
-        )
-    rows = _dedupe_dict_rows(rows, ("application_name", "artifact_path", "evidence_id"))
-    return _structured_answer(
-        case,
-        answer_id=answer_id,
-        section_key=section_key,
-        block_heading=block_heading,
-        rows=rows,
-        columns=[
-            "application_name",
-            "version",
-            "evidence_type",
-            "artifact_path",
-            "artifact_time",
-            "evidence_id",
-        ],
-        queries_run=["structured:email_application_usage:mail_application_artifacts"],
-    )
-
-
-def _build_email_data_files(
-    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
-) -> dict[str, Any]:
-    rows = _structured_rows(
-        db,
-        """
-        SELECT
-            file_name,
-            file_path,
-            extension,
-            si_created,
-            si_modified,
-            si_accessed,
-            fn_created,
-            fn_modified,
-            fn_accessed,
-            evidence_id
-        FROM mft_entries
-        WHERE LOWER(COALESCE(extension, '')) IN ('ost', 'pst', 'mbox')
-           OR LOWER(COALESCE(file_name, '')) LIKE '%.ost'
-           OR LOWER(COALESCE(file_name, '')) LIKE '%.pst'
-           OR LOWER(COALESCE(file_name, '')) LIKE '%.mbox'
-        ORDER BY COALESCE(fn_modified, si_modified, fn_created, si_created) DESC NULLS LAST, file_path
-        LIMIT 100
-        """,
-    )
-    return _structured_answer(
-        case,
-        answer_id=answer_id,
-        section_key=section_key,
-        block_heading=block_heading,
-        rows=rows,
-        columns=[
-            "file_name",
-            "file_path",
-            "extension",
-            "si_created",
-            "si_modified",
-            "si_accessed",
-            "fn_created",
-            "fn_modified",
-            "fn_accessed",
-            "evidence_id",
-        ],
-        queries_run=["structured:email_data_files:mft"],
     )
 
 
@@ -1484,20 +1397,37 @@ def _build_desktop_rename_candidates(
     )
 
 
-_CLOUD_MARKERS: dict[str, tuple[str, ...]] = {
-    "Google Drive": ("googledrive", "google drive", "google/drive", "google\\drive"),
-    "iCloud": ("icloud", "apple computer"),
-    "OneDrive": ("onedrive",),
-    "Dropbox": ("dropbox", "config.dbx"),
-}
+@lru_cache(maxsize=1)
+def _cloud_markers() -> dict[str, tuple[str, ...]]:
+    return catalog_marker_map(
+        "cloud_sync_artifacts",
+        "service",
+        "exe_patterns",
+        "paths",
+        "registry",
+    )
 
 
 def _build_cloud_service_traces(
     case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
 ) -> dict[str, Any]:
+    cloud_path_sql = _like_sql(
+        "file_path", _catalog_path_patterns("cloud_sync_artifacts")
+    )
+    cloud_file_sql = _like_sql(
+        "file_name",
+        [
+            *catalog_file_patterns(
+                "cloud_sync_artifacts", "exe_patterns", "paths", "prefetch_names"
+            )
+        ],
+    )
+    cloud_prefetch_sql = exe_glob_sql(
+        "executable_name", catalog_exe_globs("cloud_sync_artifacts")
+    )
     mft_rows = _structured_rows(
         db,
-        """
+        f"""
         SELECT
             file_name,
             file_path,
@@ -1505,20 +1435,15 @@ def _build_cloud_service_traces(
             si_modified AS artifact_time,
             evidence_id
         FROM mft_entries
-        WHERE LOWER(COALESCE(file_path, '')) LIKE '%google/drive%'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%google\\drive%'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%apple computer%'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%icloud%'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%onedrive%'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%dropbox%'
-           OR LOWER(COALESCE(file_name, '')) IN ('googledrivesync.exe', 'icloudsetup.exe', 'onedrive.exe', 'dropbox.exe', 'sync_config.db', 'snapshot.db', 'config.dbx')
+        WHERE {cloud_path_sql}
+           OR {cloud_file_sql}
         ORDER BY si_modified DESC NULLS LAST, file_path
         LIMIT 200
         """,
     )
     prefetch_rows = _structured_rows(
         db,
-        """
+        f"""
         SELECT
             executable_name,
             exec_count,
@@ -1526,12 +1451,12 @@ def _build_cloud_service_traces(
             evidence_id,
             source_file
         FROM prefetch_executions
-        WHERE LOWER(COALESCE(executable_name, '')) IN ('googledrivesync.exe', 'icloudsetup.exe', 'onedrive.exe', 'dropbox.exe')
+        WHERE {cloud_prefetch_sql}
         ORDER BY last_exec_time DESC NULLS LAST, executable_name
         """,
     )
     rows: list[dict[str, Any]] = []
-    for service_name, markers in _CLOUD_MARKERS.items():
+    for service_name, markers in _cloud_markers().items():
         service_mft = [
             row
             for row in mft_rows
@@ -1600,61 +1525,28 @@ def _build_cloud_service_traces(
     )
 
 
-def _build_resignation_file_timestamps(
-    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
-) -> dict[str, Any]:
-    rows = _structured_rows(
-        db,
-        """
-        SELECT
-            file_name,
-            file_path,
-            extension,
-            is_deleted,
-            si_created,
-            si_modified,
-            si_accessed,
-            fn_created,
-            fn_modified,
-            fn_accessed,
-            evidence_id
-        FROM mft_entries
-        WHERE LOWER(COALESCE(file_name, '')) LIKE '%resign%'
-           OR LOWER(COALESCE(file_name, '')) LIKE '%resignation%'
-           OR LOWER(COALESCE(file_name, '')) LIKE '%retire%'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%resign%'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%resignation%'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%retire%'
-        ORDER BY COALESCE(fn_modified, si_modified, fn_created, si_created) DESC NULLS LAST, file_path
-        LIMIT 100
-        """,
-    )
-    return _structured_answer(
-        case,
-        answer_id=answer_id,
-        section_key=section_key,
-        block_heading=block_heading,
-        rows=rows,
-        columns=[
-            "file_name",
-            "file_path",
-            "extension",
-            "is_deleted",
-            "si_created",
-            "si_modified",
-            "si_accessed",
-            "fn_created",
-            "fn_modified",
-            "fn_accessed",
-            "evidence_id",
-        ],
-        queries_run=["structured:resignation_file_timestamps:mft"],
-    )
-
-
 def _build_antiforensic_activity(
     case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
 ) -> dict[str, Any]:
+    tool_globs = catalog_exe_globs("antiforensic_tools")
+    tool_exe_sql = exe_glob_sql("executable_name", tool_globs)
+    tool_file_sql = exe_glob_sql("file_name", tool_globs)
+    artifact_name_sql = _like_sql(
+        "file_name", catalog_artifact_names("antiforensic_tools")
+    )
+    prefetch_name_sql = _like_sql(
+        "file_name", catalog_file_patterns("antiforensic_tools", "prefetch_names")
+    )
+    tool_markers = [
+        markers[0]
+        for markers in catalog_marker_map(
+            "antiforensic_tools", "name", "exe_patterns", "artifact_names"
+        ).values()
+        if markers
+    ]
+    prefetch_path_sql = _like_sql(
+        "file_path", [f"%prefetch%{marker}%" for marker in tool_markers]
+    )
     event_rows = _structured_rows(
         db,
         """
@@ -1676,7 +1568,7 @@ def _build_antiforensic_activity(
     )
     prefetch_rows = _structured_rows(
         db,
-        """
+        f"""
         SELECT
             'tool_execution' AS evidence_type,
             last_exec_time AS timestamp,
@@ -1684,16 +1576,14 @@ def _build_antiforensic_activity(
             source_file AS file_path,
             evidence_id
         FROM prefetch_executions
-        WHERE LOWER(COALESCE(executable_name, '')) IN (
-            'eraser.exe', 'ccleaner.exe', 'ccleaner64.exe', 'bleachbit.exe', 'sdelete.exe'
-        )
+        WHERE {tool_exe_sql}
         ORDER BY last_exec_time DESC NULLS LAST, executable_name
         LIMIT 50
         """,
     )
     tool_rows = _structured_rows(
         db,
-        """
+        f"""
         SELECT
             'tool_or_cleanup_artifact' AS evidence_type,
             file_name,
@@ -1704,17 +1594,11 @@ def _build_antiforensic_activity(
             evidence_id
         FROM mft_entries
         WHERE (
-              LOWER(COALESCE(file_name, '')) IN ('task list.ersy', 'ccleaner.lnk', 'eraser.lnk')
-           OR LOWER(COALESCE(file_name, '')) LIKE '%eraser%.pf'
-           OR LOWER(COALESCE(file_name, '')) LIKE '%ccleaner%.pf'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%prefetch%eraser%'
-           OR LOWER(COALESCE(file_path, '')) LIKE '%prefetch%ccleaner%'
+              {artifact_name_sql}
+           OR {prefetch_name_sql}
+           OR {prefetch_path_sql}
            OR (
-                (LOWER(COALESCE(file_name, '')) LIKE 'eraser%.exe'
-                 OR LOWER(COALESCE(file_name, '')) LIKE 'ccleaner%.exe'
-                 OR LOWER(COALESCE(file_name, '')) LIKE 'ccsetup%.exe'
-                 OR LOWER(COALESCE(file_name, '')) LIKE 'bleachbit%.exe'
-                 OR LOWER(COALESCE(file_name, '')) LIKE 'sdelete%.exe')
+                ({tool_file_sql})
                 AND (
                     LOWER(COALESCE(file_path, '')) LIKE '%/download/%'
                     OR LOWER(COALESCE(file_path, '')) LIKE '%\\download\\%'
@@ -1785,6 +1669,7 @@ def _build_generic_question_spec_answer(
         query = str(entry.get("query") or "").strip()
         if not query:
             continue
+        query = expand_catalog_sql_placeholders(query)
         source = str(entry.get("source") or f"query_{index}").strip()
         label = f"structured:{spec.semantic_id}:{source}"
         queries_run.append(label)
@@ -1833,11 +1718,8 @@ _STRUCTURED_ANSWER_BUILDERS: dict[str, StructuredAnswerBuilder] = {
     "daily_session_activity": _build_daily_session_activity,
     "daily_session_timeline": _build_daily_session_timeline,
     "browser_usage": _build_browser_usage,
-    "email_application_usage": _build_email_application_usage,
-    "email_data_files": _build_email_data_files,
     "desktop_rename_candidates": _build_desktop_rename_candidates,
     "cloud_service_traces": _build_cloud_service_traces,
-    "resignation_file_timestamps": _build_resignation_file_timestamps,
     "antiforensic_activity": _build_antiforensic_activity,
 }
 
@@ -1854,6 +1736,17 @@ def build_structured_answer(
     normalized_spec = str(answer_spec or "").strip().casefold().replace("-", "_")
     if not normalized_spec:
         return None
+    spec = question_spec_for_answer_spec(normalized_spec)
+    builder_policy = str(getattr(spec, "builder_policy", "") or "").strip().casefold()
+    if builder_policy in {"generic", "question_spec", "declarative"}:
+        return _build_generic_question_spec_answer(
+            case,
+            db,
+            answer_spec=normalized_spec,
+            answer_id=str(answer_id or normalized_spec).strip() or normalized_spec,
+            section_key=section_key,
+            block_heading=block_heading,
+        )
     builder = _STRUCTURED_ANSWER_BUILDERS.get(normalized_spec)
     if builder is None:
         return _build_generic_question_spec_answer(
@@ -1869,7 +1762,6 @@ def build_structured_answer(
     if not answer.get("answer_spec"):
         answer["answer_spec"] = normalized_spec
         _persist_structured_answer(case, answer)
-    spec = question_spec_for_answer_spec(normalized_spec)
     if spec is not None:
         status, reasons = evaluate_question_spec_status(
             spec,

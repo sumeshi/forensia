@@ -44,6 +44,7 @@ cloud_sync_artifacts:
     prefetch_names: ["GOOGLEDRIVESYNC*.pf"]
     
   - service: Apple iCloud
+    display_name: iCloud
     exe_patterns: ["icloudsetup.exe", "icloud.exe", "AppleCloud.exe", "iCloudDrive.exe"]
     paths:
       - "%LocalAppData%/Apple Computer/"
@@ -54,6 +55,7 @@ cloud_sync_artifacts:
     prefetch_names: ["ICLOUDSETUP*.pf", "ICLOUD*.pf"]
     
   - service: Microsoft OneDrive
+    display_name: OneDrive
     exe_patterns: ["onedrive.exe", "OneDrive.exe", "OneDriveSetup.exe"]
     paths:
       - "%LocalAppData%/Microsoft/OneDrive/"
@@ -82,6 +84,7 @@ email_artifacts:
     
   - client: Mozilla Thunderbird
     exe_patterns: ["thunderbird.exe"]
+    data_files: ["*.mbox"]
     paths: ["%AppData%/Thunderbird/", "%AppData%/Thunderbird/Profiles/"]
     
   - client: Windows Mail / Live Mail
@@ -132,6 +135,16 @@ browser_artifacts:
   - name: Microsoft Edge
     exe_patterns: ["msedge.exe", "MicrosoftEdge.exe"]
     paths: ["%LocalAppData%/Microsoft/Edge/"]
+
+  - name: Brave
+    exe_patterns: ["brave.exe"]
+    data_files: ["*.sqlite", "Bookmarks", "History", "Cookies", "Login Data"]
+    paths: ["%LocalAppData%/BraveSoftware/Brave-Browser/"]
+
+  - name: Opera
+    exe_patterns: ["opera.exe"]
+    data_files: ["*.sqlite", "Bookmarks", "History", "Cookies", "Login Data"]
+    paths: ["%AppData%/Opera Software/"]
 
 # USB / External device artifacts
 usb_artifacts:

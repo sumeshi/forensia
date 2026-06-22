@@ -43,6 +43,7 @@ question_types:
 
   - name: email_application
     answer_spec: email_application_usage
+    builder_policy: generic
     intent: "Identify mail client applications from mail data files and application artifacts."
     keywords:
       - e-mail application
@@ -73,10 +74,11 @@ question_types:
       note: "Identify the mail client application from mail data files and application artifacts."
     evidence_chain:
       - source: mft_entries
-        query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE file_name LIKE '%.ost' OR file_name LIKE '%.pst' OR file_path LIKE '%/Outlook/%'"
+        query: "SELECT {{catalog_label_sql:email_artifacts:client:exe_patterns,paths,data_files:file_name,file_path:application_name}}, '' AS version, 'mft' AS evidence_type, file_path AS artifact_path, si_modified AS artifact_time, evidence_id FROM mft_entries WHERE {{catalog_data_file_sql:email_artifacts:file_name}} OR {{catalog_path_sql:email_artifacts:file_path}}"
 
   - name: email_ost
     answer_spec: email_data_files
+    builder_policy: generic
     intent: "List observed mail data files such as OST/PST/MBOX and their filesystem timestamps."
     keywords:
       - ost
@@ -108,10 +110,8 @@ question_types:
       note: "OST files ALWAYS imply Microsoft Outlook. Report as 'Microsoft Outlook 2013' (or version from MFT)."
 
     evidence_chain:
-      - source: mft_entries
-        query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE file_name LIKE '%.ost' OR file_name LIKE '%.pst'"
-      - source: mft_entries
-        query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE file_path LIKE '%/Outlook/%'"
+      - source: mft
+        query: "SELECT file_name, file_path, extension, si_created, si_modified, si_accessed, fn_created, fn_modified, fn_accessed, evidence_id FROM mft_entries WHERE {{catalog_extension_sql:email_artifacts:extension}} OR {{catalog_data_file_sql:email_artifacts:file_name}} ORDER BY COALESCE(fn_modified, si_modified, fn_created, si_created) DESC NULLS LAST, file_path LIMIT 100"
 
   - name: desktop_rename
     answer_spec: desktop_rename_candidates
@@ -147,6 +147,36 @@ question_types:
       - source: mft_entries
         query: "SELECT file_name, json_extract_string(raw_json, '$.attributes.FileName.data.name') AS original_name, si_modified FROM mft_entries WHERE json_extract_string(raw_json, '$.attributes.FileName.data.name') IS NOT NULL AND json_extract_string(raw_json, '$.attributes.FileName.data.name') != file_name"
 
+  - name: topic_file_timestamps
+    answer_spec: resignation_file_timestamps
+    builder_policy: generic
+    intent: "List filesystem timestamps for files matching the topic keywords supplied by an external evaluation/template question."
+    keywords:
+      - resignation
+      - resign
+      - retire
+      - resignation letter
+      - retirement
+      - 退職
+      - 辞職
+    keypoints:
+      - structured_resignation_files
+    interpretation_template: "対象 topic に一致するファイルは {row_count} 件、代表は {sample(file_name, 3)} です。この keyword は evaluation/template 側の設問語彙であり、ファイル内容や意図までは別証跡で確認してください。"
+    required_fields: [file_name]
+    render_columns: [file_name, file_path, extension, is_deleted, si_created, si_modified, si_accessed, fn_created, fn_modified, fn_accessed, evidence_id]
+    status_rules:
+      min_rows_for_answer: 1
+      empty_status: not_found
+      empty_reason: "No files matched the declared topic keywords."
+    expected_answer_shape:
+      format: table
+      fields: [file_name, file_path, extension, si_created, si_modified, si_accessed, fn_created, fn_modified, fn_accessed]
+      style: table
+      note: "Keyword-specific file timestamp questions should be represented in template/question routing, not core Python builders."
+    evidence_chain:
+      - source: mft_topic_keyword_files
+        query: "SELECT file_name, file_path, extension, is_deleted, si_created, si_modified, si_accessed, fn_created, fn_modified, fn_accessed, evidence_id FROM mft_entries WHERE LOWER(COALESCE(file_name, '')) LIKE '%resign%' OR LOWER(COALESCE(file_name, '')) LIKE '%resignation%' OR LOWER(COALESCE(file_name, '')) LIKE '%retire%' OR LOWER(COALESCE(file_path, '')) LIKE '%resign%' OR LOWER(COALESCE(file_path, '')) LIKE '%resignation%' OR LOWER(COALESCE(file_path, '')) LIKE '%retire%' ORDER BY COALESCE(fn_modified, si_modified, fn_created, si_created) DESC NULLS LAST, file_path LIMIT 100"
+
   - name: browser_usage
     answer_spec: browser_usage
     intent: "Identify browser applications observed through Prefetch and filesystem artifacts."
@@ -174,13 +204,13 @@ question_types:
       format: name_with_version
       fields: [application_name, version]
       style: versioned_list
-      note: "Include version from MFT file_path of the browser executable (e.g. 'Google Chrome 41.x', 'Microsoft Internet Explorer 11.0.9600.17691', 'Mozilla Firefox 36.x')."
+      note: "Include version when available from MFT file_path of the browser executable. Browser product names are supplied by dfir_ioc_catalog.yaml."
 
     evidence_chain:
       - source: mft_entries
-        query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE (file_path LIKE '%/Google/Chrome/%' OR file_path LIKE '%/Internet Explorer/%' OR file_path LIKE '%/Mozilla/Firefox/%' OR file_path LIKE '%/Microsoft/Edge/%') AND file_name LIKE '%.exe'"
+        query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE ({{catalog_path_sql:browser_artifacts:file_path}}) AND {{catalog_exe_sql:browser_artifacts:file_name}}"
       - source: prefetch_executions
-        query: "SELECT executable_name, exec_count, last_exec_time FROM prefetch_executions WHERE LOWER(executable_name) IN ('chrome.exe', 'iexplore.exe', 'firefox.exe', 'msedge.exe')"
+        query: "SELECT executable_name, exec_count, last_exec_time FROM prefetch_executions WHERE {{catalog_exe_sql:browser_artifacts:executable_name}}"
 
   - name: logon_history
     answer_spec: daily_session_activity
@@ -289,15 +319,15 @@ question_types:
       format: enumerated_services
       fields: [service_name, exe_found, paths_found, config_found]
       style: table
-      note: "Enumerate ALL cloud services scanned (Google Drive, iCloud, OneDrive, Dropbox). For each, report whether executable/path/config files were found."
+      note: "Enumerate all cloud services declared in dfir_ioc_catalog.yaml. For each, report whether executable/path/config files were found."
 
     evidence_chain:
       - source: mft_entries
-        query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE file_path LIKE '%/Google/Drive/%' OR file_path LIKE '%/Apple Computer/%' OR file_path LIKE '%/OneDrive/%' OR file_path LIKE '%/Dropbox/%'"
+        query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE {{catalog_path_sql:cloud_sync_artifacts:file_path}}"
       - source: prefetch_executions
-        query: "SELECT executable_name, exec_count, last_exec_time FROM prefetch_executions WHERE LOWER(executable_name) IN ('googledrivesync.exe', 'icloudsetup.exe', 'onedrive.exe', 'dropbox.exe')"
+        query: "SELECT executable_name, exec_count, last_exec_time FROM prefetch_executions WHERE {{catalog_exe_sql:cloud_sync_artifacts:executable_name}}"
       - source: mft_entries
-        query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE file_name IN ('sync_config.db', 'snapshot.db', 'config.dbx')"
+        query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE {{catalog_file_sql:cloud_sync_artifacts:paths:file_name}}"
 
   - name: antiforensics
     answer_spec: antiforensic_activity
@@ -328,15 +358,15 @@ question_types:
       format: full_scan
       fields: [tool_name, evidence_type, found, details]
       style: table
-      note: "Scan ALL known antiforensic tools (Eraser, CCleaner, BleachBit, Privazer, SDelete). Report log clearing events (104, 1102). Report Recycle Bin emptying."
+      note: "Scan all antiforensic tools declared in dfir_ioc_catalog.yaml. Report log clearing events (104, 1102). Report Recycle Bin emptying."
 
     evidence_chain:
       - source: evtx_events
         query: "SELECT event_id, timestamp, computer FROM evtx_events WHERE event_id IN (104, 1102, 1100)"
       - source: mft_entries
-        query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE LOWER(file_name) LIKE 'eraser%.exe' OR LOWER(file_name) LIKE 'ccsetup%.exe' OR LOWER(file_name) LIKE 'ccleaner%.exe' OR LOWER(file_name) LIKE 'bleachbit%.exe' OR LOWER(file_name) LIKE 'sdelete%.exe'"
+        query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE {{catalog_exe_sql:antiforensic_tools:file_name}} OR {{catalog_artifact_sql:antiforensic_tools:file_name}}"
       - source: mft_entries
-        query: "SELECT file_name, file_path, is_deleted FROM mft_entries WHERE is_deleted = 1 AND file_name IN ('sync_config.db', 'snapshot.db')"
+        query: "SELECT file_name, file_path, is_deleted FROM mft_entries WHERE is_deleted = 1 AND {{catalog_file_sql:cloud_sync_artifacts:paths:file_name}}"
 
   - name: host_identity
     answer_spec: host_identity

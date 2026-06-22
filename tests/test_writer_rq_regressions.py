@@ -508,6 +508,118 @@ class WriterRQRegressionTests(unittest.TestCase):
             self.assertGreaterEqual(cloud["row_count"], 1)
             self.assertGreaterEqual(resignation["row_count"], 1)
 
+    def test_resignation_file_timestamps_uses_question_spec_evidence_chain(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO mft_entries (
+                        evidence_id, file_path, file_name, extension, si_modified
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "mft-000000000003-01",
+                        r"C:\Users\Alice\Desktop\resignation_letter.docx",
+                        "resignation_letter.docx",
+                        "docx",
+                        datetime(2015, 3, 25, 15, 20, 0),
+                    ),
+                )
+                answer = build_structured_answer(
+                    case,
+                    db,
+                    answer_spec="resignation_file_timestamps",
+                    answer_id="Q28",
+                    section_key="6_appendix",
+                    block_heading="Resignation file timestamps",
+                )
+
+            self.assertIsNotNone(answer)
+            self.assertEqual("question_spec", answer.get("source"))
+            self.assertEqual("answered", answer.get("status"))
+            self.assertEqual(
+                ["structured:resignation_file_timestamps:mft_topic_keyword_files"],
+                answer.get("queries_run"),
+            )
+            self.assertEqual(
+                "resignation_letter.docx",
+                answer["answer"][0].get("file_name"),
+            )
+
+    def test_email_data_files_uses_question_spec_evidence_chain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO mft_entries (
+                        evidence_id, file_path, file_name, extension,
+                        si_created, si_modified
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "mft-000000000004-01",
+                        r"C:\Users\Alice\AppData\Local\Microsoft\Outlook\mailbox.ost",
+                        "mailbox.ost",
+                        "ost",
+                        datetime(2015, 3, 25, 14, 10, 0),
+                        datetime(2015, 3, 25, 14, 20, 0),
+                    ),
+                )
+                answer = build_structured_answer(
+                    case,
+                    db,
+                    answer_spec="email_data_files",
+                    answer_id="Q-email",
+                    section_key="6_appendix",
+                    block_heading="Email data files",
+                )
+
+            self.assertIsNotNone(answer)
+            self.assertEqual("question_spec", answer.get("source"))
+            self.assertEqual("answered", answer.get("status"))
+            self.assertEqual(["structured:email_data_files:mft"], answer["queries_run"])
+            self.assertEqual("mailbox.ost", answer["answer"][0].get("file_name"))
+
+    def test_email_application_usage_uses_question_spec_catalog_label(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO mft_entries (
+                        evidence_id, file_path, file_name, extension, si_modified
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "mft-000000000005-01",
+                        r"C:\Users\Alice\AppData\Local\Microsoft\Outlook\mailbox.ost",
+                        "mailbox.ost",
+                        "ost",
+                        datetime(2015, 3, 25, 14, 20, 0),
+                    ),
+                )
+                answer = build_structured_answer(
+                    case,
+                    db,
+                    answer_spec="email_application_usage",
+                    answer_id="Q-email-app",
+                    section_key="6_appendix",
+                    block_heading="Email application",
+                )
+
+            self.assertIsNotNone(answer)
+            self.assertEqual("question_spec", answer.get("source"))
+            self.assertEqual("answered", answer.get("status"))
+            self.assertEqual(
+                "Microsoft Outlook", answer["answer"][0].get("application_name")
+            )
+
     def test_structured_benchmark_last_logon_persists_json_and_csv(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -812,6 +924,33 @@ class WriterRQRegressionTests(unittest.TestCase):
 
             evidence_ids = {row.get("evidence_id") for row in answer["answer"]}
             self.assertEqual({"mft-000000000002-00"}, evidence_ids)
+
+    def test_structured_antiforensics_uses_ioc_catalog_tool_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO prefetch_executions "
+                    "(evidence_id, executable_name, exec_count, last_exec_time) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        "prefetch-privazer-exe-0001",
+                        "PrivaZer.exe",
+                        1,
+                        datetime(2015, 3, 25, 15, 40, 0),
+                    ),
+                )
+                answer = build_structured_answer(
+                    case,
+                    db,
+                    answer_spec="antiforensic_activity",
+                    answer_id="Q45",
+                    section_key="6_appendix",
+                    block_heading="12. Antiforensic activity",
+                )
+
+            evidence_ids = {row.get("evidence_id") for row in answer["answer"]}
+            self.assertIn("prefetch-privazer-exe-0001", evidence_ids)
 
     def test_structured_benchmark_prefetch_fallback_excludes_non_pf_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

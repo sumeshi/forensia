@@ -908,6 +908,24 @@ def doctor() -> None:
         checks.append(("Verdict enforcement", False))
         print(f"  ✗ Error: {exc}")
 
+    _status("Report template policy...")
+    try:
+        from forensia.report.ranking import audit_packaged_report_templates
+
+        problems = audit_packaged_report_templates()
+        ok = not problems
+        checks.append(("Report template policy", ok))
+        if ok:
+            print("  ✓ Packaged templates carry no case-specific ranking policy")
+        else:
+            print(
+                "  ✗ Case-specific policy / malformed frontmatter in packaged "
+                "templates:\n" + "\n".join(f"      - {p}" for p in problems)
+            )
+    except Exception as exc:
+        checks.append(("Report template policy", False))
+        print(f"  ✗ Error: {exc}")
+
     _status("Test suite...")
     try:
         result = subprocess.run(

@@ -8,6 +8,15 @@ from typing import Any
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records, normalize_value
+from forensia.knowledge import (
+    catalog_data_file_extensions,
+    catalog_exe_globs,
+    catalog_file_patterns,
+    catalog_path_terms,
+    exe_glob_sql,
+    expand_catalog_sql_placeholders,
+)
+from forensia.questions import load_question_specs, project_rows_for_question_spec
 from forensia.report.benchmark_keypoints import BENCHMARK_KEYPOINT_ALIASES
 
 # ── SQL helpers used by keypoint lambdas ──
@@ -33,6 +42,44 @@ def _path_like_any(column: str, *segments: str) -> str:
         backslash_pattern = "%\\" + "\\".join(parts) + "\\%"
         patterns.extend((slash_pattern, backslash_pattern))
     return _sql_like_any(column, *patterns)
+
+
+def _like_any_or_false(column: str, patterns: tuple[str, ...]) -> str:
+    return _sql_like_any(column, *patterns) if patterns else "FALSE"
+
+
+def _path_like_any_or_false(column: str, segments: tuple[str, ...]) -> str:
+    return _path_like_any(column, *segments) if segments else "FALSE"
+
+
+def _extension_in_sql(column: str, extensions: tuple[str, ...]) -> str:
+    if not extensions:
+        return "FALSE"
+    values = ", ".join(f"'{extension}'" for extension in extensions)
+    return f"LOWER(COALESCE({column}, '')) IN ({values})"
+
+
+_BROWSER_EXE_SQL = exe_glob_sql(
+    "executable_name", catalog_exe_globs("browser_artifacts")
+)
+_EMAIL_DATA_FILE_SQL = _like_any_or_false(
+    "file_name", catalog_file_patterns("email_artifacts", "data_files")
+)
+_EMAIL_EXTENSION_SQL = _extension_in_sql(
+    "extension", catalog_data_file_extensions("email_artifacts")
+)
+_EMAIL_PATH_SQL = _path_like_any_or_false(
+    "file_path", catalog_path_terms("email_artifacts")
+)
+_CLOUD_PATH_SQL = _path_like_any_or_false(
+    "file_path", catalog_path_terms("cloud_sync_artifacts")
+)
+_CLOUD_FILE_SQL = _like_any_or_false(
+    "file_name",
+    catalog_file_patterns(
+        "cloud_sync_artifacts", "exe_patterns", "paths", "prefetch_names"
+    ),
+)
 
 
 # ── Pattern ──
@@ -799,16 +846,14 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "Notable user-data file paths from MFT (desktop, office, mail, cloud storage).",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT file_path, si_created, si_modified, fn_modified, is_deleted, evidence_id
             FROM mft_entries
             WHERE
                 LOWER(file_path) LIKE '%/desktop/%' OR
                 LOWER(file_path) LIKE '%/office/%' OR
-                LOWER(file_path) LIKE '%/outlook/%' OR
-                LOWER(file_path) LIKE '%googledrivesync%' OR
-                LOWER(file_path) LIKE '%/icloud%' OR
-                LOWER(file_path) LIKE '%/onedrive%'
+                {_EMAIL_PATH_SQL} OR
+                {_CLOUD_PATH_SQL}
             ORDER BY COALESCE(si_modified, fn_modified, si_created) DESC
             LIMIT 80
             """,
@@ -818,10 +863,10 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "Email OST/PST mailbox cache file paths from MFT.",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT file_path, si_created, si_modified, evidence_id
             FROM mft_entries
-            WHERE extension IN ('ost', 'pst')
+            WHERE {_EMAIL_EXTENSION_SQL}
             LIMIT 10
             """,
         ),
@@ -873,9 +918,9 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "Browser executable names from prefetch/mft.",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT DISTINCT executable_name FROM prefetch_executions
-            WHERE LOWER(executable_name) IN ('chrome.exe','firefox.exe','msedge.exe','iexplore.exe','brave.exe','opera.exe')
+            WHERE {_BROWSER_EXE_SQL}
         """,
         ),
     ),
@@ -885,7 +930,7 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             db,
             f"""
             SELECT file_name, file_path, si_modified FROM mft_entries
-            WHERE file_name ILIKE '%.ost' OR file_name ILIKE '%.pst' OR {_path_like_any("file_path", "outlook")}
+            WHERE {_EMAIL_DATA_FILE_SQL} OR {_EMAIL_PATH_SQL}
             """,
         ),
     ),
@@ -900,19 +945,6 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             """,
         ),
     ),
-    "structured_resignation_files": (
-        "Files matching resignation keywords.",
-        lambda db: _report_keypoint_rows(
-            db,
-            f"""
-            SELECT file_name, file_path, si_modified FROM mft_entries
-            WHERE (
-                {_sql_like_any("file_name", "%resign%", "%resignation%", "%retire%")}
-                OR {_path_like_any("file_path", "resign", "resignation", "retire")}
-            )
-            """,
-        ),
-    ),
     "structured_cloud_artifacts": (
         "Cloud sync artifacts from MFT (Google Drive, OneDrive, Dropbox, iCloud).",
         lambda db: _report_keypoint_rows(
@@ -920,8 +952,8 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             f"""
             SELECT file_name, file_path, is_deleted FROM mft_entries
             WHERE (
-                {_path_like_any("file_path", "google/drive", "apple computer", "onedrive", "dropbox", "icloud")}
-                OR {_sql_like_any("file_name", "%googledrivesync.exe%", "%icloudsetup.exe%", "%onedrive.exe%", "%dropbox.exe%", "%sync_config.db%", "%snapshot.db%", "%config.dbx%")}
+                {_CLOUD_PATH_SQL}
+                OR {_CLOUD_FILE_SQL}
             )
             """,
         ),
@@ -1027,7 +1059,7 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             f"""
             SELECT file_name, file_path, si_created, si_modified, evidence_id
             FROM mft_entries
-            WHERE extension IN ('ost', 'pst') OR {_path_like_any("file_path", "outlook")}
+            WHERE {_EMAIL_EXTENSION_SQL} OR {_EMAIL_PATH_SQL}
             ORDER BY COALESCE(si_modified, si_created) DESC
             LIMIT 40
             """,
@@ -1041,8 +1073,8 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             SELECT file_name, file_path, is_deleted, evidence_id
             FROM mft_entries
             WHERE (
-                {_path_like_any("file_path", "google/drive", "apple computer", "onedrive", "dropbox", "icloud")}
-                OR {_sql_like_any("file_name", "%googledrivesync.exe%", "%icloudsetup.exe%", "%onedrive.exe%", "%dropbox.exe%", "%sync_config.db%", "%snapshot.db%", "%config.dbx%")}
+                {_CLOUD_PATH_SQL}
+                OR {_CLOUD_FILE_SQL}
             )
             ORDER BY COALESCE(si_modified, si_created) DESC
             LIMIT 40
@@ -1399,6 +1431,35 @@ def _load_keypoint_cards(
 # ── Evidence resolver ──
 
 
+def _question_spec_keypoint_rows(
+    db: CaseDB, keypoint: str
+) -> tuple[str, list[dict[str, Any]]] | None:
+    """Resolve a keypoint declared by question_routing.yaml evidence_chain."""
+    normalized = str(keypoint or "").strip()
+    if not normalized:
+        return None
+    for spec in load_question_specs():
+        if normalized not in set(spec.keypoints):
+            continue
+        rows: list[dict[str, Any]] = []
+        for index, entry in enumerate(spec.evidence_chain, start=1):
+            query = str(entry.get("query") or "").strip()
+            if not query:
+                continue
+            query = expand_catalog_sql_placeholders(query)
+            source = str(entry.get("source") or f"query_{index}").strip()
+            try:
+                source_rows = _report_keypoint_rows(db, query)
+            except Exception:
+                continue
+            rows.extend({**row, "_question_source": source} for row in source_rows)
+        return (
+            spec.intent or f"Evidence chain for question spec {spec.semantic_id}.",
+            project_rows_for_question_spec(spec, rows),
+        )
+    return None
+
+
 def _resolve_evidence_results(
     case: Case,
     db: CaseDB,
@@ -1433,7 +1494,19 @@ def _resolve_evidence_results(
         resolved_name = REPORT_KEYPOINT_ALIASES.get(normalized, normalized)
         resolver_entry = REPORT_KEYPOINTS.get(resolved_name)
         if resolver_entry is None:
-            raise ValueError(f"unknown report template keypoint: {normalized}")
+            spec_result = _question_spec_keypoint_rows(db, resolved_name)
+            if spec_result is None:
+                raise ValueError(f"unknown report template keypoint: {normalized}")
+            description, rows = spec_result
+            results.append(
+                _summarize_rows(
+                    source_type="keypoint",
+                    source_id=normalized,
+                    description=description,
+                    rows=rows,
+                )
+            )
+            continue
         description, resolver = resolver_entry
         rows = resolver(db)
         results.append(

@@ -20,6 +20,8 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from forensia.knowledge import expand_catalog_sql_placeholders
+
 SCHEMA_DIR = REPO_ROOT / "src" / "forensia" / "rulepacks" / "_schema"
 RULES_DIR = REPO_ROOT / "src" / "forensia" / "rulepacks"
 TEMPLATES_DIR = REPO_ROOT / "src" / "forensia" / "report" / "templates"
@@ -138,6 +140,7 @@ def _schema_table_columns() -> dict[str, set[str]]:
 
 def _select_output_names(sql: str) -> set[str]:
     names: set[str] = set()
+    sql = expand_catalog_sql_placeholders(sql)
     try:
         parsed = sqlglot.parse_one(sql, read="duckdb")
     except Exception:
@@ -155,6 +158,7 @@ def _select_output_names(sql: str) -> set[str]:
 
 
 def _validate_question_sql(sql: str, table_columns: dict[str, set[str]]) -> list[str]:
+    sql = expand_catalog_sql_placeholders(sql)
     if not sql.strip():
         return ["empty evidence_chain query"]
     try:

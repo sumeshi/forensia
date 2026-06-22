@@ -2,154 +2,211 @@
 
 ![forensia-logo](web_ui/src/assets/images/forensia-logo.svg)
 
-あなたの代わりに週末作業してくれるAIフォレンジック調査員。
+**Your local AI assistant for weekend forensic work.**
 
-## 概要
+## Overview
 
-`forensia` (= forensic-ai) は、ローカルLLMを活用して Windows フォレンジック調査の自動化および調査支援を行うツールです。
+`forensia` blends **forensics** and **AI**.
 
-`gemma3-4b` や `qwen3-8b` といった小規模なローカルLLMでも実用的な推論ができるように、LLMにデータ全体を丸投げするのではなく、原本由来の証拠データ、ルールベース検知の結果、用途ごとに定義されたプロンプト、構造化された記憶を組み合わせながら、細かい単位で仮説の生成、検証を繰り返す設計をしています。
+It is an experimental tool for assisting Windows forensic investigations with local LLMs. The goal is not to throw an entire case at a model and hope it behaves like a senior analyst. Instead, forensia builds a harness around the model: the investigation is broken into small, inspectable steps — collecting evidence, generating hypotheses, checking them against source-derived data, extracting findings, and continuously updating a report — and the model is only asked to handle one narrow step at a time.
 
+The project starts from two practical constraints:
 
-## 開発の背景
+> Forensic data is sensitive. It often cannot be sent to a hosted AI service, and sometimes cannot leave the local machine at all. Also, a model large enough to work through a whole case on its own can be prohibitively expensive to run locally.
 
-Claude のモデル性能が上がった?素晴らしい! GPT も追従している?未来はきっと明るいですね。
+So forensia bets on the opposite approach: small local models, made useful by the architecture around them.
 
-でも、セキュリティインシデントに関する機微な情報を扱う技術者にはあまり関係のないことです。このような情報は当然、外部に出せません。もちろんクラウド環境にも。
-疑心暗鬼に陥っている人たちならば、自分たちが新たなセキュリティインシデントを産まないようにオフラインで作業するでしょう。私もそうです。
+Models such as `google/gemma-4-e4b` or `qwen/qwen3.5-9b` are not strong enough to read everything, remember everything, and reason correctly for hours without help. forensia therefore combines normalized evidence, rule-based signals, structured prompts, deterministic checks, and persistent memory so that the model is never asked to solve the whole case at once.
 
-では、オフラインで動く LLM にこのような仕事を任せられるでしょうか。
-試してみました。**とても無理です。**
+## Development status
 
-なぜなら、彼らは厳格なプロンプトを与えなければ指示を曲解するし、あまり長い文章は読めないし、健忘症です。
-なので、私はこれを **アーキテクチャで解決** できないかと考えました。
+forensia is in **early development**.
 
+The architecture, internal schemas, templates, rule formats, command-line interface, and repository layout may change significantly. The current design should be treated as a working research prototype rather than a stable platform.
 
-## 解決したいこと
+Contributions are welcome, and breaking changes are expected. Because of that, work on the core logic is the most valuable kind of contribution. Case-specific pieces such as individual rules are lower priority: they move quickly, and depending on your needs it may be easier to maintain them in your own fork — tuned per user or per engagement — rather than upstream.
 
-インシデントの相談というのはたいていが金曜日に来ます。あるいは長期休みの前に。このロジックは以下のとおりです。
+## Why this exists
 
-- まず、攻撃者は土日の人がいない時間を狙い、システムを侵害します。
-- 月曜に担当者が異変に気づきます。でも家に帰ることのほうが重要なので報告はしません。
-- 火曜の朝、ミーティングで「もしかするとインシデントかもしれない」と共有され、社内調査が開始します。
-- 水曜の終わり頃になって、ようやくインシデントらしいと諦めがつきます。
-- 木曜にベンダへ相談しようという話になり、あなたの会社の営業に連絡が来ますが、残念ながら技術者との間にはレイテンシがあります。
-- 金曜の朝あなたのところにリクエストが届き、月曜に報告をくださいという話になっています。調査対象のデータは、まだ届いていません。
+Modern frontier models are impressive. Claude gets better, GPT gets better, and the future looks bright.
 
-もううんざりです。あなたの代わりに週末作業してくれる人はいないでしょうか?
-いません。AIの友人以外は。
+But that does not help much when you are handling sensitive incident-response data.
 
+In many real investigations, the evidence cannot leave the organization. It cannot be uploaded to a cloud API. It may not even be safe to work on a network-connected machine. If you are paranoid enough to investigate an incident properly, you may also be paranoid enough to work offline. In the most sensitive cases, even the analysis environment may need to remain isolated, be wiped, or be disposed of afterwards.
 
-## 設計原則
+So the question is:
 
-### 1. **孤独に戦う**
+> Can an offline LLM help with forensic work?
 
-完全にオフラインでも動作し続けることを重視します。
-ネットワークに繋がれたシステムを週末放置しておけば、月曜の朝に見るのはランサムウェアの脅迫画面かもしれません。
+I tried.
 
-最小システム要件は、eBayで150ドルで買えるGPUにそれが動かせるPC、電力だけです。
+**Not directly.**
 
+Small local models misunderstand strict instructions, lose track of long context, forget previous reasoning, and sometimes repeat the same bad inference again and again. The solution is not to pretend they are smarter than they are. The solution is architecture.
 
-### 2. **AIの出力を信じない**
+forensia is an attempt to make weak models useful by surrounding them with structure.
 
-AI を「賢い調査員」として扱わない。
-人間がAIに使われることがあってはいけません。彼らは歯車です。人間が彼らを使うのです。
+## The weekend problem
 
-検知結果から仮説の生成、検証方針の提案、結果の確認、レポート作成などあらゆるタスクをひとくちサイズに分割して何度も推論を重ねつつ処理します。役割は `gap_identifier` / `hypothesis_drafter` / `query_intent_planner` / `sql_composer` / `verdict_reviewer` / `finding_extractor` / `section_outliner` / `paragraph_narrator` のように細かく分割し、それぞれが 1 文で目的を言える粒度に絞っています。
+Incident requests often arrive on Fridays.
 
-決定論的に決まる処理(SQL の妥当性検証、仮説の同一性判定、構造化質問のルーティングと表組み、フォールバック SQL の生成、重複クエリ検出)は LLM に渡さず、必ずコード側で処理します。LLM を「ルーティング」「リトライ」「フォーマット整形」に使わないことで、出力の予測可能性と監査性を保ちます。
+The pattern is familiar:
 
-LLM の verdict も無検証では採用しません。`confirmed` は「rationale が主張する Event ID と仮説の必須エンティティが実際のクエリ結果行に存在するか」をコード側の整合ゲートで照合してから確定します。フォールバック検索で代替された行からは `confirmed` を出せず(最大でも `newlead`)、記憶へ書き込む事実・エンティティもクエリ結果行に実在する evidence_id・値のみが受理されます。
+* Attackers compromise systems when nobody is watching.
+* Someone notices something strange on Monday.
+* It is discussed internally on Tuesday.
+* By Wednesday, people admit that it may be an incident.
+* On Thursday, someone decides to ask a vendor.
+* On Friday morning, the request reaches the engineer.
+* The report is expected by Monday.
+* The data has not arrived yet.
 
+This is exhausting.
 
-### 3. **時間は湯水のごとく使う**
+It would be nice if someone could work through the weekend for you.
 
-一度の実行で完璧な結論を出すことを目指しません。
+There is no such person.
 
-ひとつの仮説に対して何度も推論を重ね、その過程や記憶を観測可能な形で構造化します。これによって、なぜその結論に至ったのかを人間が理解できるようにします。
-報告書も最後にまとめて書くのではなく、調査の進行に合わせて継続的に更新していきます。
+There may be an AI friend.
 
-LLM への入出力は `ai_logs/` に保存され、durable な結論は必ず DuckDB のテーブルに格納されます。evidence_id / finding_id / hypothesis_id によって元証拠まで辿れるため、後から「なぜそう判断したのか」を人間が監査できます。
+## Design principles
 
-## アーキテクチャ概観
+### 1. Fight alone
 
-```mermaid
-flowchart LR
-    A["Artifacts<br/>EVTX / MFT / Prefetch / ..."]
-    A -->|Ingest / Normalize| C
-    C[("Case State<br/>normalized evidence")]
-    C --> D["Rule Engine<br/>Findings / KeyPoints"]
+forensia is designed to keep working in offline or isolated environments.
 
-    subgraph L["Investigation Loop (per plan_cycle)"]
-        D --> E["Hypothesis Seeding<br/>(rule.hypotheses + gap_identifier)"]
-        E --> P["Planner<br/>query_intent → sql_composer"]
-        P --> X["Executor<br/>+ fallback_search if 0 rows"]
-        X --> CK["Checker<br/>verdict_reviewer → finding_extractor"]
-        CK --> TR["Progress Tracker<br/>auto-confirm / refute / pivot"]
-        TR -->|active| P
-        TR -->|resolved| R["Resolver<br/>stale sections + follow-up"]
-        R --> RW["Report Writer<br/>section_outliner → paragraph_narrator"]
-        RW -->|new gaps| E
-    end
+If a system involved in an investigation is left connected to the network over the weekend, the thing waiting on Monday morning may not be a progress report. It may be a ransomware note.
 
-    T[("Trace State<br/>steps / verdicts / reasoning")]
-    M[("Structured Memories<br/>working context")]
+The minimal operating assumption is intentionally modest: a local machine, a cheap GPU if available, storage, and electricity.
 
-    E --> T
-    CK --> T
-    R --> T
+### 2. Do not trust the AI
 
-    C -. derive .-> M
-    T -. derive .-> M
-    M -. context .-> P
-    M -. context .-> CK
-```
+forensia does not treat the model as a brilliant investigator.
 
-ループ開始時には、発火した検知ルールの `hypotheses` 宣言が仮説としてシードされます(`source_decl_id` で宣言と紐づき、confirmed 時の follow-up 質問やレポートセクションの stale 化を駆動)。その後 `plan_cycle` 単位で次の流れを 1 周します。
+The model is a component. It is not the authority.
 
-1. **broad_plan**: `gap_identifier` が未カバーの観測点を抽出し、`hypothesis_drafter` がそれぞれに対し仮説を 1 つずつ起案。コード側で類似仮説を dedup し、ケースに存在しない Event ID への依存を確認条件から除去。
-2. **plan**: `query_intent_planner` が「何を取りに行くか」を JSON で出し、`sql_composer` が schema_card を見て SELECT 文を生成。
-3. **execute**: DuckDB に対し SELECT を発行。0 行のときに限り rule 側の `fallback_search` 宣言が決定論的に発火。
-4. **check**: `verdict_reviewer` が verdict を出し、コード側の整合ゲートが主張と結果行の一致を照合。confirmed のときだけ `finding_extractor` が構造化 finding を抽出し、検証済みのものを `findings` テーブルへ永続化。
-5. **track**: `HypothesisProgressTracker` が confirm_when / 連続 0-row / フィンガープリント重複を見て auto-confirm / auto-refute / untestable / pivot を機械的に判定。「証拠が無く検証不能 (untestable)」は「反証された (refuted)」と区別して記録。
-6. **resolve**: 仮説が確定すると関連レポートセクションが `stale` 化(ルール宣言の `report_sections` に加え、`target_keypoint_id` と記述キーワードからも導出。セクションごとの更新回数に上限あり)、follow-up 質問が新たな仮説に投入。
-7. **report**: `mode: table` ブロックは決定論的ビルダーが「宣言済みキャプション+表」を描画し(`rulepacks/_schema/report_tables.yaml`、`max_rows` 指定で全行表示可)、narrative ブロックは同一セクションの表データをダイジェストとして受け取ってから `section_outliner` / `paragraph_narrator` が本文を生成。生成された本文は毎回 `section_reviewer` が決定的ルーブリック(引用数超過・疑似引用・内部ID露出は `report/narrative_review.py` がコードで判定)+LLM批評でチェックし、問題があれば1回だけ書き直す。引用された evidence_id は `reports/evidence_map.json` に元レコード要約として解決され、report.md 末尾の Evidence References と report.html のホバー/アンカーリンクから参照できる。さらに `forensia serve` で配信中は、参照エントリの「記録を開く ⧉」ボタンと表の Ref ボタンが `/evidence/{id}` を新タブで開き、元レコード全文を平文 JSON で確認できる(report.html をローカルファイルとして開いた場合、ツールチップとページ内アンカーは機能するが、レコードビューアはサーバが必要)。untestable の仮説は不足テレメトリとともに Gap セクションへ。レポートから出た gap は次サイクルの仮説に戻る。ループ終了時には最終リフレッシュが走り、終盤サイクルで確定した仮説も `reports/report.md` に反映される。レポートリフレッシュの失敗は調査ループを止めない: LLM サーバ障害は調査ループと同じ復旧待機(既定で最大 8 時間)でリトライし、それ以外の失敗はトレースバックと進捗イベントに記録して続行する。stale フラグは DB に保持されるため、次に成功したリフレッシュ(または終了時の最終リフレッシュ)が未反映分に追いつく。失敗回数は調査結果の `report_refresh_failures` で確認できる。
+The system divides work into small roles: identifying gaps, drafting hypotheses, planning queries, composing SQL, reviewing verdicts, extracting findings, outlining sections, and writing paragraphs. Each role is intentionally narrow enough that its purpose can be stated in one sentence.
 
-## 効率性のための設計
+Anything that can be decided deterministically should be handled by code, not by the model. SQL validation, duplicate-query detection, structured routing, fallback behavior, evidence mapping, and consistency checks should be predictable and auditable.
 
-ローカル LLM の処理時間と精度を両立するため、以下の工夫を施しています。
+A model verdict is not accepted just because the model says it is true. Claims must be grounded in actual query results and source-derived evidence. If a finding cannot be tied back to evidence, it should not become durable memory.
 
-- **宣言層への知識集約**:Event ID 解説、Logon Type、検知ルール、フォールバック手順、レポートセクションのスタイル指示などは `src/forensia/rulepacks/_schema/` 配下の YAML / Markdown にまとめてあり、Python 側は generic に消費するだけです。新しい攻撃手法や調査観点は YAML 編集で追加できます。
-- **証拠アベイラビリティプロファイル**:調査開始時にケース DB から「実在する Event ID・テーブル行数・主要ユーザー/ホスト/実行ファイル」を決定的に集計し、仮説起案と SQL 計画のプロンプトへ注入します。存在しない Event ID にしか依存できない仮説は `untestable` として早期にループから外れます。また、`--auto-rulepacks` (既定 on) により、検出済みの痕跡ファミリ (クラウド同期 exe、`.ost`/`.pst` など) に `applies_when` が一致するルールパックを自動有効化します。`--no-auto-rulepacks` で従来の profile 固定動作に戻します。`resolve_active_packs` ([loader.py:222](src/forensia/rules/loader.py#L222)) で決定論的に判定されます。
-- **schema_card と SQL クックブック**:planner は intent の `target_table` に応じて `_schema/*.yaml` の schema_card を切り替え、`information_schema` から live スキーマを併記します。SQL クックブックは event_id 列挙 / 時間範囲 / GROUP BY / COALESCE / MFT path LIKE / Prefetch の 6 種で、LLM が SQL をゼロから合成しなくて済むようにしています。SQL バリデーション失敗時は `sql_composer` のみを最大 3 回リトライし、巨大プロンプト全体を送り直しません。
-- **LLM サーバ障害への耐性**:`chat_completion` は HTTP 5xx / 接続エラー / タイムアウトを最大 3 回まで指数バックオフ(2 / 4 / 8 秒)でリトライします。リトライ枯渇後は `_run_broad_plan_step` が再 raise して仮説調査全体を停止させ、空のレポート生成を抑止します。
-- **mid-investigation の UI 同期**:調査中は `progress_events.json` に加えて `hypotheses` / `findings` / `attack_coverage` / `report_sections` / `stats` 等の軽量スナップショットを 5 秒間隔で書き出し、webui が長時間調査の途中でも実状態を表示できるようにしています。
-- **記憶の圧縮と分離**:`overview.md` は状態遷移時のみ追記 (confirmed / refuted / untestable の確定、`observed_user` 以外の新規 entity role、新 artifact family の初 finding)。単なる inconclusive check では書き込みません。`_apply_memory_updates` ([investigator.py:737](src/forensia/ai/investigator.py#L737)) の決定論的述語で制御されます。`facts.md` / `timeline.md` などは構造を保持し、confirmed verdict では決定的な事実行が必ず追記されます。仮説検証中の暫定情報は `memory/scratch/H-NNN/` に隔離され、confirmed 時に共有記憶へ昇格、refuted / untestable 時は archive へ退避します。これによって未確証の暫定情報が他仮説の検証に汚染することを防ぎます。
-- **段落単位の汚染防止**:レポート生成では `paragraph_narrator` が 1 段落ずつ独立して書き、他セクションの本文や全 top-finding を見ません。ブロック間で共有するのは 120 字程度のサマリのみで、序文の使い回しや無関係な finding の流入を構造的に避けています。
-- **QuestionSpec による構造化質問**:テンプレートの見出しやコメントは `question_routing.yaml` の安定した `answer_spec` に解決されます。シャットダウン時刻、最終ログオン、メールデータファイル、クラウド同期痕跡などの定型質問は LLM に自由回答させず、決定論的 SQL / builder / CSV/JSON export で処理します。回答に添える解釈文も `interpretation_template` として YAML 側で宣言し、コードが行数や代表値を埋めて描画します。質問文中の日付・時刻範囲(`between 09:00 and 18:00` など)は正規表現で抽出され、SQL の時間フィルタに反映されます。
-- **クエリの正規化フィンガープリント**:重複クエリ検出は sqlglot AST ベースで、空白や別名差を無視して「意味的に同じクエリを 2 回出した」を判定します。LLM が同じ問いを言い換えて繰り返すことによる無限ループを防ぎます。
-- **LLM 呼び出し総数の硬上限(opt-in)**:`--max-llm-calls N` を超えると `RuntimeError` で停止します。クラウド API への暴走防止用の安全弁で、ローカル LLM 前提の既定値は `0`(無制限)。phase 別の集計は `ai_logs/` から確認できます。
+### 3. Spend time, not trust
 
-## クイックスタート
+forensia does not try to produce a perfect conclusion in one pass.
 
-### 前提
+Instead, it repeatedly generates, tests, refines, and records hypotheses. The investigation process itself should be observable. A human should be able to ask:
 
-- Python 3.14 以上
-- EVTX / MFT / Prefetch などの Windows フォレンジックアーティファクト
-- 仮説検証やレポート本文生成を行う場合は、OpenAI 互換 API を提供するローカル LLM サーバ
-  (LM Studio / llama.cpp server など)
+> Why did the system believe this?
 
-### インストール
+and trace the answer back to evidence, intermediate reasoning, and report output.
+
+The report is not written only at the end. It is continuously refreshed as the investigation progresses. Confirmed findings update the report; unresolved gaps can feed the next investigation cycle.
+
+## What forensia is not
+
+forensia is not intended to be a simple wrapper around existing detection rules.
+
+There are already many valuable rule ecosystems, such as Sigma rules, and they represent a large amount of human knowledge. But simply feeding those results to an LLM and asking for a summary is not the main goal here.
+
+That would make the AI a summarizer of detections.
+
+forensia is trying to explore something different:
+
+> AI-assisted investigation, not AI-generated detection summaries.
+
+Rules are still important. The project includes key rules where they help the investigation. But the more important design idea is this:
+
+> **Rules should express investigative intent, not only detection logic.**
+
+This is the single most important idea behind forensia's rule design. A good rule should not just record what was detected — it should help the system understand what the user may want to investigate next. As models improve, this intent-rich structure should become more valuable: the model can read not only what was detected, but why that detection matters and where the investigation should go.
+
+## Architecture at a glance
+
+forensia works as an investigation loop.
+
+At a high level:
+
+1. Artifacts such as EVTX, MFT, Prefetch, browser data, or email traces are ingested and normalized.
+2. Rules produce findings, key points, and possible hypotheses.
+3. The system drafts and tests hypotheses in small steps.
+4. SQL queries are generated, validated, executed, and checked.
+5. Confirmed evidence becomes structured findings and durable memory.
+6. Report sections are refreshed as new findings are confirmed.
+7. Gaps in the report can feed the next investigation cycle.
+
+The model is used where language and judgment are useful. Code is used where determinism and auditability matter.
+
+This separation is central to the project.
+
+## Why retrieval matters
+
+A major lesson from this project is that weaker models need more than prompts.
+
+They need the right information at the right time.
+
+When a model starts from insufficient context, it may make a wrong inference. If that wrong inference is then repeated back into later prompts, the model can rediscover the same mistaken idea again and again. This creates a loop of bad reasoning.
+
+The long-term direction for forensia is therefore strongly tied to retrieval-augmented generation.
+
+A future version should be able to use a local “second brain”: a folder of documents, notes, reports, playbooks, references, and user-collected knowledge. The system should index that material with full-text search, retrieve relevant fragments when needed, and pass them to the model as context.
+
+This is similar in spirit to the kind of search engine being explored in `sumeshi/roughsearch`.
+
+The point is not to make the prompt longer. The point is to trigger the right neurons.
+
+For local models, good retrieval may be as important as the model itself.
+
+## Efficiency by architecture
+
+forensia is designed to make local LLMs useful without pretending they are frontier models.
+
+Important techniques include:
+
+* **Declarative knowledge layers**
+  Rules, schema cards, report templates, question specifications, and investigation hints should be editable as YAML or Markdown where possible.
+
+* **Evidence availability profiles**
+  The system should know what evidence exists before asking the model to reason about it. A hypothesis that depends on unavailable telemetry should be marked as untestable, not treated as false.
+
+* **Small prompts for small tasks**
+  The model should not receive the entire case. It should receive only the context needed for the current task.
+
+* **Deterministic gates**
+  The system should verify that model claims are supported by actual evidence before accepting them.
+
+* **Structured memory**
+  Confirmed facts, entities, timelines, hypotheses, and findings should be stored in durable, inspectable formats.
+
+* **Incremental reporting**
+  Reports should evolve with the investigation rather than being generated as a final black box.
+
+* **Human auditability**
+  Outputs should link back to evidence wherever possible. The human investigator remains responsible for the final judgment.
+
+## Quick start
+
+### Requirements
+
+* Python 3.14 or later
+* Windows forensic artifacts such as EVTX, MFT, Prefetch, browser data, or related evidence
+* A local OpenAI-compatible LLM server for hypothesis testing and report writing
+  Examples include LM Studio or llama.cpp server.
+
+### Installation
 
 ```bash
 pip install forensia
 ```
 
-Web UI も同梱されているため、別途ビルドは不要です。`uvx forensia ...` や
-`uv tool install forensia` でも利用できます。
+You can also use:
 
-ソースから開発する場合は次を使います(以降のコマンド例の `forensia ...` は、ソース実行時には
-`forensia ...` に読み替えてください)。
+```bash
+uvx forensia ...
+uv tool install forensia
+```
+
+For development:
 
 ```bash
 git clone https://github.com/sumeshi/forensia.git
@@ -157,140 +214,128 @@ cd forensia
 uv sync --dev
 ```
 
-### ローカル LLM の設定
+### Local LLM configuration
 
-接続先は環境変数(または作業ディレクトリの `.env`)で指定します。
+Set your local model endpoint with environment variables or a local `.env` file:
 
 ```bash
 export LLM_BASE_URL="http://127.0.0.1:1234"
-export LLM_MODEL="qwen/qwen3-8b"
+export LLM_MODEL="google/gemma-4-e4b"
 ```
 
-ソースチェックアウトでは同梱の `.env.example` を雛形として使えます。`.env` は機密・ローカル設定として
-コミットしないでください。
+You can start from the example file:
 
 ```bash
 cp .env.example .env
-# edit .env if your local LLM endpoint/model differs
 ```
 
-### 実行
+Do not commit `.env`.
 
-アーティファクト (EVTX / MFT / Prefetch など) を `input/` に置き、次を実行します。
+### Run an investigation
+
+Place artifacts in an input directory and run:
 
 ```bash
 forensia investigate case001 ./input --profile windows-basic
 ```
 
-`investigate` は取り込み、正規化、ルール検知、仮説検証、レポート生成までを一括で実行します。LLM が未設定の場合、仮説検証フェーズはスキップされます。
-
-## 使い方
-
-### 一括実行 (新規ケース)
-
-```bash
-forensia investigate case001 ./input --profile windows-basic
-```
-
-長く調査ループを回す場合は `--max-iter` を指定します(既定 20)。
+To run more investigation cycles:
 
 ```bash
 forensia investigate case001 ./input --profile windows-basic --max-iter 50
 ```
 
-レポートテンプレートを差し替えるときは `--template-dir` を使います。
+To use custom report templates:
 
 ```bash
 forensia investigate case001 ./input --template-dir ./my-templates
 ```
 
-出力先を初期化してやり直す場合は `--rerun` を指定します。既存の `raw/` は保持しつつ、正規化テーブル、仮説、レポート本文、section agent の履歴、構造化質問の解決結果などの派生状態を消して再構築します。
-
-```bash
-forensia investigate case001 ./input --profile windows-basic --rerun
-```
-
-### 調査を続ける (既存ケース)
-
-既存ケースに対して `investigate` を実行すると、前回までの仮説・gap・記憶・レポート状態を引き継いで調査を続けます。`input_dir` は省略可能です。
+### Continue an existing case
 
 ```bash
 forensia investigate case001 --max-iter 50
-forensia investigate case001 --template-dir ./my-templates
 ```
 
-### 追加エビデンスの取り込み
-
-追加で EVTX / MFT などが届いた場合は既存ケースに `add` で取り込みます。重複は hash で避けられます。
+### Add more evidence
 
 ```bash
-forensia add case001 ./input
+forensia add case001 ./new-input
 ```
 
-### レポート
-
-既存のレポート状態から Markdown / HTML を出力します。
+### Generate or refresh a report
 
 ```bash
 forensia report case001
-```
-
-LLM でレポートセクションを再生成するには `--write` フラグを追加します。
-
-```bash
 forensia report case001 --write
 forensia report case001 --write --template-dir ./my-templates
 ```
 
-構造化質問の回答は Markdown 本文に加えて `reports/structured/answers.json` と個別 CSV に保存されます。どのテンプレートブロックがどの QuestionSpec に解決されたかは `reports/debug/<section>_questions.json` と `reports/api/section_questions.json` で確認できます。
-
-同梱テンプレートを任意の場所に書き出すには:
+### Export templates
 
 ```bash
 forensia templates-export ./my-templates
 ```
 
-### UI で確認する
-
-調査状態とレポートの途中経過をブラウザで確認できます。
+### Open the local UI
 
 ```bash
 forensia serve case001 --host 127.0.0.1 --port 8000
 ```
 
-UI 画面 (cockpit) は次で構成されます。
+The UI provides a cockpit for investigation progress, findings, hypotheses, report sections, timeline data, and evidence references.
 
-- **Header / KPI バー**: ケース名、現在 phase、LLM モデル、Events / Findings / Hypotheses / Open Gaps の 4 KPI。severity / verdict 内訳が積み棒で併記されます。
-- **Event Volume**: 全期間を day 粒度で表示し、年→月→日のピッカーで絞り込みます。日まで絞ると hour 粒度に切り替わります。EVTX channel 別の積み棒に検知件数を折れ線で重ねます。
-- **Report Draft Progress**: 各セクションの状態 (`draft` / `stable` / `ai_exhausted` / `human_reviewed`) と進捗。
-- **ATT&CK Coverage**: `findings.attack` を tactic × technique のマトリックスで集計。
-- **Cockpit**: 現在実行中のクエリ / focus 仮説、Active / Resolved Hypotheses / Latest Reasoning タブ、Open Gaps。
-- **Top Rules / Top Entities**: 発火ルール上位と、`memory/entities/` から検出された重要 entity。Entity は kind ごとにグルーピングされ、各カードの role / notes 行を2行プレビューします。
-- **Details**: findings / steps / sessions / activity / mft の生データタブ。
+## Safety notes
 
-## 注意事項
+* forensia is an investigation aid, not a replacement for human review.
+* Always verify findings against source evidence.
+* Use a local or offline LLM for sensitive investigations.
+* If `LLM_BASE_URL` points to a cloud or external endpoint, prompts may include case-derived evidence or summaries.
+* Do not publish real case directories, raw evidence, reports, AI logs, memory files, DuckDB databases, email stores, disk images, or other investigation artifacts.
+* See `SECURITY.md` for more details.
 
-- このツールの目的はレポートの材料を半自動で集めることであり、出力結果は必ず人間が検証してください。
-- オフライン動作を前提に設計していますが、ローカル LLM の準備 (モデルダウンロード、推論サーバの起動)は別途必要です。
-- `LLM_BASE_URL` をクラウドや社外のエンドポイントに向けると、プロンプトに含まれるケース由来の要約や証拠断片が外部送信される可能性があります。機微な調査ではローカル/オフラインの LLM を使用してください。
-- 実ケースの `raw/`、`reports/`、`ai_logs/`、`memory/`、DuckDB、メールストア、ディスクイメージなどは公開しないでください。詳しくは [SECURITY.md](SECURITY.md) を参照してください。
-- forensia は開発中のソフトウェアです。実装上の詳細、リポジトリ構成、内部不変条件などは [docs/](docs/) を参照してください。
+## Contributing
 
-## コントリビュート
+forensia is designed to prefer declarative changes where possible.
 
-検知ルール・スキーマカード・QuestionSpec などの知識追加は `src/forensia/rulepacks/` 配下の YAML 編集だけで完結するよう設計されています。コード変更を伴う貢献の原則(宣言層ファースト、決定的処理とLLMの責務分担、verdict 語彙、マイグレーション、テスト方針)は [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。
+If you want to add detection knowledge, investigation hints, schema cards, report behavior, or structured question handling, start with the rulepacks and template layers before modifying core code.
 
-## ベンチマーク
+Core code should stay focused on generic mechanisms. Case-specific pieces such as individual rules may be better discussed first. They tend to move quickly, and some may be better maintained as external profiles or forks tuned for a specific user, dataset, or engagement.
 
-CFReDS / NIST Data Leakage Case を使った評価観点は [BENCHMARK.md](./BENCHMARK.md) にまとめています。
-実データや派生ケースディレクトリはサイズ・ライセンス・機密性の理由でリポジトリには同梱していません。
-必要に応じて公開元からデータを取得し、作業用ディレクトリでアーティファクトを抽出してください。
+See `CONTRIBUTING.md` for development guidelines.
+
+## Benchmarks
+
+Benchmark-related notes are documented in `BENCHMARK.md`.
+
+The repository does not include large forensic datasets or derived case directories for size, license, and sensitivity reasons. Obtain benchmark data from the original public sources when needed, extract artifacts into a local working directory, and run forensia against that local copy.
+
+Example:
 
 ```bash
-# Optional: start from the packaged report templates and customize them for a local benchmark run.
 forensia templates-export ./benchmark-templates
 forensia investigate benchmark-output ./path/to/extracted-artifacts --profile windows-basic --template-dir ./benchmark-templates
 forensia report benchmark-output
 ```
 
-詳細は [BENCHMARK.md](./BENCHMARK.md) を参照してください。
+Benchmark templates and scoring-oriented configuration may be documented separately from the core project. The important architectural goal is that benchmark-specific behavior should come from templates, profiles, or rules, not from hidden assumptions in the core engine.
+
+## Future plans
+
+Important future directions include:
+
+* stronger retrieval-augmented generation
+* a local second-brain style knowledge folder
+* integration with full-text search over user-collected references
+* more declarative investigation profiles
+* clearer separation between generic engine logic and case-specific knowledge
+* better template documentation
+* more stable contribution boundaries as the project matures
+
+The long-term goal is not merely to automate reports.
+
+The goal is to build an offline investigation assistant that can use evidence, rules, memory, retrieval, and human intent to help answer the question:
+
+> What actually happened?
+
+And, just as importantly, to let a human trace exactly how that answer was reached — and decide whether to trust it.
