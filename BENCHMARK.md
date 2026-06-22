@@ -163,7 +163,7 @@ uv run python scripts/eval_run.py <case_dir>
 | Metric | What it measures | Flag threshold |
 |---|---|---|
 | Hypothesis family diversity | Share of hypotheses per artifact family; flags if >70% single-family | dominant share >0.7 |
-| Confirmed-while-benign rate | Proportion of confirmed hypotheses whose supporting rows match benign-context rules (R2-06) | N/A (placeholder until R2-06 lands) |
+| Confirmed-while-benign rate | Proportion of confirmed hypotheses whose supporting rows match benign-context rules | N/A (observational until benign-context rules are fully defined) |
 | Placeholder leak count | Lines matching `{…}` or `[placeholder]` in hypotheses, facts, SQL logs | >0 is a defect |
 | Memory duplication ratio | Pairwise Jaccard ≥0.7 among overview lines | ratio >0.3 |
 | Report hygiene | Error-string leaks (sqlglot, internal-error), bare-ID hypothesis tables, day-coverage gap | >0 errors or bare IDs |

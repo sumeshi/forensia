@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "forensia"
 version = "0.1.0"
-description = "Incident response helper for ingesting Windows artefacts and generating reports"
+description = "Your local AI assistant for weekend forensic work."
 readme = "README.md"
 requires-python = ">=3.14"
 license = "MIT"
@@ -57,9 +57,12 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 forensia = [
+    "profiles/*.yaml",
     "report/templates/*.j2",
     "report_template/*.md",
+    "rulepacks/*/*.yaml",
     "rulepacks/_schema/*.yaml",
+    "rulepacks/_schema/suppression/*.yaml",
     "rulepacks/_schema/playbook/*.md",
     "static/**/*",
 ]

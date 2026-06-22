@@ -43,9 +43,9 @@ Raw logs of LLM input/output are saved to `ai_logs/<phase>-<id>.json`.
 
 | Role | Caller | Prompt builder | Output schema |
 |---|---|---|---|
-| `section_outliner` | [section_agent._write_block_body](../src/forensia/ai/section_agent.py#L1907) | `build_section_outline_messages` | `SECTION_OUTLINE_SCHEMA` |
-| `paragraph_narrator` | [section_agent._narrate_paragraph_with_retry](../src/forensia/ai/section_agent.py#L1819) | `build_paragraph_narrate_messages` | `PARAGRAPH_NARRATE_SCHEMA` |
-| `benchmark_classifier` | [section_agent._write_block_body](../src/forensia/ai/section_agent.py#L2008) (structured answer candidate) | `build_benchmark_classify_messages` | `benchmark_classify_schema(n_rows)` |
+| `section_outliner` | [section_agent._write_block_body](../src/forensia/ai/section_agent.py#L936) | `build_section_outline_messages` | `SECTION_OUTLINE_SCHEMA` |
+| `paragraph_narrator` | [section_agent._narrate_paragraph_with_retry](../src/forensia/ai/section_agent.py#L612) | `build_paragraph_narrate_messages` | `PARAGRAPH_NARRATE_SCHEMA` |
+| `benchmark_classifier` | [section_agent._write_block_body](../src/forensia/ai/section_agent.py#L936) (structured answer candidate) | `build_benchmark_classify_messages` | `benchmark_classify_schema(n_rows)` |
 
 ---
 
@@ -110,7 +110,7 @@ See [`_apply_memory_updates`](../src/forensia/ai/investigator.py#L737) for the a
 }
 ```
 
-A retry on empty body is performed exactly once in [`_narrate_paragraph_with_retry`](../src/forensia/ai/section_agent.py#L1819). If the second attempt also fails, [`_fallback_narrative_body`](../src/forensia/ai/section_agent.py#L1853) falls back to local generation (in the form `representative row is <timestamp> / <event_id> / <evidence_id>`).
+A retry on empty body is performed exactly once in [`_narrate_paragraph_with_retry`](../src/forensia/ai/section_agent.py#L612). If the second attempt also fails, [`_fallback_narrative_body`](../src/forensia/ai/section_agent.py#L684) falls back to local generation (in the form `representative row is <timestamp> / <event_id> / <evidence_id>`).
 
 ### 3.4 `FINDING_EXTRACTOR_SCHEMA` / others
 

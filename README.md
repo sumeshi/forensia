@@ -125,6 +125,38 @@ This is the single most important idea behind forensia's rule design. A good rul
 
 forensia works as an investigation loop.
 
+```mermaid
+flowchart LR
+    A["Artifacts<br/>EVTX / MFT / Prefetch / ..."]
+    A -->|Ingest / Normalize| C
+    C[("Case State<br/>normalized evidence")]
+    C --> D["Rule Engine<br/>Findings / Key Points"]
+
+    subgraph L["Investigation Loop"]
+        D --> E["Hypothesis Seeding<br/>rules + gap analysis"]
+        E --> P["Planner<br/>query intent → SQL composition"]
+        P --> X["Executor<br/>query execution + fallback search"]
+        X --> CK["Checker<br/>verdict review → finding extraction"]
+        CK --> TR["Progress Tracker<br/>confirm / refute / pivot"]
+        TR -->|active| P
+        TR -->|resolved| R["Resolver<br/>stale report sections + follow-up gaps"]
+        R --> RW["Report Writer<br/>section outline → narrative paragraphs"]
+        RW -->|new gaps| E
+    end
+
+    T[("Trace State<br/>steps / verdicts / evidence links")]
+    M[("Structured Memories<br/>working context")]
+
+    E --> T
+    CK --> T
+    R --> T
+
+    C -. derive .-> M
+    T -. derive .-> M
+    M -. context .-> P
+    M -. context .-> CK
+```
+
 At a high level:
 
 1. Artifacts such as EVTX, MFT, Prefetch, browser data, or email traces are ingested and normalized.

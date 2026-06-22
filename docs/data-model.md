@@ -22,7 +22,7 @@ Schema initialization is performed in `CaseDB.__init__` in [src/forensia/db/data
 | `prefetch_executions` | Prefetch aggregate (latest one per binary) | `evidence_id`, `executable_name`, `exec_count`, `last_exec_time`, `prefetch_hash`, `filenames`, `volumes`, `raw_json` |
 | `prefetch_timeline` | Prefetch execution history (up to 8 rows per binary) | `timeline_id`, `evidence_id`, `executable_name`, `prefetch_hash`, `exec_time`, `exec_index` |
 | `ingested_files` | Hash table for ingest deduplication | `path`, `hash`, `source_kind`, `ingested_at` |
-| `case_timeline` | Deterministic timeline (R2-11) | `entry_id`, `timestamp`, `source` (`finding`/`verdict`/`structured`/`keypoint`), `ref_id`, `host`, `summary`, `evidence_id` |
+| `case_timeline` | Deterministic timeline | `entry_id`, `timestamp`, `source` (`finding`/`verdict`/`structured`/`keypoint`), `ref_id`, `host`, `summary`, `evidence_id` |
 
 `case_timeline` is fed by three deterministic feeders: (a) the first-evidence timestamp of findings with severity ≥ medium (`feed_findings_to_timeline` [engine.py:196](../src/forensia/rules/engine.py#L196)), (b) the decisive query row of resolved hypotheses, and (c) the matching rows of structured answers declared with `timeline: true` in `question_routing.yaml`.
 

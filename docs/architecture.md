@@ -116,12 +116,12 @@ sequenceDiagram
 
 For the input/output schema of each LLM role, see [llm-roles.md](llm-roles.md).
 
-**Extensions (R2-07 / R2-08 / R2-11 / R2-14):**
+**Additional behavior:**
 
-- **auto-rulepacks** (R2-07): `resolve_active_packs` ([loader.py:222](../src/forensia/rules/loader.py#L222)) automatically enables rulepacks whose `applies_when.artifact_families` match the case's evidence families. Use `--no-auto-rulepacks` for the legacy behavior. Controlled by the `auto_rulepacks` argument of `investigator.investigate` ([investigator.py:1930](../src/forensia/ai/investigator.py#L1930)).
-- **playbook budget control** (R2-08): `_dfir_playbook` ([prompts.py:426](../src/forensia/ai/prompts.py#L426)) narrows Event ID narratives to IDs that exist in the case so they stay under `FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS` (default 24000), and drops sections in priority order when the budget is exceeded.
-- **automatic timeline assembly** (R2-11): The `case_timeline` table ([schema.py:287](../src/forensia/db/schema.py#L287)) is deterministically fed with the first-evidence timestamp of findings (severity ≥ medium) and the decisive query row of resolved hypotheses (`feed_findings_to_timeline` [engine.py:196](../src/forensia/rules/engine.py#L196)). `memory/timeline.md` is a projection regenerated from this table.
-- **timezone support** (R2-14): `infer_timezone` ([timezone.py:8](../src/forensia/normalize/timezone.py#L8)) infers the offset from events such as 4616 system time changes. It is stored in `case.source_timezone` ([case.py:131](../src/forensia/core/case.py#L131)), and `_render_timestamp_with_timezone` ([writer.py:2098](../src/forensia/report/writer.py#L2098)) renders a dual UTC + local display.
+- **auto-rulepacks**: `resolve_active_packs` ([loader.py:222](../src/forensia/rules/loader.py#L222)) automatically enables rulepacks whose `applies_when.artifact_families` match the case's evidence families. Use `--no-auto-rulepacks` for the legacy behavior. Controlled by the `auto_rulepacks` argument of `investigator.investigate` ([investigator.py:1930](../src/forensia/ai/investigator.py#L1930)).
+- **playbook budget control**: `_dfir_playbook` ([prompts.py:426](../src/forensia/ai/prompts.py#L426)) narrows Event ID narratives to IDs that exist in the case so they stay under `FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS` (default 24000), and drops sections in priority order when the budget is exceeded.
+- **automatic timeline assembly**: The `case_timeline` table ([schema.py:287](../src/forensia/db/schema.py#L287)) is deterministically fed with the first-evidence timestamp of findings (severity ≥ medium) and the decisive query row of resolved hypotheses (`feed_findings_to_timeline` [engine.py:196](../src/forensia/rules/engine.py#L196)). `memory/timeline.md` is a projection regenerated from this table.
+- **timezone support**: `infer_timezone` ([timezone.py:8](../src/forensia/normalize/timezone.py#L8)) infers the offset from events such as 4616 system time changes. It is stored in `case.source_timezone` ([case.py:131](../src/forensia/core/case.py#L131)), and `_render_timestamp_with_timezone` ([markdown.py:103](../src/forensia/report/markdown.py#L103)) renders a dual UTC + local display.
 
 ### 2.4 Section Agent (report generation)
 
@@ -169,7 +169,7 @@ Markdown templates under `report_template_dir` declare the layout per `section_k
 6_appendix        · Structured answers (Q1, Q2, ...)
 ```
 
-Each section is decomposed into multiple **blocks** (heading units) and processed sequentially by `run_section_block_agent` ([section_agent.py:2113](../src/forensia/ai/section_agent.py#L2113)).
+Each section is decomposed into multiple **blocks** (heading units) and processed sequentially by `run_section_block_agent` ([section_agent.py:1161](../src/forensia/ai/section_agent.py#L1161)).
 
 ### 3.2 Keypoint catalog
 
@@ -249,7 +249,7 @@ dist/<case>/
 | `LLM_BASE_URL` | URL of the OpenAI-compatible LLM server | (required) |
 | `LLM_MODEL` | Model name | (required) |
 | `LLM_REASONING_RESERVE_TOKENS` | max_tokens addition reserved for reasoning | 0 |
-| `LLM_OUTPUT_LANGUAGE` | Output language (`ja` / `en`) | `en` |
+| `LLM_OUTPUT_LANGUAGE` | Output language (`ja` / `en`) | `ja` (`.env.example` sets `en`) |
 | `LLM_MAX_TOKENS` | max_tokens for normal output | 4096 |
 | `LLM_OUTAGE_WALL_CLOCK_BUDGET_S` | Total time budget (seconds) to wait for LLM server recovery | 28800 |
 | `LLM_OUTAGE_PROBE_INTERVAL_S` | Interval (seconds) between recovery probes | 60 |

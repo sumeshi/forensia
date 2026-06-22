@@ -29,7 +29,12 @@ cp .env.example .env
 | `LLM_THINKING_LANGUAGE` | Language of thinking prompts |
 | `LLM_OUTPUT_LANGUAGE` | Language of human-facing output |
 | `LLM_MEMORY_MAX_BYTES` | Threshold that triggers memory file compaction |
+| `LLM_REPORT_MAX_QUERIES_PER_SECTION` | Default query budget for each report-section block |
 | `LLM_REASONING_RESERVE_TOKENS` | Extra token buffer for reasoning models |
+| `FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS` | System-prompt budget for generated DFIR guidance |
+| `STRUCTURED_MARKDOWN_MAX_ROWS` | Maximum rows rendered directly in structured-answer Markdown |
+| `LLM_OUTAGE_WALL_CLOCK_BUDGET_S` | Total time budget for waiting on LLM server recovery |
+| `LLM_OUTAGE_PROBE_INTERVAL_S` | Probe interval while waiting on LLM server recovery |
 | `FORENSIA_API_BASE_URL` | API base URL during UI development |
 | `FORENSIA_UI_ORIGINS` | FastAPI CORS allow-list (comma-separated) |
 
