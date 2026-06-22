@@ -309,7 +309,6 @@ class MemoryManager:
     # (includes the Active Tasks seed lines from _initialize_overview).
     _OVERVIEW_PLACEHOLDERS = (
         "- none",
-        "- 初回調査待ち",
         "- Awaiting initial investigation",
     )
     _TASK_VERB_RE = re.compile(

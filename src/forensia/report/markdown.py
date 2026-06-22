@@ -291,7 +291,7 @@ def render_rows_template(template: str, rows: list[dict[str, Any]]) -> str:
                 seen.append(str(val))
             if len(seen) >= n:
                 break
-        return "、".join(seen) if seen else ""
+        return ", ".join(seen) if seen else ""
 
     return re.sub(r"\{sample\((\w+),\s*(\d+)\)\}", replace_sample, result)
 

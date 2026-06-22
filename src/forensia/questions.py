@@ -246,7 +246,7 @@ def extract_time_qualifiers(
       - 'from YYYY-MM-DD to YYYY-MM-DD'
       - JP wave-dash: '2026-03-01〜2026-03-31'
       - Time-of-day: 'between 09:00 and 17:00'
-      - JP time range: '午前9時から午後5時まで'
+      - Time range: '9 AM to 5 PM'
 
     When a timezone name is provided and hour qualifiers are present, the returned
     hour values are converted to UTC so that SQL filters match the UTC timestamps
@@ -291,7 +291,10 @@ def extract_time_qualifiers(
     if m:
         hour_from, hour_to = m.group(1), m.group(2)
     else:
-        m = re.search(r"午前(\d{1,2})時から午後(\d{1,2})時まで", text)
+        m = re.search(
+            r"(\d{1,2})(?::\d{2})?\s*(?:AM|am)\s*(?:to|and|[-–])\s*(\d{1,2})(?::\d{2})?\s*(?:PM|pm)",
+            text,
+        )
         if m:
             hour_from = f"{int(m.group(1)):02d}:00"
             hour_to = f"{int(m.group(2)) + 12:02d}:00"

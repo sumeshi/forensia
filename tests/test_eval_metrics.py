@@ -362,14 +362,14 @@ class TestR311Metrics:
         assert (
             instruction_tone_ratio("Clean normal text without any instructions.") == 0.0
         )
-        assert instruction_tone_ratio("通常の日本語テキストです。") == 0.0
+        assert instruction_tone_ratio("Normal English text.") == 0.0
 
     def test_instruction_tone_ratio_flagged(self):
-        text = "確認する必要があります。"
+        text = "should be verified."
         assert instruction_tone_ratio(text) > 0
 
     def test_instruction_tone_ratio_mixed(self):
-        text = "通常の文です。確認する必要があります。別の通常文。評価してください。"
+        text = "Normal sentence. should be verified. Another normal sentence. evaluate carefully."
         r = instruction_tone_ratio(text)
         assert r == 0.5, f"expected 0.5, got {r}"
 

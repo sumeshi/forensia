@@ -1,9 +1,9 @@
 # Contributing to forensia
 
-forensia への貢献に興味を持っていただきありがとうございます。
-このドキュメントは「何を・どこに・どう書くか」の最短ガイドです。実装の詳細は [docs/](docs/) を、開発環境のセットアップ・テストコマンド・CLI フラグは [docs/development.md](docs/development.md) を参照してください。
+Thank you for your interest in contributing to forensia.
+This document is a short guide on "what, where, and how to write." For implementation details, see [docs/](docs/); for development environment setup, test commands, and CLI flags, see [docs/development.md](docs/development.md).
 
-## セットアップ
+## Setup
 
 ```bash
 git clone https://github.com/sumeshi/forensia
@@ -11,81 +11,81 @@ cd forensia
 uv sync
 ```
 
-LLM 接続は `.env.example` を `.env` にコピーしてローカル値へ編集してください。`.env` やケース成果物はコミットしないでください。
-Web UI のセットアップは [docs/development.md](docs/development.md) を参照してください。
+For LLM connectivity, copy `.env.example` to `.env` and edit it with your local values. Do not commit `.env` or case artifacts.
+For Web UI setup, see [docs/development.md](docs/development.md).
 
-## 変更を入れる前に知っておくべき設計原則
+## Design principles to know before making changes
 
-詳細は [docs/design-principles.md](docs/design-principles.md)。レビューで最も問われるのは以下です。
+See [docs/design-principles.md](docs/design-principles.md) for details. The following are the points most scrutinized during review.
 
-### 1. 宣言層ファースト
+### 1. Declarative layer first
 
-Event ID の解説、検知ルール、フォールバック手順、QuestionSpec、構造化回答の解釈文 (`interpretation_template`)、verdict 語彙などの **DFIR 知識は `src/forensia/rulepacks/` 配下の YAML に置きます**。Python 側に rule_id / event_id / ホスト名などのハードコード分岐を増やす PR は原則受け付けません。
+DFIR knowledge such as Event ID descriptions, detection rules, fallback procedures, QuestionSpec, structured answer interpretation text (`interpretation_template`), and verdict vocabulary **belongs in YAML under `src/forensia/rulepacks/`**. PRs that add hardcoded branches for rule_id / event_id / host names on the Python side are generally not accepted.
 
-- 新しい検知観点 → `rulepacks/<pack>/*.yaml`([docs/rules-and-profiles.md](docs/rules-and-profiles.md))
-- 新しい定型質問 → `rulepacks/_schema/question_routing.yaml`
-- 新しいテーブル → `rulepacks/_schema/<table>.yaml` の schema card
+- New detection perspective → `rulepacks/<pack>/*.yaml`([docs/rules-and-profiles.md](docs/rules-and-profiles.md))
+- New canned question → `rulepacks/_schema/question_routing.yaml`
+- New table → schema card in `rulepacks/_schema/<table>.yaml`
 
-### 2. 決定的処理を LLM に渡さない
+### 2. Do not pass deterministic processing to the LLM
 
-ルーティング、リトライ、SQL 検証、重複判定、集計、整形、値の検証はコードで行います。LLM ロールを追加するときは「`<TASK>` を 1 文で書けるか」を確認してください。
+Routing, retries, SQL validation, duplicate detection, aggregation, formatting, and value validation are handled in code. When adding an LLM role, verify that its `<TASK>` can be stated in one sentence.
 
-逆方向も同じく重要です: **LLM の出力を無検証で永続状態にしない**。verdict はコード側の整合ゲート(主張された Event ID・必須エンティティと結果行の照合、フォールバック行からの confirmed 禁止)を通り、memory への書き込みは観測された evidence_id・エンティティ名のみが受理されます。これらのゲートを弱める変更には、相応の根拠とテストが必要です。
+The reverse direction is equally important: **never persist LLM output without validation**. Verdicts must pass code-side consistency gates (matching claimed Event IDs and required entities against result rows, prohibiting confirmed from fallback rows), and only observed evidence_ids and entity names are accepted into memory. Changes that weaken these gates require proportionate justification and tests.
 
-### 3. verdict / status は列挙であり自由文字列ではない
+### 3. verdict / status are enums, not free strings
 
-許可値と層間マッピングは `rulepacks/_schema/verdict_taxonomy.yaml` が正本です。新しい値(例: `untestable`)を増やすときは taxonomy を編集し、Python 側の Literal / validator を追随させます。validator の回避はバグ扱いです。
+Allowed values and cross-layer mappings are authoritative in `rulepacks/_schema/verdict_taxonomy.yaml`. When adding a new value (e.g. `untestable`), edit the taxonomy and follow up with the Python-side Literal / validator. Bypassing the validator is treated as a bug.
 
-なお `refuted`(証拠により反証)と `untestable`(必要なテレメトリがケースに存在せず検証不能)は意味が異なります。「証拠が無い」ことを反証として記録しないでください。
+Note that `refuted` (contradicted by evidence) and `untestable` (cannot be verified because the required telemetry is not present in the case) have different meanings. Do not record "no evidence" as a refutation.
 
-### 4. スキーマ変更にはマイグレーションが必須
+### 4. Schema changes require migrations
 
-`db/schema.py` の `CREATE TABLE IF NOT EXISTS` を変更しても**既存ケース DB には適用されません**。既存テーブルへ列を追加する場合は、`db/database.py` の `_apply_migration_once("<key>", ...)` にマイグレーションを必ず追加してください(`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` パターン)。mutable なテーブルを追加した場合は `_reset_case_tables()` と対応するテストも更新します。
+Editing `CREATE TABLE IF NOT EXISTS` in `db/schema.py` does **not** apply to existing case databases. When adding columns to an existing table, always add a migration in `_apply_migration_once("<key>", ...)` in `db/database.py` (using the `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` pattern). When adding a mutable table, also update `_reset_case_tables()` and the corresponding tests.
 
-### 5. 証拠への traceability を保つ
+### 5. Maintain evidence traceability
 
-durable な結論(findings / claims / memory facts)は必ず evidence_id まで辿れるようにします。証拠を要約・ランキングする抽象を追加するときも、元証拠への参照経路を切らないでください。
+Durable conclusions (findings / claims / memory facts) must always be traceable back to an evidence_id. Even when adding abstractions that summarize or rank evidence, do not sever the reference path back to the source evidence.
 
-### 6. ベンチマークを最適化対象にしない
+### 6. Do not optimize for the benchmark
 
-BENCHMARK.md の CFReDS ベンチマークは**測定器であり、最適化対象ではありません**。特定の設問・ホスト名・ファイル名・日時に紐づくコードパスやプロンプトの追加は禁止です。ベンチマークで欠落を見つけたら「どの汎用 DFIR 能力が欠けているか」に翻訳してから実装してください。
+The CFReDS benchmark in BENCHMARK.md is **a measurement instrument, not an optimization target**. Adding code paths or prompts tied to specific questions, host names, file names, or timestamps is prohibited. When you find a gap in the benchmark, translate it into "which generic DFIR capability is missing" before implementing.
 
-## テスト
+## Tests
 
 ```bash
-# 全テスト(秒単位で完了すること)
+# All tests (should complete in seconds)
 UV_CACHE_DIR=/tmp/uv-cache PYTHONPATH=src uv run python -m pytest tests/ -q
 
-# 宣言層・ドキュメントの整合性監査
+# Declarative layer / documentation consistency audit
 forensia doctor
 ```
 
-- **実 LLM 呼び出し・実 LLM サーバを叩くテストは書かない**(理由は [docs/development.md](docs/development.md) の「テスト方針」)。
-- 決定論ゲートを変更した場合は対応する回帰テストを更新してください:
-  `tests/test_checker_gates.py`(verdict 整合ゲート・フォールバック降格・memory フィルタ・finding 検証)、
-  `tests/test_untestable_resolution.py`(untestable 早期解決)。
-- ルール YAML や `question_routing.yaml` を変更したら `scripts/audit_schema_coverage.py --strict`(`forensia doctor` に含まれる)が通ることを確認してください。
-- import の層契約(`core→ai` 禁止、`report→ai` 禁止など)は `scripts/check_imports.py`(`forensia doctor` に含まれる)で検査されます。新しい module を追加したら通ることを確認してください。
+- **Do not write tests that make real LLM calls or hit a real LLM server** (see the "Test policy" section in [docs/development.md](docs/development.md) for the rationale).
+- When you change a determinism gate, update the corresponding regression tests:
+  `tests/test_checker_gates.py` (verdict consistency gates, fallback downgrade, memory filter, finding verification),
+  `tests/test_untestable_resolution.py` (early untestable resolution).
+- When you change rule YAML or `question_routing.yaml`, confirm that `scripts/audit_schema_coverage.py --strict` (included in `forensia doctor`) passes.
+- The import layer contracts (`core→ai` forbidden, `report→ai` forbidden, etc.) are checked by `scripts/check_imports.py` (included in `forensia doctor`). When you add a new module, confirm it passes.
 
-## テンプレート
+## Templates
 
-パッケージ同梱の既定テンプレートは `src/forensia/report_template/` が正本です。通常のレポート構造を変える場合はここを更新し、必要なら README / docs も同じ PR で更新してください。
+The package-bundled default templates have `src/forensia/report_template/` as the source of truth. When changing the standard report structure, update this directory and, if necessary, update the README / docs in the same PR.
 
-ローカル評価用にテンプレートを派生させる場合は、`uv run forensia templates-export ./my-templates` で作業コピーを作り、`--template-dir ./my-templates` で明示指定してください。評価用テンプレートや実ケース固有テンプレートは、汎用テンプレートとして公開できる内容だけをコミットしてください。
+To derive templates for local evaluation, create a working copy with `uv run forensia templates-export ./my-templates` and specify it explicitly with `--template-dir ./my-templates`. Only commit evaluation templates or case-specific templates whose content is suitable for publication as generic templates.
 
-## ドキュメント
+## Documentation
 
-コードを変更したら**同じ PR で** [docs/](docs/) の該当ページと、ユーザー向け挙動が変わる場合は README.md を更新してください(docs/architecture.md 冒頭の規約)。
+When you change code, update the relevant page in [docs/](docs/) **in the same PR**, and update README.md if user-facing behavior changes (see the convention at the top of docs/architecture.md).
 
-## PR の出し方
+## Submitting PRs
 
-1. ブランチを切り、変更は小さく焦点を絞る(無関係なリファクタを混ぜない)。
-2. `pytest` と `forensia doctor` を全て通す。スキップ・失敗を残したまま「完了」としない。
-3. コード・コメント・コミットメッセージは英語で書く。
-4. PR 説明には「何を・なぜ・どう検証したか」を書く。LLM プロンプトの変更は before/after の挙動差を添えると速くレビューできます。
+1. Cut a branch and keep changes small and focused (do not mix in unrelated refactors).
+2. Make `pytest` and `forensia doctor` pass in full. Do not mark something "done" while skips or failures remain.
+3. Write code, comments, and commit messages in English.
+4. In the PR description, state "what, why, and how you verified it." For LLM prompt changes, attaching the before/after behavior diff speeds up review.
 
-## バグ報告・提案
+## Bug reports and suggestions
 
-Issue には再現手順(可能なら `ai_logs/` の該当エントリや `hypothesis_reasoning` の抜粋)と、期待した挙動・実際の挙動を添えてください。機微な調査データはそのまま貼らず、サニタイズしてください。
+Include reproduction steps (entries from `ai_logs/` or excerpts of `hypothesis_reasoning` where possible) along with expected and actual behavior in issues. Do not paste sensitive investigation data as-is; sanitize it first.
 
-セキュリティ上の問題や機微データの扱いは [SECURITY.md](SECURITY.md) も参照してください。
+For security issues and handling of sensitive data, also see [SECURITY.md](SECURITY.md).

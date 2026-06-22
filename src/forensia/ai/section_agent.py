@@ -691,8 +691,6 @@ def _fallback_narrative_body(
     actual_query_row_counts: list[int],
 ) -> str:
     """Build a deterministic paragraph when the LLM narrator returns an empty body."""
-    language = _report_language()
-    is_ja = language in {"ja", "jp", "japanese"}
     total_rows, positive_sources, _zero_sources = _result_count_summary(
         collected_results
     )
@@ -711,49 +709,28 @@ def _fallback_narrative_body(
     if status in {"not_found", "not_searched"} or (
         actual_query_count > 0 and not any(actual_query_row_counts)
     ):
-        if is_ja:
-            paragraph = (
-                f"{heading}について、関連する証拠検索を実行しましたが、該当する行は得られていません。"
-                "この項目は現時点では証拠不足として扱い、結論本文には採用しません。"
-            )
-        else:
-            paragraph = (
-                f"For {heading}, the relevant evidence searches returned no matching rows. "
-                "This item remains unsupported and should not be promoted into the incident narrative."
-            )
+        paragraph = (
+            f"For {heading}, the relevant evidence searches returned no matching rows. "
+            "This item remains unsupported and should not be promoted into the incident narrative."
+        )
         return paragraph
 
-    sources = "取得済み証拠" if is_ja else "the collected evidence"
+    sources = "the collected evidence"
     ref_text = ""
     if evidence_ids:
         ref_text = ", ".join(evidence_ids)
-        if is_ja:
-            ref_text = f"代表証拠ID: {ref_text}。"
-        else:
-            ref_text = f"Representative evidence IDs: {ref_text}."
+        ref_text = f"Representative evidence IDs: {ref_text}."
     elif finding_ids:
         ref_text = ", ".join(finding_ids)
-        if is_ja:
-            ref_text = f"代表 finding_id: {ref_text}。"
-        else:
-            ref_text = f"Representative finding IDs: {ref_text}."
+        ref_text = f"Representative finding IDs: {ref_text}."
 
-    if is_ja:
-        paragraph = f"{heading}について、{sources}から合計 {total_rows} 件の関連行が得られました。"
-        if example:
-            paragraph += f"代表行は {example} です。"
-        if status == "partial":
-            paragraph += "ただし、この記述は追加の相関確認が必要な暫定評価です。"
-        if ref_text:
-            paragraph += ref_text
-    else:
-        paragraph = f"For {heading}, {sources} returned {total_rows} related rows. "
-        if example:
-            paragraph += f"Representative row: {example}. "
-        if status == "partial":
-            paragraph += "Additional correlation is still needed before treating the block as fully answered. "
-        if ref_text:
-            paragraph += ref_text
+    paragraph = f"For {heading}, {sources} returned {total_rows} related rows. "
+    if example:
+        paragraph += f"Representative row: {example}. "
+    if status == "partial":
+        paragraph += "Additional correlation is still needed before treating the block as fully answered. "
+    if ref_text:
+        paragraph += ref_text
     return paragraph.strip()
 
 

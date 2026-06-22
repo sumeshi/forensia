@@ -13,7 +13,7 @@ cases:
     body: "When did the endpoint last shut down?"
     answer_spec: last_shutdown_event
     min_confidence: 0.4
-  - heading: "最後のシャットダウン時刻"
+  - heading: "Final shutdown time"
     body: ""
     answer_spec: last_shutdown_event
     min_confidence: 0.4
@@ -21,24 +21,24 @@ cases:
     body: "Return the latest human user logon, not aggregate counts."
     answer_spec: last_human_logon
     min_confidence: 0.4
-  - heading: "最終ログオンユーザー"
-    body: "直近ログオンしたユーザーを示す。"
+  - heading: "Most recent logon user"
+    body: "Indicates the most recently logged-on user."
     answer_spec: last_human_logon
     min_confidence: 0.4
   - heading: "Startup, shutdown, logon, and logoff history"
     body: "Group session activity by date."
     answer_spec: daily_session_activity
     min_confidence: 0.4
-  - heading: "セッション履歴"
-    body: "起動、ログオン、ログオフ、シャットダウンを日別にまとめる。"
+  - heading: "Session history"
+    body: "Summarize startup, logon, logoff, and shutdown by date."
     answer_spec: daily_session_activity
     min_confidence: 0.4
   - heading: "Computer name"
     body: "List host identity observed in evidence."
     answer_spec: host_identity
     min_confidence: 0.4
-  - heading: "端末名"
-    body: "証拠に現れるホスト名を列挙する。"
+  - heading: "Endpoint identity"
+    body: "Enumerate host names appearing in evidence."
     answer_spec: host_identity
     min_confidence: 0.4
   - heading: "Evidence Scope"
@@ -49,31 +49,31 @@ cases:
     body: "Use Prefetch or Prefetch file fallback."
     answer_spec: application_execution_history
     min_confidence: 0.4
-  - heading: "実行履歴"
-    body: "プリフェッチからアプリケーション実行を確認する。"
+  - heading: "Execution history"
+    body: "Check application execution from Prefetch."
     answer_spec: application_execution_history
     min_confidence: 0.4
   - heading: "Mail data files"
     body: "Where are OST/PST files located?"
     answer_spec: email_data_files
     min_confidence: 0.4
-  - heading: "メールデータ"
-    body: "OSTファイルまたはPSTファイルの場所を答える。"
+  - heading: "Mail data"
+    body: "Answer the location of OST or PST files."
     answer_spec: email_data_files
     min_confidence: 0.4
   - heading: "Browser usage"
     body: "Identify observed web browsers."
     answer_spec: browser_usage
     min_confidence: 0.4
-  - heading: "クラウドサービス"
-    body: "同期サービスの痕跡を列挙する。"
+  - heading: "Cloud services"
+    body: "Enumerate sync service traces."
     answer_spec: cloud_service_traces
     min_confidence: 0.4
   - heading: "Antiforensic activity"
     body: "Scan for cleanup tools and log clearing."
     answer_spec: antiforensic_activity
     min_confidence: 0.4
-  - heading: "証拠隠滅"
-    body: "ログ削除やクリーナーツールの痕跡を確認する。"
+  - heading: "Log clearing and cleanup tools"
+    body: "Check for log deletion and cleaner tool traces."
     answer_spec: antiforensic_activity
     min_confidence: 0.4

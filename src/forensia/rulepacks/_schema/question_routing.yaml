@@ -14,16 +14,13 @@ question_types:
       - application history
       - execution history
       - executed applications
-      - アプリケーション実行
-      - 実行履歴
-      - プリフェッチ
     keypoints:
       - timeline_prefetch_history
       - mft_prefetch_filenames
       - host_execution_activity
     required_fields: [executable_name]
     render_columns: [executable_name, exec_count, last_exec_time, executable_path, prefetch_file, prefetch_records, artifact_time, artifact_path, evidence_id, source_file]
-    interpretation_template: "実行履歴は {row_count} 行あり、代表例は {sample(executable_name, 4)} です。Prefetch は実行の存在を示しますが、操作目的や対象ファイルは別証跡との相関が必要です。"
+    interpretation_template: "Execution history has {row_count} rows, with representatives such as {sample(executable_name, 4)}. Prefetch indicates execution occurred, but purpose and target files require correlation with other evidence."
     status_rules:
       min_rows_for_answer: 1
       empty_status: not_found
@@ -53,15 +50,12 @@ question_types:
       - e-mail communication
       - email communication
       - mail communication
-      - メールアプリ
-      - メールクライアント
-      - 電子メールアプリケーション
     keypoints:
       - structured_email_artifacts
       - mft_outlook_artifacts
       - ioc_email_ost_files
       - mft_user_app_activity
-    interpretation_template: "メール関連痕跡は {sample(application_name, 3)} を中心に確認されています。OST/PST はメールデータ参照の可能性を示しますが、内容閲覧や外部送信までは直接示しません。"
+    interpretation_template: "Mail-related traces are centered on {sample(application_name, 3)}. OST/PST files indicate potential mail data access, but do not directly show content viewing or external sending."
     required_fields: [application_name]
     render_columns: [application_name, version, evidence_type, artifact_path, artifact_time, evidence_id]
     status_rules:
@@ -88,16 +82,15 @@ question_types:
       - outlook
       - email data
       - mail data
-      - メールデータ
-      - メールファイル
-      - ostファイル
-      - pstファイル
+      - mail file
+      - ost file
+      - pst file
     keypoints:
       - structured_email_artifacts
       - mft_outlook_artifacts
       - ioc_email_ost_files
       - mft_user_app_activity
-    interpretation_template: "メールデータファイルは {row_count} 件、代表は {sample(file_name, 3)} です。OST/PST の存在はメールクライアント利用を示しますが、実際の送受信内容はクライアントログやネットワーク証跡で確認してください。"
+    interpretation_template: "{row_count} mail data files found, representatives: {sample(file_name, 3)}. OST/PST existence indicates mail client usage, but actual send/receive content should be verified via client logs and network evidence."
     required_fields: [file_path]
     render_columns: [file_name, file_path, extension, si_created, si_modified, si_accessed, fn_created, fn_modified, fn_accessed, evidence_id]
     status_rules:
@@ -122,14 +115,13 @@ question_types:
       - rename
       - file name
       - file rename
-      - リネーム
-      - 名前変更
-      - デスクトップファイル
+      - name change
+      - desktop file
     keypoints:
       - structured_desktop_rename_candidates
       - mft_recent_folder_lnk
       - mft_user_desktop_artifacts
-    interpretation_template: "リネーム候補は {row_count} 件です。Recent LNK 由来の推定はユーザー操作の手掛かりになりますが、実ファイル名変更の直接証跡としては慎重に扱います。"
+    interpretation_template: "{row_count} rename candidates. Recent LNK-based estimates provide clues about user activity, but should be treated cautiously as direct evidence of actual file renames."
     required_fields: [original_name, new_name]
     render_columns: [original_name, new_name, timestamp, basis, source_paths, evidence_ids]
     status_rules:
@@ -157,11 +149,10 @@ question_types:
       - retire
       - resignation letter
       - retirement
-      - 退職
-      - 辞職
+      - resignation letter
     keypoints:
       - structured_resignation_files
-    interpretation_template: "対象 topic に一致するファイルは {row_count} 件、代表は {sample(file_name, 3)} です。この keyword は evaluation/template 側の設問語彙であり、ファイル内容や意図までは別証跡で確認してください。"
+    interpretation_template: "{row_count} files matched the target topic, representatives: {sample(file_name, 3)}. This keyword comes from the evaluation/template question vocabulary; file content and intent require other evidence to confirm."
     required_fields: [file_name]
     render_columns: [file_name, file_path, extension, is_deleted, si_created, si_modified, si_accessed, fn_created, fn_modified, fn_accessed, evidence_id]
     status_rules:
@@ -188,13 +179,11 @@ question_types:
       - firefox
       - web
       - web browser
-      - ブラウザ
-      - Webブラウザ
     keypoints:
       - structured_browser_artifacts
       - host_execution_activity
       - mft_user_app_activity
-    interpretation_template: "ブラウザ痕跡として {sample(browser_name, 4)} が確認できます。Web利用の存在は示しますが、アクセス先や送信内容は履歴・キャッシュ・ネットワーク証跡で補完してください。"
+    interpretation_template: "Browser traces include {sample(browser_name, 4)}. These indicate web usage occurred, but destinations and transmitted content should be supplemented with history, cache, and network evidence."
     required_fields: [browser_name]
     render_columns: [browser_name, prefetch_records, total_exec_count, last_exec_time, mft_artifacts, first_artifact_time, last_artifact_time, sample_paths, evidence_ids]
     status_rules:
@@ -222,13 +211,11 @@ question_types:
       - shutdown
       - startup
       - session activity
-      - ログオン履歴
-      - シャットダウン履歴
-      - 起動履歴
-      - セッション履歴
-      - 日別
-      - 起動
-      - ログオフ
+      - logon history
+      - shutdown history
+      - startup history
+      - session history
+      - daily
     keypoints:
       - session_activity_events
       - structured_daily_session_activity
@@ -236,7 +223,7 @@ question_types:
       - system_startup_events
       - interactive_logon_events
       - logoff_events
-    interpretation_template: "日別セッション活動は {first.date} から {last.date} まで {row_count} 日分確認できます。起動・ログオン・シャットダウンのパターンから、通常稼働期間と異常を評価します。"
+    interpretation_template: "Daily session activity is available for {row_count} days from {first.date} to {last.date}. Startup, logon, and shutdown patterns are used to evaluate normal operation periods and anomalies."
     required_fields: [date]
     render_columns: [date, startup, logons, logoff, shutdown]
     status_rules:
@@ -268,11 +255,8 @@ question_types:
       - last logoff
       - last shutdown
       - daily session
-      - 起動/シャットダウン
-      - ログオン/ログオフ履歴
-      - セッションタイムライン
-      - 起動時刻
-      - シャットダウン時刻
+      - startup time
+      - shutdown time
     keypoints:
       - session_activity_events
       - structured_daily_session_activity
@@ -280,7 +264,7 @@ question_types:
       - system_startup_events
       - interactive_logon_events
       - logoff_events
-    interpretation_template: "セッションタイムラインは {row_count} 日分あります。日ごとの最初の起動・ログオン、最後のログオフ・シャットダウン時刻から、システム稼働パターンを確認できます。"
+    interpretation_template: "Session timeline covers {row_count} days. First startup/logon and last logoff/shutdown timestamps per day show the system operating pattern."
     required_fields: [date, first_startup]
     render_columns: [date, first_startup, first_logon, last_logoff, last_shutdown, logon_users, interactive_logon_count]
     status_rules:
@@ -302,14 +286,12 @@ question_types:
       - onedrive
       - dropbox
       - cloud service
-      - クラウド
-      - クラウドサービス
-      - 同期サービス
+      - sync service
     keypoints:
       - structured_cloud_artifacts
       - host_execution_activity
       - mft_cloud_sync_artifacts
-    interpretation_template: "クラウドサービス痕跡として {sample(service_name, 4)} が確認できます。同期環境の存在は示しますが、同期対象と完了可否はクライアントDBやログの追加確認が必要です。"
+    interpretation_template: "Cloud service traces include {sample(service_name, 4)}. These indicate the sync environment exists, but sync targets and completion status require additional checks of client DB and logs."
     required_fields: [service_name]
     render_columns: [service_name, exe_found, paths_found, config_found, evidence_ids]
     status_rules:
@@ -341,15 +323,14 @@ question_types:
       - log clearing
       - anti-forensic
       - antiforensic
-      - 証拠隠滅
-      - ログ削除
-      - ログ消去
+      - evidence destruction
+      - log deletion
     keypoints:
       - structured_antiforensics
       - timeline_system_events
       - system_shutdown_events
     required_fields: [evidence_type]
-    interpretation_template: "反フォレンジック候補は {sample(evidence_type, 4)} として {row_count} 行あります。ツールの存在と実行は重要ですが、削除対象や実行内容は別証拠で確認します。"
+    interpretation_template: "{row_count} anti-forensic candidate rows found, categorized as {sample(evidence_type, 4)}. Tool presence and execution are important, but deletion targets and execution details require other evidence."
     render_columns: [evidence_type, timestamp, event_id, channel, computer, target_user, file_name, file_path, is_deleted, si_created, si_modified, evidence_id, message]
     status_rules:
       min_rows_for_answer: 1
@@ -377,12 +358,11 @@ question_types:
       - host identity
       - endpoint identity
       - computer
-      - コンピュータ名
-      - ホスト名
-      - 端末名
+      - hostname
+      - terminal name
     keypoints:
       - overview_hosts
-    interpretation_template: "EVTX 上では {sample(host_id, 3)} が観測されています。以降の判断では、主要ホストと少数ホストを分け、同一端末名の表記揺れも考慮します。"
+    interpretation_template: "On EVTX, {sample(host_id, 3)} were observed. In subsequent analysis, distinguish primary hosts from minor hosts, and consider naming variants of the same endpoint."
     required_fields: [host_id]
     render_columns: [host_id, evidence_count, first_seen, last_seen]
     status_rules:
@@ -405,13 +385,13 @@ question_types:
       - time range
       - case time range
       - investigation window
-      - 調査期間
-      - 証拠期間
-      - イベント期間
+      - investigation period
+      - evidence period
+      - event period
     keypoints:
       - overview_event_range
     required_fields: [first_event, last_event]
-    interpretation_template: "証拠期間は {first.first_event} から {first.last_event} まで、合計 {first.event_count} イベントです。"
+    interpretation_template: "The evidence period spans from {first.first_event} to {first.last_event}, with a total of {first.event_count} events."
     render_columns: [first_event, last_event, event_count]
     status_rules:
       min_rows_for_answer: 1
@@ -435,15 +415,13 @@ question_types:
       - last user to log on
       - latest logon
       - most recent logon
-      - 最後にログオン
-      - 最終ログオン
-      - 直近ログオン
-      - ログオンしたユーザー
+      - final logon
+      - logged-on user
     keypoints:
       - session_activity_events
       - interactive_logon_events
     required_fields: [logon_time, user_name]
-    interpretation_template: "最後に確認できる人間ユーザー系ログオンは {first.logon_time} の {first.computer} / {first.user_name} です。これは最終利用者の候補であり、ログオン種別と周辺操作で裏付けます。"
+    interpretation_template: "The latest human-user logon observed is {first.logon_time} on {first.computer} / {first.user_name}. This is a candidate for the last user; verify with logon type and surrounding activity."
     render_columns: [logon_time, computer, user_name, logon_type, process_name, src_ip, evidence_id]
     status_rules:
       min_rows_for_answer: 1
@@ -481,17 +459,13 @@ question_types:
       - final shutdown
       - latest shutdown
       - most recent shutdown
-      - 最後のシャットダウン
-      - 最終シャットダウン
-      - 直近シャットダウン
-      - シャットダウン時刻
     keypoints:
       - structured_last_shutdown
       - overview_event_range
       - system_shutdown_events
       - system_startup_events
     required_fields: [shutdown_time, event_id]
-    interpretation_template: "最後の shutdown/log stop 系イベントは {first.shutdown_time} の Event ID {first.event_id} です。終了時刻の基準として使えますが、意図的停止か通常終了かは周辺イベントで判断します。"
+    interpretation_template: "The last shutdown/log-stop event is Event ID {first.event_id} at {first.shutdown_time}. This can serve as a termination time reference, but whether it was intentional or a normal shutdown should be determined from surrounding events."
     render_columns: [shutdown_time, event_id, computer, evidence_id, message]
     status_rules:
       min_rows_for_answer: 1

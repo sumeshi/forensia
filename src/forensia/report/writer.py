@@ -207,7 +207,7 @@ __all__ = [
 from forensia.report.probes import TemplateMeta  # noqa: E402
 
 GAP_PATTERN = re.compile(
-    r"\[INSUFFICIENT EVIDENCE:\s*([^\]]+)\]|【調査不足:\s*([^】]+)】",
+    r"\[INSUFFICIENT EVIDENCE:\s*([^\]]+)\]",
     re.IGNORECASE,
 )
 BLOCK_HINT_PATTERN = re.compile(

@@ -399,7 +399,7 @@ class WebApiTests(unittest.TestCase):
                 self.assertEqual("30", api.headers.get("retry-after"))
                 page = client.get("/evidence/evtx-security-000000000032")
                 self.assertEqual(503, page.status_code)
-                self.assertIn("ロックされています", page.text)
+                self.assertIn("locked", page.text)
                 self.assertIn("4624 Security ANONYMOUS LOGON@37L4247F27-25", page.text)
 
     def test_evidence_record_html_page_escapes_untrusted_content(self) -> None:

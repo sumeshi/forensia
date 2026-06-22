@@ -15,8 +15,6 @@ from forensia.rules.engine import generate_findings, save_findings
 from forensia.rules.loader import load_rules_from_dir
 from forensia.rules.models import Finding, Rule
 
-JP_CHAR_PATTERN = r"[ぁ-んァ-ン一-龥]"
-
 
 class RuleProfileTests(unittest.TestCase):
     def test_windows_rules_have_attack_mapping(self) -> None:
@@ -172,71 +170,6 @@ class RuleProfileTests(unittest.TestCase):
             rules = load_rules_from_dir("src/forensia/rulepacks", profile_path)
 
         self.assertEqual(0, len(rules))
-
-    def test_windows_rule_findings_are_english_for_translated_batch(self) -> None:
-        target_files = [
-            "corr_account_created_then_admin_added.yaml",
-            "corr_bruteforce_then_success.yaml",
-            "corr_defender_disabled_then_exec.yaml",
-            "corr_logon_then_logclear.yaml",
-            "corr_logon_then_service.yaml",
-            "corr_logon_then_task.yaml",
-            "corr_rdp_then_powershell.yaml",
-            "defender_1116_malware_detected.yaml",
-            "defender_1117_action_taken.yaml",
-            "defender_5001_realtime_disabled.yaml",
-            "powershell_400_engine_start.yaml",
-            "powershell_4103_module_logging.yaml",
-            "powershell_4104_encoded.yaml",
-            "powershell_4105_script_started.yaml",
-            "rdp_lsm_21_logon.yaml",
-            "rdp_lsm_24_disconnect.yaml",
-            "rdp_lsm_25_reconnect.yaml",
-            "rdp_rcm_1149_user_auth_success.yaml",
-            "security_1100_evtlog_shutdown.yaml",
-            "security_1102_log_cleared.yaml",
-            "security_1104_security_log_full.yaml",
-            "security_4616_time_changed.yaml",
-            "security_4624_explicit_creds.yaml",
-            "security_4624_interactive_logon.yaml",
-            "security_4624_network_logon.yaml",
-            "security_4624_rdp_logon.yaml",
-            "security_4625_failed_logon.yaml",
-            "security_4648_logon_explicit_creds.yaml",
-            "security_4672_special_privileges.yaml",
-            "security_4688_powershell.yaml",
-            "security_4688_suspicious_tools.yaml",
-            "security_4697_service_install.yaml",
-            "security_4698_task_created.yaml",
-            "security_4699_task_deleted.yaml",
-            "security_4719_audit_policy_changed.yaml",
-            "security_4720_account_lifecycle_consolidated.yaml",
-            "security_4723_password_change.yaml",
-            "security_4728_group_change_consolidated.yaml",
-            "security_4740_account_lockout.yaml",
-            "security_4756_universal_group_added.yaml",
-            "security_4768_4769_kerberos_consolidated.yaml",
-            "security_4771_pre_auth_failed.yaml",
-            "security_4776_ntlm_auth.yaml",
-            "security_4778_rdp_reconnect.yaml",
-            "security_4779_rdp_disconnect.yaml",
-            "security_5140_admin_share_access.yaml",
-            "system_104_log_cleared.yaml",
-            "system_1074_initiated_shutdown.yaml",
-            "system_41_unexpected_reboot.yaml",
-            "system_6008_unexpected_shutdown.yaml",
-            "system_7036_service_state.yaml",
-            "system_7040_service_starttype_change.yaml",
-            "system_7045_service_installed.yaml",
-            "tasksched_106_task_registered.yaml",
-            "tasksched_141_task_deleted.yaml",
-        ]
-        rules_dir = Path("src/forensia/rulepacks/windows")
-        for filename in target_files:
-            parsed = yaml.safe_load((rules_dir / filename).read_text(encoding="utf-8"))
-            finding = parsed["finding"]
-            self.assertNotRegex(finding["title"], JP_CHAR_PATTERN, filename)
-            self.assertNotRegex(finding["summary"], JP_CHAR_PATTERN, filename)
 
 
 class AllowlistTests(unittest.TestCase):

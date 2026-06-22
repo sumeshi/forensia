@@ -321,11 +321,9 @@ def _initialize_overview(
         return
     output_language = str(get_llm_settings()["output_language"]).lower()
     open_question_seed = {
-        "ja": "初回調査待ち",
         "en": "Awaiting initial investigation",
     }.get(output_language, "Awaiting initial investigation")
     objective_line = objective or {
-        "ja": "証拠に基づいて事実関係を整理する",
         "en": "Establish the evidence-backed incident narrative.",
     }.get(output_language, "Establish the evidence-backed incident narrative.")
     memory.update_overview(
@@ -590,7 +588,6 @@ def _final_summary(state: SessionState) -> str:
         return "\n".join(entry.summary for entry in state.history[-5:] if entry.summary)
     output_language = str(get_llm_settings()["output_language"]).lower()
     return {
-        "ja": "調査中に追加の進展はありませんでした。",
         "en": "No additional progress was made during this investigation.",
     }.get(output_language, "No additional progress was made during this investigation.")
 

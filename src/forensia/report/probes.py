@@ -118,7 +118,7 @@ class TemplateMeta:
 
 
 GAP_PATTERN = re.compile(
-    r"\[INSUFFICIENT EVIDENCE:\s*([^\]]+)\]|【調査不足:\s*([^】]+)】",
+    r"\[INSUFFICIENT EVIDENCE:\s*([^\]]+)\]",
     re.IGNORECASE,
 )
 BLOCK_HINT_PATTERN = re.compile(
@@ -1283,11 +1283,7 @@ def _refresh_appendix_structured_blocks(
         heading = chunk.splitlines()[0].lstrip("#").strip()
         lower_heading = heading.casefold()
         answer_spec = ""
-        if (
-            "antiforensic" in lower_heading
-            or "anti-forensic" in lower_heading
-            or "反フォレンジック" in lower_heading
-        ):
+        if "antiforensic" in lower_heading or "anti-forensic" in lower_heading:
             answer_spec = "antiforensic_activity"
         if not answer_spec:
             rendered.append(chunk)
@@ -1478,7 +1474,7 @@ def _finding_theme_counts(db: CaseDB) -> dict[str, int]:
 
     Excludes benign-context tagged findings, matching `_signal_finding_rows`'s
     existing exclusion (R3-04). Both the Key Findings table and the Action Plan
-    table read from this function so theme `(N件)` counts stay consistent.
+    table read from this function so theme `(N)` counts stay consistent.
     """
     counts: dict[str, int] = {}
     for row in fetch_records(db, _FINDING_THEME_FILTER_SQL):
@@ -1621,28 +1617,31 @@ def _finding_theme_rank(theme: str) -> int:
 
 
 def _finding_theme_title(theme: str, count: int) -> str:
-    suffix = f" ({count}件)" if count > 1 else ""
+    suffix = f" ({count})" if count > 1 else ""
     return {
-        "explicit_credentials": f"明示的資格情報利用の観測{suffix}",
-        "account_lifecycle": f"ユーザーアカウント変更イベント{suffix}",
-        "time_change": f"システム時刻変更の観測{suffix}",
-        "log_integrity": f"ログ停止・消去候補イベント{suffix}",
-        "antiforensic_tools": f"消去・クリーニング系ツール痕跡{suffix}",
-        "data_access": f"メール・ブラウザ・クラウド関連痕跡{suffix}",
-        "other": f"その他の優先所見{suffix}",
-    }.get(theme, f"優先所見{suffix}")
+        "explicit_credentials": f"Explicit credential usage observed{suffix}",
+        "account_lifecycle": f"User account change events{suffix}",
+        "time_change": f"System time change observed{suffix}",
+        "log_integrity": f"Log stop / clear candidate events{suffix}",
+        "antiforensic_tools": f"Wiping / cleaning tool traces{suffix}",
+        "data_access": f"Mail / browser / cloud-related traces{suffix}",
+        "other": f"Other priority findings{suffix}",
+    }.get(theme, f"Priority findings{suffix}")
 
 
 def _finding_theme_summary(theme: str) -> str:
     return {
-        "explicit_credentials": "通常ログオンとは別に資格情報が明示的に使われており、対象ユーザー・ホスト・時刻の相関確認が必要です。",
-        "account_lifecycle": "ユーザー作成・有効化・パスワード変更などは権限利用や痕跡操作の前提になり得ます。",
-        "time_change": "時刻変更はタイムライン解釈に影響するため、前後の認証・ファイル操作と合わせて確認します。",
-        "log_integrity": "ログ停止・消去候補は単独で証跡消去を断定できませんが、消去系ツールや終了処理と近接する場合は重要です。",
-        "antiforensic_tools": "消去・クリーニング系ツールの痕跡は削除対象までは示さないものの、証跡削除仮説の中心的な補助証拠です。",
-        "data_access": "メール・ブラウザ・クラウド痕跡は情報参照や同期環境の存在を示し、送信先・対象ファイルの追加確認が必要です。",
-        "other": "詳細な結論には、個別 evidence と周辺イベントの突合が必要です。",
-    }.get(theme, "詳細な結論には、個別 evidence と周辺イベントの突合が必要です。")
+        "explicit_credentials": "Credentials were used explicitly (not standard logon); correlate target user, host, and time.",
+        "account_lifecycle": "Account creation, activation, or password changes may enable privilege use or trace manipulation.",
+        "time_change": "Time changes affect timeline interpretation; correlate with surrounding auth and file events.",
+        "log_integrity": "Log stop/clear candidates alone do not confirm wiping; check proximity to cleaning tools and shutdown.",
+        "antiforensic_tools": "Cleaning tool traces do not reveal what was deleted, but are central supporting evidence for a wiping hypothesis.",
+        "data_access": "Mail/browser/cloud traces show information access and sync environment; confirm destinations and target files.",
+        "other": "Detailed conclusions require correlating individual evidence with surrounding events.",
+    }.get(
+        theme,
+        "Detailed conclusions require correlating individual evidence with surrounding events.",
+    )
 
 
 def _event_interpretation(event_id: Any) -> str:
@@ -1933,7 +1932,7 @@ def _sentence_list(items: list[str]) -> str:
         return ""
     if len(clean) == 1:
         return clean[0]
-    return "、".join(clean[:-1]) + "、および " + clean[-1]
+    return ", ".join(clean[:-1]) + ", and " + clean[-1]
 
 
 def _signal_executable_labels(rows: list[dict[str, Any]], limit: int = 4) -> list[str]:
@@ -2025,21 +2024,23 @@ def _timeline_phase_rows(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
         row = by_date[date]
         points: list[str] = []
         if _as_int(row.get("explicit_credentials")):
-            points.append(f"4648 が{_as_int(row.get('explicit_credentials'))}件")
+            points.append(
+                f"{_as_int(row.get('explicit_credentials'))} explicit-credential logon events (4648)"
+            )
         if _as_int(row.get("log_integrity_events")):
             points.append(
-                f"ログ整合性イベントが{_as_int(row.get('log_integrity_events'))}件"
+                f"{_as_int(row.get('log_integrity_events'))} log integrity events"
             )
         if _as_int(row.get("shutdown_events")):
             points.append(
-                f"shutdown/log stop 系が{_as_int(row.get('shutdown_events'))}件"
+                f"{_as_int(row.get('shutdown_events'))} shutdown/log-stop events"
             )
         if _as_int(row.get("executions")):
             executables = str(row.get("executables") or "").strip()
             points.append(
-                f"注目アプリ実行: {executables}"
+                f"Notable application executions: {executables}"
                 if executables
-                else "注目アプリ実行あり"
+                else "Notable application executions detected"
             )
         if not points:
             continue
@@ -2065,14 +2066,14 @@ def _phase_interpretation(row: dict[str, Any]) -> str:
     has_tools = any(_matches_exe_globs(name, tool_globs) for name in executables)
     has_cloud = any(_matches_exe_globs(name, cloud_globs) for name in executables)
     if has_tools and _as_int(row.get("log_integrity_events")):
-        return "クリーニング系ツールとログ整合性イベントが同日にあり、反フォレンジック仮説を優先確認する"
+        return "Cleaning tools and log integrity events on the same day; prioritize anti-forensic hypothesis"
     if has_cloud and has_tools:
-        return "クラウド同期痕跡とクリーニング系ツールが同日にあり、データ移動後の消去可能性を確認する"
+        return "Cloud sync traces and cleaning tools on the same day; check for post-exfiltration wiping"
     if _as_int(row.get("explicit_credentials")):
-        return "明示的資格情報利用があり、通常ログオンとの関係をユーザー単位で確認する"
+        return "Explicit credential usage detected; check relationship with standard logons per user"
     if _as_int(row.get("log_integrity_events")):
-        return "ログ停止・消去候補があり、同時刻の操作主体と周辺イベントを確認する"
-    return "注目イベントが集中する日として、前後のファイル・実行痕跡と突合する"
+        return "Log stop/clear candidates detected; check the actor and surrounding events at the same time"
+    return "Notable events clustered on this day; correlate with surrounding file and execution traces"
 
 
 def _forensic_gap_rows(db: CaseDB) -> list[dict[str, Any]]:
@@ -2094,25 +2095,25 @@ def _forensic_gap_rows(db: CaseDB) -> list[dict[str, Any]]:
     if active_count:
         gaps.append(
             {
-                "gap": "未解決仮説の確定/棄却",
-                "why_it_matters": f"{active_count}件の active hypothesis が残っており、結論に混ぜると過剰推定になる。",
-                "next_step": "未調査仮説を優先し、confirmed/refuted/needs_data に分類する。",
+                "gap": "Resolve or refute outstanding hypotheses",
+                "why_it_matters": f"{active_count} active hypotheses remain; mixing them into conclusions risks overstatement.",
+                "next_step": "Prioritize uninvestigated hypotheses and classify them as confirmed/refuted/needs_data.",
             }
         )
     if "cloud_sync" in families:
         gaps.append(
             {
-                "gap": "クラウド同期の送信先・対象の直接証跡",
-                "why_it_matters": "クラウド同期クライアントの痕跡は環境の存在を示すが、同期対象・送信先・完了可否を直接示すわけではない。",
-                "next_step": "同期クライアントのログ・ローカルDB・ネットワークログを突合する。",
+                "gap": "Direct evidence of cloud sync destinations and targets",
+                "why_it_matters": "Cloud sync client traces show the environment exists but do not directly show sync targets, destinations, or completion status.",
+                "next_step": "Correlate sync client logs, local DB, and network logs.",
             }
         )
     if "mailbox" in families:
         gaps.append(
             {
-                "gap": "メールデータの内容・送受信の裏付け",
-                "why_it_matters": "メールデータファイルの存在はクライアント利用を示すが、送受信内容や添付の移動は別証跡が必要。",
-                "next_step": "メールデータファイルの解析結果やサーバ側ログが利用可能なら突合する。",
+                "gap": "Email content and send/receive verification",
+                "why_it_matters": "Email data file existence shows client usage but content and attachment movement need other evidence.",
+                "next_step": "Correlate email data file analysis results and server-side logs if available.",
             }
         )
     antiforensic_findings = _count_findings_with_tag(
@@ -2121,9 +2122,9 @@ def _forensic_gap_rows(db: CaseDB) -> list[dict[str, Any]]:
     if antiforensic_findings or _has_antiforensic_executions(db):
         gaps.append(
             {
-                "gap": "消去系ツールの実行対象範囲",
-                "why_it_matters": "クリーニングツールの実行痕跡は強い候補だが、削除対象や実行内容までは実行痕跡だけでは分からない。",
-                "next_step": "ツールの設定・タスクファイル、削除済み MFT エントリ、ログ停止時刻を突合する。",
+                "gap": "Scope of wiping tool execution",
+                "why_it_matters": "Cleaning tool execution traces are a strong candidate but do not reveal deletion targets or execution details alone.",
+                "next_step": "Correlate tool settings, task files, deleted MFT entries, and log stop times.",
             }
         )
     if network and not (
@@ -2132,9 +2133,9 @@ def _forensic_gap_rows(db: CaseDB) -> list[dict[str, Any]]:
     ):
         gaps.append(
             {
-                "gap": "正規化済みネットワーク証跡の不足",
-                "why_it_matters": "EVTX だけでは外部通信の有無を十分に判断できない。",
-                "next_step": "Firewall/proxy/DNS/cloud client logs が存在する場合は追加取り込みする。",
+                "gap": "Insufficient normalized network evidence",
+                "why_it_matters": "EVTX alone is insufficient to determine external communication.",
+                "next_step": "Ingest firewall/proxy/DNS/cloud client logs if available.",
             }
         )
     return gaps
@@ -2367,15 +2368,15 @@ def _build_recommendations_table(db: CaseDB) -> list[dict[str, Any]]:
         rows.append(
             {
                 "priority": "High",
-                "action": "未解決仮説を完了状態へ整理する",
-                "rationale": f"{active_count}件の active hypothesis が残っているため、追加調査・needs_data・refuted のいずれかに分類する。",
+                "action": "Triage outstanding hypotheses into terminal states",
+                "rationale": f"{active_count} active hypotheses remain; classify each as needs_data, refuted, or confirmed with additional investigation.",
                 "evidence_or_gap": "hypotheses",
             }
         )
 
     # Correlation actions for the top finding themes actually observed.
     # RPT-03: counts come from the same single-source `_finding_theme_counts`
-    # used by the Key Findings table, so `(N件)` matches across sections.
+    # used by the Key Findings table, so `(N)` matches across sections.
     theme_counts = _finding_theme_counts(db)
     ranked_themes = sorted(
         (theme for theme in theme_counts if theme != "other"),
@@ -2385,7 +2386,7 @@ def _build_recommendations_table(db: CaseDB) -> list[dict[str, Any]]:
         rows.append(
             {
                 "priority": "High" if _finding_theme_rank(theme) <= 2 else "Medium",
-                "action": f"{_finding_theme_title(theme, theme_counts[theme])} をユーザー・ホスト・時刻で相関確認する",
+                "action": f"Correlate {_finding_theme_title(theme, theme_counts[theme])} by user, host, and time",
                 "rationale": _finding_theme_summary(theme),
                 "evidence_or_gap": theme,
             }
@@ -2398,8 +2399,8 @@ def _build_recommendations_table(db: CaseDB) -> list[dict[str, Any]]:
         rows.append(
             {
                 "priority": "Low",
-                "action": "benign-context として降格された所見を必要に応じて手動確認する",
-                "rationale": f"{benign_count}件の所見が既知の正常パターンに一致したため自動降格されている。",
+                "action": "Manually review findings auto-downgraded as benign-context if needed",
+                "rationale": f"{benign_count} findings matched known benign patterns and were auto-downgraded.",
                 "evidence_or_gap": "finding ranking",
             }
         )

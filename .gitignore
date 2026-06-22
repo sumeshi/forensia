@@ -7,6 +7,7 @@ __pycache__/
 .ruff_cache
 
 web_ui/node_modules/
+web_ui/dist/
 src/forensia/static
 
 .env

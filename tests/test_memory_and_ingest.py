@@ -514,7 +514,6 @@ class MemoryAndIngestTests(unittest.TestCase):
             self.assertIn(
                 "Write the compressed overview in en.", messages[0]["content"]
             )
-            self.assertNotRegex(messages[0]["content"], r"[ぁ-んァ-ン一-龥]")
 
     def test_overview_compaction_failure_keeps_existing_file(self) -> None:
         with (
@@ -1620,7 +1619,7 @@ class MemoryAndIngestTests(unittest.TestCase):
             self.assertGreater(prose_idx, notes_idx)
 
     def test_append_overview_clears_seed_placeholder_in_active_tasks(self) -> None:
-        """The initial-overview seed line (初回調査待ち / Awaiting initial
+        """The initial-overview seed line (Awaiting initial
         investigation) is a placeholder and must vanish once a real task lands."""
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -1628,7 +1627,7 @@ class MemoryAndIngestTests(unittest.TestCase):
             memory.update_overview(
                 "# Investigation Overview\n\n"
                 "## Key Findings\n- none\n\n"
-                "## Active Tasks\n- 初回調査待ち\n"
+                "## Active Tasks\n- Awaiting initial investigation\n"
             )
 
             memory.append_overview(
@@ -1636,7 +1635,7 @@ class MemoryAndIngestTests(unittest.TestCase):
             )
 
             overview = memory.load_overview()
-            self.assertNotIn("初回調査待ち", overview)
+            self.assertNotIn("Awaiting initial investigation", overview)
             self.assertIn(
                 "Verify logon type distribution for host informant-PC", overview
             )

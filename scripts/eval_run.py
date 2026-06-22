@@ -182,9 +182,9 @@ def _find_placeholder_lines(text: str) -> list[str]:
 
 
 _INSTRUCTION_TONE_RE = re.compile(
-    r"(してください|必要があります|べきです|do not treat|should be verified|"
-    r"を確認する必要があります|を確認してください|扱わないでください|を分けて扱い|"
-    r"として扱わない|読みべきです|相関してください|断定せず|評価してください)",
+    r"(do not treat|should be verified|needs verification|requires confirmation|"
+    r"must be confirmed|should not be assumed|evaluate carefully|"
+    r"do not conclude|correlate further|needs more evidence)",
     re.IGNORECASE,
 )
 

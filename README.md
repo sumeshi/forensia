@@ -307,6 +307,7 @@ See `CONTRIBUTING.md` for development guidelines.
 ## Benchmarks
 
 Benchmark-related notes are documented in `BENCHMARK.md`.
+Ground-truth answers for the scored questions are documented in `BENCHMARK-ANSWERS.md`. These are derived from the public NIST CFReDS dataset and are intended for evaluation reference only — do not optimize code or prompts against specific answers (see `CONTRIBUTING.md`).
 
 The repository does not include large forensic datasets or derived case directories for size, license, and sensitivity reasons. Obtain benchmark data from the original public sources when needed, extract artifacts into a local working directory, and run forensia against that local copy.
 

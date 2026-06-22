@@ -91,7 +91,6 @@ class PlannerRetryTests(unittest.TestCase):
             )
         system = messages[0]["content"]
         self.assertIn("[INSUFFICIENT EVIDENCE: reason]", system)
-        self.assertNotIn("【調査不足: 理由】", system)
 
     def test_report_section_prompt_includes_ioc_catalog(self) -> None:
         # A case profile is always set before report prompts at runtime
@@ -1040,8 +1039,8 @@ class PlannerRetryTests(unittest.TestCase):
 
     def test_benchmark_classify_messages_request_picked_row_indices_only(self) -> None:
         messages, _ = build_benchmark_classify_messages(
-            question="## 8. メールデータファイル",
-            block_heading="8. メールデータファイル",
+            question="## 8. Mail data files",
+            block_heading="8. Mail data files",
             evidence_rows=[
                 {"evidence_id": "ev-1", "file_path": "C:/Users/Alice/file.ost"}
             ],

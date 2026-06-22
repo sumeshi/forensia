@@ -460,7 +460,7 @@ class InsufficientEvidencePlaceholderTests(unittest.TestCase):
 
     def test_placeholder_has_no_open_question_markers(self) -> None:
         body = _insufficient_evidence_placeholder()
-        for marker in ("?", "？", "TBD", "要確認", "未調査", "XXX", "Block skipped"):
+        for marker in ("?", "？", "TBD", "XXX", "Block skipped"):
             self.assertNotIn(marker, body)
 
 
@@ -605,7 +605,7 @@ class SectionReviewerTests(unittest.TestCase):
     def test_check_pseudo_citations_fullwidth_parens(self) -> None:
         from forensia.report.narrative_review import check_pseudo_citations
 
-        body = "確認された（antiforensic_activity）事象。"
+        body = "Confirmed (antiforensic_activity) event."
         self.assertEqual(1, len(check_pseudo_citations(body)))
 
     def test_check_pseudo_citations_ignores_plain_words_and_ids(self) -> None:
@@ -638,8 +638,10 @@ class SectionReviewerTests(unittest.TestCase):
         from forensia.core.case import Case
         from forensia.db.database import CaseDB
 
-        clean_body = "informant のログオンが確認された (evtx-security-000000000122)。"
-        dirty_body = "観測 (STRUCTURED_OBSERVATIONS) のとおり gap-8b9254d65e は未解決。"
+        clean_body = "informant logon confirmed (evtx-security-000000000122)."
+        dirty_body = (
+            "As observed (STRUCTURED_OBSERVATIONS) gap-8b9254d65e is unresolved."
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)

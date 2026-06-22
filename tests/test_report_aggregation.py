@@ -1,12 +1,12 @@
 """Tests for report aggregation consistency (RPT-03, RPT-04).
 
 Why this matters: the report's Key Findings table (Overview) and Action Plan
-table (Recommendations) must report the same `(N件)` count for a given finding
+table (Recommendations) must report the same `(N)` count for a given finding
 theme. Before this fix they came from two independently-filtered queries and
-could disagree (e.g. "明示的資格情報利用の観測 (3件)" vs "(15件)" for the same
-case). These tests pin a single-source theme count and a top-findings ranking
-that demotes routine local machine-account 4648 events and removes exact
-duplicate finding titles.
+could disagree (e.g. "Explicit credential usage observed (3)" vs "(15)" for
+the same case). These tests pin a single-source theme count and a
+top-findings ranking that demotes routine local machine-account 4648 events
+and removes exact duplicate finding titles.
 """
 
 from __future__ import annotations
@@ -98,13 +98,17 @@ class TestFindingThemeCountsConsistency(unittest.TestCase):
                 action_plan = _build_recommendations_table(db)
 
         key_findings_row = next(
-            r for r in key_findings if "明示的資格情報利用の観測" in r["finding"]
+            r
+            for r in key_findings
+            if "Explicit credential usage observed" in r["finding"]
         )
         action_plan_row = next(
-            r for r in action_plan if "明示的資格情報利用の観測" in r["action"]
+            r
+            for r in action_plan
+            if "Explicit credential usage observed" in r["action"]
         )
-        self.assertIn("(5件)", key_findings_row["finding"])
-        self.assertIn("(5件)", action_plan_row["action"])
+        self.assertIn("(5)", key_findings_row["finding"])
+        self.assertIn("(5)", action_plan_row["action"])
 
 
 class TestLocalMachineAccount4648Demotion(unittest.TestCase):

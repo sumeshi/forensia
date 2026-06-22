@@ -365,7 +365,7 @@ def _render_answer_block(
     ]
 
 
-_MISSING_REASON_NOOP_VALUES = frozenset({"none", "n/a", "na", "-", "該当なし", "なし"})
+_MISSING_REASON_NOOP_VALUES = frozenset({"none", "n/a", "na", "-", "not applicable"})
 
 
 def _meaningful_missing_reason_items(value: Any) -> list[str]:
@@ -420,14 +420,14 @@ def _structured_answer_interpretation(
     status = str(answer.get("status") or "").strip().lower()
     tz_basis = ""
     if tz_name and tz_name != "UTC":
-        tz_basis = f" (タイムゾーン: {tz_name})"
+        tz_basis = f" (timezone: {tz_name})"
     elif tz_name == "UTC":
-        tz_basis = " (UTC、タイムゾーン未確定のため)"
+        tz_basis = " (UTC, timezone undetermined)"
     if not rows:
         base = (
-            "この設問に直接対応する行は見つかっていません。該当なしと断定する前に、取り込み対象ログと時刻範囲が十分か確認してください。"
+            "No rows directly matching this question were found. Before concluding 'not found', verify that the ingested logs and time range are sufficient."
             if status == "not_found"
-            else "この設問は十分な行が得られていないため、表の欠落理由を確認したうえで追加証拠の有無を判断してください。"
+            else "Insufficient rows were retrieved for this question. Review the missing reason in the table and determine whether additional evidence exists."
         )
         return base + tz_basis
 
@@ -437,7 +437,7 @@ def _structured_answer_interpretation(
     template = templates.get(answer_spec)
     if template:
         return _render_interpretation_template(template, answer) + tz_basis
-    return f"この設問では {row_count} 行の構造化証拠を確認しています。表は回答の根拠ですが、結論は時刻・ホスト・ユーザー・関連成果物の相関で評価してください。{tz_basis}"
+    return f"This question has {row_count} rows of structured evidence. The table supports the answer, but evaluate conclusions by correlating time, host, user, and related artifacts.{tz_basis}"
 
 
 def _render_structured_answer_markdown(

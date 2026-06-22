@@ -712,7 +712,7 @@ class PersistenceTests(unittest.TestCase):
                 markdown = build_report_markdown_from_db(db)
 
             self.assertIn("### Interpretation", markdown)
-            self.assertIn("EVTX 上では informant-PC", markdown)
+            self.assertIn("On EVTX", markdown)
             self.assertIn("### Answer", markdown)
             self.assertNotIn("evidence_id", markdown)
             self.assertNotIn("evtx-security-000000000001", markdown)

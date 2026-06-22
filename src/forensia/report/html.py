@@ -67,28 +67,31 @@ def _finding_theme(row: dict[str, Any]) -> str:
 
 
 def _finding_theme_title(theme: str, count: int) -> str:
-    suffix = f" ({count}件)" if count > 1 else ""
+    suffix = f" ({count})" if count > 1 else ""
     return {
-        "explicit_credentials": f"明示的資格情報利用の観測{suffix}",
-        "account_lifecycle": f"ユーザーアカウント変更イベント{suffix}",
-        "time_change": f"システム時刻変更の観測{suffix}",
-        "log_integrity": f"ログ停止・消去候補イベント{suffix}",
-        "antiforensic_tools": f"消去・クリーニング系ツール痕跡{suffix}",
-        "data_access": f"メール・ブラウザ・クラウド関連痕跡{suffix}",
-        "other": f"その他の優先所見{suffix}",
-    }.get(theme, f"優先所見{suffix}")
+        "explicit_credentials": f"Explicit credential usage observed{suffix}",
+        "account_lifecycle": f"User account change events{suffix}",
+        "time_change": f"System time change observed{suffix}",
+        "log_integrity": f"Log stop / clear candidate events{suffix}",
+        "antiforensic_tools": f"Wiping / cleaning tool traces{suffix}",
+        "data_access": f"Mail / browser / cloud-related traces{suffix}",
+        "other": f"Other priority findings{suffix}",
+    }.get(theme, f"Priority findings{suffix}")
 
 
 def _finding_theme_summary(theme: str) -> str:
     return {
-        "explicit_credentials": "対象ユーザー・ホスト・時刻の相関確認が必要です。",
-        "account_lifecycle": "権限利用や痕跡操作の前提になり得るため、変更主体を確認します。",
-        "time_change": "タイムライン解釈に影響するため、前後の操作と突合します。",
-        "log_integrity": "単独では証跡消去と断定せず、消去系ツールや終了処理との近接性を確認します。",
-        "antiforensic_tools": "削除対象までは示しませんが、証跡削除仮説の補助証拠です。",
-        "data_access": "情報参照や同期環境の存在を示し、送信先・対象ファイルの追加確認が必要です。",
-        "other": "個別 evidence と周辺イベントの突合が必要です。",
-    }.get(theme, "個別 evidence と周辺イベントの突合が必要です。")
+        "explicit_credentials": "Credentials were used explicitly (not standard logon); correlate target user, host, and time.",
+        "account_lifecycle": "Account creation, activation, or password changes may enable privilege use or trace manipulation.",
+        "time_change": "Time changes affect timeline interpretation; correlate with surrounding auth and file events.",
+        "log_integrity": "Log stop/clear candidates alone do not confirm wiping; check proximity to cleaning tools and shutdown.",
+        "antiforensic_tools": "Cleaning tool traces do not reveal what was deleted, but are central supporting evidence for a wiping hypothesis.",
+        "data_access": "Mail/browser/cloud traces show information access and sync environment; confirm destinations and target files.",
+        "other": "Detailed conclusions require correlating individual evidence with surrounding events.",
+    }.get(
+        theme,
+        "Detailed conclusions require correlating individual evidence with surrounding events.",
+    )
 
 
 def _finding_theme_rank(theme: str) -> int:

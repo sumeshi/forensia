@@ -1,49 +1,49 @@
 # Report Pipeline
 
-レポートセクション充填の詳細仕様。
+Detailed specification of report section filling.
 
 ---
 
-## 1. レポートセクションの状態
+## 1. Report section state
 
-`report_sections.status` は 4 値:
+`report_sections.status` has 4 values:
 
-| 値 | 意味 |
+| Value | Meaning |
 |---|---|
-| `draft` | 証拠 gap がある / 弱い support |
-| `stable` | AI ワークフロー上で既知の gap なし |
-| `ai_exhausted` | AI ワークフローがこれ以上の有意な手がかりを生成しなくなった |
-| `human_reviewed` | 人間が明示的にレビュー済み |
+| `draft` | Evidence gap exists / weak support |
+| `stable` | No known gaps in the AI workflow |
+| `ai_exhausted` | The AI workflow no longer produces meaningful leads |
+| `human_reviewed` | A human has explicitly reviewed it |
 
-これらは workflow state であり、evidence state ではない。
+These are workflow states, not evidence states.
 
 ---
 
-## 2. レポートテンプレート契約
+## 2. Report template contract
 
-テンプレートはコントリビュータが定義する section の契約であり、durable なレポート状態ではない。
+Templates are a contract for sections defined by contributors, not durable report state.
 
-### 2.1 所有境界
+### 2.1 Ownership boundary
 
-- テンプレートファイルは `src/forensia/report_template/` 配下
-- 新規ケース作成時には case-local の `report_template/` がパッケージ既定からコピーされる
-- CLI のレポート生成は case-local テンプレが存在するときはそれを優先
-- `report --write --template-dir` で明示的に外部テンプレを指定可能
+- Template files live under `src/forensia/report_template/`
+- When a new case is created, a case-local `report_template/` is copied from the package default
+- CLI report generation prefers the case-local templates when they exist
+- `report --write --template-dir` can specify external templates explicitly
 
-テンプレートは入力であり、生成されたセクション本文は `report_sections` に永続化される。
+Templates are inputs; the generated section bodies are persisted in `report_sections`.
 
-### 2.2 Frontmatter フィールド
+### 2.2 Frontmatter fields
 
-各テンプレートはオプションの YAML frontmatter を持つ Markdown ファイル。
+Each template is a Markdown file with optional YAML frontmatter.
 
-| フィールド | 役割 |
+| Field | Role |
 |---|---|
-| `behaviors` | quality gate / 振る舞いフラグの list (例: `require_chronological_table`) |
-| `brief.top_findings.ranking` | `report_brief.json` の `top_findings`(= leading thesis)の並び順 policy。overview/executive summary を描くセクションに書く |
+| `behaviors` | List of quality gate / behavior flags (e.g. `require_chronological_table`) |
+| `brief.top_findings.ranking` | Ordering policy for `top_findings` (= leading thesis) in `report_brief.json`. Write this on sections that draw overview / executive summaries |
 
-`behaviors` を増やしたいときは [writer.py](../src/forensia/report/writer.py) 側の `_GateCtx.behaviors` 判定を 1 箇所だけ伸ばし、section_key にハードコードしない。
+When adding `behaviors`, extend the `_GateCtx.behaviors` judgment in [writer.py](../src/forensia/report/writer.py) in a single place only; do not hardcode it per section_key.
 
-`brief.top_findings.ranking` は [report/ranking.py](../src/forensia/report/ranking.py) が解釈する。`policy: severity`(既定 = severity → ATT&CK → confidence のケース非依存順)か `policy: priority_keywords`(順序付きキーワード群で narrative 順に並べる)を選べる。**ケース固有の語彙(`4648` / `ccleaner` 等)は core ではなくこの frontmatter に置く**。同梱の汎用テンプレートは policy を宣言せず(= severity 既定)、`forensia doctor` の "Report template policy" チェックが同梱テンプレートに `priority_keywords` が混入しないことを保証する。malformed な policy は実行時に警告 + 既定へフォールバックし、同梱テンプレートでは doctor が hard-fail する。
+`brief.top_findings.ranking` is interpreted by [report/ranking.py](../src/forensia/report/ranking.py). You can choose `policy: severity` (default = case-independent order of severity → ATT&CK → confidence) or `policy: priority_keywords` (arrange in narrative order using ordered keyword groups). **Case-specific vocabulary (`4648` / `ccleaner` etc.) belongs in this frontmatter, not in the core.** The bundled generic templates declare no policy (= severity default), and the `forensia doctor` "Report template policy" check ensures `priority_keywords` never leaks into bundled templates. A malformed policy warns at runtime and falls back to the default; for bundled templates, doctor hard-fails.
 
 ```yaml
 ---
@@ -57,193 +57,193 @@ brief:
 ---
 ```
 
-現行 writer が frontmatter から読む契約フィールドは `behaviors` だけ(`brief.top_findings.ranking` は report ブリーフビルダーが読む)。`section` / `title` / `prompt` / `evidence_queries` を置いても durable key や evidence access には使われない。section title は本文見出しから抽出され、block ごとの要求は `##` heading と HTML comment hints (`evidence_keypoints` / `mode` / `answer_id` / `answer_spec` / `question`、旧評価テンプレート互換の `benchmark_id`) で表現する。
+The only contract field the current writer reads from frontmatter is `behaviors` (`brief.top_findings.ranking` is read by the report brief builder). Putting `section` / `title` / `prompt` / `evidence_queries` there does not affect durable keys or evidence access. The section title is extracted from the body heading, and per-block requirements are expressed via `##` headings and HTML comment hints (`evidence_keypoints` / `mode` / `answer_id` / `answer_spec` / `question`, plus `benchmark_id` for legacy evaluation template compatibility).
 
-### 2.3 Section の同一性と順序
+### 2.3 Section identity and ordering
 
-- ファイル名パターン `[0-9]*_*.md` でテンプレを発見
-- 再充填順はファイル名の lexical 順
-- durable な `section_key` はファイル stem
-- レポート出力は `section_key` で並び替え
+- Templates are discovered via the filename pattern `[0-9]*_*.md`
+- Refill order is the lexical order of filenames
+- The durable `section_key` is the file stem
+- Report output is sorted by `section_key`
 
-section key は **stable な識別子** として扱う。ファイル名のリネームより key 変更のほうが影響が大きい。
+Treat the section key as a **stable identifier**. Renaming a file is less impactful than changing a key.
 
-### 2.4 テンプレートで宣言すること / しないこと
+### 2.4 What templates declare / do not declare
 
-宣言する:
-- レポート構造
-- セクション固有の執筆要求 (`##` block と comment hints)
-- block ごとの keypoint / structured answer hints
-- 証拠不十分時のプレースホルダ
+Declare:
+- Report structure
+- Section-specific writing requirements (`##` blocks and comment hints)
+- Per-block keypoint / structured answer hints
+- Placeholders for insufficient evidence
 
-宣言しない:
-- durable なワークフロー状態
-- mutable なレポート status
-- provenance 保存ルール
-- セクション本文の正本 (これは `report_sections` テーブル)
+Do not declare:
+- Durable workflow state
+- Mutable report status
+- Provenance preservation rules
+- The source of truth for section bodies (that is the `report_sections` table)
 
-テンプレ著作は英語で揃える。scaffold の見出し、表頭、コメント、プレースホルダはすべて英語。出力言語は runtime の `LLM_OUTPUT_LANGUAGE` で制御される。
+Template authoring is kept in English. Scaffold headings, table headers, comments, and placeholders are all English. The output language is controlled at runtime via `LLM_OUTPUT_LANGUAGE`.
 
-### 2.5 DB 連携
+### 2.5 DB integration
 
-- 充填済みセクション本文は `report_sections` に UPSERT
-- confidence は本文の初期スコア、quality gate、evidence_id validation、claim support、extra gaps を合わせて決まる
-- claims は本文から抽出して `claims` に書き込み
-- claim の provenance は本文中の finding_id / hypothesis_id / evidence_id と検証結果から計算
-- gap は明示的な insufficient-evidence マーカー、section agent の extra gaps、quality gate、claim/evidence validation から集約され、次サイクルの仮説候補になる
-- block が `question` / `answer_spec` / `mode: structured` を持つ場合、`questions.py` が `question_routing.yaml` の QuestionSpec に解決し、結果を `section_questions` に保存。case-wide probe は `section_key='__case_probe__'` として保存
-- structured answer は `reports/structured/answers.json` と CSV に永続化し、section ごとの解決結果は `reports/debug/<section>_questions.json` に dump
+- Filled section bodies are UPSERTed into `report_sections`
+- confidence is determined from the body's initial score, quality gates, evidence_id validation, claim support, and extra gaps
+- claims are extracted from the body and written to `claims`
+- claim provenance is computed from finding_id / hypothesis_id / evidence_id in the body and verification results
+- gaps are aggregated from explicit insufficient-evidence markers, section agent extra gaps, quality gates, and claim/evidence validation, and become hypothesis candidates for the next cycle
+- If a block has `question` / `answer_spec` / `mode: structured`, `questions.py` resolves it to a QuestionSpec in `question_routing.yaml` and saves the result to `section_questions`. Case-wide probes are saved with `section_key='__case_probe__'`
+- Structured answers are persisted to `reports/structured/answers.json` and CSV, and per-section resolution results are dumped to `reports/debug/<section>_questions.json`
 
-### 2.6 内蔵テンプレートと評価用テンプレートの分離
+### 2.6 Separation of bundled templates and evaluation templates
 
-| 場所 | 用途 |
+| Location | Purpose |
 |---|---|
-| `src/forensia/report_template/` | パッケージ同梱の汎用インシデントレポート。新規ケース作成時に各ケースの `report_template/` としてコピーされる |
-| 外部テンプレートディレクトリ (`--template-dir`) | ローカル評価・ケース固有レポート用の作業コピー。`forensia templates-export <dir>` で既定テンプレートをコピーしてから編集する |
+| `src/forensia/report_template/` | The generic incident report bundled with the package. Copied into each case's `report_template/` on new case creation |
+| External template directory (`--template-dir`) | A working copy for local evaluation and case-specific reports. Run `forensia templates-export <dir>` to copy the default templates, then edit them |
 
-ベンチマーク評価時も通常の `--template-dir` 経路を使う。公開リポジトリには実データや派生ケースディレクトリを同梱しないため、評価用テンプレート・アーティファクトはローカル作業ディレクトリで管理する。Scored Question と期待値は [BENCHMARK.md](../BENCHMARK.md) / [BENCHMARK-ANSWERS.md](../BENCHMARK-ANSWERS.md) を参照する。
+Benchmark evaluation also uses the normal `--template-dir` path. Because the public repository does not bundle real data or derived case directories, evaluation templates and artifacts are managed in a local working directory. See [BENCHMARK.md](../BENCHMARK.md) / [BENCHMARK-ANSWERS.md](../BENCHMARK-ANSWERS.md) for scored questions and expected values.
 
 ---
 
-## 3. レポート品質ゲート
+## 3. Report quality gates
 
-各セクション本文充填後、`_quality_gate_section` ([report/writer.py](../src/forensia/report/writer.py)) が静的チェックを走らせ、検出ごとに gap を追加して confidence を上限値まで下げる。検査はテンプレ非依存で全セクションに適用される。
+After each section body is filled, `_quality_gate_section` ([report/writer.py](../src/forensia/report/writer.py)) runs static checks, adding a gap per detection and lowering confidence down to a cap. The checks are template-independent and apply to all sections.
 
-セクション固有の挙動は `behaviors:` frontmatter で宣言。例: `require_chronological_table` / `require_recommendations_strength` / `canonical_evidence_scope`。`_GateCtx.behaviors` を見て発火条件を分岐する。section_key を Python 側でハードコードしない。
+Section-specific behavior is declared via the `behaviors:` frontmatter. Examples: `require_chronological_table` / `require_recommendations_strength` / `canonical_evidence_scope`. Firing conditions branch on `_GateCtx.behaviors`. Do not hardcode section_keys in Python.
 
-### 3.1 検査一覧
+### 3.1 Check list
 
-| 検査 | 発火条件 | confidence 上限 |
+| Check | Firing condition | confidence cap |
 |---|---|---|
-| Placeholder entity | `PLACEHOLDER_ENTITY_PATTERN` 一致 | 0.5 |
-| Template marker leak | `HTML_FILL_PATTERN` 一致 | 0.3 |
-| Heading / title mismatch | 本文先頭の `#` 見出しが `report_sections.title` と乖離 | 0.65 |
-| Timeline ordering | `require_chronological_table` 持ちセクションで date 列が非単調 | 0.6 |
-| Recommendations strength | `require_recommendations_strength` 持ちセクションで `confirmed` / `may indicate` / verification 関連語が欠落 | 0.65 |
-| Verdict inflation | source verdict に `confirmed` がないのに本文が強い断定語を使う | 0.6 |
-| Raw evidence dump | NULL / None だらけの raw evidence 表が混入 | 0.55 |
-| Output language drift | 本文の言語が `LLM_OUTPUT_LANGUAGE` と乖離 | 0.4 |
-| Open-question markers | `?` / `？` / `TBD` / `要確認` / `未調査` / `XXX` | 0.55 |
-| Empty body | 表 / 見出し / 引用を除いた実質本文が 80 字未満 | 0.3 |
-| Bullet-only | bullet 行のみで narrative なし | 0.6 |
-| Hedge without citation | `may` / `could` / `思われる` 等があるのに timestamp も finding_id も引用なし | 0.5 |
-| Citation token without finding_id | `evidence` / `根拠` 等を含むのに finding_id がない | 0.75 |
-| Duplicate paragraph | 長さ 40 以上の同一段落が 2 つ | 0.5 |
-| Out-of-range timestamp | 本文の `YYYY-MM-DD` が今日 + 1 を超えるか 1990 未満 | 0.4 |
-| Overused evidence id | 同一 evidence_id が 3 以上のセクションで引用 | 0.7 |
-| JSON object leak | raw LLM response らしい JSON object が本文に漏れた | 0.3 |
-| Failure marker spam | `Section block failed` / `Block skipped` が本文に混入 | 0.15 |
+| Placeholder entity | matches `PLACEHOLDER_ENTITY_PATTERN` | 0.5 |
+| Template marker leak | matches `HTML_FILL_PATTERN` | 0.3 |
+| Heading / title mismatch | The leading `#` heading of the body diverges from `report_sections.title` | 0.65 |
+| Timeline ordering | A section with `require_chronological_table` has a non-monotonic date column | 0.6 |
+| Recommendations strength | A section with `require_recommendations_strength` lacks `confirmed` / `may indicate` / verification-related words | 0.65 |
+| Verdict inflation | The source verdict has no `confirmed`, but the body uses strong assertive wording | 0.6 |
+| Raw evidence dump | A raw evidence table full of NULL / None is mixed in | 0.55 |
+| Output language drift | The body language diverges from `LLM_OUTPUT_LANGUAGE` | 0.4 |
+| Open-question markers | `?` / `？` / `TBD` / `TODO` / `FIXME` / `XXX` | 0.55 |
+| Empty body | Substantive body excluding tables / headings / quotes is under 80 characters | 0.3 |
+| Bullet-only | Only bullet lines with no narrative | 0.6 |
+| Hedge without citation | Contains `may` / `could` / `possibly` / `appears to` etc. but cites neither timestamp nor finding_id | 0.5 |
+| Citation token without finding_id | Contains `evidence` / `finding_id` / `according to` etc. but has no finding_id | 0.75 |
+| Duplicate paragraph | Two identical paragraphs of length 40 or more | 0.5 |
+| Out-of-range timestamp | A `YYYY-MM-DD` in the body exceeds today + 1 or is before 1990 | 0.4 |
+| Overused evidence id | The same evidence_id is cited in 3 or more sections | 0.7 |
+| JSON object leak | A raw LLM response-like JSON object leaks into the body | 0.3 |
+| Failure marker spam | `Section block failed` / `Block skipped` mixed into the body | 0.15 |
 
-gap notes は `report_sections.gaps` に積まれ、次サイクルでは追加仮説として扱われる。新規ゲートを追加するときは 1 関数 + 1 note 文字列に閉じ込め、テンプレ固有ロジックを書かない。
-
----
-
-## 4. プロンプトの組み立て
-
-LLM 入力は固定文字列ではなく、フェーズと文脈に応じて段階的に組み立てる。
-
-1. **DFIR プレイブック注入 (phase-aware)**: `_dfir_playbook(phase)` が `_schema/playbook/<phase>.md` を読む。planning 系 (`broad_plan`, `hypothesis_plan`) では Application Catalog / Artifact-to-Application Inference / FP Reduction を意図的に省略 (これらは evidence 解釈用)。interpretation 系 (`check`, `report_section`, `section_agent_check`) では全部入り
-2. **schema_card + SQL クックブック注入**: planner / checker に対象 table の `<SCHEMA_CARDS>` と 6 種の `<SQL_COOKBOOK>` を渡し、ゼロから SQL を書かせない。SQL validator の許可 table は `get_allowed_tables(db)` と live schema に従う
-3. **動的コンテキスト**: case の `time_range`、`uncovered_keypoints`、active / resolved hypotheses、recent history、observed_keypoints を役割ごとの builder で挿入。hypothesis は `_slim_hypothesis_dump` で null / 空フィールドを落として serialize、findings は `_slim_findings` が同一 rule パターンを `count` 付き 1 行に集約
-4. **report_brief のセクション別スリム化**: `_slim_report_brief_for_section` がセクション key を見て、`1_overview` 以外は `time_range` / `source_timezone` / `investigation_objective` のみに削る。top_findings や全仮説の丸ごとダンプは行わない (2/3/4/5 系統には scoped `top_findings` / `confirmed_hypotheses` / `active_hypotheses` を選択的に戻す)
-5. **トークン予算ガード**: `_assemble_messages_with_budget()` が system を保護したまま user / dynamic 側のみ trim
+Gap notes accumulate in `report_sections.gaps` and are treated as additional hypotheses in the next cycle. When adding a new gate, keep it self-contained in one function + one note string; do not write template-specific logic.
 
 ---
 
-## 5. 仮説検証ループの詳細
+## 4. Prompt assembly
 
-### 5.1 1 サイクル (`plan_cycle`) の流れ
+LLM input is not a fixed string; it is assembled step by step according to phase and context.
+
+1. **DFIR playbook injection (phase-aware)**: `_dfir_playbook(phase)` reads `_schema/playbook/<phase>.md`. For planning phases (`broad_plan`, `hypothesis_plan`), Application Catalog / Artifact-to-Application Inference / FP Reduction are intentionally omitted (these are for evidence interpretation). For interpretation phases (`check`, `report_section`, `section_agent_check`), the full set is injected
+2. **schema_card + SQL cookbook injection**: planner / checker receive the `<SCHEMA_CARDS>` and 6 kinds of `<SQL_COOKBOOK>` for the target table, so they never write SQL from scratch. The SQL validator's allowed tables follow `get_allowed_tables(db)` and the live schema
+3. **Dynamic context**: The case's `time_range`, `uncovered_keypoints`, active / resolved hypotheses, recent history, and observed_keypoints are inserted by role-specific builders. Hypotheses are serialized via `_slim_hypothesis_dump` which drops null / empty fields; findings are aggregated by `_slim_findings` into a single line with a `count` for identical rule patterns
+4. **Per-section slimming of report_brief**: `_slim_report_brief_for_section` looks at the section key and, except for `1_overview`, trims down to only `time_range` / `source_timezone` / `investigation_objective`. It does not dump top_findings or all hypotheses wholesale (for 2/3/4/5 series it selectively restores scoped `top_findings` / `confirmed_hypotheses` / `active_hypotheses`)
+5. **Token budget guard**: `_assemble_messages_with_budget()` trims only the user / dynamic side while protecting the system side
+
+---
+
+## 5. Hypothesis verification loop details
+
+### 5.1 Flow of one cycle (`plan_cycle`)
 
 ```
 broad_plan → for each active hypothesis: plan → exec(+fallback) → check → track → resolve → refresh_report(stale-first) → inject_gaps_as_new_hypotheses
 ```
 
-- `plan_cycle` は `--max-iter` で上限
-- 仮説あたりのクエリ試行は `--max-queries-per-hypothesis` で上限
-- レポート再充填は `--report-every-n-cycles` ごとに走る
+- `plan_cycle` is capped by `--max-iter`
+- Query attempts per hypothesis are capped by `--max-queries-per-hypothesis`
+- Report refilling runs every `--report-every-n-cycles` cycles
 
-### 5.2 仮説の入り口
+### 5.2 Entry points for hypotheses
 
-`state.active_hypotheses` に入る仮説は 3 経路ある。
+Hypotheses that enter `state.active_hypotheses` come from 3 routes.
 
-1. `rule.hypotheses`: ルール発火時にテンプレから生成。`source_rule_ids` が埋まる
-2. `gap_identifier` + `hypothesis_drafter`: gap 領域から起案。`source_rule_ids` は空
-3. `follow_up_questions`: confirmed になった `source_rule_ids` 付き仮説から自動派生
+1. `rule.hypotheses`: Generated from templates when a rule fires. `source_rule_ids` is populated
+2. `gap_identifier` + `hypothesis_drafter`: Drafted from gap areas. `source_rule_ids` is empty
+3. `follow_up_questions`: Automatically derived from confirmed hypotheses that carry `source_rule_ids`
 
-レポート writer から出る gap 仮説は `_inject_gap_hypotheses` を通り、`GapHypothesisOutput` の Pydantic バリデーションで形を整え、LLM が `required_entities` / `confirm_when` を落とした場合はヒューリスティックなセーフティネットで補完する。
+Gap hypotheses emitted by the report writer pass through `_inject_gap_hypotheses`, are shaped by `GapHypothesisOutput` Pydantic validation, and if the LLM drops `required_entities` / `confirm_when`, a heuristic safety net fills them in.
 
 ### 5.3 Planner
 
-`build_query_intent_messages` → `build_sql_composer_messages` の 2 段呼び。
+Two-stage call: `build_query_intent_messages` → `build_sql_composer_messages`.
 
-- **schema cards** (`<SCHEMA_CARDS>`): `rulepacks/_schema/*.yaml` の `core_columns` (planner に見せる短いリスト、5〜13 列) + `column_descriptions` (1 行説明) + `columns` (SQL validator 用フルリスト)。intent planner の `target_table` は主に `evtx_events` / `mft_entries` / `mft_timeline` / `prefetch_executions` から選び、composer は対象 table の schema_card と live schema を見る。validator の allowlist は `get_allowed_tables(db)` が live DB から組み立て、`findings` / `prefetch_timeline` / `report_*` / `section_*` などの派生テーブルも必要に応じて許可する
-- **SQL クックブック** (`<SQL_COOKBOOK>`): event_id 列挙 / 時間範囲 / GROUP BY / COALESCE / MFT path LIKE / Prefetch という 6 種の SELECT テンプレ。弱い LLM はゼロから合成せず、これをコピー編集することを想定
-- **SQL リトライ**: `validate_select_sql` で弾かれたら `_retry_query_once` が最大 `_PLANNER_SQL_MAX_RETRIES = 3` 回まで `sql_composer` のみを再呼び出し。intent 段階は再実行しない
-- **フォールバック**: リトライしても valid SQL にならなければ、`_fallback_planned_query_from_hypothesis` が `hypothesis.confirm_when.co_observed_event_ids` から `SELECT … FROM evtx_events WHERE event_id IN (…) ORDER BY timestamp LIMIT 500` を deterministic に生成。check フェーズは必ず走る
+- **schema cards** (`<SCHEMA_CARDS>`): `core_columns` (a short list shown to the planner, 5–13 columns) + `column_descriptions` (one-line descriptions) + `columns` (full list for the SQL validator) from `rulepacks/_schema/*.yaml`. The intent planner's `target_table` is chosen mainly from `evtx_events` / `mft_entries` / `mft_timeline` / `prefetch_executions`, and the composer looks at the schema_card and live schema of the target table. The validator's allowlist is built by `get_allowed_tables(db)` from the live DB and also permits derived tables such as `findings` / `prefetch_timeline` / `report_*` / `section_*` as needed
+- **SQL cookbook** (`<SQL_COOKBOOK>`): 6 SELECT templates — event_id enumeration / time range / GROUP BY / COALESCE / MFT path LIKE / Prefetch. Weak LLMs are expected to copy-edit these rather than synthesize from scratch
+- **SQL retry**: When `validate_select_sql` rejects a query, `_retry_query_once` re-invokes only `sql_composer` up to `_PLANNER_SQL_MAX_RETRIES = 3` times. The intent stage is not re-executed
+- **Fallback**: If retries still do not yield valid SQL, `_fallback_planned_query_from_hypothesis` deterministically generates `SELECT … FROM evtx_events WHERE event_id IN (…) ORDER BY timestamp LIMIT 500` from `hypothesis.confirm_when.co_observed_event_ids`. The check phase always runs
 
-### 5.4 Executor とフォールバック
+### 5.4 Executor and fallback
 
-executor は計画された SQL を実行する。0 行で、かつ仮説に `source_rule_ids` + `fallback_search` 宣言があれば、宣言順にフォールバックフェーズを試行する。fallback SQL は `engine.execute_fallback_search` がコードで組み、LLM は介在しない。
+The executor runs the planned SQL. On 0 rows, if the hypothesis has `source_rule_ids` + `fallback_search` declarations, fallback phases are tried in declared order. The fallback SQL is assembled by `engine.execute_fallback_search` in code; the LLM is not involved.
 
-フォールバックがヒットしたら `fallback_info = {phase, source_rule_id}` を checker プロンプトに渡し、verdict にフォールバック由来であることを反映させる。
+If a fallback hits, `fallback_info = {phase, source_rule_id}` is passed to the checker prompt, and the verdict reflects that it originated from a fallback.
 
 ### 5.5 Checker
 
-`build_verdict_review_messages` が verdict / rationale / confidence の 3 フィールドのみ返す。default 基準は相関ベース:
+`build_verdict_review_messages` returns only three fields: verdict / rationale / confidence. The default criteria are correlation-based:
 
-- `confirmed`: `required_entities` が同じ rows で共起
-- `refuted`: 0 行または矛盾 entity
-- `inconclusive`: 一部の `required_entities` のみ観測 → rationale で欠落 entity を名指しすること
+- `confirmed`: `required_entities` co-occur in the same rows
+- `refuted`: 0 rows or contradictory entities
+- `inconclusive`: Only some `required_entities` are observed → the rationale must name the missing entities
 
-「直接的因果は証明されていない」「さらなる調査が必要」のような名指しなしの hedge は禁止語として明示。
+Unnamed hedges such as "direct causation is not proven" or "further investigation is needed" are explicitly forbidden phrases.
 
-verdict は LLM 出力のまま採用されず、コード側の整合ゲート (`_verify_verdict_consistency`) を通る: confirmed が主張する Event ID (confirm_when + rationale 中の event 表現) が結果行の event_id 集合に存在しない場合、または `required_entities` 列が全行 NULL の場合は inconclusive に降格。フォールバック検索由来の行からの confirmed は `_guardrail_check_payload` が newlead に降格する。
+The verdict is not adopted as-is from LLM output; it passes through a code-side consistency gate (`_verify_verdict_consistency`): if the Event IDs a confirmed verdict claims (from confirm_when + event representations in the rationale) do not exist in the set of event_ids in the result rows, or if the `required_entities` columns are NULL across all rows, it is downgraded to inconclusive. A confirmed verdict from rows originating in a fallback search is downgraded to newlead by `_guardrail_check_payload`.
 
-verdict==confirmed のときだけ `build_finding_extractor_messages` が呼ばれ、structured findings を抽出して検証後に `findings` テーブル (`rule_id='hypothesis-extraction'`) へ永続化。`build_memory_updater_messages` は verdict 確定後に durable memory updates を提案する (結果行サンプルと observed evidence_ids がプロンプトに渡され、行に実在しないエンティティ名・evidence_id はコード側で破棄)。
+Only when verdict==confirmed is `build_finding_extractor_messages` invoked to extract structured findings, which are persisted to the `findings` table (`rule_id='hypothesis-extraction'`) after verification. `build_memory_updater_messages` proposes durable memory updates after the verdict is finalized (result row samples and observed evidence_ids are passed in the prompt; entity names and evidence_ids that do not actually exist in the rows are discarded on the code side).
 
 ### 5.6 Progress Tracker
 
-`HypothesisProgressTracker` は仮説単位の dataclass で、各クエリの `(query_fingerprint, verdict, row_count)` を記録。check のたびに次の決定論的判定を行う。
+`HypothesisProgressTracker` is a per-hypothesis dataclass that records `(query_fingerprint, verdict, row_count)` for each query. On every check it makes the following deterministic decisions.
 
-| メソッド | 条件 | 効果 |
+| Method | Condition | Effect |
 |---|---|---|
-| `should_auto_confirm(rule_context, rows, hypothesis)` | `_co_observation_satisfied` ([checker.py:218](../src/forensia/ai/checker.py#L218)) が `same_host` で rows をグループ化し、`within_minutes` の時間窓内ですべての `co_observed_event_ids` が共起 | LLM verdict を無視して confirmed に強制。時刻/ホスト列がない行は未充足。`co_observed_event_ids` 未宣言の hypothesis は auto-confirm しない |
-| `should_auto_refute(threshold=3)` | 3 連続 0-row inconclusive (かつ partial 信号なし) | rule が `refute_when.zero_rows` を宣言していれば refuted、そうでなければ untestable に強制 |
-| `should_pivot(fp)` | 同じ query fingerprint が 2 回以上出現 | planner に pivot 指示 |
-| `_unavailable_missing_event_ids` | inconclusive の `missing_questions` が、ケースに存在しない Event ID のみを参照 (mft/prefetch の代替経路なし) | 初回 check で即 untestable |
-| `_investigate_one_hypothesis` short-circuit | 初回 plan で SQL / template / `confirm_when` フォールバックのいずれも組めない | 即 refuted (`no executable evidence path`) |
+| `should_auto_confirm(rule_context, rows, hypothesis)` | `_co_observation_satisfied` ([checker.py:218](../src/forensia/ai/checker.py#L218)) groups rows by `same_host` and all `co_observed_event_ids` co-occur within the `within_minutes` time window | Forces confirmed, ignoring the LLM verdict. Rows without time / host columns are treated as unsatisfied. A hypothesis without a declared `co_observed_event_ids` is not auto-confirmed |
+| `should_auto_refute(threshold=3)` | 3 consecutive 0-row inconclusive (and no partial signal) | If the rule declares `refute_when.zero_rows`, forces refuted; otherwise forces untestable |
+| `should_pivot(fp)` | The same query fingerprint appears 2 or more times | Instructs the planner to pivot |
+| `_unavailable_missing_event_ids` | The inconclusive `missing_questions` reference only Event IDs that do not exist in the case (with no mft/prefetch alternative path) | Immediately untestable on the first check |
+| `_investigate_one_hypothesis` short-circuit | The first plan cannot compose any of SQL / template / `confirm_when` fallback | Immediately refuted (`no executable evidence path`) |
 
-`refuted` (証拠による反証) と `untestable` (必要なテレメトリ不在で検証不能) は区別され、untestable はレポートの Gap セクションに不足テレメトリ付きで列挙される。
+`refuted` (disproven by evidence) and `untestable` (cannot be verified because required telemetry is absent) are distinguished, and untestable ones are listed in the report's Gap section with the missing telemetry.
 
-`query_fingerprint` は sqlglot AST を canonicalize して event_id / computer マーカーと合わせてハッシュ化したもの。空白や別名違いを吸収する。sqlglot 不在時は文字列正規化に fallback。
+`query_fingerprint` canonicalizes the sqlglot AST and hashes it together with event_id / computer markers. It absorbs whitespace and alias differences. When sqlglot is unavailable, it falls back to string normalization.
 
-`_merge_active_hypotheses` は `MAX_ACTIVE_HYPOTHESES = 8` を強制。既存仮説の更新はカウント対象外で、上限超過分の新規だけが drop される (`[CAP]` ログ)。
+`_merge_active_hypotheses` enforces `MAX_ACTIVE_HYPOTHESES = 8`. Updates to existing hypotheses do not count toward the limit; only new entries beyond the cap are dropped (`[CAP]` log).
 
-### 5.7 仮説 dedup
+### 5.7 Hypothesis dedup
 
-仮説の同一性判定はコード側で完結する。
+Hypothesis identity judgment is fully completed on the code side.
 
-- `_hypothesis_similarity` (`hypothesis_manager.py`): triple (actor / action / target) ベースの類似度
-- `_dedup_new_hypotheses` (`investigator.py`): drafter 出力後、active との類似度 > 0.85 で drop
-- `_best_hypothesis_match` (`hypothesis_manager.py`): `_merge_active_hypotheses` 内で同一の閾値判定により upsert 先を決める
+- `_hypothesis_similarity` (`hypothesis_manager.py`): similarity based on a (actor / action / target) triple
+- `_dedup_new_hypotheses` (`investigator.py`): after the drafter output, drops entries with similarity > 0.85 to active ones
+- `_best_hypothesis_match` (`hypothesis_manager.py`): determines the upsert target using the same threshold judgment inside `_merge_active_hypotheses`
 
 ### 5.8 Resolver
 
-仮説が確定すると `_resolve_hypothesis` が次を行う。
+When a hypothesis is finalized, `_resolve_hypothesis` does the following.
 
-1. `state.resolved_hypotheses` に移動し、DB の `status` を `confirmed` / `refuted` に upsert
-2. 各 `source_rule_id` についてキャッシュされた `load_rule_by_id` でルールを引き、id 一致する `HypothesisDeclaration` を探す
-3. 宣言から:
-   - `stale_sections` に `decl.report_sections` を追加
-   - confirmed のときは `decl.follow_up_questions` を新たな active 仮説に追加 (description で dedup)
-4. 該当 section について `UPDATE report_sections SET stale = TRUE WHERE section_key = ?` を発行
+1. Moves it to `state.resolved_hypotheses` and upserts `status` to `confirmed` / `refuted` in the DB
+2. For each `source_rule_id`, looks up the rule via the cached `load_rule_by_id` and finds the `HypothesisDeclaration` whose id matches
+3. From the declaration:
+   - Adds `decl.report_sections` to `stale_sections`
+   - When confirmed, adds `decl.follow_up_questions` as new active hypotheses (deduped by description)
+4. Issues `UPDATE report_sections SET stale = TRUE WHERE section_key = ?` for the relevant sections
 
 ### 5.9 Termination
 
-サイクルが終了する条件は次のいずれか:
+A cycle ends when any of the following holds:
 
-- すべての active 仮説が解決し、broad_plan が `stop` を出し、レポート gap が空
-- 3 サイクル連続で進捗なし (`--no-progress-limit`)
-- `--max-iter` サイクル完了
+- All active hypotheses are resolved, broad_plan returns `stop`, and the report gaps are empty
+- 3 consecutive cycles with no progress (`--no-progress-limit`)
+- `--max-iter` cycles completed
 
-「進捗なし」は仮説解決も新規 gap 仮説追加もレポート status カウンタ変動もないサイクルを指す。
+"No progress" means a cycle with no hypothesis resolution, no new gap hypotheses added, and no change in the report status counters.

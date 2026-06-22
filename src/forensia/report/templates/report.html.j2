@@ -403,28 +403,8 @@
         <div class="header-meta">
           <div>Output Time: {{ generated_at }}</div>
           <div>Host Name: {{ hostnames|join(", ") if hostnames else "-" }}</div>
-          <div>Case: {{ manifest_data.case_name if manifest_data.case_name else case_name }}</div>
         </div>
       </header>
-
-      <section class="summary">
-        <article class="metric">
-          <p class="metric-label">Evidence</p>
-          <p class="metric-value">{{ evtx_count + mft_count }}</p>
-        </article>
-        <article class="metric">
-          <p class="metric-label">EVTX Events</p>
-          <p class="metric-value">{{ evtx_count }}</p>
-        </article>
-        <article class="metric">
-          <p class="metric-label">MFT Entries</p>
-          <p class="metric-value">{{ mft_count }}</p>
-        </article>
-        <article class="metric">
-          <p class="metric-label">Findings</p>
-          <p class="metric-value">{{ findings|length }}</p>
-        </article>
-      </section>
 
       <section class="content">
         {% if report_toc_html %}

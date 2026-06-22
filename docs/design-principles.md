@@ -1,169 +1,169 @@
 # Design Principles
 
-forensia がコード変更を超えて守る設計原則。新機能を入れるときの判断材料。
+Design principles that forensia preserves beyond code changes. Use them as decision material when adding new features.
 
 ---
 
-## 1. 状態の 3 層分離
+## 1. Three-layer state separation
 
-forensia は信頼度と寿命が異なる 3 種の状態を分離して扱う。
+forensia separates three kinds of state that differ in trust level and lifetime.
 
-| 種類 | 場所 | 役割 |
+| Type | Location | Role |
 |---|---|---|
-| Case State | `db/case.duckdb` | 取り込んだアーティファクトを正規化した証拠と、それから導かれる永続調査オブジェクト。証拠行は immutable 寄りだが、findings / hypotheses / report_sections などの workflow state は更新される |
-| Trace State | `db/trace.duckdb` | 調査セッションのライフサイクル、ステップ I/O、進捗履歴。原則 append-only |
-| Structured Memory | `memory/**/*.md` | Case と Trace から LLM 向けに再構成した文脈。regeneratable |
+| Case State | `db/case.duckdb` | Normalized evidence derived from ingested artifacts, plus the persistent investigation objects derived from it. Evidence rows are closer to immutable, but workflow state such as findings / hypotheses / report_sections is updated |
+| Trace State | `db/trace.duckdb` | Investigation session lifecycle, step I/O, and progress history. Append-only in principle |
+| Structured Memory | `memory/**/*.md` | Context reconstructed from Case and Trace for LLM consumption. Regeneratable |
 
-権威の階層:
-- Case State は「ケースが現状何を含んでいるか」を答える正本
-- Trace State は「どうやって現在状態に達したか」を答える正本
-- Memory は **projection** であり、authority ではない
+Hierarchy of authority:
+- Case State is the source of truth for "what the case currently contains"
+- Trace State is the source of truth for "how the current state was reached"
+- Memory is a **projection**, not an authority
 
-新機能が永続状態を要するなら、Markdown やログだけでなく DuckDB のテーブルに表現する。
-
----
-
-## 2. LLM 出力は正本ではない
-
-実装は LLM の活動を記録するが、生の出力を永続状態としては扱わない。
-
-- LLM のリクエスト / レスポンスは `ai_logs/<session_id>/` に保存
-- 各ステップの `input_json` / `output_json` は `trace.investigation_steps` に保存
-- findings / hypotheses / claims / report_sections は DuckDB に永続化
-- Memory Markdown は derived state であり、再生成可能
+If a new feature requires persistent state, represent it in a DuckDB table, not only in Markdown or logs.
 
 ---
 
-## 3. 証拠への traceability を保つ
+## 2. Handling LLM output
 
-durable な結論は evidence_id まで辿れる。
+The implementation records LLM activity but does not treat raw output as persistent state.
 
-- 証拠テーブルは正規化された原本レコードを持つ
-- findings は構造化された evidence 参照を持つ
-- memory の facts / timeline には evidence 参照を含める
-- claims は `finding_ids` / `hypothesis_ids` / `evidence_ids` をリンクとして持つ
-
-新たに証拠を要約・ランキングする抽象を追加するときは、必ず元証拠への参照経路を保つ。
+- LLM requests / responses are saved under `ai_logs/<session_id>/`
+- Each step's `input_json` / `output_json` is saved in `trace.investigation_steps`
+- findings / hypotheses / claims / report_sections are persisted in DuckDB
+- Memory Markdown is derived state and regeneratable
 
 ---
 
-## 4. 1 LLM ロール = 1 文で書ける目的
+## 3. Preserve traceability to evidence
 
-`<TASK>You are a sql_composer. Write a DuckDB SQL query that satisfies the given intent.</TASK>` のように、ビルダー冒頭が複文になったら粒度が崩れているサイン。
+Durable conclusions can be traced back to an evidence_id.
 
-- **ルーティング・テンプレマッチング・整形は LLM に渡さない**。`validate_select_sql` / `HypothesisProgressTracker` / `_dedup_new_hypotheses` / `_format_structured_answer` / `execute_fallback_search` はすべてコード側で決定論的に動く
-- 新ロールを足すときは `<TASK>` を 1 文で書けるか確認
+- Evidence tables hold the normalized source records
+- Findings carry structured evidence references
+- memory facts / timeline include evidence references
+- claims link to `finding_ids` / `hypothesis_ids` / `evidence_ids`
 
-LLM ロールの一覧と入出力スキーマは [llm-roles.md](llm-roles.md) を参照。
+When adding a new abstraction that summarizes or ranks evidence, always preserve the reference path back to the source evidence.
 
 ---
 
-## 5. ノブはルール宣言層に置く
+## 4. Role granularity: one LLM role = a purpose writable in one sentence
 
-新しい AI 駆動の振る舞いを追加するときは「これを 1 文の `<TASK>` で書けるか」「コード側で表せないか」を先に問い、答えが No / Yes ならルール宣言ノブで表現できないかを確認する。Python に rule_id や event_id のハードコード分岐を増やす前に、必ず宣言層 (`src/forensia/rulepacks/_schema/`) を検討する。
+If the opening of a builder becomes a multi-sentence block, such as `<TASK>You are a sql_composer. Write a DuckDB SQL query that satisfies the given intent.</TASK>`, it is a sign that the granularity is broken.
 
-ルール経由で挙動を変えられる主なノブ:
+- **Do not hand routing, template matching, or formatting to the LLM**. `validate_select_sql` / `HypothesisProgressTracker` / `_dedup_new_hypotheses` / `_format_structured_answer` / `execute_fallback_search` all run deterministically on the code side
+- When adding a new role, check whether you can write its `<TASK>` in one sentence
 
-| ノブ | 宣言場所 | 効果 |
+For the list of LLM roles and their input/output schemas, see [llm-roles.md](llm-roles.md).
+
+---
+
+## 5. Place knobs in the rule declaration layer
+
+When adding new AI-driven behavior, first ask "can this be written as a one-sentence `<TASK>`?" and "can it be expressed on the code side?". If the answers are No / Yes, check whether it can be expressed as a rule declaration knob. Before increasing hardcoded branches on rule_id or event_id in Python, always consider the declaration layer (`src/forensia/rulepacks/_schema/`).
+
+The main knobs that can change behavior through rules:
+
+| Knob | Declaration location | Effect |
 |---|---|---|
-| `correlate_with` | rule | planner プロンプトに「これらの event id も見ろ」ヒント |
-| `confirm_when.co_observed_event_ids` | `hypotheses[]` | tracker の auto-confirm 基準 |
-| `refute_when.zero_rows` | `hypotheses[]` | checker のデフォルト refutation |
-| `fallback_search` | rule | LLM 不在の 0-row リカバリ |
-| `follow_up_questions` | `hypotheses[]` | confirmed 時に次の調査を自動派生 |
-| `report_sections` | `hypotheses[]` | 解決時に stale 化するセクション |
+| `correlate_with` | rule | Hint in the planner prompt to "also look at these event ids" |
+| `confirm_when.co_observed_event_ids` | `hypotheses[]` | tracker auto-confirm criteria |
+| `refute_when.zero_rows` | `hypotheses[]` | checker default refutation |
+| `fallback_search` | rule | 0-row recovery without LLM |
+| `follow_up_questions` | `hypotheses[]` | auto-derive next investigation on confirmed |
+| `report_sections` | `hypotheses[]` | sections to stale-mark on resolution |
 
 ---
 
-## 6. 仮説単位の文脈隔離
+## 6. Context isolation per hypothesis
 
-検証中の暫定 facts / timeline / tasks は `memory/scratch/<hypothesis_id>/` に閉じ込め、confirmed 時に共有記憶へ昇格、refuted 時に archive へ退避する。他仮説の暫定情報を流入させない。
+Provisional facts / timeline / tasks under verification are confined to `memory/scratch/<hypothesis_id>/`, promoted to shared memory on confirmed, and retreated to archive on refuted. Do not let provisional information from other hypotheses leak in.
 
-`_apply_memory_updates` ([investigator.py:737](../src/forensia/ai/investigator.py#L737)) は `hypothesis_id` と `verdict` を見て書き込み先を振り分ける。仮説起源の memory write には必ず `hypothesis_id` を持たせる (落とすと共有記憶に無条件書き込みされ、このライフサイクルを壊す)。
+`_apply_memory_updates` ([investigator.py:737](../src/forensia/ai/investigator.py#L737)) routes the write destination based on `hypothesis_id` and `verdict`. Hypothesis-originated memory writes must always carry `hypothesis_id` (dropping it causes unconditional writes to shared memory and breaks this lifecycle).
 
-レポートセクション間の汚染防止も同様:
-- `_summarize_context_sections`: 過去セクション本文はタイトル + 先頭 120 字のみで渡す
-- `current_section_outline`: 同一セクション内の先行ブロックは見出し + 120 字サマリの list で渡す
-- `_filter_prior_runs_by_heading`: 現在の `block_heading` に一致する prior_runs のみ採用
-- `_load_reusable_section_evidence` / `_load_reusable_section_facts`: `section_key = ?` 完全一致のみで scope
+The same contamination prevention applies between report sections:
+- `_summarize_context_sections`: pass prior section bodies as title + first 120 characters only
+- `current_section_outline`: pass preceding blocks in the same section as a list of heading + 120-character summary
+- `_filter_prior_runs_by_heading`: adopt only prior_runs matching the current `block_heading`
+- `_load_reusable_section_evidence` / `_load_reusable_section_facts`: scope with exact `section_key = ?` match only
 
 ---
 
-## 7. verdict 値は列挙であり自由文字列ではない
+## 7. Verdict values are an enum, not free strings
 
-verdict 文字列は許可リスト。許可値は `src/forensia/rulepacks/_schema/verdict_taxonomy.yaml` で宣言され、3 箇所の書き込み境界で `forensia.core.verdicts.assert_valid_verdict` により強制される。
+Verdict strings are an allow-list. Allowed values are declared in `src/forensia/rulepacks/_schema/verdict_taxonomy.yaml` and enforced by `forensia.core.verdicts.assert_valid_verdict` at three write boundaries.
 
-| レイヤー | 強制サイト |
+| Layer | Enforcement site |
 |---|---|
 | `hypothesis_verdict` | `hypothesis_manager.py:_upsert_hypothesis()` + `Hypothesis.verdict` field validator |
 | `section_verdict` | `section_agent.py:_store_section_run()` |
 | `structured_status` | `report/writer.py:_normalize_structured_answer()` |
 
-新しい verdict 値を増やすなら `verdict_taxonomy.yaml` を編集する。validator を Python から回避するのはバグ扱い。
+To add a new verdict value, edit `verdict_taxonomy.yaml`. Bypassing the validator from Python is treated as a bug.
 
-層間マッピング (`hypothesis_to_section`, `section_to_benchmark`, `benchmark_to_claim`) も taxonomy ファイルが宣言するので、層間変換が必要なら `map_verdict()` を呼び、独自テーブルを作らない。
-
----
-
-## 8. SQL 安全性
-
-LLM が出した SQL は読み取り専用の証拠アクセスとして扱う。
-
-- `SELECT` と `WITH` のみ許可
-- 複文は拒否
-- 破壊的 SQL は拒否
-- テーブルは allowlist で制限 (`get_allowed_tables(db)` + `_LEGACY_ALLOWED_TABLES`)
-
-LLM は証拠アクセスを「提案」できても、生成 SQL で DB を mutate することはできない。
+Cross-layer mappings (`hypothesis_to_section`, `section_to_benchmark`, `benchmark_to_claim`) are also declared by the taxonomy file, so if you need cross-layer conversion call `map_verdict()` and do not create custom tables.
 
 ---
 
-## 9. LLM 呼び出し総数は opt-in hard cap
+## 8. SQL safety
 
-`audit.LLMCallLogger` がすべての呼び出しを記録する。
+SQL produced by the LLM is treated as read-only evidence access.
 
-- `investigator.investigate(max_llm_calls=...)` (CLI: `--max-llm-calls`) は opt-in の hard cap
-- 既定値は `0` (無制限)。ローカル LLM ではコスト懸念がないため既定では無効
-- クラウド API 利用時は明示的に正の値を指定 (超過で `RuntimeError`、soft warning ではなくループ終了)
+- Only `SELECT` and `WITH` are allowed
+- Multi-statement queries are rejected
+- Destructive SQL is rejected
+- Tables are restricted by an allowlist (`get_allowed_tables(db)` + `_LEGACY_ALLOWED_TABLES`)
 
-プロンプト組み立てには別途トークン予算ガードがあり、`_assemble_messages_with_budget()` が system メッセージを保護したまま user/dynamic 側のみ trim する。
-
----
-
-## 10. トークン予算は hard cap、しかし system は保護
-
-- system プロンプトはトークン予算の trim 対象外
-- user / dynamic content から先に削る
-- system に直接連結することで予算ガードを回避しない
+The LLM may "propose" evidence access, but generated SQL cannot mutate the DB.
 
 ---
 
-## 11. 概念モデルの境界
+## 9. Total LLM call count is an opt-in hard cap
 
-| 用語 | 意味 |
+`audit.LLMCallLogger` records every call.
+
+- `investigator.investigate(max_llm_calls=...)` (CLI: `--max-llm-calls`) is an opt-in hard cap
+- The default is `0` (unlimited). It is disabled by default because cost is not a concern with a local LLM
+- When using a cloud API, explicitly specify a positive value (exceeding it raises `RuntimeError` and terminates the loop, not a soft warning)
+
+Prompt assembly has a separate token budget guard, where `_assemble_messages_with_budget()` trims only the user/dynamic side while protecting the system message.
+
+---
+
+## 10. Token budget is a hard cap, but the system is protected
+
+- system prompts are not subject to token budget trimming
+- trim user / dynamic content first
+- do not bypass the budget guard by concatenating directly into the system
+
+---
+
+## 11. Conceptual model boundaries
+
+| Term | Meaning |
 |---|---|
-| Evidence | EVTX / MFT 行のような正規化済み生レコード |
-| Finding | 証拠から導かれた観測条件・信号 |
-| Hypothesis | 検証・反証する解釈 |
-| Claim | レポートで読者に提示する記述 |
-| Gap | confidence を阻む未知 |
+| Evidence | Normalized raw record such as an EVTX / MFT row |
+| Finding | Observed condition or signal derived from evidence |
+| Hypothesis | Interpretation to verify or refute |
+| Claim | Description presented to the reader in the report |
+| Gap | Unknown that blocks confidence |
 
-これらの境界を混ぜると推論の監査と安全な再開が困難になる。Evidence と Finding は証拠近傍、Hypothesis は解釈、Claim はレポート向け、Gap は未知。
+Mixing these boundaries makes inference auditing and safe resumption difficult. Evidence and Finding sit close to the evidence, Hypothesis is interpretation, Claim is for the report, and Gap is the unknown.
 
-`suppressed` finding は削除ではない:
-- suppressed な finding は durable なケース記録の一部として残る
-- suppression は表示とワークフロー意味論を変えるだけで、証拠の存在は変えない
-- finding が suppressed でも evidence リンクは残す
+A `suppressed` finding is not a deletion:
+- a suppressed finding remains part of the durable case record
+- suppression only changes display and workflow semantics, not the existence of the evidence
+- even if a finding is suppressed, the evidence link is retained
 
 ---
 
-## 12. 構造化記憶は再構成可能
+## 12. Structured memory is reconstructable
 
-構造化記憶は DB と先行する evidence-backed 出力からの projection に留める。
+Keep structured memory as a projection from the DB and preceding evidence-backed output.
 
-- 排他的なビジネスロジックを memory Markdown だけに置かない
-- 直近のプロンプト文脈からしか復元できない状態を作らない
-- ファイル名と索引項目には安定 id を使う
-- 明示的に要約されたファイル (`overview.md` など) を除き、追記履歴を in-place な書き換えより優先する
+- Do not place exclusive business logic in memory Markdown alone
+- Do not create state that can only be restored from the most recent prompt context
+- Use stable ids for file names and index entries
+- Except for explicitly summarized files (such as `overview.md`), prefer append history over in-place rewrites
 
-structured / benchmark / appendix ブロックが narrative memory を見ると既に形成された結論にブロック回答が引き寄せられるため、`core.memory.EvidenceOnlyMemory` wrapper で `facts` / `keypoints` / `entities` のみを露出する仕組みがある。切り替えは `core.memory.memory_for_section(memory, structured_mode=...)` の 1 箇所で行う。
+When structured / benchmark / appendix blocks view narrative memory, block answers get pulled toward already-formed conclusions, so the `core.memory.EvidenceOnlyMemory` wrapper exposes only `facts` / `keypoints` / `entities`. The switch happens in a single place: `core.memory.memory_for_section(memory, structured_mode=...)`.

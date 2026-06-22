@@ -1692,8 +1692,6 @@ def _insufficient_evidence_placeholder() -> str:
     Deliberately avoids quality-gate trigger phrases (failure markers,
     open-question markers, hedge words without citations).
     """
-    if _report_language() in {"ja", "jp", "japanese"}:
-        return "本ブロックを裏付ける十分な証拠は得られていない。詳細は Investigation Gaps の節に記載する。"
     return "No sufficient evidence was collected for this block. Details are tracked in the Investigation Gaps section."
 
 

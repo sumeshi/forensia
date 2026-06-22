@@ -394,7 +394,7 @@ def _register_evidence_record_routes(app: FastAPI, case: Case):
                 " h1 { font-size: 18px; color: #b4befe; } .meta { color: #a6adc8; font-size: 13px; }"
                 " pre { background: #181825; padding: 16px; border-radius: 8px; white-space: pre-wrap; }</style></head>"
                 f"<body><h1>{safe_id}</h1>"
-                '<p class="meta">調査実行中のためデータベースがロックされています。全文は実行終了後に表示できます(このページは30秒ごとに自動再試行します)。</p>'
+                '<p class="meta">The database is locked while an investigation is running. The full content will be available after the run completes (this page auto-retries every 30 seconds).</p>'
                 f"{summary_html}</body></html>",
                 status_code=503,
             )

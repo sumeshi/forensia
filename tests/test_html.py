@@ -83,7 +83,7 @@ class FindingDisplayTests(unittest.TestCase):
         )
 
         self.assertEqual(1, len(grouped))
-        self.assertEqual("明示的資格情報利用の観測 (2件)", grouped[0]["title"])
+        self.assertEqual("Explicit credential usage observed (2)", grouped[0]["title"])
         self.assertNotIn("Logon attempt", grouped[0]["title"])
 
 
@@ -701,7 +701,7 @@ class EvidenceTooltipInjectionTests(unittest.TestCase):
             render_markdown_fragment("Logon observed (evtx-security-000000000001).")
         )
         injected = _inject_evidence_interactivity(html, self.EMAP)
-        self.assertNotIn("記録を開く", injected)
+        self.assertNotIn("open record", injected)
         self.assertNotIn("evidence-open", injected)
 
 

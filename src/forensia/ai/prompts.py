@@ -1551,7 +1551,7 @@ def build_report_section_messages(
             "Write what the evidence shows, not instructions to the reader.\n"
             "Lead with the 2-3 strongest observations (with dates and counts) from "
             "STRUCTURED_OBSERVATIONS and confirmed findings. One sentence on open questions.\n"
-            'Do not use phrases like "需要确认/確認する必要があります/should be verified" more than once.\n'
+            'Do not use phrases like "should be verified", "needs confirmation", "requires verification" more than once.\n'
         )
     digest_block = f"\n{structured_digest}\n" if structured_digest else ""
     system = (
@@ -2023,7 +2023,7 @@ def build_paragraph_narrate_messages(
             "Write what the evidence shows, not instructions to the reader.\n"
             "Lead with the 2-3 strongest observations (with dates and counts) from "
             "STRUCTURED_OBSERVATIONS and confirmed findings. One sentence on open questions.\n"
-            'Do not use phrases like "需要确认/確認する必要があります/should be verified" more than once.\n'
+            'Do not use phrases like "should be verified", "needs confirmation", "requires verification" more than once.\n'
         )
     system = (
         "<TASK>You are a section_narrator. Write one markdown paragraph for the given heading using the supplied evidence. "

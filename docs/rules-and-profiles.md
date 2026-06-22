@@ -1,48 +1,48 @@
 # Rules / Profiles / Allowlist
 
-検知ルール、プロファイル選択、allowlist による suppression、宣言層の仕様。
+Detection rules, profile selection, suppression via allowlist, and the declarative layer specification.
 
 ---
 
 ## 1. Rulepack
 
-ルールパックは `src/forensia/rulepacks/windows/` (または類似) 配下の YAML 定義。`src/forensia/rules/models.py` の Pydantic モデルが `extra="forbid"` でスキーマ強制するため、未知フィールドはロード時に弾かれる。
+A rulepack is a YAML definition under `src/forensia/rulepacks/windows/` (or similar). The Pydantic models in `src/forensia/rules/models.py` enforce the schema with `extra="forbid"`, so unknown fields are rejected at load time.
 
-### 1.1 検出部 (必須)
+### 1.1 Detection part (required)
 
-| フィールド | 役割 |
+| Field | Role |
 |---|---|
-| `id` | 安定したルール識別子 |
-| `title` | 人間向けタイトル |
-| `severity` | findings の既定 severity |
-| `confidence` | findings の既定 confidence |
-| `query` | 正規化済み証拠への読み取り専用 SQL |
-| `finding.title` / `finding.summary` | 行フィールドから render するテンプレ |
-| `tags` | 分類タグ |
-| `attack` | ATT&CK マッピング (full-form: `[{tactic, technique_id, technique_name}]`) |
+| `id` | Stable rule identifier |
+| `title` | Human-facing title |
+| `severity` | Default severity for findings |
+| `confidence` | Default confidence for findings |
+| `query` | Read-only SQL against normalized evidence |
+| `finding.title` / `finding.summary` | Templates rendered from row fields |
+| `tags` | Classification tags |
+| `attack` | ATT&CK mapping (full-form: `[{tactic, technique_id, technique_name}]`) |
 
-ルールクエリの 1 行が 1 finding になる。元行は構造化 evidence として保存される。
+One row of a rule query becomes one finding. The source row is stored as structured evidence.
 
-### 1.2 仮説宣言 (任意、仮説ループを駆動)
+### 1.2 Hypothesis declaration (optional, drives the hypothesis loop)
 
-ルールが LLM 駆動の仮説ループも seed するなら、次を宣言する。Python 側はこれを generic に消費する (kill-chain 知識は Python にハードコードしない)。
+If a rule also seeds the LLM-driven hypothesis loop, declare the following. The Python side consumes these generically (kill-chain knowledge is not hardcoded in Python).
 
-- `hypotheses[]`: ルール発火時に instantiate される仮説テンプレ
-  - `id`: ルール内安定 id
-  - `segment`: kill-chain segment (`persistence`, `lateral-movement` 等)
-  - `description`: `{field}` プレースホルダ付き仮説文 (クエリ行カラムにバインドされる)
-  - `required_entities`: confirm に必要な entity 名
-  - `confirm_when`: `{co_observed_event_ids: [...], same_host: bool, within_minutes: int}` のような相関基準。`HypothesisProgressTracker` が auto-confirm を判定
-  - `refute_when`: `{zero_rows: true}` 等の refutation 基準
-  - `follow_up_questions`: confirmed 時に自動 spawn される質問
-  - `report_sections`: 解決時に stale 化する section キー
-- `correlate_with[]`: planner が「これも見ろ」と促される event ID 群。`{event_ids: [...], rationale: str}`
-- `fallback_search[]`: primary SQL 0 行時に宣言順で実行されるフェーズ。LLM 不在。許可フェーズは:
-  - `keyword_in_raw_json` (LIKE エスケープ)
-  - `related_event_ids` (別 event 表面)
-  - `artifact_table` (別の正規化テーブル、`engine.py` で whitelist)
+- `hypotheses[]`: Hypothesis templates instantiated when the rule fires
+  - `id`: Stable id within the rule
+  - `segment`: kill-chain segment (`persistence`, `lateral-movement`, etc.)
+  - `description`: Hypothesis sentence with `{field}` placeholders (bound to query row columns)
+  - `required_entities`: Entity names required for confirmation
+  - `confirm_when`: Correlation criteria such as `{co_observed_event_ids: [...], same_host: bool, within_minutes: int}`. `HypothesisProgressTracker` uses it to judge auto-confirm
+  - `refute_when`: Refutation criteria such as `{zero_rows: true}`
+  - `follow_up_questions`: Questions automatically spawned on confirmation
+  - `report_sections`: Section keys to mark stale on resolution
+- `correlate_with[]`: A set of event IDs the planner is nudged to "also look at". `{event_ids: [...], rationale: str}`
+- `fallback_search[]`: Phases executed in declared order when the primary SQL returns 0 rows. No LLM involved. Allowed phases:
+  - `keyword_in_raw_json` (LIKE escaped)
+  - `related_event_ids` (alternative event surface)
+  - `artifact_table` (another normalized table, whitelisted in `engine.py`)
 
-### 1.3 例
+### 1.3 Example
 
 ```yaml
 id: windows-security-4625-failed-logon
@@ -88,84 +88,84 @@ fallback_search:
 
 ## 2. Profile
 
-プロファイルはルール選択ポリシー。`src/forensia/profiles/` 配下。
+A profile is a rule selection policy. It lives under `src/forensia/profiles/`.
 
-| フィールド | 役割 |
+| Field | Role |
 |---|---|
-| `name` | プロファイル名 |
-| `rulepacks` | rulepack root 配下の対象ディレクトリ / パス |
-| `rule_ids` | 任意の特定ルール ID 許可リスト |
+| `name` | Profile name |
+| `rulepacks` | Target directories / paths under the rulepack root |
+| `rule_ids` | Optional allowlist of specific rule IDs |
 
-プロファイルは選択メタデータ。ルールロジックを複製しない。
+A profile is selection metadata. It does not duplicate rule logic.
 
-### 安定であるべきこと
+### What should remain stable
 
-- ルール ID は外部識別子として永続的に扱う
-- プロファイルは「どのルールが active か」を意味し、「どう実行するか」ではない
-- ルールクエリは read-only / 証拠指向のまま保つ
-- finding テンプレは行駆動で、各 finding が evidence traceability を保つ
-- パッケージ同梱のルールメタデータと finding テキストは英語で書く
+- Treat rule IDs as persistent external identifiers
+- A profile means "which rules are active", not "how to run them"
+- Keep rule queries read-only / evidence-oriented
+- Finding templates are row-driven, and each finding preserves evidence traceability
+- Write package-bundled rule metadata and finding text in English
 
-選択意味論ではなく実行意味論を変える必要があるなら、それは rule engine の変更であり、profile フォーマットの変更ではない。
-
----
-
-## 3. Allowlist と suppression モデル
-
-`allowlist.yaml` は概念的にルールに隣接するが、ルールを選択しない。
-
-- プロファイルがどのルールを走らせるかを決める
-- ルールが候補 findings を生成する
-- allowlist が rule_id スコープのフィールドマッチで `suppressed` を決める
-
-現在のマッチモデル:
-- 1 つの `rule_id`
-- `when` 配下の 1 つ以上のフィールド述語
-- 値は対象 finding の最初の構造化 evidence 行から取得
-
-これは pre-filter ではなく post-generation な提示・triage コントロール。
+If you need to change execution semantics rather than selection semantics, that is a rule engine change, not a profile format change.
 
 ---
 
-## 4. 宣言層 (`_schema/`)
+## 3. Allowlist and suppression model
 
-`src/forensia/rulepacks/_schema/` はルールディレクトリではなく、ルールとプロンプトが共有するスキーマと DFIR 知識を置く場所。ローダは enumerate 時にスキップする。
+`allowlist.yaml` is conceptually adjacent to rules but does not select rules.
 
-| ファイル | 消費側 | 役割 |
+- The profile decides which rules run
+- The rules generate candidate findings
+- The allowlist determines `suppressed` via a rule_id-scoped field match
+
+The current match model:
+- One `rule_id`
+- One or more field predicates under `when`
+- Values are taken from the first structured evidence row of the target finding
+
+This is a post-generation presentation / triage control, not a pre-filter.
+
+---
+
+## 4. Declarative layer (`_schema/`)
+
+`src/forensia/rulepacks/_schema/` is not a rule directory; it is where schemas and DFIR knowledge shared by rules and prompts live. The loader skips it during enumeration.
+
+| File | Consumer | Role |
 |---|---|---|
-| `evtx_events.yaml` / `mft_entries.yaml` / `mft_timeline.yaml` / `prefetch_executions.yaml` / `prefetch_timeline.yaml` / `findings.yaml` | `prompts._build_schema_guidance()` 経由 `_load_schema_hints()` | DB テーブルの schema card。`core_columns` (planner 向け短いサブセット) + `column_descriptions` (1 行説明) + `columns` (SQL validator 用) + `json_field_extractors` (raw_json fallback) |
-| `event_ids.yaml` / `logon_types.yaml` | `prompts._dfir_playbook()` | Event ID / Logon Type の DFIR 解説 |
-| `app_catalog.yaml` / `artifact_inference.yaml` | `prompts._dfir_playbook()` | Prefetch / MFT / Registry / File → アプリ推定。planning 系では意図的に省略、interpretation 系のみに注入 |
-| `false_positive_rules.yaml` | rule engine + `prompts._dfir_playbook()` | 既知 FP。interpretation 系プロンプトのみで参照 |
-| `dfir_ioc_catalog.yaml` | `prompts._dfir_playbook()` | アンチフォレンジック / クラウド同期 / メール / Recycle Bin 等の補助 IOC 辞書 |
-| `question_routing.yaml` | `questions.py` + `section_agent.py` + `prompts.build_section_agent_*` + `prompts.build_structured_classify_messages` | QuestionSpec の正本。`question_type` / `answer_spec` ごとの `expected_answer_shape` (コード側 `_format_structured_answer` が消費)、`evidence_chain` (primary 0-row 時に `_execute_evidence_chain` が決定論的に試行)、required/render fields、status rules を宣言 |
-| `question_routing_eval.yaml` | `scripts/audit_schema_coverage.py --strict` | QuestionSpec ルーティングの mutation corpus。見出し・本文・言語が変わっても安定した `answer_spec` に解決されるかを監査 |
-| `verdict_taxonomy.yaml` | `core/verdicts.py` | verdict 値の whitelist と層間マッピング |
-| `playbook/*.md` | `prompts._dfir_playbook(phase)` | フェーズ別 (`broad_plan` / `hypothesis_plan` / `check` / `report_section` / `section_agent_plan` / `section_agent_check`) のプレイブック本文。`<CRITICAL_RULES>` / `<FORBIDDEN_PATTERNS>` / `<SCHEMA_CONSTRAINTS>` 等のタグ付き |
+| `evtx_events.yaml` / `mft_entries.yaml` / `mft_timeline.yaml` / `prefetch_executions.yaml` / `prefetch_timeline.yaml` / `findings.yaml` | `_load_schema_hints()` via `prompts._build_schema_guidance()` | Schema cards for DB tables. `core_columns` (short subset for the planner) + `column_descriptions` (one-line descriptions) + `columns` (for the SQL validator) + `json_field_extractors` (raw_json fallback) |
+| `event_ids.yaml` / `logon_types.yaml` | `prompts._dfir_playbook()` | DFIR explanations of Event IDs / Logon Types |
+| `app_catalog.yaml` / `artifact_inference.yaml` | `prompts._dfir_playbook()` | Prefetch / MFT / Registry / File → application inference. Intentionally omitted in planning phases and injected only in interpretation phases |
+| `false_positive_rules.yaml` | rule engine + `prompts._dfir_playbook()` | Known FPs. Referenced only in interpretation-phase prompts |
+| `dfir_ioc_catalog.yaml` | `prompts._dfir_playbook()` | Auxiliary IOC dictionary for anti-forensics / cloud sync / email / Recycle Bin, etc. |
+| `question_routing.yaml` | `questions.py` + `section_agent.py` + `prompts.build_section_agent_*` + `prompts.build_structured_classify_messages` | The source of truth for QuestionSpecs. Declares `expected_answer_shape` per `question_type` / `answer_spec` (consumed by the code-side `_format_structured_answer`), `evidence_chain` (deterministically tried by `_execute_evidence_chain` when the primary returns 0 rows), required/render fields, and status rules |
+| `question_routing_eval.yaml` | `scripts/audit_schema_coverage.py --strict` | A mutation corpus for QuestionSpec routing. Audits whether headings / body / language changes still resolve to a stable `answer_spec` |
+| `verdict_taxonomy.yaml` | `core/verdicts.py` | Verdict value whitelist and cross-layer mapping |
+| `playbook/*.md` | `prompts._dfir_playbook(phase)` | Phase-specific (`broad_plan` / `hypothesis_plan` / `check` / `report_section` / `section_agent_plan` / `section_agent_check`) playbook bodies. Tagged with `<CRITICAL_RULES>` / `<FORBIDDEN_PATTERNS>` / `<SCHEMA_CONSTRAINTS>` etc. |
 
-### 4.1 DB テーブル schema YAML が宣言すること
+### 4.1 What DB table schema YAML declares
 
-- `table`: テーブル名 (例: `evtx_events`)
-- `core_columns`: planner LLM が見る短いリスト。13 以下に保つ
-- `column_descriptions`: 各 `core_columns` に対する 1 行説明
-- `columns`: 全列リスト (`validate_select_sql` が undeclared 列の SELECT / WHERE を弾くのに使う)
-- `json_field_extractors` (任意): 列が NULL のときに raw_json から拾う DuckDB JSON 抽出式
-- `notes` (任意): timestomp 注意点や Prefetch の `no_host_column` 等のヒント
+- `table`: Table name (e.g. `evtx_events`)
+- `core_columns`: Short list the planner LLM sees. Keep it at 13 or fewer
+- `column_descriptions`: One-line description for each `core_columns`
+- `columns`: Full column list (used by `validate_select_sql` to reject SELECT / WHERE on undeclared columns)
+- `json_field_extractors` (optional): DuckDB JSON extraction expressions to pull from raw_json when a column is NULL
+- `notes` (optional): Hints such as timestomp caveats or Prefetch's `no_host_column`
 
-新しい investigable テーブルを追加するなら `_schema/<table>.yaml` を置き、必要に応じて `sql_schema.py` の `_LEGACY_ALLOWED_TABLES` / `get_allowed_tables()` と SQL template allowlist を更新する。YAML は `_load_schema_hints()` で自動消費される。
+To add a new investigable table, place `_schema/<table>.yaml` and, as needed, update `_LEGACY_ALLOWED_TABLES` / `get_allowed_tables()` and the SQL template allowlist in `sql_schema.py`. The YAML is consumed automatically by `_load_schema_hints()`.
 
-### 4.2 playbook 自動再生成
+### 4.2 Playbook auto-regeneration
 
-`playbook/*.md` は `<!-- AUTO-FROM: <yaml-path> -->` ... `<!-- /AUTO-FROM -->` マーカー内を `scripts/regenerate_playbook.py` が再生成する。マーカー内は手編集せず、ソース YAML を編集して再生成する。
+`playbook/*.md` is regenerated by `scripts/regenerate_playbook.py` within `<!-- AUTO-FROM: <yaml-path> -->` ... `<!-- /AUTO-FROM -->` markers. Do not hand-edit inside the markers; edit the source YAML and regenerate.
 
-### 4.3 Allowlist スキップ
+### 4.3 Allowlist skip
 
-`kind: allowlist_services` のように `kind:` プレフィックスを持つファイルはルールではなく、ローダがスキップする (suppression ロジックが消費)。
+Files with a `kind:` prefix such as `kind: allowlist_services` are not rules; the loader skips them (the suppression logic consumes them).
 
 ---
 
-## 5. ファイル配置慣習
+## 5. File placement conventions
 
-- パッケージ既定は `src/forensia/report_template/` / `profiles/` / `rulepacks/` 配下に置く
-- case-local `report_template/` は初期化時にコピーされる override 入力として扱う
-- 現状、profile と rulepack の case-local コピーには依存しない (package tree から解決される)
+- Package defaults live under `src/forensia/report_template/` / `profiles/` / `rulepacks/`
+- Treat case-local `report_template/` as an override input copied at initialization
+- Currently, case-local copies of profiles and rulepacks are not depended upon (they are resolved from the package tree)

@@ -147,7 +147,7 @@ class WriterRQRegressionTests(unittest.TestCase):
             behaviors=("require_recommendations_strength",),
         )
         note, cap = _check_recommendations_strength(
-            "追加の相関確認を行い、根拠が揃った後に封じ込めを判断する。",
+            "Perform additional verification and correlation checks; consider containment after verification.",
             ctx,
         )
         self.assertIsNone(note)
@@ -176,9 +176,9 @@ class WriterRQRegressionTests(unittest.TestCase):
                 "When did the endpoint last shut down?",
                 "last_shutdown_event",
             ),
-            ("最後のシャットダウン時刻", "", "last_shutdown_event"),
+            ("Final shutdown time", "", "last_shutdown_event"),
             ("Last user", "Who was the last logged-on user?", "last_human_logon"),
-            ("最終ログオンユーザー", "", "last_human_logon"),
+            ("Most recent logon user", "", "last_human_logon"),
             ("Evidence Scope", "case time range and event window", "case_event_window"),
         ]
         for heading, body, expected in samples:
@@ -271,14 +271,13 @@ class WriterRQRegressionTests(unittest.TestCase):
         """Status=answered with no missing reason should not render `### Missing Reason\\n- none`.
 
         Codex's earlier fix handled `missing_reason=[]` but kept emitting the section for
-        sentinel values (`["none"]`, `["該当なし"]`) that mean the same thing.
+        sentinel values (`["none"]`, `["not applicable"]`) that mean the same thing.
         """
         for missing in (
             [],
             ["none"],
             ["None"],
-            ["該当なし"],
-            ["なし"],
+            ["not applicable"],
             ["-"],
             ["", "  "],
         ):
@@ -308,13 +307,13 @@ class WriterRQRegressionTests(unittest.TestCase):
         self.assertIn("### Missing Reason", partial_md)
 
     def test_fallback_narrative_body_stays_compact(self) -> None:
-        """The fallback paragraph must stay readable (under ~240 chars) and avoid keypoint name leakage.
+        """The fallback paragraph must stay readable (under ~350 chars) and avoid keypoint name leakage.
 
         RPT-FU-06 / RPT-FU-07: protect against regressions where multiple sample rows were
         joined with ` / ` and exploded the paragraph past 1000 chars, or keypoint identifiers
         (`overview_top_findings=10`) leaked into the prose.
         """
-        with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "ja"}):
+        with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "en"}):
             clear_llm_settings_cache()
             body = _fallback_narrative_body(
                 heading="Executive Summary",
@@ -375,7 +374,7 @@ class WriterRQRegressionTests(unittest.TestCase):
 
         self.assertLess(
             len(body),
-            280,
+            350,
             msg=f"fallback paragraph too long ({len(body)} chars): {body!r}",
         )
         self.assertNotIn("overview_top_findings", body)
@@ -401,7 +400,7 @@ class WriterRQRegressionTests(unittest.TestCase):
         )
 
         self.assertIn("### Interpretation", markdown)
-        self.assertIn("構造化証拠", markdown)
+        self.assertIn("structured evidence", markdown)
         self.assertIn("... (+3 more)", markdown)
         # STRUCTURED_MARKDOWN_MAX_ROWS is now 200, so all 30 rows are shown
         self.assertIn("| 29 |", markdown)
@@ -1244,7 +1243,7 @@ class WriterRQRegressionTests(unittest.TestCase):
             "{row_count} hosts ({sample(host, 3)}); first={first.host} last={last.host}",
             rows,
         )
-        self.assertEqual("2 hosts (alpha、beta); first=alpha last=beta", out)
+        self.assertEqual("2 hosts (alpha, beta); first=alpha last=beta", out)
 
     def test_render_table_block_prepends_caption(self) -> None:
         """R6-03: a mode:table block renders a declarative caption above the table."""
@@ -1260,7 +1259,7 @@ class WriterRQRegressionTests(unittest.TestCase):
             caption.startswith("|"),
             f"caption paragraph expected, got table first: {caption!r}",
         )
-        self.assertIn("指標", caption)
+        self.assertIn("metrics", caption)
         self.assertIn("| Metric | Value |", rest)
 
     def test_render_table_block_empty_rows_render_declared_text(self) -> None:
@@ -1273,7 +1272,7 @@ class WriterRQRegressionTests(unittest.TestCase):
                 body = render_table_block(db, "gaps_untestable")
         self.assertIsNotNone(body)
         self.assertNotIn("|", body, "no table for zero rows")
-        self.assertIn("検証不能", body)
+        self.assertIn("untestable", body)
 
     def test_render_table_block_unknown_builder_returns_none(self) -> None:
         from forensia.report.probes import render_table_block

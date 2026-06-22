@@ -54,5 +54,4 @@ fallback_search:
   keywords:
   - resignation
   - resign
-  - 退職
   rationale: Resignation-related activity may be logged in event data or process command lines

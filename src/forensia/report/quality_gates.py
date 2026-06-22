@@ -22,27 +22,20 @@ PLACEHOLDER_ENTITY_PATTERN = re.compile(
 HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.*)$")
 HTML_FILL_PATTERN = re.compile(r"<!--\s*fill(?:[^>]*)-->", re.IGNORECASE)
 FINDING_ID_PATTERN = re.compile(r"\b[A-Za-z][A-Za-z0-9-]*-\d{4}\b")
-_OPEN_QUESTION_RE = re.compile(
-    r"(?:^|[\s\(])(\?|？|TBD|TODO|FIXME|要確認|要調査|未確認|未調査|未特定|不明瞭|未解明|XXX|N\/A\?)"
-)
+_OPEN_QUESTION_RE = re.compile(r"(?:^|[\s\(])(\?|？|TBD|TODO|FIXME|XXX|N\/A\?)")
 _CITATION_TOKENS_RE = re.compile(
-    r"(?:証拠|証拠ID|finding[_\s]?id|evidence|根拠は|に基づく|according to|based on the)",
+    r"(?:finding[_\s]?id|evidence|according to|based on the)",
     re.IGNORECASE,
 )
 _FINDING_ID_RE = re.compile(r"\b[a-z]+-[a-z0-9]+-[0-9]+-[a-z0-9-]+\b")
 _PURE_HEDGE_RE = re.compile(
-    r"(?:may|might|could|possibly|perhaps|seem(?:s|ed)?|appears? to|思われる|可能性が|かもしれない)",
+    r"(?:may|might|could|possibly|perhaps|seem(?:s|ed)?|appears? to)",
     re.IGNORECASE,
 )
 _TIMESTAMP_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}([T\s]\d{2}:\d{2})?")
 _ENGLISH_PARAGRAPH_RE = re.compile(r"^[\x20-\x7e]{120,}$", re.MULTILINE)
-_JAPANESE_CHAR_RE = re.compile(r"[぀-ヿ一-鿿]")
-# RPT-02: vocabulary used to detect a narrative that asserts an external/lateral
-# intrusion storyline as the main thread, not tied to any specific benchmark
-# scenario or finding id (Rule 16).
 _STRONG_INTRUSION_THEME_RE = re.compile(
-    r"lateral movement|remote service creation|external (?:attacker|actor|intrusion)"
-    r"|横移動|侵入|不正アクセス|リモートサービスの作成|外部からの",
+    r"lateral movement|remote service creation|external (?:attacker|actor|intrusion)",
     re.IGNORECASE,
 )
 
@@ -102,21 +95,10 @@ def _title_matches_body_heading(title: str, body: str) -> bool:
 
 
 def _detect_body_language(text: str) -> str:
-    """Crude heuristic: count Japanese chars vs ASCII letters; return 'ja', 'en', or 'mixed'."""
-    ja_chars = len(_JAPANESE_CHAR_RE.findall(text))
+    """Crude heuristic: detect English text by ASCII letter count."""
     en_chars = sum(1 for ch in text if "a" <= ch.lower() <= "z")
-    if ja_chars == 0 and en_chars > 50:
+    if en_chars > 50:
         return "en"
-    if en_chars == 0 and ja_chars > 0:
-        return "ja"
-    if ja_chars > 0 and en_chars > 0:
-        return (
-            "ja"
-            if ja_chars * 2 > en_chars
-            else "en"
-            if en_chars > ja_chars * 4
-            else "mixed"
-        )
     return "unknown"
 
 
@@ -192,13 +174,13 @@ def _check_recommendations_strength(
             "may indicate",
             "additional verification",
             "consider containment after verification",
-            "追加の相関確認",
-            "追加確認",
-            "検証後",
-            "証拠不足",
-            "根拠",
-            "中程度",
-            "高信頼",
+            "additional correlation needed",
+            "additional confirmation",
+            "post-verification",
+            "insufficient evidence",
+            "basis",
+            "medium",
+            "high confidence",
         )
         if not any(marker in lowered for marker in strength_markers):
             return (
@@ -223,9 +205,7 @@ def _check_verdict_inflation(
             "executed",
             "compromised",
             "attack succeeded",
-            "侵害",
-            "実行された",
-            "確認された",
+            "compromise",
         )
         if any(marker in lowered for marker in strong_markers):
             return (
