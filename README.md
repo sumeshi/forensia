@@ -1,8 +1,16 @@
 # forensia
 
-![forensia-logo](web_ui/src/assets/images/forensia-logo.svg)
+![forensia-logo](https://gist.githubusercontent.com/sumeshi/c2f430d352ae763273faadf9616a29e5/raw/afaaa9317a3170fc22b17e0a833632b0018acd12/forensia.svg)
 
 **Your local AI assistant for weekend forensic work.**
+
+---
+
+<img width="2471" height="1328" alt="cockpit" src="https://github.com/user-attachments/assets/36225144-70ea-4ecd-96f9-b9f84ce9e30d" />
+Investigation cockpit showing case progress, hypotheses, findings, and report sections.
+
+<img width="2466" height="1330" alt="report" src="https://github.com/user-attachments/assets/c6d61b5e-16e2-4e73-82e2-bde4b29fac99" />
+Generated forensic report with evidence-backed findings and investigation context.
 
 ## Overview
 
