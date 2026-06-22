@@ -39,8 +39,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
-          cache-dependency-path: web_ui/pnpm-lock.yaml
       - name: Build web UI
         working-directory: web_ui
         run: |
