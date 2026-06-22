@@ -266,8 +266,7 @@ def _strong_confirmed_hypothesis_exists(db: CaseDB) -> bool:
         if not finding_rows:
             continue
         if not all(
-            "benign-context:" in str(r.get("tags") or "").lower()
-            for r in finding_rows
+            "benign-context:" in str(r.get("tags") or "").lower() for r in finding_rows
         ):
             return True
     return False

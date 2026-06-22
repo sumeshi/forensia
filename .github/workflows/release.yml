@@ -1,0 +1,98 @@
+name: Release
+
+# Publishes forensia to PyPI when a GitHub Release is published.
+# The web UI (Svelte/Vite) is built and staged into src/forensia/static so it
+# ships inside the wheel/sdist (see MANIFEST.in). Uses PyPI Trusted Publishing
+# (OIDC) — no API token secret is required; configure the trusted publisher on
+# PyPI once (project "forensia", workflow "release.yml", environment "pypi").
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # On a published release, fail fast if the tag does not match the version
+      # declared in pyproject.toml, so we never upload a mismatched artifact.
+      - name: Verify tag matches package version
+        if: github.event_name == 'release'
+        run: |
+          version="$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)"
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$version" != "$tag" ]; then
+            echo "::error::Release tag '$GITHUB_REF_NAME' does not match pyproject version '$version'"
+            exit 1
+          fi
+
+      # --- Build the web UI and stage it into the package ---
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web_ui/pnpm-lock.yaml
+      - name: Build web UI
+        working-directory: web_ui
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: Stage web UI into src/forensia/static
+        run: |
+          rm -rf src/forensia/static
+          mkdir -p src/forensia/static
+          cp -r web_ui/dist/. src/forensia/static/
+
+      # --- Quality gate, then build sdist + wheel ---
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Sync dependencies (Python 3.14 + dev group)
+        run: uv sync --dev
+      - name: Quality gate (ruff + doctor)
+        run: |
+          uv run ruff check
+          uv run ruff format --check
+          uv run forensia doctor
+      - name: Build sdist + wheel
+        run: uv build
+
+      # Guard against shipping a wheel without the bundled web UI.
+      - name: Verify web UI is bundled in the wheel
+        run: |
+          uv run python - <<'PY'
+          import glob, zipfile
+          whl = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(whl).namelist()
+          assert any(
+              n == "forensia/static/index.html" for n in names
+          ), f"forensia/static/index.html missing from {whl}"
+          print("OK: web UI bundled in", whl)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # required for PyPI Trusted Publishing (OIDC)
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

@@ -29,7 +29,9 @@ def _rows_for_event_ids(event_ids: list[int]) -> list[dict]:
 
 
 class TestAutoConfirmCoobservationGate:
-    def test_gap_derived_hypothesis_with_baseline_coobservation_not_auto_confirmed(self) -> None:
+    def test_gap_derived_hypothesis_with_baseline_coobservation_not_auto_confirmed(
+        self,
+    ) -> None:
         """A gap-derived hypothesis (no source_rule_ids) whose confirm_when is
         satisfied purely by ubiquitous baseline events (4624/4634 logon/logoff)
         must not be force-confirmed: such co-occurrence is normal background
@@ -50,7 +52,9 @@ class TestAutoConfirmCoobservationGate:
         tracker = HypothesisProgressTracker()
         assert tracker.should_auto_confirm(None, rows, hypothesis) is False
 
-    def test_rule_seeded_hypothesis_with_satisfied_coobservation_still_auto_confirmed(self) -> None:
+    def test_rule_seeded_hypothesis_with_satisfied_coobservation_still_auto_confirmed(
+        self,
+    ) -> None:
         """A rule-seeded hypothesis (non-empty source_rule_ids), backed by a
         vetted detection rule, retains the existing auto-confirm behavior
         when its confirm_when constraints are satisfied.

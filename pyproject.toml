@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,6 +8,19 @@ version = "0.1.0"
 description = "Incident response helper for ingesting Windows artefacts and generating reports"
 readme = "README.md"
 requires-python = ">=3.14"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "S.Nakano" }]
+keywords = ["dfir", "forensics", "incident-response", "windows", "evtx", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security",
+]
 dependencies = [
     "duckdb==1.5.3",
     "evtx2es==1.10.0",
@@ -30,6 +43,11 @@ dependencies = [
 
 [project.scripts]
 forensia = "forensia.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/sumeshi/forensia"
+Repository = "https://github.com/sumeshi/forensia"
+Issues = "https://github.com/sumeshi/forensia/issues"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

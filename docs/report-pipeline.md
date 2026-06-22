@@ -84,9 +84,9 @@ section key は **stable な識別子** として扱う。ファイル名のリ�
 | 場所 | 用途 |
 |---|---|
 | `src/forensia/report_template/` | パッケージ同梱の汎用インシデントレポート。新規ケース作成時に各ケースの `report_template/` としてコピーされる |
-| `./templates/` (リポジトリルート) | このソフトウェアの推論精度を計測するためのベンチマーク専用テンプレート。BENCHMARK.md / BENCHMARK-ANSWERS.md と対応し、6_appendix で 12 個の Scored Question を block として展開する |
+| 外部テンプレートディレクトリ (`--template-dir`) | ローカル評価・ケース固有レポート用の作業コピー。`forensia templates-export <dir>` で既定テンプレートをコピーしてから編集する |
 
-ベンチマーク評価時は `forensia investigate ... --template-dir ./templates` で指定して使う。ベンチマーク以外の通常運用ではこの templates/ は使わない。
+ベンチマーク評価時も通常の `--template-dir` 経路を使う。公開リポジトリには実データや派生ケースディレクトリを同梱しないため、評価用テンプレート・アーティファクトはローカル作業ディレクトリで管理する。Scored Question と期待値は [BENCHMARK.md](../BENCHMARK.md) / [BENCHMARK-ANSWERS.md](../BENCHMARK-ANSWERS.md) を参照する。
 
 ---
 

@@ -4,6 +4,11 @@ Source: https://cfreds-archive.nist.gov/data_leakage_case/data-leakage-case.html
 
 The purpose of this work is to learn various types of data leakage, and practice its investigation techniques.
 
+The public repository does **not** include CFReDS images, extracted artifacts, or
+generated case directories. Download the dataset from the source above and keep
+all extracted evidence outside git-tracked paths (or in ignored case/output
+directories).
+
 ## Scenario Overview
 
 ‘Iaman Informant’ was working as a manager of the technology development division at a famous international company OOO that developed state-of-the-art technologies and gadgets.
@@ -150,7 +155,7 @@ In this scenario, find any evidence of the data leakage, and any data that might
 from any case directory. Run it after a CFReDS rerun to detect regressions:
 
 ```
-uv run python scripts/eval_run.py dist/cfreds
+uv run python scripts/eval_run.py <case_dir>
 ```
 
 ### Metrics computed
@@ -167,10 +172,10 @@ uv run python scripts/eval_run.py dist/cfreds
 
 ### Regression tracking
 
-Compare two runs via the JSON reports at `dist/cfreds/eval_report.json`:
+Compare two runs via the JSON reports written by the harness:
 
 ```bash
-uv run python scripts/eval_run.py dist/cfreds --output cfreds_run2.json
+uv run python scripts/eval_run.py <case_dir> --output cfreds_run2.json
 # then diff with a previous report
 python -c "
 import json

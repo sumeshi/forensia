@@ -11,7 +11,8 @@ cd forensia
 uv sync
 ```
 
-LLM 接続 (`.env`) や Web UI のセットアップは [docs/development.md](docs/development.md) を参照してください。
+LLM 接続は `.env.example` を `.env` にコピーしてローカル値へ編集してください。`.env` やケース成果物はコミットしないでください。
+Web UI のセットアップは [docs/development.md](docs/development.md) を参照してください。
 
 ## 変更を入れる前に知っておくべき設計原則
 
@@ -47,7 +48,7 @@ durable な結論(findings / claims / memory facts)は必ず evidence_id まで�
 
 ### 6. ベンチマークを最適化対象にしない
 
-`./templates/` + BENCHMARK.md の CFReDS ベンチマークは**測定器であり、最適化対象ではありません**。特定の設問・ホスト名・ファイル名・日時に紐づくコードパスやプロンプトの追加は禁止です。ベンチマークで欠落を見つけたら「どの汎用 DFIR 能力が欠けているか」に翻訳してから実装してください(CLAUDE.md Rule 16)。
+BENCHMARK.md の CFReDS ベンチマークは**測定器であり、最適化対象ではありません**。特定の設問・ホスト名・ファイル名・日時に紐づくコードパスやプロンプトの追加は禁止です。ベンチマークで欠落を見つけたら「どの汎用 DFIR 能力が欠けているか」に翻訳してから実装してください。
 
 ## テスト
 
@@ -66,9 +67,11 @@ forensia doctor
 - ルール YAML や `question_routing.yaml` を変更したら `scripts/audit_schema_coverage.py --strict`(`forensia doctor` に含まれる)が通ることを確認してください。
 - import の層契約(`core→ai` 禁止、`report→ai` 禁止など)は `scripts/check_imports.py`(`forensia doctor` に含まれる)で検査されます。新しい module を追加したら通ることを確認してください。
 
-## テンプレート同期
+## テンプレート
 
-`./templates/` の sections 1–5 は `src/forensia/report_template/` のコピーです。`report_template/` 側を変更したら `./templates/` の該当ファイルも同じ内容で更新してください（`./templates/6_appendix.md` のみケース固有の質問リストを保持するため同期対象外）。
+パッケージ同梱の既定テンプレートは `src/forensia/report_template/` が正本です。通常のレポート構造を変える場合はここを更新し、必要なら README / docs も同じ PR で更新してください。
+
+ローカル評価用にテンプレートを派生させる場合は、`uv run forensia templates-export ./my-templates` で作業コピーを作り、`--template-dir ./my-templates` で明示指定してください。評価用テンプレートや実ケース固有テンプレートは、汎用テンプレートとして公開できる内容だけをコミットしてください。
 
 ## ドキュメント
 
@@ -84,3 +87,5 @@ forensia doctor
 ## バグ報告・提案
 
 Issue には再現手順(可能なら `ai_logs/` の該当エントリや `hypothesis_reasoning` の抜粋)と、期待した挙動・実際の挙動を添えてください。機微な調査データはそのまま貼らず、サニタイズしてください。
+
+セキュリティ上の問題や機微データの扱いは [SECURITY.md](SECURITY.md) も参照してください。

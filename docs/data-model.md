@@ -40,7 +40,7 @@ forensia が扱う永続データの定義。3 つの層に分かれている。
 | テーブル | 役割 | 主な列 |
 |---|---|---|
 | `findings` | ルール検知の結果 | `finding_id`, `rule_id`, `title`, `summary`, `severity`, `confidence`, `status` (`new`/`accepted`/`suppressed`), `tags`, `attack`, `evidence`, `ai_summary`, `missing_checks`, `created_at` |
-| `hypotheses` | 投資調査の仮説 | `hypothesis_id`, `description`, `status` (`active`/`resolved`), `verdict` (`confirmed`/`refuted`/`inconclusive`/`untestable`), `summary`, `origin`, `created_session`, `resolved_session`, `confidence`, `source_rule_ids`, `source_decl_id`, `required_entities`, `confirm_when` |
+| `hypotheses` | 仮説調査の仮説 | `hypothesis_id`, `description`, `status` (`active`/`resolved`), `verdict` (`confirmed`/`refuted`/`inconclusive`/`untestable`), `summary`, `origin`, `created_session`, `resolved_session`, `confidence`, `source_rule_ids`, `source_decl_id`, `required_entities`, `confirm_when` |
 | `hypothesis_reasoning` | 仮説検証の reasoning 履歴 | `entry_id`, `hypothesis_id`, `session_id`, `iteration`, `phase` (`plan`/`do`/`check`/`act`/`memo`), `verdict`, `query_id`, `body`, `created_at` |
 
 `findings.attack` は JSON 文字列で、`[{tactic, technique_id, technique_name}]` 形式。`list_attack_coverage_dto` ([src/forensia/api/service.py:716-](../src/forensia/api/service.py#L716)) で tactic × technique マトリックスに集計される。
@@ -51,7 +51,7 @@ forensia が扱う永続データの定義。3 つの層に分かれている。
 
 | テーブル | 役割 | 主な列 |
 |---|---|---|
-| `sessions` | 投資調査 / レポート生成の実行単位 | `session_id`, `started_at`, `finished_at`, `iterations`, `status` |
+| `sessions` | 仮説調査 / レポート生成の実行単位 | `session_id`, `started_at`, `finished_at`, `iterations`, `status` |
 | `investigation_steps` | session 内の各ステップ (plan / do / check) | `step_id`, `session_id`, `hypothesis_id`, `iteration`, `phase`, `input_json`, `output_json` |
 | `progress_events` | UI 用の進捗イベントストリーム | `event_index`, `stage`, `status`, `iteration`, `current_query`, `summary`, `payload` |
 | `query_cache` | LLM が出した SQL の結果キャッシュ | `sql_hash`, `sql_text`, `result_json`, `executed_at` |
@@ -134,7 +134,7 @@ memory/
 
 | パス | 関数 |
 |---|---|
-| 投資調査ループ (verdict 反映) | [`_apply_memory_updates`](../src/forensia/ai/investigator.py#L737) が LLM の `memory_updates` 出力を読み、facts / timeline / tasks / overview / refuted_hypotheses / resolved_gaps / entities を反映 |
+| 仮説調査ループ (verdict 反映) | [`_apply_memory_updates`](../src/forensia/ai/investigator.py#L737) が LLM の `memory_updates` 出力を読み、facts / timeline / tasks / overview / refuted_hypotheses / resolved_gaps / entities を反映 |
 | セクションエージェント | [`_sync_keypoint_cards`](../src/forensia/ai/investigator.py#L547) が findings → keypoint カードを同期 |
 | 仮説確定時 | `memory.upsert_hypothesis` が `memory/hypotheses/<id>.md` を書き換え (refute 時は `archive/refuted.md` へ追記) |
 

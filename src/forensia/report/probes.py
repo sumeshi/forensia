@@ -624,9 +624,10 @@ def _is_local_machine_account_4648(row: dict[str, Any]) -> bool:
     winlogon.exe credential prompt) is routine local activity, not a
     lateral-movement indicator.
     """
-    if "4648" not in str(row.get("finding_id") or "").lower() and "4648" not in str(
-        row.get("title") or ""
-    ).lower():
+    if (
+        "4648" not in str(row.get("finding_id") or "").lower()
+        and "4648" not in str(row.get("title") or "").lower()
+    ):
         return False
     evidence = row.get("evidence")
     if isinstance(evidence, str):
@@ -641,7 +642,11 @@ def _is_local_machine_account_4648(row: dict[str, Any]) -> bool:
             continue
         subject = str(entry.get("subject_user") or "").strip()
         computer = str(entry.get("computer") or "").strip()
-        if subject.endswith("$") and computer and subject[:-1].casefold() == computer.casefold():
+        if (
+            subject.endswith("$")
+            and computer
+            and subject[:-1].casefold() == computer.casefold()
+        ):
             return True
     return False
 
@@ -2299,9 +2304,9 @@ def _build_gaps_confirmed_table(db: CaseDB) -> list[dict[str, Any]]:
             basis = "gap-derived"
         rows.append(
             {
-                "hypothesis": str(item.get("description") or item.get("hypothesis_id") or "")[
-                    :120
-                ],
+                "hypothesis": str(
+                    item.get("description") or item.get("hypothesis_id") or ""
+                )[:120],
                 "verdict": str(item.get("verdict") or item.get("status") or ""),
                 "basis": basis,
                 "benign_context": "yes" if item.get("benign_context") else "no",

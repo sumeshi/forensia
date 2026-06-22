@@ -14,15 +14,11 @@ cd forensia
 uv sync
 ```
 
-`.env` の例:
+`.env` の作成:
 
-```dotenv
-LLM_BASE_URL="http://127.0.0.1:1234"
-LLM_MODEL="qwen/qwen3-8b"
-LLM_MAX_TOKENS=4096
-LLM_THINKING_LANGUAGE=en
-LLM_OUTPUT_LANGUAGE=ja
-LLM_MEMORY_MAX_BYTES=16384
+```bash
+cp .env.example .env
+# edit .env for your local LLM endpoint/model
 ```
 
 | 変数 | 意味 |
@@ -50,7 +46,7 @@ npx pnpm install
 
 ```bash
 # バックエンドテスト
-UV_CACHE_DIR=/tmp/uv-cache PYTHONPATH=src uv run python -m unittest discover -s tests
+UV_CACHE_DIR=/tmp/uv-cache PYTHONPATH=src uv run python -m pytest tests/ -q
 
 # フロントエンド
 cd web_ui
@@ -59,10 +55,10 @@ npx pnpm test
 npx pnpm build
 
 # ローカル実行
-forensia investigate ./dist/DESKTOP-001 ./sample/DESKTOP-001 --profile windows-basic --max-iter 20
-forensia report ./dist/DESKTOP-001
-forensia report ./dist/DESKTOP-001 --write
-forensia serve ./dist/DESKTOP-001
+uv run forensia investigate ./cases/demo ./path/to/evidence --profile windows-basic --max-iter 20
+uv run forensia report ./cases/demo
+uv run forensia report ./cases/demo --write
+uv run forensia serve ./cases/demo
 ```
 
 ---
@@ -105,7 +101,7 @@ forensia serve ./dist/DESKTOP-001
 | `doctor` | hidden。schema coverage / playbook drift / verdict taxonomy AST / pytest をまとめて実行 |
 | `templates-export` | hidden。同梱レポートテンプレートを書き出し |
 
-### 4.1 投資フラグ
+### 4.1 調査フラグ
 
 | フラグ | 既定 | いつ気にするか |
 |---|---|---|

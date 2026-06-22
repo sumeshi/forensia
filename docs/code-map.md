@@ -37,11 +37,11 @@
 | [src/forensia/rules/engine.py](../src/forensia/rules/engine.py) | rule SQL の実行 + finding 生成 + `fallback_search` 発火 |
 | [src/forensia/rulepacks/](../src/forensia/rulepacks/) | YAML ルール定義 (windows/, leakage/, _schema/) |
 
-## AI / 投資調査
+## AI / 仮説調査
 
 | パス | 責務 |
 |---|---|
-| [src/forensia/ai/investigator.py](../src/forensia/ai/investigator.py) | 投資調査ループ。`broad_plan` / `_investigate_one_hypothesis` / `_apply_memory_updates` / トラッキング |
+| [src/forensia/ai/investigator.py](../src/forensia/ai/investigator.py) | 仮説調査ループ。`broad_plan` / `_investigate_one_hypothesis` / `_apply_memory_updates` / トラッキング |
 | [src/forensia/ai/planner.py](../src/forensia/ai/planner.py) | 仮説検証クエリ立案。`plan_hypothesis_query` で `query_intent_planner` → `sql_self_check` → `sql_composer` の 3 段 |
 | [src/forensia/ai/checker.py](../src/forensia/ai/checker.py) | 仮説判定。`_check_query` で `verdict_reviewer` → `finding_extractor` → `memory_updater` を呼ぶ |
 | [src/forensia/ai/section_agent.py](../src/forensia/ai/section_agent.py) | レポートセクション block 単位の query → narrate → finalize。`_narrate_paragraph_with_retry` などの narrator ロジック |

@@ -4,11 +4,14 @@ __pycache__/
 .python-version
 .venv
 .pytest_cache
+.ruff_cache
 
 web_ui/node_modules/
 src/forensia/static
 
 .env
+.env.*
+!.env.example
 .agents
 .codex
 .claude
@@ -23,3 +26,26 @@ sample/
 dist/
 test_output*
 templates/
+
+# Case/runtime outputs and forensic evidence that must not be committed.
+*.duckdb
+*.db
+*.sqlite
+*.sqlite3
+*.evtx
+*.pf
+*.E01
+*.E02
+*.E03
+*.E04
+*.7z
+*.001
+*.002
+*.003
+*.ost
+*.pst
+$MFT
+raw/
+reports/
+ai_logs/
+memory/

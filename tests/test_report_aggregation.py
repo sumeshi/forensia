@@ -153,9 +153,12 @@ class TestLocalMachineAccount4648Demotion(unittest.TestCase):
         local_indices = [
             i
             for i, t in enumerate(titles)
-            if t == "Logon attempt with explicit credentials (4648): HOST-A$ -> informant"
+            if t
+            == "Logon attempt with explicit credentials (4648): HOST-A$ -> informant"
         ]
-        self.assertTrue(local_indices, "local machine-account finding should still appear")
+        self.assertTrue(
+            local_indices, "local machine-account finding should still appear"
+        )
         self.assertLess(cross_host_index, min(local_indices))
 
         # Exact duplicate titles are collapsed to a single row.

@@ -1,0 +1,4 @@
+# The built web UI is emitted into src/forensia/static by `pnpm build` and is
+# gitignored, so setuptools' git-aware sdist file finder would otherwise drop
+# it. Force it into the sdist so the wheel built from the sdist bundles it too.
+recursive-include src/forensia/static *

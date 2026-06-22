@@ -1,6 +1,6 @@
 # forensia
 
-![forensia-logo](https://gist.githubusercontent.com/sumeshi/c2f430d352ae763273faadf9616a29e5/raw/12528f2bdb072a7cb763d5513077756c301ea811/forensia.svg)
+![forensia-logo](web_ui/src/assets/images/forensia-logo.svg)
 
 あなたの代わりに週末作業してくれるAIフォレンジック調査員。
 
@@ -113,18 +113,18 @@ flowchart LR
 4. **check**: `verdict_reviewer` が verdict を出し、コード側の整合ゲートが主張と結果行の一致を照合。confirmed のときだけ `finding_extractor` が構造化 finding を抽出し、検証済みのものを `findings` テーブルへ永続化。
 5. **track**: `HypothesisProgressTracker` が confirm_when / 連続 0-row / フィンガープリント重複を見て auto-confirm / auto-refute / untestable / pivot を機械的に判定。「証拠が無く検証不能 (untestable)」は「反証された (refuted)」と区別して記録。
 6. **resolve**: 仮説が確定すると関連レポートセクションが `stale` 化(ルール宣言の `report_sections` に加え、`target_keypoint_id` と記述キーワードからも導出。セクションごとの更新回数に上限あり)、follow-up 質問が新たな仮説に投入。
-7. **report**: `mode: table` ブロックは決定論的ビルダーが「宣言済みキャプション+表」を描画し(`rulepacks/_schema/report_tables.yaml`、`max_rows` 指定で全行表示可)、narrative ブロックは同一セクションの表データをダイジェストとして受け取ってから `section_outliner` / `paragraph_narrator` が本文を生成。生成された本文は毎回 `section_reviewer` が決定的ルーブリック(引用数超過・疑似引用・内部ID露出は `report/narrative_review.py` がコードで判定)+LLM批評でチェックし、問題があれば1回だけ書き直す。引用された evidence_id は `reports/evidence_map.json` に元レコード要約として解決され、report.md 末尾の Evidence References と report.html のホバー/アンカーリンクから参照できる。さらに `forensia web` で配信中は、参照エントリの「記録を開く ⧉」ボタンと表の Ref ボタンが `/evidence/{id}` を新タブで開き、元レコード全文を平文 JSON で確認できる(report.html をローカルファイルとして開いた場合、ツールチップとページ内アンカーは機能するが、レコードビューアはサーバが必要)。untestable の仮説は不足テレメトリとともに Gap セクションへ。レポートから出た gap は次サイクルの仮説に戻る。ループ終了時には最終リフレッシュが走り、終盤サイクルで確定した仮説も `reports/report.md` に反映される。レポートリフレッシュの失敗は調査ループを止めない: LLM サーバ障害は調査ループと同じ復旧待機(既定で最大 8 時間)でリトライし、それ以外の失敗はトレースバックと進捗イベントに記録して続行する。stale フラグは DB に保持されるため、次に成功したリフレッシュ(または終了時の最終リフレッシュ)が未反映分に追いつく。失敗回数は調査結果の `report_refresh_failures` で確認できる。
+7. **report**: `mode: table` ブロックは決定論的ビルダーが「宣言済みキャプション+表」を描画し(`rulepacks/_schema/report_tables.yaml`、`max_rows` 指定で全行表示可)、narrative ブロックは同一セクションの表データをダイジェストとして受け取ってから `section_outliner` / `paragraph_narrator` が本文を生成。生成された本文は毎回 `section_reviewer` が決定的ルーブリック(引用数超過・疑似引用・内部ID露出は `report/narrative_review.py` がコードで判定)+LLM批評でチェックし、問題があれば1回だけ書き直す。引用された evidence_id は `reports/evidence_map.json` に元レコード要約として解決され、report.md 末尾の Evidence References と report.html のホバー/アンカーリンクから参照できる。さらに `forensia serve` で配信中は、参照エントリの「記録を開く ⧉」ボタンと表の Ref ボタンが `/evidence/{id}` を新タブで開き、元レコード全文を平文 JSON で確認できる(report.html をローカルファイルとして開いた場合、ツールチップとページ内アンカーは機能するが、レコードビューアはサーバが必要)。untestable の仮説は不足テレメトリとともに Gap セクションへ。レポートから出た gap は次サイクルの仮説に戻る。ループ終了時には最終リフレッシュが走り、終盤サイクルで確定した仮説も `reports/report.md` に反映される。レポートリフレッシュの失敗は調査ループを止めない: LLM サーバ障害は調査ループと同じ復旧待機(既定で最大 8 時間)でリトライし、それ以外の失敗はトレースバックと進捗イベントに記録して続行する。stale フラグは DB に保持されるため、次に成功したリフレッシュ(または終了時の最終リフレッシュ)が未反映分に追いつく。失敗回数は調査結果の `report_refresh_failures` で確認できる。
 
 ## 効率性のための設計
 
 ローカル LLM の処理時間と精度を両立するため、以下の工夫を施しています。
 
 - **宣言層への知識集約**:Event ID 解説、Logon Type、検知ルール、フォールバック手順、レポートセクションのスタイル指示などは `src/forensia/rulepacks/_schema/` 配下の YAML / Markdown にまとめてあり、Python 側は generic に消費するだけです。新しい攻撃手法や調査観点は YAML 編集で追加できます。
-- **証拠アベイラビリティプロファイル**:調査開始時にケース DB から「実在する Event ID・テーブル行数・主要ユーザー/ホスト/実行ファイル」を決定的に集計し、仮説起案と SQL 計画のプロンプトへ注入します。存在しない Event ID にしか依存できない仮説は `untestable` として早期にループから外れます。また、`--auto-rulepacks` (既定 on) により、検出済みの痕跡ファミリ (クラウド同期 exe、`.ost`/`.pst` など) に `applies_when` が一致するルールパックを自動有効化します。`--no-auto-rulepacks` で従来の profile 固定動作に戻します。`resolve_active_packs` ([loader.py:222](../src/forensia/rules/loader.py#L222)) で決定論的に判定されます。
+- **証拠アベイラビリティプロファイル**:調査開始時にケース DB から「実在する Event ID・テーブル行数・主要ユーザー/ホスト/実行ファイル」を決定的に集計し、仮説起案と SQL 計画のプロンプトへ注入します。存在しない Event ID にしか依存できない仮説は `untestable` として早期にループから外れます。また、`--auto-rulepacks` (既定 on) により、検出済みの痕跡ファミリ (クラウド同期 exe、`.ost`/`.pst` など) に `applies_when` が一致するルールパックを自動有効化します。`--no-auto-rulepacks` で従来の profile 固定動作に戻します。`resolve_active_packs` ([loader.py:222](src/forensia/rules/loader.py#L222)) で決定論的に判定されます。
 - **schema_card と SQL クックブック**:planner は intent の `target_table` に応じて `_schema/*.yaml` の schema_card を切り替え、`information_schema` から live スキーマを併記します。SQL クックブックは event_id 列挙 / 時間範囲 / GROUP BY / COALESCE / MFT path LIKE / Prefetch の 6 種で、LLM が SQL をゼロから合成しなくて済むようにしています。SQL バリデーション失敗時は `sql_composer` のみを最大 3 回リトライし、巨大プロンプト全体を送り直しません。
-- **LLM サーバ障害への耐性**:`chat_completion` は HTTP 5xx / 接続エラー / タイムアウトを最大 3 回まで指数バックオフ(2 / 4 / 8 秒)でリトライします。リトライ枯渇後は `_run_broad_plan_step` が再 raise して投資調査全体を停止させ、空のレポート生成を抑止します。
+- **LLM サーバ障害への耐性**:`chat_completion` は HTTP 5xx / 接続エラー / タイムアウトを最大 3 回まで指数バックオフ(2 / 4 / 8 秒)でリトライします。リトライ枯渇後は `_run_broad_plan_step` が再 raise して仮説調査全体を停止させ、空のレポート生成を抑止します。
 - **mid-investigation の UI 同期**:調査中は `progress_events.json` に加えて `hypotheses` / `findings` / `attack_coverage` / `report_sections` / `stats` 等の軽量スナップショットを 5 秒間隔で書き出し、webui が長時間調査の途中でも実状態を表示できるようにしています。
-- **記憶の圧縮と分離**:`overview.md` は状態遷移時のみ追記 (confirmed / refuted / untestable の確定、`observed_user` 以外の新規 entity role、新 artifact family の初 finding)。単なる inconclusive check では書き込みません。`_apply_memory_updates` ([investigator.py:737](../src/forensia/ai/investigator.py#L737)) の決定論的述語で制御されます。`facts.md` / `timeline.md` などは構造を保持し、confirmed verdict では決定的な事実行が必ず追記されます。仮説検証中の暫定情報は `memory/scratch/H-NNN/` に隔離され、confirmed 時に共有記憶へ昇格、refuted / untestable 時は archive へ退避します。これによって未確証の暫定情報が他仮説の検証に汚染することを防ぎます。
+- **記憶の圧縮と分離**:`overview.md` は状態遷移時のみ追記 (confirmed / refuted / untestable の確定、`observed_user` 以外の新規 entity role、新 artifact family の初 finding)。単なる inconclusive check では書き込みません。`_apply_memory_updates` ([investigator.py:737](src/forensia/ai/investigator.py#L737)) の決定論的述語で制御されます。`facts.md` / `timeline.md` などは構造を保持し、confirmed verdict では決定的な事実行が必ず追記されます。仮説検証中の暫定情報は `memory/scratch/H-NNN/` に隔離され、confirmed 時に共有記憶へ昇格、refuted / untestable 時は archive へ退避します。これによって未確証の暫定情報が他仮説の検証に汚染することを防ぎます。
 - **段落単位の汚染防止**:レポート生成では `paragraph_narrator` が 1 段落ずつ独立して書き、他セクションの本文や全 top-finding を見ません。ブロック間で共有するのは 120 字程度のサマリのみで、序文の使い回しや無関係な finding の流入を構造的に避けています。
 - **QuestionSpec による構造化質問**:テンプレートの見出しやコメントは `question_routing.yaml` の安定した `answer_spec` に解決されます。シャットダウン時刻、最終ログオン、メールデータファイル、クラウド同期痕跡などの定型質問は LLM に自由回答させず、決定論的 SQL / builder / CSV/JSON export で処理します。回答に添える解釈文も `interpretation_template` として YAML 側で宣言し、コードが行数や代表値を埋めて描画します。質問文中の日付・時刻範囲(`between 09:00 and 18:00` など)は正規表現で抽出され、SQL の時間フィルタに反映されます。
 - **クエリの正規化フィンガープリント**:重複クエリ検出は sqlglot AST ベースで、空白や別名差を無視して「意味的に同じクエリを 2 回出した」を判定します。LLM が同じ問いを言い換えて繰り返すことによる無限ループを防ぎます。
@@ -132,18 +132,49 @@ flowchart LR
 
 ## クイックスタート
 
+### 前提
+
+- Python 3.14 以上
+- EVTX / MFT / Prefetch などの Windows フォレンジックアーティファクト
+- 仮説検証やレポート本文生成を行う場合は、OpenAI 互換 API を提供するローカル LLM サーバ
+  (LM Studio / llama.cpp server など)
+
+### インストール
+
 ```bash
 pip install forensia
 ```
 
-`.env` を作成してローカル LLM の接続先を設定します。
+Web UI も同梱されているため、別途ビルドは不要です。`uvx forensia ...` や
+`uv tool install forensia` でも利用できます。
 
-```dotenv
-LLM_BASE_URL="http://127.0.0.1:1234"
-LLM_MODEL="qwen/qwen3-8b"
-# For reasoning models (gemma-4-E*, qwen3-thinking), add budget for reasoning_content.
-LLM_REASONING_RESERVE_TOKENS=0
+ソースから開発する場合は次を使います(以降のコマンド例の `forensia ...` は、ソース実行時には
+`forensia ...` に読み替えてください)。
+
+```bash
+git clone https://github.com/sumeshi/forensia.git
+cd forensia
+uv sync --dev
 ```
+
+### ローカル LLM の設定
+
+接続先は環境変数(または作業ディレクトリの `.env`)で指定します。
+
+```bash
+export LLM_BASE_URL="http://127.0.0.1:1234"
+export LLM_MODEL="qwen/qwen3-8b"
+```
+
+ソースチェックアウトでは同梱の `.env.example` を雛形として使えます。`.env` は機密・ローカル設定として
+コミットしないでください。
+
+```bash
+cp .env.example .env
+# edit .env if your local LLM endpoint/model differs
+```
+
+### 実行
 
 アーティファクト (EVTX / MFT / Prefetch など) を `input/` に置き、次を実行します。
 
@@ -241,6 +272,8 @@ UI 画面 (cockpit) は次で構成されます。
 
 - このツールの目的はレポートの材料を半自動で集めることであり、出力結果は必ず人間が検証してください。
 - オフライン動作を前提に設計していますが、ローカル LLM の準備 (モデルダウンロード、推論サーバの起動)は別途必要です。
+- `LLM_BASE_URL` をクラウドや社外のエンドポイントに向けると、プロンプトに含まれるケース由来の要約や証拠断片が外部送信される可能性があります。機微な調査ではローカル/オフラインの LLM を使用してください。
+- 実ケースの `raw/`、`reports/`、`ai_logs/`、`memory/`、DuckDB、メールストア、ディスクイメージなどは公開しないでください。詳しくは [SECURITY.md](SECURITY.md) を参照してください。
 - forensia は開発中のソフトウェアです。実装上の詳細、リポジトリ構成、内部不変条件などは [docs/](docs/) を参照してください。
 
 ## コントリビュート
@@ -249,9 +282,15 @@ UI 画面 (cockpit) は次で構成されます。
 
 ## ベンチマーク
 
-このツールは `./templates/` にあるベンチマーク専用テンプレートを使用して、DFIR 推論精度を評価できます。ベンチマーク用の Scored Question も通常のレポートテンプレートと同じ QuestionSpec / structured answer 経路で処理されます。
+CFReDS / NIST Data Leakage Case を使った評価観点は [BENCHMARK.md](./BENCHMARK.md) にまとめています。
+実データや派生ケースディレクトリはサイズ・ライセンス・機密性の理由でリポジトリには同梱していません。
+必要に応じて公開元からデータを取得し、作業用ディレクトリでアーティファクトを抽出してください。
 
-    forensia investigate benchmark-output ./sample/DESKTOP-001 --profile windows-basic --template-dir ./templates
-    forensia report benchmark-output
+```bash
+# Optional: start from the packaged report templates and customize them for a local benchmark run.
+forensia templates-export ./benchmark-templates
+forensia investigate benchmark-output ./path/to/extracted-artifacts --profile windows-basic --template-dir ./benchmark-templates
+forensia report benchmark-output
+```
 
 詳細は [BENCHMARK.md](./BENCHMARK.md) を参照してください。

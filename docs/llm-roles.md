@@ -26,7 +26,7 @@ LLM 入出力の生ログは `ai_logs/<phase>-<id>.json` に保存される。
 
 ## 2. ロール一覧
 
-### 2.1 投資調査ループ
+### 2.1 仮説調査ループ
 
 `plan_hypothesis_query` ([planner.py:320](../src/forensia/ai/planner.py#L320)) は Phase 1 (intent) → Phase 2 (composer) の 2 相構成:
 
