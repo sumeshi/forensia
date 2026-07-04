@@ -224,6 +224,14 @@ class HypothesisProgressTracker:
             confirm_when = getattr(hypothesis, "confirm_when", None)
         if not confirm_when or not isinstance(confirm_when, dict):
             return False
+        # Code-backfilled criteria (heuristic marker) are not vetted
+        # confirmation evidence. Rule-declared follow-up hypotheses carry
+        # source_rule_ids AND a heuristic confirm_when, and an entity-only
+        # confirm_when trivially "satisfies" co-observation (there are no
+        # event IDs to verify) — without this guard they would auto-confirm
+        # on any non-benign rows.
+        if confirm_when.get("heuristic"):
+            return False
         satisfied, _ = _co_observation_satisfied(confirm_when, rows)
         if satisfied and rows:
             from forensia.report.benign_auth import is_benign_local_auth
@@ -235,6 +243,15 @@ class HypothesisProgressTracker:
         self, rule_context: Any, rows: list[dict[str, Any]], hypothesis: Any = None
     ) -> bool:
         """Return True when some, but not all, confirm_when event IDs are present."""
+        # Heuristic confirm_when entries (e.g. entity-name fallback) are too
+        # noisy to block auto-refute -- treat them as having no signal.
+        confirm_when = None
+        if rule_context is not None:
+            confirm_when = getattr(rule_context, "confirm_when", None)
+        if not confirm_when and hypothesis is not None:
+            confirm_when = getattr(hypothesis, "confirm_when", None)
+        if isinstance(confirm_when, dict) and confirm_when.get("heuristic"):
+            return False
         required_set = self._confirm_set_from(rule_context, hypothesis)
         if not required_set:
             return False

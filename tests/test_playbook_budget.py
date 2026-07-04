@@ -137,14 +137,15 @@ def test_budget_enforcement_drops_sections_in_order(tmp_path: Any) -> None:
 def test_budget_drop_order_is_stable() -> None:
     """Drop order is deterministic: IOC → app → artifact → extractor → FP → logon → schema → events."""
     expected = [
-        "ioc",
-        "app",
-        "artifact",
-        "extractor",
-        "fp",
-        "logon",
-        "schema",
-        "events",
+        "ioc",      # first to drop
+        "app",      # application catalog
+        "artifact", # artifact inference
+        "logon",    # logon types
+        "events",   # event IDs
+        "priority", # priority investigation order
+        "fp",       # false-positive guidance
+        "extractor",# JSON extractors
+        "schema",   # schema notes — highest priority, last to drop
     ]
     assert _PLAYBOOK_SECTION_DROP_ORDER == expected
 
@@ -240,3 +241,53 @@ def test_no_profile_playbook_truncates_events_instead_of_dropping_everything():
     # Stays in the same order of magnitude as the budget (phase narrative is
     # appended after enforcement, so allow headroom above the raw budget).
     assert len(playbook) < get_system_prompt_budget_chars() * 1.5
+
+
+def test_sections_for_hypothesis_auth_excludes_catalogs() -> None:
+    """An auth-only hypothesis must not pull file/tool catalogs into context.
+
+    Why: catalog sections are interpretation aids for executable/file
+    evidence. Including them for a pure authentication hypothesis dilutes
+    the prompt for weak local models without adding signal (G-1).
+    """
+    from forensia.ai.prompts import _sections_for_hypothesis
+    from forensia.core.session import Hypothesis
+
+    auth = Hypothesis(
+        id="H-001",
+        description="credential reuse via explicit credentials",
+        confirm_when={"co_observed_event_ids": [4648]},
+    )
+    sections = _sections_for_hypothesis(auth)
+    assert sections is not None
+    assert "logon_types" in sections
+    assert "ioc_catalog" not in sections
+    assert "app_catalog" not in sections
+
+    narrowed = _dfir_playbook("check", event_ids={4648}, sections=sections)
+    full = _dfir_playbook("check", event_ids={4648})
+    assert "## IOC Catalog" not in narrowed
+    assert len(narrowed) < len(full)
+
+
+def test_sections_for_hypothesis_exec_includes_catalogs() -> None:
+    """A hypothesis about executables keeps the catalog interpretation aids."""
+    from forensia.ai.prompts import _sections_for_hypothesis
+    from forensia.core.session import Hypothesis
+
+    exe = Hypothesis(
+        id="H-002",
+        description="anti-forensic tool execution",
+        required_entities=["executable_name"],
+    )
+    sections = _sections_for_hypothesis(exe)
+    assert sections is not None
+    assert {"ioc_catalog", "app_catalog", "artifact_inference"} <= sections
+
+
+def test_sections_for_hypothesis_no_signal_returns_none() -> None:
+    """No event IDs and no entities → None (full playbook, backward safe)."""
+    from forensia.ai.prompts import _sections_for_hypothesis
+    from forensia.core.session import Hypothesis
+
+    assert _sections_for_hypothesis(Hypothesis(id="H-003", description="x")) is None

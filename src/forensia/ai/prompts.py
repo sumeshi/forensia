@@ -32,6 +32,7 @@ from forensia.core.session import Hypothesis
 from forensia.knowledge import (
     load_benign_context_rules,
     load_dfir_yamls,
+    load_event_class_definitions,
     load_event_id_hints,
     load_question_routing_raw,
     load_schema_hints,
@@ -403,15 +404,152 @@ def _render_ioc_catalog_narrative(ioc_data: dict) -> str:
 
 
 _PLAYBOOK_SECTION_DROP_ORDER = [
-    "ioc",
-    "app",
-    "artifact",
-    "extractor",
-    "fp",
-    "logon",
-    "schema",
-    "events",
+    "ioc",      # first to drop — auxiliary catalog
+    "app",      # application catalog — interpretation aid
+    "artifact", # artifact inference — interpretation aid
+    "logon",    # logon types — lowest-priority core section
+    "events",   # event IDs
+    "priority", # priority investigation order
+    "fp",       # false-positive guidance
+    "extractor",# JSON extractors
+    "schema",   # schema notes — highest priority, last to drop
 ]
+
+# Mapping from internal section keys to user-facing keys used by the
+# ``sections`` parameter of ``_dfir_playbook``.  Callers pass a set of
+# user-facing keys; only sections whose mapped key is in the set are
+# rendered.  The ``preamble`` key is always included.
+_SECTION_KEY_MAP: dict[str, str] = {
+    "events": "event_ids",
+    "priority": "event_ids",
+    "logon": "logon_types",
+    "fp": "fp_guidance",
+    "schema": "schema",
+    "extractor": "schema",
+    "app": "app_catalog",
+    "artifact": "artifact_inference",
+    "ioc": "ioc_catalog",
+}
+
+# Entity columns whose presence signals that file/executable interpretation
+# aids (app catalog, artifact inference, IOC catalog) are worth including.
+_CATALOG_ENTITY_COLUMNS = frozenset(
+    {
+        "process_name",
+        "executable_name",
+        "file_path",
+        "file_name",
+        "command_line",
+        "service_name",
+        "extension",
+    }
+)
+
+
+@lru_cache(maxsize=1)
+def _auth_event_ids() -> frozenset[int]:
+    """Event IDs of authentication-related classes from event_ids.yaml."""
+    ids: set[int] = set()
+    for class_name, class_def in load_event_class_definitions().items():
+        name = class_name.lower()
+        if "logon" in name or "auth" in name or "credential" in name:
+            for eid in class_def.get("event_ids") or []:
+                try:
+                    ids.add(int(eid))
+                except TypeError, ValueError:
+                    continue
+    return frozenset(ids)
+
+
+def _sections_for_hypothesis(
+    hypothesis: Any, sample_rows: list[dict[str, Any]] | None = None
+) -> set[str] | None:
+    """Deterministically pick playbook sections relevant to one hypothesis.
+
+    Selection signals (all code-side, no LLM):
+    - confirm_when.co_observed_event_ids → logon_types only when they
+      intersect the auth event classes.
+    - required_entities / sample-row columns → catalog sections only when
+      file/executable columns are involved.
+
+    Returns None (= render all sections) when the hypothesis carries no
+    usable signal, so behaviour degrades to the full playbook.
+    """
+    event_ids: set[int] = set()
+    confirm_when = getattr(hypothesis, "confirm_when", None)
+    if isinstance(confirm_when, dict):
+        for eid in confirm_when.get("co_observed_event_ids") or []:
+            try:
+                event_ids.add(int(eid))
+            except TypeError, ValueError:
+                continue
+    entities = {
+        str(e).strip().lower()
+        for e in (getattr(hypothesis, "required_entities", None) or [])
+        if e
+    }
+    row_columns: set[str] = set()
+    for row in sample_rows or []:
+        if isinstance(row, dict):
+            row_columns.update(k for k, v in row.items() if v not in (None, ""))
+    if not event_ids and not entities and not row_columns:
+        return None
+    sections = {"schema", "event_ids", "fp_guidance"}
+    if event_ids & _auth_event_ids():
+        sections.add("logon_types")
+    if (entities | row_columns) & _CATALOG_ENTITY_COLUMNS:
+        sections.update({"app_catalog", "artifact_inference", "ioc_catalog"})
+    return sections
+
+
+def _render_prior_attempts(
+    recent_history: list[dict[str, Any]], limit: int = 5
+) -> str:
+    """Render hypothesis attempt history as a compact structured block.
+
+    Accepts both HistoryEntry dumps (query_id / verdict / summary /
+    evidence_ids / template_id / purpose) and hypothesis_reasoning rows
+    (phase / verdict / query_id / body). Fields absent from a row are
+    omitted — nothing is fabricated. Free text is demoted to a
+    120-char note; the structured fields carry the signal.
+    """
+    entries = [item for item in (recent_history or []) if isinstance(item, dict)]
+    if not entries:
+        return "<PRIOR_ATTEMPTS>\n(none)\n</PRIOR_ATTEMPTS>\n"
+    entries = entries[-limit:]
+    lines: list[str] = []
+    tried_query_ids: list[str] = []
+    for idx, item in enumerate(entries, 1):
+        parts: list[str] = []
+        query_id = str(item.get("query_id") or "").strip()
+        if query_id:
+            parts.append(f"query_id={query_id}")
+            if query_id not in tried_query_ids:
+                tried_query_ids.append(query_id)
+        template_id = str(item.get("template_id") or "").strip()
+        if template_id:
+            parts.append(f"template={template_id}")
+        verdict = str(item.get("verdict") or "").strip()
+        if verdict:
+            parts.append(f"verdict={verdict}")
+        evidence_ids = item.get("evidence_ids")
+        if isinstance(evidence_ids, list):
+            parts.append(f"evidence_count={len(evidence_ids)}")
+        purpose = str(item.get("purpose") or "").strip().replace("\n", " ")
+        if purpose:
+            parts.append(f"purpose={purpose[:80]}")
+        note = (
+            str(item.get("summary") or item.get("body") or "")
+            .strip()
+            .replace("\n", " ")
+        )
+        if note:
+            parts.append(f"note={note[:120]}")
+        lines.append(f"- attempt {idx}: " + ", ".join(parts))
+    block = "<PRIOR_ATTEMPTS>\n" + "\n".join(lines)
+    if tried_query_ids:
+        block += "\ndo_not_repeat_query_ids: " + ", ".join(tried_query_ids)
+    return block + "\n</PRIOR_ATTEMPTS>\n"
 
 
 def _enforce_system_budget(system_str: str, budget_chars: int = 24000) -> str:
@@ -426,17 +564,19 @@ def _enforce_system_budget(system_str: str, budget_chars: int = 24000) -> str:
         return system_str
 
     # Sections appended after the playbook, in priority order (last = first to drop)
+    # Priority: schema > fp_guidance > event_ids > logon_types (highest = last to drop)
     sections_to_drop = [
         "<INVESTIGATION_FRAMEWORK>",
         "<SCHEMA_GUIDANCE>",
         "## IOC Catalog",
         "## Artifact-to-Application",
-        "## JSON Field Extractors",
         "## Application Catalog",
-        "## False-Positive",
-        "## Schema Notes",
         "## Logon Type Reference",
+        "## Priority Investigation Order",
         "## Event ID Reference",
+        "## False-Positive",
+        "## JSON Field Extractors",
+        "## Schema Notes",
     ]
 
     text = system_str
@@ -456,6 +596,7 @@ def _dfir_playbook(
     *,
     event_ids: set[int] | None = None,
     tables: set[str] | None = None,
+    sections: set[str] | None = None,
 ) -> str:
     """Generate DFIR investigator playbook narrative for the given phase.
 
@@ -471,6 +612,11 @@ def _dfir_playbook(
     tables : optional set of table names
         If provided, the app/artifact/IOC sections are included only if a relevant
         table is present in the case. None means include all (current behavior).
+    sections : optional set of str
+        If provided, only sections whose mapped key is in this set are included.
+        Valid keys: 'event_ids', 'logon_types', 'fp_guidance', 'schema',
+        'app_catalog', 'artifact_inference', 'ioc_catalog'.
+        When None, all sections are included (backward compatible).
 
     Returns a narrative string optimized for weak LLMs.
     """
@@ -627,11 +773,20 @@ def _dfir_playbook(
             ("ioc", f"## IOC Catalog\n{ioc_narrative or 'No IOC catalog available.'}")
         )
 
+    # -- Section-key filtering (caller-specified) --
+    if sections is not None:
+        section_entries = [
+            (key, text)
+            for key, text in section_entries
+            if key == "preamble" or _SECTION_KEY_MAP.get(key, key) in sections
+        ]
+
     base_playbook = "\n".join(text for _, text in section_entries) + "\n"
 
     # -- Budget enforcement --
     budget = get_system_prompt_budget_chars()
     dropped: list[str] = []
+    _pre_budget_chars = len(base_playbook)
 
     # Step 1: if the Event ID Reference alone busts the budget (no case profile
     # supplied, so no event-id filtering happened), shrink it to the events the
@@ -708,13 +863,24 @@ def _dfir_playbook(
 
     # -- Telemetry --
     section_sizes = {k: len(v) for k, v in section_entries}
-    logging.debug(
-        "[_dfir_playbook] phase=%s total=%d chars, sections=%s, dropped=%s",
-        phase,
-        len(result),
-        section_sizes,
-        dropped,
-    )
+    if sections is not None:
+        logging.debug(
+            "[_dfir_playbook] phase=%s sections=%s pre_budget=%d post_budget=%d total=%d dropped=%s",
+            phase,
+            sorted(sections),
+            _pre_budget_chars,
+            len(base_playbook),
+            len(result),
+            dropped,
+        )
+    else:
+        logging.debug(
+            "[_dfir_playbook] phase=%s total=%d chars, sections=%s, dropped=%s",
+            phase,
+            len(result),
+            section_sizes,
+            dropped,
+        )
     return result
 
 
@@ -1108,6 +1274,7 @@ def build_query_intent_messages(
     extra_context_md: str = "",
     prior_check_feedback: str = "",
     case_profile: str | None = None,
+    findings_snapshot: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     """Build messages for the query_intent_planner phase.
 
@@ -1125,14 +1292,58 @@ def build_query_intent_messages(
         extra = hypothesis.confirm_when.get("co_observed_event_ids", [])
         if extra:
             _pb_ids.update(int(e) for e in extra if e is not None)
+
+    # --- CONFIRMED_FINDINGS block (top 5 by severity) ---
+    confirmed_findings_block = ""
+    if findings_snapshot:
+        severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        sorted_findings = sorted(
+            findings_snapshot,
+            key=lambda f: severity_rank.get(str(f.get("severity") or "").lower(), 4),
+        )
+        top5 = sorted_findings[:5]
+        lines = []
+        for f in top5:
+            title = str(f.get("title") or "").strip()[:80]
+            hypothesis_id = str(f.get("hypothesis_id") or "").strip()
+            finding_id = str(f.get("finding_id") or "").strip()
+            evidence_ids = f.get("evidence_ids") or []
+            if isinstance(evidence_ids, str):
+                try:
+                    evidence_ids = json.loads(evidence_ids)
+                except (json.JSONDecodeError, TypeError):
+                    evidence_ids = [evidence_ids] if evidence_ids else []
+            evidence_str = ",".join(str(e) for e in (evidence_ids or [])[:3])
+            severity = str(f.get("severity") or "unknown").lower()
+            line = f"  - [{severity}] {title}"
+            if hypothesis_id or finding_id:
+                line += " ("
+                if hypothesis_id:
+                    line += hypothesis_id
+                if finding_id:
+                    line += f", finding_id: {finding_id}"
+                line += ")"
+            if evidence_str:
+                line += f" (evidence: {evidence_str})"
+            # Truncate to 160 chars per line
+            if len(line) > 160:
+                line = line[:157] + "..."
+            lines.append(line)
+        if lines:
+            confirmed_findings_block = (
+                "\n<CONFIRMED_FINDINGS>\n"
+                + "\n".join(lines)
+                + "\n</CONFIRMED_FINDINGS>\n"
+            )
+
     system = (
-        f"{_dfir_playbook('hypothesis_plan', event_ids=_pb_ids)}\n"
+        f"{_dfir_playbook('hypothesis_plan', event_ids=_pb_ids, sections=_sections_for_hypothesis(hypothesis))}\n"
         f"{_time_range_guidance(time_range)}"
         f"{_case_profile_guidance(case_profile)}"
         "<TASK>You are a query_intent_planner. Decide WHAT data to fetch for the given hypothesis. Do NOT write SQL.</TASK>\n"
         "<INPUT_SCHEMA>\n"
         f"hypothesis: {hypothesis.model_dump() if hasattr(hypothesis, 'model_dump') else hypothesis}\n"
-        f"recent_history: {json.dumps(recent_history, ensure_ascii=False, default=str)}\n"
+        f"{_render_prior_attempts(recent_history)}"
         f"time_range: {json.dumps(time_range, ensure_ascii=False, default=str)}\n"
         f"schema: {schema_context}\n"
         "</INPUT_SCHEMA>\n"
@@ -1158,6 +1369,8 @@ def build_query_intent_messages(
         f"extra_context:\n{extra_context_md}\n"
         f"prior_check_feedback:\n{prior_check_feedback or '(no prior checks)'}\n"
     )
+    if confirmed_findings_block:
+        system += confirmed_findings_block
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
@@ -1317,7 +1530,7 @@ def build_verdict_review_messages(
                     pass
 
     system = (
-        f"{_dfir_playbook('check', event_ids=_pb_ids)}\n"
+        f"{_dfir_playbook('check', event_ids=_pb_ids, sections=_sections_for_hypothesis(hypothesis, (result_summary or {}).get('sample_rows')))}\n"
         f"{_time_range_guidance(time_range)}"
         "<TASK>You are a verdict_reviewer. Classify the SQL result against the hypothesis as confirmed, refuted, or inconclusive.</TASK>\n"
         "<OUTPUT_SCHEMA>\n"

@@ -256,8 +256,10 @@ def _resolve_planner_context(
     if default_context_md is None:
         load_investigation_context = getattr(memory, "load_investigation_context", None)
         if callable(load_investigation_context):
+            _relevance = memory.build_relevance_terms_from_hypothesis(hypothesis)
             default_context_md = load_investigation_context(
                 hypothesis.id,
+                relevance_terms=_relevance or None,
                 max_bytes=max(1024, memory.max_bytes // 3),
                 include_overview=False,
             )
@@ -364,8 +366,10 @@ def plan_hypothesis_query(
             (hypothesis.id,),
         ).fetchall()
         if recent_checks:
+            # Free text is a supplement only — the structured attempt history
+            # (<PRIOR_ATTEMPTS> in the intent prompt) carries the signal.
             prior_check_feedback = "\n".join(
-                f"- {row[0][:300]}" for row in recent_checks
+                f"- {row[0][:120]}" for row in recent_checks
             )
 
     execution_error_block = ""
@@ -392,6 +396,7 @@ def plan_hypothesis_query(
             extra_context_md=extra_context + execution_error_block,
             prior_check_feedback=prior_check_feedback,
             case_profile=case_profile,
+            findings_snapshot=state.findings_snapshot,
         )
 
     intent_response = _request_with_optional_context(

@@ -369,7 +369,7 @@ class PlannerRetryTests(unittest.TestCase):
         first_call_system = mock_request.call_args_list[0].kwargs["messages"][0][
             "content"
         ]
-        self.assertIn('"query_id": "Q-old"', first_call_system)
+        self.assertIn("query_id=Q-old", first_call_system)
 
     def test_plan_hypothesis_query_dedupes_local_and_db_query_ids(self) -> None:
         state = SessionState(
@@ -419,7 +419,10 @@ class PlannerRetryTests(unittest.TestCase):
         first_call_system = mock_request.call_args_list[0].kwargs["messages"][0][
             "content"
         ]
-        self.assertEqual(1, first_call_system.count("Q-local"))
+        # Exactly one attempt line for Q-local: the DB reasoning row sharing
+        # the same query_id must merge with the local history entry, not
+        # appear as a second attempt.
+        self.assertEqual(1, first_call_system.count("query_id=Q-local"))
 
     def test_query_template_uses_dataset_max_timestamp_not_now(self) -> None:
         sql = _template_failed_logon_by_ip_window({"hours": 24, "threshold": 5})
@@ -1092,7 +1095,180 @@ class PlannerRetryTests(unittest.TestCase):
         )
 
         self.assertNotEqual(left, right)
+class TestConfirmedFindingsBlock(unittest.TestCase):
+    """Tests for the <CONFIRMED_FINDINGS> block in build_query_intent_messages."""
+
+    def test_no_findings_omits_block(self) -> None:
+        from forensia.ai.prompts import build_query_intent_messages
+        from forensia.core.session import Hypothesis
+
+        h = Hypothesis(description="test", id="H-001")
+        msgs = build_query_intent_messages(
+            hypothesis=h,
+            recent_history=[],
+            active_hypotheses=[],
+            findings_snapshot=[],
+        )
+        system_content = msgs[0]["content"]
+        self.assertNotIn("<CONFIRMED_FINDINGS>", system_content)
+
+    def test_none_findings_omits_block(self) -> None:
+        from forensia.ai.prompts import build_query_intent_messages
+        from forensia.core.session import Hypothesis
+
+        h = Hypothesis(description="test", id="H-001")
+        msgs = build_query_intent_messages(
+            hypothesis=h,
+            recent_history=[],
+            active_hypotheses=[],
+            findings_snapshot=None,
+        )
+        system_content = msgs[0]["content"]
+        self.assertNotIn("<CONFIRMED_FINDINGS>", system_content)
+
+    def test_top5_by_severity(self) -> None:
+        from forensia.ai.prompts import build_query_intent_messages
+        from forensia.core.session import Hypothesis
+
+        h = Hypothesis(description="test", id="H-001")
+        # 10 findings with various severities
+        findings = [
+            {"severity": "low", "title": f"finding-{i}", "hypothesis_id": f"H-{i:03d}",
+             "finding_id": f"f-{i:03d}", "evidence_ids": [f"evtx-{i:03d}"]}
+            for i in range(1, 11)
+        ]
+        # Insert critical/high in positions 6,7 so they should bubble to top
+        findings[5]["severity"] = "critical"
+        findings[6]["severity"] = "high"
+        findings[0]["severity"] = "critical"  # another critical
+
+        msgs = build_query_intent_messages(
+            hypothesis=h,
+            recent_history=[],
+            active_hypotheses=[],
+            findings_snapshot=findings,
+        )
+        system_content = msgs[0]["content"]
+        # Find the line in the CONFIRMED_FINDINGS block
+        for line in system_content.split("\n"):
+            if "[high]" in line:
+                self.assertLessEqual(len(line.strip()), 163)  # 160 + "... "
+                # Line may or may not end with "..." depending on length
+                break
+        else:
+            self.fail("No [high] finding line found in CONFIRMED_FINDINGS block")
+
+    def test_evidence_ids_string_parsed(self) -> None:
+        from forensia.ai.prompts import build_query_intent_messages
+        from forensia.core.session import Hypothesis
+
+        h = Hypothesis(description="test", id="H-001")
+        findings = [
+            {"severity": "high", "title": "test finding", "hypothesis_id": "H-001",
+             "finding_id": "f-001", "evidence_ids": "evtx-001,evtx-002"},
+        ]
+        msgs = build_query_intent_messages(
+            hypothesis=h,
+            recent_history=[],
+            active_hypotheses=[],
+            findings_snapshot=findings,
+        )
+        system_content = msgs[0]["content"]
+        self.assertIn("evtx-001", system_content)
+        self.assertIn("evtx-002", system_content)
+
+    def test_max_length_truncation(self) -> None:
+        from forensia.ai.prompts import build_query_intent_messages
+        from forensia.core.session import Hypothesis
+
+        h = Hypothesis(description="test", id="H-001")
+        # Finding with very long title
+        findings = [
+            {"severity": "critical", "title": "A" * 200, "hypothesis_id": "H-001",
+             "finding_id": "f-001", "evidence_ids": []},
+        ]
+        msgs = build_query_intent_messages(
+            hypothesis=h,
+            recent_history=[],
+            active_hypotheses=[],
+            findings_snapshot=findings,
+        )
+        system_content = msgs[0]["content"]
+        # Should contain truncated title (truncated to ~80 chars)
+        self.assertIn("A" * 80, system_content)  # First 80 chars kept
 
 
-if __name__ == "__main__":
-    unittest.main()
+
+class PriorAttemptsBlockTests(unittest.TestCase):
+    """G-6: attempt history reaches the planner as structured fields, not prose.
+
+    Why: weak local models act reliably on structured lists (query_id /
+    verdict / evidence_count) but often ignore clipped free text. The
+    structured block is also what lets the planner avoid repeating queries.
+    """
+
+    def test_render_prior_attempts_structured_fields(self) -> None:
+        from forensia.ai.prompts import _render_prior_attempts
+
+        block = _render_prior_attempts(
+            [
+                {
+                    "query_id": "q-001",
+                    "template_id": "t-logon",
+                    "verdict": "inconclusive",
+                    "evidence_ids": [],
+                    "purpose": "find 4720 account creation",
+                    "summary": "no rows returned for event 4720",
+                },
+                {
+                    "query_id": "q-002",
+                    "verdict": "inconclusive",
+                    "evidence_ids": ["e-1", "e-2"],
+                    "body": "partial overlap only",
+                },
+            ]
+        )
+        self.assertIn("<PRIOR_ATTEMPTS>", block)
+        self.assertIn("query_id=q-001", block)
+        self.assertIn("template=t-logon", block)
+        self.assertIn("verdict=inconclusive", block)
+        self.assertIn("evidence_count=0", block)
+        self.assertIn("evidence_count=2", block)
+        self.assertIn("do_not_repeat_query_ids: q-001, q-002", block)
+
+    def test_render_prior_attempts_omits_absent_fields(self) -> None:
+        """Fields missing from a row are omitted, never fabricated (Rule 12)."""
+        from forensia.ai.prompts import _render_prior_attempts
+
+        block = _render_prior_attempts([{"verdict": "inconclusive"}])
+        self.assertNotIn("query_id=", block)
+        self.assertNotIn("evidence_count=", block)
+        self.assertNotIn("do_not_repeat_query_ids", block)
+
+    def test_render_prior_attempts_empty_history(self) -> None:
+        from forensia.ai.prompts import _render_prior_attempts
+
+        self.assertIn("(none)", _render_prior_attempts([]))
+
+    def test_intent_messages_carry_structured_attempts(self) -> None:
+        from forensia.ai.prompts import build_query_intent_messages
+        from forensia.core.session import Hypothesis
+
+        msgs = build_query_intent_messages(
+            hypothesis=Hypothesis(id="H-001", description="test hypothesis"),
+            recent_history=[
+                {
+                    "query_id": "q-009",
+                    "verdict": "inconclusive",
+                    "summary": "zero rows",
+                }
+            ],
+            active_hypotheses=[],
+            time_range={},
+            schema_context="",
+        )
+        system = msgs[0]["content"]
+        self.assertIn("<PRIOR_ATTEMPTS>", system)
+        self.assertIn("query_id=q-009", system)
+        # The raw JSON dump of history must be gone.
+        self.assertNotIn("recent_history:", system)

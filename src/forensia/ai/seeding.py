@@ -172,6 +172,81 @@ def _seed_rule_hypotheses(
             "HYPOTHESIS",
             f"seeded {len(seeded)} rule-declared hypotheses (active={len(state.active_hypotheses)})",
         )
+    # G-8: Pre-screen telemetry availability to avoid wasting LLM cycles on
+    # hypotheses whose required event IDs are entirely absent from the case.
+    _prescreen_telemetry_availability(db, state, session_id)
+
+
+def _prescreen_telemetry_availability(
+    db: CaseDB,
+    state: SessionState,
+    session_id: str,
+) -> None:
+    """Resolve as 'untestable' any active hypothesis whose confirm_when.co_observed_event_ids
+    are entirely absent from the case evtx_events table.
+
+    Rules:
+    - No confirm_when or no co_observed_event_ids → skip (cannot determine)
+    - ALL referenced event IDs missing → resolve as untestable immediately
+    - SOME exist → let it proceed (normal investigation)
+
+    This prevents wasting 3+ LLM cycles on hypotheses that will ultimately
+    become untestable due to missing telemetry.
+    """
+    from forensia.ai.hypothesis_manager import _resolve_hypothesis
+
+    # Compute the set of event_ids present in the case.
+    try:
+        rows = db.execute(
+            "SELECT DISTINCT event_id FROM evtx_events WHERE event_id IS NOT NULL"
+        ).fetchall()
+        available_event_ids: set[int] = {int(r[0]) for r in rows}
+    except Exception:
+        # Table may not exist yet or have no event_id column
+        available_event_ids = set()
+
+    screened = 0
+    for hyp in list(state.active_hypotheses):
+        confirm_when = hyp.confirm_when or {}
+        co_observed = confirm_when.get("co_observed_event_ids")
+        if not co_observed or not isinstance(co_observed, list):
+            continue
+        # Coerce to int set
+        required_ids: set[int] = set()
+        for eid in co_observed:
+            try:
+                required_ids.add(int(eid))
+            except (TypeError, ValueError):
+                continue
+        if not required_ids:
+            continue
+        # G-8: If ALL required event_ids are missing → untestable
+        if not required_ids.intersection(available_event_ids):
+            id_list = ", ".join(str(eid) for eid in sorted(required_ids))
+            _log(
+                "RESOLVE",
+                f"{hyp.id} — untestable (pre-screen): required event IDs [{id_list}] "
+                f"are not present in the available telemetry",
+            )
+            _resolve_hypothesis(
+                db=db,
+                state=state,
+                hypothesis_id=hyp.id,
+                verdict="untestable",
+                summary=(
+                    f"Untestable: verification requires event IDs [{id_list}] "
+                    "which are not present in the available telemetry — "
+                    "absence of telemetry is not a disproof."
+                ),
+                session_id=session_id,
+            )
+            screened += 1
+    if screened:
+        _log(
+            "HYPOTHESIS",
+            f"pre-screened {screened} hypotheses as untestable "
+            f"(missing telemetry, active={len(state.active_hypotheses)})",
+        )
 
 
 def _family_interleaved_keypoint_names() -> list[str]:

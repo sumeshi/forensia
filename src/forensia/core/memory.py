@@ -8,6 +8,7 @@ from collections.abc import Callable
 from math import ceil
 from pathlib import Path
 from re import sub
+from typing import Any
 
 from forensia.config import get_llm_settings
 from forensia.core.case import Case
@@ -214,8 +215,87 @@ class MemoryManager:
             body += f" [{' | '.join(meta)}]"
         return f"- {body}"
 
-    def _append_markdown_entry(self, path: Path, heading: str, line: str) -> bool:
-        """Append a line under a heading in a Markdown file, skipping if the line is already present."""
+    @staticmethod
+    def _extract_line_text(line: str) -> str:
+        """Extract the text content from a formatted memory line for comparison.
+
+        Strips the leading '- ' bullet, trailing metadata brackets like
+        '[confirmed | evidence: E-001]', and detail IDs like '[fact-001]'.
+        """
+        text = line.strip()
+        if text.startswith("- "):
+            text = text[2:]
+        # Strip trailing metadata brackets: [confirmed | evidence: ...]
+        # or [provisional | evidence: ...]
+        meta_match = re.search(r"\s*\[(?:confirmed|provisional)(?:\s*\|.*)?\]\s*$", text)
+        if meta_match:
+            text = text[: meta_match.start()]
+        # Strip detail IDs like [fact-001] that are unique per entry
+        text = re.sub(r"\s*\[fact-\d+\]\s*", " ", text)
+        return text.strip()
+
+    @staticmethod
+    def _extract_evidence_ids(line: str) -> list[str]:
+        """Extract evidence IDs from a formatted memory line."""
+        match = re.search(r"evidence:\s*([^\]]+)\]", line)
+        if not match:
+            return []
+        raw = match.group(1)
+        return sorted(e.strip() for e in raw.split(",") if e.strip())
+
+    @staticmethod
+    def _tokenize(text: str) -> set[str]:
+        """Split text into lowercase tokens for relevance matching."""
+        return {t.casefold() for t in re.findall(r"\w+", text) if len(t) > 1}
+
+    @staticmethod
+    def _file_matches_relevance(
+        rel_path: str, base_dir: Path, relevance_terms: set[str], head_lines: int = 10
+    ) -> bool:
+        """Return True if a file's filename or first *head_lines* contain any relevance token."""
+        # Check filename tokens
+        fname_tokens = set()
+        for part in Path(rel_path).stem.split("_"):
+            fname_tokens.update(MemoryManager._tokenize(part))
+        if fname_tokens & relevance_terms:
+            return True
+        # Check first N lines of file content
+        full = (base_dir / rel_path).resolve()
+        try:
+            if full.exists() and full.is_file():
+                with full.open(encoding="utf-8") as fh:
+                    for i, line in enumerate(fh):
+                        if i >= head_lines:
+                            break
+                        if MemoryManager._tokenize(line) & relevance_terms:
+                            return True
+        except (OSError, UnicodeDecodeError):
+            pass
+        return False
+
+    @staticmethod
+    def build_relevance_terms_from_hypothesis(hypothesis: Any) -> set[str]:
+        """Extract relevance tokens from a Hypothesis's description + required_entities."""
+        if hypothesis is None:
+            return set()
+        terms: set[str] = set()
+        desc = getattr(hypothesis, "description", None)
+        if desc:
+            terms.update(MemoryManager._tokenize(desc))
+        for ent in getattr(hypothesis, "required_entities", []) or []:
+            terms.update(MemoryManager._tokenize(ent))
+        return terms
+
+    def _append_markdown_entry(
+        self, path: Path, heading: str, line: str, *, fuzzy_dedup: bool = False
+    ) -> bool:
+        """Append a line under a heading in a Markdown file, skipping if the line is already present.
+
+        When *fuzzy_dedup* is enabled, near-duplicate entries are suppressed
+        using jaccard_similarity.  Entries are considered near-duplicates when
+        their normalized text similarity >= 0.75 **and** they carry the same
+        evidence IDs — different evidence for the same fact is always kept.
+        """
         path.parent.mkdir(parents=True, exist_ok=True)
         existing = (
             path.read_text(encoding="utf-8").rstrip() if path.exists() else heading
@@ -225,6 +305,29 @@ class MemoryManager:
         existing_lines = set(existing.splitlines())
         if line in existing_lines:
             return False
+
+        # --- fuzzy near-duplicate suppression (Rule 12) ---
+        if fuzzy_dedup and existing_lines:
+            new_text = self._extract_line_text(line)
+            new_norm = normalize_text(new_text)
+            new_evidence = self._extract_evidence_ids(line)
+            if new_norm:
+                for existing_line in existing_lines:
+                    existing_text = self._extract_line_text(existing_line)
+                    existing_norm = normalize_text(existing_text)
+                    if not existing_norm:
+                        continue
+                    similarity = jaccard_similarity(new_norm, existing_norm)
+                    if similarity >= 0.75:
+                        existing_evidence = self._extract_evidence_ids(existing_line)
+                        if new_evidence == existing_evidence:
+                            logger.debug(
+                                "fuzzy_dedup suppressed entry (sim=%.2f): %s",
+                                similarity,
+                                new_text[:80],
+                            )
+                            return False
+
         path.write_text(existing + "\n\n" + line + "\n", encoding="utf-8")
         return True
 
@@ -232,22 +335,42 @@ class MemoryManager:
         self,
         hypothesis_id: str | None = None,
         *,
+        relevance_terms: set[str] | None = None,
         include_archive: bool = True,
         include_overview: bool = True,
         include_entities: bool = True,
         include_keypoints: bool = True,
         include_scratch: bool = True,
     ) -> list[str]:
-        """Assemble a deduplicated list of memory file paths for LLM context."""
+        """Assemble a deduplicated list of memory file paths for LLM context.
+
+        When *relevance_terms* is provided and non-empty, entity and keypoint
+        files are filtered to those whose filename or first few lines contain
+        at least one token matching a relevance term (case-insensitive).
+        When empty or None, all entity/keypoint files are included (backward
+        compatible).
+        """
         files: list[str] = []
         if include_overview:
             files.extend(["overview.md", "facts.md", "timeline.md", "tasks.md"])
         if include_archive:
             files.extend(["archive/refuted.md", "archive/resolved_gaps.md"])
         if include_entities:
-            files.extend(self._markdown_files(self.entities_dir))
+            ent_files = self._markdown_files(self.entities_dir)
+            if relevance_terms:
+                ent_files = [
+                    f for f in ent_files
+                    if self._file_matches_relevance(f, self.base_dir, relevance_terms)
+                ]
+            files.extend(ent_files)
         if include_keypoints:
-            files.extend(self._markdown_files(self.keypoints_dir))
+            kp_files = self._markdown_files(self.keypoints_dir)
+            if relevance_terms:
+                kp_files = [
+                    f for f in kp_files
+                    if self._file_matches_relevance(f, self.base_dir, relevance_terms)
+                ]
+            files.extend(kp_files)
         if include_scratch:
             files.extend(self._markdown_files(self.scratch_global_dir))
             if hypothesis_id:
@@ -267,6 +390,7 @@ class MemoryManager:
         self,
         hypothesis_id: str | None = None,
         *,
+        relevance_terms: set[str] | None = None,
         max_bytes: int | None = None,
         include_archive: bool = True,
         include_overview: bool = True,
@@ -278,6 +402,7 @@ class MemoryManager:
         return self.load_compact_context(
             self.investigation_context_files(
                 hypothesis_id,
+                relevance_terms=relevance_terms,
                 include_archive=include_archive,
                 include_overview=include_overview,
                 include_entities=include_entities,
@@ -287,20 +412,122 @@ class MemoryManager:
             max_bytes=max_bytes,
         )
 
+    # Priority constants for memory trimming — lower number = higher priority.
+    PRIORITY_P0 = 0  # overview, facts — NEVER fully removed
+    PRIORITY_P1 = 1  # timeline, tasks, archive
+    PRIORITY_P2 = 2  # entities, keypoints
+    PRIORITY_P3 = 3  # scratch — cut first
+
+    # Minimum lines to preserve for P0 files even under extreme budget pressure.
+    _P0_MIN_LINES = 5
+
+    def _file_priority(self, relative_path: str) -> int:
+        """Assign a trimming priority to a memory file by its relative path."""
+        if relative_path in ("overview.md", "facts.md"):
+            return self.PRIORITY_P0
+        if relative_path.startswith("scratch/"):
+            return self.PRIORITY_P3
+        if relative_path.startswith("entities/") or relative_path.startswith("keypoints/"):
+            return self.PRIORITY_P2
+        # timeline, tasks, archive/*, etc.
+        return self.PRIORITY_P1
+
     def load_compact_context(
         self, files: list[str], max_bytes: int | None = None
     ) -> str:
-        """Load context from files but truncate from the front if the byte budget is exceeded."""
+        """Load context from files, trimming lowest-priority files first when over budget.
+
+        Priority order (lowest cuts first):
+          P3 scratch  →  P2 entities/keypoints  →  P1 timeline/tasks/archive  →  P0 overview/facts
+
+        P0 files are never fully removed — at least ``_P0_MIN_LINES`` are kept.
+        Within each priority level, trimming removes lines from the TAIL.
+        """
         budget = max_bytes if max_bytes is not None else self.max_bytes
-        text = self.load_context(files)
-        encoded = text.encode("utf-8")
-        if len(encoded) <= budget:
-            return text
-        tail = encoded[-budget:].decode("utf-8", errors="ignore")
-        split = tail.find("\n# ")
-        if split > 0:
-            tail = tail[split + 1 :]
-        return tail
+
+        # Read each file individually with its priority.
+        original_order: list[str] = []
+        file_data: dict[str, tuple[int, list[str]]] = {}  # rel -> (priority, lines)
+
+        for relative in files:
+            path = (self.base_dir / relative).resolve()
+            try:
+                path.relative_to(self.base_dir.resolve())
+            except ValueError:
+                continue
+            if path.exists() and path.is_file():
+                text = path.read_text(encoding="utf-8")
+                priority = self._file_priority(relative)
+                original_order.append(relative)
+                file_data[relative] = (priority, text.splitlines(keepends=True))
+
+        # Fast path: everything fits.
+        def _assemble(data: dict[str, tuple[int, list[str]]]) -> str:
+            parts: list[str] = []
+            for rel in original_order:
+                if rel in data:
+                    _, lines = data[rel]
+                    parts.append(f"# {rel}\n\n{''.join(lines)}")
+            return "\n\n".join(parts)
+
+        total_bytes = len(_assemble(file_data).encode("utf-8"))
+        if total_bytes <= budget:
+            return _assemble(file_data)
+
+        # Sort files by priority descending (P3 first) for cutting order.
+        cut_order = sorted(
+            original_order, key=lambda r: -file_data[r][0]
+        )
+
+        for rel in cut_order:
+            priority, lines = file_data.get(rel, (self.PRIORITY_P3, []))
+            if not lines:
+                continue
+
+            # --- Try removing entire file first (skip for P0) ---
+            if priority > self.PRIORITY_P0:
+                test = {k: v for k, v in file_data.items() if k != rel}
+                if len(_assemble(test).encode("utf-8")) <= budget:
+                    logger.info(
+                        "memory trim: removed %s (P%d) to fit budget %d bytes",
+                        rel, priority, budget,
+                    )
+                    file_data.pop(rel, None)
+                    return _assemble(file_data)
+
+            # --- Truncate from TAIL in 25 % chunks ---
+            keep_count = len(lines)
+            min_lines = self._P0_MIN_LINES if priority == self.PRIORITY_P0 else 0
+            step = max(1, len(lines) // 4)
+
+            while keep_count > min_lines:
+                keep_count -= step
+                if keep_count < min_lines:
+                    keep_count = min_lines
+                file_data[rel] = (priority, lines[:keep_count])
+                if len(_assemble(file_data).encode("utf-8")) <= budget:
+                    logger.info(
+                        "memory trim: truncated %s (P%d) %d → %d lines",
+                        rel, priority, len(lines), keep_count,
+                    )
+                    return _assemble(file_data)
+
+            # Could not trim this file enough — drop it (non-P0 only).
+            if priority > self.PRIORITY_P0:
+                file_data.pop(rel, None)
+                logger.info(
+                    "memory trim: removed %s (P%d) entirely (min lines reached)",
+                    rel, priority,
+                )
+                if len(_assemble(file_data).encode("utf-8")) <= budget:
+                    return _assemble(file_data)
+
+        # Budget still exceeded — return what we have.
+        logger.warning(
+            "memory trim: budget %d bytes still exceeded after all cuts (%d bytes)",
+            budget, len(_assemble(file_data).encode("utf-8")),
+        )
+        return _assemble(file_data)
 
     def update_overview(self, content: str) -> None:
         self.overview_path.write_text(content, encoding="utf-8")
@@ -453,7 +680,7 @@ class MemoryManager:
             hypothesis_id=hypothesis_id,
             provisional=False,
         )
-        if self._append_markdown_entry(self.facts_path, "# Facts", shared_line):
+        if self._append_markdown_entry(self.facts_path, "# Facts", shared_line, fuzzy_dedup=True):
             self._write_fact_detail(detail_id, body, normalized_ids)
             self._fact_hashes.add(fact_hash)
 
@@ -482,6 +709,7 @@ class MemoryManager:
             else self.timeline_path,
             "# Timeline",
             line,
+            fuzzy_dedup=True,
         ):
             self._rotate_timeline()
 

@@ -73,3 +73,58 @@ class TestAutoConfirmCoobservationGate:
 
         tracker = HypothesisProgressTracker()
         assert tracker.should_auto_confirm(None, rows, hypothesis) is True
+
+
+class TestHeuristicConfirmWhenNeverAutoConfirms:
+    """Code-backfilled confirm_when must not drive auto-confirm.
+
+    Why: rule-declared follow-up hypotheses are created with non-empty
+    source_rule_ids AND a heuristic confirm_when from _propose_confirm_when
+    ({"co_observed_entity_names": [...], "heuristic": True}). An entity-only
+    confirm_when has no event IDs to verify, so _co_observation_satisfied
+    trivially returns True — without the heuristic guard the hypothesis
+    would auto-confirm on any non-benign rows, bypassing the LLM verdict.
+    """
+
+    def test_rule_seeded_with_heuristic_confirm_when_not_auto_confirmed(self) -> None:
+        hypothesis = Hypothesis(
+            id="H-100",
+            description="follow-up: suspicious service on HOST-A",
+            source_rule_ids=["windows-some-rule"],
+            confirm_when={
+                "co_observed_entity_names": ["service_name"],
+                "same_host": False,
+                "heuristic": True,
+            },
+        )
+        tracker = HypothesisProgressTracker()
+        rows = [
+            {
+                "event_id": 7045,
+                "computer": "HOST-A",
+                "src_ip": "10.0.0.5",
+                "timestamp": "2024-01-01T00:00:00Z",
+            }
+        ]
+        assert (
+            tracker.should_auto_confirm(None, rows, hypothesis) is False
+        ), "heuristic confirm_when must never force a confirmed verdict"
+
+    def test_vetted_confirm_when_unaffected_by_guard(self) -> None:
+        """A rule-declared confirm_when (no heuristic marker) still confirms."""
+        hypothesis = Hypothesis(
+            id="H-101",
+            description="rule-seeded with vetted criteria",
+            source_rule_ids=["windows-some-rule"],
+            confirm_when={"co_observed_event_ids": [7045]},
+        )
+        tracker = HypothesisProgressTracker()
+        rows = [
+            {
+                "event_id": 7045,
+                "computer": "HOST-A",
+                "src_ip": "10.0.0.5",
+                "timestamp": "2024-01-01T00:00:00Z",
+            }
+        ]
+        assert tracker.should_auto_confirm(None, rows, hypothesis) is True

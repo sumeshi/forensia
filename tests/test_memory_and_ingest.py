@@ -1701,6 +1701,168 @@ class MemoryAndIngestTests(unittest.TestCase):
                 "plain inconclusive without transition writes nothing to overview",
             )
 
+    def test_priority_trimming_keeps_p0_over_p3(self) -> None:
+        """With a tiny budget, overview and facts (P0) survive while scratch (P3) is removed."""
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "300"}),
+        ):
+            reload_settings()
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+
+            # Create files at each priority level
+            memory.overview_path.write_text(
+                "# Overview\n\n- key finding 1\n- key finding 2\n- key finding 3\n",
+                encoding="utf-8",
+            )
+            memory.facts_path.write_text(
+                "# Facts\n\n- confirmed fact A\n- confirmed fact B\n",
+                encoding="utf-8",
+            )
+            memory.timeline_path.write_text(
+                "# Timeline\n\n- 2026-05-12: event alpha\n- 2026-05-13: event beta\n",
+                encoding="utf-8",
+            )
+            memory.tasks_memory_path.write_text(
+                "# Tasks\n\n- [internal_db_check] check logs\n",
+                encoding="utf-8",
+            )
+            # P2 entity
+            entity_dir = memory.entities_ip_dir / "10-0-0-5.md"
+            entity_dir.parent.mkdir(parents=True, exist_ok=True)
+            entity_dir.write_text(
+                "# 10.0.0.5\n\n- suspicious IP\n- role: source\n",
+                encoding="utf-8",
+            )
+            # P2 keypoint
+            kp_dir = memory.keypoints_dir / "KP-001.md"
+            kp_dir.parent.mkdir(parents=True, exist_ok=True)
+            kp_dir.write_text(
+                "# KP-001\n\n- important keypoint\n",
+                encoding="utf-8",
+            )
+            # P3 scratch
+            scratch_dir = memory.scratch_global_dir
+            scratch_dir.mkdir(parents=True, exist_ok=True)
+            (scratch_dir / "scratch_notes.md").write_text(
+                "# Scratch Notes\n\n- scratch item 1\n- scratch item 2\n- scratch item 3\n",
+                encoding="utf-8",
+            )
+
+            files = memory.investigation_context_files()
+            result = memory.load_compact_context(files, max_bytes=300)
+
+            # P0 files must survive — overview and facts content should be present
+            self.assertIn("key finding", result, "P0 overview must survive budget pressure")
+            self.assertIn("confirmed fact", result, "P0 facts must survive budget pressure")
+            # P3 scratch should be removed first
+            self.assertNotIn("scratch item", result, "P3 scratch should be removed")
+
+    def test_file_priority_assignment(self) -> None:
+        """Verify _file_priority assigns correct levels to file paths."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+
+            self.assertEqual(memory._file_priority("overview.md"), memory.PRIORITY_P0)
+            self.assertEqual(memory._file_priority("facts.md"), memory.PRIORITY_P0)
+            self.assertEqual(memory._file_priority("timeline.md"), memory.PRIORITY_P1)
+            self.assertEqual(memory._file_priority("tasks.md"), memory.PRIORITY_P1)
+            self.assertEqual(memory._file_priority("archive/refuted.md"), memory.PRIORITY_P1)
+            self.assertEqual(memory._file_priority("archive/resolved_gaps.md"), memory.PRIORITY_P1)
+            self.assertEqual(memory._file_priority("entities/user/alice.md"), memory.PRIORITY_P2)
+            self.assertEqual(memory._file_priority("entities/ip/10-0-0-5.md"), memory.PRIORITY_P2)
+            self.assertEqual(memory._file_priority("keypoints/KP-001.md"), memory.PRIORITY_P2)
+            self.assertEqual(memory._file_priority("scratch/global/notes.md"), memory.PRIORITY_P3)
+            self.assertEqual(memory._file_priority("scratch/H-001/scratch.md"), memory.PRIORITY_P3)
+
+    def test_p0_never_fully_removed_under_extreme_budget(self) -> None:
+        """Even with a near-zero budget, P0 files keep at least _P0_MIN_LINES lines."""
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "1"}),
+        ):
+            reload_settings()
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+
+            # Write multi-line P0 content
+            overview_lines = [f"- overview item {i}" for i in range(20)]
+            memory.overview_path.write_text(
+                "# Overview\n\n" + "\n".join(overview_lines) + "\n",
+                encoding="utf-8",
+            )
+            facts_lines = [f"- fact item {i}" for i in range(20)]
+            memory.facts_path.write_text(
+                "# Facts\n\n" + "\n".join(facts_lines) + "\n",
+                encoding="utf-8",
+            )
+
+            files = ["overview.md", "facts.md"]
+            result = memory.load_compact_context(files, max_bytes=1)
+
+            # Overview and facts must NOT be fully removed
+            self.assertIn("# Overview", result)
+            self.assertIn("# Facts", result)
+            # Must keep at least _P0_MIN_LINES from each
+            overview_section = result.split("# Facts")[0]
+            self.assertGreaterEqual(
+                len([l for l in overview_section.splitlines() if l.strip()]),
+                memory._P0_MIN_LINES - 1,  # heading counts as a line
+            )
+
+    def test_tail_trimming_preserves_head(self) -> None:
+        """When files are truncated, the HEAD (first lines) of P0 files are always kept."""
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "400"}),
+        ):
+            reload_settings()
+            case = Case.init(tmpdir)
+            memory = MemoryManager(case)
+
+            # Overview is large enough that even after dropping P3/P1 files,
+            # overview alone exceeds budget — so it gets TRUNCATED (not removed).
+            overview_lines = [f"- overview item {i}" for i in range(20)]
+            memory.overview_path.write_text(
+                "# Overview\n\n" + "\n".join(overview_lines) + "\n",
+                encoding="utf-8",
+            )
+            # Small facts (P0) to survive
+            memory.facts_path.write_text(
+                "# Facts\n\n- confirmed fact alpha\n",
+                encoding="utf-8",
+            )
+            # Large timeline (P1) — will be removed entirely before P0 trimming
+            timeline_lines = [f"- 2026-05-{i:02d}: event {i}" for i in range(1, 21)]
+            memory.timeline_path.write_text(
+                "# Timeline\n\n" + "\n".join(timeline_lines) + "\n",
+                encoding="utf-8",
+            )
+            # Scratch (P3) — removed first
+            scratch_dir = memory.scratch_global_dir
+            scratch_dir.mkdir(parents=True, exist_ok=True)
+            scratch_lines = [f"- scratch entry {i}" for i in range(15)]
+            (scratch_dir / "bulk.md").write_text(
+                "# Bulk\n\n" + "\n".join(scratch_lines) + "\n",
+                encoding="utf-8",
+            )
+
+            files = ["overview.md", "facts.md", "timeline.md", "scratch/global/bulk.md"]
+            result = memory.load_compact_context(files, max_bytes=400)
+
+            # Head of overview must be preserved (first items)
+            self.assertIn("overview item 0", result)
+            self.assertIn("overview item 1", result)
+            # Later items may be trimmed away
+            # Facts must survive
+            self.assertIn("confirmed fact alpha", result)
+            # P3 scratch must be removed
+            self.assertNotIn("scratch entry", result)
+            # Timeline should be removed (over budget even after scratch)
+            self.assertNotIn("event 1", result)
+
 
 if __name__ == "__main__":
     unittest.main()

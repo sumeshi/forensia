@@ -1035,12 +1035,14 @@ def check_query_result(
     and persists results via apply_check_result.
     """
     overview_md = overview_md if overview_md is not None else memory.load_overview()
+    _relevance = memory.build_relevance_terms_from_hypothesis(hypothesis)
     memory_context_md = (
         memory_context_md
         if memory_context_md is not None
         else memory.load_compact_context(
             memory.investigation_context_files(
                 hypothesis.id if hypothesis else None,
+                relevance_terms=_relevance or None,
                 include_overview=False,
             ),
             max_bytes=max(1024, memory.max_bytes // 2),

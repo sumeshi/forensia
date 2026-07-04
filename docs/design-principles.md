@@ -51,7 +51,7 @@ When adding a new abstraction that summarizes or ranks evidence, always preserve
 
 If the opening of a builder becomes a multi-sentence block, such as `<TASK>You are a sql_composer. Write a DuckDB SQL query that satisfies the given intent.</TASK>`, it is a sign that the granularity is broken.
 
-- **Do not hand routing, template matching, or formatting to the LLM**. `validate_select_sql` / `HypothesisProgressTracker` / `_dedup_new_hypotheses` / `_format_structured_answer` / `execute_fallback_search` all run deterministically on the code side
+- **Do not hand routing, template matching, or formatting to the LLM**. `validate_select_sql` / `HypothesisProgressTracker` / `admit_new_hypothesis` / `_format_structured_answer` / `execute_fallback_search` all run deterministically on the code side
 - When adding a new role, check whether you can write its `<TASK>` in one sentence
 
 For the list of LLM roles and their input/output schemas, see [llm-roles.md](llm-roles.md).

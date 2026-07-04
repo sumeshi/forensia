@@ -29,7 +29,7 @@ from forensia.ai.case_profile import (
 )
 from forensia.ai.checker import check_query_result, summarize_query_result
 from forensia.ai.hypothesis_manager import (
-    MAX_ACTIVE_HYPOTHESES,
+    _filter_valid_entities,
     _all_hypotheses,
     _guess_related_sections,
     _hypothesis_similarity,
@@ -37,6 +37,7 @@ from forensia.ai.hypothesis_manager import (
     _merge_active_hypotheses,
     _resolve_hypothesis,
     _upsert_hypothesis,
+    admit_new_hypothesis,
 )
 from forensia.ai.json_response import request_llm_json
 from forensia.ai.llm_client import (
@@ -147,20 +148,36 @@ def _ctx_refresh_caches(
     base_url: str,
     model: str,
     current_hypothesis_id: str | None = None,
+    hypothesis: Hypothesis | None = None,
 ) -> None:
-    """Reload memory context caches and compact overview if needed."""
+    """Reload memory context caches and compact overview if needed.
+
+    When *hypothesis* is provided, entity/keypoint files are filtered by
+    relevance to it (G-3) — these caches are handed to the planner and
+    checker as their default context, so the filtering must happen here,
+    not only in the lazy-load fallbacks inside planner/checker.
+    """
     memory.compact_overview_if_needed(base_url=base_url, model=model)
     ctx.memory_overview = memory.load_compact_context(
         ["overview.md"], max_bytes=memory.max_bytes
     )
+    if hypothesis is not None and current_hypothesis_id is None:
+        current_hypothesis_id = hypothesis.id
+    relevance_terms = (
+        memory.build_relevance_terms_from_hypothesis(hypothesis)
+        if hypothesis is not None
+        else None
+    )
     ctx.current_hypothesis_id = current_hypothesis_id
     ctx.memory_plan = memory.load_investigation_context(
         current_hypothesis_id,
+        relevance_terms=relevance_terms or None,
         max_bytes=max(1024, memory.max_bytes // 3),
         include_overview=False,
     )
     ctx.memory_check = memory.load_investigation_context(
         current_hypothesis_id,
+        relevance_terms=relevance_terms or None,
         max_bytes=max(1024, memory.max_bytes // 2),
         include_overview=False,
     )
@@ -906,14 +923,26 @@ async def _investigate_one_hypothesis(
         )
         state.history = state.history[-50:]
         if check_result.new_hypotheses:
-            state.active_hypotheses = _merge_active_hypotheses(
-                db=db,
-                current=state.active_hypotheses,
-                updates=check_result.new_hypotheses,
-                resolved=state.resolved_hypotheses,
-                session_id=session_id,
-                origin="check_new",
-            )
+            # --- Unified admission gate (G-5) ---
+            admitted = []
+            for hyp in check_result.new_hypotheses:
+                ok, reason = admit_new_hypothesis(hyp, state)
+                if ok:
+                    admitted.append(hyp)
+                else:
+                    _log(
+                        "HYPOTHESIS",
+                        f"check_new rejected: '{hyp.description[:80]}' reason={reason}",
+                    )
+            if admitted:
+                state.active_hypotheses = _merge_active_hypotheses(
+                    db=db,
+                    current=state.active_hypotheses,
+                    updates=admitted,
+                    resolved=state.resolved_hypotheses,
+                    session_id=session_id,
+                    origin="check_new",
+                )
         if check_result.verdict in {"confirmed", "refuted", "untestable"}:
             _resolve_hypothesis(
                 db=db,
@@ -970,9 +999,7 @@ async def _investigate_one_hypothesis(
             memory.archive_hypothesis_scratch(hypothesis.id)
         elif check_result.verdict == "untestable":
             memory.archive_untestable_hypothesis_scratch(hypothesis.id)
-        _ctx_refresh_caches(
-            ctx, memory, base_url, model, current_hypothesis_id=hypothesis.id
-        )
+        _ctx_refresh_caches(ctx, memory, base_url, model, hypothesis=hypothesis)
         _save_step(
             db=db,
             session_id=session_id,
@@ -1162,58 +1189,9 @@ def _dedup_new_hypotheses(
                 break
         if not is_duplicate:
             accepted.append(new_h)
-    return accepted
 
-
-@functools.lru_cache(maxsize=1)
-def _known_db_columns() -> frozenset[str]:
-    """Whitelist of valid DB column names sourced from rulepacks/_schema/*.yaml.
-
-    Used to reject natural-language `required_entities` (e.g. 'user_identity',
-    'computer_name') that pass the snake_case regex but are not real columns.
-    """
-    from forensia.ai.prompts import _load_schema_hints
-
-    cols: set[str] = set()
-    for hint in _load_schema_hints().values():
-        for col in (hint.get("columns") or []) + (hint.get("core_columns") or []):
-            cols.add(str(col).strip())
-    # Augment with synonyms that drafter commonly emits and we accept as aliases
-    cols.update(
-        {
-            "src_ip",
-            "dst_ip",
-            "target_user",
-            "subject_user",
-            "logon_type",
-            "process_name",
-            "file_path",
-            "computer",
-            "event_id",
-            "timestamp",
-            "command_line",
-            "service_name",
-        }
-    )
-    return frozenset(c for c in cols if c)
-
-
-def _filter_valid_entities(raw: list[Any]) -> list[str]:
-    """Keep only entries that are real DB columns from the rulepack schema cards.
-
-    Drops natural-language phrases formatted as snake_case (e.g. 'user_identity',
-    'computer_name', 'credential_usage') that the bare snake_case regex would
-    otherwise accept.
-    """
-    known = _known_db_columns()
-    out: list[str] = []
-    seen: set[str] = set()
-    for item in raw:
-        name = str(item or "").strip().lower()
-        if name and name in known and name not in seen:
-            seen.add(name)
-            out.append(name)
-    return out
+    # _known_db_columns and _filter_valid_entities moved to hypothesis_manager.py
+    # (shared with the unified admission gate).  Import kept above.
 
 
 def _parse_hypothesis_from_drafter(parsed: dict[str, Any]) -> Hypothesis | None:
@@ -1254,7 +1232,7 @@ def _parse_hypothesis_from_drafter(parsed: dict[str, Any]) -> Hypothesis | None:
                 for eid in co_ids:
                     try:
                         numeric_ids.append(int(str(eid).strip()))
-                    except TypeError, ValueError:
+                    except (TypeError, ValueError):
                         continue
                 filtered = [eid for eid in numeric_ids if eid in available_ids]
                 if len(filtered) < len(numeric_ids) or len(numeric_ids) < len(co_ids):
@@ -1423,12 +1401,21 @@ async def _run_broad_plan_step(
                 hyp.id = f"draft-{plan_cycle}-{len(drafted_hypotheses) + 1}"
                 drafted_hypotheses.append(hyp)
 
-        # 3) dedup + merge
-        deduped = _dedup_new_hypotheses(drafted_hypotheses, state.active_hypotheses)
+        # 3) admission gate + merge  (G-5: unified gate replaces _dedup_new_hypotheses)
+        admitted = []
+        for hyp in drafted_hypotheses:
+            ok, reason = admit_new_hypothesis(hyp, state)
+            if ok:
+                admitted.append(hyp)
+            else:
+                _log(
+                    "HYPOTHESIS",
+                    f"broad_plan rejected: '{hyp.description[:80]}' reason={reason}",
+                )
         state.active_hypotheses = _merge_active_hypotheses(
             db=db,
             current=state.active_hypotheses,
-            updates=deduped,
+            updates=admitted,
             resolved=state.resolved_hypotheses,
             session_id=session_id,
             origin="broad_plan",
@@ -1587,9 +1574,7 @@ async def _run_cycle_body(
                 break
             state.focus_hypothesis_id = hypothesis.id
             state.focus_depth = 0
-            _ctx_refresh_caches(
-                ctx, memory, base_url, model, current_hypothesis_id=hypothesis.id
-            )
+            _ctx_refresh_caches(ctx, memory, base_url, model, hypothesis=hypothesis)
             focus_sections = _guess_related_sections(hypothesis.description)
             _log("HYPOTHESIS", f"{hypothesis.id} — {hypothesis.description}")
             _emit(

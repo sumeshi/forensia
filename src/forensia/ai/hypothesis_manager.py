@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import re
@@ -12,6 +13,63 @@ from forensia.core.textutil import normalize_text as _normalize_text
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
 from forensia.rules.loader import load_rule_by_id
+
+
+# ---------------------------------------------------------------------------
+# Entity validation (moved here from investigator.py so the admission gate
+# and the drafter parser can share one copy without circular imports)
+# ---------------------------------------------------------------------------
+
+@functools.lru_cache(maxsize=1)
+def _known_db_columns() -> frozenset[str]:
+    """Whitelist of valid DB column names sourced from rulepacks/_schema/*.yaml.
+
+    Used to reject natural-language ``required_entities`` (e.g.
+    'user_identity', 'computer_name') that pass the snake_case regex but
+    are not real columns.
+    """
+    from forensia.ai.prompts import _load_schema_hints
+
+    cols: set[str] = set()
+    for hint in _load_schema_hints().values():
+        for col in (hint.get("columns") or []) + (hint.get("core_columns") or []):
+            cols.add(str(col).strip())
+    # Augment with synonyms that drafter commonly emits and we accept as aliases
+    cols.update(
+        {
+            "src_ip",
+            "dst_ip",
+            "target_user",
+            "subject_user",
+            "logon_type",
+            "process_name",
+            "file_path",
+            "computer",
+            "event_id",
+            "timestamp",
+            "command_line",
+            "service_name",
+        }
+    )
+    return frozenset(c for c in cols if c)
+
+
+def _filter_valid_entities(raw: list[Any]) -> list[str]:
+    """Keep only entries that are real DB columns from the rulepack schema cards.
+
+    Drops natural-language phrases formatted as snake_case (e.g.
+    'user_identity', 'computer_name', 'credential_usage') that the bare
+    snake_case regex would otherwise accept.
+    """
+    known = _known_db_columns()
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        name = str(item or "").strip().lower()
+        if name and name in known and name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
 
 
 # Hypothesis-construction helpers (moved from report_gap.py to break the
@@ -68,7 +126,7 @@ def _propose_confirm_when(entities: list[str]) -> dict[str, Any]:
     """Safety-net: Propose confirmation criteria when LLM output is incomplete."""
     if not entities:
         return {"zero_rows": True}
-    return {"co_observed_entity_names": entities, "same_host": False}
+    return {"co_observed_entity_names": entities, "same_host": False, "heuristic": True}
 
 
 def _clean_confirm_when(
@@ -924,3 +982,142 @@ def _resolve_hypothesis(
 
 def _all_hypotheses(state: SessionState) -> list[Hypothesis]:
     return [*state.active_hypotheses, *state.resolved_hypotheses]
+
+
+# ---------------------------------------------------------------------------
+# Unified hypothesis admission gate
+# ---------------------------------------------------------------------------
+
+def _extract_refuted_tokens(descriptions: list[str]) -> set[str]:
+    """Extract key entity tokens from refuted hypothesis descriptions.
+
+    Captures executable names, IPs, hostnames, registry keys, and other
+    distinctive tokens so hypothesis text referencing refuted content can
+    be detected even when the wording differs from the original description.
+
+    Moved here from report_gap.py so all admission paths share one copy.
+    """
+    tokens: set[str] = set()
+    # Executable / script file names (poqexec.exe, evil.dll, etc.)
+    exe_pattern = re.compile(
+        r"[A-Za-z0-9_\-\.]+\.(?:exe|dll|sys|bat|ps1|cmd|vbs|js|hta|scr|com)",
+        re.IGNORECASE,
+    )
+    # IPv4 addresses
+    ip_pattern = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
+    # Registry key paths
+    reg_pattern = re.compile(
+        r"(?:HKLM|HKCU|HKEY_[A-Z_]+)\\[^\s\]]+", re.IGNORECASE
+    )
+    for desc in descriptions:
+        if not desc:
+            continue
+        lowered = desc.lower()
+        # File names
+        for m in exe_pattern.finditer(lowered):
+            tokens.add(m.group(0).lower())
+        # IPs
+        for m in ip_pattern.finditer(desc):
+            tokens.add(m.group(0))
+        # Registry keys (normalized lowercase)
+        for m in reg_pattern.finditer(desc):
+            tokens.add(m.group(0).lower())
+    return tokens
+
+
+def _gap_references_refuted(text: str, refuted_tokens: set[str]) -> bool:
+    """Check whether *text* references content from refuted hypotheses.
+
+    Returns True if *text* contains any token extracted from refuted
+    hypothesis descriptions.
+
+    Moved here from report_gap.py so all admission paths share one copy.
+    """
+    if not refuted_tokens:
+        return False
+    lowered = text.lower()
+    for token in refuted_tokens:
+        if token in lowered:
+            return True
+    return False
+
+
+ADMISSION_THRESHOLD = 0.85
+
+
+def admit_new_hypothesis(
+    candidate: Hypothesis,
+    state: SessionState,
+    *,
+    threshold: float = ADMISSION_THRESHOLD,
+) -> tuple[bool, str]:
+    """Unified admission gate for new hypotheses.
+
+    Checks the candidate against **active** AND **resolved** hypotheses for
+    similarity, against **refuted** hypothesis tokens, and validates entity
+    names.  Returns ``(accepted, reason)`` where *reason* is a short label
+    explaining the decision (logged via ``_log('HYPOTHESIS', …)``).
+
+    Replaces the fragmented checks that previously lived in:
+    - ``_dedup_new_hypotheses``  (active-only similarity)
+    - ``_inject_gap_hypotheses``  (inline refuted-token + description checks)
+    - ``check_new`` path          (no gate at all)
+    """
+    description = candidate.description or ""
+    if not description.strip():
+        return False, "empty-description"
+
+    # --- 1. Check against RESOLVED hypotheses ----------------------------
+    resolved_match, resolved_score = _best_hypothesis_match(
+        state.resolved_hypotheses, description
+    )
+    if resolved_match is not None and resolved_score >= threshold:
+        _log(
+            "HYPOTHESIS",
+            f"admission REJECTED (duplicate-of-resolved): "
+            f"'{description[:80]}' ~ {resolved_match.id} "
+            f"(score={resolved_score:.2f})",
+        )
+        return False, "duplicate-of-resolved"
+
+    # --- 2. Check against ACTIVE hypotheses ------------------------------
+    active_match, active_score = _best_hypothesis_match(
+        state.active_hypotheses, description
+    )
+    if active_match is not None and active_score >= threshold:
+        _log(
+            "HYPOTHESIS",
+            f"admission REJECTED (duplicate-of-active): "
+            f"'{description[:80]}' ~ {active_match.id} "
+            f"(score={active_score:.2f})",
+        )
+        return False, "duplicate-of-active"
+
+    # --- 3. Check against REFUTED hypothesis tokens ----------------------
+    refuted_descriptions = [
+        h.description
+        for h in state.resolved_hypotheses
+        if h.status == "refuted"
+    ]
+    refuted_tokens = _extract_refuted_tokens(refuted_descriptions)
+    if _gap_references_refuted(description, refuted_tokens):
+        _log(
+            "HYPOTHESIS",
+            f"admission REJECTED (refuted-claim): "
+            f"'{description[:80]}' contains refuted tokens "
+            f"{sorted(refuted_tokens)[:5]}",
+        )
+        return False, "refuted-claim"
+
+    # --- 4. Entity validity check ----------------------------------------
+    if candidate.required_entities:
+        valid_entities = _filter_valid_entities(candidate.required_entities)
+        if not valid_entities:
+            _log(
+                "HYPOTHESIS",
+                f"admission REJECTED (invalid-entities): "
+                f"'{description[:80]}' — entities={candidate.required_entities}",
+            )
+            return False, "invalid-entities"
+
+    return True, "accepted"

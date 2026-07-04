@@ -9,9 +9,12 @@ from pydantic import BaseModel, Field, field_validator
 from forensia.ai.hypothesis_manager import (
     _all_hypotheses,
     _extract_entities_from_text,
+    _extract_refuted_tokens,
     _gap_hypothesis_id,
+    _gap_references_refuted,
     _propose_confirm_when,
     _upsert_hypothesis,
+    admit_new_hypothesis,
 )
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, SessionState
@@ -256,55 +259,9 @@ def _parse_gap_hypothesis_output(
     return required_entities, confirm_when
 
 
-def _extract_refuted_tokens(descriptions: list[str]) -> set[str]:
-    """Extract key entity tokens from refuted hypothesis descriptions.
-
-    Captures executable names, IPs, hostnames, registry keys, and other
-    distinctive tokens so gap text referencing refuted content can be
-    detected even when the wording differs from the original description.
-    """
-    tokens: set[str] = set()
-    # Executable / script file names (poqexec.exe, evil.dll, etc.)
-    exe_pattern = re.compile(
-        r"[A-Za-z0-9_\-\.]+\.(?:exe|dll|sys|bat|ps1|cmd|vbs|js|hta|scr|com)",
-        re.IGNORECASE,
-    )
-    # IPv4 addresses
-    ip_pattern = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
-    # Registry key paths
-    reg_pattern = re.compile(
-        r"(?:HKLM|HKCU|HKEY_[A-Z_]+)\\[^\s\]]+", re.IGNORECASE
-    )
-    for desc in descriptions:
-        if not desc:
-            continue
-        # Lowercase normalized tokens for case-insensitive matching
-        lowered = desc.lower()
-        # File names
-        for m in exe_pattern.finditer(lowered):
-            tokens.add(m.group(0).lower())
-        # IPs
-        for m in ip_pattern.finditer(desc):
-            tokens.add(m.group(0))
-        # Registry keys (normalized lowercase)
-        for m in reg_pattern.finditer(desc):
-            tokens.add(m.group(0).lower())
-    return tokens
-
-
-def _gap_references_refuted(gap_text: str, refuted_tokens: set[str]) -> bool:
-    """Check whether a gap description references content from refuted hypotheses.
-
-    Returns True if the gap text contains any token extracted from refuted
-    hypothesis descriptions, indicating the gap is derived from refuted content.
-    """
-    if not refuted_tokens:
-        return False
-    lowered = gap_text.lower()
-    for token in refuted_tokens:
-        if token in lowered:
-            return True
-    return False
+# _extract_refuted_tokens and _gap_references_refuted moved to
+# hypothesis_manager.py (shared with the unified admission gate).
+# Imported above.
 
 def _is_refuted_hypothesis(hypothesis, resolved_hypotheses: list) -> bool:
     """Check if a hypothesis matches any resolved (refuted) hypothesis."""
@@ -329,50 +286,23 @@ def _inject_gap_hypotheses(
 ) -> int:
     """Convert unresolved report gaps into active hypotheses, skipping duplicates and non-DB gaps.
 
-    Also filters out gaps that reference content from refuted hypotheses
-    (e.g. hallucinated binaries like poqexec.exe) to prevent refuted
-    claims from being re-injected as new active hypotheses.
+    Uses the unified admission gate (admit_new_hypothesis) to check against
+    active, resolved, and refuted hypotheses — preventing refuted claims like
+    poqexec.exe from being re-admitted through the gap injection path.
     """
-    known_by_description = {
-        _normalize_text(item.description) for item in _all_hypotheses(state)
-    }
-    resolved_by_description = {
-        _normalize_text(item.description) for item in state.resolved_hypotheses
-    }
-    # Extract tokens from refuted hypothesis descriptions so we can
-    # catch gaps that reference refuted content even when wording differs.
-    refuted_descriptions = [
-        item.description
-        for item in state.resolved_hypotheses
-        if item.status == "refuted"
-    ]
-    refuted_tokens = _extract_refuted_tokens(refuted_descriptions)
     added = 0
     for gap in gaps:
         normalized_gap = _normalize_text(gap)
-        if (
-            not normalized_gap
-            or normalized_gap in known_by_description
-            or normalized_gap in resolved_by_description
-        ):
-            continue
-        # Filter out gaps that reference refuted hypothesis content.
-        # These are discarded rather than promoted to active hypotheses.
-        if _gap_references_refuted(gap, refuted_tokens):
-            continue
-        gap_kind = _classify_gap_kind(gap)
-        if gap_kind != "internal_db_check":
-            if memory is not None:
-                memory.append_task(gap, gap_kind)
-            known_by_description.add(normalized_gap)
+        if not normalized_gap:
             continue
 
-        # Try to get required_entities/confirm_when from LLM output first (safety-net pattern)
+        # Try to get required_entities/confirm_when from LLM output first
         required_entities, confirm_when = _parse_gap_hypothesis_output(
             llm_output or {}, gap
         )
 
-        hypothesis = Hypothesis(
+        # Build a candidate hypothesis for the unified admission gate
+        candidate = Hypothesis(
             id=_gap_hypothesis_id(gap),
             description=gap,
             status="active",
@@ -381,8 +311,19 @@ def _inject_gap_hypotheses(
             required_entities=required_entities,
             confirm_when=confirm_when,
         )
-        state.active_hypotheses.append(hypothesis)
-        _upsert_hypothesis(db, hypothesis, origin="report_gap", session_id=session_id)
-        known_by_description.add(normalized_gap)
+
+        # --- Unified admission gate (G-5) ---
+        ok, reason = admit_new_hypothesis(candidate, state)
+        if not ok:
+            continue
+
+        gap_kind = _classify_gap_kind(gap)
+        if gap_kind != "internal_db_check":
+            if memory is not None:
+                memory.append_task(gap, gap_kind)
+            continue
+
+        state.active_hypotheses.append(candidate)
+        _upsert_hypothesis(db, candidate, origin="report_gap", session_id=session_id)
         added += 1
     return added

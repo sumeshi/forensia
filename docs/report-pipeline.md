@@ -224,7 +224,7 @@ Only when verdict==confirmed is `build_finding_extractor_messages` invoked to ex
 Hypothesis identity judgment is fully completed on the code side.
 
 - `_hypothesis_similarity` (`hypothesis_manager.py`): similarity based on a (actor / action / target) triple
-- `_dedup_new_hypotheses` (`investigator.py`): after the drafter output, drops entries with similarity > 0.85 to active ones
+- `admit_new_hypothesis` (`hypothesis_manager.py`): unified admission gate for drafter / checker / gap-derived hypotheses — rejects near-duplicates of active AND resolved hypotheses (similarity > 0.85), claims matching refuted-hypothesis tokens, and invalid entity names
 - `_best_hypothesis_match` (`hypothesis_manager.py`): determines the upsert target using the same threshold judgment inside `_merge_active_hypotheses`
 
 ### 5.8 Resolver
