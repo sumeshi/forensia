@@ -11,7 +11,6 @@ import json
 from functools import lru_cache
 from typing import Any
 
-from forensia.core.log import log as _log
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
 

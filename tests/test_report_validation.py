@@ -5,17 +5,13 @@ All tests use synthetic briefs — no dist/cfreds data required.
 
 from __future__ import annotations
 
-import pytest
-
 from forensia.report.report_validation import (
-    ValidationFinding,
     check_local_path_leak,
     check_refuted_leakage,
     check_thesis_alignment,
     check_verdict_contradiction,
     validate_report,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

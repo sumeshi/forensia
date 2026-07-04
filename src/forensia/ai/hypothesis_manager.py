@@ -14,7 +14,6 @@ from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
 from forensia.rules.loader import load_rule_by_id
 
-
 # ---------------------------------------------------------------------------
 # Entity validation (moved here from investigator.py so the admission gate
 # and the drafter parser can share one copy without circular imports)

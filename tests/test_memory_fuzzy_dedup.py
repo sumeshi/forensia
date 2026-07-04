@@ -3,10 +3,9 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from pathlib import Path
 
-from forensia.core.memory import MemoryManager
 from forensia.core.case import Case
+from forensia.core.memory import MemoryManager
 
 
 class FuzzyDedupTests(unittest.TestCase):

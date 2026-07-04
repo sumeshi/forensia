@@ -735,3 +735,60 @@ class RuleExecutionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FindingEvidencePathSanitizationTests(unittest.TestCase):
+    """Finding evidence must never record the analyst's local ingest tree.
+
+    Why: databases ingested before the source_file basename fix carry raw
+    local paths (e.g. sample/<case>/Prefetch/FOO.pf). Rules that SELECT
+    source_file would otherwise copy those paths into finding evidence and
+    the rendered summary, from where they leak into report_brief.json and
+    the client-facing report.
+    """
+
+    def test_generate_findings_sanitizes_ingest_paths_in_evidence(self) -> None:
+        rule = Rule.model_validate(
+            {
+                "id": "test-path-sanitize",
+                "title": "t",
+                "severity": "high",
+                "confidence": 0.7,
+                "query": "SELECT 1",
+                "finding": {
+                    "title": "tool {executable_name}",
+                    "summary": "seen in {source_file}",
+                },
+                "tags": ["test"],
+                "attack": [],
+            }
+        )
+        rows = [
+            {
+                "evidence_id": "pf-001",
+                "executable_name": "ERASER.EXE",
+                "source_file": "sample/case1/Prefetch/ERASER.EXE-BE552234.pf",
+            },
+            {
+                "evidence_id": "ev-002",
+                "executable_name": "REAL.EXE",
+                # Real Windows path from the image — must stay untouched.
+                "source_file": "C:\\Windows\\Prefetch\\REAL.EXE-11111111.pf",
+            },
+        ]
+        findings = generate_findings(rule, rows)
+
+        self.assertEqual(2, len(findings))
+        ingest_ev = findings[0].evidence[0]
+        self.assertEqual(
+            "ERASER.EXE-BE552234.pf",
+            ingest_ev["source_file"],
+            "local ingest path must be reduced to basename",
+        )
+        self.assertNotIn("sample/", findings[0].summary)
+        windows_ev = findings[1].evidence[0]
+        self.assertEqual(
+            "C:\\Windows\\Prefetch\\REAL.EXE-11111111.pf",
+            windows_ev["source_file"],
+            "real Windows evidence paths must not be shortened",
+        )

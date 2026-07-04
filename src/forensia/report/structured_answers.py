@@ -11,6 +11,11 @@ from pathlib import Path
 from typing import Any
 
 from forensia.core.case import Case, detect_epochs
+from forensia.core.textutil import (
+    is_local_ingest_path,
+    path_basename,
+    sanitize_ingest_path,
+)
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records, normalize_value
 from forensia.knowledge import (
@@ -639,53 +644,19 @@ def _prefetch_executable_from_filename(file_name: Any) -> str:
     return re.sub(r"-[A-Fa-f0-9]{8}$", "", name)
 
 
+# Shared implementations live in core/textutil so the rules engine can
+# sanitize finding evidence without a report-layer import. These aliases
+# keep the established local names.
 def _is_local_ingest_path(path: Any) -> bool:
-    """Return True if *path* looks like a local ingest artefact path rather
-    than a real on-disk Windows path.
-
-    The distinction is purely structural: evidence extracted from the image
-    carries Windows-style paths (drive letter, UNC, or ``\\Device\\`` prefix,
-    backslash separators), while paths pointing at the analyst's local ingest
-    tree use forward slashes without a Windows root. No directory names are
-    matched, so the check is independent of any particular case layout.
-    """
-    p = _text(path)
-    if not p:
-        return False
-    # Real Windows absolute paths start with a drive letter or UNC prefix
-    if re.match(r"^[A-Za-z]:[\\/]", p):
-        return False
-    if p.startswith("\\\\") or p.startswith("\\Device\\"):
-        return False
-    # Forward-slash separators without a Windows root → local ingest tree
-    return "/" in p
+    return is_local_ingest_path(_text(path))
 
 
 def _strip_path_basename(path: Any) -> str:
-    """Return just the final filename component from a path string."""
-    p = _text(path)
-    if not p:
-        return ""
-    # Use the last / or \\ delimited segment
-    for sep in ("/", "\\"):
-        if sep in p:
-            p = p.rsplit(sep, 1)[-1]
-    return p
+    return path_basename(_text(path))
 
 
 def _sanitize_prefetch_path(path: Any) -> str:
-    """Sanitise a path that may be a local ingest artefact.
-
-    - If the path is a local ingest path, return just the basename.
-    - If the path looks like a real Windows path, return it unchanged.
-    - Returns an empty string for empty/None input.
-    """
-    p = _text(path)
-    if not p:
-        return ""
-    if _is_local_ingest_path(p):
-        return _strip_path_basename(p)
-    return p
+    return sanitize_ingest_path(_text(path))
 
 
 def _human_user_predicate(column: str = "target_user") -> str:

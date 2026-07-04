@@ -58,3 +58,49 @@ def jaccard_similarity(a: str, b: str) -> float:
     intersection = tokens_a & tokens_b
     union = tokens_a | tokens_b
     return len(intersection) / len(union)
+
+
+def is_local_ingest_path(path: object) -> bool:
+    """Return True if *path* looks like a local ingest artefact path rather
+    than a real on-disk Windows path.
+
+    The distinction is purely structural: evidence extracted from the image
+    carries Windows-style paths (drive letter, UNC, or ``\\Device\\`` prefix,
+    backslash separators), while paths pointing at the analyst's local ingest
+    tree use forward slashes without a Windows root. No directory names are
+    matched, so the check is independent of any particular case layout.
+    """
+    p = str(path).strip() if path is not None else ""
+    if not p:
+        return False
+    if re.match(r"^[A-Za-z]:[\\/]", p):
+        return False
+    if p.startswith("\\\\") or p.startswith("\\Device\\"):
+        return False
+    return "/" in p
+
+
+def path_basename(path: object) -> str:
+    """Return just the final filename component from a path string."""
+    p = str(path).strip() if path is not None else ""
+    if not p:
+        return ""
+    for sep in ("/", "\\"):
+        if sep in p:
+            p = p.rsplit(sep, 1)[-1]
+    return p
+
+
+def sanitize_ingest_path(path: object) -> str:
+    """Reduce a local ingest artefact path to its basename.
+
+    Real Windows evidence paths are returned unchanged; only paths that
+    point at the analyst's local ingest tree are shortened, so case output
+    never records the local filesystem layout.
+    """
+    p = str(path).strip() if path is not None else ""
+    if not p:
+        return ""
+    if is_local_ingest_path(p):
+        return path_basename(p)
+    return p

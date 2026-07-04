@@ -5,8 +5,6 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.report.benign_auth import (
@@ -14,7 +12,6 @@ from forensia.report.benign_auth import (
     is_benign_local_auth,
     tag_benign_local_auth_findings,
 )
-
 
 # ====================================================================
 # _normalise_ip

@@ -7,11 +7,8 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
 from forensia.ai.hypothesis_manager import (
-    _all_hypotheses,
     _extract_entities_from_text,
-    _extract_refuted_tokens,
     _gap_hypothesis_id,
-    _gap_references_refuted,
     _propose_confirm_when,
     _upsert_hypothesis,
     admit_new_hypothesis,

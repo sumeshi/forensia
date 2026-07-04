@@ -11,6 +11,7 @@ import orjson
 import yaml
 
 from forensia.core.case import Case
+from forensia.core.textutil import sanitize_ingest_path
 from forensia.core.timeutil import parse_timestamp
 from forensia.db.database import CaseDB
 from forensia.knowledge import (
@@ -88,6 +89,18 @@ def generate_findings(rule: Rule, rows: list[dict[str, Any]]) -> list[Finding]:
     """
     findings = []
     for index, row in enumerate(rows, start=1):
+        # Path-bearing columns may carry the analyst's local ingest tree
+        # (e.g. a pre-basename-fix DB whose prefetch source_file is the
+        # raw ingest path). Sanitize before the row is rendered into the
+        # title/summary and embedded as evidence, so the local filesystem
+        # layout never reaches case output.
+        sanitized = {
+            key: sanitize_ingest_path(row[key])
+            for key in ("source_file", "prefetch_file")
+            if row.get(key)
+        }
+        if sanitized:
+            row = {**row, **sanitized}
         referenced_fields = rule.required_fields or [
             *_template_fields(rule.finding.title),
             *[

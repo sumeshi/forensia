@@ -987,6 +987,31 @@ def doctor() -> None:
         checks.append(("Report output validation", False))
         print(f"  ✗ Error: {exc}")
 
+    _status("Static lint (undefined names, unused imports)...")
+    try:
+        # Runtime-only NameErrors (e.g. a constant referenced in a code path
+        # tests never execute) crash long investigation runs hours in. Ruff's
+        # pyflakes rules catch them statically before any run starts.
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "src/forensia", "tests"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode != 0 and "No module named" in (result.stderr or ""):
+            checks.append(("Static lint", True))
+            print("  ✓ ruff not installed — skipping (dev dependency)")
+        else:
+            ok = result.returncode == 0
+            checks.append(("Static lint", ok))
+            if ok:
+                print("  ✓ ruff check clean")
+            else:
+                print(f"  ✗ Lint findings:\n{result.stdout[-500:]}")
+    except Exception as exc:
+        checks.append(("Static lint", False))
+        print(f"  ✗ Error: {exc}")
+
     _status("Test suite...")
     try:
         result = subprocess.run(

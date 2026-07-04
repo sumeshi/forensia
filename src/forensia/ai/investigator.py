@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import functools
 import hashlib
 import inspect
 import json
@@ -29,8 +28,9 @@ from forensia.ai.case_profile import (
 )
 from forensia.ai.checker import check_query_result, summarize_query_result
 from forensia.ai.hypothesis_manager import (
-    _filter_valid_entities,
+    MAX_ACTIVE_HYPOTHESES,
     _all_hypotheses,
+    _filter_valid_entities,
     _guess_related_sections,
     _hypothesis_similarity,
     _load_persisted_hypotheses,
