@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from forensia.core.case import Case, detect_epochs
+from forensia.core.log import log as _log
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records, normalize_value
 from forensia.knowledge import (
@@ -21,6 +22,7 @@ from forensia.knowledge import (
     exe_glob_sql,
     matches_exe_globs,
 )
+from forensia.report.benign_auth import is_benign_local_auth
 from forensia.report.keypoints import (
     EVIDENCE_ID_PATTERN,
     _extract_evidence_ids_from_value,
@@ -636,17 +638,12 @@ def _query_top_findings(
 
 
 def _is_local_machine_account_4648(row: dict[str, Any]) -> bool:
-    """True when a 4648 finding's subject is the host's own machine account.
+    """True when a finding's evidence is all benign local auth.
 
-    A computer authenticating to itself as "<COMPUTERNAME>$" (e.g. a
-    winlogon.exe credential prompt) is routine local activity, not a
-    lateral-movement indicator.
+    Delegates to :func:`is_benign_local_auth` for each evidence row.
+    Returns True when every evidence entry in the row is benign local auth
+    (loopback src_ip, machine-account subject, local auth processes, etc.)
     """
-    if (
-        "4648" not in str(row.get("finding_id") or "").lower()
-        and "4648" not in str(row.get("title") or "").lower()
-    ):
-        return False
     evidence = row.get("evidence")
     if isinstance(evidence, str):
         try:
@@ -655,18 +652,14 @@ def _is_local_machine_account_4648(row: dict[str, Any]) -> bool:
             evidence = []
     if not isinstance(evidence, list):
         return False
+    if not evidence:
+        return False
     for entry in evidence:
         if not isinstance(entry, dict):
-            continue
-        subject = str(entry.get("subject_user") or "").strip()
-        computer = str(entry.get("computer") or "").strip()
-        if (
-            subject.endswith("$")
-            and computer
-            and subject[:-1].casefold() == computer.casefold()
-        ):
-            return True
-    return False
+            return False
+        if not is_benign_local_auth(entry):
+            return False
+    return True
 
 
 def _query_hypotheses_by_status(
@@ -872,6 +865,12 @@ def write_report_brief(
     path.write_text(
         json.dumps(brief, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
     )
+    # Post-generation validation: warn (never block) on thesis/evidence
+    # misalignment, refuted-content leakage, and contradictory verdicts.
+    from forensia.report.report_validation import validate_report
+
+    for issue in validate_report(brief):
+        _log("VALIDATION", f"[{issue.severity}] {issue.check_name}: {issue.message}")
     return brief
 
 
@@ -1857,6 +1856,7 @@ def _antiforensic_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
         """,
     ):
         rows.append({"type": "log integrity event", **row})
+    artifact_rows: list[dict[str, Any]] = []
     for row in fetch_records(
         db,
         f"""
@@ -1869,7 +1869,11 @@ def _antiforensic_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
         LIMIT 6
         """,
     ):
-        rows.append({"type": "tool artifact", **row})
+        artifact_rows.append({"type": "tool artifact", **row})
+    # The MFT commonly carries multiple records for one file (e.g. 8.3 short
+    # name or duplicate attribute records); one on-disk artifact should appear
+    # as one row, not inflate the count.
+    rows.extend(_dedupe_dict_rows(artifact_rows, ("artifact", "file_path")))
     return sorted(
         rows, key=lambda item: str(item.get("timestamp") or ""), reverse=True
     )[:limit]
@@ -2357,23 +2361,17 @@ def _build_evidence_gaps_table(db: CaseDB) -> list[dict[str, Any]]:
 
 
 def _build_recommendations_table(db: CaseDB) -> list[dict[str, Any]]:
-    """Action plan rows derived from the case's own findings and hypotheses.
+    """Action plan rows derived from the case's own findings.
 
     No fixed scenario actions: every row is conditional on data present in
     this case (Rule 16). Top finding themes drive correlation actions.
+
+    Only evidence-driven forensic recommendations belong here. Tool-side
+    investigation bookkeeping (triaging open hypotheses, reviewing automatic
+    benign downgrades) is not client-facing advice; open hypotheses are
+    already surfaced in the Gap Assessment tables.
     """
     rows: list[dict[str, Any]] = []
-    active_count = len(_hypothesis_rows(db, "active", 20))
-    if active_count:
-        rows.append(
-            {
-                "priority": "High",
-                "action": "Triage outstanding hypotheses into terminal states",
-                "rationale": f"{active_count} active hypotheses remain; classify each as needs_data, refuted, or confirmed with additional investigation.",
-                "evidence_or_gap": "hypotheses",
-            }
-        )
-
     # Correlation actions for the top finding themes actually observed.
     # RPT-03: counts come from the same single-source `_finding_theme_counts`
     # used by the Key Findings table, so `(N)` matches across sections.
@@ -2392,18 +2390,6 @@ def _build_recommendations_table(db: CaseDB) -> list[dict[str, Any]]:
             }
         )
 
-    benign_count = _count_findings_with_tag(
-        db, "", negate=False, tag_like="%benign-context:%"
-    )
-    if benign_count:
-        rows.append(
-            {
-                "priority": "Low",
-                "action": "Manually review findings auto-downgraded as benign-context if needed",
-                "rationale": f"{benign_count} findings matched known benign patterns and were auto-downgraded.",
-                "evidence_or_gap": "finding ranking",
-            }
-        )
     return rows
 
 

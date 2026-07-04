@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable
 from datetime import UTC, datetime
 from itertools import chain
@@ -70,7 +71,7 @@ def ingest_prefetch_file(
             enriched = {
                 **record,
                 "source_type": "prefetch",
-                "source_file": str(prefetch_path),
+                "source_file": os.path.basename(str(prefetch_path)),
                 "ingested_at": ingested_at,
                 # Forensia-flat fields consumed by normalize/prefetch.py
                 "timeline_id": f"{evidence_id}-{idx:02d}",

@@ -8,6 +8,14 @@ import yaml
 from forensia.rules.models import Rule, RulePackMetadata
 
 
+def _expand_rule_query(rule: Rule) -> Rule:
+    """Expand catalog SQL placeholders ({{catalog_exe_sql:...}}) in a rule's query."""
+    from forensia.knowledge import expand_catalog_sql_placeholders
+
+    rule.query = expand_catalog_sql_placeholders(rule.query)
+    return rule
+
+
 # REFACTOR-21: Cache id → Rule mapping for O(1) lookup
 @cache
 def _get_rule_cache() -> dict[str, Rule]:
@@ -35,6 +43,7 @@ def _load_all_rules() -> list[Rule]:
             continue
         if data:
             rule = Rule.model_validate(data)
+            _expand_rule_query(rule)
             rules.append(rule)
     return rules
 
@@ -98,6 +107,7 @@ def load_rules_from_dir(
             continue
         if data:
             rule = Rule.model_validate(data)
+            _expand_rule_query(rule)
             if allowed_rule_ids is not None and rule.id not in allowed_rule_ids:
                 continue
             rules.append(rule)

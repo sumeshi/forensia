@@ -231,8 +231,32 @@ def _compact_cell(value: Any, max_chars: int = 110) -> str:
     return text or "-"
 
 
+def _strip_empty_columns(
+    rows: list[dict[str, Any]], columns: list[tuple[str, str]]
+) -> list[tuple[str, str]]:
+    """Remove columns where ALL rows have empty/null/None values.
+
+    Preserves columns that have any non-empty value in any row.
+    A column is considered empty if every row has None, '', or '-' for that key.
+    """
+    if not rows:
+        return columns
+    kept: list[tuple[str, str]] = []
+    for col_key, col_label in columns:
+        has_data = any(
+            row.get(col_key) not in (None, "", "-", "None", "null")
+            for row in rows
+        )
+        if has_data:
+            kept.append((col_key, col_label))
+    return kept
+
+
 def _markdown_table(
-    rows: list[dict[str, Any]], columns: list[tuple[str, str]], *, max_rows: int = 0
+    rows: list[dict[str, Any]],
+    columns: list[tuple[str, str]],
+    *,
+    max_rows: int = 0,
 ) -> str:
     """Build a compact Markdown table for deterministic report sections.
 
@@ -241,6 +265,8 @@ def _markdown_table(
     """
     if not rows:
         return "_No rows available._"
+    # Strip columns where all values are empty
+    columns = _strip_empty_columns(rows, columns)
     header = "| " + " | ".join(label for _, label in columns) + " |"
     sep = "| " + " | ".join("---" for _ in columns) + " |"
     display_rows = rows[:max_rows] if max_rows > 0 else rows

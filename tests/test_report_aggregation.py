@@ -19,6 +19,7 @@ from pathlib import Path
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.report.probes import (
+    _antiforensic_rows,
     _build_recommendations_table,
     _finding_theme_counts,
     _query_top_findings,
@@ -111,6 +112,76 @@ class TestFindingThemeCountsConsistency(unittest.TestCase):
         self.assertIn("(5)", action_plan_row["action"])
 
 
+class TestActionPlanIsClientFacing(unittest.TestCase):
+    """P-7: the Action Plan carries forensic recommendations only.
+
+    Tool-side investigation bookkeeping (triaging open hypotheses, reviewing
+    automatic benign downgrades) is not client-facing advice. It must stay out
+    of the Action Plan even when the case has open hypotheses and
+    benign-tagged findings — open hypotheses already surface in the Gap
+    Assessment tables.
+    """
+
+    def test_no_investigation_ops_rows_in_action_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO hypotheses (hypothesis_id, description, status)
+                    VALUES ('H-001', 'unfinished lateral movement hypothesis', 'active')
+                    """
+                )
+                _insert_finding(
+                    db,
+                    finding_id="windows-security-4648-logon-explicit-creds-0001",
+                    rule_id="windows-security-4648-logon-explicit-creds",
+                    title="Logon attempt with explicit credentials (4648): HOST-A$ -> HOST-A$",
+                    tags=["benign-context:loopback-local-auth"],
+                    evidence=[{"evidence_id": "evtx-1", "computer": "HOST-A"}],
+                )
+                rows = _build_recommendations_table(db)
+
+        for row in rows:
+            text = " ".join(
+                str(row.get(key) or "") for key in ("action", "rationale")
+            ).lower()
+            self.assertNotIn("hypothes", text)
+            self.assertNotIn("auto-downgraded", text)
+
+
+class TestAntiforensicTableDeduplication(unittest.TestCase):
+    """P-8: one on-disk artifact must appear as one antiforensic table row.
+
+    The MFT commonly stores several records for the same file (8.3 short
+    names, duplicate attribute records). Without deduplication these inflate
+    the apparent count of anti-forensic artifacts.
+    """
+
+    def test_duplicate_mft_records_collapse_to_one_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                for i in (234, 235):
+                    db.execute(
+                        """
+                        INSERT INTO mft_entries (evidence_id, file_path, file_name, si_modified)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            f"mft-{i}",
+                            "C:\\Users\\informant\\Desktop\\ERASER.EXE",
+                            "ERASER.EXE",
+                            "2015-03-22 14:38:16",
+                        ),
+                    )
+                rows = _antiforensic_rows(db)
+
+        artifact_rows = [r for r in rows if r.get("type") == "tool artifact"]
+        self.assertEqual(1, len(artifact_rows))
+        self.assertEqual("ERASER.EXE", artifact_rows[0].get("artifact"))
+
+
 class TestLocalMachineAccount4648Demotion(unittest.TestCase):
     """RPT-04: self-host machine-account 4648 should not top the rankings,
     and exact duplicate finding titles must be collapsed."""
@@ -131,6 +202,8 @@ class TestLocalMachineAccount4648Demotion(unittest.TestCase):
                                 "evidence_id": f"evtx-local-{i}",
                                 "computer": "HOST-A",
                                 "subject_user": "HOST-A$",
+                                "src_ip": "127.0.0.1",
+                                "event_id": "4648",
                                 "target_user": "informant",
                             }
                         ],
@@ -148,6 +221,8 @@ class TestLocalMachineAccount4648Demotion(unittest.TestCase):
                             "computer": "HOST-A",
                             "subject_user": "WIN-OTHERHOST$",
                             "target_user": "informant",
+                            "src_ip": "10.0.0.5",
+                            "event_id": "4648",
                         }
                     ],
                 )

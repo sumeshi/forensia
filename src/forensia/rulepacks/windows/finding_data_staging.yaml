@@ -1,0 +1,20 @@
+id: windows-finding-data-staging
+title: Cloud sync and data staging tools
+severity: medium
+confidence: 0.7
+required_fields:
+- executable_name
+- last_exec_time
+tags:
+- windows
+- data-staging
+- exfiltration
+- t1567
+attack:
+- tactic: exfiltration
+  technique_id: T1567
+  technique_name: Exfiltration Over Web Service
+finding:
+  title: 'Data staging tool detected: {executable_name}'
+  summary: 'Data staging tool ''{executable_name}'' executed (last run: {last_exec_time}, count: {exec_count}). Cloud sync services (Google Drive, OneDrive, Dropbox, iCloud) and file transfer tools (rclone, WinSCP, Cyberduck, FileZilla) can be used to stage and exfiltrate data. Verify whether this usage aligns with normal business operations, and investigate transferred data volumes and destination endpoints (ATT&CK T1567).'
+query: "SELECT\n    evidence_id,\n    executable_name,\n    last_exec_time,\n    exec_count,\n    source_file\nFROM prefetch_executions\nWHERE ({{catalog_exe_sql:cloud_sync_artifacts:executable_name}})\nORDER BY last_exec_time DESC\n"

@@ -50,3 +50,4 @@ raw/
 reports/
 ai_logs/
 memory/
+.tokensave

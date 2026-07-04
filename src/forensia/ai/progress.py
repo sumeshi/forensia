@@ -225,6 +225,10 @@ class HypothesisProgressTracker:
         if not confirm_when or not isinstance(confirm_when, dict):
             return False
         satisfied, _ = _co_observation_satisfied(confirm_when, rows)
+        if satisfied and rows:
+            from forensia.report.benign_auth import is_benign_local_auth
+            if all(is_benign_local_auth(r) for r in rows):
+                return False
         return satisfied
 
     def has_partial_confirm_signal(

@@ -62,7 +62,7 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
     try:
         return float(value)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return default
 
 
@@ -256,6 +256,69 @@ def _parse_gap_hypothesis_output(
     return required_entities, confirm_when
 
 
+def _extract_refuted_tokens(descriptions: list[str]) -> set[str]:
+    """Extract key entity tokens from refuted hypothesis descriptions.
+
+    Captures executable names, IPs, hostnames, registry keys, and other
+    distinctive tokens so gap text referencing refuted content can be
+    detected even when the wording differs from the original description.
+    """
+    tokens: set[str] = set()
+    # Executable / script file names (poqexec.exe, evil.dll, etc.)
+    exe_pattern = re.compile(
+        r"[A-Za-z0-9_\-\.]+\.(?:exe|dll|sys|bat|ps1|cmd|vbs|js|hta|scr|com)",
+        re.IGNORECASE,
+    )
+    # IPv4 addresses
+    ip_pattern = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
+    # Registry key paths
+    reg_pattern = re.compile(
+        r"(?:HKLM|HKCU|HKEY_[A-Z_]+)\\[^\s\]]+", re.IGNORECASE
+    )
+    for desc in descriptions:
+        if not desc:
+            continue
+        # Lowercase normalized tokens for case-insensitive matching
+        lowered = desc.lower()
+        # File names
+        for m in exe_pattern.finditer(lowered):
+            tokens.add(m.group(0).lower())
+        # IPs
+        for m in ip_pattern.finditer(desc):
+            tokens.add(m.group(0))
+        # Registry keys (normalized lowercase)
+        for m in reg_pattern.finditer(desc):
+            tokens.add(m.group(0).lower())
+    return tokens
+
+
+def _gap_references_refuted(gap_text: str, refuted_tokens: set[str]) -> bool:
+    """Check whether a gap description references content from refuted hypotheses.
+
+    Returns True if the gap text contains any token extracted from refuted
+    hypothesis descriptions, indicating the gap is derived from refuted content.
+    """
+    if not refuted_tokens:
+        return False
+    lowered = gap_text.lower()
+    for token in refuted_tokens:
+        if token in lowered:
+            return True
+    return False
+
+def _is_refuted_hypothesis(hypothesis, resolved_hypotheses: list) -> bool:
+    """Check if a hypothesis matches any resolved (refuted) hypothesis."""
+    for resolved in resolved_hypotheses:
+        if resolved.status == "refuted":
+            # Check similarity - if descriptions are similar, it's refuted content
+            if (hypothesis.description and resolved.description and
+                _normalize_text(hypothesis.description[:80]) == _normalize_text(resolved.description[:80])):
+                return True
+    return False
+
+
+
+
 def _inject_gap_hypotheses(
     db: CaseDB,
     state: SessionState,
@@ -264,13 +327,26 @@ def _inject_gap_hypotheses(
     memory: MemoryManager | None = None,
     llm_output: dict[str, Any] | None = None,
 ) -> int:
-    """Convert unresolved report gaps into active hypotheses, skipping duplicates and non-DB gaps."""
+    """Convert unresolved report gaps into active hypotheses, skipping duplicates and non-DB gaps.
+
+    Also filters out gaps that reference content from refuted hypotheses
+    (e.g. hallucinated binaries like poqexec.exe) to prevent refuted
+    claims from being re-injected as new active hypotheses.
+    """
     known_by_description = {
         _normalize_text(item.description) for item in _all_hypotheses(state)
     }
     resolved_by_description = {
         _normalize_text(item.description) for item in state.resolved_hypotheses
     }
+    # Extract tokens from refuted hypothesis descriptions so we can
+    # catch gaps that reference refuted content even when wording differs.
+    refuted_descriptions = [
+        item.description
+        for item in state.resolved_hypotheses
+        if item.status == "refuted"
+    ]
+    refuted_tokens = _extract_refuted_tokens(refuted_descriptions)
     added = 0
     for gap in gaps:
         normalized_gap = _normalize_text(gap)
@@ -279,6 +355,10 @@ def _inject_gap_hypotheses(
             or normalized_gap in known_by_description
             or normalized_gap in resolved_by_description
         ):
+            continue
+        # Filter out gaps that reference refuted hypothesis content.
+        # These are discarded rather than promoted to active hypotheses.
+        if _gap_references_refuted(gap, refuted_tokens):
             continue
         gap_kind = _classify_gap_kind(gap)
         if gap_kind != "internal_db_check":

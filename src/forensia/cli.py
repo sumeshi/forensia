@@ -926,6 +926,67 @@ def doctor() -> None:
         checks.append(("Report template policy", False))
         print(f"  ✗ Error: {exc}")
 
+    _status("Report output validation self-check...")
+    try:
+        from forensia.report.report_validation import validate_report
+
+        # Build a synthetic brief with known-bad patterns to exercise
+        # every validator check without depending on pre-generated case output.
+        synthetic_brief = {
+            "executive_summary": (
+                "Analysis revealed signs of lateral movement and network "
+                "intrusion via compromised host."
+            ),
+            "confirmed_hypotheses": [
+                {
+                    # No source_rule_ids → not a "strong" hypothesis
+                    "description": "Attacker used RDP lateral movement to pivot",
+                    "source_rule_ids": [],
+                    "tags": [],
+                },
+                {
+                    # Tagged benign → should be excluded from strong count
+                    "description": "Loopback 4648 logon via explicit credentials",
+                    "source_rule_ids": ["SIGMA-001"],
+                    "tags": ["benign"],
+                },
+            ],
+            "refuted_hypotheses": [
+                {
+                    # Duplicate description → verdict_contradiction
+                    "description": "Attacker used RDP lateral movement to pivot",
+                },
+            ],
+            "evidence_gaps": [],
+        }
+        synthetic_body = (
+            "Evidence sourced from sample/MFT_C and Prefetch/RDPBLAH.pf."
+        )
+        findings = validate_report(synthetic_brief, report_body=synthetic_body)
+        # The validator should catch: thesis_alignment, verdict_contradiction,
+        # and local_path_leak (sample/ in body).
+        ok = len(findings) >= 3
+        checks.append(("Report output validation", ok))
+        if ok:
+            names = [f.check_name for f in findings]
+            print(
+                f"  ✓ Validator correctly caught {len(findings)} intentional "
+                f"issues ({', '.join(names)})"
+            )
+        else:
+            print(
+                f"  ✗ Validator only caught {len(findings)} issue(s) "
+                "(expected >= 3); possible regression"
+            )
+            for f_item in findings:
+                print(
+                    f"      [{f_item.severity}] {f_item.check_name}: "
+                    f"{f_item.message}"
+                )
+    except Exception as exc:
+        checks.append(("Report output validation", False))
+        print(f"  ✗ Error: {exc}")
+
     _status("Test suite...")
     try:
         result = subprocess.run(

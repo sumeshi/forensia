@@ -639,6 +639,55 @@ def _prefetch_executable_from_filename(file_name: Any) -> str:
     return re.sub(r"-[A-Fa-f0-9]{8}$", "", name)
 
 
+def _is_local_ingest_path(path: Any) -> bool:
+    """Return True if *path* looks like a local ingest artefact path rather
+    than a real on-disk Windows path.
+
+    The distinction is purely structural: evidence extracted from the image
+    carries Windows-style paths (drive letter, UNC, or ``\\Device\\`` prefix,
+    backslash separators), while paths pointing at the analyst's local ingest
+    tree use forward slashes without a Windows root. No directory names are
+    matched, so the check is independent of any particular case layout.
+    """
+    p = _text(path)
+    if not p:
+        return False
+    # Real Windows absolute paths start with a drive letter or UNC prefix
+    if re.match(r"^[A-Za-z]:[\\/]", p):
+        return False
+    if p.startswith("\\\\") or p.startswith("\\Device\\"):
+        return False
+    # Forward-slash separators without a Windows root → local ingest tree
+    return "/" in p
+
+
+def _strip_path_basename(path: Any) -> str:
+    """Return just the final filename component from a path string."""
+    p = _text(path)
+    if not p:
+        return ""
+    # Use the last / or \\ delimited segment
+    for sep in ("/", "\\"):
+        if sep in p:
+            p = p.rsplit(sep, 1)[-1]
+    return p
+
+
+def _sanitize_prefetch_path(path: Any) -> str:
+    """Sanitise a path that may be a local ingest artefact.
+
+    - If the path is a local ingest path, return just the basename.
+    - If the path looks like a real Windows path, return it unchanged.
+    - Returns an empty string for empty/None input.
+    """
+    p = _text(path)
+    if not p:
+        return ""
+    if _is_local_ingest_path(p):
+        return _strip_path_basename(p)
+    return p
+
+
 def _human_user_predicate(column: str = "target_user") -> str:
     return f"""
         {column} IS NOT NULL
@@ -824,7 +873,7 @@ def _build_application_execution_history(
               (SELECT MIN(x.executable_path)
                FROM (SELECT UNNEST(TRY_CAST(filenames AS VARCHAR[])) AS executable_path) x
                WHERE x.executable_path LIKE '%' || UPPER(executable_name)),
-              source_file
+              NULL
             )) AS executable_path,
             MIN(source_file) AS prefetch_file
         FROM prefetch_executions
@@ -835,6 +884,12 @@ def _build_application_execution_history(
         """,
     )
     if rows:
+        # Sanitise paths so raw local ingest artefact paths never leak into output
+        for row in rows:
+            row["executable_path"] = _sanitize_prefetch_path(
+                row.get("executable_path")
+            )
+            row["prefetch_file"] = _strip_path_basename(row.get("prefetch_file"))
         return _structured_answer(
             case,
             answer_id=answer_id,
@@ -875,8 +930,12 @@ def _build_application_execution_history(
             "exec_count": "",
             "last_exec_time": "",
             "prefetch_records": "",
-            "executable_path": row.get("file_path"),
-            "prefetch_file": row.get("file_name"),
+            "executable_path": (
+                ""
+                if _is_local_ingest_path(row.get("file_path"))
+                else _text(row.get("file_path"))
+            ),
+            "prefetch_file": _strip_path_basename(row.get("file_name")),
             "artifact_time": row.get("artifact_time"),
             "artifact_path": row.get("file_path"),
             "evidence_id": row.get("evidence_id"),

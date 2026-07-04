@@ -1,0 +1,16 @@
+# Report validation detection vocabulary
+# Loaded by report_validation.py — language-agnostic (Rule 16).
+
+intrusion_keywords:
+  - intrusion
+  - lateral movement
+  - lateral-movement
+  - remote access
+  - network penetration
+  - 外部侵入
+  - ラテラルムーブメント
+
+path_leak_patterns:
+  - "sample/"
+  - "Prefetch/.+\\.pf"
+  - "/mnt/[a-z]/"

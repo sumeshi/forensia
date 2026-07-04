@@ -40,6 +40,12 @@ def _seed_findings(
         findings = generate_findings(rule, run_rule(db, rule))
         save_findings(case, db, findings)
         total += len(findings)
+    # Tag any findings that are entirely benign local auth (e.g. loopback 4648).
+    from forensia.report.benign_auth import tag_benign_local_auth_findings
+
+    tagged = tag_benign_local_auth_findings(db)
+    if tagged:
+        _log("TAG", f"tagged {tagged} findings as benign-context:loopback-local-auth")
     return total
 
 

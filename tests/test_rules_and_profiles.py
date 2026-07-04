@@ -22,8 +22,35 @@ class RuleProfileTests(unittest.TestCase):
         profile_path = Path("src/forensia/profiles/windows-basic.yaml")
         rules = load_rules_from_dir(rules_dir, profile_path)
 
-        self.assertEqual(113, len(rules))
+        self.assertEqual(115, len(rules))
         self.assertTrue(all(rule.attack for rule in rules))
+
+    def test_tool_detection_rules_are_catalog_driven(self) -> None:
+        """Detection scope must come from dfir_ioc_catalog.yaml, not the rule.
+
+        Why: new anti-forensic or cloud-sync tools should become detectable by
+        adding a catalog entry alone — no rule edit. If tool names were inlined
+        in the rule SQL, the catalog would stop being the single source of
+        truth for tool knowledge.
+        """
+        from forensia.knowledge import catalog_exe_globs
+
+        rules_dir = Path("src/forensia/rulepacks")
+        profile_path = Path("src/forensia/profiles/windows-basic.yaml")
+        rules = {rule.id: rule for rule in load_rules_from_dir(rules_dir, profile_path)}
+
+        for rule_id, section in (
+            ("windows-finding-antiforensic-tools", "antiforensic_tools"),
+            ("windows-finding-data-staging", "cloud_sync_artifacts"),
+        ):
+            rule = rules[rule_id]
+            # Placeholders must be expanded at load time...
+            self.assertNotIn("{{", rule.query, rule_id)
+            # ...into predicates derived from the catalog section.
+            globs = catalog_exe_globs(section)
+            self.assertTrue(globs, f"catalog section {section} is empty")
+            sample = globs[0].lower().replace("*", "%")
+            self.assertIn(sample, rule.query.lower(), rule_id)
 
     def test_ransomware_profile_filters_rule_ids(self) -> None:
         rules_dir = Path("src/forensia/rulepacks")
@@ -159,7 +186,7 @@ class RuleProfileTests(unittest.TestCase):
         rules = load_rules_from_dir(rules_dir, profile_path)
         rule_ids = {rule.id for rule in rules}
 
-        self.assertEqual(113, len(rules))
+        self.assertEqual(115, len(rules))
         self.assertNotIn("allowlist_services", rule_ids)
 
     def test_profile_with_nonexistent_rulepack_loads_zero_rules(self) -> None:

@@ -7,6 +7,11 @@ event_classes:
   logon:
     event_ids: [4624]
     logon_types: [2, 10, 11]
+  # Explicit credential use (4648) is authentication-related but NOT a logon:
+  # keep it out of the logon class (session/timeline builders count logons)
+  # while still exposing it to auth-pattern consumers such as benign_auth.
+  explicit_credential:
+    event_ids: [4648]
   logoff:
     event_ids: [4634, 4647]
 events:

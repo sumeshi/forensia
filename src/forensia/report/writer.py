@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from forensia.core.case import Case
+from forensia.core.log import log as _log
 from forensia.db.database import CaseDB
 from forensia.db.query import normalize_value
 from forensia.knowledge import (
@@ -804,5 +805,11 @@ def render_written_report(
     write_evidence_map(db, report_body, case.reports_dir)
     report_path = case.reports_dir / "report.md"
     report_path.write_text(report_body, encoding="utf-8")
+    # Post-generation validation: warn (never block) when local ingest paths
+    # leak into the deliverable body.
+    from forensia.report.report_validation import check_local_path_leak
+
+    for issue in check_local_path_leak(report_body):
+        _log("VALIDATION", f"[{issue.severity}] {issue.check_name}: {issue.message}")
     report_html = render_html_report(case, db)
     return report_path, report_html

@@ -223,6 +223,32 @@ def _merge_hypothesis_fields(existing: Hypothesis, incoming: Hypothesis) -> Hypo
     )
 
 
+def _hypothesis_evidence_strength(hypothesis: Hypothesis) -> int:
+    """Score the evidence footing of a hypothesis.
+
+    Returns an integer score used for conflict resolution when a new
+    hypothesis is similar to an already-resolved one:
+
+    * 2 — rule-seeded AND has non-benign evidence (strongest)
+    * 1 — rule-seeded only (moderate)
+    * 0 — neither rule-seeded nor evidence-backed (weakest / LLM-speculated)
+
+    ``rule-seeded`` means the hypothesis has at least one ``source_rule_ids``
+    entry (originated from a declarative rule, not purely LLM-generated).
+
+    ``non-benign evidence`` means the hypothesis carries a ``confirm_when`` or
+    ``refute_when`` with meaningful criteria (not just the fallback
+    ``{"zero_rows": True}`` placeholder).
+    """
+    if not hypothesis.source_rule_ids:
+        return 0
+    has_evidence = bool(
+        hypothesis.confirm_when
+        and hypothesis.confirm_when != {"zero_rows": True}
+    ) or bool(hypothesis.refute_when)
+    return 2 if has_evidence else 1
+
+
 def _hypothesis_tokens(description: str) -> set[str]:
     return {
         token
@@ -516,6 +542,54 @@ def _merge_active_hypotheses(
         if item.id in resolved_ids or item.status in {"confirmed", "refuted"}:
             continue
         incoming_id = alias_map.get(item.id, item.id)
+        # FIRST: Check against resolved hypotheses — prevents the same claim
+        # from existing as both confirmed AND refuted.
+        resolved_existing = resolved_by_description.get(
+            _normalize_hypothesis_description(item.description)
+        )
+        resolved_score: float | None = None
+        if resolved_existing is None:
+            best_resolved, best_resolved_score = _best_hypothesis_match(
+                resolved, item.description
+            )
+            if best_resolved is not None and best_resolved_score > 0.85:
+                resolved_existing = best_resolved
+                resolved_score = best_resolved_score
+        if resolved_existing is not None:
+            resolved_strength = _hypothesis_evidence_strength(resolved_existing)
+
+            # Default: bind to resolved. The resolved hypothesis's verdict
+            # stands — do NOT create a duplicate active hypothesis.
+            merged = _merge_hypothesis_fields(resolved_existing, item)
+            alias_map[item.id] = merged.id
+            resolved_by_description[
+                _normalize_hypothesis_description(merged.description)
+            ] = merged
+            _upsert_hypothesis(
+                db,
+                merged,
+                origin="resolved",
+                session_id=session_id,
+                resolved_session=session_id,
+            )
+            score_str = (
+                f"score={resolved_score:.2f}"
+                if resolved_score is not None
+                else "exact match"
+            )
+            _log(
+                "HYPOTHESIS",
+                f"bound to resolved {resolved_existing.id} "
+                f"(verdict={resolved_existing.verdict}, "
+                f"strength={resolved_strength}): "
+                f"incoming similar ({score_str}); "
+                f"not creating duplicate",
+            )
+            continue
+        # SECOND: Check against active hypotheses for dedup/merge within the
+        # active set. This runs AFTER the resolved check so that a near-duplicate
+        # of a resolved hypothesis is always caught regardless of coincidental
+        # similarity with an existing active hypothesis.
         existing = by_id.get(incoming_id)
         if existing is None:
             existing = active_by_description.get(
@@ -537,29 +611,6 @@ def _merge_active_hypotheses(
                 _normalize_hypothesis_description(merged.description)
             ] = merged
             _upsert_hypothesis(db, merged, origin=origin, session_id=session_id)
-            continue
-        resolved_existing = resolved_by_description.get(
-            _normalize_hypothesis_description(item.description)
-        )
-        if resolved_existing is None:
-            best_resolved, best_resolved_score = _best_hypothesis_match(
-                resolved, item.description
-            )
-            if best_resolved is not None and best_resolved_score > 0.85:
-                resolved_existing = best_resolved
-        if resolved_existing is not None:
-            merged = _merge_hypothesis_fields(resolved_existing, item)
-            alias_map[item.id] = merged.id
-            resolved_by_description[
-                _normalize_hypothesis_description(merged.description)
-            ] = merged
-            _upsert_hypothesis(
-                db,
-                merged,
-                origin="resolved",
-                session_id=session_id,
-                resolved_session=session_id,
-            )
             continue
         # Cap the active set. Updates to existing hypotheses already happened
         # above (in the merge branches); only NEW additions are subject to the

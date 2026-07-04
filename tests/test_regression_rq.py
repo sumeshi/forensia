@@ -200,7 +200,12 @@ class TestDailySessionTimelineBuilder(unittest.TestCase):
         self.assertIn("logoff", classes)
         self.assertEqual(classes["startup"]["event_ids"], [6005, 12])
         self.assertEqual(classes["shutdown"]["event_ids"], [6006, 13, 1074])
+        # 4648 (explicit credential use) is deliberately NOT in the logon
+        # class: session/daily-timeline builders count logons from this class,
+        # and explicit credential use is not a logon. It lives in the separate
+        # explicit_credential class consumed by auth-pattern code paths.
         self.assertEqual(classes["logon"]["event_ids"], [4624])
+        self.assertEqual(classes["explicit_credential"]["event_ids"], [4648])
         self.assertEqual(classes["logon"]["logon_types"], [2, 10, 11])
         self.assertEqual(classes["logoff"]["event_ids"], [4634, 4647])
 

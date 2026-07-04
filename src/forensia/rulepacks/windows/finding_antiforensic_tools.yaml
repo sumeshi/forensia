@@ -1,0 +1,20 @@
+id: windows-finding-antiforensic-tools
+title: Anti-forensic tool execution
+severity: high
+confidence: 0.7
+required_fields:
+- executable_name
+- last_exec_time
+tags:
+- windows
+- antiforensic
+- defense-evasion
+- t1070
+attack:
+- tactic: defense-evasion
+  technique_id: T1070
+  technique_name: Indicator Removal
+finding:
+  title: 'Anti-forensic tool detected: {executable_name}'
+  summary: 'Anti-forensic tool ''{executable_name}'' executed (last run: {last_exec_time}, count: {exec_count}). Tools like Eraser, CCleaner, BleachBit, PrivaZer, SDelete, and DBAN are used to erase traces of malicious activity — deleting files, wiping free space, and cleaning registry keys. Investigate the timeline of execution, what data may have been tampered with, and correlate with gaps in event logs or MFT records (ATT&CK T1070).'
+query: "SELECT\n    evidence_id,\n    executable_name,\n    last_exec_time,\n    exec_count,\n    source_file\nFROM prefetch_executions\nWHERE ({{catalog_exe_sql:antiforensic_tools:executable_name}})\nORDER BY last_exec_time DESC\n"
