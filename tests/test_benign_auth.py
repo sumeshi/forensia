@@ -9,6 +9,7 @@ from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.report.benign_auth import (
     _normalise_ip,
+    finding_is_auth_scoped,
     is_benign_local_auth,
     tag_benign_local_auth_findings,
 )
@@ -348,3 +349,106 @@ class TestTagBenignLocalAuthFindings:
                 ).fetchall()
                 tagged_ids = {r[0] for r in rows}
                 assert tagged_ids == {"f-006"}
+
+# ====================================================================
+# Real-data shape: evidence rows without event_id (auth rules that
+# filter on event_id but do not SELECT it). Mirrors the 2026-07-05
+# dist/cfreds run where benign 4648 findings led top_findings because
+# their evidence rows carried no event_id column. (H-1)
+# ====================================================================
+
+
+class TestFindingIsAuthScoped:
+    def test_rule_id_naming_auth_event(self) -> None:
+        assert finding_is_auth_scoped(
+            "windows-security-4648-logon-explicit-creds", ""
+        )
+
+    def test_title_naming_auth_event(self) -> None:
+        assert finding_is_auth_scoped(
+            "some-rule", "Logon attempt with explicit credentials (4648): PC$ -> user"
+        )
+
+    def test_non_auth_finding_not_scoped(self) -> None:
+        assert not finding_is_auth_scoped(
+            "windows-finding-antiforensic-tools", "Anti-forensic tool: CCLEANER.EXE"
+        )
+
+    def test_substring_digits_do_not_false_match(self) -> None:
+        # 14648 / 46480 must not match the 4648 auth id.
+        assert not finding_is_auth_scoped("id-14648-x", "count 46480 things")
+
+
+class TestBenignDetectionWithoutEventIdColumn:
+    """The real-data failure: evidence rows lack event_id."""
+
+    _EVIDENCE_NO_EID = {
+        "computer": "informant-PC",
+        "target_user": "informant",
+        "subject_user": "INFORMANT-PC$",
+        "src_ip": "127.0.0.1",
+        "process_name": "C:\\Windows\\System32\\winlogon.exe",
+    }
+
+    def test_not_benign_without_assume(self) -> None:
+        assert not is_benign_local_auth(self._EVIDENCE_NO_EID)
+
+    def test_benign_with_assume_auth_event(self) -> None:
+        assert is_benign_local_auth(
+            self._EVIDENCE_NO_EID, assume_auth_event=True
+        )
+
+    def test_present_non_auth_event_id_still_rejected(self) -> None:
+        row = {**self._EVIDENCE_NO_EID, "event_id": "4688"}
+        assert not is_benign_local_auth(row, assume_auth_event=True)
+
+    def test_loopback_machine_account_benign_even_if_name_differs(self) -> None:
+        """A renamed host / base-image machine account authenticating to
+        itself over loopback is benign — lateral movement cannot present as a
+        127.0.0.1 source (mirrors dist/cfreds WIN-D9RGPJQ68G8$ -> informant)."""
+        row = {**self._EVIDENCE_NO_EID, "subject_user": "WIN-D9RGPJQ68G8$"}
+        assert is_benign_local_auth(row, assume_auth_event=True)
+
+    def test_non_loopback_cross_host_machine_account_not_benign(self) -> None:
+        """A different host's machine account over a real IP is a
+        lateral-movement signal, not benign."""
+        row = {
+            **self._EVIDENCE_NO_EID,
+            "subject_user": "OTHER-PC$",
+            "src_ip": "10.0.0.5",
+        }
+        assert not is_benign_local_auth(row, assume_auth_event=True)
+
+    def test_tag_pass_uses_finding_scope(self) -> None:
+        """The tagging pass must tag a 4648 finding whose evidence has no
+        event_id, using the finding's auth-scoped rule_id/title."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(Path(tmpdir) / "case")
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO findings (finding_id, rule_id, title, severity,
+                        confidence, status, tags, evidence, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, now())
+                    """,
+                    (
+                        "windows-security-4648-logon-explicit-creds-0015",
+                        "windows-security-4648-logon-explicit-creds",
+                        "Logon attempt with explicit credentials (4648): "
+                        "INFORMANT-PC$ -> informant",
+                        "high",
+                        0.75,
+                        "accepted",
+                        json.dumps([]),
+                        json.dumps([self._EVIDENCE_NO_EID]),
+                    ),
+                )
+                count = tag_benign_local_auth_findings(db)
+                assert count == 1
+                tags = json.loads(
+                    db.execute(
+                        "SELECT tags FROM findings WHERE finding_id = ?",
+                        ("windows-security-4648-logon-explicit-creds-0015",),
+                    ).fetchall()[0][0]
+                )
+                assert "benign-context:loopback-local-auth" in tags

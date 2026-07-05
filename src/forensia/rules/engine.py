@@ -401,6 +401,16 @@ def _annotate_finding_benign_context(
 
 
 def clear_rule_findings(case: Case, db: CaseDB, rule_id: str) -> None:
+    rows = db.execute(
+        "SELECT finding_id FROM findings WHERE rule_id = ?", (rule_id,)
+    ).fetchall()
+    for row in rows:
+        finding_id = str(row[0] or "")
+        if finding_id:
+            db.execute(
+                "DELETE FROM case_timeline WHERE entry_id = ?",
+                (f"tl-finding-{finding_id}",),
+            )
     db.execute("DELETE FROM findings WHERE rule_id = ?", (rule_id,))
     for path in case.findings_dir.glob(f"{rule_id}-*.json"):
         path.unlink(missing_ok=True)

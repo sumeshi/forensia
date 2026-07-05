@@ -17,4 +17,25 @@ attack:
 finding:
   title: 'Data staging tool detected: {executable_name}'
   summary: 'Data staging tool ''{executable_name}'' executed (last run: {last_exec_time}, count: {exec_count}). Cloud sync services (Google Drive, OneDrive, Dropbox, iCloud) and file transfer tools (rclone, WinSCP, Cyberduck, FileZilla) can be used to stage and exfiltrate data. Verify whether this usage aligns with normal business operations, and investigate transferred data volumes and destination endpoints (ATT&CK T1567).'
+hypotheses:
+- id: sync_tool_with_document_access
+  segment: exfiltration
+  description: Cloud sync or transfer tool execution by {executable_name} near broad user-document access indicates possible data staging before exfiltration
+  required_entities:
+  - executable_name
+  - last_exec_time
+  confirm_when:
+    co_observed_event_ids:
+    - 4663
+    - 5145
+    within_minutes: 1440
+  refute_when:
+    zero_rows: true
+  follow_up_questions:
+  - Which user documents or archives were accessed near {executable_name} execution?
+  - Are cloud sync logs, browser downloads, or network records available to identify destination and completion status?
+  report_sections:
+  - 3_technical
+  - 4_gaps
+  - 5_recommendations
 query: "SELECT\n    evidence_id,\n    executable_name,\n    last_exec_time,\n    exec_count,\n    source_file\nFROM prefetch_executions\nWHERE ({{catalog_exe_sql:cloud_sync_artifacts:executable_name}})\nORDER BY last_exec_time DESC\n"

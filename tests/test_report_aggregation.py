@@ -20,6 +20,7 @@ from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.report.probes import (
     _antiforensic_rows,
+    _build_evidence_gaps_table,
     _build_recommendations_table,
     _finding_theme_counts,
     _query_top_findings,
@@ -106,10 +107,10 @@ class TestFindingThemeCountsConsistency(unittest.TestCase):
         action_plan_row = next(
             r
             for r in action_plan
-            if "Explicit credential usage observed" in r["action"]
+            if r.get("evidence_or_gap") == "explicit_credentials"
         )
         self.assertIn("(5)", key_findings_row["finding"])
-        self.assertIn("(5)", action_plan_row["action"])
+        self.assertIn("loopback/local", action_plan_row["action"])
 
 
 class TestActionPlanIsClientFacing(unittest.TestCase):
@@ -149,6 +150,44 @@ class TestActionPlanIsClientFacing(unittest.TestCase):
             self.assertNotIn("hypothes", text)
             self.assertNotIn("auto-downgraded", text)
 
+    def test_declared_theme_action_replaces_generic_correlate_template(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                _insert_finding(
+                    db,
+                    finding_id="windows-finding-antiforensic-tools-0001",
+                    rule_id="windows-finding-antiforensic-tools",
+                    title="Anti-forensic tool detected: CLEANER.EXE",
+                    tags=["antiforensic"],
+                    evidence=[{"evidence_id": "prefetch-cleaner-1"}],
+                )
+                rows = _build_recommendations_table(db)
+
+        action = rows[0]["action"]
+        self.assertIn("cleanup-tool execution time", action)
+        self.assertNotEqual(
+            "Correlate Wiping / cleaning tool traces by user, host, and time",
+            action,
+        )
+
+
+class TestEvidenceGapsAreForensicOnly(unittest.TestCase):
+    def test_active_hypotheses_do_not_create_evidence_gap_ops_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO hypotheses (hypothesis_id, description, status)
+                    VALUES ('H-001', 'unfinished hypothesis', 'active')
+                    """
+                )
+                rows = _build_evidence_gaps_table(db)
+
+        text = " ".join(str(row) for row in rows).lower()
+        self.assertNotIn("resolve or refute outstanding hypotheses", text)
+
 
 class TestAntiforensicTableDeduplication(unittest.TestCase):
     """P-8: one on-disk artifact must appear as one antiforensic table row.
@@ -180,6 +219,7 @@ class TestAntiforensicTableDeduplication(unittest.TestCase):
         artifact_rows = [r for r in rows if r.get("type") == "tool artifact"]
         self.assertEqual(1, len(artifact_rows))
         self.assertEqual("ERASER.EXE", artifact_rows[0].get("artifact"))
+        self.assertEqual("Desktop/ERASER.EXE", artifact_rows[0].get("context"))
 
 
 class TestLocalMachineAccount4648Demotion(unittest.TestCase):
@@ -251,6 +291,58 @@ class TestLocalMachineAccount4648Demotion(unittest.TestCase):
                 "Logon attempt with explicit credentials (4648): HOST-A$ -> informant"
             ),
             1,
+        )
+
+    def test_benign_4648_demoted_when_evidence_lacks_event_id(self) -> None:
+        """H-1: the 2026-07-05 run's failure — 4648 rule queries filter on
+        event_id but do not SELECT it, so finding evidence carries no
+        event_id. The benign predicate must still fire (using the finding's
+        auth-scoped rule_id/title) and demote the loopback finding below a
+        genuine non-benign high finding."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                _insert_finding(
+                    db,
+                    finding_id="windows-security-4648-logon-explicit-creds-0015",
+                    rule_id="windows-security-4648-logon-explicit-creds",
+                    title="Logon attempt with explicit credentials (4648): "
+                    "INFORMANT-PC$ -> informant",
+                    evidence=[
+                        {
+                            "evidence_id": "evtx-security-0015",
+                            "computer": "informant-PC",
+                            "subject_user": "INFORMANT-PC$",
+                            "src_ip": "127.0.0.1",
+                            "target_user": "informant",
+                            "process_name": "C:\\Windows\\System32\\winlogon.exe",
+                            # NOTE: deliberately no "event_id" — real-data shape
+                        }
+                    ],
+                )
+                _insert_finding(
+                    db,
+                    finding_id="windows-finding-antiforensic-tools-0001",
+                    rule_id="windows-finding-antiforensic-tools",
+                    title="Anti-forensic tool detected: ERASER.EXE",
+                    evidence=[
+                        {
+                            "evidence_id": "prefetch-eraser-1",
+                            "executable_name": "ERASER.EXE",
+                        }
+                    ],
+                )
+                top_findings = _query_top_findings(db, 8)
+
+        titles = [item["title"] for item in top_findings]
+        eraser_idx = titles.index("Anti-forensic tool detected: ERASER.EXE")
+        benign_idx = next(
+            i for i, t in enumerate(titles) if "INFORMANT-PC$" in t
+        )
+        self.assertLess(
+            eraser_idx,
+            benign_idx,
+            "anti-forensic finding must rank above benign loopback 4648",
         )
 
 

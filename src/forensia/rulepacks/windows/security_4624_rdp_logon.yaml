@@ -15,7 +15,7 @@ attack:
 - tactic: lateral-movement
   technique_id: T1021.001
   technique_name: Remote Desktop Protocol
-query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    src_ip,\n    logon_type\nFROM evtx_events\nWHERE event_id = 4624\n  AND logon_type = '10'\n"
+query: "SELECT\n    evidence_id,\n    event_id,\n    timestamp,\n    computer,\n    target_user,\n    src_ip,\n    logon_type\nFROM evtx_events\nWHERE event_id = 4624\n  AND logon_type = '10'\n"
 finding:
   title: RDP logon for {target_user}
   summary: 'An RDP logon for {target_user} was observed on {computer} at {timestamp}. Source IP: {src_ip}. Correlate with LSM 21 and RCM 1149, and if the source IP is external, check for 4688 or 4104 execution within 15 minutes after logon.'

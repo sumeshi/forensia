@@ -960,12 +960,13 @@ def doctor() -> None:
             "evidence_gaps": [],
         }
         synthetic_body = (
-            "Evidence sourced from sample/MFT_C and Prefetch/RDPBLAH.pf."
+            "Evidence sourced from sample/MFT_C and Prefetch/RDPBLAH.pf. "
+            "For Executive Summary, the collected evidence returned 14 related rows."
         )
         findings = validate_report(synthetic_brief, report_body=synthetic_body)
         # The validator should catch: thesis_alignment, verdict_contradiction,
-        # and local_path_leak (sample/ in body).
-        ok = len(findings) >= 3
+        # local_path_leak (sample/ in body), and fallback_stub.
+        ok = len(findings) >= 4
         checks.append(("Report output validation", ok))
         if ok:
             names = [f.check_name for f in findings]

@@ -8,6 +8,7 @@ from typing import Any
 
 from forensia.core.case import Case
 from forensia.core.log import log as _log
+from forensia.core.textutil import normalize_localized_dates
 from forensia.db.database import CaseDB
 from forensia.db.query import normalize_value
 from forensia.knowledge import (
@@ -52,6 +53,7 @@ from forensia.report.probes import (  # noqa: F401 — re-export for backward co
     _query_evtx_time_range,
     _query_prior_sections,
     _query_top_findings,
+    _render_json_table_blocks,
     _render_timestamp_with_timezone,
     _sanitize_raw_evidence_body,
     _section_confidence,
@@ -188,6 +190,7 @@ __all__ = [
     "_persist_structured_answer",
     "_preprocess_section_body",
     "_quality_gate_section",
+    "_render_json_table_blocks",
     "_render_structured_answer_markdown",
     "_resolve_evidence_results",
     "_section_confidence",
@@ -481,6 +484,8 @@ def _preprocess_section_body(
     section_key: str, body: str, *, template_meta: TemplateMeta | None = None
 ) -> tuple[str, bool]:
     body = re.sub(r"^\*\*Status:\*\*.*$", "", body, flags=re.MULTILINE).strip()
+    body = normalize_localized_dates(body)
+    body = _render_json_table_blocks(body)
     sanitized_body, removed_raw_evidence = _sanitize_raw_evidence_body(
         section_key, body
     )
@@ -806,10 +811,20 @@ def render_written_report(
     report_path = case.reports_dir / "report.md"
     report_path.write_text(report_body, encoding="utf-8")
     # Post-generation validation: warn (never block) when local ingest paths
-    # leak into the deliverable body.
-    from forensia.report.report_validation import check_local_path_leak
+    # or narrator-fallback stubs leak into the deliverable body.
+    from forensia.config import get_llm_settings
+    from forensia.report.report_validation import (
+        check_fallback_stub,
+        check_language_consistency,
+        check_local_path_leak,
+    )
 
-    for issue in check_local_path_leak(report_body):
+    expected_language = str(get_llm_settings().get("output_language", ""))
+    for issue in [
+        *check_local_path_leak(report_body),
+        *check_fallback_stub(report_body),
+        *check_language_consistency(report_body, expected_language),
+    ]:
         _log("VALIDATION", f"[{issue.severity}] {issue.check_name}: {issue.message}")
     report_html = render_html_report(case, db)
     return report_path, report_html

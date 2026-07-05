@@ -14,3 +14,12 @@ path_leak_patterns:
   - "sample/"
   - "Prefetch/.+\\.pf"
   - "/mnt/[a-z]/"
+
+# Fixed phrases emitted by the deterministic narrative fallback. If any of
+# these reach the rendered report, a narrator failure was shipped verbatim
+# as report prose instead of being summarized (Fail loud, H-2).
+fallback_stub_phrases:
+  - "the collected evidence returned"
+  - "collected evidence returned"
+  - "related rows. Representative row:"
+  - "could not be summarized automatically"

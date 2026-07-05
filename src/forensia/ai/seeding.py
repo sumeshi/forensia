@@ -12,18 +12,19 @@ from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
 from forensia.report.writer import REPORT_KEYPOINTS, _resolve_evidence_results
-from forensia.rules.engine import generate_findings, run_rule, save_findings
+from forensia.rules.engine import (
+    clear_rule_findings,
+    generate_findings,
+    run_rule,
+    save_findings,
+)
 from forensia.rules.loader import _get_pack_map, _get_rule_cache, load_rules_from_dir
 
 
 def _seed_findings(
     case: Case, db: CaseDB, profile: str, active_pack_ids: set[str] | None = None
 ) -> int:
-    """Run all rules once to seed initial findings, unless already populated."""
-    existing = db.execute("SELECT COUNT(*) FROM findings").fetchone()[0]
-    if existing:
-        return int(existing)
-
+    """Run profile rules and replace rule-derived seed findings on resume."""
     profile_path = Path(__file__).parent.parent / "profiles" / f"{profile}.yaml"
     rules_dir = Path(__file__).parent.parent / "rulepacks"
     if active_pack_ids is not None:
@@ -37,6 +38,7 @@ def _seed_findings(
         rules = load_rules_from_dir(rules_dir, profile_path)
     total = 0
     for rule in rules:
+        clear_rule_findings(case, db, rule.id)
         findings = generate_findings(rule, run_rule(db, rule))
         save_findings(case, db, findings)
         total += len(findings)

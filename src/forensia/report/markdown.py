@@ -7,6 +7,7 @@ pure rendering layer with no database or case imports beyond typing.
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import UTC, datetime
 from typing import Any
@@ -278,6 +279,34 @@ def _markdown_table(
     if max_rows > 0 and len(rows) > max_rows:
         table += f"\n\n_Showing {max_rows} of {len(rows)} rows._"
     return table
+
+
+def _render_json_table_blocks(body: str) -> str:
+    """Convert one-line JSON list-of-dicts blocks into Markdown tables."""
+    lines: list[str] = []
+    for line in str(body or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[{") and stripped.endswith("}]"):
+            try:
+                data = json.loads(stripped)
+            except json.JSONDecodeError:
+                lines.append(line)
+                continue
+            if (
+                isinstance(data, list)
+                and data
+                and all(isinstance(item, dict) for item in data)
+            ):
+                keys: list[str] = []
+                for item in data:
+                    for key in item:
+                        if key not in keys:
+                            keys.append(str(key))
+                columns = [(key, key) for key in keys]
+                lines.append(_markdown_table(data, columns))
+                continue
+        lines.append(line)
+    return "\n".join(lines).strip()
 
 
 def render_rows_template(template: str, rows: list[dict[str, Any]]) -> str:

@@ -1,0 +1,13 @@
+themes:
+  explicit_credentials:
+    recommended_action: "Separate loopback/local explicit-credential events from remote credential use, then correlate the remaining user, host, process, and logon sequence."
+  account_lifecycle:
+    recommended_action: "Review account creation, enablement, password change, and group membership events around the affected users, and verify whether each change has an authorized administrator path."
+  time_change:
+    recommended_action: "Anchor the timeline with independent timestamps before and after the time-change event, then re-evaluate nearby authentication, file, and execution activity."
+  log_integrity:
+    recommended_action: "Correlate log stop, clear, shutdown, and service-control events with the surrounding actor and process evidence before treating the gap as intentional tampering."
+  antiforensic_tools:
+    recommended_action: "Correlate cleanup-tool execution time with log stop/clear events, shutdown records, tool configuration files, and deleted MFT entries to identify likely deletion targets."
+  data_access:
+    recommended_action: "Correlate cloud sync or transfer client execution with document access, archive creation, browser/download traces, and available network or provider logs."

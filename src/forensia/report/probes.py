@@ -12,6 +12,7 @@ from typing import Any
 
 from forensia.core.case import Case, detect_epochs
 from forensia.core.log import log as _log
+from forensia.core.textutil import sanitize_ingest_path
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records, normalize_value
 from forensia.knowledge import (
@@ -22,7 +23,7 @@ from forensia.knowledge import (
     exe_glob_sql,
     matches_exe_globs,
 )
-from forensia.report.benign_auth import is_benign_local_auth
+from forensia.report.benign_auth import finding_is_auth_scoped, is_benign_local_auth
 from forensia.report.keypoints import (
     EVIDENCE_ID_PATTERN,
     _extract_evidence_ids_from_value,
@@ -32,6 +33,7 @@ from forensia.report.keypoints import (
 from forensia.report.markdown import (  # noqa: F401
     _build_host_note,
     _markdown_table,
+    _render_json_table_blocks,
     _render_timestamp_with_timezone,
     _sort_markdown_table_by_first_column,
     _strip_hidden_report_columns_from_markdown_tables,
@@ -630,11 +632,58 @@ def _query_top_findings(
             evidence_ids = _extract_evidence_ids_from_value(item.get("evidence"))
             if evidence_ids:
                 item["evidence_ids"] = evidence_ids[:5]
+            item["evidence"] = _sanitize_evidence_paths(item.get("evidence"))
             item.pop("signal_rank", None)
         normalized.append(item)
         if len(normalized) >= limit:
             break
     return normalized
+
+
+_EVIDENCE_PATH_KEYS = ("source_file", "prefetch_file", "executable_path")
+
+
+def _short_path_context(path: Any) -> str:
+    text = str(path or "").strip()
+    if not text:
+        return ""
+    text = sanitize_ingest_path(text)
+    parts = [part for part in re.split(r"[\\/]+", text) if part]
+    if len(parts) >= 2:
+        return "/".join(parts[-2:])
+    return parts[-1] if parts else text
+
+
+def _sanitize_evidence_paths(evidence: Any) -> Any:
+    """Reduce local ingest paths in finding evidence to basenames.
+
+    Defense-in-depth for the report brief: findings persisted before the
+    engine-side sanitize (or by a resumed case whose rules were not
+    re-seeded) still carry raw ingest paths like ``sample/<case>/...pf`` in
+    their evidence rows. Sanitizing at brief-build time guarantees the local
+    filesystem layout never reaches report_brief.json regardless of when the
+    finding was stored. Real Windows paths are left unchanged.
+    """
+    if isinstance(evidence, str):
+        try:
+            evidence = json.loads(evidence)
+        except (json.JSONDecodeError, TypeError):
+            return evidence
+    if not isinstance(evidence, list):
+        return evidence
+    out: list[Any] = []
+    for entry in evidence:
+        if isinstance(entry, dict):
+            entry = {
+                key: (
+                    sanitize_ingest_path(value)
+                    if key in _EVIDENCE_PATH_KEYS and value
+                    else value
+                )
+                for key, value in entry.items()
+            }
+        out.append(entry)
+    return out
 
 
 def _is_local_machine_account_4648(row: dict[str, Any]) -> bool:
@@ -643,6 +692,10 @@ def _is_local_machine_account_4648(row: dict[str, Any]) -> bool:
     Delegates to :func:`is_benign_local_auth` for each evidence row.
     Returns True when every evidence entry in the row is benign local auth
     (loopback src_ip, machine-account subject, local auth processes, etc.)
+
+    Auth rule queries often filter on an event ID without SELECTing it, so
+    evidence rows may lack ``event_id``; when the finding is itself scoped to
+    an auth event (rule_id / title), the predicate is applied on that basis.
     """
     evidence = row.get("evidence")
     if isinstance(evidence, str):
@@ -654,10 +707,13 @@ def _is_local_machine_account_4648(row: dict[str, Any]) -> bool:
         return False
     if not evidence:
         return False
+    assume_auth = finding_is_auth_scoped(
+        row.get("rule_id") or row.get("finding_id"), row.get("title")
+    )
     for entry in evidence:
         if not isinstance(entry, dict):
             return False
-        if not is_benign_local_auth(entry):
+        if not is_benign_local_auth(entry, assume_auth_event=assume_auth):
             return False
     return True
 
@@ -1643,6 +1699,41 @@ def _finding_theme_summary(theme: str) -> str:
     )
 
 
+@lru_cache(maxsize=1)
+def _load_finding_theme_specs() -> dict[str, dict[str, str]]:
+    import yaml
+
+    path = (
+        Path(__file__).resolve().parent.parent
+        / "rulepacks"
+        / "_schema"
+        / "finding_themes.yaml"
+    )
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+    themes = data.get("themes") if isinstance(data, dict) else None
+    if not isinstance(themes, dict):
+        return {}
+    return {
+        str(name): {str(k): str(v) for k, v in spec.items() if isinstance(v, str)}
+        for name, spec in themes.items()
+        if isinstance(spec, dict)
+    }
+
+
+def _finding_theme_recommended_action(theme: str, count: int) -> str:
+    declared = (
+        _load_finding_theme_specs().get(theme, {}).get("recommended_action") or ""
+    ).strip()
+    if declared:
+        return declared
+    return (
+        f"Correlate {_finding_theme_title(theme, count)} by user, host, and time"
+    )
+
+
 def _event_interpretation(event_id: Any) -> str:
     try:
         event = int(event_id)
@@ -1836,14 +1927,20 @@ def _antiforensic_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
     for row in fetch_records(
         db,
         f"""
-        SELECT last_exec_time AS timestamp, executable_name AS artifact, exec_count, evidence_id
+        SELECT last_exec_time AS timestamp, executable_name AS artifact, exec_count, evidence_id, source_file
         FROM prefetch_executions
         WHERE {tool_exe_sql}
         ORDER BY last_exec_time DESC
         LIMIT 6
         """,
     ):
-        rows.append({"type": "tool execution", **row})
+        rows.append(
+            {
+                "type": "tool execution",
+                "context": _short_path_context(row.get("source_file")),
+                **row,
+            }
+        )
     for row in fetch_records(
         db,
         """
@@ -1855,7 +1952,13 @@ def _antiforensic_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
         LIMIT 6
         """,
     ):
-        rows.append({"type": "log integrity event", **row})
+        rows.append(
+            {
+                "type": "log integrity event",
+                "context": str(row.get("computer") or ""),
+                **row,
+            }
+        )
     artifact_rows: list[dict[str, Any]] = []
     for row in fetch_records(
         db,
@@ -1869,7 +1972,13 @@ def _antiforensic_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
         LIMIT 6
         """,
     ):
-        artifact_rows.append({"type": "tool artifact", **row})
+        artifact_rows.append(
+            {
+                "type": "tool artifact",
+                "context": _short_path_context(row.get("file_path")),
+                **row,
+            }
+        )
     # The MFT commonly carries multiple records for one file (e.g. 8.3 short
     # name or duplicate attribute records); one on-disk artifact should appear
     # as one row, not inflate the count.
@@ -2088,7 +2197,6 @@ def _forensic_gap_rows(db: CaseDB) -> list[dict[str, Any]]:
     """
     from forensia.rules.loader import detect_artifact_families
 
-    active_count = _hypothesis_count(db, "active")
     network = _network_summary_rows(db)
     try:
         families = detect_artifact_families(db)
@@ -2096,14 +2204,6 @@ def _forensic_gap_rows(db: CaseDB) -> list[dict[str, Any]]:
         families = set()
 
     gaps: list[dict[str, Any]] = []
-    if active_count:
-        gaps.append(
-            {
-                "gap": "Resolve or refute outstanding hypotheses",
-                "why_it_matters": f"{active_count} active hypotheses remain; mixing them into conclusions risks overstatement.",
-                "next_step": "Prioritize uninvestigated hypotheses and classify them as confirmed/refuted/needs_data.",
-            }
-        )
     if "cloud_sync" in families:
         gaps.append(
             {
@@ -2384,7 +2484,9 @@ def _build_recommendations_table(db: CaseDB) -> list[dict[str, Any]]:
         rows.append(
             {
                 "priority": "High" if _finding_theme_rank(theme) <= 2 else "Medium",
-                "action": f"Correlate {_finding_theme_title(theme, theme_counts[theme])} by user, host, and time",
+                "action": _finding_theme_recommended_action(
+                    theme, theme_counts[theme]
+                ),
                 "rationale": _finding_theme_summary(theme),
                 "evidence_or_gap": theme,
             }
@@ -2468,6 +2570,7 @@ _TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("type", "Type"),
         ("timestamp", "Timestamp"),
         ("artifact", "Artifact"),
+        ("context", "Context"),
         ("computer", "Host"),
         ("evidence_id", "Ref"),
     ],

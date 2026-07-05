@@ -17,4 +17,26 @@ attack:
 finding:
   title: 'Anti-forensic tool detected: {executable_name}'
   summary: 'Anti-forensic tool ''{executable_name}'' executed (last run: {last_exec_time}, count: {exec_count}). Tools like Eraser, CCleaner, BleachBit, PrivaZer, SDelete, and DBAN are used to erase traces of malicious activity — deleting files, wiping free space, and cleaning registry keys. Investigate the timeline of execution, what data may have been tampered with, and correlate with gaps in event logs or MFT records (ATT&CK T1070).'
+hypotheses:
+- id: cleanup_tool_near_log_integrity_event
+  segment: anti-forensics
+  description: Cleanup or wiping tool execution by {executable_name} near log stop or clear events indicates possible trace removal activity
+  required_entities:
+  - executable_name
+  - last_exec_time
+  confirm_when:
+    co_observed_event_ids:
+    - 1102
+    - 1100
+    - 6006
+    within_minutes: 240
+  refute_when:
+    zero_rows: true
+  follow_up_questions:
+  - Which deleted files or tool configuration artifacts are temporally near {executable_name} execution?
+  - Do event log stop or clear records occur in the same window as cleanup tool execution?
+  report_sections:
+  - 3_technical
+  - 4_gaps
+  - 5_recommendations
 query: "SELECT\n    evidence_id,\n    executable_name,\n    last_exec_time,\n    exec_count,\n    source_file\nFROM prefetch_executions\nWHERE ({{catalog_exe_sql:antiforensic_tools:executable_name}})\nORDER BY last_exec_time DESC\n"

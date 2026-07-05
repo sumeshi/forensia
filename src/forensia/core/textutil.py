@@ -104,3 +104,38 @@ def sanitize_ingest_path(path: object) -> str:
     if is_local_ingest_path(p):
         return path_basename(p)
     return p
+
+
+_JP_DATE_TIME_RE = re.compile(
+    r"(?P<year>\d{4})年(?P<month>\d{1,2})月(?P<day>\d{1,2})日"
+    r"(?:\s*(?P<hour>\d{1,2})時(?P<minute>\d{1,2})分"
+    r"(?:(?P<second>\d{1,2})秒)?)?"
+)
+
+
+def normalize_localized_dates(text: str) -> str:
+    """Normalize Japanese numeric date/time strings to ISO-like report format.
+
+    The LLM may ignore DATE FORMAT instructions and emit strings such as
+    ``2015年3月22日14時38分16秒``. This deterministic pass converts only that
+    narrow numeric pattern; it does not translate prose or month names.
+    """
+    if not text:
+        return ""
+
+    def _replace(match: re.Match[str]) -> str:
+        year = int(match.group("year"))
+        month = int(match.group("month"))
+        day = int(match.group("day"))
+        hour = match.group("hour")
+        minute = match.group("minute")
+        second = match.group("second")
+        date_part = f"{year:04d}-{month:02d}-{day:02d}"
+        if hour is None or minute is None:
+            return date_part
+        return (
+            f"{date_part} {int(hour):02d}:{int(minute):02d}:"
+            f"{int(second or 0):02d} UTC"
+        )
+
+    return _JP_DATE_TIME_RE.sub(_replace, str(text))

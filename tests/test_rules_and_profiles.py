@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from forensia.ai.seeding import _seed_findings
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.normalize.evtx import normalize_evtx
@@ -51,6 +52,72 @@ class RuleProfileTests(unittest.TestCase):
             self.assertTrue(globs, f"catalog section {section} is empty")
             sample = globs[0].lower().replace("*", "%")
             self.assertIn(sample, rule.query.lower(), rule_id)
+
+    def test_seed_findings_replaces_existing_rule_rows_on_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO prefetch_executions (
+                        evidence_id, source_file, executable_name,
+                        exec_count, last_exec_time
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "prefetch-cleaner-1",
+                        "sample/case/Prefetch/ERASER.EXE-12345678.pf",
+                        "ERASER.EXE",
+                        1,
+                        "2024-01-01 00:00:00",
+                    ),
+                )
+                _insert_old_finding = """
+                    INSERT INTO findings (
+                        finding_id, rule_id, title, summary, severity,
+                        confidence, status, tags, evidence
+                    )
+                    VALUES (?, ?, ?, '', 'high', 0.7, 'accepted', '[]', ?)
+                """
+                db.execute(
+                    _insert_old_finding,
+                    (
+                        "windows-finding-antiforensic-tools-0001",
+                        "windows-finding-antiforensic-tools",
+                        "Anti-forensic tool detected: ERASER.EXE",
+                        '[{"source_file":"sample/old/Prefetch/ERASER.EXE-OLD.pf"}]',
+                    ),
+                )
+
+                _seed_findings(case, db, "windows-basic")
+                row = db.execute(
+                    """
+                    SELECT evidence FROM findings
+                    WHERE finding_id = 'windows-finding-antiforensic-tools-0001'
+                    """
+                ).fetchone()
+
+        self.assertIsNotNone(row)
+        self.assertIn("ERASER.EXE-12345678.pf", row[0])
+        self.assertNotIn("sample/", row[0])
+
+    def test_antiforensic_and_staging_rules_declare_seed_hypotheses(self) -> None:
+        rules_dir = Path("src/forensia/rulepacks")
+        profile_path = Path("src/forensia/profiles/windows-basic.yaml")
+        rules = {rule.id: rule for rule in load_rules_from_dir(rules_dir, profile_path)}
+
+        for rule_id in (
+            "windows-finding-antiforensic-tools",
+            "windows-finding-data-staging",
+        ):
+            rule = rules[rule_id]
+            self.assertTrue(rule.hypotheses, rule_id)
+            description = rule.hypotheses[0].description.lower()
+            self.assertIn("{executable_name}", description)
+            for specific_tool in ("eraser", "ccleaner", "google drive", "dropbox"):
+                self.assertNotIn(specific_tool, description)
+            self.assertTrue(rule.hypotheses[0].confirm_when)
 
     def test_ransomware_profile_filters_rule_ids(self) -> None:
         rules_dir = Path("src/forensia/rulepacks")

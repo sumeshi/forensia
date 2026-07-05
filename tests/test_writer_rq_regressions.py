@@ -18,6 +18,7 @@ from forensia.ai.section_agent import (
 )
 from forensia.config import clear_llm_settings_cache, reload_settings
 from forensia.core.case import Case
+from forensia.core.textutil import normalize_localized_dates
 from forensia.db.database import CaseDB
 from forensia.questions import resolve_question_spec
 from forensia.report.writer import (
@@ -29,6 +30,7 @@ from forensia.report.writer import (
     _extract_needed_evidence,
     _GateCtx,
     _hypothesis_rows,
+    _preprocess_section_body,
     _render_structured_answer_markdown,
     _resolve_evidence_results,
     _validate_body_evidence_ids,
@@ -76,9 +78,11 @@ class WriterRQRegressionTests(unittest.TestCase):
             )
             reload_settings()
 
-        self.assertIn("Additional correlation is still needed", body)
+        self.assertIn("Additional correlation is needed", body)
         self.assertIn("evtx-security-000000000122", body)
-        self.assertGreater(len(body), 120)
+        # H-2: fallback must not emit review-metadata phrasing.
+        self.assertNotIn("the collected evidence returned", body.lower())
+        self.assertNotIn("Representative row:", body)
 
     def test_not_found_fallback_does_not_emit_block_skipped_marker(self) -> None:
         with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "en"}):
@@ -100,7 +104,7 @@ class WriterRQRegressionTests(unittest.TestCase):
             )
             reload_settings()
 
-        self.assertIn("returned no matching rows", body)
+        self.assertIn("No supporting evidence was found", body)
         self.assertNotIn("Block skipped", body)
         self.assertNotIn("evtx_network_connections", body)
 
@@ -135,6 +139,22 @@ class WriterRQRegressionTests(unittest.TestCase):
         self.assertTrue(
             body.startswith("# Investigation Overview\n\n## Executive Summary")
         )
+
+    def test_localized_numeric_date_is_normalized(self) -> None:
+        body = normalize_localized_dates("Log clear at 2015年3月22日14時38分16秒.")
+        self.assertIn("2015-03-22 14:38:16 UTC", body)
+        self.assertNotIn("2015年3月22日", body)
+
+    def test_preprocess_converts_raw_json_rows_to_markdown_table(self) -> None:
+        raw = (
+            '## Evidence Scope\n\n[{"Metric":"EVTX rows","Value":12,'
+            '"Scope":"security"}]'
+        )
+        body, removed_raw = _preprocess_section_body("1_overview", raw)
+        self.assertFalse(removed_raw)
+        self.assertNotIn('[{"Metric"', body)
+        self.assertIn("| Metric | Value | Scope |", body)
+        self.assertIn("| EVTX rows | 12 | security |", body)
 
     def test_recommendation_strength_accepts_japanese_verification_wording(
         self,
@@ -381,6 +401,30 @@ class WriterRQRegressionTests(unittest.TestCase):
         self.assertNotIn("overview_hosts", body)
         self.assertNotIn("=10", body)
         self.assertNotIn("=3", body)
+
+    def test_fallback_prefers_key_points_over_meta_phrasing(self) -> None:
+        """H-2: when key points are available the fallback states observed
+        facts, never review-metadata like 'returned N related rows'."""
+        with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "en"}):
+            clear_llm_settings_cache()
+            body = _fallback_narrative_body(
+                heading="Executive Summary",
+                status="answered",
+                collected_results=[],
+                flat_evidence=[],
+                actual_query_count=1,
+                actual_query_row_counts=[3],
+                key_points=[
+                    "Anti-forensic tool CCLEANER64.EXE was executed",
+                    "The Event Log service was stopped on informant-PC",
+                ],
+            )
+            clear_llm_settings_cache()
+
+        self.assertIn("CCLEANER64.EXE", body)
+        self.assertIn("Event Log service", body)
+        self.assertNotIn("the collected evidence returned", body.lower())
+        self.assertNotIn("related rows", body.lower())
 
     def test_structured_markdown_previews_large_tables(self) -> None:
         markdown = _render_structured_answer_markdown(

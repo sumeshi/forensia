@@ -6,6 +6,8 @@ All tests use synthetic briefs — no dist/cfreds data required.
 from __future__ import annotations
 
 from forensia.report.report_validation import (
+    check_fallback_stub,
+    check_language_consistency,
     check_local_path_leak,
     check_refuted_leakage,
     check_thesis_alignment,
@@ -141,6 +143,53 @@ class TestLocalPathLeak:
     def test_pass_when_empty_body(self) -> None:
         """Empty string → no finding."""
         assert check_local_path_leak("") == []
+
+
+class TestFallbackStub:
+    """H-2: narrator-fallback stubs must never ship as report prose."""
+
+    def test_error_when_stub_phrase_present(self) -> None:
+        body = (
+            "## Executive Summary\n\nFor Executive Summary, the collected "
+            "evidence returned 14 related rows. Representative row: evtx-1."
+        )
+        findings = check_fallback_stub(body)
+        assert findings
+        assert all(f.check_name == "fallback_stub" for f in findings)
+        assert all(f.severity == "error" for f in findings)
+
+    def test_pass_when_real_prose(self) -> None:
+        body = (
+            "## Executive Summary\n\nAnti-forensic tooling (CCleaner, Eraser) "
+            "was executed on informant-PC shortly before the Event Log service "
+            "was stopped."
+        )
+        assert check_fallback_stub(body) == []
+
+    def test_validate_report_includes_fallback_check(self) -> None:
+        body = "For X, the collected evidence returned 3 related rows."
+        findings = validate_report({}, report_body=body)
+        assert any(f.check_name == "fallback_stub" for f in findings)
+
+
+class TestLanguageConsistency:
+    def test_error_when_expected_english_but_japanese_body(self) -> None:
+        body = "## Summary\n\nこのセクションは日本語で記述され、追加の説明を含みます。"
+        findings = check_language_consistency(body, "en")
+        assert findings
+        assert findings[0].check_name == "language_consistency"
+
+    def test_pass_when_expected_english_and_english_body(self) -> None:
+        body = (
+            "## Summary\n\nThe report describes observed authentication and "
+            "file activity using a single consistent language for the reader."
+        )
+        assert check_language_consistency(body, "en") == []
+
+    def test_validate_report_can_include_language_check(self) -> None:
+        body = "## Summary\n\nこの本文は設定言語と一致しません。"
+        findings = validate_report({}, report_body=body, expected_language="en")
+        assert any(f.check_name == "language_consistency" for f in findings)
 
 
 # ---------------------------------------------------------------------------

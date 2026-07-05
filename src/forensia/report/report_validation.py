@@ -18,6 +18,7 @@ from typing import Any
 import yaml
 
 from forensia.core.log import log as _log
+from forensia.report.quality_gates import _detect_body_language
 
 _SCHEMA_DIR = Path(__file__).parent.parent / "rulepacks" / "_schema"
 _VOCAB_PATH = _SCHEMA_DIR / "report_validation_vocab.yaml"
@@ -54,6 +55,13 @@ def _get_path_leak_patterns() -> tuple[re.Pattern, ...]:
     if not isinstance(raw, list):
         return ()
     return tuple(re.compile(p, re.IGNORECASE) for p in raw if isinstance(p, str))
+
+
+def _get_fallback_stub_phrases() -> tuple[str, ...]:
+    """Return narrative-fallback stub phrases from YAML vocabulary."""
+    vocab = _load_vocab()
+    raw = vocab.get("fallback_stub_phrases") or []
+    return tuple(str(p).lower() for p in raw) if isinstance(raw, list) else ()
 
 
 class ValidationFinding:
@@ -162,6 +170,59 @@ def check_local_path_leak(content: str) -> list[ValidationFinding]:
     return findings
 
 
+def check_fallback_stub(content: str) -> list[ValidationFinding]:
+    """Detect deterministic narrative-fallback stubs shipped as report prose.
+
+    When the LLM narrator fails twice, a deterministic fallback paragraph is
+    produced. If its fixed phrasing reaches the rendered report, a narrator
+    failure was shipped verbatim (e.g. as an Executive Summary) instead of a
+    real summary — a Fail-loud violation the pipeline must surface.
+    """
+    findings: list[ValidationFinding] = []
+    lowered = content.lower()
+    for phrase in _get_fallback_stub_phrases():
+        if phrase and phrase in lowered:
+            findings.append(
+                ValidationFinding(
+                    "fallback_stub",
+                    "error",
+                    "Narrative fallback stub phrase found in report body "
+                    f"('{phrase}'); a narrator failure was shipped as prose",
+                    None,
+                )
+            )
+    return findings
+
+
+def _normalize_expected_language(expected_lang: str) -> str:
+    value = str(expected_lang or "").strip().lower()
+    if value in {"ja", "jp", "japanese"}:
+        return "ja"
+    if value in {"en", "english"}:
+        return "en"
+    return value
+
+
+def check_language_consistency(
+    content: str, expected_lang: str
+) -> list[ValidationFinding]:
+    """Detect report-body language that conflicts with the configured output language."""
+    expected = _normalize_expected_language(expected_lang)
+    if expected not in {"en", "ja"}:
+        return []
+    detected = _detect_body_language(content)
+    if detected in {"unknown", expected}:
+        return []
+    return [
+        ValidationFinding(
+            "language_consistency",
+            "error",
+            f"Report body language mismatch: expected={expected}, detected={detected}",
+            None,
+        )
+    ]
+
+
 def check_verdict_contradiction(report_brief: dict[str, Any]) -> list[ValidationFinding]:
     """Detect identical claims in both confirmed and refuted hypotheses."""
     findings: list[ValidationFinding] = []
@@ -198,6 +259,7 @@ def validate_report(
     report_brief: dict[str, Any],
     *,
     report_body: str | None = None,
+    expected_language: str | None = None,
 ) -> list[ValidationFinding]:
     """Run all validation checks on a generated report.
 
@@ -214,6 +276,11 @@ def validate_report(
     all_findings.extend(check_verdict_contradiction(report_brief))
     if report_body:
         all_findings.extend(check_local_path_leak(report_body))
+        all_findings.extend(check_fallback_stub(report_body))
+        if expected_language:
+            all_findings.extend(
+                check_language_consistency(report_body, expected_language)
+            )
     return all_findings
 
 
@@ -221,6 +288,7 @@ def validate_report_file(
     brief_path: str | Path,
     *,
     report_path: str | Path | None = None,
+    expected_language: str | None = None,
 ) -> list[ValidationFinding]:
     """Load a ``report_brief.json`` (and optional ``report.md``) and validate."""
     brief: dict[str, Any] = {}
@@ -230,7 +298,9 @@ def validate_report_file(
     if report_path:
         with open(report_path) as f:
             body = f.read()
-    findings = validate_report(brief, report_body=body)
+    findings = validate_report(
+        brief, report_body=body, expected_language=expected_language
+    )
 
     for finding in findings:
         _log(

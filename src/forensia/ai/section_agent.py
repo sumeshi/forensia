@@ -20,7 +20,9 @@ from forensia.ai.prompts import (
     build_structured_classify_messages,
 )
 from forensia.core.case import Case
+from forensia.core.log import log as _log
 from forensia.core.memory import MemoryManager
+from forensia.core.textutil import normalize_localized_dates
 from forensia.db.database import CaseDB
 from forensia.knowledge import (  # noqa: F401 — re-export for test import
     load_event_class_definitions as _load_event_class_definitions,
@@ -609,6 +611,35 @@ _NARRATE_RETRY_PROMPT = (
 )
 
 
+def _normalize_report_language(value: str) -> str:
+    value = str(value or "").strip().lower()
+    if value in {"ja", "jp", "japanese"}:
+        return "ja"
+    if value in {"en", "english"}:
+        return "en"
+    return value
+
+
+def _postprocess_block_body(body: str, *, section_key: str, block_heading: str) -> str:
+    """Apply deterministic post-generation cleanup to section block prose."""
+    processed = normalize_localized_dates(str(body or ""))
+    if processed != body:
+        _log(
+            "SECTION",
+            f"normalized localized date format in {section_key}/{block_heading}",
+        )
+    expected = _normalize_report_language(_report_language())
+    if expected in {"en", "ja"}:
+        detected = _detect_body_language(processed)
+        if detected not in {"unknown", expected}:
+            _log(
+                "SECTION",
+                f"language mismatch in {section_key}/{block_heading}: "
+                f"expected={expected}, detected={detected}",
+            )
+    return processed
+
+
 def _narrate_paragraph_with_retry(
     *,
     narrate_messages: list[dict[str, str]],
@@ -689,48 +720,73 @@ def _fallback_narrative_body(
     flat_evidence: list[dict[str, Any]],
     actual_query_count: int,
     actual_query_row_counts: list[int],
+    key_points: list[str] | None = None,
 ) -> str:
-    """Build a deterministic paragraph when the LLM narrator returns an empty body."""
-    total_rows, positive_sources, _zero_sources = _result_count_summary(
-        collected_results
-    )
+    """Build a deterministic paragraph when the LLM narrator returns an empty body.
+
+    The prose states what was *observed* — never how much data was *reviewed*.
+    Meta-diagnostic phrasing ("the collected evidence returned N rows",
+    "Representative row: …") is deliberately avoided: the paragraph_narrate
+    prompt forbids it, and such text shipped as an Executive Summary in the
+    2026-07-05 run. Key points (already verdict-labelled observations) are the
+    primary material; evidence rows are the fallback. ``check_fallback_stub``
+    in report_validation guards against the old phrasing reappearing.
+    """
     evidence_ids, finding_ids = _representative_ids(collected_results, flat_evidence)
-    example = ""
-    for row in flat_evidence:
-        if not isinstance(row, dict):
-            continue
-        ts = str(row.get("timestamp") or row.get("date") or "")
-        eid = str(row.get("event_id") or "")
-        evid = str(row.get("evidence_id") or "")
-        parts = [p for p in [ts, eid, evid] if p]
-        if parts:
-            example = " / ".join(parts)
-            break
+
     if status in {"not_found", "not_searched"} or (
         actual_query_count > 0 and not any(actual_query_row_counts)
     ):
-        paragraph = (
-            f"For {heading}, the relevant evidence searches returned no matching rows. "
-            "This item remains unsupported and should not be promoted into the incident narrative."
+        return (
+            f"No supporting evidence was found for {heading}. This item is "
+            "unsupported and is not part of the incident narrative."
         )
-        return paragraph
 
-    sources = "the collected evidence"
     ref_text = ""
     if evidence_ids:
-        ref_text = ", ".join(evidence_ids)
-        ref_text = f"Representative evidence IDs: {ref_text}."
+        ref_text = f" (evidence: {', '.join(evidence_ids[:3])})"
     elif finding_ids:
-        ref_text = ", ".join(finding_ids)
-        ref_text = f"Representative finding IDs: {ref_text}."
+        ref_text = f" (findings: {', '.join(finding_ids[:3])})"
 
-    paragraph = f"For {heading}, {sources} returned {total_rows} related rows. "
-    if example:
-        paragraph += f"Representative row: {example}. "
+    # Prefer already-observed, verdict-labelled key points: these are report
+    # statements, not review metadata.
+    clean_points: list[str] = []
+    for point in key_points or []:
+        text = str(point or "").strip()
+        if text:
+            clean_points.append(text)
+    if clean_points:
+        joined = "; ".join(clean_points[:4])
+        paragraph = f"{joined}.{ref_text}"
+    else:
+        # No key points — describe representative observed rows factually.
+        observed: list[str] = []
+        for row in flat_evidence:
+            if not isinstance(row, dict):
+                continue
+            ts = str(row.get("timestamp") or row.get("date") or "").strip()
+            eid = str(row.get("event_id") or "").strip()
+            desc = " ".join(p for p in (ts, f"event {eid}" if eid else "") if p)
+            if desc:
+                observed.append(desc)
+            if len(observed) >= 3:
+                break
+        if observed:
+            paragraph = (
+                f"Observed activity relevant to {heading}: "
+                + "; ".join(observed)
+                + f".{ref_text}"
+            )
+        else:
+            paragraph = (
+                f"Evidence relevant to {heading} was collected, but the available "
+                f"rows do not contain enough report-visible detail for a stronger "
+                f"summary.{ref_text}"
+            )
     if status == "partial":
-        paragraph += "Additional correlation is still needed before treating the block as fully answered. "
-    if ref_text:
-        paragraph += ref_text
+        paragraph += (
+            " Additional correlation is needed before this is fully established."
+        )
     return paragraph.strip()
 
 
@@ -1132,6 +1188,11 @@ def _write_block_body(
                 target_language=_report_language(),
             )
             if _is_effectively_empty_body(body):
+                _log(
+                    "SECTION",
+                    f"narrator returned empty body for '{ctx.block_heading}'; "
+                    "using deterministic fallback",
+                )
                 body = _fallback_narrative_body(
                     heading=ctx.block_heading,
                     status=status_inner,
@@ -1139,12 +1200,16 @@ def _write_block_body(
                     flat_evidence=flat_evidence,
                     actual_query_count=actual_query_count,
                     actual_query_row_counts=actual_query_row_counts,
+                    key_points=all_key_points,
                 )
             body = _review_and_rewrite_narrative(
                 ctx, body, narrate_messages, narrate_schema
             )
             messages = narrate_messages
 
+    body = _postprocess_block_body(
+        body, section_key=ctx.section_key, block_heading=ctx.block_heading
+    )
     if audit_callback:
         audit_callback(messages, body)
     _store_section_run(
@@ -1226,6 +1291,11 @@ def run_section_block_agent(
             if structured_answer is not None:
                 body = _render_structured_answer_markdown(
                     structured_answer, ctx.block_heading
+                )
+                body = _postprocess_block_body(
+                    body,
+                    section_key=ctx.section_key,
+                    block_heading=ctx.block_heading,
                 )
                 if audit_callback:
                     audit_callback([], body)

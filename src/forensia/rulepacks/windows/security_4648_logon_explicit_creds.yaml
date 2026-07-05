@@ -19,7 +19,7 @@ attack:
 - tactic: lateral-movement
   technique_id: T1550
   technique_name: Use Alternate Authentication Material
-query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    target_user,\n    subject_user,\n    src_ip,\n    process_name\nFROM evtx_events\nWHERE event_id = 4648\n  AND target_user NOT LIKE '%$'\n"
+query: "SELECT\n    evidence_id,\n    event_id,\n    timestamp,\n    computer,\n    target_user,\n    subject_user,\n    src_ip,\n    process_name\nFROM evtx_events\nWHERE event_id = 4648\n  AND target_user NOT LIKE '%$'\n"
 finding:
   title: 'Logon attempt with explicit credentials (4648): {subject_user} -> {target_user}'
   summary: '{subject_user} explicitly used credentials for {target_user} in a logon attempt on {computer} at {timestamp}. Process: {process_name}. This is credential-use evidence that may support a lateral movement hypothesis, but it does not by itself confirm Pass-the-Hash, PsExec, or another specific technique.'

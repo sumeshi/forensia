@@ -95,8 +95,24 @@ def _title_matches_body_heading(title: str, body: str) -> bool:
 
 
 def _detect_body_language(text: str) -> str:
-    """Crude heuristic: detect English text by ASCII letter count."""
-    en_chars = sum(1 for ch in text if "a" <= ch.lower() <= "z")
+    """Crude deterministic language heuristic for generated report prose."""
+    clean = re.sub(
+        r"`[^`]+`|```.*?```|\[[^\]]+\]\([^)]+\)|\|[^\n]+\|",
+        " ",
+        str(text or ""),
+        flags=re.DOTALL,
+    )
+    visible = [ch for ch in clean if not ch.isspace()]
+    if not visible:
+        return "unknown"
+    kana_chars = sum(
+        1
+        for ch in visible
+        if ("\u3040" <= ch <= "\u309f") or ("\u30a0" <= ch <= "\u30ff")
+    )
+    if kana_chars / max(len(visible), 1) > 0.05:
+        return "ja"
+    en_chars = sum(1 for ch in visible if "a" <= ch.lower() <= "z")
     if en_chars > 50:
         return "en"
     return "unknown"
