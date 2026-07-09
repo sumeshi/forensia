@@ -10,7 +10,7 @@ from forensia.ai.schemas import (
     SECTION_AGENT_CHECK_SCHEMA,
     SECTION_AGENT_PLAN_SCHEMA,
     SECTION_OUTLINE_SCHEMA,
-    benchmark_classify_schema,
+    question_classify_schema,
     structured_classify_schema,
 )
 from forensia.ai.sql_schema import (
@@ -172,20 +172,20 @@ def build_report_section_messages(
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def build_benchmark_classify_messages(
+def build_question_classify_messages(
     question: str,
     block_heading: str,
     evidence_rows: list[dict],
     expected_shape: dict | None,
     time_range: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
-    """role: benchmark_classifier.
+    """role: question_classifier.
     Goal: decide answer status and pick which evidence_rows answer the question.
     Output: {status, picked_row_indices, rationale}
     """
-    schema = benchmark_classify_schema(len(evidence_rows))
+    schema = question_classify_schema(len(evidence_rows))
     system = (
-        "<TASK>You are a benchmark_classifier. Decide the answer status and pick which evidence rows answer the question. "
+        "<TASK>You are a question_classifier. Decide the answer status and pick which evidence rows answer the question. "
         "Do NOT write narrative.</TASK>\n"
         "<OUTPUT_SCHEMA>\n"
         "{\n"

@@ -783,7 +783,7 @@ class WriterRQRegressionTests(unittest.TestCase):
                     report_brief={},
                     base_url="http://127.0.0.1:1",
                     model="unused",
-                    benchmark_mode=True,
+                    question_mode=True,
                     answer_id="Q9",
                 )
 
@@ -816,7 +816,7 @@ class WriterRQRegressionTests(unittest.TestCase):
                     report_brief={},
                     base_url="http://127.0.0.1:1",
                     model="unused",
-                    benchmark_mode=True,
+                    question_mode=True,
                     answer_id="Q9",
                 )
                 row = db.execute(
@@ -1381,7 +1381,7 @@ class WriterRQRegressionTests(unittest.TestCase):
                     memory=None,
                     max_queries=1,
                     evidence_keypoints=None,
-                    benchmark_mode=False,
+                    question_mode=False,
                     section_table_digest="<SECTION_TABLES>\n### Phase Summary\n| Date |\n</SECTION_TABLES>",
                 )
         self.assertIn("<SECTION_TABLES>", ctx.structured_digest)
@@ -1826,7 +1826,7 @@ class WriterRQRegressionTests(unittest.TestCase):
                     memory=None,
                     max_queries=3,
                     evidence_keypoints=None,
-                    benchmark_mode=False,
+                    question_mode=False,
                     audit_callback=None,
                     report_brief={},
                 )
@@ -1842,7 +1842,7 @@ class WriterRQRegressionTests(unittest.TestCase):
                     memory=None,
                     max_queries=3,
                     evidence_keypoints=None,
-                    benchmark_mode=False,
+                    question_mode=False,
                     audit_callback=None,
                     report_brief={},
                 )

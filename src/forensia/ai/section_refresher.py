@@ -187,7 +187,7 @@ async def _render_section_blocks(
     is_stale = request.get("is_stale", False)
     blocks = request.get("block_requests") or []
     all_structured = bool(blocks) and all(
-        str(b.get("mode") or "").strip().casefold() in {"benchmark", "structured"}
+        str(b.get("mode") or "").strip().casefold() in {"question", "benchmark", "structured"}
         or bool(b.get("answer_spec") or b.get("question"))
         for b in blocks
     )
@@ -230,7 +230,7 @@ async def _render_section_blocks(
             block = blocks[index]
             try:
                 block_mode = str(block.get("mode") or "").strip().casefold()
-                is_structured_mode = block_mode in {"benchmark", "structured"} or bool(
+                is_structured_mode = block_mode in {"question", "benchmark", "structured"} or bool(
                     block.get("answer_spec") or block.get("question")
                 )
                 block_result = None
@@ -270,12 +270,12 @@ async def _render_section_blocks(
                         ),
                         max_queries_per_section=max_queries_per_section,
                         evidence_keypoints=list(block.get("evidence_keypoints") or []),
-                        benchmark_mode=is_structured_mode,
-                        benchmark_id=str(
-                            block.get("benchmark_id") or block.get("answer_id") or ""
+                        question_mode=is_structured_mode,
+                        question_id=str(
+                            block.get("question_id") or block.get("answer_id") or ""
                         ),
                         answer_id=str(
-                            block.get("answer_id") or block.get("benchmark_id") or ""
+                            block.get("answer_id") or block.get("question_id") or ""
                         ),
                         answer_spec=str(block.get("answer_spec") or ""),
                         question=str(block.get("question") or ""),
@@ -368,7 +368,7 @@ def _render_section_from_request(
     for index in _table_first_order(blocks):
         block = blocks[index]
         block_mode = str(block.get("mode") or "").strip().casefold()
-        is_structured_mode = block_mode in {"benchmark", "structured"} or bool(
+        is_structured_mode = block_mode in {"question", "benchmark", "structured"} or bool(
             block.get("answer_spec") or block.get("question")
         )
         block_result = None
@@ -402,12 +402,12 @@ def _render_section_from_request(
                 memory=memory_for_section(memory, structured_mode=is_structured_mode),
                 max_queries_per_section=max_queries_per_section,
                 evidence_keypoints=list(block.get("evidence_keypoints") or []),
-                benchmark_mode=is_structured_mode,
-                benchmark_id=str(
-                    block.get("benchmark_id") or block.get("answer_id") or ""
+                question_mode=is_structured_mode,
+                question_id=str(
+                    block.get("question_id") or block.get("answer_id") or ""
                 ),
                 answer_id=str(
-                    block.get("answer_id") or block.get("benchmark_id") or ""
+                    block.get("answer_id") or block.get("question_id") or ""
                 ),
                 answer_spec=str(block.get("answer_spec") or ""),
                 question=str(block.get("question") or ""),

@@ -159,7 +159,7 @@ GAP_PATTERN = re.compile(
     re.IGNORECASE,
 )
 BLOCK_HINT_PATTERN = re.compile(
-    r"<!--\s*(?P<name>evidence_keypoints|mode|benchmark_id|answer_id|answer_spec|builder)\s*:\s*(?P<value>.*?)\s*-->",
+    r"<!--\s*(?P<name>evidence_keypoints|mode|question_id|benchmark_id|answer_id|answer_spec|builder)\s*:\s*(?P<value>.*?)\s*-->",
     re.IGNORECASE,
 )
 QUESTION_HINT_PATTERN = re.compile(
@@ -203,7 +203,7 @@ def _parse_block_hints(block_body: str) -> dict[str, Any]:
     hints: dict[str, Any] = {
         "evidence_keypoints": [],
         "mode": "",
-        "benchmark_id": "",
+        "question_id": "",
         "answer_id": "",
         "answer_spec": "",
         "question": "",
@@ -243,8 +243,8 @@ def _parse_block_hints(block_body: str) -> dict[str, Any]:
                 hints["evidence_keypoints"].append(keypoint)
         elif name == "mode":
             hints["mode"] = value.casefold()
-        elif name == "benchmark_id":
-            hints["benchmark_id"] = value.strip()
+        elif name in ("question_id", "benchmark_id"):  # benchmark_id: legacy hint name
+            hints["question_id"] = value.strip()
             hints["answer_id"] = value.strip()
         elif name == "answer_id":
             hints["answer_id"] = value.strip()
@@ -367,7 +367,7 @@ def prepare_section_request(
                 "template_body": template_body,
                 "evidence_keypoints": [],
                 "mode": "",
-                "benchmark_id": "",
+                "question_id": "",
                 "answer_id": "",
                 "answer_spec": "",
                 "question": "",
@@ -380,8 +380,8 @@ def prepare_section_request(
             "template_body": block["template_body"],
             "evidence_keypoints": list(block.get("evidence_keypoints") or []),
             "mode": str(block.get("mode") or ""),
-            "benchmark_id": str(block.get("benchmark_id") or ""),
-            "answer_id": str(block.get("answer_id") or block.get("benchmark_id") or ""),
+            "question_id": str(block.get("question_id") or ""),
+            "answer_id": str(block.get("answer_id") or block.get("question_id") or ""),
             "answer_spec": str(block.get("answer_spec") or ""),
             "question": str(block.get("question") or ""),
             "builder": str(block.get("builder") or ""),
@@ -639,11 +639,11 @@ def finalize_section(
             gaps=candidate_gaps,
         )
     if updated and evidence_results:
-        is_benchmark = any(
-            str(r.get("mode") or "").strip().casefold() == "benchmark"
+        is_question = any(
+            str(r.get("mode") or "").strip().casefold() in {"question", "benchmark"}
             for r in (evidence_results if isinstance(evidence_results, list) else [])
         )
-        if is_benchmark and candidate_confidence and candidate_confidence >= 0.8:
+        if is_question and candidate_confidence and candidate_confidence >= 0.8:
             db.execute(
                 "UPDATE report_sections SET stale = FALSE WHERE section_key = ?",
                 [section_key],

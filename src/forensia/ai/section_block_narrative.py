@@ -464,8 +464,8 @@ def _write_block_body(
         )
     prompt_rows = _summarize_flat_evidence_rows(raw_rows) if raw_rows else None
 
-    if ctx.benchmark_mode:
-        body, messages, status_inner = _write_benchmark_block(
+    if ctx.question_mode:
+        body, messages, status_inner = _write_question_block(
             ctx, raw_rows, prompt_rows, collected_results, status_inner,
         )
     else:
@@ -486,7 +486,7 @@ def _write_block_body(
     )
     return body, status_inner
 
-def _write_benchmark_block(
+def _write_question_block(
     ctx: _BlockContext,
     raw_rows: list[dict[str, Any]] | None,
     prompt_rows: list[dict[str, Any]] | None,
@@ -498,7 +498,7 @@ def _write_benchmark_block(
         ctx.case,
         ctx.db,
         answer_spec=ctx.answer_spec,
-        answer_id=ctx.answer_id or ctx.benchmark_id,
+        answer_id=ctx.answer_id or ctx.question_id,
         section_key=ctx.section_key,
         block_heading=ctx.block_heading,
     )
@@ -575,7 +575,7 @@ def _write_benchmark_block(
             block_heading=ctx.block_heading,
             status=status_inner,
             case=ctx.case,
-            benchmark_id=ctx.benchmark_id,
+            question_id=ctx.question_id,
             queries_run=queries_run,
             evidence_rows=prompt_rows or [],
             answer_spec=ctx.answer_spec

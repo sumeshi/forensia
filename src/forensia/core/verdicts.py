@@ -53,12 +53,12 @@ def hypothesis_to_section(verdict: str) -> str | None:
     return map_verdict(verdict, "hypothesis_to_section")
 
 
-def section_to_benchmark(verdict: str) -> str | None:
-    return map_verdict(verdict, "section_to_benchmark")
+def section_to_question(verdict: str) -> str | None:
+    return map_verdict(verdict, "section_to_question")
 
 
-def benchmark_to_claim(verdict: str) -> str | None:
-    return map_verdict(verdict, "benchmark_to_claim")
+def question_to_claim(verdict: str) -> str | None:
+    return map_verdict(verdict, "question_to_claim")
 
 
 def section_to_structured(verdict: str) -> str | None:

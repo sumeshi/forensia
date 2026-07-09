@@ -42,7 +42,7 @@ GAP_PATTERN = re.compile(
     re.IGNORECASE,
 )
 BLOCK_HINT_PATTERN = re.compile(
-    r"<!--\s*(?P<name>evidence_keypoints|mode|benchmark_id|answer_id|answer_spec|builder)\s*:\s*(?P<value>.*?)\s*-->",
+    r"<!--\s*(?P<name>evidence_keypoints|mode|question_id|benchmark_id|answer_id|answer_spec|builder)\s*:\s*(?P<value>.*?)\s*-->",
     re.IGNORECASE,
 )
 QUESTION_HINT_PATTERN = re.compile(

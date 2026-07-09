@@ -10,7 +10,7 @@ from forensia.ai.schemas import PARAGRAPH_NARRATE_SCHEMA
 from forensia.ai.section_answers import (
     _build_daily_session_timeline,
     _extract_answer_by_shape,
-    _format_benchmark_answer,
+    _format_question_answer,
 )
 from forensia.ai.section_exec import _coerce_plan_action
 from forensia.report.answer_builders_host import _load_event_class_definitions
@@ -34,7 +34,7 @@ class TestRegressionRQ(unittest.TestCase):
 
     def test_benchmark_format_uses_classifier_status(self):
         case = SimpleNamespace(reports_dir=Path(tempfile.mkdtemp()))
-        body = _format_benchmark_answer(
+        body = _format_question_answer(
             {"status": "answered", "picked_row_indices": [], "rationale": "ok"},
             [{"host_id": "INFORMANT-PC"}],
             {"fields": ["host_id"]},
@@ -42,14 +42,14 @@ class TestRegressionRQ(unittest.TestCase):
             "1. host",
             "not_found",
             case,
-            benchmark_id="Q6",
+            question_id="Q6",
         )
         self.assertIn("**Status:** answered", body)
         self.assertIn("INFORMANT-PC", body)
 
     def test_benchmark_missing_reason_string_not_split_by_formatter(self):
         case = SimpleNamespace(reports_dir=Path(tempfile.mkdtemp()))
-        body = _format_benchmark_answer(
+        body = _format_question_answer(
             {
                 "status": "answered",
                 "picked_row_indices": [],
@@ -61,7 +61,7 @@ class TestRegressionRQ(unittest.TestCase):
             "1. host",
             "answered",
             case,
-            benchmark_id="Q6",
+            question_id="Q6",
         )
         self.assertIn("**Status:** wrong_query", body)
         self.assertIn("- empty answer rationale", body)

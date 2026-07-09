@@ -340,7 +340,7 @@ PARAGRAPH_NARRATE_SCHEMA: dict[str, Any] = {
 }
 
 
-def benchmark_classify_schema(n_rows: int) -> dict[str, Any]:
+def question_classify_schema(n_rows: int) -> dict[str, Any]:
     return {
         "title": "BenchmarkClassifier",
         "type": "object",
@@ -371,6 +371,6 @@ def benchmark_classify_schema(n_rows: int) -> dict[str, Any]:
 
 
 def structured_classify_schema(n_rows: int) -> dict[str, Any]:
-    schema = benchmark_classify_schema(n_rows)
+    schema = question_classify_schema(n_rows)
     schema["title"] = "StructuredClassifier"
     return schema

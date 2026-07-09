@@ -90,7 +90,7 @@ REPORT_KEYPOINT_ALIASES.update(_load_template_keypoint_aliases())
 
 def _default_keypoints_for_section(
     section_key: str,
-    benchmark_mode: bool = False,
+    question_mode: bool = False,
     block_heading: str = "",
 ) -> tuple[str, ...]:
     """Return default keypoint names to seed a section's evidence collection.
@@ -100,7 +100,7 @@ def _default_keypoints_for_section(
     Each family's set is intentionally heterogeneous so different sections do
     not all surface the same finding list.
     """
-    if benchmark_mode:
+    if question_mode:
         return ()
 
     # Block-heading-level overrides take precedence over family defaults.

@@ -1,4 +1,4 @@
-"""Answer extraction and formatting for structured and benchmark blocks."""
+"""Answer extraction and formatting for structured and question blocks."""
 
 from __future__ import annotations
 
@@ -34,8 +34,8 @@ def _resolve_structured_expected_shape(block_heading: str) -> dict | None:
     return spec.expected_answer_shape if spec is not None else None
 
 
-def _resolve_benchmark_expected_shape(block_heading: str) -> dict | None:
-    """Compatibility wrapper for older benchmark terminology."""
+def _resolve_question_expected_shape(block_heading: str) -> dict | None:
+    """Compatibility wrapper for older question-block terminology."""
     return _resolve_structured_expected_shape(block_heading)
 
 
@@ -47,7 +47,7 @@ def _format_structured_answer(
     block_heading: str,
     status: str,
     case: Case,
-    benchmark_id: str = "",
+    question_id: str = "",
     queries_run: list[str] | None = None,
     evidence_rows: list[dict] | None = None,
     answer_spec: str = "",
@@ -68,7 +68,7 @@ def _format_structured_answer(
                 answer_data.append(entry)
 
     resolved_id = (
-        benchmark_id.strip() if benchmark_id else _structured_block_id(block_heading)
+        question_id.strip() if question_id else _structured_block_id(block_heading)
     )
     normalized_status = (
         str(classification.get("status") or status or "insufficient_evidence")
@@ -148,7 +148,7 @@ def _format_structured_answer(
     return _render_structured_answer_markdown(normalized_answer, block_heading)
 
 
-def _format_benchmark_answer(
+def _format_question_answer(
     classification: dict,
     picked_rows: list[dict],
     expected_shape: dict | None,
@@ -156,7 +156,7 @@ def _format_benchmark_answer(
     block_heading: str,
     status: str,
     case: Case,
-    benchmark_id: str = "",
+    question_id: str = "",
     queries_run: list[str] | None = None,
     evidence_rows: list[dict] | None = None,
     answer_spec: str = "",
@@ -170,7 +170,7 @@ def _format_benchmark_answer(
         block_heading=block_heading,
         status=status,
         case=case,
-        benchmark_id=benchmark_id,
+        question_id=question_id,
         queries_run=queries_run,
         evidence_rows=evidence_rows,
         answer_spec=answer_spec,

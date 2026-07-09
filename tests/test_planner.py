@@ -19,11 +19,11 @@ from forensia.ai.progress import (
 )
 from forensia.ai.prompt_context import _truncate_context_sections
 from forensia.ai.prompt_sections import (
-    build_benchmark_classify_messages,
+    build_question_classify_messages,
     build_report_section_messages,
     build_structured_classify_messages,
 )
-from forensia.ai.section_exec import _benchmark_report_brief
+from forensia.ai.section_exec import _question_report_brief
 from forensia.ai.sql_schema import build_investigation_framework
 from forensia.ai.sql_templates import _template_failed_logon_by_ip_window, coerce_list
 from forensia.config import (
@@ -977,7 +977,7 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertIn("SCHTASKS.EXE=persistence_tool", framework)
 
     def test_benchmark_report_brief_strips_narrative_keys(self) -> None:
-        brief = _benchmark_report_brief(
+        brief = _question_report_brief(
             {
                 "investigation_objective": "Narrative objective",
                 "top_findings": [{"finding_id": "F-1"}],
@@ -1042,7 +1042,7 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertIn("avoid 'confirmed'", system)
 
     def test_benchmark_classify_messages_request_picked_row_indices_only(self) -> None:
-        messages, _ = build_benchmark_classify_messages(
+        messages, _ = build_question_classify_messages(
             question="## 8. Mail data files",
             block_heading="8. Mail data files",
             evidence_rows=[
@@ -1055,7 +1055,7 @@ class PlannerRetryTests(unittest.TestCase):
         )
         system = messages[0]["content"]
         user = messages[1]["content"]
-        self.assertIn("benchmark_classifier", system)
+        self.assertIn("question_classifier", system)
         self.assertIn("picked_row_indices", system)
         self.assertNotIn('"answer"', system)
         self.assertIn("ev-1", user)
@@ -1074,7 +1074,7 @@ class PlannerRetryTests(unittest.TestCase):
             },
         )
         self.assertIn("structured_classifier", messages[0]["content"])
-        self.assertNotIn("benchmark_classifier", messages[0]["content"])
+        self.assertNotIn("question_classifier", messages[0]["content"])
         self.assertEqual("StructuredClassifier", schema["title"])
 
     def test_query_fingerprint_normalizes_equivalent_ast_forms(self) -> None:

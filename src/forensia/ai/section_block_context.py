@@ -45,14 +45,14 @@ class _BlockContext:
     reusable_facts: list[dict[str, Any]]
     reusable_evidence: list[dict[str, Any]]
     memory_context_md: str
-    benchmark_mode: bool
+    question_mode: bool
     max_queries: int
     findings_snapshot: list[dict[str, Any]]
     prompt_report_brief: dict[str, Any]
     question_spec: QuestionSpec | None = None
     question_confidence: float = 0.0
     evidence_keypoints: list[str] | None = None
-    benchmark_id: str = ""
+    question_id: str = ""
     answer_id: str = ""
     answer_spec: str = ""
     question: str = ""
@@ -73,8 +73,8 @@ def _prepare_block_context(
     memory: MemoryManager | None,
     max_queries: int,
     evidence_keypoints: list[str] | None,
-    benchmark_mode: bool,
-    benchmark_id: str = "",
+    question_mode: bool,
+    question_id: str = "",
     answer_id: str = "",
     answer_spec: str = "",
     question: str = "",
@@ -123,14 +123,14 @@ def _prepare_block_context(
         include_case_probe=section_key == "6_appendix",
     )
     reusable_evidence = _load_reusable_section_evidence(db, section_key)
-    if benchmark_mode:
+    if question_mode:
         reusable_facts = []
         reusable_evidence = []
     audit = _audit_bridge(audit_callback)
     review_audit = _audit_bridge(review_audit_callback)
     prompt_report_brief = (
         _structured_report_brief(report_brief)
-        if benchmark_mode
+        if question_mode
         else (report_brief or {})
     )
     structured_digest = (
@@ -157,14 +157,14 @@ def _prepare_block_context(
         reusable_facts=reusable_facts,
         reusable_evidence=reusable_evidence,
         memory_context_md=memory_context_md,
-        benchmark_mode=benchmark_mode,
+        question_mode=question_mode,
         max_queries=max_queries,
         findings_snapshot=findings_snapshot,
         prompt_report_brief=prompt_report_brief,
         question_spec=question_spec,
         question_confidence=question_confidence,
         evidence_keypoints=evidence_keypoints,
-        benchmark_id=benchmark_id,
+        question_id=question_id,
         answer_id=answer_id,
         answer_spec=resolved_answer_spec,
         question=question,

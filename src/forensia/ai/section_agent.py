@@ -65,7 +65,7 @@ def _prepare_block_seed_data(
         _default_keypoints_for_section(
             ctx.section_key, block_heading=ctx.block_heading
         )[:2]
-        if not ctx.benchmark_mode
+        if not ctx.question_mode
         else list(ctx.evidence_keypoints or [])[:3]
     )
     executed_seed_keypoints: set[str] = set()
@@ -187,7 +187,7 @@ from forensia.report.keypoint_catalog import (
 )
 
 
-def _try_benchmark_structured_answer(
+def _try_question_structured_answer(
     ctx: _BlockContext,
     audit_callback=None,
 ) -> SectionBlockResult | None:
@@ -196,13 +196,13 @@ def _try_benchmark_structured_answer(
     Returns *None* when there is no structured answer (caller should continue
     with the normal plan loop).
     """
-    if not (ctx.benchmark_mode and ctx.answer_spec):
+    if not (ctx.question_mode and ctx.answer_spec):
         return None
     structured_answer = build_structured_answer(
         ctx.case,
         ctx.db,
         answer_spec=ctx.answer_spec,
-        answer_id=ctx.answer_id or ctx.benchmark_id or ctx.answer_spec,
+        answer_id=ctx.answer_id or ctx.question_id or ctx.answer_spec,
         section_key=ctx.section_key,
         block_heading=ctx.block_heading,
     )
@@ -293,7 +293,7 @@ def _run_block_pipeline(
 ) -> SectionBlockResult:
     """Benchmark early-return, seed prep, plan loop, and final write for one block."""
     # --- Benchmark early-return: structured answer available ---
-    bench_result = _try_benchmark_structured_answer(ctx, audit_callback)
+    bench_result = _try_question_structured_answer(ctx, audit_callback)
     if bench_result is not None:
         return bench_result
 
@@ -326,7 +326,7 @@ def _run_block_pipeline(
     )
 
     # --- Finalize: evidence chain fallback + write ---
-    force_chain = ctx.benchmark_mode and status in {
+    force_chain = ctx.question_mode and status in {
         "wrong_query",
         "insufficient_evidence",
         "not_searched",
@@ -373,8 +373,8 @@ def run_section_block_agent(
     memory: MemoryManager | None = None,
     max_queries_per_section: int = 3,
     evidence_keypoints: list[str] | None = None,
-    benchmark_mode: bool = False,
-    benchmark_id: str = "",
+    question_mode: bool = False,
+    question_id: str = "",
     answer_id: str = "",
     answer_spec: str = "",
     question: str = "",
@@ -402,8 +402,8 @@ def run_section_block_agent(
         memory=memory,
         max_queries=max_queries,
         evidence_keypoints=evidence_keypoints,
-        benchmark_mode=benchmark_mode,
-        benchmark_id=benchmark_id,
+        question_mode=question_mode,
+        question_id=question_id,
         answer_id=answer_id,
         answer_spec=answer_spec,
         question=question,
@@ -441,8 +441,8 @@ async def async_run_section_block_agent(
     memory: MemoryManager | None = None,
     max_queries_per_section: int = 3,
     evidence_keypoints: list[str] | None = None,
-    benchmark_mode: bool = False,
-    benchmark_id: str = "",
+    question_mode: bool = False,
+    question_id: str = "",
     answer_id: str = "",
     answer_spec: str = "",
     question: str = "",
@@ -467,8 +467,8 @@ async def async_run_section_block_agent(
         memory=memory,
         max_queries_per_section=max_queries_per_section,
         evidence_keypoints=evidence_keypoints,
-        benchmark_mode=benchmark_mode,
-        benchmark_id=benchmark_id,
+        question_mode=question_mode,
+        question_id=question_id,
         answer_id=answer_id,
         answer_spec=answer_spec,
         question=question,

@@ -28,7 +28,7 @@ structured_status:
     - wrong_query
   description: "Status for individual semantic/structured question answers"
 
-benchmark_status:
+question_status:
   values:
     - answered
     - partial
@@ -63,11 +63,11 @@ mapping:
     not_searched: pending
     insufficient_evidence: pending
     wrong_query: pending
-  section_to_benchmark:
+  section_to_question:
     block_supported: answered
     block_needs_more: insufficient_evidence
     block_contradicted: not_found
-  benchmark_to_claim:
+  question_to_claim:
     answered: accepted
     partial: pending
     not_found: suppressed

@@ -114,7 +114,7 @@ def _execute_block_plan(
     if plan_action.action == "keypoint":
         keypoint = plan_action.keypoint
         if not keypoint:
-            if ctx.benchmark_mode:
+            if ctx.question_mode:
                 _store_section_run(
                     ctx.db,
                     section_key=ctx.section_key,
@@ -122,7 +122,7 @@ def _execute_block_plan(
                     iteration=iteration,
                     phase="plan_error",
                     payload={
-                        "error": "benchmark_mode: no keypoint name and default not allowed"
+                        "error": "question_mode: no keypoint name and default not allowed"
                     },
                 )
                 return None

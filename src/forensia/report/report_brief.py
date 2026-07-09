@@ -76,7 +76,7 @@ def _query_top_findings(
     # when it declares a priority-keyword ordering, regroup the severity-ranked
     # rows into those narrative tiers. The stable sort keeps the generic
     # severity / confidence order within each tier, and with no policy the rows
-    # keep the case-agnostic default order — so the benchmark's narrative order
+    # keep the case-agnostic default order — so an external question sheet's narrative order
     # lives in its overview template's frontmatter, not in this core query.
     if priority_keywords:
         rows = sorted(

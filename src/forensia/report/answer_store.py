@@ -37,10 +37,6 @@ def _structured_block_id(block_heading: str) -> str:
     return "Q0"
 
 
-def _benchmark_block_id(block_heading: str) -> str:
-    return _structured_block_id(block_heading)
-
-
 def _coerce_string_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
@@ -82,7 +78,7 @@ def _answer_columns(items: list[Any], preferred: Any = None) -> list[str]:
     return columns
 
 
-def _normalize_benchmark_answer(
+def _normalize_structured_answer(
     answer: dict[str, Any],
     *,
     section_key: str,
@@ -123,21 +119,6 @@ def _normalize_benchmark_answer(
         if value:
             normalized[key] = value
     return normalized
-
-
-def _normalize_structured_answer(
-    answer: dict[str, Any],
-    *,
-    section_key: str,
-    block_heading: str,
-    status: str,
-) -> dict[str, Any]:
-    return _normalize_benchmark_answer(
-        answer,
-        section_key=section_key,
-        block_heading=block_heading,
-        status=status,
-    )
 
 
 def _structured_answers_path(case: Case) -> Path:
@@ -419,24 +400,6 @@ def _render_structured_answer_markdown(
         ]
     )
     return "\n".join(lines).strip() + "\n"
-
-
-def _benchmark_answers_path(case: Case) -> Path:
-    return _structured_answers_path(case)
-
-
-def _load_benchmark_answers(case: Case) -> list[dict[str, Any]]:
-    return _load_structured_answers(case)
-
-
-def _persist_benchmark_answer(case: Case, answer: dict[str, Any]) -> None:
-    _persist_structured_answer(case, answer)
-
-
-def _render_benchmark_answer_markdown(
-    answer: dict[str, Any], block_heading: str, tz_name: str | None = None
-) -> str:
-    return _render_structured_answer_markdown(answer, block_heading, tz_name=tz_name)
 
 
 def _structured_rows(db: CaseDB, query: str) -> list[dict[str, Any]]:

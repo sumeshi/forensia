@@ -222,9 +222,9 @@ def memory_for_section(
     memory: MemoryManager,
     *,
     structured_mode: bool = False,
-    benchmark_mode: bool | None = None,
+    question_mode: bool | None = None,
 ) -> MemoryManager | EvidenceOnlyMemory:
     """Wrap memory in EvidenceOnlyMemory for structured-answer blocks."""
-    if benchmark_mode is not None:
-        structured_mode = benchmark_mode
+    if question_mode is not None:
+        structured_mode = question_mode
     return EvidenceOnlyMemory(memory) if structured_mode else memory

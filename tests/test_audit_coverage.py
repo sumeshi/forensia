@@ -114,7 +114,7 @@ class VerdictEnforcementTests(unittest.TestCase):
         assert_valid_verdict("confirmed", "hypothesis_verdict")  # no error
         assert_valid_verdict("block_supported", "section_verdict")  # no error
         assert_valid_verdict("answered", "structured_status")  # no error
-        assert_valid_verdict("answered", "benchmark_status")  # no error
+        assert_valid_verdict("answered", "question_status")  # no error
 
     def test_store_section_run_rejects_invalid(self) -> None:
         from forensia.core.verdicts import assert_valid_verdict
@@ -123,9 +123,9 @@ class VerdictEnforcementTests(unittest.TestCase):
             assert_valid_verdict("bogus_verdict", "section_verdict")
 
     def test_benchmark_answer_normalization_enforces_taxonomy(self) -> None:
-        from forensia.report.answer_store import _normalize_benchmark_answer
+        from forensia.report.answer_store import _normalize_structured_answer
 
-        result = _normalize_benchmark_answer(
+        result = _normalize_structured_answer(
             {"status": "bogus_status"},
             section_key="6_appendix",
             block_heading="Q01: Test",

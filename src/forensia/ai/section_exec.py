@@ -222,8 +222,8 @@ def _structured_digest_from_answers(case: Case) -> str:
     return digest
 
 
-def _benchmark_report_brief(report_brief: dict[str, Any] | None) -> dict[str, Any]:
-    """Strip narrative-heavy fields from report_brief for benchmark mode.
+def _question_report_brief(report_brief: dict[str, Any] | None) -> dict[str, Any]:
+    """Strip narrative-heavy fields from report_brief for question mode.
 
     Benchmark blocks must only receive factual inventories, not LLM-generated
     narratives, to prevent answer leakage.
@@ -254,7 +254,7 @@ def _benchmark_report_brief(report_brief: dict[str, Any] | None) -> dict[str, An
 
 def _structured_report_brief(report_brief: dict[str, Any] | None) -> dict[str, Any]:
     """Neutral alias for structured question blocks."""
-    return _benchmark_report_brief(report_brief)
+    return _question_report_brief(report_brief)
 
 
 def _keypoint_catalog(

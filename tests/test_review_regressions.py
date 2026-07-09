@@ -665,7 +665,7 @@ class SectionReviewerTests(unittest.TestCase):
                     memory=None,
                     max_queries=1,
                     evidence_keypoints=None,
-                    benchmark_mode=False,
+                    question_mode=False,
                 )
                 narrate_calls = []
                 with (
