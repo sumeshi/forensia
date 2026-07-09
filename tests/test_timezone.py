@@ -13,15 +13,13 @@ from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.normalize.timezone import infer_timezone
 from forensia.questions import extract_time_qualifiers
-from forensia.report.writer import (
-    _add_local_time_columns,
-    _build_report_brief,
+from forensia.report.answer_store import _add_local_time_columns
+from forensia.report.markdown import _local_time_from_utc as _wt_local_time_from_utc
+from forensia.report.markdown import (
     _render_timestamp_with_timezone,
     _tz_offset_str,
 )
-from forensia.report.writer import (
-    _local_time_from_utc as _wt_local_time_from_utc,
-)
+from forensia.report.writer import _build_report_brief
 
 # ── Case timezone persistence ──────────────────────────────────────────────
 

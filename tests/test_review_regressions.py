@@ -18,13 +18,16 @@ import unittest
 from typing import Any
 
 from forensia.ai.case_profile import get_profile_event_ids, set_case_profile
-from forensia.ai.checker import _co_observation_satisfied, _verify_verdict_consistency
+from forensia.ai.check_guardrails import (
+    _co_observation_satisfied,
+    _verify_verdict_consistency,
+)
 from forensia.ai.hypothesis_manager import (
     _feed_verdict_to_timeline,
     _interpolate_follow_up,
     _resolve_hypothesis,
 )
-from forensia.ai.prompts import (
+from forensia.ai.prompt_sections import (
     build_paragraph_narrate_messages,
     build_section_outline_messages,
 )
@@ -271,7 +274,7 @@ class RowWithEvidenceIdsCitableTests(unittest.TestCase):
     """_row_with_evidence_ids must tag rows as citable: False when no evidence_id is present."""
 
     def test_row_without_evidence_id_gets_citable_false(self) -> None:
-        from forensia.report.keypoints import _row_with_evidence_ids
+        from forensia.report.evidence_refs import _row_with_evidence_ids
 
         row = {"src_ip": "10.0.0.5", "computer": "host1", "event_id": 4624}
         normalized = _row_with_evidence_ids(row)
@@ -280,7 +283,7 @@ class RowWithEvidenceIdsCitableTests(unittest.TestCase):
         self.assertNotIn("evidence_ids", normalized)
 
     def test_row_with_evidence_id_does_not_get_citable_false(self) -> None:
-        from forensia.report.keypoints import _row_with_evidence_ids
+        from forensia.report.evidence_refs import _row_with_evidence_ids
 
         row = {"src_ip": "10.0.0.5", "evidence_id": "evtx-security-000000000001"}
         normalized = _row_with_evidence_ids(row)
@@ -288,7 +291,7 @@ class RowWithEvidenceIdsCitableTests(unittest.TestCase):
         self.assertEqual("evtx-security-000000000001", normalized.get("evidence_id"))
 
     def test_row_with_evidence_ids_list_does_not_get_citable_false(self) -> None:
-        from forensia.report.keypoints import _row_with_evidence_ids
+        from forensia.report.evidence_refs import _row_with_evidence_ids
 
         row = {
             "src_ip": "10.0.0.5",
@@ -306,7 +309,7 @@ class VerdictLabeledKeyPointsTests(unittest.TestCase):
     """RC5: Verdict-labeled key points for narrative blocks."""
 
     def test_label_refuted_from_source_verdict(self) -> None:
-        from forensia.ai.section_agent import _label_key_points_with_verdicts
+        from forensia.ai.section_block_narrative import _label_key_points_with_verdicts
 
         outline = [
             {
@@ -329,7 +332,7 @@ class VerdictLabeledKeyPointsTests(unittest.TestCase):
         self.assertTrue(labeled[0].startswith("[refuted]"), labeled[0])
 
     def test_label_confirmed_from_source_verdict(self) -> None:
-        from forensia.ai.section_agent import _label_key_points_with_verdicts
+        from forensia.ai.section_block_narrative import _label_key_points_with_verdicts
 
         outline = [
             {
@@ -350,7 +353,7 @@ class VerdictLabeledKeyPointsTests(unittest.TestCase):
         self.assertTrue(labeled[0].startswith("[confirmed]"), labeled[0])
 
     def test_label_finding_confidence_from_confidence_field(self) -> None:
-        from forensia.ai.section_agent import _label_key_points_with_verdicts
+        from forensia.ai.section_block_narrative import _label_key_points_with_verdicts
 
         outline = [
             {
@@ -372,7 +375,7 @@ class VerdictLabeledKeyPointsTests(unittest.TestCase):
         self.assertIn("0.85", labeled[0])
 
     def test_unlabeled_when_no_verdict_info(self) -> None:
-        from forensia.ai.section_agent import _label_key_points_with_verdicts
+        from forensia.ai.section_block_narrative import _label_key_points_with_verdicts
 
         outline = [
             {
@@ -385,7 +388,7 @@ class VerdictLabeledKeyPointsTests(unittest.TestCase):
         self.assertEqual(["Generic observation"], labeled)
 
     def test_fallback_to_overall_verdict_when_no_per_result_verdicts(self) -> None:
-        from forensia.ai.section_agent import _label_key_points_with_verdicts
+        from forensia.ai.section_block_narrative import _label_key_points_with_verdicts
 
         outline = [
             {
@@ -402,7 +405,7 @@ class VerdictLabeledKeyPointsTests(unittest.TestCase):
         self.assertTrue(labeled[0].startswith("[confirmed]"), labeled[0])
 
     def test_narrate_prompt_rules_contain_verdict_label_guidance(self) -> None:
-        from forensia.ai.prompts import build_paragraph_narrate_messages
+        from forensia.ai.prompt_sections import build_paragraph_narrate_messages
 
         messages, schema = build_paragraph_narrate_messages(
             heading="Test Heading",
@@ -429,12 +432,12 @@ if __name__ == "__main__":
 
 from pathlib import Path
 
-from forensia.ai.section_agent import _insufficient_evidence_placeholder
+from forensia.ai.section_answers import _insufficient_evidence_placeholder
+from forensia.report.markdown import _build_host_note
+from forensia.report.quality_gates import _check_failure_spam
 from forensia.report.writer import (
-    _build_host_note,
     _catalog_exe_globs,
     _catalog_path_terms,
-    _check_failure_spam,
     _exe_glob_sql,
     _GateCtx,
     _matches_exe_globs,
@@ -634,7 +637,11 @@ class SectionReviewerTests(unittest.TestCase):
         import tempfile
         from unittest import mock
 
-        from forensia.ai import llm_gateway, section_agent, section_block_narrative
+        from forensia.ai import (
+            llm_gateway,
+            section_block_context,
+            section_block_narrative,
+        )
         from forensia.core.case import Case
         from forensia.db.database import CaseDB
 
@@ -646,7 +653,7 @@ class SectionReviewerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                ctx = section_agent._prepare_block_context(
+                ctx = section_block_context._prepare_block_context(
                     case=case,
                     db=db,
                     section_key="1_overview",
@@ -677,7 +684,7 @@ class SectionReviewerTests(unittest.TestCase):
                         side_effect=lambda **kw: narrate_calls.append(kw) or clean_body,
                     ),
                 ):
-                    result = section_agent._review_and_rewrite_narrative(
+                    result = section_block_narrative._review_and_rewrite_narrative(
                         ctx,
                         dirty_body,
                         narrate_messages=[{"role": "system", "content": "narrate"}],
@@ -708,7 +715,7 @@ class SectionReviewerTests(unittest.TestCase):
                         return_value=dirty_body,
                     ) as clean_rewrite_call,
                 ):
-                    kept = section_agent._review_and_rewrite_narrative(
+                    kept = section_block_narrative._review_and_rewrite_narrative(
                         ctx,
                         clean_body,
                         narrate_messages=[{"role": "system", "content": "narrate"}],
@@ -726,7 +733,7 @@ class SectionReviewerTests(unittest.TestCase):
         self.assertGreaterEqual(len(problems), 2)
 
     def test_build_section_review_messages_includes_problems(self) -> None:
-        from forensia.ai.prompts import (
+        from forensia.ai.prompt_sections import (
             SECTION_REVIEW_SCHEMA,
             build_section_review_messages,
         )

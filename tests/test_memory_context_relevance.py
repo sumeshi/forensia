@@ -295,7 +295,10 @@ def test_ctx_refresh_caches_forwards_relevance_terms() -> None:
     """
     from unittest.mock import MagicMock
 
-    from forensia.ai.investigator import _Ctx, _ctx_refresh_caches
+    from forensia.ai.investigation_session import (
+        _Ctx,
+        _ctx_refresh_caches,
+    )
     from forensia.core.memory import MemoryManager
     from forensia.core.session import Hypothesis
 

@@ -18,18 +18,18 @@ from pathlib import Path
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
-from forensia.report.probes import (
-    _antiforensic_rows,
-    _build_evidence_gaps_table,
+from forensia.report.finding_themes import (
     _build_recommendations_table,
     _finding_theme_counts,
-    _query_top_findings,
     _signal_finding_rows,
 )
+from forensia.report.gap_tables import _build_evidence_gaps_table
 from forensia.report.ranking import (
     audit_packaged_report_templates,
     load_top_findings_priority_keywords,
 )
+from forensia.report.report_brief import _query_top_findings
+from forensia.report.summary_rows import _antiforensic_rows
 
 
 def _insert_finding(

@@ -9,40 +9,30 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from forensia.ai.hypothesis_model import (  # noqa: F401
+from forensia.ai.hypothesis_model import (
     _best_hypothesis_match,
     _clean_confirm_when,
     _extract_entities_from_text,
     _extract_refuted_tokens,
-    _extract_semantic_triple,
     _filter_valid_entities,
-    _find_hypothesis_by_description,
     _gap_hypothesis_id,
     _gap_references_refuted,
     _hypothesis_evidence_strength,
-    _hypothesis_similarity,
-    _hypothesis_tokens,
-    _known_db_columns,
     _merge_hypothesis_fields,
     _merge_string_lists,
     _normalize_hypothesis_description,
     _propose_confirm_when,
-    _semantic_hypothesis_similarity,
 )
-from forensia.ai.hypothesis_store import (  # noqa: F401
+from forensia.ai.hypothesis_store import (
     _all_hypotheses,
-    _load_persisted_hypotheses,
     _next_hypothesis_id,
-    _recent_reasoning_rows,
-    _render_hypothesis_memory,
-    _row_to_hypothesis,
     _upsert_hypothesis,
 )
 from forensia.core.log import log as _log
 from forensia.core.session import Hypothesis, SessionState
 from forensia.core.textutil import normalize_text as _normalize_text
 from forensia.db.database import CaseDB
-from forensia.report.section_taxonomy import (  # noqa: F401 — re-export for backward compat
+from forensia.report.section_taxonomy import (
     guess_related_sections as _guess_related_sections,
 )
 from forensia.report.section_taxonomy import (

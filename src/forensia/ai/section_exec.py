@@ -35,7 +35,7 @@ from forensia.report.keypoint_catalog import (
     _resolve_evidence_results,
 )
 from forensia.report.section_taxonomy import (
-    section_family as _section_family,  # noqa: F401
+    section_family as _section_family,
 )
 
 # ====================================================================

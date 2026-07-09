@@ -241,7 +241,7 @@ def _build_daily_session_timeline(
     db: CaseDB,
     qualifiers: dict[str, str | None] | None = None,
 ) -> list[dict[str, Any]]:
-    """Structured answer builder (compatibility shim): delegates to report.structured_answers."""
+    """Structured answer builder (compatibility shim): delegates to report.answer_registry."""
     return _build_daily_session_timeline_rows(db, qualifiers)
 
 

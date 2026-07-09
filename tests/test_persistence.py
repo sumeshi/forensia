@@ -11,15 +11,11 @@ import yaml
 from typer.testing import CliRunner
 
 from forensia import cli as cli_module
-from forensia.ai.checker import _insert_investigation_finding
-from forensia.ai.hypothesis_manager import (
-    _load_persisted_hypotheses,
-    _merge_active_hypotheses,
-)
-from forensia.ai.investigator import (
-    _append_hypothesis_reasoning,
-    _final_summary,
-)
+from forensia.ai.check_apply import _insert_investigation_finding
+from forensia.ai.hypothesis_manager import _merge_active_hypotheses
+from forensia.ai.hypothesis_store import _load_persisted_hypotheses
+from forensia.ai.investigation_session import _append_hypothesis_reasoning
+from forensia.ai.investigator import _final_summary
 from forensia.ai.report_gap import (
     _classify_gap_kind,
     _gap_hypothesis_id,

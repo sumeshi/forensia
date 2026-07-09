@@ -193,7 +193,7 @@ def _validate_question_sql(sql: str, table_columns: dict[str, set[str]]) -> list
 
 def _structured_builder_specs() -> set[str]:
     try:
-        from forensia.report.writer import _STRUCTURED_ANSWER_BUILDERS
+        from forensia.report.answer_registry import _STRUCTURED_ANSWER_BUILDERS
 
         return set(_STRUCTURED_ANSWER_BUILDERS)
     except Exception:

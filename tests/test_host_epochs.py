@@ -7,7 +7,7 @@ import duckdb
 
 from forensia.core.case import Case, detect_epochs
 from forensia.db.database import CaseDB
-from forensia.report.writer import _host_summary_rows
+from forensia.report.summary_rows import _host_summary_rows
 
 
 def _create_db_with_events(rows: list[tuple]) -> duckdb.DuckDBPyConnection:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from forensia.ai.investigator import _unavailable_missing_event_ids
+from forensia.ai.hypothesis_runner import _unavailable_missing_event_ids
 
 
 class TestUnavailableMissingEventIds:

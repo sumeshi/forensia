@@ -42,7 +42,7 @@ def _rebuild_top_findings_from_db() -> list | None:
         return None
     import duckdb
 
-    from forensia.report.probes import _query_top_findings
+    from forensia.report.report_brief import _query_top_findings
 
     conn = duckdb.connect(str(CASE_DB_PATH), read_only=True)
     try:

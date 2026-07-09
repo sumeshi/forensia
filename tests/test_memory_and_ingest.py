@@ -10,10 +10,14 @@ from unittest.mock import Mock, patch
 from typer.testing import CliRunner
 
 from forensia import cli as cli_module
-from forensia.ai.checker import summarize_query_result
-from forensia.ai.investigator import _apply_memory_updates, _sync_keypoint_cards
+from forensia.ai.check_normalize import summarize_query_result
+from forensia.ai.investigation_session import _sync_keypoint_cards
+from forensia.ai.memory_sync import _apply_memory_updates
 from forensia.artifacts import MftArtifactAdapter, PrefetchArtifactAdapter
-from forensia.cli import _progress_pusher, _reset_case_tables
+from forensia.cli_support import (
+    _progress_pusher,
+    _reset_case_tables,
+)
 from forensia.config import (
     get_llm_settings,
     reload_settings,

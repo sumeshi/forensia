@@ -14,7 +14,7 @@ from forensia.knowledge import (
     load_event_class_definitions,
     load_question_routing_raw,
 )
-from forensia.report.section_taxonomy import (  # noqa: F401 — re-export for backward compat
+from forensia.report.section_taxonomy import (
     SECTION_KEY_PLAYBOOK_MAP as _SECTION_KEY_MAP,
 )
 

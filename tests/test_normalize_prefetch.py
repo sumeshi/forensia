@@ -227,14 +227,14 @@ class PrefetchPathSanitizationTests(unittest.TestCase):
     """Tests for _is_local_ingest_path, _strip_path_basename, and _sanitize_prefetch_path."""
 
     def test_is_local_ingest_path_cfreds_prefetch(self) -> None:
-        from forensia.report.structured_answers import _is_local_ingest_path
+        from forensia.report.answer_store import _is_local_ingest_path
 
         self.assertTrue(_is_local_ingest_path("sample/cfreds/Prefetch/CALC.EXE-ABCD1234.pf"))
         self.assertTrue(_is_local_ingest_path("disk-image-1/PREFETCH/NOTEPAD.EXE-5678.pf"))
         self.assertTrue(_is_local_ingest_path("Windows/Prefetch/WINWORD.EXE-CECBA770.pf"))
 
     def test_is_local_ingest_path_real_windows_paths_are_not_local(self) -> None:
-        from forensia.report.structured_answers import _is_local_ingest_path
+        from forensia.report.answer_store import _is_local_ingest_path
 
         self.assertFalse(_is_local_ingest_path("C:\\Windows\\System32\\calc.exe"))
         self.assertFalse(_is_local_ingest_path("\\Device\\HarddiskVolume1\\Windows\\notepad.exe"))
@@ -243,13 +243,13 @@ class PrefetchPathSanitizationTests(unittest.TestCase):
         self.assertFalse(_is_local_ingest_path("Windows\\Prefetch\\CALC.EXE-ABCD1234.pf"))
 
     def test_is_local_ingest_path_empty_or_none(self) -> None:
-        from forensia.report.structured_answers import _is_local_ingest_path
+        from forensia.report.answer_store import _is_local_ingest_path
 
         self.assertFalse(_is_local_ingest_path(""))
         self.assertFalse(_is_local_ingest_path(None))
 
     def test_strip_path_basename(self) -> None:
-        from forensia.report.structured_answers import _strip_path_basename
+        from forensia.report.answer_store import _strip_path_basename
 
         self.assertEqual("CALC.EXE-ABCD1234.pf", _strip_path_basename("sample/cfreds/Prefetch/CALC.EXE-ABCD1234.pf"))
         self.assertEqual("notepad.exe", _strip_path_basename("C:\\Windows\\System32\\notepad.exe"))
@@ -258,7 +258,7 @@ class PrefetchPathSanitizationTests(unittest.TestCase):
         self.assertEqual("", _strip_path_basename(None))
 
     def test_sanitize_prefetch_path_local_ingest_returns_basename(self) -> None:
-        from forensia.report.structured_answers import _sanitize_prefetch_path
+        from forensia.report.answer_store import _sanitize_prefetch_path
 
         self.assertEqual(
             "CALC.EXE-ABCD1234.pf",
@@ -270,7 +270,7 @@ class PrefetchPathSanitizationTests(unittest.TestCase):
         )
 
     def test_sanitize_prefetch_path_real_windows_path_unchanged(self) -> None:
-        from forensia.report.structured_answers import _sanitize_prefetch_path
+        from forensia.report.answer_store import _sanitize_prefetch_path
 
         self.assertEqual(
             "C:\\Windows\\System32\\calc.exe",
@@ -282,7 +282,7 @@ class PrefetchPathSanitizationTests(unittest.TestCase):
         )
 
     def test_sanitize_prefetch_path_empty_or_none(self) -> None:
-        from forensia.report.structured_answers import _sanitize_prefetch_path
+        from forensia.report.answer_store import _sanitize_prefetch_path
 
         self.assertEqual("", _sanitize_prefetch_path(""))
         self.assertEqual("", _sanitize_prefetch_path(None))

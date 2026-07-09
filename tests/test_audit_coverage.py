@@ -123,7 +123,7 @@ class VerdictEnforcementTests(unittest.TestCase):
             assert_valid_verdict("bogus_verdict", "section_verdict")
 
     def test_benchmark_answer_normalization_enforces_taxonomy(self) -> None:
-        from forensia.report.writer import _normalize_benchmark_answer
+        from forensia.report.answer_store import _normalize_benchmark_answer
 
         result = _normalize_benchmark_answer(
             {"status": "bogus_status"},

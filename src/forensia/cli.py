@@ -19,24 +19,17 @@ from forensia.api.cache import (
     write_api_snapshots,
 )
 from forensia.api.progress import clear_progress_events
-from forensia.cli_stages import (  # noqa: F401
+from forensia.cli_stages import (
     _make_initial_progress_state,
     _run_analyze_stage,
     _run_ingest_stage,
-    _run_init_stage,
     _run_investigate_stage,
     _run_normalize_stage,
     _run_report_stage,
 )
-from forensia.cli_support import (  # noqa: F401
-    PROFILE_ROOT,
-    _available_profiles,
-    _case_timezone,
-    _count_records,
-    _normalize_counts_summary,
+from forensia.cli_support import (
     _open_case_or_die,
     _progress_pusher,
-    _prune_orphan_reviews,
     _reset_case_tables,
     _resolve_llm_or_die,
     _resolve_profile_path,

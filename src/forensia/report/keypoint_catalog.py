@@ -16,14 +16,6 @@ from forensia.report.evidence_refs import (
     _report_keypoint_rows,
     _summarize_rows,
 )
-from forensia.report.keypoint_sql import (  # noqa: F401
-    _BROWSER_EXE_SQL,
-    _CLOUD_FILE_SQL,
-    _CLOUD_PATH_SQL,
-    _EMAIL_DATA_FILE_SQL,
-    _EMAIL_EXTENSION_SQL,
-    _EMAIL_PATH_SQL,
-)
 from forensia.report.keypoints_activity import ACTIVITY_KEYPOINTS
 from forensia.report.keypoints_host_account import HOST_ACCOUNT_KEYPOINTS
 from forensia.report.keypoints_overview_ioc import OVERVIEW_IOC_KEYPOINTS

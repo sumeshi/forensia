@@ -6,81 +6,19 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-# Block-support helpers moved to ai.section_blocks (R4 follow-up); re-exported
-# here for backward compatibility with existing imports and tests.
-from forensia.ai.section_answers import (  # noqa: F401
-    _all_values_empty,
-    _antiforensic_tool_names,
-    _build_daily_session_timeline,
-    _compact_narrative_value,
-    _extract_answer_by_shape,
-    _extract_daily_table,
-    _extract_enumerated_services,
-    _extract_full_scan,
-    _extract_known_list,
-    _extract_name_with_version,
-    _extract_pair_list,
-    _flatten_sample_rows,
-    _format_benchmark_answer,
-    _format_structured_answer,
-    _insufficient_evidence_placeholder,
-    _is_effectively_empty_body,
-    _report_language,
-    _representative_ids,
-    _resolve_benchmark_expected_shape,
-    _resolve_structured_expected_shape,
-    _result_count_summary,
-    _result_source_label,
-    _row_narrative,
-    _row_text,
-    _row_value,
-)
-from forensia.ai.section_exec import (  # noqa: F401
-    SectionBlockResult,
-    SectionPlanAction,
-    _add_json_fallback,
-    _benchmark_report_brief,
-    _classify_block_status,
-    _coerce_plan_action,
-    _execute_evidence_chain,
-    _execute_keypoint,
-    _execute_sql,
+# Block-support helpers live in section_answers / section_exec / section_run_store.
+from forensia.ai.section_exec import (
     _filter_template_catalog_by_section,
-    _is_valid_status,
     _keypoint_catalog,
-    _known_keypoints,
-    _load_evidence_chains,
-    _load_question_routing,
-    _query_template_catalog,
-    _question_routing_answer_spec,
-    _question_routing_keypoints,
-    _question_routing_rule,
-    _section_family,
-    _split_keypoint_names,
     _structured_digest_from_answers,
     _structured_report_brief,
-    _substitute_placeholders,
-    _summarize_sql_result,
 )
-from forensia.ai.section_run_store import (  # noqa: F401
-    _CONFIDENCE_KEYWORD_MAP,
+from forensia.ai.section_run_store import (
     _audit_bridge,
-    _cache_key,
-    _coerce_confidence,
-    _evidence_as_result,
-    _facts_as_result,
     _findings_snapshot,
-    _load_cached_result,
-    _load_prior_runs,
     _load_reusable_section_evidence,
     _load_reusable_section_facts,
-    _now,
-    _safe_rows,
-    _store_cached_result,
-    _store_section_evidence,
-    _store_section_facts,
     _store_section_question,
-    _store_section_run,
 )
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager

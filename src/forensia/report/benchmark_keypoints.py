@@ -1,7 +1,7 @@
 """Benchmark-evaluation keypoint aliases.
 
 These map benchmark-question-oriented keypoint names to the *generic* keypoint
-implementations defined in :mod:`forensia.report.keypoints`. They exist only to
+implementations defined in :mod:`forensia.report.keypoint_catalog`. They exist only to
 let the optional external CFReDS benchmark report template (see ``BENCHMARK.md``)
 address report tables by question-oriented names.
 

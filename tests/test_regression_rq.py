@@ -4,21 +4,19 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from forensia.ai.prompts import (
-    _slim_report_brief_for_section,
-    build_paragraph_narrate_messages,
-)
+from forensia.ai.prompt_context import _slim_report_brief_for_section
+from forensia.ai.prompt_sections import build_paragraph_narrate_messages
 from forensia.ai.schemas import PARAGRAPH_NARRATE_SCHEMA
-from forensia.ai.section_agent import (
+from forensia.ai.section_answers import (
     _build_daily_session_timeline,
-    _coerce_plan_action,
     _extract_answer_by_shape,
     _format_benchmark_answer,
-    _load_event_class_definitions,
 )
+from forensia.ai.section_exec import _coerce_plan_action
+from forensia.report.answer_builders_host import _load_event_class_definitions
+from forensia.report.quality_gates import _check_json_object_leak
 from forensia.report.writer import (
     EVIDENCE_ID_PATTERN,
-    _check_json_object_leak,
     _extract_claim_texts,
     _GateCtx,
 )

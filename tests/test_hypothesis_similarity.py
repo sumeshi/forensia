@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import tempfile
 
-from forensia.ai.hypothesis_manager import (
+from forensia.ai.hypothesis_manager import _merge_active_hypotheses
+from forensia.ai.hypothesis_model import (
     _extract_semantic_triple,
     _hypothesis_evidence_strength,
     _hypothesis_similarity,
-    _merge_active_hypotheses,
 )
 from forensia.core.case import Case
 from forensia.core.session import Hypothesis

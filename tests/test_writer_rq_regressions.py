@@ -7,25 +7,29 @@ import unittest
 from datetime import UTC, datetime
 from unittest.mock import patch
 
-from forensia.ai.section_agent import (
+from forensia.ai.section_agent import run_section_block_agent
+from forensia.ai.section_answers import _is_effectively_empty_body
+from forensia.ai.section_block_narrative import (
     _fallback_narrative_body,
-    _is_effectively_empty_body,
-    _load_reusable_section_facts,
     _narrate_paragraph_with_retry,
+)
+from forensia.ai.section_exec import (
     _question_routing_answer_spec,
     _structured_digest_from_answers,
-    run_section_block_agent,
 )
+from forensia.ai.section_run_store import _load_reusable_section_facts
 from forensia.config import clear_llm_settings_cache, reload_settings
 from forensia.core.case import Case
 from forensia.core.textutil import normalize_localized_dates
 from forensia.db.database import CaseDB
 from forensia.questions import resolve_question_spec
-from forensia.report.writer import (
-    _assemble_section_body,
+from forensia.report.quality_gates import (
     _check_citation_token_no_finding_id,
     _check_hedge_no_citation,
     _check_recommendations_strength,
+)
+from forensia.report.writer import (
+    _assemble_section_body,
     _dump_section_questions_json,
     _extract_needed_evidence,
     _GateCtx,
@@ -1291,7 +1295,7 @@ class WriterRQRegressionTests(unittest.TestCase):
 
     def test_render_table_block_prepends_caption(self) -> None:
         """R6-03: a mode:table block renders a declarative caption above the table."""
-        from forensia.report.probes import render_table_block
+        from forensia.report.table_registry import render_table_block
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -1308,7 +1312,7 @@ class WriterRQRegressionTests(unittest.TestCase):
 
     def test_render_table_block_empty_rows_render_declared_text(self) -> None:
         """R6-03: an empty result renders the declared empty text, not a bare table."""
-        from forensia.report.probes import render_table_block
+        from forensia.report.table_registry import render_table_block
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -1319,7 +1323,7 @@ class WriterRQRegressionTests(unittest.TestCase):
         self.assertIn("untestable", body)
 
     def test_render_table_block_unknown_builder_returns_none(self) -> None:
-        from forensia.report.probes import render_table_block
+        from forensia.report.table_registry import render_table_block
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -1338,7 +1342,7 @@ class WriterRQRegressionTests(unittest.TestCase):
 
     def test_execution_rows_aggregate_per_executable(self) -> None:
         """R6-06: one table row per executable name, exec counts summed."""
-        from forensia.report.probes import _execution_rows
+        from forensia.report.summary_rows import _execution_rows
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -1360,7 +1364,7 @@ class WriterRQRegressionTests(unittest.TestCase):
 
     def test_prepare_block_context_merges_section_table_digest(self) -> None:
         """R6-05: same-section table digest reaches the narrator context."""
-        from forensia.ai.section_agent import _prepare_block_context
+        from forensia.ai.section_block_context import _prepare_block_context
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -1392,7 +1396,7 @@ class WriterRQRegressionTests(unittest.TestCase):
         from unittest import mock
 
         from forensia.ai import section_refresher
-        from forensia.ai.section_blocks import SectionBlockResult
+        from forensia.ai.section_exec import SectionBlockResult
         from forensia.core.memory import MemoryManager
 
         captured: dict = {}
@@ -1756,7 +1760,7 @@ class WriterRQRegressionTests(unittest.TestCase):
 
     def test_structured_digest_in_prompt_for_overview(self) -> None:
         """Verify that build_paragraph_narrate_messages injects STRUCTURED_OBSERVATIONS for overview blocks."""
-        from forensia.ai.prompts import build_paragraph_narrate_messages
+        from forensia.ai.prompt_sections import build_paragraph_narrate_messages
 
         messages, _schema = build_paragraph_narrate_messages(
             heading="Executive Summary",
@@ -1774,7 +1778,7 @@ class WriterRQRegressionTests(unittest.TestCase):
 
     def test_structured_digest_not_in_prompt_for_appendix(self) -> None:
         """Verify appendix blocks get no STRUCTURED_OBSERVATIONS."""
-        from forensia.ai.prompts import build_paragraph_narrate_messages
+        from forensia.ai.prompt_sections import build_paragraph_narrate_messages
 
         messages, _schema = build_paragraph_narrate_messages(
             heading="Appendix Details",
@@ -1787,7 +1791,7 @@ class WriterRQRegressionTests(unittest.TestCase):
 
     def test_structured_digest_context_in_prepare_block_context(self) -> None:
         """Verify _prepare_block_context computes digest for overview and not for appendix."""
-        from forensia.ai.section_agent import _prepare_block_context
+        from forensia.ai.section_block_context import _prepare_block_context
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -1868,7 +1872,7 @@ class HtmlEvidenceIdAnchorTests(unittest.TestCase):
 
     def test_structured_answer_increased_max_rows(self) -> None:
         """R7-02: structured answer with 68 rows renders all 68 (no truncation below 200)."""
-        from forensia.report.structured_answers import _render_answer_block
+        from forensia.report.answer_store import _render_answer_block
 
         items = [{"idx": i} for i in range(68)]
         lines = _render_answer_block(items, columns=["idx"], max_rows=200)

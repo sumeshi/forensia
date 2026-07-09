@@ -5,7 +5,7 @@ from unittest import mock
 
 from forensia import config
 from forensia.ai import llm_client
-from forensia.report import structured_answers
+from forensia.report import answer_store
 
 
 def test_reload_settings_updates_existing_imported_reference() -> None:
@@ -47,7 +47,7 @@ def test_structured_answer_row_limit_uses_reloaded_setting() -> None:
             {"STRUCTURED_MARKDOWN_MAX_ROWS": "3"},
         ):
             config.reload_settings()
-            rendered = structured_answers._render_answer_block(items)
+            rendered = answer_store._render_answer_block(items)
             assert any("| 0 |" in line for line in rendered)
             assert any("| 2 |" in line for line in rendered)
             assert not any("| 3 |" in line for line in rendered)
