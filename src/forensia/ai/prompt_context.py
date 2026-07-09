@@ -347,7 +347,7 @@ LIMIT 200;
 SELECT event_id, timestamp, computer
 FROM evtx_events
 WHERE event_id = 7045
-  AND timestamp BETWEEN '2015-03-22 00:00:00' AND '2015-03-25 23:59:59'
+  AND timestamp BETWEEN '2024-05-14 00:00:00' AND '2024-05-17 23:59:59'
 ORDER BY timestamp;
 
 -- Per-user logon summary --

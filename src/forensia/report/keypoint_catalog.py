@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
@@ -10,7 +13,6 @@ from forensia.knowledge import (
     expand_catalog_sql_placeholders,
 )
 from forensia.questions import load_question_specs, project_rows_for_question_spec
-from forensia.report.benchmark_keypoints import BENCHMARK_KEYPOINT_ALIASES
 from forensia.report.evidence_refs import (
     EvidenceResolver,
     _report_keypoint_rows,
@@ -62,11 +64,25 @@ REPORT_KEYPOINT_ALIASES = {
     "chronological_events": "timeline_case_assembled",
 }
 
-# Benchmark-question-oriented aliases live in a separate module so the generic
-# alias map above stays free of benchmark-specific names (CLAUDE.md Rule 16).
-# They resolve to the same generic keypoints and are only used by the optional
-# external benchmark template.
-REPORT_KEYPOINT_ALIASES.update(BENCHMARK_KEYPOINT_ALIASES)
+def _load_template_keypoint_aliases() -> dict[str, str]:
+    """Aliases used by optional external report templates (e.g. evaluation
+    question sheets), kept as packaged data so product code carries no
+    template/question-specific vocabulary (CLAUDE.md Rule 16). Each value must
+    be a keypoint registered in REPORT_KEYPOINTS or a generic alias above;
+    a missing file simply means no extra aliases."""
+    path = Path(__file__).parent.parent / "rulepacks" / "_schema" / "keypoint_aliases.yaml"
+    if not path.exists():
+        return {}
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    aliases = data.get("aliases") or {}
+    return {
+        str(key): str(value)
+        for key, value in aliases.items()
+        if isinstance(key, str) and isinstance(value, str)
+    }
+
+
+REPORT_KEYPOINT_ALIASES.update(_load_template_keypoint_aliases())
 
 
 # ── Default keypoints for section ──

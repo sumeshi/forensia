@@ -518,8 +518,8 @@ def build_section_outline_messages(
         "Do not use raw internal IDs (gap-*, H-*, KP-*) in prose. Use human-readable descriptions instead.\n"
         "</RULES>\n"
         "<EXAMPLE>\n"
-        'Input evidence rows: [{"evidence_id": "evtx-security-000000000122", "summary": "4648 logon WIN-D9->informant 2015-03-22 14:33:54"}, {"evidence_id": "evtx-security-000000000152", "summary": "4648 logon WIN-D9->informant 2015-03-22 14:34:28"}]\n'
-        'Output: {"outline": [{"heading": "Executive Summary", "key_points": ["Two explicit-credential logon attempts (4648) from WIN-D9RGPJQ68G8$ targeting informant were observed within 60 seconds on 2015-03-22"], "evidence_ids": ["evtx-security-000000000122"]}]}\n'
+        'Input evidence rows: [{"evidence_id": "evtx-security-000000000122", "summary": "4648 logon WS-SALES-03->jdoe 2024-05-14 14:33:54"}, {"evidence_id": "evtx-security-000000000152", "summary": "4648 logon WS-SALES-03->jdoe 2024-05-14 14:34:28"}]\n'
+        'Output: {"outline": [{"heading": "Executive Summary", "key_points": ["Two explicit-credential logon attempts (4648) from WS-SALES-03$ targeting jdoe were observed within 60 seconds on 2024-05-14"], "evidence_ids": ["evtx-security-000000000122"]}]}\n'
         "</EXAMPLE>\n"
         "Output JSON only. "
     )
@@ -582,13 +582,13 @@ def build_paragraph_narrate_messages(
         "</RULES>\n"
         f"{digest_block}"
         "<EXAMPLE_GOOD>\n"
-        "Eight explicit-credential logon attempts (4648) targeting informant, admin11, and temporary were observed from INFORMANT-PC$ between 14:33 and 15:55 on 2015-03-22 (evtx-security-000000000122, evtx-security-000000000152). All attempts succeeded and produced no subsequent 4624 from the same src_ip, suggesting localhost credential injection rather than network-reused access.\n"
+        "Eight explicit-credential logon attempts (4648) targeting jdoe, admin02, and tempuser were observed from WS-SALES-03$ between 14:33 and 15:55 on 2024-05-14 (evtx-security-000000000122, evtx-security-000000000152). All attempts succeeded and produced no subsequent 4624 from the same src_ip, suggesting localhost credential injection rather than network-reused access.\n"
         "</EXAMPLE_GOOD>\n"
         "<EXAMPLE_BAD>\n"
         "The investigation revealed multiple high-severity findings related to logon attempts using explicit credentials (windows-security-4648-logon-explicit-creds-0001, ..., 0011).\n"
         "</EXAMPLE_BAD>\n"
         "<EXAMPLE_JSON>\n"
-        '{"body":"Eight explicit-credential logon attempts targeting informant and admin11 were observed from INFORMANT-PC$ on 2015-03-22 (evtx-security-000000000122, evtx-security-000000000152)."}\n'
+        '{"body":"Eight explicit-credential logon attempts targeting jdoe and admin02 were observed from WS-SALES-03$ on 2024-05-14 (evtx-security-000000000122, evtx-security-000000000152)."}\n'
         "</EXAMPLE_JSON>"
     )
     user = (

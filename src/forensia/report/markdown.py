@@ -105,7 +105,7 @@ def _render_timestamp_with_timezone(timestamp_str: str, case: Case) -> str:
     """Render timestamp with timezone qualifier.
 
     When the case has a known non-UTC timezone, shows dual-time format:
-      2015-03-25 15:31:00 UTC (11:31:00 local, UTC-4, basis: …)
+      2024-05-14 15:31:00 UTC (11:31:00 local, UTC-4, basis: …)
     Otherwise shows UTC-only.
     """
     if not timestamp_str:

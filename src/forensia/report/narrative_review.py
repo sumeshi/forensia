@@ -16,7 +16,7 @@ _INTERNAL_ID_RE = re.compile(r"\bgap-[0-9a-f]{6,}\b|\bH-\d{3}\b|\bKP-\d{4}\b")
 # A pseudo-citation is a parenthesized snake_case label (digest/keypoint names
 # like `(antiforensic_activity)` or `(STRUCTURED_OBSERVATIONS)`). Requiring at
 # least one underscore avoids flagging ordinary parenthesized words such as
-# `(informant)`. Both ASCII and full-width parentheses appear in ja output.
+# `(username)`. Both ASCII and full-width parentheses appear in ja output.
 _PSEUDO_CITATION_RE = re.compile(r"[（(]\s*([A-Za-z]+(?:_[A-Za-z]+)+)\s*[)）]")
 
 
