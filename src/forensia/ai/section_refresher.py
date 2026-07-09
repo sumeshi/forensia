@@ -13,10 +13,10 @@ from forensia.ai.audit import LLMCallLogger
 from forensia.ai.llm_client import LLMServerUnavailableError, chat_completion
 from forensia.ai.report_gap import _build_report_status
 from forensia.ai.section_agent import (
-    SectionBlockResult,
     async_run_section_block_agent,
     run_section_block_agent,
 )
+from forensia.ai.section_exec import SectionBlockResult
 from forensia.api.cache import write_api_snapshots
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager, memory_for_section

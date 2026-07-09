@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
-from forensia.ai.checker import summarize_query_result
+from forensia.ai.check_normalize import summarize_query_result
 from forensia.ai.section_run_store import (
     _load_cached_result,
     _store_cached_result,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from forensia.ai.hypothesis_manager import _render_hypothesis_memory
+from forensia.ai.hypothesis_store import _render_hypothesis_memory
 from forensia.core.log import log as _log
 from forensia.core.memory import MemoryManager
 from forensia.core.session import ENTITY_ROLES, Hypothesis

@@ -9,6 +9,33 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from forensia.ai.section_answers import (  # noqa: F401
+    _all_values_empty,
+    _antiforensic_tool_names,
+    _build_daily_session_timeline,
+    _compact_narrative_value,
+    _extract_answer_by_shape,
+    _extract_daily_table,
+    _extract_enumerated_services,
+    _extract_full_scan,
+    _extract_known_list,
+    _extract_name_with_version,
+    _extract_pair_list,
+    _flatten_sample_rows,
+    _format_benchmark_answer,
+    _format_structured_answer,
+    _insufficient_evidence_placeholder,
+    _is_effectively_empty_body,
+    _report_language,
+    _representative_ids,
+    _resolve_benchmark_expected_shape,
+    _resolve_structured_expected_shape,
+    _result_count_summary,
+    _result_source_label,
+    _row_narrative,
+    _row_text,
+    _row_value,
+)
 from forensia.ai.section_block_context import (  # noqa: F401
     _BlockContext,
     _prepare_block_context,
@@ -30,75 +57,52 @@ from forensia.ai.section_block_plan import (  # noqa: F401
     _select_columns_by_template,
     _try_evidence_chain_fallback,
 )
-from forensia.ai.section_blocks import (  # noqa: F401,E402
-    _CONFIDENCE_KEYWORD_MAP,
+from forensia.ai.section_exec import (  # noqa: F401
     SectionBlockResult,
     SectionPlanAction,
     _add_json_fallback,
-    _all_values_empty,
-    _antiforensic_tool_names,
-    _audit_bridge,
     _benchmark_report_brief,
-    _build_daily_session_timeline,
-    _cache_key,
     _classify_block_status,
-    _coerce_confidence,
     _coerce_plan_action,
-    _compact_narrative_value,
-    _evidence_as_result,
     _execute_evidence_chain,
     _execute_keypoint,
     _execute_sql,
-    _extract_answer_by_shape,
-    _extract_daily_table,
-    _extract_enumerated_services,
-    _extract_full_scan,
-    _extract_known_list,
-    _extract_name_with_version,
-    _extract_pair_list,
-    _facts_as_result,
     _filter_template_catalog_by_section,
-    _findings_snapshot,
-    _flatten_sample_rows,
-    _format_benchmark_answer,
-    _format_structured_answer,
-    _insufficient_evidence_placeholder,
-    _is_effectively_empty_body,
     _is_valid_status,
     _keypoint_catalog,
     _known_keypoints,
-    _load_cached_result,
     _load_evidence_chains,
-    _load_prior_runs,
     _load_question_routing,
-    _load_reusable_section_evidence,
-    _load_reusable_section_facts,
-    _now,
     _query_template_catalog,
     _question_routing_answer_spec,
     _question_routing_keypoints,
     _question_routing_rule,
-    _report_language,
-    _representative_ids,
-    _resolve_benchmark_expected_shape,
-    _resolve_structured_expected_shape,
-    _result_count_summary,
-    _result_source_label,
-    _row_narrative,
-    _row_text,
-    _row_value,
-    _safe_rows,
     _section_family,
     _split_keypoint_names,
+    _structured_digest_from_answers,
+    _structured_report_brief,
+    _substitute_placeholders,
+    _summarize_sql_result,
+)
+from forensia.ai.section_run_store import (  # noqa: F401
+    _CONFIDENCE_KEYWORD_MAP,
+    _audit_bridge,
+    _cache_key,
+    _coerce_confidence,
+    _evidence_as_result,
+    _facts_as_result,
+    _findings_snapshot,
+    _load_cached_result,
+    _load_prior_runs,
+    _load_reusable_section_evidence,
+    _load_reusable_section_facts,
+    _now,
+    _safe_rows,
     _store_cached_result,
     _store_section_evidence,
     _store_section_facts,
     _store_section_question,
     _store_section_run,
-    _structured_digest_from_answers,
-    _structured_report_brief,
-    _substitute_placeholders,
-    _summarize_sql_result,
 )
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
@@ -351,6 +355,78 @@ def _try_fast_path_write(
     )
 
 
+def _run_block_pipeline(
+    ctx: _BlockContext,
+    context_sections: dict[str, str],
+    current_section_outline: list[dict],
+    audit_callback=None,
+) -> SectionBlockResult:
+    """Benchmark early-return, seed prep, plan loop, and final write for one block."""
+    # --- Benchmark early-return: structured answer available ---
+    bench_result = _try_benchmark_structured_answer(ctx, audit_callback)
+    if bench_result is not None:
+        return bench_result
+
+    # --- Prepare: collect reusable data and execute seed keypoints ---
+    collected_results: list[dict[str, Any]] = []
+    actual_query_row_counts: list[int] = []
+    actual_query_count, executed_seed_keypoints = _prepare_block_seed_data(
+        ctx, collected_results, actual_query_row_counts,
+    )
+    # R3-07: Fast path — skip plan loop if we already have evidence rows
+    fast_result = _try_fast_path_write(
+        ctx, collected_results, actual_query_count, actual_query_row_counts,
+        audit_callback=audit_callback,
+    )
+    if fast_result is not None:
+        return fast_result
+
+    # --- Plan/Execute/Check loop ---
+    verdict, rationale, missing_questions, status, actual_query_count = (
+        _run_plan_execute_check_loop(
+            ctx,
+            collected_results,
+            actual_query_row_counts,
+            actual_query_count,
+            executed_seed_keypoints,
+            context_sections,
+            current_section_outline,
+            ctx.template_catalog,
+        )
+    )
+
+    # --- Finalize: evidence chain fallback + write ---
+    force_chain = ctx.benchmark_mode and status in {
+        "wrong_query",
+        "insufficient_evidence",
+        "not_searched",
+    }
+    actual_query_count = _try_evidence_chain_fallback(
+        ctx,
+        collected_results,
+        actual_query_count,
+        actual_query_row_counts,
+        force=force_chain,
+    )
+    body, final_status = _write_block_body(
+        ctx,
+        collected_results,
+        status,
+        verdict,
+        rationale,
+        missing_questions,
+        actual_query_count,
+        actual_query_row_counts,
+        audit_callback=audit_callback,
+    )
+    return SectionBlockResult(
+        body=body,
+        evidence_results=collected_results,
+        iterations=max(len(collected_results), 1),
+        status=final_status,
+    )
+
+
 def run_section_block_agent(
     *,
     case: Case,
@@ -407,68 +483,8 @@ def run_section_block_agent(
         report_brief=report_brief,
     )
     try:
-        # --- Benchmark early-return: structured answer available ---
-        bench_result = _try_benchmark_structured_answer(ctx, audit_callback)
-        if bench_result is not None:
-            return bench_result
-
-        # --- Prepare: collect reusable data and execute seed keypoints ---
-        collected_results: list[dict[str, Any]] = []
-        actual_query_row_counts: list[int] = []
-        actual_query_count, executed_seed_keypoints = _prepare_block_seed_data(
-            ctx, collected_results, actual_query_row_counts,
-        )
-        # R3-07: Fast path — skip plan loop if we already have evidence rows
-        fast_result = _try_fast_path_write(
-            ctx, collected_results, actual_query_count, actual_query_row_counts,
-            audit_callback=audit_callback,
-        )
-        if fast_result is not None:
-            return fast_result
-
-        # --- Plan/Execute/Check loop ---
-        verdict, rationale, missing_questions, status, actual_query_count = (
-            _run_plan_execute_check_loop(
-                ctx,
-                collected_results,
-                actual_query_row_counts,
-                actual_query_count,
-                executed_seed_keypoints,
-                context_sections,
-                current_section_outline,
-                ctx.template_catalog,
-            )
-        )
-
-        # --- Finalize: evidence chain fallback + write ---
-        force_chain = ctx.benchmark_mode and status in {
-            "wrong_query",
-            "insufficient_evidence",
-            "not_searched",
-        }
-        actual_query_count = _try_evidence_chain_fallback(
-            ctx,
-            collected_results,
-            actual_query_count,
-            actual_query_row_counts,
-            force=force_chain,
-        )
-        body, final_status = _write_block_body(
-            ctx,
-            collected_results,
-            status,
-            verdict,
-            rationale,
-            missing_questions,
-            actual_query_count,
-            actual_query_row_counts,
-            audit_callback=audit_callback,
-        )
-        return SectionBlockResult(
-            body=body,
-            evidence_results=collected_results,
-            iterations=max(len(collected_results), 1),
-            status=final_status,
+        return _run_block_pipeline(
+            ctx, context_sections, current_section_outline, audit_callback
         )
     except Exception as exc:
         return SectionBlockResult(

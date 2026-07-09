@@ -13,7 +13,7 @@ except ImportError:  # pragma: no cover - optional until dependency is installed
     parse_one = None
     normalize_identifiers = None
 
-from forensia.ai.checker import _co_observation_satisfied
+from forensia.ai.check_guardrails import _co_observation_satisfied
 
 
 def _query_fingerprint(sql: str | None) -> str:

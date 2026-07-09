@@ -16,9 +16,7 @@ from uuid import uuid4
 import yaml
 
 from forensia.ai.audit import LLMCallLogger
-from forensia.ai.hypothesis_manager import (
-    _load_persisted_hypotheses,
-)
+from forensia.ai.hypothesis_store import _load_persisted_hypotheses
 from forensia.ai.llm_client import (
     LLMServerUnavailableError,
     chat_completion,

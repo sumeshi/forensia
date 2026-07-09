@@ -22,108 +22,48 @@ from forensia.knowledge import (
 from forensia.report import (
     probes as _probes,  # noqa: F401 — re-export below, lazy import used internally
 )
-from forensia.report.evidence_refs import (
-    EVIDENCE_ID_PATTERN,
-    _extract_needed_evidence,
+from forensia.report.answer_builders_artifacts import (  # noqa: F401
+    _build_antiforensic_activity,
+    _build_browser_usage,
+    _build_cloud_service_traces,
+    _build_desktop_rename_candidates,
 )
-from forensia.report.html import render_html_report
-from forensia.report.keypoint_catalog import (
-    REPORT_KEYPOINT_ALIASES,
-    REPORT_KEYPOINTS,
-    _default_keypoints_for_section,
-    _resolve_evidence_results,
+from forensia.report.answer_builders_host import (  # noqa: F401
+    _build_application_execution_history,
+    _build_daily_session_activity,
+    _build_daily_session_timeline,
+    _build_daily_session_timeline_rows,
+    _build_host_identity,
+    _build_last_human_logon,
+    _build_last_shutdown_event,
 )
-from forensia.report.probes import (  # noqa: F401 — re-export for backward compat
-    _TABLE_BLOCK_BUILDERS,
-    _TABLE_COLUMNS,
-    # Re-exported for backward compat
-    _build_host_note,
-    _build_report_brief,
-    # Used directly by core writer.py functions
-    _collect_flat_evidence_rows,
-    _correlation_finding_ids,
-    _dump_section_evidence_json,
-    _dump_section_questions_json,
-    _dump_section_trace_json,
-    _duplicate_finding_titles,
-    _event_claim_gaps,
-    _extract_claim_texts,
-    _final_report_section_body,
-    _host_summary_rows,
-    _hypothesis_rows,
-    _markdown_table,
-    _query_evtx_time_range,
-    _query_prior_sections,
-    _query_top_findings,
-    _render_json_table_blocks,
-    _render_timestamp_with_timezone,
-    _sanitize_raw_evidence_body,
-    _section_confidence,
-    _sort_markdown_table_by_first_column,
-    _strip_narrative_status_lines,
-    _summarize_flat_evidence_rows,
-    _table_block_columns,
-    _title_from_template_body,
-    _tz_offset_str,
-    _update_section_quality_only,
-    _upsert_claims,
-    _upsert_report_section,
-    _validate_body_evidence_ids,
-    _verify_block_output,
-    collect_gaps,
-    fetch_report_sections,
-    load_report_sections_map,
-    mark_report_sections_ai_exhausted,
-    set_report_section_status,
-    write_report_brief,
-)
-from forensia.report.quality_gates import (  # noqa: F401 — re-exported for test imports
-    FINDING_ID_PATTERN,
-    _check_citation_token_no_finding_id,
-    _check_failure_spam,
-    _check_hedge_no_citation,
-    _check_json_object_leak,
-    _check_recommendations_strength,
-    _GateCtx,
-    _quality_gate_section,
-)
-from forensia.report.structured_answers import (  # noqa: F401
-    _HUMAN_REPORT_HIDDEN_COLUMNS,
-    _MISSING_REASON_NOOP_VALUES,
+from forensia.report.answer_registry import (  # noqa: F401
     _STRUCTURED_ANSWER_BUILDERS,
+    UNIVERSAL_QUESTION_SPECS,
+    StructuredAnswerBuilder,
+    _build_generic_question_spec_answer,
+    _collect_answer_evidence_ids,
+    _feed_structured_to_timeline,
+    build_structured_answer,
+    ensure_universal_question_probes,
+)
+from forensia.report.answer_store import (  # noqa: F401
+    _MISSING_REASON_NOOP_VALUES,
     _TIMESTAMP_COLUMN_SUFFIXES,
     STRUCTURED_MARKDOWN_MAX_CELL_CHARS,
     STRUCTURED_MARKDOWN_MAX_LIST_ITEMS,
     STRUCTURED_MARKDOWN_MAX_ROWS,
-    UNIVERSAL_QUESTION_SPECS,
-    StructuredAnswerBuilder,
     _add_local_time_columns,
     _answer_columns,
     _benchmark_answers_path,
     _benchmark_block_id,
-    _build_antiforensic_activity,
-    _build_application_execution_history,
-    _build_browser_usage,
-    _build_cloud_service_traces,
-    _build_daily_session_activity,
-    _build_daily_session_timeline,
-    _build_daily_session_timeline_rows,
-    _build_desktop_rename_candidates,
-    _build_generic_question_spec_answer,
-    _build_host_identity,
-    _build_last_human_logon,
-    _build_last_shutdown_event,
     _coerce_answer_items,
     _coerce_string_list,
-    _collect_answer_evidence_ids,
     _dedupe_dict_rows,
-    _feed_structured_to_timeline,
     _human_user_predicate,
-    _is_human_report_hidden_column,
     _load_benchmark_answers,
     _load_interpretation_templates,
     _load_structured_answers,
-    _local_time_from_utc,
     _lower_blob,
     _meaningful_missing_reason_items,
     _normalize_benchmark_answer,
@@ -143,8 +83,80 @@ from forensia.report.structured_answers import (  # noqa: F401
     _structured_block_id,
     _structured_rows,
     _text,
-    build_structured_answer,
-    ensure_universal_question_probes,
+)
+from forensia.report.evidence_refs import (
+    EVIDENCE_ID_PATTERN,
+    _extract_needed_evidence,
+)
+from forensia.report.gap_tables import _hypothesis_rows  # noqa: F401
+from forensia.report.html import render_html_report
+from forensia.report.keypoint_catalog import (
+    REPORT_KEYPOINT_ALIASES,
+    REPORT_KEYPOINTS,
+    _default_keypoints_for_section,
+    _resolve_evidence_results,
+)
+from forensia.report.markdown import (  # noqa: F401  # noqa: F401
+    _HUMAN_REPORT_HIDDEN_COLUMNS,
+    _build_host_note,
+    _is_human_report_hidden_column,
+    _local_time_from_utc,
+    _markdown_table,
+    _render_json_table_blocks,
+    _render_timestamp_with_timezone,
+    _sort_markdown_table_by_first_column,
+    _tz_offset_str,
+)
+from forensia.report.quality_gates import (  # noqa: F401 — re-exported for test imports
+    FINDING_ID_PATTERN,
+    _check_citation_token_no_finding_id,
+    _check_failure_spam,
+    _check_hedge_no_citation,
+    _check_json_object_leak,
+    _check_recommendations_strength,
+    _GateCtx,
+    _quality_gate_section,
+)
+from forensia.report.report_brief import (  # noqa: F401
+    _build_report_brief,
+    _query_evtx_time_range,
+    _query_prior_sections,
+    _query_top_findings,
+    write_report_brief,
+)
+from forensia.report.section_quality import (  # noqa: F401
+    _correlation_finding_ids,
+    _duplicate_finding_titles,
+    _event_claim_gaps,
+    _final_report_section_body,
+    _sanitize_raw_evidence_body,
+    _section_confidence,
+    _strip_narrative_status_lines,
+    _title_from_template_body,
+    _validate_body_evidence_ids,
+    _verify_block_output,
+    collect_gaps,
+)
+from forensia.report.section_store import (  # noqa: F401
+    _dump_section_evidence_json,
+    _dump_section_questions_json,
+    _dump_section_trace_json,
+    _extract_claim_texts,
+    _update_section_quality_only,
+    _upsert_claims,
+    _upsert_report_section,
+    fetch_report_sections,
+    load_report_sections_map,
+    mark_report_sections_ai_exhausted,
+    set_report_section_status,
+)
+from forensia.report.summary_rows import _host_summary_rows  # noqa: F401
+from forensia.report.table_registry import (  # noqa: F401
+    _TABLE_BLOCK_BUILDERS,
+    _TABLE_COLUMNS,
+    _collect_flat_evidence_rows,
+    _summarize_flat_evidence_rows,
+    _table_block_columns,
 )
 
 # backward-compat aliases (tests import these from writer)

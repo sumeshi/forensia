@@ -16,17 +16,19 @@ from forensia.ai.case_profile import (
 )
 from forensia.ai.hypothesis_manager import (
     MAX_ACTIVE_HYPOTHESES,
-    _all_hypotheses,
-    _filter_valid_entities,
     _guess_related_sections,
-    _hypothesis_similarity,
     _merge_active_hypotheses,
     admit_new_hypothesis,
+)
+from forensia.ai.hypothesis_model import (
+    _filter_valid_entities,
+    _hypothesis_similarity,
 )
 from forensia.ai.hypothesis_runner import (
     _investigate_one_hypothesis,
     _observed_keypoints_from_findings,
 )
+from forensia.ai.hypothesis_store import _all_hypotheses
 from forensia.ai.investigation_session import (
     _call_with_outage_recovery,
     _Ctx,

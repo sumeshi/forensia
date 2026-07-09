@@ -21,9 +21,6 @@ from forensia.ai.case_profile import (
     build_case_profile,
     set_case_profile,
 )
-from forensia.ai.hypothesis_manager import (
-    _all_hypotheses,
-)
 from forensia.ai.hypothesis_runner import (  # noqa: F401
     _has_zero_rows_refute_condition,
     _investigate_one_hypothesis,
@@ -31,6 +28,7 @@ from forensia.ai.hypothesis_runner import (  # noqa: F401
     _observed_keypoints_from_findings,
     _unavailable_missing_event_ids,
 )
+from forensia.ai.hypothesis_store import _all_hypotheses
 from forensia.ai.investigation_cycle import (  # noqa: F401
     _audit_broad_plan_hypotheses,
     _dedup_new_hypotheses,

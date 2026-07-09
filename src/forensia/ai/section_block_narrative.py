@@ -6,20 +6,13 @@ import json
 from typing import Any
 
 from forensia.ai import llm_gateway
-from forensia.ai.prompts import (
+from forensia.ai.prompt_sections import (
     build_paragraph_narrate_messages,
     build_section_outline_messages,
     build_section_review_messages,
     build_structured_classify_messages,
 )
-from forensia.ai.section_block_context import (
-    _BlockContext,
-)
-from forensia.ai.section_block_plan import (
-    _select_columns_by_template,
-)
-from forensia.ai.section_blocks import (
-    _classify_block_status,
+from forensia.ai.section_answers import (
     _extract_answer_by_shape,
     _flatten_sample_rows,
     _format_structured_answer,
@@ -28,19 +21,24 @@ from forensia.ai.section_blocks import (
     _report_language,
     _representative_ids,
     _resolve_structured_expected_shape,
-    _store_section_run,
 )
+from forensia.ai.section_block_context import (
+    _BlockContext,
+)
+from forensia.ai.section_block_plan import (
+    _select_columns_by_template,
+)
+from forensia.ai.section_exec import _classify_block_status
+from forensia.ai.section_run_store import _store_section_run
 from forensia.core.log import log as _log
 from forensia.core.textutil import normalize_localized_dates
+from forensia.report.answer_registry import build_structured_answer
+from forensia.report.answer_store import _render_structured_answer_markdown
 from forensia.report.narrative_review import review_narrative_body
-from forensia.report.probes import (
+from forensia.report.quality_gates import _detect_body_language
+from forensia.report.table_registry import (
     _collect_flat_evidence_rows,
     _summarize_flat_evidence_rows,
-)
-from forensia.report.quality_gates import _detect_body_language
-from forensia.report.structured_answers import (
-    _render_structured_answer_markdown,
-    build_structured_answer,
 )
 
 # ====================================================================
