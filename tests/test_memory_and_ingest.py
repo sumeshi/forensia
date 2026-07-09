@@ -735,8 +735,8 @@ class MemoryAndIngestTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with (
                 CaseDB(case) as db,
-                patch("forensia.cli.write_progress_snapshot") as mock_progress,
-                patch("forensia.cli.write_api_snapshots") as mock_full,
+                patch("forensia.cli_support.write_progress_snapshot") as mock_progress,
+                patch("forensia.cli_support.write_api_snapshots") as mock_full,
             ):
                 push = _progress_pusher(
                     db,
@@ -867,7 +867,7 @@ class MemoryAndIngestTests(unittest.TestCase):
 
             with (
                 patch(
-                    "forensia.cli.ingest_all",
+                    "forensia.cli_stages.ingest_all",
                     return_value={
                         "new_files": 1,
                         "skipped_files": 0,
@@ -877,7 +877,7 @@ class MemoryAndIngestTests(unittest.TestCase):
                     },
                 ),
                 patch(
-                    "forensia.cli.normalize_all",
+                    "forensia.cli_stages.normalize_all",
                     return_value={
                         "evtx_rows": 1,
                         "mft_entries": 0,
@@ -886,16 +886,17 @@ class MemoryAndIngestTests(unittest.TestCase):
                     },
                 ),
                 patch("forensia.cli.resolve_llm_config", return_value=(None, None)),
-                patch("forensia.cli.load_rules_from_dir", return_value=[]),
+                patch("forensia.cli_stages.load_rules_from_dir", return_value=[]),
                 patch(
-                    "forensia.cli.render_written_report",
+                    "forensia.cli_stages.render_written_report",
                     return_value=(
                         output_dir / "reports" / "report.md",
                         output_dir / "reports" / "report.html",
                     ),
                 ) as mock_render_written,
                 patch("forensia.cli.render_html_report") as mock_render_html,
-                patch("forensia.cli.write_api_snapshots"),
+                patch("forensia.cli_stages.write_api_snapshots"),
+                patch("forensia.cli_support.write_api_snapshots"),
             ):
                 cli_module.investigate(
                     case_dir=str(output_dir),
@@ -944,7 +945,7 @@ class MemoryAndIngestTests(unittest.TestCase):
             with (
                 CaseDB(case) as db,
                 patch(
-                    "forensia.ai.hypothesis_manager._recent_reasoning_rows"
+                    "forensia.ai.hypothesis_store._recent_reasoning_rows"
                 ) as mock_reasoning,
             ):
                 mock_reasoning.return_value = [
@@ -1200,7 +1201,7 @@ class MemoryAndIngestTests(unittest.TestCase):
             output_dir = Path(tmpdir) / "case-run"
             with (
                 patch(
-                    "forensia.cli.ingest_all",
+                    "forensia.cli_stages.ingest_all",
                     return_value={
                         "new_files": 1,
                         "skipped_files": 0,
@@ -1210,7 +1211,7 @@ class MemoryAndIngestTests(unittest.TestCase):
                     },
                 ),
                 patch(
-                    "forensia.cli.normalize_all",
+                    "forensia.cli_stages.normalize_all",
                     return_value={
                         "evtx_rows": 0,
                         "mft_entries": 0,
@@ -1220,17 +1221,18 @@ class MemoryAndIngestTests(unittest.TestCase):
                 ),
                 patch("forensia.cli.resolve_llm_config", return_value=(None, None)),
                 patch(
-                    "forensia.cli.load_rules_from_dir",
+                    "forensia.cli_stages.load_rules_from_dir",
                     return_value=[],
                 ),
                 patch(
-                    "forensia.cli.render_written_report",
+                    "forensia.cli_stages.render_written_report",
                     return_value=(
                         output_dir / "reports" / "report.md",
                         output_dir / "reports" / "report.html",
                     ),
                 ),
-                patch("forensia.cli.write_api_snapshots"),
+                patch("forensia.cli_stages.write_api_snapshots"),
+                patch("forensia.cli_support.write_api_snapshots"),
             ):
                 run_result = runner.invoke(
                     cli_module.app, ["investigate", str(output_dir), str(input_dir)]

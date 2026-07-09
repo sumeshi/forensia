@@ -1,7 +1,11 @@
+"""Typer CLI commands; helpers live in cli_support and cli_stages.
+
+Kept for backward compatibility: existing code and tests import these
+names from forensia.cli.
+"""
+
 import asyncio
 import sys
-import time
-from collections.abc import Callable
 from pathlib import Path
 
 import typer
@@ -10,222 +14,50 @@ from rich import print
 
 from forensia.ai.case_profile import profile_advisor
 from forensia.ai.investigator import investigate as investigate_loop
-from forensia.ai.llm_client import LLMServerUnavailableError
 from forensia.api.cache import (
-    VOLATILE_SNAPSHOT_INTERVAL_S,
     clear_api_snapshots,
     write_api_snapshots,
-    write_progress_snapshot,
-    write_volatile_api_snapshots,
 )
-from forensia.api.progress import clear_progress_events, record_progress_event
+from forensia.api.progress import clear_progress_events
+from forensia.cli_stages import (  # noqa: F401
+    _make_initial_progress_state,
+    _run_analyze_stage,
+    _run_ingest_stage,
+    _run_init_stage,
+    _run_investigate_stage,
+    _run_normalize_stage,
+    _run_report_stage,
+)
+from forensia.cli_support import (  # noqa: F401
+    PROFILE_ROOT,
+    _available_profiles,
+    _case_timezone,
+    _count_records,
+    _normalize_counts_summary,
+    _open_case_or_die,
+    _progress_pusher,
+    _prune_orphan_reviews,
+    _reset_case_tables,
+    _resolve_llm_or_die,
+    _resolve_profile_path,
+    _resolve_template_dir,
+    _resolve_timezone,
+    _seed_api_snapshots_if_possible,
+    _status,
+)
 from forensia.config import get_llm_settings, resolve_llm_config
 from forensia.core.case import Case
 from forensia.core.case_tasks import CaseTasks
 from forensia.db.database import CaseDB
 from forensia.ingest import ingest_all
-from forensia.normalize import normalize_all
 from forensia.report.html import render_html_report
 from forensia.report.writer import render_written_report
 from forensia.report_templates import (
     export_packaged_report_templates,
-    has_report_templates,
 )
-from forensia.rules.engine import (
-    clear_rule_findings,
-    generate_findings,
-    run_rule,
-    save_findings,
-)
-from forensia.rules.loader import load_rules_from_dir
 from forensia.web import create_app
 
 app = typer.Typer(help="forensia incident response tool")
-PROFILE_ROOT = Path(__file__).parent / "profiles"
-
-
-def _status(message: str) -> None:
-    """Print a colored status message to stdout."""
-    print(f"[bold cyan]==>[/bold cyan] {message}")
-
-
-def _count_records(db: CaseDB) -> dict[str, int]:
-    """Query row counts for all major case tables."""
-    row = db.execute(
-        """
-        SELECT
-            (SELECT COUNT(*) FROM evtx_events) AS evtx_rows,
-            (SELECT COUNT(*) FROM mft_entries) AS mft_entries,
-            (SELECT COUNT(*) FROM findings) AS findings,
-            (SELECT COUNT(*) FROM investigation_sessions) AS sessions,
-            (SELECT COUNT(*) FROM hypotheses) AS hypotheses,
-            (SELECT COUNT(*) FROM report_sections) AS report_sections,
-            (SELECT COUNT(*) FROM progress_events) AS progress_events
-        """
-    ).fetchone()
-    keys = [
-        "evtx_rows",
-        "mft_entries",
-        "findings",
-        "sessions",
-        "hypotheses",
-        "report_sections",
-        "progress_events",
-    ]
-    return {key: int(row[index] or 0) for index, key in enumerate(keys)}
-
-
-def _reset_case_tables(db: CaseDB) -> None:
-    """Delete all rows from every case table (destructive reset)."""
-    for table in (
-        "evtx_events",
-        "mft_entries",
-        "mft_timeline",
-        "prefetch_executions",
-        "prefetch_timeline",
-        "findings",
-        "claims",
-        "section_facts",
-        "section_evidence",
-        "query_cache",
-        "section_runs",
-        "section_questions",
-        "ai_reviews",
-        "investigation_sessions",
-        "investigation_steps",
-        "hypothesis_reasoning",
-        "hypotheses",
-        "report_sections",
-        "progress_events",
-        "ingested_files",
-    ):
-        db.execute(f"DELETE FROM {table}")
-
-
-def _prune_orphan_reviews(db: CaseDB) -> None:
-    """Remove AI reviews whose referenced findings no longer exist."""
-    db.execute(
-        """
-        DELETE FROM ai_reviews
-        WHERE finding_id NOT IN (SELECT finding_id FROM findings)
-          AND finding_id NOT LIKE 'hypothesis:%'
-          AND finding_id NOT LIKE 'query:%'
-          AND finding_id NOT LIKE 'investigate:%'
-        """
-    )
-
-
-def _normalize_counts_summary(counts: dict[str, int]) -> str:
-    return (
-        f"evtx_rows={counts['evtx_rows']}, "
-        f"mft_entries={counts['mft_entries']}, "
-        f"prefetch_executions={counts['prefetch_executions']}"
-    )
-
-
-def _resolve_template_dir(case: Case, template_dir: str | None) -> Path:
-    """Resolve and validate a report template directory, falling back to the case's bundled templates."""
-    if template_dir:
-        path = Path(template_dir).resolve()
-        if not path.exists():
-            raise typer.BadParameter(f"template_dir not found: {path}")
-        if not has_report_templates(path):
-            raise typer.BadParameter(
-                f"template_dir must contain at least one template matching [0-9]*_*.md: {path}"
-            )
-        return path
-    case.ensure_report_templates()
-    if case.report_template_dir.exists() and has_report_templates(
-        case.report_template_dir
-    ):
-        return case.report_template_dir
-    raise typer.BadParameter("no report templates are available")
-
-
-def _available_profiles() -> list[str]:
-    return sorted(path.stem for path in PROFILE_ROOT.glob("*.yaml"))
-
-
-def _resolve_profile_path(profile: str) -> Path:
-    """Resolve a profile name to a YAML file path, raising an error if not found."""
-    profile_name = str(profile).strip()
-    path = PROFILE_ROOT / f"{profile_name}.yaml"
-    if path.exists():
-        return path
-    available = ", ".join(_available_profiles()) or "none"
-    raise typer.BadParameter(
-        f"unknown profile: {profile_name}. Available profiles: {available}"
-    )
-
-
-def _resolve_llm_or_die(base_url: str | None, model: str | None) -> tuple[str, str]:
-    """Resolve LLM endpoint and model, raising an error if either is missing."""
-    resolved_base_url, resolved_model = resolve_llm_config(base_url, model)
-    if not resolved_base_url or not resolved_model:
-        raise typer.BadParameter(
-            "Set LLM_BASE_URL and LLM_MODEL via .env file or CLI flags."
-        )
-    return resolved_base_url, resolved_model
-
-
-def _resolve_timezone(tz, case) -> str:
-    """Return the resolved timezone string, preferring CLI flag over manifest value."""
-    if isinstance(tz, str):
-        return tz if tz else _case_timezone(case)
-    return _case_timezone(case)
-
-
-def _case_timezone(case) -> str:
-    val = getattr(case, "source_timezone", "UTC") if case is not None else "UTC"
-    return str(val or "UTC")
-
-
-def _open_case_or_die(case_dir: str, timezone: str | None = None) -> Case:
-    """Open a case directory or raise a CLI error if the manifest is missing."""
-    try:
-        case = Case.open(case_dir)
-        case.source_timezone = _resolve_timezone(timezone, case)
-        return case
-    except FileNotFoundError as exc:
-        target = Path(case_dir).resolve()
-        raise typer.BadParameter(
-            "case_dir must point to an initialized case directory.\n"
-            f"missing: {target / 'manifest.yaml'}\n"
-            f"initialize with: forensia investigate {target} <input_dir>"
-        ) from exc
-
-
-def _progress_pusher(db: CaseDB, initial_state: dict) -> Callable[..., None]:
-    """Return a closure that records progress events and writes snapshots."""
-    state = dict(initial_state)
-
-    def push(message: str | None = None, **updates) -> None:
-        if message:
-            recent = list(state.get("recent_logs", []))
-            recent.append(message)
-            state["recent_logs"] = recent[-20:]
-        state.update(updates)
-        payload = {**state, "counts": _count_records(db)}
-        record_progress_event(db, payload)
-        write_progress_snapshot(db.case, db)
-        now = time.monotonic()
-        if now - state.get("_last_volatile_at", 0.0) > VOLATILE_SNAPSHOT_INTERVAL_S:
-            try:
-                write_volatile_api_snapshots(db.case, db)
-            except Exception as exc:
-                _status(f"volatile snapshot skipped: {exc}")
-            state["_last_volatile_at"] = now
-
-    return push
-
-
-def _seed_api_snapshots_if_possible(case: Case) -> None:
-    """Try to write API snapshots; silently skip if the database is unavailable."""
-    try:
-        with CaseDB(case) as db:
-            write_api_snapshots(case, db)
-    except Exception as exc:
-        _status(f"serve snapshot refresh skipped: {exc}")
 
 
 @app.command("templates-export", hidden=True)
@@ -320,285 +152,6 @@ def report(
         write_api_snapshots(case, db)
     print(f"Markdown report written to {report_md}")
     print(f"HTML report written to {path}")
-
-
-def _make_initial_progress_state(
-    model: str | None,
-    llm_base_url: str | None,
-    stage: str = "init",
-    summary: str = "Case initialized",
-) -> dict:
-    return {
-        "stage": stage,
-        "status": "running",
-        "iteration": 0,
-        "current_query": None,
-        "summary": summary,
-        "recent_logs": [],
-        "llm_model": model,
-        "llm_base_url": llm_base_url,
-        "hypotheses": [],
-        "report_sections": {
-            "items": [],
-            "current_section": None,
-            "focus_sections": [],
-            "total_gaps": 0,
-            "total_body_chars": 0,
-        },
-    }
-
-
-def _run_init_stage(
-    case: Case,
-    db: CaseDB,
-    out: str,
-    llm_base_url: str | None,
-    model: str | None,
-    template_dir: str | None,
-    init: bool,
-) -> tuple[Case, CaseTasks, Path | None]:
-    """Initialize case, tasks, resolve template root and profile path."""
-    tasks = CaseTasks.for_case(case)
-    template_root = (
-        _resolve_template_dir(case, template_dir) if (llm_base_url and model) else None
-    )
-
-    if init:
-        _reset_case_tables(db)
-        case.clear_runtime_outputs(
-            preserve_memory=True, preserve_ai_logs=True, drop_database=False
-        )
-        case = Case.init(out)
-        tasks = CaseTasks.for_case(case)
-        template_root = (
-            _resolve_template_dir(case, template_dir)
-            if (llm_base_url and model)
-            else None
-        )
-
-    return case, tasks, template_root
-
-
-def _run_ingest_stage(
-    case: Case,
-    db: CaseDB,
-    tasks: CaseTasks,
-    input_dir: str,
-    push_progress,
-) -> dict:
-    """Ingest evidence files (EVTX, MFT, Prefetch) into the case."""
-
-    def stage_status(message: str) -> None:
-        _status(message)
-        push_progress(message, stage="ingest", status="running", summary=message)
-
-    _status(f"Stage 1/4: ingest from {input_dir}")
-    push_progress(f"[ingest] scanning {input_dir}", stage="ingest", status="running")
-    counts = ingest_all(case, input_dir, db=db, progress_callback=stage_status)
-    note = (
-        f"new_files={counts['new_files']}, skipped_files={counts['skipped_files']}, "
-        f"evtx_files={counts['evtx_files']}, mft_files={counts['mft_files']}, "
-        f"prefetch_files={counts['prefetch_files']}"
-    )
-    tasks.mark_done("ingest", note)
-    _status(f"Ingest complete: {note}")
-    push_progress(f"[ingest] {note}", stage="ingest", status="running", summary=note)
-    return counts
-
-
-def _run_normalize_stage(
-    case: Case,
-    db: CaseDB,
-    tasks: CaseTasks,
-    init: bool,
-    ingest_counts: dict,
-    push_progress,
-) -> bool:
-    """Normalize raw evidence into structured DuckDB tables."""
-    existing_rows = int(db.execute("SELECT COUNT(*) FROM evtx_events").fetchone()[0])
-    normalized_this_run = True
-    if (
-        not init
-        and ingest_counts["new_files"] == 0
-        and tasks.is_done("normalize")
-        and existing_rows > 0
-    ):
-        normalized_this_run = False
-        _status(f"Stage 2/4: normalize - already done ({existing_rows} rows), skipping")
-        push_progress(
-            f"[normalize] skipped ({existing_rows} rows already in DB)",
-            stage="normalize",
-            status="running",
-        )
-    else:
-        _status("Stage 2/4: normalize into DuckDB")
-        push_progress("[normalize] starting", stage="normalize", status="running")
-        normalized = normalize_all(case, db)
-        note = _normalize_counts_summary(normalized)
-        tasks.mark_done("normalize", note)
-        _status(
-            f"Normalize complete: {note}, mft_timeline_rows={normalized['mft_timeline_rows']}"
-        )
-        push_progress(
-            f"[normalize] {note}", stage="normalize", status="running", summary=note
-        )
-    return normalized_this_run
-
-
-def _run_analyze_stage(
-    case: Case,
-    db: CaseDB,
-    tasks: CaseTasks,
-    profile: str,
-    profile_path: Path,
-    init: bool,
-    normalized_this_run: bool,
-    push_progress,
-) -> int:
-    """Run rule-based analysis to generate findings."""
-    if not init and not normalized_this_run and tasks.is_done("analyze"):
-        existing_findings = int(
-            db.execute("SELECT COUNT(*) FROM findings").fetchone()[0]
-        )
-        _status(
-            f"Stage 3/4: analyze - already done ({existing_findings} findings), skipping"
-        )
-        push_progress(
-            f"[analyze] skipped ({existing_findings} findings already exist)",
-            stage="analyze",
-            status="running",
-        )
-        return existing_findings
-
-    rules_dir = Path(__file__).parent / "rulepacks"
-    rules = load_rules_from_dir(rules_dir, profile_path)
-    _status(f"Stage 3/4: analyze with profile={profile} ({len(rules)} rules)")
-    push_progress(
-        f"[analyze] profile={profile}, rules={len(rules)}",
-        stage="analyze",
-        status="running",
-    )
-    total_findings = 0
-    for rule in rules:
-        push_progress(f"[analyze] rule: {rule.id}", stage="analyze", status="running")
-        clear_rule_findings(case, db, rule.id)
-        findings = generate_findings(rule, run_rule(db, rule))
-        save_findings(case, db, findings)
-        total_findings += len(findings)
-    _prune_orphan_reviews(db)
-    tasks.mark_done("analyze", f"profile={profile}, findings={total_findings}")
-    _status(f"Analyze complete: findings={total_findings}")
-    push_progress(
-        f"[analyze] done - findings={total_findings}",
-        stage="analyze",
-        status="running",
-        summary=f"findings={total_findings}",
-    )
-    return total_findings
-
-
-def _run_investigate_stage(
-    case: Case,
-    db: CaseDB,
-    tasks: CaseTasks,
-    llm_base_url: str | None,
-    model: str | None,
-    template_root: Path | None,
-    profile: str,
-    push_progress,
-    *,
-    max_iter: int,
-    max_queries_per_hypothesis: int,
-    no_progress_limit: int,
-    report_every_n_cycles: int,
-    report_max_queries_per_section: int,
-    max_llm_calls: int,
-    auto_rulepacks: bool = True,
-) -> None:
-    """Run LLM-driven investigation loop (or skip if LLM not configured)."""
-    if not (llm_base_url and model):
-        _status(
-            "Stage 4/4: LLM not configured - skipping investigate (set LLM_BASE_URL and LLM_MODEL in .env)"
-        )
-        push_progress(
-            "[investigate] skipped - LLM not configured",
-            stage="investigate",
-            status="running",
-        )
-        return
-
-    _status(f"Stage 4/4: investigate with model={model}")
-    push_progress(
-        f"[investigate] starting - model={model}", stage="investigate", status="running"
-    )
-    write_api_snapshots(case, db)
-    try:
-        result = asyncio.run(
-            investigate_loop(
-                case=case,
-                db=db,
-                base_url=llm_base_url,
-                model=model,
-                template_root=template_root,
-                max_iter=max_iter,
-                max_queries_per_hypothesis=max_queries_per_hypothesis,
-                no_progress_limit=no_progress_limit,
-                profile=profile,
-                report_every_n_cycles=report_every_n_cycles,
-                report_max_queries_per_section=report_max_queries_per_section
-                or get_llm_settings()["report_max_queries_per_section"],
-                max_llm_calls=max_llm_calls,
-                auto_rulepacks=auto_rulepacks,
-                progress_callback=lambda payload: push_progress(
-                    payload.get("summary"),
-                    stage=payload.get("stage", "investigate"),
-                    status=payload.get("status", "running"),
-                    iteration=payload.get("iteration", 0),
-                    current_query=payload.get("current_query"),
-                    summary=payload.get("summary"),
-                    hypotheses=payload.get("hypotheses", []),
-                    report_sections=payload.get("report_sections", {}),
-                ),
-            )
-        )
-    except LLMServerUnavailableError as exc:
-        _status(f"investigation aborted: LLM server unavailable ({exc})")
-        sys.exit(2)
-    tasks.mark_done(
-        "investigate",
-        f"session={result['session_id']}, status={result['status']}, iterations={result['iteration']}",
-    )
-    _status(
-        f"Investigation complete: session={result['session_id']} status={result['status']}"
-    )
-    push_progress(
-        f"[investigate] done - session={result['session_id']} status={result['status']}",
-        stage="investigate",
-        status=result["status"],
-        iteration=result["iteration"],
-        summary=result["summary"],
-        hypotheses=result.get("hypotheses", []),
-        report_sections=result.get("report_sections", {}),
-    )
-
-
-def _run_report_stage(
-    case: Case,
-    db: CaseDB,
-    tasks: CaseTasks,
-    push_progress,
-) -> Path:
-    """Render the final written report."""
-    report_md, report_path = render_written_report(case, db)
-    write_api_snapshots(case, db)
-    tasks.mark_done("report", str(report_path))
-    push_progress(
-        f"[report] written: {report_path}",
-        stage="completed",
-        status="completed",
-        summary=f"Report: {report_path}",
-    )
-    return report_path
 
 
 @app.command()
@@ -1073,3 +626,4 @@ def serve(
 
 if __name__ == "__main__":
     app()
+

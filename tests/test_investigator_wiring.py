@@ -158,6 +158,7 @@ class ReportRefreshFailureTests(unittest.TestCase):
         from pathlib import Path
         from unittest import mock
 
+        from forensia.ai import investigation_session
         from forensia.ai import investigator as investigator_module
         from forensia.ai.llm_client import LLMServerUnavailableError
         from forensia.core.memory import MemoryManager
@@ -178,7 +179,7 @@ class ReportRefreshFailureTests(unittest.TestCase):
                         investigator_module, "async_refresh_report_sections", _outage
                     ),
                     mock.patch.object(
-                        investigator_module,
+                        investigation_session,
                         "outage_wait_until_recovered",
                         _instant_recovery_probe,
                     ),

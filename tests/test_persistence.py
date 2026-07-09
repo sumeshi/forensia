@@ -81,12 +81,16 @@ class PersistenceTests(unittest.TestCase):
         return resolve_llm_config()[0] or "http://test-llm.invalid"
 
     def setUp(self) -> None:
-        self._llm_json_patch = patch(
+        # request_llm_json is called from the section-agent facade and from the
+        # split-out plan/narrative modules; patch every module that binds it.
+        for target in (
             "forensia.ai.section_agent.request_llm_json",
-            side_effect=_agent_plan_router,
-        )
-        self._llm_json_patch.start()
-        self.addCleanup(self._llm_json_patch.stop)
+            "forensia.ai.section_block_plan.request_llm_json",
+            "forensia.ai.section_block_narrative.request_llm_json",
+        ):
+            llm_json_patch = patch(target, side_effect=_agent_plan_router)
+            llm_json_patch.start()
+            self.addCleanup(llm_json_patch.stop)
         # The async report-refresh path uses async_request_llm_json; mock it too
         # so async tests don't hit the real LLM.
         self._async_llm_json_patch = patch(
@@ -1406,10 +1410,10 @@ class PersistenceTests(unittest.TestCase):
 
             with (
                 patch(
-                    "forensia.cli.investigate_loop", side_effect=fake_investigate_loop
+                    "forensia.cli_stages.investigate_loop", side_effect=fake_investigate_loop
                 ),
                 patch(
-                    "forensia.cli.render_written_report",
+                    "forensia.cli_stages.render_written_report",
                     return_value=(
                         case.path / "reports" / "report.md",
                         case.path / "reports" / "report.html",
@@ -1479,7 +1483,7 @@ class PersistenceTests(unittest.TestCase):
 
             with (
                 patch(
-                    "forensia.cli.ingest_all",
+                    "forensia.cli_stages.ingest_all",
                     return_value={
                         "new_files": 0,
                         "skipped_files": 0,
@@ -1489,7 +1493,7 @@ class PersistenceTests(unittest.TestCase):
                     },
                 ),
                 patch(
-                    "forensia.cli.normalize_all",
+                    "forensia.cli_stages.normalize_all",
                     return_value={
                         "evtx_rows": 0,
                         "mft_entries": 0,
@@ -1497,13 +1501,13 @@ class PersistenceTests(unittest.TestCase):
                         "prefetch_executions": 0,
                     },
                 ),
-                patch("forensia.cli.load_rules_from_dir", return_value=[]),
+                patch("forensia.cli_stages.load_rules_from_dir", return_value=[]),
                 patch(
-                    "forensia.cli.investigate_loop",
+                    "forensia.cli_stages.investigate_loop",
                     side_effect=fake_investigate_loop,
                 ),
                 patch(
-                    "forensia.cli.render_written_report",
+                    "forensia.cli_stages.render_written_report",
                     return_value=(
                         output_dir / "reports" / "report.md",
                         output_dir / "reports" / "report.html",

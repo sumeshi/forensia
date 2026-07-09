@@ -634,7 +634,7 @@ class SectionReviewerTests(unittest.TestCase):
         import tempfile
         from unittest import mock
 
-        from forensia.ai import section_agent
+        from forensia.ai import section_agent, section_block_narrative
         from forensia.core.case import Case
         from forensia.db.database import CaseDB
 
@@ -663,7 +663,7 @@ class SectionReviewerTests(unittest.TestCase):
                 narrate_calls = []
                 with (
                     mock.patch.object(
-                        section_agent,
+                        section_block_narrative,
                         "request_llm_json",
                         return_value={
                             "verdict": "rewrite",
@@ -672,7 +672,7 @@ class SectionReviewerTests(unittest.TestCase):
                         },
                     ) as review_call,
                     mock.patch.object(
-                        section_agent,
+                        section_block_narrative,
                         "_narrate_paragraph_with_retry",
                         side_effect=lambda **kw: narrate_calls.append(kw) or clean_body,
                     ),
@@ -694,7 +694,7 @@ class SectionReviewerTests(unittest.TestCase):
                 # Clean output passes the deterministic review without LLM calls.
                 with (
                     mock.patch.object(
-                        section_agent,
+                        section_block_narrative,
                         "request_llm_json",
                         return_value={
                             "verdict": "rewrite",
@@ -703,7 +703,7 @@ class SectionReviewerTests(unittest.TestCase):
                         },
                     ) as clean_review_call,
                     mock.patch.object(
-                        section_agent,
+                        section_block_narrative,
                         "_narrate_paragraph_with_retry",
                         return_value=dirty_body,
                     ) as clean_rewrite_call,
