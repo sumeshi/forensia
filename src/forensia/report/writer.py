@@ -22,13 +22,15 @@ from forensia.knowledge import (
 from forensia.report import (
     probes as _probes,  # noqa: F401 — re-export below, lazy import used internally
 )
-from forensia.report.html import render_html_report
-from forensia.report.keypoints import (
+from forensia.report.evidence_refs import (
     EVIDENCE_ID_PATTERN,
+    _extract_needed_evidence,
+)
+from forensia.report.html import render_html_report
+from forensia.report.keypoint_catalog import (
     REPORT_KEYPOINT_ALIASES,
     REPORT_KEYPOINTS,
     _default_keypoints_for_section,
-    _extract_needed_evidence,
     _resolve_evidence_results,
 )
 from forensia.report.probes import (  # noqa: F401 — re-export for backward compat
@@ -145,13 +147,14 @@ from forensia.report.structured_answers import (  # noqa: F401
     ensure_universal_question_probes,
 )
 
-# Re-export aliases so existing internal callers keep working
+# backward-compat aliases (tests import these from writer)
 _catalog_exe_globs = catalog_exe_globs
 _catalog_names = catalog_names
 _catalog_path_terms = catalog_path_terms
 _catalog_artifact_names = catalog_artifact_names
 _exe_glob_sql = exe_glob_sql
 _matches_exe_globs = matches_exe_globs
+
 
 __all__ = [
     # Public API (defined here)
@@ -208,7 +211,7 @@ __all__ = [
 
 # Canonical TemplateMeta lives in report.probes (single class shared by both
 # template parsers; duplicating the dataclass made identity/typing fragile).
-from forensia.report.probes import TemplateMeta  # noqa: E402
+from forensia.report.section_quality import TemplateMeta  # noqa: E402
 
 GAP_PATTERN = re.compile(
     r"\[INSUFFICIENT EVIDENCE:\s*([^\]]+)\]",

@@ -6,11 +6,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from forensia.ai import llm_gateway
 from forensia.ai.hypothesis_manager import _recent_reasoning_rows
-from forensia.ai.json_response import request_llm_json
-from forensia.ai.prompts import (
+from forensia.ai.prompt_context import (
     _build_schema_guidance,
     _trim_dynamic_content,
+)
+from forensia.ai.prompt_investigation import (
     build_query_intent_messages,
     build_sql_composer_messages,
     build_sql_self_check_messages,
@@ -85,7 +87,7 @@ def _retry_sql_composer(
     """
     messages = list(base_messages)
     for attempt in range(1, _PLANNER_SQL_MAX_RETRIES + 1):
-        parsed = request_llm_json(
+        parsed = llm_gateway.request_llm_json(
             messages=messages,
             model=model,
             base_url=base_url,
@@ -166,7 +168,7 @@ def _request_with_optional_context(
                 ["facts.md", "tasks.md"],
                 max_bytes=max(1024, memory.max_bytes // 3),
             )
-    parsed = request_llm_json(
+    parsed = llm_gateway.request_llm_json(
         messages=messages_builder(default_context),
         model=model,
         base_url=base_url,
@@ -177,7 +179,7 @@ def _request_with_optional_context(
     if not read_more:
         return parsed
     extra_context = memory.load_compact_context(read_more, max_bytes=memory.max_bytes)
-    reparsed = request_llm_json(
+    reparsed = llm_gateway.request_llm_json(
         messages=messages_builder(extra_context),
         model=model,
         base_url=base_url,
@@ -415,7 +417,7 @@ def plan_hypothesis_query(
     self_check_messages, self_check_schema = build_sql_self_check_messages(
         intent_response, composer_schema_card
     )
-    self_check = request_llm_json(
+    self_check = llm_gateway.request_llm_json(
         messages=self_check_messages,
         model=model,
         base_url=base_url,

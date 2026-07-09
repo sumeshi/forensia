@@ -20,8 +20,9 @@ from forensia.ai.section_agent import (
 from forensia.api.cache import write_api_snapshots
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager, memory_for_section
+from forensia.core.progress_event import progress_event
 from forensia.db.database import CaseDB
-from forensia.report.probes import render_table_block
+from forensia.report.table_registry import render_table_block
 from forensia.report.writer import (
     _assemble_section_body,
     _body_starts_with_heading,
@@ -123,15 +124,15 @@ def _emit_section_failure(
 ) -> None:
     if progress_callback:
         progress_callback(
-            {
-                "stage": "investigate/report-section-done",
-                "status": "running",
-                "iteration": iteration,
-                "summary": f"[report] section failed: {exc}",
-                "report_sections": _build_report_status(
+            progress_event(
+                "investigate/report-section-done",
+                "running",
+                iteration=iteration,
+                summary=f"[report] section failed: {exc}",
+                report_sections=_build_report_status(
                     db, focus_sections=focus_sections
                 ),
-            }
+            )
         )
 
 
@@ -201,18 +202,18 @@ async def _render_section_blocks(
     _log_report(f"{section_key} — writing")
     if progress_callback:
         progress_callback(
-            {
-                "stage": "investigate/report-section",
-                "status": "running",
-                "iteration": iteration,
-                "summary": f"[report] {section_key} writing...",
-                "current_report_section": section_key,
-                "report_sections": _build_report_status(
+            progress_event(
+                "investigate/report-section",
+                "running",
+                iteration=iteration,
+                summary=f"[report] {section_key} writing...",
+                current_report_section=section_key,
+                report_sections=_build_report_status(
                     db,
                     current_section=section_key,
                     focus_sections=focus_sections,
                 ),
-            }
+            )
         )
 
     blocks: list[dict[str, Any]] = list(request.get("block_requests") or [])
@@ -469,13 +470,13 @@ def _persist_section_result(
     if progress_callback:
         status = _build_report_status(db, focus_sections=focus_sections)
         progress_callback(
-            {
-                "stage": "investigate/report-section-done",
-                "status": "running",
-                "iteration": iteration,
-                "summary": f"[report] {section_key} done",
-                "report_sections": status,
-            }
+            progress_event(
+                "investigate/report-section-done",
+                "running",
+                iteration=iteration,
+                summary=f"[report] {section_key} done",
+                report_sections=status,
+            )
         )
     return body
 
@@ -588,13 +589,13 @@ def _build_refresh_result(
     report_status = _build_report_status(db, focus_sections=focus_sections)
     if progress_callback:
         progress_callback(
-            {
-                "stage": "investigate/report-cycle-done",
-                "status": "running",
-                "iteration": iteration,
-                "summary": summary.format(updated=updated, gap_count=len(all_gaps)),
-                "report_sections": report_status,
-            }
+            progress_event(
+                "investigate/report-cycle-done",
+                "running",
+                iteration=iteration,
+                summary=summary.format(updated=updated, gap_count=len(all_gaps)),
+                report_sections=report_status,
+            )
         )
     return {
         "filled_sections": filled_sections,

@@ -11,7 +11,7 @@ from typing import Any
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records, normalize_value
-from forensia.report.keypoints import (
+from forensia.report.evidence_refs import (
     _extract_evidence_ids_from_value,
 )
 from forensia.report.section_quality import GAP_PATTERN

@@ -14,6 +14,9 @@ from forensia.knowledge import (
     load_event_class_definitions,
     load_question_routing_raw,
 )
+from forensia.report.section_taxonomy import (  # noqa: F401 — re-export for backward compat
+    SECTION_KEY_PLAYBOOK_MAP as _SECTION_KEY_MAP,
+)
 
 if TYPE_CHECKING:
     pass
@@ -301,17 +304,8 @@ _PLAYBOOK_SECTION_DROP_ORDER = [
 # ``sections`` parameter of ``_dfir_playbook``.  Callers pass a set of
 # user-facing keys; only sections whose mapped key is in the set are
 # rendered.  The ``preamble`` key is always included.
-_SECTION_KEY_MAP: dict[str, str] = {
-    "events": "event_ids",
-    "priority": "event_ids",
-    "logon": "logon_types",
-    "fp": "fp_guidance",
-    "schema": "schema",
-    "extractor": "schema",
-    "app": "app_catalog",
-    "artifact": "artifact_inference",
-    "ioc": "ioc_catalog",
-}
+# _SECTION_KEY_MAP: canonical definition moved to report/section_taxonomy.py
+# Re-exported via the import at the top of this file.
 
 # Entity columns whose presence signals that file/executable interpretation
 # aids (app catalog, artifact inference, IOC catalog) are worth including.

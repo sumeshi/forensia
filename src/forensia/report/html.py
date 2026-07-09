@@ -14,7 +14,7 @@ from markupsafe import Markup, escape
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.db.query import normalize_value
-from forensia.report.keypoints import EVIDENCE_ID_PATTERN
+from forensia.report.evidence_refs import EVIDENCE_ID_PATTERN
 
 
 def _fetch_records(

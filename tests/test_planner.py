@@ -223,7 +223,7 @@ class PlannerRetryTests(unittest.TestCase):
             },
         ]
 
-        with patch("forensia.ai.planner.request_llm_json", side_effect=responses):
+        with patch("forensia.ai.llm_gateway.request_llm_json", side_effect=responses):
             result = plan_hypothesis_query(
                 state=state,
                 hypothesis=hypothesis,
@@ -267,7 +267,7 @@ class PlannerRetryTests(unittest.TestCase):
         ]
 
         with patch(
-            "forensia.ai.planner.request_llm_json", side_effect=responses
+            "forensia.ai.llm_gateway.request_llm_json", side_effect=responses
         ) as mock_request:
             result = plan_hypothesis_query(
                 state=state,
@@ -318,7 +318,7 @@ class PlannerRetryTests(unittest.TestCase):
         ]
 
         with (
-            patch("forensia.ai.planner.request_llm_json", side_effect=responses),
+            patch("forensia.ai.llm_gateway.request_llm_json", side_effect=responses),
             self.assertLogs("forensia.ai.planner", level="DEBUG") as logs,
         ):
             result = plan_hypothesis_query(
@@ -354,7 +354,7 @@ class PlannerRetryTests(unittest.TestCase):
                     """
                 )
                 with patch(
-                    "forensia.ai.planner.request_llm_json", side_effect=responses
+                    "forensia.ai.llm_gateway.request_llm_json", side_effect=responses
                 ) as mock_request:
                     plan_hypothesis_query(
                         state=state,
@@ -404,7 +404,7 @@ class PlannerRetryTests(unittest.TestCase):
                     """
                 )
                 with patch(
-                    "forensia.ai.planner.request_llm_json", side_effect=responses
+                    "forensia.ai.llm_gateway.request_llm_json", side_effect=responses
                 ) as mock_request:
                     plan_hypothesis_query(
                         state=state,
@@ -483,7 +483,7 @@ class PlannerRetryTests(unittest.TestCase):
             },
         ]
 
-        with patch("forensia.ai.planner.request_llm_json", side_effect=responses):
+        with patch("forensia.ai.llm_gateway.request_llm_json", side_effect=responses):
             result = plan_hypothesis_query(
                 state=state,
                 hypothesis=hypothesis,
@@ -513,7 +513,7 @@ class PlannerRetryTests(unittest.TestCase):
             return [{"role": "user", "content": extra_context}]
 
         with patch(
-            "forensia.ai.planner.request_llm_json", return_value={"read_more": []}
+            "forensia.ai.llm_gateway.request_llm_json", return_value={"read_more": []}
         ):
             _request_with_optional_context(
                 memory=_MemoryStub(),
@@ -535,7 +535,7 @@ class PlannerRetryTests(unittest.TestCase):
                 memory, "load_compact_context", return_value="# compact extra"
             ) as mock_compact,
             patch(
-                "forensia.ai.planner.request_llm_json",
+                "forensia.ai.llm_gateway.request_llm_json",
                 side_effect=[{"read_more": ["archive/refuted.md"]}, {"read_more": []}],
             ),
         ):
@@ -555,7 +555,7 @@ class PlannerRetryTests(unittest.TestCase):
             with (
                 CaseDB(case) as db,
                 patch(
-                    "forensia.ai.checker.request_llm_json",
+                    "forensia.ai.llm_gateway.request_llm_json",
                     return_value={
                         "query_id": "Q1",
                         "verdict": "unclear",
@@ -613,7 +613,7 @@ class PlannerRetryTests(unittest.TestCase):
             with (
                 CaseDB(case) as db,
                 patch(
-                    "forensia.ai.checker.request_llm_json",
+                    "forensia.ai.llm_gateway.request_llm_json",
                     side_effect=responses,
                 ),
                 patch("forensia.ai.checker.apply_check_result", side_effect=_capture),
@@ -668,7 +668,7 @@ class PlannerRetryTests(unittest.TestCase):
             with (
                 CaseDB(case) as db,
                 patch(
-                    "forensia.ai.checker.request_llm_json",
+                    "forensia.ai.llm_gateway.request_llm_json",
                     side_effect=responses,
                 ),
                 patch("forensia.ai.checker.apply_check_result", side_effect=_capture),
@@ -720,7 +720,7 @@ class PlannerRetryTests(unittest.TestCase):
             with (
                 CaseDB(case) as db,
                 patch(
-                    "forensia.ai.checker.request_llm_json",
+                    "forensia.ai.llm_gateway.request_llm_json",
                     side_effect=responses,
                 ),
                 patch("forensia.ai.checker.apply_check_result", side_effect=_capture),
@@ -788,7 +788,7 @@ class PlannerRetryTests(unittest.TestCase):
             with (
                 CaseDB(case) as db,
                 patch(
-                    "forensia.ai.checker.request_llm_json",
+                    "forensia.ai.llm_gateway.request_llm_json",
                     side_effect=responses,
                 ),
                 patch("forensia.ai.checker.apply_check_result", side_effect=_capture),
@@ -841,7 +841,7 @@ class PlannerRetryTests(unittest.TestCase):
             with (
                 CaseDB(case) as db,
                 patch(
-                    "forensia.ai.checker.request_llm_json",
+                    "forensia.ai.llm_gateway.request_llm_json",
                     return_value={
                         "query_id": "Q1",
                         "verdict": "inconclusive",

@@ -15,7 +15,10 @@ from forensia.knowledge import (
     exe_glob_sql,
     matches_exe_globs,
 )
-from forensia.report.keypoints import (
+from forensia.report.answer_store import (
+    _dedupe_dict_rows,
+)
+from forensia.report.evidence_refs import (
     _sql_like_any,
 )
 from forensia.report.markdown import (
@@ -25,17 +28,6 @@ from forensia.report.report_brief import (
     _query_evtx_time_range,
     _short_path_context,
 )
-from forensia.report.structured_answers import (
-    _dedupe_dict_rows,
-)
-
-# Re-export aliases so existing internal callers keep working
-_catalog_exe_globs = catalog_exe_globs
-_catalog_names = catalog_names
-_catalog_path_terms = catalog_path_terms
-_catalog_artifact_names = catalog_artifact_names
-_exe_glob_sql = exe_glob_sql
-_matches_exe_globs = matches_exe_globs
 
 
 def _count_table(db: CaseDB) -> list[dict[str, Any]]:
@@ -204,9 +196,9 @@ def _timeline_rows(db: CaseDB, limit: int = 18) -> list[dict[str, Any]]:
                 "evidence_id": row.get("evidence_id"),
             }
         )
-    notable_exe_sql = _exe_glob_sql(
+    notable_exe_sql = exe_glob_sql(
         "executable_name",
-        _catalog_exe_globs(
+        catalog_exe_globs(
             "antiforensic_tools",
             "cloud_sync_artifacts",
             "browser_artifacts",
@@ -278,16 +270,16 @@ def _execution_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
             existing["last_exec_time"] = row.get("last_exec_time")
     rows = list(aggregated.values())
 
-    antiforensic_globs = _catalog_exe_globs("antiforensic_tools")
-    user_app_globs = _catalog_exe_globs(
+    antiforensic_globs = catalog_exe_globs("antiforensic_tools")
+    user_app_globs = catalog_exe_globs(
         "cloud_sync_artifacts", "browser_artifacts", "email_artifacts"
     )
 
     def _rank(row: dict[str, Any]) -> int:
         name = str(row.get("executable_name") or "")
-        if _matches_exe_globs(name, antiforensic_globs):
+        if matches_exe_globs(name, antiforensic_globs):
             return 0
-        if _matches_exe_globs(name, user_app_globs):
+        if matches_exe_globs(name, user_app_globs):
             return 1
         return 2
 
@@ -303,16 +295,16 @@ def _file_artifact_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
     Path families come from the IOC catalog and the user's Recent folder —
     no case-specific filename keywords (Rule 16).
     """
-    path_terms = _catalog_path_terms(
+    path_terms = catalog_path_terms(
         "email_artifacts", "cloud_sync_artifacts", "antiforensic_tools"
     )
-    tool_globs = _catalog_exe_globs("antiforensic_tools")
+    tool_globs = catalog_exe_globs("antiforensic_tools")
     path_sql = (
         _sql_like_any("file_path", *[f"%{term}%" for term in path_terms])
         if path_terms
         else "FALSE"
     )
-    tool_name_sql = _exe_glob_sql("file_name", tool_globs)
+    tool_name_sql = exe_glob_sql("file_name", tool_globs)
     recent_lnk_sql = "(LOWER(COALESCE(file_path, '')) LIKE '%/recent/%' AND LOWER(COALESCE(file_name, '')) LIKE '%.lnk')"
     return fetch_records(
         db,
@@ -332,14 +324,14 @@ def _file_artifact_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
 
 
 def _antiforensic_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
-    tool_globs = _catalog_exe_globs("antiforensic_tools")
-    tool_exe_sql = _exe_glob_sql("executable_name", tool_globs)
-    tool_file_sql = _exe_glob_sql("file_name", tool_globs)
-    artifact_names = _catalog_artifact_names("antiforensic_tools")
+    tool_globs = catalog_exe_globs("antiforensic_tools")
+    tool_exe_sql = exe_glob_sql("executable_name", tool_globs)
+    tool_file_sql = exe_glob_sql("file_name", tool_globs)
+    artifact_names = catalog_artifact_names("antiforensic_tools")
     artifact_name_sql = (
         _sql_like_any("file_name", *artifact_names) if artifact_names else "FALSE"
     )
-    tool_name_terms = [name.lower() for name in _catalog_names("antiforensic_tools")]
+    tool_name_terms = [name.lower() for name in catalog_names("antiforensic_tools")]
     prefetch_path_sql = (
         _sql_like_any("file_path", *[f"%prefetch%{term}%" for term in tool_name_terms])
         if tool_name_terms
@@ -473,16 +465,16 @@ def _sentence_list(items: list[str]) -> str:
 def _signal_executable_labels(rows: list[dict[str, Any]], limit: int = 4) -> list[str]:
     """Pick high-signal executable labels, catalog families first (wipers, cloud, browsers)."""
     glob_groups = (
-        _catalog_exe_globs("antiforensic_tools"),
-        _catalog_exe_globs("cloud_sync_artifacts"),
-        _catalog_exe_globs("browser_artifacts", "email_artifacts"),
+        catalog_exe_globs("antiforensic_tools"),
+        catalog_exe_globs("cloud_sync_artifacts"),
+        catalog_exe_globs("browser_artifacts", "email_artifacts"),
     )
     labels: list[str] = []
     for globs in glob_groups:
         for row in rows:
             for key in ("executable_name", "file_name", "artifact"):
                 text = str(row.get(key) or "").strip()
-                if text and text not in labels and _matches_exe_globs(text, globs):
+                if text and text not in labels and matches_exe_globs(text, globs):
                     labels.append(text)
                     break
             if len(labels) >= limit:
@@ -521,9 +513,9 @@ def _timeline_phase_rows(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
         ORDER BY CAST(timestamp AS DATE)
         """,
     )
-    notable_exe_sql = _exe_glob_sql(
+    notable_exe_sql = exe_glob_sql(
         "executable_name",
-        _catalog_exe_globs(
+        catalog_exe_globs(
             "antiforensic_tools",
             "cloud_sync_artifacts",
             "browser_artifacts",
@@ -596,10 +588,10 @@ def _phase_interpretation(row: dict[str, Any]) -> str:
         for item in str(row.get("executables") or "").split(",")
         if item.strip()
     ]
-    tool_globs = _catalog_exe_globs("antiforensic_tools")
-    cloud_globs = _catalog_exe_globs("cloud_sync_artifacts")
-    has_tools = any(_matches_exe_globs(name, tool_globs) for name in executables)
-    has_cloud = any(_matches_exe_globs(name, cloud_globs) for name in executables)
+    tool_globs = catalog_exe_globs("antiforensic_tools")
+    cloud_globs = catalog_exe_globs("cloud_sync_artifacts")
+    has_tools = any(matches_exe_globs(name, tool_globs) for name in executables)
+    has_cloud = any(matches_exe_globs(name, cloud_globs) for name in executables)
     if has_tools and _as_int(row.get("log_integrity_events")):
         return "Cleaning tools and log integrity events on the same day; prioritize anti-forensic hypothesis"
     if has_cloud and has_tools:

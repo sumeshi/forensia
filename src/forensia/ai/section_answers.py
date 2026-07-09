@@ -17,8 +17,10 @@ from forensia.knowledge import catalog_names as _catalog_names
 from forensia.questions import (
     resolve_question_spec,
 )
-from forensia.report.structured_answers import (
+from forensia.report.answer_builders_host import (
     _build_daily_session_timeline_rows,
+)
+from forensia.report.answer_store import (
     _normalize_structured_answer,
     _persist_structured_answer,
     _render_structured_answer_markdown,

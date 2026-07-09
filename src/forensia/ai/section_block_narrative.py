@@ -5,9 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from forensia.ai.json_response import (
-    request_llm_json,
-)
+from forensia.ai import llm_gateway
 from forensia.ai.prompts import (
     build_paragraph_narrate_messages,
     build_section_outline_messages,
@@ -111,7 +109,7 @@ def _narrate_paragraph_with_retry(
     )
 
     def _call(messages: list[dict[str, str]]) -> str:
-        parsed = request_llm_json(
+        parsed = llm_gateway.request_llm_json(
             messages=messages,
             model=model,
             base_url=base_url,
@@ -373,7 +371,7 @@ def _review_and_rewrite_narrative(
             deterministic_problems,
         )
         review_audit = ctx.review_audit or ctx.audit
-        review = request_llm_json(
+        review = llm_gateway.request_llm_json(
             messages=review_msgs,
             model=ctx.model,
             base_url=ctx.base_url,
@@ -469,195 +467,15 @@ def _write_block_body(
     prompt_rows = _summarize_flat_evidence_rows(raw_rows) if raw_rows else None
 
     if ctx.benchmark_mode:
-        structured_answer = build_structured_answer(
-            ctx.case,
-            ctx.db,
-            answer_spec=ctx.answer_spec,
-            answer_id=ctx.answer_id or ctx.benchmark_id,
-            section_key=ctx.section_key,
-            block_heading=ctx.block_heading,
+        body, messages, status_inner = _write_benchmark_block(
+            ctx, raw_rows, prompt_rows, collected_results, status_inner,
         )
-        if structured_answer is not None:
-            status_inner = str(structured_answer.get("status") or status_inner)
-            body = _render_structured_answer_markdown(
-                structured_answer, ctx.block_heading
-            )
-            messages = []
-        else:
-            expected_shape = _resolve_structured_expected_shape(ctx.block_heading)
-
-            extracted_rows = (
-                _extract_answer_by_shape(
-                    raw_rows, expected_shape, expected_shape.get("format", "")
-                )
-                if raw_rows and expected_shape
-                else []
-            )
-
-            # BUG-030: Skip classify when rows already match expected_shape
-            if (
-                extracted_rows
-                and expected_shape
-                and all(
-                    field in extracted_rows[0]
-                    for field in expected_shape.get("fields") or []
-                )
-            ):
-                # rows already match the expected shape — skip classify, use them directly
-                picked_rows = extracted_rows
-                classification = {
-                    "status": "answered",
-                    "picked_row_indices": [],
-                    "rationale": "rows match expected_shape",
-                }
-            else:
-                classify_messages, classify_schema = build_structured_classify_messages(
-                    question=ctx.template_body or ctx.block_heading,
-                    block_heading=ctx.block_heading,
-                    evidence_rows=prompt_rows or [],
-                    expected_shape=expected_shape,
-                    time_range=ctx.case.time_range,
-                )
-                classification = request_llm_json(
-                    messages=classify_messages,
-                    model=ctx.model,
-                    base_url=ctx.base_url,
-                    json_schema=classify_schema,
-                    audit_callback=ctx.audit,
-                )
-                # Handle picked_row_indices (int array) instead of picked_row_ids
-                picked_row_indices = classification.get("picked_row_indices") or []
-                if isinstance(picked_row_indices, list):
-                    valid_indices = [
-                        i
-                        for i in picked_row_indices
-                        if isinstance(i, int) and 0 <= i < len(raw_rows or [])
-                    ]
-                else:
-                    valid_indices = []
-                picked_rows = [raw_rows[i] for i in valid_indices] if raw_rows else []
-
-            queries_run = [
-                str(r.get("source_ref") or r.get("source_query") or "")
-                for r in collected_results
-                if r.get("source_ref") or r.get("source_query")
-            ]
-            body = _format_structured_answer(
-                classification=classification,
-                picked_rows=picked_rows,
-                expected_shape=expected_shape,
-                section_key=ctx.section_key,
-                block_heading=ctx.block_heading,
-                status=status_inner,
-                case=ctx.case,
-                benchmark_id=ctx.benchmark_id,
-                queries_run=queries_run,
-                evidence_rows=prompt_rows or [],
-                answer_spec=ctx.answer_spec
-                or (
-                    ctx.question_spec.answer_spec
-                    if ctx.question_spec is not None
-                    else ""
-                ),
-            )
-            messages = (
-                classify_messages
-                if not (
-                    extracted_rows
-                    and expected_shape
-                    and all(
-                        field in extracted_rows[0]
-                        for field in expected_shape.get("fields") or []
-                    )
-                )
-                else []
-            )
     else:
-        if (
-            status_inner in {"not_searched", "not_found", "wrong_query"}
-            and not ctx.structured_digest
-        ):
-            # Reader-facing insufficient-evidence placeholder. Must not contain
-            # workflow markers ("Block skipped", "Section block failed") or
-            # open-question markers — those trip the section quality gates and
-            # would cap the whole section's confidence.
-            # When structured observations exist (structured answers or the
-            # section's own table data), narrate from them instead of
-            # claiming insufficiency next to a populated table.
-            body = _insufficient_evidence_placeholder()
-            messages = []
-        else:
-            flat_evidence = _flatten_sample_rows(collected_results, rows_only=True)
-            if flat_evidence:
-                prior_section_keypoints = list(
-                    {
-                        str(r.get("keypoint") or r.get("source_kind") or "")
-                        for r in collected_results
-                        if r.get("keypoint") or r.get("source_kind")
-                    }
-                )
-                outline_messages, outline_schema = build_section_outline_messages(
-                    template_body=ctx.template_body,
-                    relevant_evidence=flat_evidence,
-                    time_range=ctx.case.time_range,
-                    section_meta={"section": ctx.section_key, "title": ctx.title},
-                    prior_section_keypoints=prior_section_keypoints,
-                )
-                outline = request_llm_json(
-                    messages=outline_messages,
-                    model=ctx.model,
-                    base_url=ctx.base_url,
-                    json_schema=outline_schema,
-                    audit_callback=ctx.audit,
-                )
-                outline_items: list[dict[str, Any]] = outline.get("outline") or []
-                all_key_points: list[str] = _label_key_points_with_verdicts(
-                    outline_items,
-                    collected_results,
-                    verdict,
-                )
-            else:
-                # No query evidence — the narrator works from the structured
-                # digest alone; an outline call over zero rows is wasted.
-                all_key_points = []
-            narrate_messages, narrate_schema = build_paragraph_narrate_messages(
-                heading=ctx.block_heading,
-                key_points=all_key_points,
-                evidence_rows=flat_evidence[:10],
-                template_body=ctx.template_body,
-                structured_digest=ctx.structured_digest,
-            )
-            body = _narrate_paragraph_with_retry(
-                narrate_messages=narrate_messages,
-                narrate_schema=narrate_schema,
-                model=ctx.model,
-                base_url=ctx.base_url,
-                audit_callback=ctx.audit,
-                target_language=_report_language(),
-            )
-            if _is_effectively_empty_body(body):
-                _log(
-                    "SECTION",
-                    f"narrator returned empty body for '{ctx.block_heading}'; "
-                    "using deterministic fallback",
-                )
-                body = _fallback_narrative_body(
-                    heading=ctx.block_heading,
-                    status=status_inner,
-                    collected_results=collected_results,
-                    flat_evidence=flat_evidence,
-                    actual_query_count=actual_query_count,
-                    actual_query_row_counts=actual_query_row_counts,
-                    key_points=all_key_points,
-                )
-            body = _review_and_rewrite_narrative(
-                ctx, body, narrate_messages, narrate_schema
-            )
-            messages = narrate_messages
+        body, messages = _write_narrative_block(
+            ctx, raw_rows, prompt_rows, collected_results,
+            verdict, status_inner, actual_query_count, actual_query_row_counts,
+        )
 
-    body = _postprocess_block_body(
-        body, section_key=ctx.section_key, block_heading=ctx.block_heading
-    )
     if audit_callback:
         audit_callback(messages, body)
     _store_section_run(
@@ -670,3 +488,215 @@ def _write_block_body(
     )
     return body, status_inner
 
+def _write_benchmark_block(
+    ctx: _BlockContext,
+    raw_rows: list[dict[str, Any]] | None,
+    prompt_rows: list[dict[str, Any]] | None,
+    collected_results: list[dict[str, Any]],
+    status_inner: str,
+) -> tuple[str, list, str]:
+    """Benchmark-mode body: structured answer or classify-then-format."""
+    structured_answer = build_structured_answer(
+        ctx.case,
+        ctx.db,
+        answer_spec=ctx.answer_spec,
+        answer_id=ctx.answer_id or ctx.benchmark_id,
+        section_key=ctx.section_key,
+        block_heading=ctx.block_heading,
+    )
+    if structured_answer is not None:
+        status_inner = str(structured_answer.get("status") or status_inner)
+        body = _render_structured_answer_markdown(
+            structured_answer, ctx.block_heading
+        )
+        messages = []
+    else:
+        expected_shape = _resolve_structured_expected_shape(ctx.block_heading)
+
+        extracted_rows = (
+            _extract_answer_by_shape(
+                raw_rows, expected_shape, expected_shape.get("format", "")
+            )
+            if raw_rows and expected_shape
+            else []
+        )
+
+        # BUG-030: Skip classify when rows already match expected_shape
+        if (
+            extracted_rows
+            and expected_shape
+            and all(
+                field in extracted_rows[0]
+                for field in expected_shape.get("fields") or []
+            )
+        ):
+            # rows already match the expected shape — skip classify, use them directly
+            picked_rows = extracted_rows
+            classification = {
+                "status": "answered",
+                "picked_row_indices": [],
+                "rationale": "rows match expected_shape",
+            }
+        else:
+            classify_messages, classify_schema = build_structured_classify_messages(
+                question=ctx.template_body or ctx.block_heading,
+                block_heading=ctx.block_heading,
+                evidence_rows=prompt_rows or [],
+                expected_shape=expected_shape,
+                time_range=ctx.case.time_range,
+            )
+            classification = llm_gateway.request_llm_json(
+                messages=classify_messages,
+                model=ctx.model,
+                base_url=ctx.base_url,
+                json_schema=classify_schema,
+                audit_callback=ctx.audit,
+            )
+            # Handle picked_row_indices (int array) instead of picked_row_ids
+            picked_row_indices = classification.get("picked_row_indices") or []
+            if isinstance(picked_row_indices, list):
+                valid_indices = [
+                    i
+                    for i in picked_row_indices
+                    if isinstance(i, int) and 0 <= i < len(raw_rows or [])
+                ]
+            else:
+                valid_indices = []
+            picked_rows = [raw_rows[i] for i in valid_indices] if raw_rows else []
+
+        queries_run = [
+            str(r.get("source_ref") or r.get("source_query") or "")
+            for r in collected_results
+            if r.get("source_ref") or r.get("source_query")
+        ]
+        body = _format_structured_answer(
+            classification=classification,
+            picked_rows=picked_rows,
+            expected_shape=expected_shape,
+            section_key=ctx.section_key,
+            block_heading=ctx.block_heading,
+            status=status_inner,
+            case=ctx.case,
+            benchmark_id=ctx.benchmark_id,
+            queries_run=queries_run,
+            evidence_rows=prompt_rows or [],
+            answer_spec=ctx.answer_spec
+            or (
+                ctx.question_spec.answer_spec
+                if ctx.question_spec is not None
+                else ""
+            ),
+        )
+        messages = (
+            classify_messages
+            if not (
+                extracted_rows
+                and expected_shape
+                and all(
+                    field in extracted_rows[0]
+                    for field in expected_shape.get("fields") or []
+                )
+            )
+            else []
+        )
+    return body, messages, status_inner
+
+
+def _write_narrative_block(
+    ctx: _BlockContext,
+    raw_rows: list[dict[str, Any]] | None,
+    prompt_rows: list[dict[str, Any]] | None,
+    collected_results: list[dict[str, Any]],
+    verdict: str,
+    status_inner: str,
+    actual_query_count: int,
+    actual_query_row_counts: list[int],
+) -> tuple[str, list]:
+    """Narrative-mode body: outline -> narrate -> review."""
+    flat_evidence = _flatten_sample_rows(collected_results, rows_only=True)
+    if (
+        status_inner in {"not_searched", "not_found", "wrong_query"}
+        and not ctx.structured_digest
+    ):
+        # Reader-facing insufficient-evidence placeholder. Must not contain
+        # workflow markers ("Block skipped", "Section block failed") or
+        # open-question markers — those trip the section quality gates and
+        # would cap the whole section's confidence.
+        # When structured observations exist (structured answers or the
+        # section's own table data), narrate from them instead of
+        # claiming insufficiency next to a populated table.
+        body = _insufficient_evidence_placeholder()
+        messages = []
+    else:
+        flat_evidence = _flatten_sample_rows(collected_results, rows_only=True)
+        if flat_evidence:
+            prior_section_keypoints = list(
+                {
+                    str(r.get("keypoint") or r.get("source_kind") or "")
+                    for r in collected_results
+                    if r.get("keypoint") or r.get("source_kind")
+                }
+            )
+            outline_messages, outline_schema = build_section_outline_messages(
+                template_body=ctx.template_body,
+                relevant_evidence=flat_evidence,
+                time_range=ctx.case.time_range,
+                section_meta={"section": ctx.section_key, "title": ctx.title},
+                prior_section_keypoints=prior_section_keypoints,
+            )
+            outline = llm_gateway.request_llm_json(
+                messages=outline_messages,
+                model=ctx.model,
+                base_url=ctx.base_url,
+                json_schema=outline_schema,
+                audit_callback=ctx.audit,
+            )
+            outline_items: list[dict[str, Any]] = outline.get("outline") or []
+            all_key_points: list[str] = _label_key_points_with_verdicts(
+                outline_items,
+                collected_results,
+                verdict,
+            )
+        else:
+            # No query evidence — the narrator works from the structured
+            # digest alone; an outline call over zero rows is wasted.
+            all_key_points = []
+        narrate_messages, narrate_schema = build_paragraph_narrate_messages(
+            heading=ctx.block_heading,
+            key_points=all_key_points,
+            evidence_rows=flat_evidence[:10],
+            template_body=ctx.template_body,
+            structured_digest=ctx.structured_digest,
+        )
+        body = _narrate_paragraph_with_retry(
+            narrate_messages=narrate_messages,
+            narrate_schema=narrate_schema,
+            model=ctx.model,
+            base_url=ctx.base_url,
+            audit_callback=ctx.audit,
+            target_language=_report_language(),
+        )
+        if _is_effectively_empty_body(body):
+            _log(
+                "SECTION",
+                f"narrator returned empty body for '{ctx.block_heading}'; "
+                "using deterministic fallback",
+            )
+            body = _fallback_narrative_body(
+                heading=ctx.block_heading,
+                status=status_inner,
+                collected_results=collected_results,
+                flat_evidence=flat_evidence,
+                actual_query_count=actual_query_count,
+                actual_query_row_counts=actual_query_row_counts,
+                key_points=all_key_points,
+            )
+        body = _review_and_rewrite_narrative(
+            ctx, body, narrate_messages, narrate_schema
+        )
+        messages = narrate_messages
+    return body, messages
+
+    body = _postprocess_block_body(
+    body, section_key=ctx.section_key, block_heading=ctx.block_heading
+    )

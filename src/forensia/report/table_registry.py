@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -72,131 +73,171 @@ def _build_network_table(db: CaseDB) -> list[dict[str, Any]]:
     return _network_summary_rows(db)
 
 
-_TABLE_BLOCK_BUILDERS: dict[str, Callable[[CaseDB], list[dict[str, Any]]]] = {
-    "overview_evidence_scope": _build_evidence_scope_table,
-    "overview_systems_observed": _build_systems_observed_table,
-    "overview_key_findings": _build_key_findings_table,
-    "timeline_phase_summary": _build_timeline_phase_table,
-    "timeline_chronological": _build_timeline_chronological_table,
-    "technical_accounts": _build_accounts_table,
-    "technical_execution": _build_execution_table,
-    "technical_files": _build_file_artifacts_table,
-    "technical_antiforensic": _build_antiforensic_table,
-    "technical_network": _build_network_table,
-    "gaps_unresolved": _build_gaps_unresolved_table,
-    "gaps_untestable": _build_gaps_untestable_table,
-    "gaps_confirmed": _build_gaps_confirmed_table,
-    "gaps_evidence": _build_evidence_gaps_table,
-    "recommendations_action_plan": _build_recommendations_table,
+@dataclass(frozen=True)
+class TableSpec:
+    """One entry in the unified TABLE_BLOCKS registry."""
+
+    builder: Callable[[CaseDB], list[dict[str, Any]]]
+    columns: tuple[tuple[str, str], ...] | None  # None = use default
+
+
+TABLE_BLOCKS: dict[str, TableSpec] = {
+    "overview_evidence_scope": TableSpec(
+        builder=_build_evidence_scope_table,
+        columns=(
+            ("metric", "Metric"),
+            ("value", "Value"),
+            ("scope", "Scope"),
+        ),
+    ),
+    "overview_systems_observed": TableSpec(
+        builder=_build_systems_observed_table,
+        columns=(
+            ("host", "Host"),
+            ("events", "EVTX rows"),
+            ("first_seen", "First seen"),
+            ("last_seen", "Last seen"),
+        ),
+    ),
+    "overview_key_findings": TableSpec(
+        builder=_build_key_findings_table,
+        columns=(
+            ("finding", "Finding"),
+            ("severity", "Severity"),
+            ("confidence", "Confidence"),
+            ("why_it_matters", "Why it matters"),
+        ),
+    ),
+    "timeline_phase_summary": TableSpec(
+        builder=_build_timeline_phase_table,
+        columns=(
+            ("date", "Date"),
+            ("phase", "Observed activity"),
+            ("interpretation", "Interpretation"),
+            ("window", "Event window"),
+        ),
+    ),
+    "timeline_chronological": TableSpec(
+        builder=_build_timeline_chronological_table,
+        columns=(
+            ("time", "Time"),
+            ("host", "Host"),
+            ("activity", "Activity"),
+            ("subject", "Subject"),
+            ("artifact", "Artifact"),
+            ("evidence_id", "Ref"),
+        ),
+    ),
+    "technical_accounts": TableSpec(
+        builder=_build_accounts_table,
+        columns=(
+            ("account", "Account"),
+            ("computer", "Host"),
+            ("logons", "4624"),
+            ("failed_logons", "4625"),
+            ("explicit_credential_events", "4648"),
+            ("first_seen", "First seen"),
+            ("last_seen", "Last seen"),
+        ),
+    ),
+    "technical_execution": TableSpec(
+        builder=_build_execution_table,
+        columns=(
+            ("executable", "Executable"),
+            ("execution_count", "Execution count"),
+            ("first_execution", "First execution"),
+            ("evidence_id", "Ref"),
+        ),
+    ),
+    "technical_files": TableSpec(
+        builder=_build_file_artifacts_table,
+        columns=(
+            ("timestamp", "Timestamp"),
+            ("file_name", "File"),
+            ("file_path", "Path"),
+            ("evidence_id", "Ref"),
+        ),
+    ),
+    "technical_antiforensic": TableSpec(
+        builder=_build_antiforensic_table,
+        columns=(
+            ("type", "Type"),
+            ("timestamp", "Timestamp"),
+            ("artifact", "Artifact"),
+            ("context", "Context"),
+            ("computer", "Host"),
+            ("evidence_id", "Ref"),
+        ),
+    ),
+    "technical_network": TableSpec(
+        builder=_build_network_table,
+        columns=(
+            ("area", "Area"),
+            ("ip_address", "IP address"),
+            ("outbound_rows", "Outbound rows"),
+            ("inbound_rows", "Inbound rows"),
+            ("interpretation", "Interpretation"),
+        ),
+    ),
+    "gaps_unresolved": TableSpec(
+        builder=_build_gaps_unresolved_table,
+        columns=(
+            ("hypothesis", "Hypothesis"),
+            ("status", "State"),
+            ("evidence_rows", "Evidence rows"),
+            ("missing_rationale", "Missing rationale"),
+            ("next_step", "Next step"),
+        ),
+    ),
+    "gaps_untestable": TableSpec(
+        builder=_build_gaps_untestable_table,
+        columns=(
+            ("hypothesis", "Hypothesis"),
+            ("missing_telemetry", "Missing telemetry"),
+            ("rationale", "Rationale"),
+            ("next_step", "Next step"),
+        ),
+    ),
+    "gaps_confirmed": TableSpec(
+        builder=_build_gaps_confirmed_table,
+        columns=(
+            ("hypothesis", "Hypothesis"),
+            ("verdict", "Verdict"),
+            ("evidence_basis", "Basis"),
+            ("related_context", "Related context"),
+            ("summary", "Summary"),
+        ),
+    ),
+    "gaps_evidence": TableSpec(
+        builder=_build_evidence_gaps_table,
+        columns=(
+            ("gap", "Gap"),
+            ("why_it_matters", "Why it matters"),
+            ("next_step", "Next step"),
+        ),
+    ),
+    "recommendations_action_plan": TableSpec(
+        builder=_build_recommendations_table,
+        columns=(
+            ("priority", "Priority"),
+            ("action", "Action"),
+            ("rationale", "Rationale"),
+            ("evidence_or_gap", "Evidence/Gap"),
+        ),
+    ),
 }
 
-_TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
-    "overview_evidence_scope": [
-        ("metric", "Metric"),
-        ("value", "Value"),
-        ("scope", "Scope"),
-    ],
-    "overview_systems_observed": [
-        ("host", "Host"),
-        ("events", "EVTX rows"),
-        ("first_seen", "First seen"),
-        ("last_seen", "Last seen"),
-    ],
-    "overview_key_findings": [
-        ("finding", "Finding"),
-        ("severity", "Severity"),
-        ("confidence", "Confidence"),
-        ("why_it_matters", "Why it matters"),
-    ],
-    "timeline_phase_summary": [
-        ("date", "Date"),
-        ("phase", "Observed activity"),
-        ("interpretation", "Interpretation"),
-        ("window", "Event window"),
-    ],
-    "timeline_chronological": [
-        ("time", "Time"),
-        ("host", "Host"),
-        ("activity", "Activity"),
-        ("subject", "Subject"),
-        ("artifact", "Artifact"),
-        ("evidence_id", "Ref"),
-    ],
-    "technical_accounts": [
-        ("account", "Account"),
-        ("computer", "Host"),
-        ("logons", "4624"),
-        ("failed_logons", "4625"),
-        ("explicit_credential_events", "4648"),
-        ("first_seen", "First seen"),
-        ("last_seen", "Last seen"),
-    ],
-    "technical_execution": [
-        ("executable_name", "Executable"),
-        ("exec_count", "Exec count"),
-        ("last_exec_time", "Last execution"),
-        ("evidence_id", "Ref"),
-    ],
-    "technical_files": [
-        ("timestamp", "Timestamp"),
-        ("file_name", "File"),
-        ("file_path", "Path"),
-        ("evidence_id", "Ref"),
-    ],
-    "technical_antiforensic": [
-        ("type", "Type"),
-        ("timestamp", "Timestamp"),
-        ("artifact", "Artifact"),
-        ("context", "Context"),
-        ("computer", "Host"),
-        ("evidence_id", "Ref"),
-    ],
-    "technical_network": [
-        ("area", "Area"),
-        ("observed_rows", "Rows with IP"),
-        ("external_src_rows", "External source rows"),
-        ("external_dst_rows", "External destination rows"),
-        ("interpretation", "Interpretation"),
-    ],
-    "gaps_unresolved": [
-        ("hypothesis", "Hypothesis"),
-        ("state", "State"),
-        ("reasoning", "Reasoning rows"),
-        ("latest", "Latest rationale"),
-        ("needed", "Needed evidence"),
-    ],
-    "gaps_untestable": [
-        ("hypothesis", "Hypothesis"),
-        ("missing_telemetry", "Missing telemetry"),
-        ("rationale", "Rationale"),
-        ("next_step", "Next step"),
-    ],
-    "gaps_confirmed": [
-        ("hypothesis", "Hypothesis"),
-        ("verdict", "Verdict"),
-        ("basis", "Basis"),
-        ("benign_context", "Benign context"),
-        ("summary", "Summary"),
-    ],
-    "gaps_evidence": [
-        ("gap", "Gap"),
-        ("why_it_matters", "Why it matters"),
-        ("next_step", "Next step"),
-    ],
-    "recommendations_action_plan": [
-        ("priority", "Priority"),
-        ("action", "Action"),
-        ("rationale", "Rationale"),
-        ("evidence_or_gap", "Evidence/Gap"),
-    ],
-}
+# Backward-compat aliases (tests / external callers may import these)
+_TABLE_BLOCK_BUILDERS = {k: v.builder for k, v in TABLE_BLOCKS.items()}
+_TABLE_COLUMNS = {k: v.columns for k, v in TABLE_BLOCKS.items() if v.columns}
 
 
 def _table_block_columns(
     builder_name: str, rows: list[dict[str, Any]]
 ) -> list[tuple[str, str]]:
     """Return column definitions for a table builder, with dynamic adjustments."""
-    base = _TABLE_COLUMNS.get(builder_name, [("key", "Key"), ("value", "Value")])
+    spec = TABLE_BLOCKS.get(builder_name)
+    base = list(spec.columns) if spec and spec.columns else [("key", "Key"), ("value", "Value")]
     if builder_name == "overview_systems_observed" and any("note" in r for r in rows):
         return [
             ("host", "Host"),
@@ -247,7 +288,8 @@ def render_table_block(
     LLM agent). Empty result sets render the declared ``empty`` text instead of
     a bare empty table.
     """
-    builder_fn = _TABLE_BLOCK_BUILDERS.get(builder_name)
+    spec = TABLE_BLOCKS.get(builder_name)
+    builder_fn = spec.builder if spec else None
     if builder_fn is None:
         return None
     rows = builder_fn(db)

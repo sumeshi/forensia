@@ -25,14 +25,17 @@ from forensia.questions import (
     load_question_specs,
     resolve_question_spec,
 )
-from forensia.report.keypoints import (
+from forensia.report.answer_store import (
+    _load_structured_answers,
+)
+from forensia.report.keypoint_catalog import (
     REPORT_KEYPOINT_ALIASES,
     REPORT_KEYPOINTS,
     _default_keypoints_for_section,
     _resolve_evidence_results,
 )
-from forensia.report.structured_answers import (
-    _load_structured_answers,
+from forensia.report.section_taxonomy import (
+    section_family as _section_family,  # noqa: F401
 )
 
 # ====================================================================
@@ -58,9 +61,8 @@ class SectionPlanAction:
     enough_to_write: bool = False
 
 
-def _section_family(section_key: str) -> str:
-    parts = str(section_key or "").split("_", 1)
-    return parts[1] if len(parts) == 2 else parts[0]
+# _section_family: canonical implementation moved to report/section_taxonomy.py
+# Re-exported via the import at the top of this file.
 
 
 def _known_keypoints(catalog: list[dict]) -> set[str]:

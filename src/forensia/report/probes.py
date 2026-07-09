@@ -4,6 +4,15 @@ Kept for backward compatibility: existing code and tests import these
 names from forensia.report.probes.
 """
 
+# backward-compat aliases — legacy callers import these from forensia.report.probes
+from forensia.knowledge import (  # noqa: E402
+    catalog_artifact_names,
+    catalog_exe_globs,
+    catalog_names,
+    catalog_path_terms,
+    exe_glob_sql,
+    matches_exe_globs,
+)
 from forensia.report.markdown import (  # noqa: F401
     _build_host_note,
     _markdown_table,
@@ -100,15 +109,10 @@ from forensia.report.summary_tables import (  # noqa: F401
     _build_systems_observed_table,
     _build_timeline_chronological_table,
     _build_timeline_phase_table,
-    _catalog_artifact_names,
-    _catalog_exe_globs,
-    _catalog_names,
-    _catalog_path_terms,
     _collect_flat_evidence_rows,
     _count_findings_with_tag,
     _count_table,
     _event_interpretation,
-    _exe_glob_sql,
     _execution_rows,
     _file_artifact_rows,
     _finding_theme,
@@ -125,7 +129,6 @@ from forensia.report.summary_tables import (  # noqa: F401
     _hypothesis_rows,
     _load_finding_theme_specs,
     _load_table_captions,
-    _matches_exe_globs,
     _max_severity,
     _network_summary_rows,
     _phase_interpretation,
@@ -142,3 +145,10 @@ from forensia.report.summary_tables import (  # noqa: F401
     _timeline_rows,
     render_table_block,
 )
+
+_catalog_exe_globs = catalog_exe_globs
+_catalog_names = catalog_names
+_catalog_path_terms = catalog_path_terms
+_catalog_artifact_names = catalog_artifact_names
+_exe_glob_sql = exe_glob_sql
+_matches_exe_globs = matches_exe_globs

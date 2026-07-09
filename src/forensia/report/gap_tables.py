@@ -6,7 +6,8 @@ from typing import Any
 
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records, normalize_value
-from forensia.report.keypoints import (
+from forensia.knowledge import catalog_exe_globs, exe_glob_sql
+from forensia.report.evidence_refs import (
     _extract_needed_evidence,
 )
 from forensia.report.report_brief import (
@@ -16,8 +17,6 @@ from forensia.report.report_brief import (
 )
 from forensia.report.summary_rows import (
     _as_int,
-    _catalog_exe_globs,
-    _exe_glob_sql,
     _network_summary_rows,
 )
 
@@ -99,8 +98,8 @@ def _count_findings_with_tag(
 
 def _has_antiforensic_executions(db: CaseDB) -> bool:
     """True when prefetch shows execution of a catalog-listed cleanup tool."""
-    tool_sql = _exe_glob_sql(
-        "executable_name", _catalog_exe_globs("antiforensic_tools")
+    tool_sql = exe_glob_sql(
+        "executable_name", catalog_exe_globs("antiforensic_tools")
     )
     try:
         row = db.execute(

@@ -42,6 +42,12 @@ from forensia.core.log import log as _log
 from forensia.core.session import Hypothesis, SessionState
 from forensia.core.textutil import normalize_text as _normalize_text
 from forensia.db.database import CaseDB
+from forensia.report.section_taxonomy import (  # noqa: F401 — re-export for backward compat
+    guess_related_sections as _guess_related_sections,
+)
+from forensia.report.section_taxonomy import (
+    sections_for_keypoint as _sections_for_keypoint,
+)
 from forensia.rules.loader import load_rule_by_id
 
 MAX_ACTIVE_HYPOTHESES = 8
@@ -261,67 +267,15 @@ def _feed_verdict_to_timeline(
         pass
 
 
-def _guess_related_sections(text: str) -> list[str]:
-    """Guess which report sections a gap description relates to by keyword matching."""
-    lowered = text.lower()
-    section_map = {
-        "1_overview": ["overview", "first evidence", "summary", "fec", "initial"],
-        "2_timeline": ["timeline", "time", "log clear", "reboot", "shutdown", "when"],
-        "3_technical": [
-            "host",
-            "computer",
-            "server",
-            "workstation",
-            "account",
-            "user",
-            "credential",
-            "password",
-            "logon",
-            "rdp",
-            "admin",
-            "service",
-            "task",
-            "powershell",
-            "defender",
-            "persistence",
-            "execution",
-            "ioc",
-            "ip",
-            "process",
-            "file",
-            "path",
-            "indicator",
-        ],
-        "4_gaps": ["gap", "unknown", "insufficient", "unresolved"],
-        "5_recommendations": ["mitigation", "recommendation", "countermeasure"],
-    }
-    matches = [
-        section
-        for section, keywords in section_map.items()
-        if any(keyword in lowered for keyword in keywords)
-    ]
-    return matches or ["4_gaps"]
+# _guess_related_sections: canonical implementation moved to report/section_taxonomy.py
+# Re-exported via the import at the top of this file.
 
 
 _MAX_SECTION_UPDATES = 5
 
 
-def _sections_for_keypoint(keypoint_name: str) -> list[str]:
-    """Return section keys whose default keypoints include the given keypoint name."""
-    from forensia.report.keypoints import _default_keypoints_for_section
-
-    results: list[str] = []
-    for section_key in (
-        "1_overview",
-        "2_timeline",
-        "3_technical",
-        "4_gaps",
-        "5_recommendations",
-        "6_appendix",
-    ):
-        if keypoint_name in _default_keypoints_for_section(section_key):
-            results.append(section_key)
-    return results
+# _sections_for_keypoint: canonical implementation moved to report/section_taxonomy.py
+# Re-exported via the import at the top of this file.
 
 
 def _mark_section_stale(db: CaseDB, section_key: str) -> None:

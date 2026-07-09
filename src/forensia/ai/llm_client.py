@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 
 from forensia.config import get_llm_settings, settings
+from forensia.core.progress_event import progress_event
 
 
 class LLMServerUnavailableError(RuntimeError):
@@ -353,11 +354,11 @@ async def outage_wait_until_recovered(
             raise LLMServerUnavailableError(f"LLM outage budget exceeded ({budget_s}s)")
         if progress_callback:
             progress_callback(
-                {
-                    "stage": "waiting_for_llm",
-                    "status": "running",
-                    "summary": f"LLM server unavailable (waited {waited}s of {budget_s}s budget)",
-                }
+                progress_event(
+                    "waiting_for_llm",
+                    "running",
+                    summary=f"LLM server unavailable (waited {waited}s of {budget_s}s budget)",
+                )
             )
         try:
             client = await _get_async_client()

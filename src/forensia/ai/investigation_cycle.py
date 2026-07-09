@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 from rich import print
 
+from forensia.ai import llm_gateway
 from forensia.ai.audit import LLMCallLogger
 from forensia.ai.case_profile import (
     get_profile_event_ids,
@@ -33,12 +34,11 @@ from forensia.ai.investigation_session import (
     _ctx_refresh_caches,
     _save_step,
 )
-from forensia.ai.json_response import request_llm_json
 from forensia.ai.llm_client import (
     LLMServerUnavailableError,
 )
 from forensia.ai.planner import _compute_uncovered_keypoints
-from forensia.ai.prompts import (
+from forensia.ai.prompt_investigation import (
     build_gap_identifier_messages,
     build_hypothesis_drafter_messages,
 )
@@ -48,6 +48,7 @@ from forensia.ai.seeding import (
 from forensia.core.case import Case
 from forensia.core.log import log as _log
 from forensia.core.memory import MemoryManager
+from forensia.core.progress_event import progress_event
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
 from forensia.report.writer import (
@@ -270,7 +271,7 @@ async def _run_broad_plan_step(
             case_profile=case_profile_str,
         )
         gap_parsed = await _call_with_outage_recovery(
-            request_llm_json,
+            llm_gateway.request_llm_json,
             base_url=base_url,
             model=model,
             messages=gap_msgs,
@@ -348,7 +349,7 @@ async def _run_broad_plan_step(
                 gap, available_rules, case_profile=case_profile_str
             )
             h_parsed = await _call_with_outage_recovery(
-                request_llm_json,
+                llm_gateway.request_llm_json,
                 base_url=base_url,
                 model=model,
                 messages=h_msgs,
@@ -485,17 +486,20 @@ async def _run_cycle_body(
     ) -> None:
         if not progress_callback:
             return
-        payload = {
-            "stage": stage,
-            "status": "running",
-            "iteration": state.iteration if iteration is None else iteration,
-            "summary": summary,
-            "focus_hypothesis_id": state.focus_hypothesis_id,
-            "hypotheses": [h.model_dump() for h in _all_hypotheses(state)],
-            "report_sections": _ctx_get_report_status(ctx, db, **(report_kw or {})),
-        }
-        payload.update(extras)
-        progress_callback(payload)
+        progress_callback(
+            progress_event(
+                stage,
+                "running",
+                iteration=state.iteration if iteration is None else iteration,
+                summary=summary,
+                focus_hypothesis_id=state.focus_hypothesis_id,
+                hypotheses=[h.model_dump() for h in _all_hypotheses(state)],
+                report_sections=_ctx_get_report_status(
+                    ctx, db, **(report_kw or {})
+                ),
+                **extras,
+            )
+        )
 
     def llm_status(message: str) -> None:
         print(f"[yellow]{message}[/yellow]")

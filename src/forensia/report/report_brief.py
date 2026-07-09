@@ -13,7 +13,7 @@ from forensia.core.textutil import sanitize_ingest_path
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records, normalize_value
 from forensia.report.benign_auth import finding_is_auth_scoped, is_benign_local_auth
-from forensia.report.keypoints import (
+from forensia.report.evidence_refs import (
     _extract_evidence_ids_from_value,
 )
 from forensia.report.markdown import (

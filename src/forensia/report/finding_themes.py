@@ -8,12 +8,10 @@ from typing import Any
 
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
+from forensia.knowledge import catalog_names
 from forensia.report.report_brief import (
     _has_benign_context_tag,
     _query_top_findings,
-)
-from forensia.report.summary_rows import (
-    _catalog_names,
 )
 
 _FINDING_THEME_FILTER_SQL = """
@@ -148,7 +146,7 @@ def _finding_theme(item: dict[str, Any]) -> str:
     if (
         "anti-forensic" in blob
         or "antiforensic" in blob
-        or any(name.lower() in blob for name in _catalog_names("antiforensic_tools"))
+        or any(name.lower() in blob for name in catalog_names("antiforensic_tools"))
     ):
         return "antiforensic_tools"
     if (

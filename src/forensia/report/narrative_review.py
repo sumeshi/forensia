@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from forensia.report.keypoints import EVIDENCE_ID_PATTERN
+from forensia.report.evidence_refs import EVIDENCE_ID_PATTERN
 
 _INTERNAL_ID_RE = re.compile(r"\bgap-[0-9a-f]{6,}\b|\bH-\d{3}\b|\bKP-\d{4}\b")
 

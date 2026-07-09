@@ -19,6 +19,7 @@ from forensia.cli_support import (
 from forensia.config import get_llm_settings
 from forensia.core.case import Case
 from forensia.core.case_tasks import CaseTasks
+from forensia.core.progress_event import progress_event
 from forensia.db.database import CaseDB
 from forensia.ingest import ingest_all
 from forensia.normalize import normalize_all
@@ -38,24 +39,24 @@ def _make_initial_progress_state(
     stage: str = "init",
     summary: str = "Case initialized",
 ) -> dict:
-    return {
-        "stage": stage,
-        "status": "running",
-        "iteration": 0,
-        "current_query": None,
-        "summary": summary,
-        "recent_logs": [],
-        "llm_model": model,
-        "llm_base_url": llm_base_url,
-        "hypotheses": [],
-        "report_sections": {
+    return progress_event(
+        stage,
+        "running",
+        iteration=0,
+        summary=summary,
+        current_query=None,
+        recent_logs=[],
+        llm_model=model,
+        llm_base_url=llm_base_url,
+        hypotheses=[],
+        report_sections={
             "items": [],
             "current_section": None,
             "focus_sections": [],
             "total_gaps": 0,
             "total_body_chars": 0,
         },
-    }
+    )
 
 
 def _run_init_stage(

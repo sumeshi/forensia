@@ -13,7 +13,7 @@ from typing import Any
 
 from forensia.db.database import CaseDB
 from forensia.db.evidence_lookup import fetch_evidence_records
-from forensia.report.keypoints import EVIDENCE_ID_PATTERN
+from forensia.report.evidence_refs import EVIDENCE_ID_PATTERN
 
 
 def _summarize_evtx_row(row: dict[str, Any]) -> str:

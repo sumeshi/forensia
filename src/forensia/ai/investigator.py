@@ -77,6 +77,7 @@ from forensia.config import get_llm_settings
 from forensia.core.case import Case
 from forensia.core.log import log as _log
 from forensia.core.memory import MemoryManager
+from forensia.core.progress_event import progress_event
 from forensia.core.session import SessionState
 from forensia.db.database import CaseDB
 from forensia.report.writer import (
@@ -162,12 +163,12 @@ async def _run_report_phase(
         print(traceback.format_exc())
         if progress_callback:
             progress_callback(
-                {
-                    "stage": "investigate/report-cycle-done",
-                    "status": "running",
-                    "iteration": plan_cycle,
-                    "summary": f"[report] refresh failed: {error_label}",
-                }
+                progress_event(
+                    "investigate/report-cycle-done",
+                    "running",
+                    iteration=plan_cycle,
+                    summary=f"[report] refresh failed: {error_label}",
+                )
             )
         try:
             render_written_report(case, db)

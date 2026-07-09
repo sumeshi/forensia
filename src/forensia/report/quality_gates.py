@@ -10,7 +10,7 @@ from typing import Any
 from forensia.config import get_llm_settings
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
-from forensia.report.keypoints import EVIDENCE_ID_PATTERN
+from forensia.report.evidence_refs import EVIDENCE_ID_PATTERN
 
 # ====================================================================
 # Patterns used by quality gates

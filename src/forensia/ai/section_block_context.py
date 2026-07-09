@@ -6,30 +6,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from forensia.core.case import Case
-from forensia.core.memory import MemoryManager
-from forensia.db.database import CaseDB
-from forensia.questions import (
-    QuestionSpec,
-    resolve_question_spec,
-)
-
-_CONFIDENCE_KEYWORD_MAP = {
-    "critical": 0.95,
-    "very high": 0.9,
-    "high": 0.85,
-    "medium-high": 0.75,
-    "medium": 0.6,
-    "moderate": 0.6,
-    "low-medium": 0.45,
-    "low": 0.3,
-    "very low": 0.15,
-    "none": 0.0,
-    "n/a": 0.0,
-    "unknown": 0.0,
-}
-
-
 # Block-support helpers moved to ai.section_blocks (R4 follow-up); re-exported
 # here for backward compatibility with existing imports and tests.
 from forensia.ai.section_blocks import (  # noqa: F401,E402
@@ -101,6 +77,13 @@ from forensia.ai.section_blocks import (  # noqa: F401,E402
     _structured_report_brief,
     _substitute_placeholders,
     _summarize_sql_result,
+)
+from forensia.core.case import Case
+from forensia.core.memory import MemoryManager
+from forensia.db.database import CaseDB
+from forensia.questions import (
+    QuestionSpec,
+    resolve_question_spec,
 )
 
 

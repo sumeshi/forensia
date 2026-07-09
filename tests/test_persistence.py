@@ -81,20 +81,17 @@ class PersistenceTests(unittest.TestCase):
         return resolve_llm_config()[0] or "http://test-llm.invalid"
 
     def setUp(self) -> None:
-        # request_llm_json is called from the section-agent facade and from the
-        # split-out plan/narrative modules; patch every module that binds it.
-        for target in (
-            "forensia.ai.section_agent.request_llm_json",
-            "forensia.ai.section_block_plan.request_llm_json",
-            "forensia.ai.section_block_narrative.request_llm_json",
-        ):
-            llm_json_patch = patch(target, side_effect=_agent_plan_router)
-            llm_json_patch.start()
-            self.addCleanup(llm_json_patch.stop)
+        # llm_gateway is the single seam for LLM JSON calls; patch here.
+        llm_json_patch = patch(
+            "forensia.ai.llm_gateway.request_llm_json",
+            side_effect=_agent_plan_router,
+        )
+        llm_json_patch.start()
+        self.addCleanup(llm_json_patch.stop)
         # The async report-refresh path uses async_request_llm_json; mock it too
         # so async tests don't hit the real LLM.
         self._async_llm_json_patch = patch(
-            "forensia.ai.section_agent.async_request_llm_json",
+            "forensia.ai.llm_gateway.async_request_llm_json",
             side_effect=_async_agent_plan_router,
         )
         self._async_llm_json_patch.start()

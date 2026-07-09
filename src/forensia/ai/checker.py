@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from forensia.ai import llm_gateway
 from forensia.ai.check_apply import (  # noqa: F401
     _insert_investigation_finding,
     _record_hypothesis_assessment,
@@ -41,8 +42,7 @@ from forensia.ai.check_normalize import (  # noqa: F401
     _validate_extracted_findings,
     summarize_query_result,
 )
-from forensia.ai.json_response import request_llm_json
-from forensia.ai.prompts import (
+from forensia.ai.prompt_investigation import (
     _load_benign_context_rules,
     build_finding_extractor_messages,
     build_memory_updater_messages,
@@ -112,7 +112,7 @@ def check_query_result(
         fallback_info=fallback_info,
         benign_annotations=benign_annotations,
     )
-    verdict_parsed = request_llm_json(
+    verdict_parsed = llm_gateway.request_llm_json(
         messages=verdict_messages,
         model=model,
         base_url=base_url,
@@ -157,7 +157,7 @@ def check_query_result(
             verdict=verdict,
             rationale=verdict_parsed.get("rationale", ""),
         )
-        finding_parsed = request_llm_json(
+        finding_parsed = llm_gateway.request_llm_json(
             messages=finding_messages,
             model=model,
             base_url=base_url,
@@ -181,7 +181,7 @@ def check_query_result(
         result_summary=result_summary,
         time_range=time_range or {},
     )
-    memory_parsed = request_llm_json(
+    memory_parsed = llm_gateway.request_llm_json(
         messages=memory_messages,
         model=model,
         base_url=base_url,

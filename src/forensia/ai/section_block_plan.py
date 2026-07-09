@@ -4,18 +4,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from forensia.ai.json_response import (
-    request_llm_json,
-)
-from forensia.ai.prompts import (
+from forensia.ai import llm_gateway
+from forensia.ai.prompt_context import (
     _enforce_system_budget,
+)
+from forensia.ai.prompt_sections import (
     build_section_agent_check_messages,
     build_section_agent_plan_messages,
 )
 from forensia.ai.section_block_context import (
     _BlockContext,
 )
-from forensia.ai.section_blocks import (
+from forensia.ai.section_exec import (
     SectionPlanAction,
     _classify_block_status,
     _coerce_plan_action,
@@ -24,12 +24,14 @@ from forensia.ai.section_blocks import (
     _execute_sql,
     _is_valid_status,
     _split_keypoint_names,
+    _summarize_sql_result,
+)
+from forensia.ai.section_run_store import (
     _store_section_evidence,
     _store_section_facts,
     _store_section_run,
-    _summarize_sql_result,
 )
-from forensia.report.keypoints import (
+from forensia.report.keypoint_catalog import (
     _default_keypoints_for_section,
 )
 
@@ -74,7 +76,7 @@ def _run_block_plan(
             plan_messages[0]["content"]
         )
     try:
-        plan = request_llm_json(
+        plan = llm_gateway.request_llm_json(
             messages=plan_messages,
             model=ctx.model,
             base_url=ctx.base_url,
@@ -265,7 +267,7 @@ def _run_block_check(
             check_messages[0]["content"]
         )
     try:
-        check = request_llm_json(
+        check = llm_gateway.request_llm_json(
             messages=check_messages,
             model=ctx.model,
             base_url=ctx.base_url,

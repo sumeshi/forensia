@@ -12,7 +12,15 @@ from typing import Any
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
-from forensia.report.keypoints import (
+from forensia.report.answer_registry import (
+    build_structured_answer,
+)
+from forensia.report.answer_store import (
+    _render_structured_answer_markdown,
+    _structured_answer_interpretation,
+    _structured_block_id,
+)
+from forensia.report.evidence_refs import (
     EVIDENCE_ID_PATTERN,
 )
 from forensia.report.markdown import (
@@ -21,12 +29,6 @@ from forensia.report.markdown import (
 from forensia.report.quality_gates import (
     HTML_FILL_PATTERN,
     _first_heading_text,
-)
-from forensia.report.structured_answers import (
-    _render_structured_answer_markdown,
-    _structured_answer_interpretation,
-    _structured_block_id,
-    build_structured_answer,
 )
 
 
