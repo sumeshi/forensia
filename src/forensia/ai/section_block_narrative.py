@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from forensia.ai import llm_gateway
+from forensia.ai.llm import llm_gateway
 from forensia.ai.prompt_sections import (
     build_paragraph_narrate_messages,
     build_section_outline_messages,

@@ -11,7 +11,7 @@ from typing import Any
 from rich import print
 
 from forensia.ai.audit import LLMCallLogger
-from forensia.ai.llm_client import LLMServerUnavailableError, chat_completion
+from forensia.ai.llm.llm_client import LLMServerUnavailableError, chat_completion
 from forensia.ai.report_gap import _build_report_status
 from forensia.ai.section_agent import (
     async_run_section_block_agent,

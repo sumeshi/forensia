@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from forensia.ai.schemas import (
+from forensia.ai.llm.schemas import (
     PARAGRAPH_NARRATE_SCHEMA,
     SECTION_AGENT_CHECK_SCHEMA,
     SECTION_AGENT_PLAN_SCHEMA,

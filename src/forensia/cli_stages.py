@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from forensia.ai.investigator import investigate as investigate_loop
-from forensia.ai.llm_client import LLMServerUnavailableError
+from forensia.ai.llm.llm_client import LLMServerUnavailableError
 from forensia.api.cache import (
     write_api_snapshots,
 )

@@ -4,7 +4,7 @@ import os
 from unittest import mock
 
 from forensia import config
-from forensia.ai import llm_client
+from forensia.ai.llm import llm_client
 from forensia.report import answer_store
 
 

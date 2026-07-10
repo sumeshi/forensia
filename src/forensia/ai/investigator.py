@@ -33,7 +33,7 @@ from forensia.ai.investigation_session import (
     _init_session,
     _sync_keypoint_cards,
 )
-from forensia.ai.llm_client import (
+from forensia.ai.llm.llm_client import (
     LLMServerUnavailableError,
 )
 from forensia.ai.report_gap import (

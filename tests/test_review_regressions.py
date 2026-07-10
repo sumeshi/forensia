@@ -637,10 +637,10 @@ class SectionReviewerTests(unittest.TestCase):
         from unittest import mock
 
         from forensia.ai import (
-            llm_gateway,
             section_block_context,
             section_block_narrative,
         )
+        from forensia.ai.llm import llm_gateway
         from forensia.core.case import Case
         from forensia.db.database import CaseDB
 

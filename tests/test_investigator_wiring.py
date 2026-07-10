@@ -160,7 +160,7 @@ class ReportRefreshFailureTests(unittest.TestCase):
 
         from forensia.ai import investigation_session
         from forensia.ai import investigator as investigator_module
-        from forensia.ai.llm_client import LLMServerUnavailableError
+        from forensia.ai.llm.llm_client import LLMServerUnavailableError
         from forensia.core.memory import MemoryManager
         from forensia.core.session import SessionState
 

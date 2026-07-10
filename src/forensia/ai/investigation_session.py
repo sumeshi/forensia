@@ -17,7 +17,7 @@ import yaml
 
 from forensia.ai.audit import LLMCallLogger
 from forensia.ai.hypothesis_store import _load_persisted_hypotheses
-from forensia.ai.llm_client import (
+from forensia.ai.llm.llm_client import (
     LLMServerUnavailableError,
     chat_completion,
     outage_wait_until_recovered,

@@ -258,7 +258,7 @@ class WriterRQRegressionTests(unittest.TestCase):
             {"role": "system", "content": "narrate system"},
             {"role": "user", "content": "narrate user"},
         ]
-        with patch("forensia.ai.llm_gateway.request_llm_json", side_effect=fake_llm):
+        with patch("forensia.ai.llm.llm_gateway.request_llm_json", side_effect=fake_llm):
             body = _narrate_paragraph_with_retry(
                 narrate_messages=base_messages,
                 narrate_schema={"type": "object"},
@@ -282,7 +282,7 @@ class WriterRQRegressionTests(unittest.TestCase):
                 "body": "A concrete paragraph long enough to pass the empty-body check."
             }
 
-        with patch("forensia.ai.llm_gateway.request_llm_json", side_effect=fake_llm):
+        with patch("forensia.ai.llm.llm_gateway.request_llm_json", side_effect=fake_llm):
             _narrate_paragraph_with_retry(
                 narrate_messages=[{"role": "system", "content": "s"}],
                 narrate_schema={"type": "object"},

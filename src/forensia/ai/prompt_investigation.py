@@ -7,7 +7,7 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from forensia.ai.schemas import (
+from forensia.ai.llm.schemas import (
     FINDING_EXTRACTOR_SCHEMA,
     MEMORY_UPDATER_SCHEMA,
     SQL_SELF_CHECK_SCHEMA,

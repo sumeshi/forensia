@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 import unittest
 
-from forensia.ai.json_response import _cheap_repair, _extract_candidate, parse_llm_json
+from forensia.ai.llm.json_response import (
+    _cheap_repair,
+    _extract_candidate,
+    parse_llm_json,
+)
 
 
 class CheapRepairTests(unittest.TestCase):

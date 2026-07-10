@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from forensia.ai import llm_gateway
+from forensia.ai.llm import llm_gateway
 from forensia.ai.prompt_context import (
     _enforce_system_budget,
 )

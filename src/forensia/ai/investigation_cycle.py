@@ -10,7 +10,6 @@ from typing import Any
 import httpx
 from rich import print
 
-from forensia.ai import llm_gateway
 from forensia.ai.audit import LLMCallLogger
 from forensia.ai.case_profile import (
     get_profile_event_ids,
@@ -37,7 +36,8 @@ from forensia.ai.investigation_session import (
     _ctx_refresh_caches,
     _save_step,
 )
-from forensia.ai.llm_client import (
+from forensia.ai.llm import llm_gateway
+from forensia.ai.llm.llm_client import (
     LLMServerUnavailableError,
 )
 from forensia.ai.planner import _compute_uncovered_keypoints

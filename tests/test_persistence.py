@@ -78,7 +78,7 @@ class PersistenceTests(unittest.TestCase):
     def setUp(self) -> None:
         # llm_gateway is the single seam for LLM JSON calls; patch here.
         llm_json_patch = patch(
-            "forensia.ai.llm_gateway.request_llm_json",
+            "forensia.ai.llm.llm_gateway.request_llm_json",
             side_effect=_agent_plan_router,
         )
         llm_json_patch.start()
@@ -86,7 +86,7 @@ class PersistenceTests(unittest.TestCase):
         # The async report-refresh path uses async_request_llm_json; mock it too
         # so async tests don't hit the real LLM.
         self._async_llm_json_patch = patch(
-            "forensia.ai.llm_gateway.async_request_llm_json",
+            "forensia.ai.llm.llm_gateway.async_request_llm_json",
             side_effect=_async_agent_plan_router,
         )
         self._async_llm_json_patch.start()

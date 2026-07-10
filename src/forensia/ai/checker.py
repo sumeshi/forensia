@@ -9,7 +9,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from forensia.ai import llm_gateway
 from forensia.ai.check_apply import (
     apply_check_result,
 )
@@ -23,6 +22,7 @@ from forensia.ai.check_normalize import (
     _normalize_verdict,
     _parse_new_hypotheses,
 )
+from forensia.ai.llm import llm_gateway
 from forensia.ai.prompt_investigation import (
     _load_benign_context_rules,
     build_finding_extractor_messages,
