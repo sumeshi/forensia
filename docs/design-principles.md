@@ -79,7 +79,7 @@ The main knobs that can change behavior through rules:
 
 Provisional facts / timeline / tasks under verification are confined to `memory/scratch/<hypothesis_id>/`, promoted to shared memory on confirmed, and retreated to archive on refuted. Do not let provisional information from other hypotheses leak in.
 
-`_apply_memory_updates` ([investigator.py:737](../src/forensia/ai/investigator.py#L737)) routes the write destination based on `hypothesis_id` and `verdict`. Hypothesis-originated memory writes must always carry `hypothesis_id` (dropping it causes unconditional writes to shared memory and breaks this lifecycle).
+`_apply_memory_updates` ([ai/memory_sync.py](../src/forensia/ai/memory_sync.py)) routes the write destination based on `hypothesis_id` and `verdict`. Hypothesis-originated memory writes must always carry `hypothesis_id` (dropping it causes unconditional writes to shared memory and breaks this lifecycle).
 
 The same contamination prevention applies between report sections:
 - `_summarize_context_sections`: pass prior section bodies as title + first 120 characters only
@@ -95,13 +95,13 @@ Verdict strings are an allow-list. Allowed values are declared in `src/forensia/
 
 | Layer | Enforcement site |
 |---|---|
-| `hypothesis_verdict` | `hypothesis_manager.py:_upsert_hypothesis()` + `Hypothesis.verdict` field validator |
-| `section_verdict` | `section_agent.py:_store_section_run()` |
-| `structured_status` | `report/writer.py:_normalize_structured_answer()` |
+| `hypothesis_verdict` | `ai/hypotheses/hypothesis_manager.py:_upsert_hypothesis()` + `Hypothesis.verdict` field validator |
+| `section_verdict` | `ai/sections/section_run_store.py:_store_section_run()` |
+| `structured_status` | `report/answer_store.py:_normalize_structured_answer()` |
 
 To add a new verdict value, edit `verdict_taxonomy.yaml`. Bypassing the validator from Python is treated as a bug.
 
-Cross-layer mappings (`hypothesis_to_section`, `section_to_benchmark`, `benchmark_to_claim`) are also declared by the taxonomy file, so if you need cross-layer conversion call `map_verdict()` and do not create custom tables.
+The taxonomy file also declares cross-layer mappings (`hypothesis_to_section` etc.), but the code-side `map_verdict()` helper was removed as unused — the mappings are currently declaration-only. If you need cross-layer conversion, reintroduce a reader for the taxonomy mappings rather than hardcoding a table in Python.
 
 ---
 

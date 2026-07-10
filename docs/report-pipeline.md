@@ -41,7 +41,7 @@ Each template is a Markdown file with optional YAML frontmatter.
 | `behaviors` | List of quality gate / behavior flags (e.g. `require_chronological_table`) |
 | `brief.top_findings.ranking` | Ordering policy for `top_findings` (= leading thesis) in `report_brief.json`. Write this on sections that draw overview / executive summaries |
 
-When adding `behaviors`, extend the `_GateCtx.behaviors` judgment in [writer.py](../src/forensia/report/writer.py) in a single place only; do not hardcode it per section_key.
+When adding `behaviors`, extend the `_GateCtx.behaviors` judgment in [report/quality_gates.py](../src/forensia/report/quality_gates.py) in a single place only; do not hardcode it per section_key.
 
 `brief.top_findings.ranking` is interpreted by [report/ranking.py](../src/forensia/report/ranking.py). You can choose `policy: severity` (default = case-independent order of severity → ATT&CK → confidence) or `policy: priority_keywords` (arrange in narrative order using ordered keyword groups). **Case-specific vocabulary (`4648` / `ccleaner` etc.) belongs in this frontmatter, not in the core.** The bundled generic templates declare no policy (= severity default), and the `forensia doctor` "Report template policy" check ensures `priority_keywords` never leaks into bundled templates. A malformed policy warns at runtime and falls back to the default; for bundled templates, doctor hard-fails.
 
@@ -107,7 +107,7 @@ Benchmark evaluation also uses the normal `--template-dir` path. Because the pub
 
 ## 3. Report quality gates
 
-After each section body is filled, `_quality_gate_section` ([report/writer.py](../src/forensia/report/writer.py)) runs static checks, adding a gap per detection and lowering confidence down to a cap. The checks are template-independent and apply to all sections.
+After each section body is filled, `_quality_gate_section` ([report/quality_gates.py](../src/forensia/report/quality_gates.py)) runs static checks, adding a gap per detection and lowering confidence down to a cap. The checks are template-independent and apply to all sections.
 
 Section-specific behavior is declared via the `behaviors:` frontmatter. Examples: `require_chronological_table` / `require_recommendations_strength` / `canonical_evidence_scope`. Firing conditions branch on `_GateCtx.behaviors`. Do not hardcode section_keys in Python.
 
@@ -144,7 +144,7 @@ LLM input is not a fixed string; it is assembled step by step according to phase
 
 1. **DFIR playbook injection (phase-aware)**: `_dfir_playbook(phase)` reads `_schema/playbook/<phase>.md`. For planning phases (`broad_plan`, `hypothesis_plan`), Application Catalog / Artifact-to-Application Inference / FP Reduction are intentionally omitted (these are for evidence interpretation). For interpretation phases (`check`, `report_section`, `section_agent_check`), the full set is injected
 2. **schema_card + SQL cookbook injection**: planner / checker receive the `<SCHEMA_CARDS>` and 6 kinds of `<SQL_COOKBOOK>` for the target table, so they never write SQL from scratch. The SQL validator's allowed tables follow `get_allowed_tables(db)` and the live schema
-3. **Dynamic context**: The case's `time_range`, `uncovered_keypoints`, active / resolved hypotheses, recent history, and observed_keypoints are inserted by role-specific builders. Hypotheses are serialized via `_slim_hypothesis_dump` which drops null / empty fields; findings are aggregated by `_slim_findings` into a single line with a `count` for identical rule patterns
+3. **Dynamic context**: The case's `time_range`, `uncovered_keypoints`, active / resolved hypotheses, recent history, and observed_keypoints are inserted by role-specific builders in [ai/prompts/](../src/forensia/ai/prompts/), which drop null / empty fields and aggregate repeated rule patterns before serialization
 4. **Per-section slimming of report_brief**: `_slim_report_brief_for_section` looks at the section key and, except for `1_overview`, trims down to only `time_range` / `source_timezone` / `investigation_objective`. It does not dump top_findings or all hypotheses wholesale (for 2/3/4/5 series it selectively restores scoped `top_findings` / `confirmed_hypotheses` / `active_hypotheses`)
 5. **Token budget guard**: `_assemble_messages_with_budget()` trims only the user / dynamic side while protecting the system side
 
@@ -178,8 +178,8 @@ Two-stage call: `build_query_intent_messages` → `build_sql_composer_messages`.
 
 - **schema cards** (`<SCHEMA_CARDS>`): `core_columns` (a short list shown to the planner, 5–13 columns) + `column_descriptions` (one-line descriptions) + `columns` (full list for the SQL validator) from `rulepacks/_schema/*.yaml`. The intent planner's `target_table` is chosen mainly from `evtx_events` / `mft_entries` / `mft_timeline` / `prefetch_executions`, and the composer looks at the schema_card and live schema of the target table. The validator's allowlist is built by `get_allowed_tables(db)` from the live DB and also permits derived tables such as `findings` / `prefetch_timeline` / `report_*` / `section_*` as needed
 - **SQL cookbook** (`<SQL_COOKBOOK>`): 6 SELECT templates — event_id enumeration / time range / GROUP BY / COALESCE / MFT path LIKE / Prefetch. Weak LLMs are expected to copy-edit these rather than synthesize from scratch
-- **SQL retry**: When `validate_select_sql` rejects a query, `_retry_query_once` re-invokes only `sql_composer` up to `_PLANNER_SQL_MAX_RETRIES = 3` times. The intent stage is not re-executed
-- **Fallback**: If retries still do not yield valid SQL, `_fallback_planned_query_from_hypothesis` deterministically generates `SELECT … FROM evtx_events WHERE event_id IN (…) ORDER BY timestamp LIMIT 500` from `hypothesis.confirm_when.co_observed_event_ids`. The check phase always runs
+- **SQL retry**: When `validate_select_sql` (or the EXPLAIN dry-run) rejects a query, `_retry_sql_composer` re-invokes only `sql_composer` up to `_PLANNER_SQL_MAX_RETRIES = 3` times. The intent stage is not re-executed
+- **Fallback**: If retries still do not yield valid SQL, the plan result carries `stop_reason: "SQL composition failed after retries"` and the hypothesis attempt is recorded as unplannable (no deterministic SQL synthesis fallback in the current implementation)
 
 ### 5.4 Executor and fallback
 
@@ -207,11 +207,11 @@ Only when verdict==confirmed is `build_finding_extractor_messages` invoked to ex
 
 | Method | Condition | Effect |
 |---|---|---|
-| `should_auto_confirm(rule_context, rows, hypothesis)` | `_co_observation_satisfied` ([checker.py:218](../src/forensia/ai/checker.py#L218)) groups rows by `same_host` and all `co_observed_event_ids` co-occur within the `within_minutes` time window | Forces confirmed, ignoring the LLM verdict. Rows without time / host columns are treated as unsatisfied. A hypothesis without a declared `co_observed_event_ids` is not auto-confirmed |
+| `should_auto_confirm(rule_context, rows, hypothesis)` | `_co_observation_satisfied` ([ai/checking/check_guardrails.py](../src/forensia/ai/checking/check_guardrails.py)) groups rows by `same_host` and all `co_observed_event_ids` co-occur within the `within_minutes` time window | Forces confirmed, ignoring the LLM verdict. Rows without time / host columns are treated as unsatisfied. A hypothesis without a declared `co_observed_event_ids` is not auto-confirmed |
 | `should_auto_refute(threshold=3)` | 3 consecutive 0-row inconclusive (and no partial signal) | If the rule declares `refute_when.zero_rows`, forces refuted; otherwise forces untestable |
 | `should_pivot(fp)` | The same query fingerprint appears 2 or more times | Instructs the planner to pivot |
 | `_unavailable_missing_event_ids` | The inconclusive `missing_questions` reference only Event IDs that do not exist in the case (with no mft/prefetch alternative path) | Immediately untestable on the first check |
-| `_investigate_one_hypothesis` short-circuit | The first plan cannot compose any of SQL / template / `confirm_when` fallback | Immediately refuted (`no executable evidence path`) |
+| `_investigate_one_hypothesis` short-circuit ([ai/hypotheses/hypothesis_runner.py](../src/forensia/ai/hypotheses/hypothesis_runner.py)) | The first plan cannot compose SQL or a template | The attempt ends without a check phase and counts toward auto-refute |
 
 `refuted` (disproven by evidence) and `untestable` (cannot be verified because required telemetry is absent) are distinguished, and untestable ones are listed in the report's Gap section with the missing telemetry.
 
@@ -223,9 +223,9 @@ Only when verdict==confirmed is `build_finding_extractor_messages` invoked to ex
 
 Hypothesis identity judgment is fully completed on the code side.
 
-- `_hypothesis_similarity` (`hypothesis_manager.py`): similarity based on a (actor / action / target) triple
-- `admit_new_hypothesis` (`hypothesis_manager.py`): unified admission gate for drafter / checker / gap-derived hypotheses — rejects near-duplicates of active AND resolved hypotheses (similarity > 0.85), claims matching refuted-hypothesis tokens, and invalid entity names
-- `_best_hypothesis_match` (`hypothesis_manager.py`): determines the upsert target using the same threshold judgment inside `_merge_active_hypotheses`
+- `_hypothesis_similarity` (`ai/hypotheses/hypothesis_manager.py`): similarity based on a (actor / action / target) triple
+- `admit_new_hypothesis` (`ai/hypotheses/hypothesis_manager.py`): unified admission gate for drafter / checker / gap-derived hypotheses — rejects near-duplicates of active AND resolved hypotheses (similarity > 0.85), claims matching refuted-hypothesis tokens, and invalid entity names
+- `_best_hypothesis_match` (`ai/hypotheses/hypothesis_manager.py`): determines the upsert target using the same threshold judgment inside `_merge_active_hypotheses`
 
 ### 5.8 Resolver
 

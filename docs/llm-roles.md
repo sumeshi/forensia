@@ -4,12 +4,12 @@ forensia decomposes LLM behavior into 11 "roles", each narrowed to a granularity
 
 ## 1. Invocation layer
 
-All LLM calls go through `request_llm_json` / `async_request_llm_json` in [src/forensia/ai/json_response.py](../src/forensia/ai/json_response.py).
+All LLM calls go through `request_llm_json` / `async_request_llm_json` in [src/forensia/ai/llm/llm_gateway.py](../src/forensia/ai/llm/llm_gateway.py); JSON parsing/repair lives in [ai/llm/json_response.py](../src/forensia/ai/llm/json_response.py).
 
 ```
 request_llm_json
    ↓
-chat_completion (src/forensia/ai/llm_client.py)
+chat_completion (src/forensia/ai/llm/llm_client.py)
    ↓
 HTTP POST <base_url>/v1/chat/completions
 ```
@@ -17,7 +17,7 @@ HTTP POST <base_url>/v1/chat/completions
 HTTP layer characteristics:
 - **Up to 3 retries** on HTTP 5xx / connect / timeout (exponential backoff of 2 / 4 / 8 seconds)
 - Attempts strict json_schema for `response_format`, then downgrades in order to compatible (`strict: false`) → unspecified if rejected
-- Downgrade results are cached per base_url in `_SCHEMA_MODE_CACHE` ([llm_client.py:32-49](../src/forensia/ai/llm_client.py#L32-L49)), so subsequent calls send the already-downgraded mode
+- Downgrade results are cached per base_url in `_SCHEMA_MODE_CACHE` ([ai/llm/llm_client.py](../src/forensia/ai/llm/llm_client.py)), so subsequent calls send the already-downgraded mode
 - After 3 retries are exhausted, raises `LLMServerUnavailableError`, and the caller waits for recovery via `outage_wait_until_recovered`
 
 Raw logs of LLM input/output are saved to `ai_logs/<phase>-<id>.json`.
@@ -28,14 +28,14 @@ Raw logs of LLM input/output are saved to `ai_logs/<phase>-<id>.json`.
 
 ### 2.1 Hypothesis investigation loop
 
-`plan_hypothesis_query` ([planner.py:320](../src/forensia/ai/planner.py#L320)) is a two-phase composition of Phase 1 (intent) → Phase 2 (composer):
+`plan_hypothesis_query` ([ai/planner.py](../src/forensia/ai/planner.py)) is a two-phase composition of Phase 1 (intent) → Phase 2 (composer):
 
 | Phase | Role | Caller | Prompt builder | Output schema |
 |---|---|---|---|---|
-| Phase 1 | `query_intent_planner` | [planner.plan_hypothesis_query](../src/forensia/ai/planner.py#L320) | `build_query_intent_messages` | `QUERY_INTENT_SCHEMA` |
+| Phase 1 | `query_intent_planner` | [planner.plan_hypothesis_query](../src/forensia/ai/planner.py) | `build_query_intent_messages` | `QUERY_INTENT_SCHEMA` |
 | Phase 1 | `sql_self_check` | same (intent gate) | `build_sql_self_check_messages` | `SQL_SELF_CHECK_SCHEMA` |
 | Phase 2 | `sql_composer` | same (up to 3 retries) | `build_sql_composer_messages` | `SQL_COMPOSER_SCHEMA` |
-| `verdict_reviewer` | [checker._check_query](../src/forensia/ai/checker.py#L460) | `build_verdict_review_messages` | `VERDICT_REVIEW_SCHEMA` |
+| `verdict_reviewer` | [checking/checker.check_query_result](../src/forensia/ai/checking/checker.py) | `build_verdict_review_messages` | `VERDICT_REVIEW_SCHEMA` |
 | `finding_extractor` | same (when verdict=confirmed) | `build_finding_extractor_messages` | `FINDING_EXTRACTOR_SCHEMA` |
 | `memory_updater` | same | `build_memory_updater_messages` | `MEMORY_UPDATER_SCHEMA` |
 
@@ -43,15 +43,15 @@ Raw logs of LLM input/output are saved to `ai_logs/<phase>-<id>.json`.
 
 | Role | Caller | Prompt builder | Output schema |
 |---|---|---|---|
-| `section_outliner` | [section_agent._write_block_body](../src/forensia/ai/section_agent.py#L936) | `build_section_outline_messages` | `SECTION_OUTLINE_SCHEMA` |
-| `paragraph_narrator` | [section_agent._narrate_paragraph_with_retry](../src/forensia/ai/section_agent.py#L612) | `build_paragraph_narrate_messages` | `PARAGRAPH_NARRATE_SCHEMA` |
-| `benchmark_classifier` | [section_agent._write_block_body](../src/forensia/ai/section_agent.py#L936) (structured answer candidate) | `build_benchmark_classify_messages` | `benchmark_classify_schema(n_rows)` |
+| `section_outliner` | [sections/section_block_narrative._write_block_body](../src/forensia/ai/sections/section_block_narrative.py) | `build_section_outline_messages` | `SECTION_OUTLINE_SCHEMA` |
+| `paragraph_narrator` | [sections/section_block_narrative._narrate_paragraph_with_retry](../src/forensia/ai/sections/section_block_narrative.py) | `build_paragraph_narrate_messages` | `PARAGRAPH_NARRATE_SCHEMA` |
+| `structured_classifier` | [sections/section_block_narrative._write_block_body](../src/forensia/ai/sections/section_block_narrative.py) (structured answer candidate) | `build_structured_classify_messages` | `structured_classify_schema(n_rows)` |
 
 ---
 
 ## 3. Schema details
 
-The schema bodies are centralized in [src/forensia/ai/schemas.py](../src/forensia/ai/schemas.py). Prompt builders live in [src/forensia/ai/prompts.py](../src/forensia/ai/prompts.py).
+The schema bodies are centralized in [src/forensia/ai/llm/schemas.py](../src/forensia/ai/llm/schemas.py). Prompt builders live in the [src/forensia/ai/prompts/](../src/forensia/ai/prompts/) package (`prompt_investigation.py` for planner/checker roles, `prompt_sections.py` for report roles).
 
 ### 3.1 `MEMORY_UPDATER_SCHEMA`
 
@@ -79,7 +79,7 @@ The schema bodies are centralized in [src/forensia/ai/schemas.py](../src/forensi
 ```
 
 Each element of `memory_updates.entities[]` has `{entity_type, name, role, notes}`.
-See [`_apply_memory_updates`](../src/forensia/ai/investigator.py#L737) for the application logic.
+See [`_apply_memory_updates`](../src/forensia/ai/memory_sync.py) for the application logic.
 
 ### 3.2 `VERDICT_REVIEW_SCHEMA`
 
@@ -110,27 +110,27 @@ See [`_apply_memory_updates`](../src/forensia/ai/investigator.py#L737) for the a
 }
 ```
 
-A retry on empty body is performed exactly once in [`_narrate_paragraph_with_retry`](../src/forensia/ai/section_agent.py#L612). If the second attempt also fails, [`_fallback_narrative_body`](../src/forensia/ai/section_agent.py#L684) falls back to local generation (in the form `representative row is <timestamp> / <event_id> / <evidence_id>`).
+A retry on empty body is performed exactly once in [`_narrate_paragraph_with_retry`](../src/forensia/ai/sections/section_block_narrative.py). If the second attempt also fails, [`_fallback_narrative_body`](../src/forensia/ai/sections/section_block_narrative.py) falls back to local generation (in the form `representative row is <timestamp> / <event_id> / <evidence_id>`).
 
 ### 3.4 `FINDING_EXTRACTOR_SCHEMA` / others
 
-See [schemas.py](../src/forensia/ai/schemas.py) directly for the full set of schemas. Each schema uses `additionalProperties: false` to reject stranger keys.
+See [ai/llm/schemas.py](../src/forensia/ai/llm/schemas.py) directly for the full set of schemas. Each schema uses `additionalProperties: false` to reject stranger keys.
 
 ---
 
 ## 4. Common prompt parts
 
-Common helpers are gathered at the top of [src/forensia/ai/prompts.py](../src/forensia/ai/prompts.py).
+Common helpers live in the [src/forensia/ai/prompts/](../src/forensia/ai/prompts/) package.
 
 | Function | Purpose |
 |---|---|
-| `_dfir_playbook(phase)` | DFIR guidelines per phase (`hypothesis_plan` / `check` / `report_section`) |
-| `_time_range_guidance(time_range)` | Presents the case earliest/latest and explicitly forbids `datetime('now')` / `CURRENT_TIMESTAMP` |
-| `_build_schema_guidance(table_name, db)` | Generates the `<SCHEMA_CARDS>` block + live `information_schema` + SQL Cookbook |
-| `_format_schema_card(table_hints)` | A schema card for one table (core_columns + column_descriptions + notes) |
-| `_load_schema_hints()` | Loads `rulepacks/_schema/*.yaml` (LRU cached) |
-| `_slim_report_brief_for_section(brief, section_key)` | Slims the brief for a report section (drops unrelated top-level information) |
-| `_render_entity_memory(...)` | Markdown formatting of entity cards |
+| `_dfir_playbook(phase)` ([prompt_playbook.py](../src/forensia/ai/prompts/prompt_playbook.py)) | DFIR guidelines per phase (`hypothesis_plan` / `check` / `report_section`) |
+| `_time_range_guidance(time_range)` ([prompt_investigation.py](../src/forensia/ai/prompts/prompt_investigation.py)) | Presents the case earliest/latest and explicitly forbids `datetime('now')` / `CURRENT_TIMESTAMP` |
+| `_build_schema_guidance(table_name, db)` ([prompt_context.py](../src/forensia/ai/prompts/prompt_context.py)) | Generates the `<SCHEMA_CARDS>` block + live `information_schema` + SQL Cookbook |
+| `_format_schema_card(table_hints)` ([sql_schema.py](../src/forensia/ai/prompts/sql_schema.py)) | A schema card for one table (core_columns + column_descriptions + notes) |
+| `_load_schema_hints()` ([sql_schema.py](../src/forensia/ai/prompts/sql_schema.py)) | Loads `rulepacks/_schema/*.yaml` (LRU cached) |
+| `_slim_report_brief_for_section(brief, section_key)` ([prompt_context.py](../src/forensia/ai/prompts/prompt_context.py)) | Slims the brief for a report section (drops unrelated top-level information) |
+| `_render_entity_memory(...)` ([memory_sync.py](../src/forensia/ai/memory_sync.py)) | Markdown formatting of entity cards |
 
 ---
 
@@ -158,5 +158,5 @@ flowchart TD
     O --> P{retry needed?}
     P -->|yes| O
     P -->|no, but empty| Q[_fallback_narrative_body]
-    M -->|structured block| R[benchmark_classifier]
+    M -->|structured block| R[structured_classifier]
 ```

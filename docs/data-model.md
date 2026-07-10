@@ -24,7 +24,7 @@ Schema initialization is performed in `CaseDB.__init__` in [src/forensia/db/data
 | `ingested_files` | Hash table for ingest deduplication | `path`, `hash`, `source_kind`, `ingested_at` |
 | `case_timeline` | Deterministic timeline | `entry_id`, `timestamp`, `source` (`finding`/`verdict`/`structured`/`keypoint`), `ref_id`, `host`, `summary`, `evidence_id` |
 
-`case_timeline` is fed by three deterministic feeders: (a) the first-evidence timestamp of findings with severity ≥ medium (`feed_findings_to_timeline` [engine.py:196](../src/forensia/rules/engine.py#L196)), (b) the decisive query row of resolved hypotheses, and (c) the matching rows of structured answers declared with `timeline: true` in `question_routing.yaml`.
+`case_timeline` is fed by three deterministic feeders: (a) the first-evidence timestamp of findings with severity ≥ medium (`feed_findings_to_timeline` in [rules/engine.py](../src/forensia/rules/engine.py)), (b) the decisive query row of resolved hypotheses, and (c) the matching rows of structured answers declared with `timeline: true` in `question_routing.yaml`.
 
 `evidence_id` is the cross-table evidence identifier. Naming conventions:
 - EVTX: `evtx-<channel>-<sequence>` (e.g. `evtx-security-000000001166`)
@@ -43,16 +43,16 @@ Host identification:
 | `hypotheses` | Hypotheses under investigation | `hypothesis_id`, `description`, `status` (`active`/`resolved`), `verdict` (`confirmed`/`refuted`/`inconclusive`/`untestable`), `summary`, `origin`, `created_session`, `resolved_session`, `confidence`, `source_rule_ids`, `source_decl_id`, `required_entities`, `confirm_when` |
 | `hypothesis_reasoning` | Reasoning history of hypothesis verification | `entry_id`, `hypothesis_id`, `session_id`, `iteration`, `phase` (`plan`/`do`/`check`/`act`/`memo`), `verdict`, `query_id`, `body`, `created_at` |
 
-`findings.attack` is a JSON string in `[{tactic, technique_id, technique_name}]` form. It is aggregated into a tactic × technique matrix by `list_attack_coverage_dto` ([src/forensia/api/service.py:716-](../src/forensia/api/service.py#L716)).
+`findings.attack` is a JSON string in `[{tactic, technique_id, technique_name}]` form. It is aggregated into a tactic × technique matrix by `list_attack_coverage_dto` ([src/forensia/api/service.py](../src/forensia/api/service.py)).
 
-`findings.evidence` is a list of dicts containing the original evidence_id. Recursive extraction is performed by [`_evidence_ids_from_payload`](../src/forensia/api/service.py#L33).
+`findings.evidence` is a list of dicts containing the original evidence_id. Recursive extraction is performed by [`_evidence_ids_from_payload`](../src/forensia/api/service.py).
 
 ### 1.3 Sessions and steps
 
 | Table | Role | Main columns |
 |---|---|---|
-| `sessions` | Execution unit of hypothesis investigation / report generation | `session_id`, `started_at`, `finished_at`, `iterations`, `status` |
-| `investigation_steps` | Each step within a session (plan / do / check) | `step_id`, `session_id`, `hypothesis_id`, `iteration`, `phase`, `input_json`, `output_json` |
+| `investigation_sessions` (trace DB) | Execution unit of hypothesis investigation / report generation | `session_id`, `started_at`, `finished_at`, `iterations`, `status` |
+| `investigation_steps` (trace DB) | Each step within a session (plan / do / check) | `step_id`, `session_id`, `hypothesis_id`, `iteration`, `phase`, `input_json`, `output_json` |
 | `progress_events` | Progress event stream for the UI | `event_index`, `stage`, `status`, `iteration`, `current_query`, `summary`, `payload` |
 | `query_cache` | Result cache for SQL emitted by the LLM | `sql_hash`, `sql_text`, `result_json`, `executed_at` |
 
@@ -67,17 +67,17 @@ Host identification:
 | `section_run_coverage` | Per-block keypoint coverage | `section_key`, `block_heading`, `keypoint`, `queried`, `rows`, `used_in_answer` |
 | `claims` | Claims extracted from report paragraphs | `claim_id`, `section_key`, `claim_text`, `support_status`, `finding_ids`, `hypothesis_ids`, `evidence_ids` |
 
-INSERTs into `section_evidence` happen in a single place: [section_agent.py:431 `_store_section_evidence`](../src/forensia/ai/section_agent.py#L431).
+INSERTs into `section_evidence` happen in a single place: [`_store_section_evidence` in ai/sections/section_run_store.py](../src/forensia/ai/sections/section_run_store.py).
 
 `section_facts.source_section` takes:
 - A normal section key (e.g. `1_overview`)
-- The special value `__case_probe__` — the result of a universal_question (such as `last_human_logon`). By default it is filtered out by [`_load_reusable_section_facts`](../src/forensia/ai/section_agent.py#L648) so it is not reused by other sections. Only `6_appendix` passes `include_case_probe=True`.
+- The special value `__case_probe__` — the result of a universal_question (such as `last_human_logon`). By default it is filtered out by [`_load_reusable_section_facts`](../src/forensia/ai/sections/section_run_store.py) so it is not reused by other sections. Only `6_appendix` passes `include_case_probe=True`.
 
 ### 1.5 Review and audit
 
 | Table | Role | Main columns |
 |---|---|---|
-| `ai_reviews` | LLM review results | `review_id`, `finding_id`, `verdict`, `report_text`, `missing_checks`, `confidence_adjustment`, `notes`, `raw_response` |
+| `ai_reviews` (trace DB) | LLM review results | `review_id`, `finding_id`, `verdict`, `report_text`, `missing_checks`, `confidence_adjustment`, `notes`, `raw_response` |
 | `schema_migrations` | Schema version management | `version`, `applied_at` |
 
 ---
@@ -117,7 +117,7 @@ memory/
 
 ### 2.2 Entity card format
 
-Generated by [`investigator._render_entity_memory`](../src/forensia/ai/investigator.py#L529).
+Generated by [`_render_entity_memory` in ai/memory_sync.py](../src/forensia/ai/memory_sync.py).
 
 ```markdown
 # user: alice
@@ -134,11 +134,11 @@ The allowed values for `role` are `attacker` / `victim` / `actor_candidate` / `o
 
 | Path | Function |
 |---|---|
-| Hypothesis investigation loop (verdict reflection) | [`_apply_memory_updates`](../src/forensia/ai/investigator.py#L737) reads the LLM's `memory_updates` output and reflects it into facts / timeline / tasks / overview / refuted_hypotheses / resolved_gaps / entities |
-| Section agent | [`_sync_keypoint_cards`](../src/forensia/ai/investigator.py#L547) syncs findings → keypoint cards |
+| Hypothesis investigation loop (verdict reflection) | [`_apply_memory_updates` (ai/memory_sync.py)](../src/forensia/ai/memory_sync.py) reads the LLM's `memory_updates` output and reflects it into facts / timeline / tasks / overview / refuted_hypotheses / resolved_gaps / entities |
+| Section agent | [`_sync_keypoint_cards` (ai/investigation_session.py)](../src/forensia/ai/investigation_session.py) syncs findings → keypoint cards |
 | On hypothesis resolution | `memory.upsert_hypothesis` rewrites `memory/hypotheses/<id>.md` (on refute it also appends to `archive/refuted.md`) |
 
-The structure of `memory_updates` is defined in `MEMORY_UPDATER_SCHEMA` ([src/forensia/ai/schemas.py:60-79](../src/forensia/ai/schemas.py#L60-L79)). For details on the LLM output schema, see [llm-roles.md](llm-roles.md).
+The structure of `memory_updates` is defined in `MEMORY_UPDATER_SCHEMA` ([src/forensia/ai/llm/schemas.py](../src/forensia/ai/llm/schemas.py)). For details on the LLM output schema, see [llm-roles.md](llm-roles.md).
 
 ---
 

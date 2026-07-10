@@ -74,7 +74,7 @@ Keep the test suite finishing in seconds.
 
 - **Do not write tests that make real LLM calls**. A full cycle of `investigate(...)` or a real-server-dependent section refresh has too many side effects (DuckDB writes, memory I/O, file walks) to stay lightweight. When exercising `run_section_block_agent` and similar, keep it within structured answer / deterministic builder / mocked JSON responses
 - **Do not write tests that hit a real LLM server**. The previous `tests/test_benchmark_e2e_real_llm.py` (gated by `FORENSIA_LLM_BASE_URL`) was removed for the same reason
-- Instead, cover with: unit tests for pure-function helpers (`_slim_findings`, `_quality_gate_section`, `_render_structured_answer_markdown`, etc.), DB-only persistence tests, and CLI / HTTP tests that do not import the LLM module
+- Instead, cover with: unit tests for pure-function helpers (`_quality_gate_section`, `_render_structured_answer_markdown`, etc.), DB-only persistence tests, and CLI / HTTP tests that do not import the LLM module
 - **Determinism-gate regression tests**: verdict consistency gates, fallback demotion, memory filters, and extracted finding validation are covered in `tests/test_checker_gates.py`; early untestable resolution is covered in `tests/test_untestable_resolution.py`. Whenever you change these gates, update them at the same time
 - When you genuinely want to observe investigation-loop behavior, run `forensia investigate ...` against a local model and inspect `ai_logs/` by eye. Do not turn it into a pytest
 
@@ -89,7 +89,7 @@ Keep the test suite finishing in seconds.
 | `scripts/audit_schema_coverage.py` | AST-parses the `query` SQL of all rule YAML files with sqlglot and extracts referenced `event_id` values. Checks coverage and QuestionSpec contract against `event_ids.yaml` / `question_routing.yaml` / `question_routing_eval.yaml` |
 | `scripts/regenerate_playbook.py` | Regenerates the `<!-- AUTO-FROM: ... -->` sections of `_schema/playbook/*.md` from source YAML. `--check` detects drift (exit 1); with no arguments it writes |
 | `scripts/cycle_summary.py <case_dir>` | Parses `progress_events.json` and renders per-cycle hypothesis deltas and benchmark progress as a Markdown table. Debugging aid |
-| `forensia doctor` | CLI command. Runs schema coverage / playbook drift check / verdict taxonomy AST scan / pytest in order, and exits 0 only when all pass |
+| `forensia doctor` | CLI command. Runs 8 checks in order — schema coverage / playbook drift / import layer contract (`scripts/check_imports.py`) / verdict taxonomy AST scan / report template policy / report validation self-check / ruff lint / pytest — and exits 0 only when all pass |
 
 `scripts/` is not a Python package. Tests that import from `scripts/` rely on `conftest.py` adding the repository root to `sys.path`.
 
@@ -103,7 +103,7 @@ Keep the test suite finishing in seconds.
 | `investigate` | For a new case: case creation + ingest → normalize → analyze → investigate → report. For an existing case: continue the hypothesis loop |
 | `report` | Render Markdown / HTML from existing `report_sections`. With `--write`, re-fill sections from current evidence before rendering |
 | `serve` | Serve FastAPI and the Svelte UI |
-| `doctor` | Hidden. Runs schema coverage / playbook drift / verdict taxonomy AST / pytest together |
+| `doctor` | Hidden. Runs the 8 health checks together (see section 3) |
 | `templates-export` | Hidden. Exports the bundled report templates |
 
 ### 4.1 Investigation flags
@@ -128,7 +128,7 @@ Keep the test suite finishing in seconds.
 - `report` is render only
 - `report --write` re-fills sections and then renders
 
-`_reset_case_tables()` invoked by `--rerun` must clear not only the evidence-derived normalized tables but also the derived workflow state. At minimum include `findings` / `hypotheses` / `report_sections` / `claims` / `section_facts` / `section_evidence` / `section_runs` / `section_questions` / `query_cache` / trace tables / `ingested_files` / `prefetch_timeline`. When you add a new mutable table, update `_reset_case_tables()` and the reset test in `tests/test_memory_and_ingest.py` at the same time.
+`_reset_case_tables()` invoked by `--rerun` must clear not only the evidence-derived normalized tables but also the derived workflow state. At minimum include `findings` / `hypotheses` / `report_sections` / `claims` / `section_facts` / `section_evidence` / `section_runs` / `section_questions` / `query_cache` / trace tables / `ingested_files` / `prefetch_timeline`. When you add a new mutable table, update `_reset_case_tables()` and the reset test in `tests/test_case_db_maintenance.py` at the same time.
 
 ### 4.3 Schema changes and migrations
 
