@@ -30,21 +30,20 @@ from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.db.database import CaseDB
-from forensia.report.writer import (
-    _build_report_brief,
-    _collect_flat_evidence_rows,
-    _default_keypoints_for_section,
-    _extract_claim_texts,
-    _quality_gate_section,
-    _resolve_evidence_results,
-    _section_confidence,
-    _sort_markdown_table_by_first_column,
-    build_report_markdown_from_db,
-    collect_gaps,
-    ensure_universal_question_probes,
-    finalize_section,
-    prepare_section_request,
+from forensia.report.answer_registry import ensure_universal_question_probes
+from forensia.report.keypoint_catalog import (
+    default_keypoints_for_section,
+    resolve_evidence_results,
 )
+from forensia.report.markdown import sort_markdown_table_by_first_column
+from forensia.report.quality_gates import quality_gate_section
+from forensia.report.report_brief import build_report_brief
+from forensia.report.section_assembly import prepare_section_request
+from forensia.report.section_finalize import finalize_section
+from forensia.report.section_quality import collect_gaps, section_confidence
+from forensia.report.section_store import extract_claim_texts
+from forensia.report.table_registry import collect_flat_evidence_rows
+from forensia.report.writer import build_report_markdown_from_db
 from forensia.report_templates import export_packaged_report_templates
 from forensia.rules.engine import execute_event_keyword_fallback_search
 
@@ -114,16 +113,16 @@ class PersistenceTests(unittest.TestCase):
             ),
         )
 
-    def test_section_confidence_and_claim_extraction_respect_english_gap_placeholder(
+    def testsection_confidence_and_claim_extraction_respect_english_gap_placeholder(
         self,
     ) -> None:
-        self.assertEqual(1.0, _section_confidence("no gaps here"))
-        self.assertLess(_section_confidence("[INSUFFICIENT EVIDENCE: x]"), 1.0)
+        self.assertEqual(1.0, section_confidence("no gaps here"))
+        self.assertLess(section_confidence("[INSUFFICIENT EVIDENCE: x]"), 1.0)
         self.assertEqual(
-            [], _extract_claim_texts("[INSUFFICIENT EVIDENCE: missing evidence]")
+            [], extract_claim_texts("[INSUFFICIENT EVIDENCE: missing evidence]")
         )
         self.assertEqual(
-            ["same claim"], _extract_claim_texts("same claim\n\nsame claim")
+            ["same claim"], extract_claim_texts("same claim\n\nsame claim")
         )
 
     def test_append_hypothesis_reasoning_is_idempotent_per_query_phase(self) -> None:
@@ -238,8 +237,8 @@ class PersistenceTests(unittest.TestCase):
                 )
                 # Evidence resolution moved into section_agent; verify the default
                 # keypoint selection + resolver directly.
-                default_keypoints = _default_keypoints_for_section("1_overview")
-                resolved = _resolve_evidence_results(
+                default_keypoints = default_keypoints_for_section("1_overview")
+                resolved = resolve_evidence_results(
                     case, db, keypoints=default_keypoints
                 )
 
@@ -271,8 +270,8 @@ class PersistenceTests(unittest.TestCase):
                     """
                 )
                 prepare_section_request(case, db, template_path, {}, report_brief={})
-                default_keypoints = _default_keypoints_for_section("3_technical")
-                resolved = _resolve_evidence_results(
+                default_keypoints = default_keypoints_for_section("3_technical")
+                resolved = resolve_evidence_results(
                     case, db, keypoints=default_keypoints
                 )
 
@@ -392,7 +391,7 @@ class PersistenceTests(unittest.TestCase):
             "| 2026-05-16 09:00:00 | host1 | Execution | process | ev-1 |\n"
         )
 
-        gaps, confidence = _quality_gate_section(
+        gaps, confidence = quality_gate_section(
             "2_timeline",
             "Attack Timeline",
             body,
@@ -405,7 +404,7 @@ class PersistenceTests(unittest.TestCase):
         self.assertTrue(any("events are not strictly chronological" in g for g in gaps))
         self.assertLess(confidence, 1.0)
 
-    def test_collect_flat_evidence_rows_filters_sparse_rows(self) -> None:
+    def testcollect_flat_evidence_rows_filters_sparse_rows(self) -> None:
         rows = [
             {
                 "kind": "rows",
@@ -426,7 +425,7 @@ class PersistenceTests(unittest.TestCase):
             }
         ]
 
-        flat = _collect_flat_evidence_rows(rows, min_filled_cols=0.5)
+        flat = collect_flat_evidence_rows(rows, min_filled_cols=0.5)
         self.assertEqual(1, len(flat))
         self.assertEqual("powershell.exe", flat[0]["process_name"])
 
@@ -1035,7 +1034,7 @@ class PersistenceTests(unittest.TestCase):
                 self.assertIn("rule-2", str(rows[0][2]))
 
     def test_quality_gate_flags_heading_title_mismatch(self) -> None:
-        gaps, confidence = _quality_gate_section(
+        gaps, confidence = quality_gate_section(
             "3_technical",
             "Compromised Accounts and Authentication",
             "# Indicators of Compromise\n\nBody text",
@@ -1049,7 +1048,7 @@ class PersistenceTests(unittest.TestCase):
     def test_quality_gate_forces_low_confidence_when_fill_placeholder_remains(
         self,
     ) -> None:
-        gaps, confidence = _quality_gate_section(
+        gaps, confidence = quality_gate_section(
             "1_overview",
             "Investigation Overview",
             "# Investigation Overview\n\n<!-- fill -->",
@@ -1068,7 +1067,7 @@ class PersistenceTests(unittest.TestCase):
             "| High | Isolate host1 now | suspicious activity observed |\n"
         )
 
-        gaps, confidence = _quality_gate_section(
+        gaps, confidence = quality_gate_section(
             "5_recommendations",
             "Recommended Actions",
             body,
@@ -1082,14 +1081,14 @@ class PersistenceTests(unittest.TestCase):
         )
         self.assertLess(confidence, 1.0)
 
-    def test_sort_markdown_table_by_first_column_orders_timeline_rows(self) -> None:
+    def testsort_markdown_table_by_first_column_orders_timeline_rows(self) -> None:
         body = (
             "| Timestamp | Host |\n"
             "|---|---|\n"
             "| 2026-05-16 10:00:00 | host1 |\n"
             "| 2026-05-16 09:00:00 | host1 |\n"
         )
-        sorted_body = _sort_markdown_table_by_first_column(body)
+        sorted_body = sort_markdown_table_by_first_column(body)
         self.assertLess(sorted_body.find("09:00:00"), sorted_body.find("10:00:00"))
 
     def test_export_packaged_templates_includes_appendix_template(self) -> None:
@@ -1181,7 +1180,7 @@ class PersistenceTests(unittest.TestCase):
             )
             self.assertLessEqual(result["confidence"], 0.55)
 
-    def test_build_report_brief_trims_excerpt_in_sql(self) -> None:
+    def testbuild_report_brief_trims_excerpt_in_sql(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             now = datetime.now(UTC).replace(tzinfo=None)
@@ -1204,12 +1203,12 @@ class PersistenceTests(unittest.TestCase):
                         now,
                     ),
                 )
-                brief = _build_report_brief(db)
+                brief = build_report_brief(db)
 
             self.assertEqual(1, len(brief["prior_sections"]))
             self.assertLessEqual(len(brief["prior_sections"][0]["body_excerpt"]), 400)
 
-    def test_build_report_brief_dedupes_existing_claims(self) -> None:
+    def testbuild_report_brief_dedupes_existing_claims(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             now = datetime.now(UTC).replace(tzinfo=None)
@@ -1226,7 +1225,7 @@ class PersistenceTests(unittest.TestCase):
                     """,
                     (now, now, now, now, now, now),
                 )
-                brief = _build_report_brief(db)
+                brief = build_report_brief(db)
 
             self.assertEqual(2, len(brief["existing_claims"]))
 

@@ -23,24 +23,25 @@ from forensia.core.case import Case
 from forensia.core.textutil import normalize_localized_dates
 from forensia.db.database import CaseDB
 from forensia.questions import resolve_question_spec
+from forensia.report.answer_registry import build_structured_answer
+from forensia.report.answer_store import render_structured_answer_markdown
+from forensia.report.evidence_refs import extract_needed_evidence
+from forensia.report.gap_tables import hypothesis_rows
+from forensia.report.keypoint_catalog import REPORT_KEYPOINTS, resolve_evidence_results
 from forensia.report.quality_gates import (
-    _check_citation_token_no_finding_id,
-    _check_hedge_no_citation,
-    _check_recommendations_strength,
+    GateContext,
+    check_citation_token_no_finding_id,
+    check_hedge_no_citation,
+    check_recommendations_strength,
 )
-from forensia.report.writer import (
-    _assemble_section_body,
-    _dump_section_questions_json,
-    _extract_needed_evidence,
-    _GateCtx,
-    _hypothesis_rows,
-    _preprocess_section_body,
-    _render_structured_answer_markdown,
-    _resolve_evidence_results,
-    _validate_body_evidence_ids,
-    _validate_section_evidence_ids,
-    build_structured_answer,
+from forensia.report.section_assembly import assemble_section_body
+from forensia.report.section_finalize import (
+    preprocess_section_body,
+    validate_section_evidence_ids,
 )
+from forensia.report.section_quality import validate_body_evidence_ids
+from forensia.report.section_store import dump_section_questions_json
+from forensia.report.template_parsing import parse_block_hints
 
 
 class WriterRQRegressionTests(unittest.TestCase):
@@ -137,7 +138,7 @@ class WriterRQRegressionTests(unittest.TestCase):
             )
 
     def test_assemble_section_body_preserves_template_preamble(self) -> None:
-        body = _assemble_section_body(
+        body = assemble_section_body(
             "# Investigation Overview", ["## Executive Summary\n\nBody"]
         )
         self.assertTrue(
@@ -154,7 +155,7 @@ class WriterRQRegressionTests(unittest.TestCase):
             '## Evidence Scope\n\n[{"Metric":"EVTX rows","Value":12,'
             '"Scope":"security"}]'
         )
-        body, removed_raw = _preprocess_section_body("1_overview", raw)
+        body, removed_raw = preprocess_section_body("1_overview", raw)
         self.assertFalse(removed_raw)
         self.assertNotIn('[{"Metric"', body)
         self.assertIn("| Metric | Value | Scope |", body)
@@ -163,14 +164,14 @@ class WriterRQRegressionTests(unittest.TestCase):
     def test_recommendation_strength_accepts_japanese_verification_wording(
         self,
     ) -> None:
-        ctx = _GateCtx(
+        ctx = GateContext(
             section_key="5_recommendations",
             title="Recommendations",
             evidence_results=[],
             db=None,
             behaviors=("require_recommendations_strength",),
         )
-        note, cap = _check_recommendations_strength(
+        note, cap = check_recommendations_strength(
             "Perform additional verification and correlation checks; consider containment after verification.",
             ctx,
         )
@@ -214,7 +215,7 @@ class WriterRQRegressionTests(unittest.TestCase):
             self.assertGreater(confidence, 0.0)
 
     def test_missing_reason_string_renders_as_one_bullet(self) -> None:
-        markdown = _render_structured_answer_markdown(
+        markdown = render_structured_answer_markdown(
             {
                 "id": "Q-TEST",
                 "status": "answered",
@@ -306,7 +307,7 @@ class WriterRQRegressionTests(unittest.TestCase):
             ["", "  "],
         ):
             with self.subTest(missing=missing):
-                markdown = _render_structured_answer_markdown(
+                markdown = render_structured_answer_markdown(
                     {
                         "id": "Q-OK",
                         "status": "answered",
@@ -318,7 +319,7 @@ class WriterRQRegressionTests(unittest.TestCase):
                 )
                 self.assertNotIn("### Missing Reason", markdown)
 
-        partial_md = _render_structured_answer_markdown(
+        partial_md = render_structured_answer_markdown(
             {
                 "id": "Q-PARTIAL",
                 "status": "partial",
@@ -431,7 +432,7 @@ class WriterRQRegressionTests(unittest.TestCase):
         self.assertNotIn("related rows", body.lower())
 
     def test_structured_markdown_previews_large_tables(self) -> None:
-        markdown = _render_structured_answer_markdown(
+        markdown = render_structured_answer_markdown(
             {
                 "id": "Q-BIG",
                 "status": "answered",
@@ -455,7 +456,7 @@ class WriterRQRegressionTests(unittest.TestCase):
 
     def test_structured_markdown_truncates_above_two_hundred(self) -> None:
         """R7-02: structured answer with 250 rows truncates at 200."""
-        markdown = _render_structured_answer_markdown(
+        markdown = render_structured_answer_markdown(
             {
                 "id": "Q-HUGE",
                 "status": "answered",
@@ -472,7 +473,7 @@ class WriterRQRegressionTests(unittest.TestCase):
         self.assertNotIn("| 249 |", markdown)
 
     def test_structured_markdown_hides_evidence_id_columns(self) -> None:
-        markdown = _render_structured_answer_markdown(
+        markdown = render_structured_answer_markdown(
             {
                 "id": "Q-EVIDENCE",
                 "status": "answered",
@@ -530,7 +531,7 @@ class WriterRQRegressionTests(unittest.TestCase):
                         datetime.now(UTC).replace(tzinfo=None),
                     ),
                 )
-                results = _resolve_evidence_results(
+                results = resolve_evidence_results(
                     case,
                     db,
                     keypoints=[
@@ -828,7 +829,7 @@ class WriterRQRegressionTests(unittest.TestCase):
                     LIMIT 1
                     """
                 ).fetchone()
-                _dump_section_questions_json(case, db, "6_appendix")
+                dump_section_questions_json(case, db, "6_appendix")
 
             self.assertIsNotNone(row)
             self.assertEqual(
@@ -1079,20 +1080,20 @@ class WriterRQRegressionTests(unittest.TestCase):
             )
 
     def test_citation_gate_accepts_evtx_and_mft_evidence_ids(self) -> None:
-        ctx = _GateCtx(section_key="test", title="test", evidence_results=None, db=None)
+        ctx = GateContext(section_key="test", title="test", evidence_results=None, db=None)
         body = (
             "This may indicate suspicious activity supported by "
             "evtx-security-000000000001 and mft-000000000002-01."
         )
-        msg, score = _check_hedge_no_citation(body, ctx)
+        msg, score = check_hedge_no_citation(body, ctx)
         self.assertIsNone(msg)
-        msg, score = _check_citation_token_no_finding_id(body, ctx)
+        msg, score = check_citation_token_no_finding_id(body, ctx)
         self.assertIsNone(msg)
 
     def test_citation_gate_flags_citation_token_without_ids(self) -> None:
-        ctx = _GateCtx(section_key="test", title="test", evidence_results=None, db=None)
+        ctx = GateContext(section_key="test", title="test", evidence_results=None, db=None)
         body = "The evidence suggests an incident, but the narrative does not name a concrete citation."
-        msg, score = _check_citation_token_no_finding_id(body, ctx)
+        msg, score = check_citation_token_no_finding_id(body, ctx)
         self.assertIsNotNone(msg)
 
     def test_prefetch_evidence_ids_validate_against_prefetch_tables(self) -> None:
@@ -1103,7 +1104,7 @@ class WriterRQRegressionTests(unittest.TestCase):
                     "INSERT INTO prefetch_executions (evidence_id, executable_name) VALUES (?, ?)",
                     ("prefetch-winword-exe-cecba770", "WINWORD.EXE"),
                 )
-                missing = _validate_body_evidence_ids(
+                missing = validate_body_evidence_ids(
                     db,
                     "WINWORD execution is supported by prefetch-winword-exe-cecba770.",
                 )
@@ -1111,18 +1112,7 @@ class WriterRQRegressionTests(unittest.TestCase):
             self.assertEqual([], missing)
 
     def test_validate_section_evidence_ids_removes_fabricated_keeps_real(self) -> None:
-        """R5-01: Fix capturing group bug in _EVIDENCE_ID_RE.
-
-        The regex previously used (evtx|mft|prefetch) — a capturing group — so
-        re.findall() returned only the prefix. This meant fabricated IDs were
-        never removed and real IDs were never validated.
-
-        Verifies:
-        - Real evtx ID is kept untouched
-        - Fabricated evtx-security-0001 is fully removed (no -security-0001 residue)
-        - No empty parens （） or () remain after removal
-        - Gap list names the removed full ID
-        """
+        """Real evidence IDs stay cited while fabricated IDs are removed."""
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -1136,43 +1126,36 @@ class WriterRQRegressionTests(unittest.TestCase):
                     ),
                 )
                 body = (
-                    "The real event evtx-security-000000000001 is supported by evidence. "
-                    "The fabricated event （evtx-security-0001） is not in DB. "
+                    "The real event evtx-security-000000000001 supported by evidence. "
+                    "The fabricated event （evtx-security-0001） not in DB. "
                     "Another fabricated one (evtx-mft-9999) also not present."
                 )
-                cleaned, gaps = _validate_section_evidence_ids(db, body)
+                cleaned, gaps = validate_section_evidence_ids(db, body)
 
-            # Real ID is preserved
-            self.assertIn("evtx-security-000000000001", cleaned)
-            # Fabricated IDs are removed (no residue)
-            self.assertNotIn("evtx-security-0001", cleaned)
-            self.assertNotIn("security-0001", cleaned)
-            self.assertNotIn("evtx-mft-9999", cleaned)
-            # Empty citation shells are cleaned up
-            self.assertNotIn("（）", cleaned)
-            self.assertNotIn("()", cleaned)
-            self.assertNotIn("（,", cleaned)
-            # Gap lists the removed full IDs
-            self.assertTrue(
-                any("evtx-security-0001" in g for g in gaps),
-                msg=f"gap missing fabricated ID: {gaps}",
-            )
-            self.assertTrue(
-                any("evtx-mft-9999" in g for g in gaps),
-                msg=f"gap missing fabricated ID: {gaps}",
-            )
-            # Real ID is NOT in the gap list
-            self.assertFalse(
-                any("evtx-security-000000000001" in g for g in gaps),
-                msg=f"real ID in gaps: {gaps}",
-            )
+                self.assertIn("evtx-security-000000000001", cleaned)
+                self.assertNotIn("evtx-security-0001", cleaned)
+                self.assertNotIn("security-0001", cleaned)
+                self.assertNotIn("evtx-mft-9999", cleaned)
+                self.assertNotIn("（）", cleaned)
+                self.assertNotIn("()", cleaned)
+                self.assertNotIn("（,", cleaned)
+                self.assertTrue(
+                    any("evtx-security-0001" in g for g in gaps),
+                    msg=f"gap missing fabricated ID: {gaps}",
+                )
+                self.assertTrue(
+                    any("evtx-mft-9999" in g for g in gaps),
+                    msg=f"gap missing fabricated ID: {gaps}",
+                )
+                self.assertFalse(
+                    any("evtx-security-000000000001" in g for g in gaps),
+                    msg=f"real ID in gaps: {gaps}",
+                )
 
     def test_validate_section_evidence_ids_keeps_valid_id_sharing_parens_with_invalid(
         self,
     ) -> None:
-        """R5-01 follow-up: removing an invalid ID must not delete a valid ID
-        cited in the same citation group. A naive "(, debris)" cleanup regex
-        deleted the whole group, silently destroying real citations."""
+        """Removing invalid IDs must not remove valid IDs from the same citation group."""
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -1189,35 +1172,32 @@ class WriterRQRegressionTests(unittest.TestCase):
                     "Invalid first （evtx-security-0001, evtx-security-000000000122） here. "
                     "Invalid last (evtx-security-000000000122, evtx-bogus-1) there."
                 )
-                cleaned, gaps = _validate_section_evidence_ids(db, body)
+                cleaned, _gaps = validate_section_evidence_ids(db, body)
 
-            # Both surviving citations keep the real ID inside their parens
-            self.assertIn("（evtx-security-000000000122）", cleaned)
-            self.assertIn("(evtx-security-000000000122)", cleaned)
-            self.assertNotIn("evtx-security-0001", cleaned)
-            self.assertNotIn("evtx-bogus-1", cleaned)
+                self.assertIn("（evtx-security-000000000122）", cleaned)
+                self.assertIn("(evtx-security-000000000122)", cleaned)
+                self.assertNotIn("evtx-security-0001", cleaned)
+                self.assertNotIn("evtx-bogus-1", cleaned)
 
     def test_parse_block_hints_combined_comment_syntax(self) -> None:
         """R5-04 follow-up: the packaged templates use the combined one-comment
         syntax `<!-- mode: table; builder: X -->`. The parser previously stored
         mode='table; builder: x' and never extracted the builder, so table mode
         silently never fired for any template that used it."""
-        from forensia.report.writer import _parse_block_hints
-
-        hints = _parse_block_hints(
+        hints = parse_block_hints(
             "<!-- mode: table; builder: overview_evidence_scope -->"
         )
         self.assertEqual("table", hints["mode"])
         self.assertEqual("overview_evidence_scope", hints["builder"])
 
-        narrative = _parse_block_hints(
+        narrative = parse_block_hints(
             "<!-- mode: narrative; Write an executive summary -->"
         )
         self.assertEqual("narrative", narrative["mode"])
         self.assertEqual("", narrative["builder"])
 
         # One-directive-per-comment syntax keeps working
-        separate = _parse_block_hints(
+        separate = parse_block_hints(
             "<!-- mode: structured -->\n<!-- answer_id: Q6 -->\n<!-- answer_spec: host_identity -->"
         )
         self.assertEqual("structured", separate["mode"])
@@ -1332,17 +1312,17 @@ class WriterRQRegressionTests(unittest.TestCase):
 
     def test_markdown_table_truncation_marker_outside_table(self) -> None:
         """R6-06: the Showing-N-of-M marker must not be a fake table row."""
-        from forensia.report.markdown import _markdown_table
+        from forensia.report.markdown import markdown_table
 
         rows = [{"a": i, "b": i} for i in range(20)]
-        table = _markdown_table(rows, [("a", "A"), ("b", "B")], max_rows=5)
+        table = markdown_table(rows, [("a", "A"), ("b", "B")], max_rows=5)
         self.assertNotIn("| ...", table)
         self.assertIn("_Showing 5 of 20 rows._", table)
         self.assertTrue(table.rstrip().endswith("_Showing 5 of 20 rows._"))
 
-    def test_execution_rows_aggregate_per_executable(self) -> None:
+    def testexecution_rows_aggregate_per_executable(self) -> None:
         """R6-06: one table row per executable name, exec counts summed."""
-        from forensia.report.summary_rows import _execution_rows
+        from forensia.report.summary_rows import execution_rows
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -1353,7 +1333,7 @@ class WriterRQRegressionTests(unittest.TestCase):
                     "('prefetch-iexplore-2', 'b.pf', 'IEXPLORE.EXE', 2, TIMESTAMP '2015-03-25 15:22:06'), "
                     "('prefetch-winword-1', 'c.pf', 'WINWORD.EXE', 3, TIMESTAMP '2015-03-25 15:24:48')"
                 )
-                rows = _execution_rows(db)
+                rows = execution_rows(db)
         names = [str(r.get("executable_name")) for r in rows]
         self.assertEqual(
             len(names), len(set(names)), f"duplicate executables in {names}"
@@ -1500,7 +1480,7 @@ class WriterRQRegressionTests(unittest.TestCase):
                         '{"winlog":{"provider":{"name":"Microsoft-Windows-Eventlog"}}}',
                     ),
                 )
-                results = _resolve_evidence_results(
+                results = resolve_evidence_results(
                     case,
                     db,
                     keypoints=["timeline_log_clearing", "gaps_log_integrity_events"],
@@ -1565,7 +1545,7 @@ class WriterRQRegressionTests(unittest.TestCase):
                         "Checked for logon events",
                     ),
                 )
-                rows = _hypothesis_rows(db, "active")
+                rows = hypothesis_rows(db, "active")
                 self.assertEqual(1, len(rows))
                 self.assertEqual("H-001", rows[0]["hypothesis_id"])
                 self.assertEqual(
@@ -1573,7 +1553,7 @@ class WriterRQRegressionTests(unittest.TestCase):
                 )
                 self.assertEqual(2, rows[0]["reasoning_count"])
 
-    def test_extract_needed_evidence_parses_missing_questions(self) -> None:
+    def testextract_needed_evidence_parses_missing_questions(self) -> None:
         body = json.dumps(
             {
                 "verdict": "inconclusive",
@@ -1581,20 +1561,19 @@ class WriterRQRegressionTests(unittest.TestCase):
             }
         )
         self.assertEqual(
-            "event_id 4663; process creation 4688", _extract_needed_evidence(body)
+            "event_id 4663; process creation 4688", extract_needed_evidence(body)
         )
 
-    def test_extract_needed_evidence_returns_first_two_only(self) -> None:
+    def testextract_needed_evidence_returns_first_two_only(self) -> None:
         body = json.dumps({"missing_questions": ["a", "b", "c", "d"]})
-        self.assertEqual("a; b", _extract_needed_evidence(body))
+        self.assertEqual("a; b", extract_needed_evidence(body))
 
-    def test_extract_needed_evidence_empty_on_none(self) -> None:
-        self.assertEqual("", _extract_needed_evidence(None))
-        self.assertEqual("", _extract_needed_evidence(""))
-        self.assertEqual("", _extract_needed_evidence("not json"))
+    def testextract_needed_evidence_empty_on_none(self) -> None:
+        self.assertEqual("", extract_needed_evidence(None))
+        self.assertEqual("", extract_needed_evidence(""))
+        self.assertEqual("", extract_needed_evidence("not json"))
 
     def test_unresolved_resolver_includes_needed_evidence(self) -> None:
-        from forensia.report.writer import REPORT_KEYPOINTS
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -1641,7 +1620,6 @@ class WriterRQRegressionTests(unittest.TestCase):
                 )
 
     def test_untestable_resolver_includes_needed_evidence(self) -> None:
-        from forensia.report.writer import REPORT_KEYPOINTS
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -1863,19 +1841,19 @@ class HtmlEvidenceIdAnchorTests(unittest.TestCase):
 
     def test_markdown_table_max_rows_zero_is_unlimited(self) -> None:
         """R7-02: max_rows=0 renders all rows without truncation marker."""
-        from forensia.report.markdown import _markdown_table
+        from forensia.report.markdown import markdown_table
 
         rows = [{"a": i, "b": i * 10} for i in range(50)]
-        table = _markdown_table(rows, [("a", "A"), ("b", "B")], max_rows=0)
+        table = markdown_table(rows, [("a", "A"), ("b", "B")], max_rows=0)
         self.assertIn("| 49 |", table)
         self.assertNotIn("_Showing", table)
 
     def test_structured_answer_increased_max_rows(self) -> None:
         """R7-02: structured answer with 68 rows renders all 68 (no truncation below 200)."""
-        from forensia.report.answer_store import _render_answer_block
+        from forensia.report.answer_store import render_answer_block
 
         items = [{"idx": i} for i in range(68)]
-        lines = _render_answer_block(items, columns=["idx"], max_rows=200)
+        lines = render_answer_block(items, columns=["idx"], max_rows=200)
         body = "\n".join(lines)
         self.assertIn("| 67 |", body)
         self.assertNotIn("_Showing", body)

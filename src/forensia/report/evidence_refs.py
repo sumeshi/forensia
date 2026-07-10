@@ -196,3 +196,6 @@ def _extract_needed_evidence(latest_reasoning: str | None) -> str:
         pass
     return ""
 
+
+extract_needed_evidence = _extract_needed_evidence
+row_with_evidence_ids = _row_with_evidence_ids

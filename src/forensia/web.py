@@ -59,9 +59,9 @@ from forensia.api.service import (
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.report.html import render_html_report
+from forensia.report.section_store import set_report_section_status
 from forensia.report.writer import (
     build_report_markdown_from_db,
-    set_report_section_status,
 )
 
 load_dotenv()

@@ -404,3 +404,5 @@ def _summarize_flat_evidence_rows(
         summarized.append({"summary": _row_to_summary_line(row)})
     return summarized
 
+collect_flat_evidence_rows = _collect_flat_evidence_rows
+summarize_flat_evidence_rows = _summarize_flat_evidence_rows

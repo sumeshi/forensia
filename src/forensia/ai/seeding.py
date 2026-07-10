@@ -11,7 +11,7 @@ from forensia.core.log import log as _log
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
-from forensia.report.writer import REPORT_KEYPOINTS, _resolve_evidence_results
+from forensia.report.keypoint_catalog import REPORT_KEYPOINTS, _resolve_evidence_results
 from forensia.rules.engine import (
     clear_rule_findings,
     generate_findings,

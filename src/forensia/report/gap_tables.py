@@ -251,3 +251,6 @@ def _build_gaps_confirmed_table(db: CaseDB) -> list[dict[str, Any]]:
 def _build_evidence_gaps_table(db: CaseDB) -> list[dict[str, Any]]:
     return _forensic_gap_rows(db)
 
+
+build_evidence_gaps_table = _build_evidence_gaps_table
+hypothesis_rows = _hypothesis_rows

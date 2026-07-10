@@ -4,17 +4,17 @@ import os
 from typing import Any
 
 from forensia.ai.prompt_playbook import (
-    _PLAYBOOK_SECTION_DROP_ORDER,
-    _dfir_playbook,
-    _load_dfir_yamls,
-    _render_event_narrative,
+    PLAYBOOK_SECTION_DROP_ORDER,
+    dfir_playbook,
+    load_dfir_yamls_cached,
+    render_event_narrative,
 )
 
 
 def test_filter_event_ids_reduces_size() -> None:
     """With a subset of event IDs (12 items), playbook has fewer event lines."""
-    full = _dfir_playbook("check", event_ids=None)
-    filtered = _dfir_playbook(
+    full = dfir_playbook("check", event_ids=None)
+    filtered = dfir_playbook(
         "check",
         event_ids={
             4624,
@@ -40,9 +40,9 @@ def test_filter_event_ids_reduces_size() -> None:
 
 def test_filter_event_ids_caps_at_forty() -> None:
     """Event narrative is capped at 40 entries when event_ids is large."""
-    _render_event_narrative(_load_dfir_yamls()["event_ids"].get("events", {}))
+    render_event_narrative(load_dfir_yamls_cached()["event_ids"].get("events", {}))
     many_ids = set(range(1, 200))
-    playbook = _dfir_playbook("check", event_ids=many_ids)
+    playbook = dfir_playbook("check", event_ids=many_ids)
     assert "Event ID Reference" in playbook
     # Count event ID entries in the playbook — each starts with " - Event "
     id_count = playbook.count(" - Event ")
@@ -51,7 +51,7 @@ def test_filter_event_ids_caps_at_forty() -> None:
 
 def test_filter_event_ids_includes_hypothesis_context_ids() -> None:
     """Hypothesis-referenced event IDs not in the case set are still rendered."""
-    playbook = _dfir_playbook("check", event_ids={9999})
+    playbook = dfir_playbook("check", event_ids={9999})
     assert " - Event 9999" in playbook or "No event ID reference" in playbook
 
 
@@ -73,7 +73,7 @@ _SMALL_EVENT_IDS = {
 
 def test_tables_gate_excludes_artifact_when_no_mft_prefetch() -> None:
     """Artifact inference section excluded when tables set lacks MFT/prefetch."""
-    playbook = _dfir_playbook(
+    playbook = dfir_playbook(
         "check", event_ids=_SMALL_EVENT_IDS, tables={"evtx_events"}
     )
     assert "Artifact-to-Application Inference" not in playbook
@@ -81,7 +81,7 @@ def test_tables_gate_excludes_artifact_when_no_mft_prefetch() -> None:
 
 def test_tables_gate_includes_artifact_when_mft_present() -> None:
     """Artifact inference section included when MFT is in tables."""
-    playbook = _dfir_playbook(
+    playbook = dfir_playbook(
         "check", event_ids=_SMALL_EVENT_IDS, tables={"evtx_events", "mft_entries"}
     )
     assert "Artifact-to-Application Inference" in playbook
@@ -89,7 +89,7 @@ def test_tables_gate_includes_artifact_when_mft_present() -> None:
 
 def test_tables_gate_ioc_with_mft() -> None:
     """IOC catalog included when MFT/prefetch present in tables."""
-    playbook = _dfir_playbook(
+    playbook = dfir_playbook(
         "check", event_ids=_SMALL_EVENT_IDS, tables={"prefetch_executions"}
     )
     assert "IOC Catalog" in playbook
@@ -97,7 +97,7 @@ def test_tables_gate_ioc_with_mft() -> None:
 
 def test_tables_gate_ioc_excluded_without_mft_prefetch() -> None:
     """IOC catalog excluded when no MFT/prefetch in tables for check phase."""
-    playbook = _dfir_playbook(
+    playbook = dfir_playbook(
         "check", event_ids=_SMALL_EVENT_IDS, tables={"evtx_events"}
     )
     assert "IOC Catalog" not in playbook
@@ -105,7 +105,7 @@ def test_tables_gate_ioc_excluded_without_mft_prefetch() -> None:
 
 def test_tables_none_includes_all_sections() -> None:
     """When tables=None (default with filtering), sections are included by phase."""
-    playbook = _dfir_playbook("check", event_ids=_SMALL_EVENT_IDS, tables=None)
+    playbook = dfir_playbook("check", event_ids=_SMALL_EVENT_IDS, tables=None)
     assert "Event ID Reference" in playbook
     assert "Logon Type Reference" in playbook
     assert "False-Positive Reduction Guidance" in playbook
@@ -121,7 +121,7 @@ def test_budget_enforcement_drops_sections_in_order(tmp_path: Any) -> None:
     try:
         assert get_system_prompt_budget_chars() == 1000
 
-        playbook = _dfir_playbook("check")
+        playbook = dfir_playbook("check")
         # With 1KB budget, sections are aggressively dropped.
         # The full playbook is ~69KB; a 1KB budget forces most sections out.
         # Only preamble, priority sections + phase MD (~3.5KB) remain.
@@ -147,12 +147,12 @@ def test_budget_drop_order_is_stable() -> None:
         "extractor",# JSON extractors
         "schema",   # schema notes — highest priority, last to drop
     ]
-    assert _PLAYBOOK_SECTION_DROP_ORDER == expected
+    assert PLAYBOOK_SECTION_DROP_ORDER == expected
 
 
 def test_empty_event_ids_still_produces_playbook() -> None:
     """Empty event_ids set doesn't crash — falls back to minimal playbook."""
-    playbook = _dfir_playbook("hypothesis_plan", event_ids=set())
+    playbook = dfir_playbook("hypothesis_plan", event_ids=set())
     assert len(playbook) > 0
     assert "DFIR_PLAYBOOK" in playbook or "No event ID reference" in playbook
 
@@ -160,7 +160,7 @@ def test_empty_event_ids_still_produces_playbook() -> None:
 def test_table_gating_planning_phases() -> None:
     """Planning phases exclude artifact/IOC regardless of tables."""
     for phase in ("broad_plan", "hypothesis_plan"):
-        playbook = _dfir_playbook(
+        playbook = dfir_playbook(
             phase,
             event_ids=_SMALL_EVENT_IDS,
             tables={"mft_entries", "prefetch_executions"},
@@ -198,7 +198,7 @@ def test_combined_filtering_reaches_budget(tmp_path: Any) -> None:
         5156,
         5158,
     }
-    playbook = _dfir_playbook("check", event_ids=event_subset, tables={"evtx_events"})
+    playbook = dfir_playbook("check", event_ids=event_subset, tables={"evtx_events"})
     assert len(playbook) <= budget, f"playbook {len(playbook)} > budget {budget}"
 
 
@@ -225,12 +225,12 @@ def test_no_profile_playbook_truncates_events_instead_of_dropping_everything():
     discarding every droppable section (the pre-fix behavior left only the
     Priority Investigation Order)."""
     from forensia.ai.case_profile import set_case_profile
-    from forensia.ai.prompt_playbook import _dfir_playbook
+    from forensia.ai.prompt_playbook import dfir_playbook
     from forensia.config import get_system_prompt_budget_chars
 
     set_case_profile(None, None)
     try:
-        playbook = _dfir_playbook("report_section")
+        playbook = dfir_playbook("report_section")
     finally:
         set_case_profile(None, None)
 
@@ -243,14 +243,14 @@ def test_no_profile_playbook_truncates_events_instead_of_dropping_everything():
     assert len(playbook) < get_system_prompt_budget_chars() * 1.5
 
 
-def test_sections_for_hypothesis_auth_excludes_catalogs() -> None:
+def testsections_for_hypothesis_auth_excludes_catalogs() -> None:
     """An auth-only hypothesis must not pull file/tool catalogs into context.
 
     Why: catalog sections are interpretation aids for executable/file
     evidence. Including them for a pure authentication hypothesis dilutes
     the prompt for weak local models without adding signal (G-1).
     """
-    from forensia.ai.prompt_playbook import _sections_for_hypothesis
+    from forensia.ai.prompt_playbook import sections_for_hypothesis
     from forensia.core.session import Hypothesis
 
     auth = Hypothesis(
@@ -258,21 +258,21 @@ def test_sections_for_hypothesis_auth_excludes_catalogs() -> None:
         description="credential reuse via explicit credentials",
         confirm_when={"co_observed_event_ids": [4648]},
     )
-    sections = _sections_for_hypothesis(auth)
+    sections = sections_for_hypothesis(auth)
     assert sections is not None
     assert "logon_types" in sections
     assert "ioc_catalog" not in sections
     assert "app_catalog" not in sections
 
-    narrowed = _dfir_playbook("check", event_ids={4648}, sections=sections)
-    full = _dfir_playbook("check", event_ids={4648})
+    narrowed = dfir_playbook("check", event_ids={4648}, sections=sections)
+    full = dfir_playbook("check", event_ids={4648})
     assert "## IOC Catalog" not in narrowed
     assert len(narrowed) < len(full)
 
 
-def test_sections_for_hypothesis_exec_includes_catalogs() -> None:
+def testsections_for_hypothesis_exec_includes_catalogs() -> None:
     """A hypothesis about executables keeps the catalog interpretation aids."""
-    from forensia.ai.prompt_playbook import _sections_for_hypothesis
+    from forensia.ai.prompt_playbook import sections_for_hypothesis
     from forensia.core.session import Hypothesis
 
     exe = Hypothesis(
@@ -280,14 +280,14 @@ def test_sections_for_hypothesis_exec_includes_catalogs() -> None:
         description="anti-forensic tool execution",
         required_entities=["executable_name"],
     )
-    sections = _sections_for_hypothesis(exe)
+    sections = sections_for_hypothesis(exe)
     assert sections is not None
     assert {"ioc_catalog", "app_catalog", "artifact_inference"} <= sections
 
 
-def test_sections_for_hypothesis_no_signal_returns_none() -> None:
+def testsections_for_hypothesis_no_signal_returns_none() -> None:
     """No event IDs and no entities → None (full playbook, backward safe)."""
-    from forensia.ai.prompt_playbook import _sections_for_hypothesis
+    from forensia.ai.prompt_playbook import sections_for_hypothesis
     from forensia.core.session import Hypothesis
 
-    assert _sections_for_hypothesis(Hypothesis(id="H-003", description="x")) is None
+    assert sections_for_hypothesis(Hypothesis(id="H-003", description="x")) is None

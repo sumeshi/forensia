@@ -602,3 +602,6 @@ def _phase_interpretation(row: dict[str, Any]) -> str:
         return "Log stop/clear candidates detected; check the actor and surrounding events at the same time"
     return "Notable events clustered on this day; correlate with surrounding file and execution traces"
 
+antiforensic_rows = _antiforensic_rows
+execution_rows = _execution_rows
+host_summary_rows = _host_summary_rows

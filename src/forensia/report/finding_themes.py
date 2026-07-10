@@ -273,3 +273,7 @@ def _build_recommendations_table(db: CaseDB) -> list[dict[str, Any]]:
 
     return rows
 
+
+build_recommendations_table = _build_recommendations_table
+finding_theme_counts = _finding_theme_counts
+signal_finding_rows = _signal_finding_rows

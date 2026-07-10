@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -53,10 +54,24 @@ from forensia.core.memory import MemoryManager
 from forensia.core.progress_event import progress_event
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
-from forensia.report.writer import (
-    REPORT_KEYPOINTS,
-)
+from forensia.report.keypoint_catalog import REPORT_KEYPOINTS
 from forensia.rules.loader import _get_rule_cache
+
+
+@dataclass(slots=True)
+class _BroadPlanContext:
+    state: SessionState
+    db: CaseDB
+    session_id: str
+    base_url: str
+    model: str
+    llm_logger: LLMCallLogger
+    plan_cycle: int
+    observed_keypoints: list[dict[str, Any]]
+    observed_keypoint_labels: list[str]
+    emit_fn: Callable[..., None] | None
+    llm_status_fn: Callable[[str], None]
+    case_profile_str: str | None
 
 
 def _normalize_hypothesis_tokens(text: str) -> set[str]:
@@ -232,6 +247,211 @@ def _parse_hypothesis_from_drafter(parsed: dict[str, Any]) -> Hypothesis | None:
         return None
 
 
+def _broad_plan_observed_labels(
+    observed_keypoints: list[dict[str, Any]]
+) -> list[str]:
+    return [
+        f"{item['keypoint']} (rows={item['row_count']})" for item in observed_keypoints
+    ]
+
+
+async def _identify_broad_plan_gaps(ctx: _BroadPlanContext) -> list[dict[str, Any]]:
+    observed_kp_strs = (
+        ctx.observed_keypoint_labels
+        or _observed_keypoints_from_findings(ctx.state.findings_snapshot)
+    )
+    uncovered_keypoints = _compute_uncovered_keypoints(
+        observed_kp_strs,
+        ctx.state.active_hypotheses,
+        ctx.state.resolved_hypotheses,
+        proposed_counts=ctx.state.proposed_keypoints,
+    )
+    active_hypotheses_slim = [
+        {"id": h.id, "description": h.description, "verdict": h.verdict}
+        for h in ctx.state.active_hypotheses[:10]
+    ]
+    gap_msgs, gap_schema = build_gap_identifier_messages(
+        observed_keypoints=ctx.observed_keypoints,
+        uncovered_keypoints=uncovered_keypoints,
+        active_hypotheses_slim=active_hypotheses_slim,
+        case_profile=ctx.case_profile_str,
+    )
+    gap_parsed = await _call_with_outage_recovery(
+        llm_gateway.request_llm_json,
+        base_url=ctx.base_url,
+        model=ctx.model,
+        messages=gap_msgs,
+        json_schema=gap_schema,
+        status_callback=ctx.llm_status_fn,
+        audit_callback=lambda msgs, out, parsed: ctx.llm_logger.write(
+            iteration=ctx.plan_cycle,
+            phase="plan-broad-gap",
+            input_messages=msgs,
+            output=parsed,
+            model=ctx.model,
+            base_url=ctx.base_url,
+        ),
+    )
+    gap_areas = gap_parsed.get("gap_areas", [])
+    for gap in gap_areas:
+        kpid = gap.get("keypoint_id", "")
+        if kpid:
+            ctx.state.proposed_keypoints[kpid] = (
+                ctx.state.proposed_keypoints.get(kpid, 0) + 1
+            )
+
+    valid_gap_areas = [
+        g for g in gap_areas if g.get("keypoint_id") in REPORT_KEYPOINTS
+    ]
+    if len(valid_gap_areas) < len(gap_areas):
+        _log(
+            "PLAN",
+            f"gap_identifier invented {len(gap_areas) - len(valid_gap_areas)} non-existent keypoint names, dropped",
+        )
+    gap_areas = valid_gap_areas
+
+    available_slots = max(0, MAX_ACTIVE_HYPOTHESES - len(ctx.state.active_hypotheses))
+    max_gap_areas = max(2, min(4, available_slots))
+    if len(gap_areas) > max_gap_areas:
+        gap_areas = gap_areas[:max_gap_areas]
+    return gap_areas
+
+
+def _rank_broad_plan_rules(gap_areas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rule_cache = _get_rule_cache()
+    all_rule_models = list(rule_cache.values())
+    all_gap_kp_text = " ".join(str(g.get("keypoint_id", "")) for g in gap_areas)
+    all_gap_tokens: set[str] = (
+        set(re.findall(r"[a-z0-9]+", all_gap_kp_text.lower()))
+        if all_gap_kp_text
+        else set()
+    )
+    profile_eids = get_profile_event_ids() or set()
+
+    def _rule_relevance_score(rule: Any) -> float:
+        score = 0.0
+        rule_text = f"{rule.id} {rule.title} {' '.join(rule.tags)}".lower()
+        rule_tokens = set(re.findall(r"[a-z0-9]+", rule_text))
+        if all_gap_tokens and rule_tokens:
+            overlap = len(all_gap_tokens & rule_tokens)
+            score += overlap / max(len(all_gap_tokens), 1)
+        rule_event_ids: set[int] = set()
+        for corr in getattr(rule, "correlate_with", []) or []:
+            rule_event_ids.update(getattr(corr, "event_ids", []) or [])
+        if profile_eids and rule_event_ids:
+            intersection = len(rule_event_ids & profile_eids)
+            score += intersection / max(len(rule_event_ids), 1) * 0.5
+        return score
+
+    scored = sorted(all_rule_models, key=_rule_relevance_score, reverse=True)
+    return [rule.model_dump() for rule in scored[:5]]
+
+
+async def _draft_broad_plan_hypotheses(
+    ctx: _BroadPlanContext,
+    gap_areas: list[dict[str, Any]],
+    available_rules: list[dict[str, Any]],
+) -> list[Hypothesis]:
+    drafted_hypotheses: list[Hypothesis] = []
+    for gap in gap_areas:
+        h_msgs, h_schema = build_hypothesis_drafter_messages(
+            gap, available_rules, case_profile=ctx.case_profile_str
+        )
+        h_parsed = await _call_with_outage_recovery(
+            llm_gateway.request_llm_json,
+            base_url=ctx.base_url,
+            model=ctx.model,
+            messages=h_msgs,
+            json_schema=h_schema,
+            status_callback=ctx.llm_status_fn,
+            audit_callback=lambda msgs, out, parsed: ctx.llm_logger.write(
+                iteration=ctx.plan_cycle,
+                phase="plan-broad-draft",
+                input_messages=msgs,
+                output=parsed,
+                model=ctx.model,
+                base_url=ctx.base_url,
+            ),
+        )
+        hyp = _parse_hypothesis_from_drafter(h_parsed)
+        if hyp:
+            kpid = gap.get("keypoint_id", "")
+            if kpid:
+                hyp.target_keypoint_id = kpid
+            hyp.id = f"draft-{ctx.plan_cycle}-{len(drafted_hypotheses) + 1}"
+            drafted_hypotheses.append(hyp)
+    return drafted_hypotheses
+
+
+def _admit_broad_plan_hypotheses(
+    ctx: _BroadPlanContext, drafted_hypotheses: list[Hypothesis]
+) -> None:
+    admitted = []
+    for hyp in drafted_hypotheses:
+        ok, reason = admit_new_hypothesis(hyp, ctx.state)
+        if ok:
+            admitted.append(hyp)
+        else:
+            _log(
+                "HYPOTHESIS",
+                f"broad_plan rejected: '{hyp.description[:80]}' reason={reason}",
+            )
+    ctx.state.active_hypotheses = _merge_active_hypotheses(
+        db=ctx.db,
+        current=ctx.state.active_hypotheses,
+        updates=admitted,
+        resolved=ctx.state.resolved_hypotheses,
+        session_id=ctx.session_id,
+        origin="broad_plan",
+    )
+
+
+def _save_broad_plan_results(
+    ctx: _BroadPlanContext,
+    plan_input: dict[str, Any],
+    gap_areas: list[dict[str, Any]],
+    drafted_hypotheses: list[Hypothesis],
+) -> None:
+    _save_step(
+        db=ctx.db,
+        session_id=ctx.session_id,
+        iteration=ctx.plan_cycle,
+        phase="plan-broad",
+        hypothesis_id=None,
+        input_json=plan_input,
+        output_json={
+            "gap_areas": gap_areas,
+            "hypotheses": [h.model_dump() for h in drafted_hypotheses],
+        },
+    )
+    _save_step(
+        db=ctx.db,
+        session_id=ctx.session_id,
+        iteration=ctx.plan_cycle,
+        phase="plan-broad-audit",
+        hypothesis_id=None,
+        input_json={"hypotheses": [item.model_dump() for item in drafted_hypotheses]},
+        output_json={
+            "audits": _audit_broad_plan_hypotheses(ctx.state, drafted_hypotheses)
+        },
+    )
+
+
+def _emit_broad_plan_result(
+    ctx: _BroadPlanContext, drafted_hypotheses: list[Hypothesis], stop_flag: bool
+) -> None:
+    _log(
+        "PLAN",
+        f"+{len(drafted_hypotheses)} new hypotheses (active={len(ctx.state.active_hypotheses)}, stop={stop_flag})",
+    )
+    if ctx.emit_fn:
+        ctx.emit_fn(
+            "investigate/plan",
+            f"[plan] new_hypotheses={len(drafted_hypotheses)} active={len(ctx.state.active_hypotheses)}",
+            iteration=ctx.plan_cycle,
+        )
+
+
 async def _run_broad_plan_step(
     state: SessionState,
     db: CaseDB,
@@ -246,192 +466,32 @@ async def _run_broad_plan_step(
     case_profile_str: str | None = None,
 ) -> bool:
     """Execute broad planning step (2-stage: gap_identifier → hypothesis_drafter). Returns stop flag."""
-    observed_keypoint_labels = [
-        f"{item['keypoint']} (rows={item['row_count']})" for item in observed_keypoints
-    ]
+    observed_keypoint_labels = _broad_plan_observed_labels(observed_keypoints)
     plan_input = state.model_dump()
+    ctx = _BroadPlanContext(
+        state=state,
+        db=db,
+        session_id=session_id,
+        base_url=base_url,
+        model=model,
+        llm_logger=llm_logger,
+        plan_cycle=plan_cycle,
+        observed_keypoints=observed_keypoints,
+        observed_keypoint_labels=observed_keypoint_labels,
+        emit_fn=emit_fn,
+        llm_status_fn=llm_status_fn,
+        case_profile_str=case_profile_str,
+    )
     try:
-        # 1) gap_identifier — identify which keypoints lack hypothesis coverage
-        observed_kp_strs = (
-            observed_keypoint_labels
-            or _observed_keypoints_from_findings(state.findings_snapshot)
+        gap_areas = await _identify_broad_plan_gaps(ctx)
+        available_rules = _rank_broad_plan_rules(gap_areas)
+        drafted_hypotheses = await _draft_broad_plan_hypotheses(
+            ctx, gap_areas, available_rules
         )
-        uncovered_keypoints = _compute_uncovered_keypoints(
-            observed_kp_strs,
-            state.active_hypotheses,
-            state.resolved_hypotheses,
-            proposed_counts=state.proposed_keypoints,
-        )
-        active_hypotheses_slim = [
-            {"id": h.id, "description": h.description, "verdict": h.verdict}
-            for h in state.active_hypotheses[:10]
-        ]
-        gap_msgs, gap_schema = build_gap_identifier_messages(
-            observed_keypoints=observed_keypoints,
-            uncovered_keypoints=uncovered_keypoints,
-            active_hypotheses_slim=active_hypotheses_slim,
-            case_profile=case_profile_str,
-        )
-        gap_parsed = await _call_with_outage_recovery(
-            llm_gateway.request_llm_json,
-            base_url=base_url,
-            model=model,
-            messages=gap_msgs,
-            json_schema=gap_schema,
-            status_callback=llm_status_fn,
-            audit_callback=lambda msgs, out, parsed: llm_logger.write(
-                iteration=plan_cycle,
-                phase="plan-broad-gap",
-                input_messages=msgs,
-                output=parsed,
-                model=model,
-                base_url=base_url,
-            ),
-        )
-        gap_areas = gap_parsed.get("gap_areas", [])
-        # Track per-keypoint proposal history for round-robin coverage
-        for gap in gap_areas:
-            kpid = gap.get("keypoint_id", "")
-            if kpid:
-                state.proposed_keypoints[kpid] = (
-                    state.proposed_keypoints.get(kpid, 0) + 1
-                )
-        valid_gap_areas = [
-            g for g in gap_areas if g.get("keypoint_id") in REPORT_KEYPOINTS
-        ]
-        if len(valid_gap_areas) < len(gap_areas):
-            _log(
-                "PLAN",
-                f"gap_identifier invented {len(gap_areas) - len(valid_gap_areas)} non-existent keypoint names, dropped",
-            )
-        gap_areas = valid_gap_areas
-
-        # R3-08: Cap gap_areas to match investigation throughput. Drafting more
-        # hypotheses than the loop can investigate only pads the Gaps table with
-        # "not started" rows, so draft at most what fits into the active cap
-        # (always >=2 so replacements keep flowing when the set is full).
-        available_slots = max(0, MAX_ACTIVE_HYPOTHESES - len(state.active_hypotheses))
-        max_gap_areas = max(2, min(4, available_slots))
-        if len(gap_areas) > max_gap_areas:
-            gap_areas = gap_areas[:max_gap_areas]
-
-        # 2) hypothesis_drafter — draft one hypothesis per gap area
-        rule_cache = _get_rule_cache()
-        all_rule_models = list(rule_cache.values())
-        # T-09: Deterministic relevance ranking — score rules by token overlap with
-        # all gap keypoint names and event ID intersection with case profile
-        _all_gap_kp_text = " ".join(str(g.get("keypoint_id", "")) for g in gap_areas)
-        _all_gap_tokens: set[str] = (
-            set(re.findall(r"[a-z0-9]+", _all_gap_kp_text.lower()))
-            if _all_gap_kp_text
-            else set()
-        )
-        _profile_eids = get_profile_event_ids() or set()
-
-        def _rule_relevance_score(rule: Any) -> float:
-            score = 0.0
-            rule_text = f"{rule.id} {rule.title} {' '.join(rule.tags)}".lower()
-            rule_tokens = set(re.findall(r"[a-z0-9]+", rule_text))
-            if _all_gap_tokens and rule_tokens:
-                overlap = len(_all_gap_tokens & rule_tokens)
-                score += overlap / max(len(_all_gap_tokens), 1)
-            rule_event_ids: set[int] = set()
-            for corr in getattr(rule, "correlate_with", []) or []:
-                rule_event_ids.update(getattr(corr, "event_ids", []) or [])
-            if _profile_eids and rule_event_ids:
-                intersection = len(rule_event_ids & _profile_eids)
-                score += intersection / max(len(rule_event_ids), 1) * 0.5
-            return score
-
-        scored = sorted(all_rule_models, key=_rule_relevance_score, reverse=True)
-        available_rules = [r.model_dump() for r in scored[:5]]
-        drafted_hypotheses: list[Hypothesis] = []
-        for gap in gap_areas:
-            h_msgs, h_schema = build_hypothesis_drafter_messages(
-                gap, available_rules, case_profile=case_profile_str
-            )
-            h_parsed = await _call_with_outage_recovery(
-                llm_gateway.request_llm_json,
-                base_url=base_url,
-                model=model,
-                messages=h_msgs,
-                json_schema=h_schema,
-                status_callback=llm_status_fn,
-                audit_callback=lambda msgs, out, parsed: llm_logger.write(
-                    iteration=plan_cycle,
-                    phase="plan-broad-draft",
-                    input_messages=msgs,
-                    output=parsed,
-                    model=model,
-                    base_url=base_url,
-                ),
-            )
-            hyp = _parse_hypothesis_from_drafter(h_parsed)
-            if hyp:
-                kpid = gap.get("keypoint_id", "")
-                if kpid:
-                    hyp.target_keypoint_id = kpid
-                # Unique placeholder id per draft: _merge_active_hypotheses aliases
-                # by incoming id, so a shared "draft" id collapses all but the
-                # first drafted hypothesis of the cycle into one record.
-                hyp.id = f"draft-{plan_cycle}-{len(drafted_hypotheses) + 1}"
-                drafted_hypotheses.append(hyp)
-
-        # 3) admission gate + merge  (G-5: unified gate replaces _dedup_new_hypotheses)
-        admitted = []
-        for hyp in drafted_hypotheses:
-            ok, reason = admit_new_hypothesis(hyp, state)
-            if ok:
-                admitted.append(hyp)
-            else:
-                _log(
-                    "HYPOTHESIS",
-                    f"broad_plan rejected: '{hyp.description[:80]}' reason={reason}",
-                )
-        state.active_hypotheses = _merge_active_hypotheses(
-            db=db,
-            current=state.active_hypotheses,
-            updates=admitted,
-            resolved=state.resolved_hypotheses,
-            session_id=session_id,
-            origin="broad_plan",
-        )
+        _admit_broad_plan_hypotheses(ctx, drafted_hypotheses)
         stop_flag = not bool(gap_areas)
-        _save_step(
-            db=db,
-            session_id=session_id,
-            iteration=plan_cycle,
-            phase="plan-broad",
-            hypothesis_id=None,
-            input_json=plan_input,
-            output_json={
-                "gap_areas": gap_areas,
-                "hypotheses": [h.model_dump() for h in drafted_hypotheses],
-            },
-        )
-        _save_step(
-            db=db,
-            session_id=session_id,
-            iteration=plan_cycle,
-            phase="plan-broad-audit",
-            hypothesis_id=None,
-            input_json={
-                "hypotheses": [item.model_dump() for item in drafted_hypotheses]
-            },
-            output_json={
-                "audits": _audit_broad_plan_hypotheses(state, drafted_hypotheses)
-            },
-        )
-        _log(
-            "PLAN",
-            f"+{len(drafted_hypotheses)} new hypotheses (active={len(state.active_hypotheses)}, stop={stop_flag})",
-        )
-        if emit_fn:
-            emit_fn(
-                "investigate/plan",
-                f"[plan] new_hypotheses={len(drafted_hypotheses)} active={len(state.active_hypotheses)}",
-                iteration=plan_cycle,
-            )
+        _save_broad_plan_results(ctx, plan_input, gap_areas, drafted_hypotheses)
+        _emit_broad_plan_result(ctx, drafted_hypotheses, stop_flag)
         return stop_flag
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code >= 500:
@@ -584,4 +644,3 @@ async def _run_cycle_body(
                 cycle_progress = True
 
     return broad_plan_stop, cycle_progress, focus_sections, report_before
-

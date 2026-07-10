@@ -19,17 +19,17 @@ from pathlib import Path
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.report.finding_themes import (
-    _build_recommendations_table,
-    _finding_theme_counts,
-    _signal_finding_rows,
+    build_recommendations_table,
+    finding_theme_counts,
+    signal_finding_rows,
 )
-from forensia.report.gap_tables import _build_evidence_gaps_table
+from forensia.report.gap_tables import build_evidence_gaps_table
 from forensia.report.ranking import (
     audit_packaged_report_templates,
     load_top_findings_priority_keywords,
 )
-from forensia.report.report_brief import _query_top_findings
-from forensia.report.summary_rows import _antiforensic_rows
+from forensia.report.report_brief import query_top_findings
+from forensia.report.summary_rows import antiforensic_rows
 
 
 def _insert_finding(
@@ -93,11 +93,11 @@ class TestFindingThemeCountsConsistency(unittest.TestCase):
                     evidence=[{"evidence_id": "evtx-99", "computer": "HOST-A"}],
                 )
 
-                theme_counts = _finding_theme_counts(db)
+                theme_counts = finding_theme_counts(db)
                 self.assertEqual(theme_counts.get("explicit_credentials"), 5)
 
-                key_findings = _signal_finding_rows(db, 8)
-                action_plan = _build_recommendations_table(db)
+                key_findings = signal_finding_rows(db, 8)
+                action_plan = build_recommendations_table(db)
 
         key_findings_row = next(
             r
@@ -141,7 +141,7 @@ class TestActionPlanIsClientFacing(unittest.TestCase):
                     tags=["benign-context:loopback-local-auth"],
                     evidence=[{"evidence_id": "evtx-1", "computer": "HOST-A"}],
                 )
-                rows = _build_recommendations_table(db)
+                rows = build_recommendations_table(db)
 
         for row in rows:
             text = " ".join(
@@ -162,7 +162,7 @@ class TestActionPlanIsClientFacing(unittest.TestCase):
                     tags=["antiforensic"],
                     evidence=[{"evidence_id": "prefetch-cleaner-1"}],
                 )
-                rows = _build_recommendations_table(db)
+                rows = build_recommendations_table(db)
 
         action = rows[0]["action"]
         self.assertIn("cleanup-tool execution time", action)
@@ -183,7 +183,7 @@ class TestEvidenceGapsAreForensicOnly(unittest.TestCase):
                     VALUES ('H-001', 'unfinished hypothesis', 'active')
                     """
                 )
-                rows = _build_evidence_gaps_table(db)
+                rows = build_evidence_gaps_table(db)
 
         text = " ".join(str(row) for row in rows).lower()
         self.assertNotIn("resolve or refute outstanding hypotheses", text)
@@ -214,7 +214,7 @@ class TestAntiforensicTableDeduplication(unittest.TestCase):
                             "2015-03-22 14:38:16",
                         ),
                     )
-                rows = _antiforensic_rows(db)
+                rows = antiforensic_rows(db)
 
         artifact_rows = [r for r in rows if r.get("type") == "tool artifact"]
         self.assertEqual(1, len(artifact_rows))
@@ -267,7 +267,7 @@ class TestLocalMachineAccount4648Demotion(unittest.TestCase):
                     ],
                 )
 
-                top_findings = _query_top_findings(db, 8)
+                top_findings = query_top_findings(db, 8)
 
         titles = [item["title"] for item in top_findings]
         # The cross-host machine-account finding ranks above the self-host one.
@@ -332,7 +332,7 @@ class TestLocalMachineAccount4648Demotion(unittest.TestCase):
                         }
                     ],
                 )
-                top_findings = _query_top_findings(db, 8)
+                top_findings = query_top_findings(db, 8)
 
         titles = [item["title"] for item in top_findings]
         eraser_idx = titles.index("Anti-forensic tool detected: ERASER.EXE")
@@ -404,7 +404,7 @@ class TestTopFindingsRankingIsCaseAgnostic(unittest.TestCase):
                     attack="[]",
                 )
 
-                top = _query_top_findings(db, 8)
+                top = query_top_findings(db, 8)
 
         titles = [item["title"] for item in top]
         self.assertEqual(titles[0], "Mass file encryption consistent with ransomware")
@@ -475,7 +475,7 @@ class TestTopFindingsRankingPolicyFromTemplate(unittest.TestCase):
                 )
 
                 # Core default (no policy): severity wins.
-                default_titles = [r["title"] for r in _query_top_findings(db)]
+                default_titles = [r["title"] for r in query_top_findings(db)]
 
                 # Policy declared in the overview template's frontmatter: the 4648
                 # narrative tier leads despite being lower severity.
@@ -485,7 +485,7 @@ class TestTopFindingsRankingPolicyFromTemplate(unittest.TestCase):
                 keywords = load_top_findings_priority_keywords(tdir)
                 policy_titles = [
                     r["title"]
-                    for r in _query_top_findings(db, priority_keywords=keywords)
+                    for r in query_top_findings(db, priority_keywords=keywords)
                 ]
 
         self.assertEqual(

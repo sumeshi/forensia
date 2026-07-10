@@ -7,7 +7,7 @@ import duckdb
 
 from forensia.core.case import Case, detect_epochs
 from forensia.db.database import CaseDB
-from forensia.report.summary_rows import _host_summary_rows
+from forensia.report.summary_rows import host_summary_rows
 
 
 def _create_db_with_events(rows: list[tuple]) -> duckdb.DuckDBPyConnection:
@@ -120,8 +120,8 @@ class HostEpochDetectionTests(unittest.TestCase):
                 self.assertEqual(tr["earliest"], "2015-03-25 10:00:00")
                 self.assertEqual(tr["latest"], "2026-03-02 10:00:00")
 
-    def test_host_summary_rows_annotated(self) -> None:
-        """_host_summary_rows includes note for hosts with pre-deployment clusters."""
+    def testhost_summary_rows_annotated(self) -> None:
+        """host_summary_rows includes note for hosts with pre-deployment clusters."""
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -135,7 +135,7 @@ class HostEpochDetectionTests(unittest.TestCase):
                     "('evtx-b3', 4624, '2010-06-03 08:00:00', 'HOST-B', 'Security'),"
                     "('evtx-b4', 4624, '2015-03-25 10:00:00', 'HOST-B', 'Security')"
                 )
-                rows = _host_summary_rows(db)
+                rows = host_summary_rows(db)
                 # Host A should be active
                 host_a = next(r for r in rows if str(r.get("host")).upper() == "HOST-A")
                 self.assertIn("note", host_a)

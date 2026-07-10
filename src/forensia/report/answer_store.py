@@ -11,9 +11,13 @@ from typing import Any
 
 from forensia.core.case import Case
 from forensia.core.textutil import (
-    is_local_ingest_path,
-    path_basename,
-    sanitize_ingest_path,
+    is_local_ingest_path as _core_is_local_ingest_path,
+)
+from forensia.core.textutil import (
+    path_basename as _core_path_basename,
+)
+from forensia.core.textutil import (
+    sanitize_ingest_path as _core_sanitize_ingest_path,
 )
 from forensia.db.database import CaseDB
 from forensia.db.query import normalize_value
@@ -532,15 +536,24 @@ def _prefetch_executable_from_filename(file_name: Any) -> str:
 # sanitize finding evidence without a report-layer import. These aliases
 # keep the established local names.
 def _is_local_ingest_path(path: Any) -> bool:
-    return is_local_ingest_path(_text(path))
+    return _core_is_local_ingest_path(_text(path))
 
 
 def _strip_path_basename(path: Any) -> str:
-    return path_basename(_text(path))
+    return _core_path_basename(_text(path))
 
 
 def _sanitize_prefetch_path(path: Any) -> str:
-    return sanitize_ingest_path(_text(path))
+    return _core_sanitize_ingest_path(_text(path))
+
+
+add_local_time_columns = _add_local_time_columns
+is_local_ingest_path = _is_local_ingest_path
+normalize_structured_answer = _normalize_structured_answer
+render_answer_block = _render_answer_block
+render_structured_answer_markdown = _render_structured_answer_markdown
+sanitize_prefetch_path = _sanitize_prefetch_path
+strip_path_basename = _strip_path_basename
 
 
 def _human_user_predicate(column: str = "target_user") -> str:
@@ -552,4 +565,3 @@ def _human_user_predicate(column: str = "target_user") -> str:
         AND UPPER({column}) NOT LIKE 'DWM-%'
         AND UPPER({column}) NOT LIKE 'UMFD-%'
     """
-

@@ -431,3 +431,6 @@ def _has_benign_context_tag(row: dict[str, Any]) -> bool:
         return any("benign-context:" in str(t).lower() for t in tags)
     return False
 
+
+build_report_brief = _build_report_brief
+query_top_findings = _query_top_findings

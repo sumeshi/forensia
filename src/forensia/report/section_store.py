@@ -481,3 +481,6 @@ def _dump_section_evidence_json(
         json.dumps(rows, ensure_ascii=False, default=str, indent=2), encoding="utf-8"
     )
 
+
+dump_section_questions_json = _dump_section_questions_json
+extract_claim_texts = _extract_claim_texts

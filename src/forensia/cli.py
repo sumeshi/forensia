@@ -5,6 +5,7 @@ names from forensia.cli.
 """
 
 import asyncio
+import subprocess
 import sys
 from pathlib import Path
 
@@ -51,6 +52,10 @@ from forensia.report_templates import (
 from forensia.web import create_app
 
 app = typer.Typer(help="forensia incident response tool")
+
+
+def _project_root() -> Path:
+    return Path(__file__).parent.parent.parent
 
 
 @app.command("templates-export", hidden=True)
@@ -320,23 +325,13 @@ def investigate(
     print(f"Investigation complete. Report: {report_path}")
 
 
-@app.command(hidden=True)
-def doctor() -> None:
-    """Run all health checks: schema coverage, playbook drift, verdict taxonomy."""
-    checks: list[tuple[str, bool]] = []
-
+def _doctor_schema_coverage_check() -> tuple[str, bool]:
     _status("Schema coverage audit...")
     try:
-        import subprocess
-
         result = subprocess.run(
             [
                 sys.executable,
-                str(
-                    Path(__file__).parent.parent.parent
-                    / "scripts"
-                    / "audit_schema_coverage.py"
-                ),
+                str(_project_root() / "scripts" / "audit_schema_coverage.py"),
                 "--strict",
             ],
             capture_output=True,
@@ -344,25 +339,23 @@ def doctor() -> None:
             timeout=60,
         )
         ok = result.returncode == 0
-        checks.append(("Schema coverage", ok))
         if ok:
             print("  ✓ All event IDs and question types covered")
         else:
             print(f"  ✗ Uncovered entries:\n{result.stdout}")
+        return "Schema coverage", ok
     except Exception as exc:
-        checks.append(("Schema coverage", False))
         print(f"  ✗ Error: {exc}")
+        return "Schema coverage", False
 
+
+def _doctor_playbook_drift_check() -> tuple[str, bool]:
     _status("Playbook MD/YAML drift check...")
     try:
         result = subprocess.run(
             [
                 sys.executable,
-                str(
-                    Path(__file__).parent.parent.parent
-                    / "scripts"
-                    / "regenerate_playbook.py"
-                ),
+                str(_project_root() / "scripts" / "regenerate_playbook.py"),
                 "--check",
             ],
             capture_output=True,
@@ -370,38 +363,40 @@ def doctor() -> None:
             timeout=30,
         )
         ok = result.returncode == 0
-        checks.append(("Playbook drift", ok))
         if ok:
             print("  ✓ All playbook files up to date")
         else:
             print(f"  ✗ Drift detected:\n{result.stdout}")
+        return "Playbook drift", ok
     except Exception as exc:
-        checks.append(("Playbook drift", False))
         print(f"  ✗ Error: {exc}")
+        return "Playbook drift", False
 
+
+def _doctor_import_layer_check() -> tuple[str, bool]:
     _status("Import layer contract (R4)...")
     try:
         result = subprocess.run(
             [
                 sys.executable,
-                str(
-                    Path(__file__).parent.parent.parent / "scripts" / "check_imports.py"
-                ),
+                str(_project_root() / "scripts" / "check_imports.py"),
             ],
             capture_output=True,
             text=True,
             timeout=30,
         )
         ok = result.returncode == 0
-        checks.append(("Import layers", ok))
         if ok:
             print("  ✓ No forbidden import edges")
         else:
             print(f"  ✗ Layer violations:\n{result.stdout}")
+        return "Import layers", ok
     except Exception as exc:
-        checks.append(("Import layers", False))
         print(f"  ✗ Error: {exc}")
+        return "Import layers", False
 
+
+def _doctor_verdict_taxonomy_check() -> tuple[str, bool]:
     _status("Verdict taxonomy enforcement...")
     try:
         from forensia.core.verdicts import valid_verdicts
@@ -438,7 +433,7 @@ def doctor() -> None:
                                 if name == "assert_valid_verdict":
                                     enforcement_files.append(
                                         os.path.relpath(
-                                            path, Path(__file__).parent.parent.parent
+                                            path, _project_root()
                                         )
                                     )
                                     break
@@ -446,21 +441,22 @@ def doctor() -> None:
                         pass
         enforcement_count = len(enforcement_files)
         ok = enforcement_count >= 4
-        checks.append(("Verdict enforcement", ok))
         print(
             f"  {'✓' if ok else '✗'} {enforcement_count} files use assert_valid_verdict: {enforcement_files}"
         )
+        return "Verdict enforcement", ok
     except Exception as exc:
-        checks.append(("Verdict enforcement", False))
         print(f"  ✗ Error: {exc}")
+        return "Verdict enforcement", False
 
+
+def _doctor_report_template_policy_check() -> tuple[str, bool]:
     _status("Report template policy...")
     try:
         from forensia.report.ranking import audit_packaged_report_templates
 
         problems = audit_packaged_report_templates()
         ok = not problems
-        checks.append(("Report template policy", ok))
         if ok:
             print("  ✓ Packaged templates carry no case-specific ranking policy")
         else:
@@ -468,10 +464,13 @@ def doctor() -> None:
                 "  ✗ Case-specific policy / malformed frontmatter in packaged "
                 "templates:\n" + "\n".join(f"      - {p}" for p in problems)
             )
+        return "Report template policy", ok
     except Exception as exc:
-        checks.append(("Report template policy", False))
         print(f"  ✗ Error: {exc}")
+        return "Report template policy", False
 
+
+def _doctor_report_validation_self_check() -> tuple[str, bool]:
     _status("Report output validation self-check...")
     try:
         from forensia.report.report_validation import validate_report
@@ -513,7 +512,6 @@ def doctor() -> None:
         # The validator should catch: thesis_alignment, verdict_contradiction,
         # local_path_leak (sample/ in body), and fallback_stub.
         ok = len(findings) >= 4
-        checks.append(("Report output validation", ok))
         if ok:
             names = [f.check_name for f in findings]
             print(
@@ -530,10 +528,13 @@ def doctor() -> None:
                     f"      [{f_item.severity}] {f_item.check_name}: "
                     f"{f_item.message}"
                 )
+        return "Report output validation", ok
     except Exception as exc:
-        checks.append(("Report output validation", False))
         print(f"  ✗ Error: {exc}")
+        return "Report output validation", False
 
+
+def _doctor_static_lint_check() -> tuple[str, bool]:
     _status("Static lint (undefined names, unused imports)...")
     try:
         # Runtime-only NameErrors (e.g. a constant referenced in a code path
@@ -546,19 +547,21 @@ def doctor() -> None:
             timeout=120,
         )
         if result.returncode != 0 and "No module named" in (result.stderr or ""):
-            checks.append(("Static lint", True))
             print("  ✓ ruff not installed — skipping (dev dependency)")
+            return "Static lint", True
         else:
             ok = result.returncode == 0
-            checks.append(("Static lint", ok))
             if ok:
                 print("  ✓ ruff check clean")
             else:
                 print(f"  ✗ Lint findings:\n{result.stdout[-500:]}")
+            return "Static lint", ok
     except Exception as exc:
-        checks.append(("Static lint", False))
         print(f"  ✗ Error: {exc}")
+        return "Static lint", False
 
+
+def _doctor_test_suite_check() -> tuple[str, bool]:
     _status("Test suite...")
     try:
         result = subprocess.run(
@@ -581,15 +584,17 @@ def doctor() -> None:
             result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
         )
         ok = result.returncode == 0
-        checks.append(("Test suite", ok))
         if ok:
             print(f"  ✓ {last_line}")
         else:
             print(f"  ✗ Failures:\n{result.stdout[-500:]}")
+        return "Test suite", ok
     except Exception as exc:
-        checks.append(("Test suite", False))
         print(f"  ✗ Error: {exc}")
+        return "Test suite", False
 
+
+def _finish_doctor_checks(checks: list[tuple[str, bool]]) -> None:
     print()
     total = len(checks)
     passed = sum(1 for _, ok in checks if ok)
@@ -602,6 +607,22 @@ def doctor() -> None:
             status_char = "✓" if ok else "✗"
             print(f"  {status_char} {name}")
     sys.exit(0 if failed == 0 else 1)
+
+
+@app.command(hidden=True)
+def doctor() -> None:
+    """Run all health checks: schema coverage, playbook drift, verdict taxonomy."""
+    checks = [
+        _doctor_schema_coverage_check(),
+        _doctor_playbook_drift_check(),
+        _doctor_import_layer_check(),
+        _doctor_verdict_taxonomy_check(),
+        _doctor_report_template_policy_check(),
+        _doctor_report_validation_self_check(),
+        _doctor_static_lint_check(),
+        _doctor_test_suite_check(),
+    ]
+    _finish_doctor_checks(checks)
 
 
 @app.command()
@@ -619,4 +640,3 @@ def serve(
 
 if __name__ == "__main__":
     app()
-

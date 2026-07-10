@@ -32,6 +32,27 @@ class RuleContext:
     refute_when: dict[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class _PlaybookCatalog:
+    events_data: dict[str | int, Any]
+    logon_types_data: dict[str | int, Any]
+    priority_events: list[Any]
+    schema_notes: dict[str, Any]
+    fp_guidance: dict[str, Any]
+    extractors: dict[str, Any]
+    app_mappings: dict[str, Any]
+    artifact_data: dict[str, Any]
+    ioc_data: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class _PlaybookBudgetResult:
+    section_entries: list[tuple[str, str]]
+    base_playbook: str
+    pre_budget_chars: int
+    dropped: list[str]
+
+
 @lru_cache(maxsize=1)
 def _get_cached_rules() -> list[Any]:
     """Load and cache all rules at module level to avoid repeated file I/O."""
@@ -378,117 +399,85 @@ def _sections_for_hypothesis(
     return sections
 
 
-def _dfir_playbook(
-    phase: str,
-    *,
-    event_ids: set[int] | None = None,
-    tables: set[str] | None = None,
-    sections: set[str] | None = None,
-) -> str:
-    """Generate DFIR investigator playbook narrative for the given phase.
+def _playbook_eid_sort_key(key: Any) -> int:
+    if isinstance(key, str) and key.isdigit():
+        return int(key)
+    if isinstance(key, (int, float)):
+        return int(key)
+    return 0
 
-    Phase is one of: 'broad_plan', 'hypothesis_plan', 'check', 'report_section',
-    'section_agent_plan', 'section_agent_check'.
 
-    Parameters
-    ----------
-    event_ids : optional set of ints
-        If provided, only those event IDs (union of case-present + hypothesis-referenced)
-        are rendered in the Event ID Reference section, capped at 40.
-        When None, all known event IDs are included.
-    tables : optional set of table names
-        If provided, the app/artifact/IOC sections are included only if a relevant
-        table is present in the case. None means include all (current behavior).
-    sections : optional set of str
-        If provided, only sections whose mapped key is in this set are included.
-        Valid keys: 'event_ids', 'logon_types', 'fp_guidance', 'schema',
-        'app_catalog', 'artifact_inference', 'ioc_catalog'.
-        When None, all sections are included (backward compatible).
+def _filter_playbook_events(
+    events_data: dict[str | int, Any], event_ids: set[int] | None
+) -> dict[str | int, Any]:
+    if event_ids is None or not isinstance(events_data, dict):
+        return events_data
+    filtered: dict[str | int, Any] = {}
+    for eid_key in sorted(events_data, key=_playbook_eid_sort_key):
+        eid_val = int(eid_key) if isinstance(eid_key, str) else int(eid_key)
+        if eid_val in event_ids:
+            filtered[eid_key] = events_data[eid_key]
+            if len(filtered) >= 40:
+                break
+    return filtered
 
-    Returns a narrative string optimized for weak LLMs.
-    """
-    from pathlib import Path
 
-    from forensia.config import get_system_prompt_budget_chars
-
+def _load_playbook_catalog(event_ids: set[int] | None) -> _PlaybookCatalog:
     yamls = _load_dfir_yamls()
-
     events_data = (
         yamls["event_ids"].get("events", {})
         if isinstance(yamls["event_ids"], dict)
         else {}
     )
-    logon_types_data = (
-        yamls["logon_types"].get("types", {})
-        if isinstance(yamls["logon_types"], dict)
-        else {}
-    )
-    priority_events = (
-        yamls["logon_types"].get("priority_events", [])
-        if isinstance(yamls["logon_types"], dict)
-        else []
-    )
-    schema_notes = (
-        yamls["evtx_events"].get("notes", {})
-        if isinstance(yamls["evtx_events"], dict)
-        else {}
-    )
-    fp_guidance = (
-        yamls["fp_rules"].get("reduction_guidance", {})
-        if isinstance(yamls["fp_rules"], dict)
-        else {}
-    )
-    extractors = (
-        yamls["evtx_events"].get("json_field_extractors", {})
-        if isinstance(yamls["evtx_events"], dict)
-        else {}
-    )
-    app_mappings = (
-        yamls["app_catalog"].get("mappings", {})
-        if isinstance(yamls["app_catalog"], dict)
-        else {}
-    )
-    artifact_data = (
-        yamls["artifact_inference"]
-        if isinstance(yamls["artifact_inference"], dict)
-        else {}
-    )
-    ioc_data = (
-        yamls["dfir_ioc_catalog"] if isinstance(yamls["dfir_ioc_catalog"], dict) else {}
+    events_data = _filter_playbook_events(events_data, event_ids)
+    return _PlaybookCatalog(
+        events_data=events_data,
+        logon_types_data=(
+            yamls["logon_types"].get("types", {})
+            if isinstance(yamls["logon_types"], dict)
+            else {}
+        ),
+        priority_events=(
+            yamls["logon_types"].get("priority_events", [])
+            if isinstance(yamls["logon_types"], dict)
+            else []
+        ),
+        schema_notes=(
+            yamls["evtx_events"].get("notes", {})
+            if isinstance(yamls["evtx_events"], dict)
+            else {}
+        ),
+        fp_guidance=(
+            yamls["fp_rules"].get("reduction_guidance", {})
+            if isinstance(yamls["fp_rules"], dict)
+            else {}
+        ),
+        extractors=(
+            yamls["evtx_events"].get("json_field_extractors", {})
+            if isinstance(yamls["evtx_events"], dict)
+            else {}
+        ),
+        app_mappings=(
+            yamls["app_catalog"].get("mappings", {})
+            if isinstance(yamls["app_catalog"], dict)
+            else {}
+        ),
+        artifact_data=(
+            yamls["artifact_inference"]
+            if isinstance(yamls["artifact_inference"], dict)
+            else {}
+        ),
+        ioc_data=(
+            yamls["dfir_ioc_catalog"]
+            if isinstance(yamls["dfir_ioc_catalog"], dict)
+            else {}
+        ),
     )
 
-    # -- Event-ID narrative filtering --
-    if event_ids is not None and isinstance(events_data, dict):
 
-        def _eid_sort_key(k: Any) -> int:
-            if isinstance(k, str) and k.isdigit():
-                return int(k)
-            if isinstance(k, (int, float)):
-                return int(k)
-            return 0
-
-        filtered: dict[str | int, Any] = {}
-        for eid_key in sorted(events_data, key=_eid_sort_key):
-            eid_val = int(eid_key) if isinstance(eid_key, str) else int(eid_key)
-            if eid_val in event_ids:
-                filtered[eid_key] = events_data[eid_key]
-                if len(filtered) >= 40:
-                    break
-        events_data = filtered
-
-    event_narrative = _render_event_narrative(events_data)
-    logon_narrative = _render_logon_narrative(logon_types_data)
-    priority_narrative = _render_priority_narrative(priority_events)
-    schema_narrative = _render_schema_narrative(schema_notes)
-    fp_narrative = _render_fp_narrative(fp_guidance)
-    extractor_narrative = _render_extractor_narrative(extractors)
-    app_narrative = _render_app_catalog_narrative(app_mappings)
-    artifact_narrative = _render_artifact_inference_narrative(artifact_data)
-    ioc_narrative = _render_ioc_catalog_narrative(ioc_data)
-
-    # Phase-aware sections. Planning phases (broad_plan / hypothesis_plan) don't
-    # need evidence-interpretation references; cutting them saves ~25% of the
-    # system prompt for those calls.
+def _playbook_include_flags(
+    phase: str, tables: set[str] | None
+) -> tuple[bool, bool, bool, bool]:
     planning_phases = {"broad_plan", "hypothesis_plan"}
     interpretation_phases = {"check", "report_section", "section_agent_check"}
     include_fp = phase in interpretation_phases
@@ -496,7 +485,6 @@ def _dfir_playbook(
     include_artifact_inference = phase in interpretation_phases
     include_ioc_catalog = phase in (interpretation_phases | {"section_agent_plan"})
 
-    # -- Table-scoped gating --
     has_mft_or_prefetch = tables is None or bool(
         tables
         & {"mft_entries", "mft_timeline", "prefetch_executions", "prefetch_timeline"}
@@ -506,8 +494,25 @@ def _dfir_playbook(
         include_app_catalog = include_app_catalog and has_evtx
         include_artifact_inference = include_artifact_inference and has_mft_or_prefetch
         include_ioc_catalog = include_ioc_catalog and has_mft_or_prefetch
+    return include_fp, include_app_catalog, include_artifact_inference, include_ioc_catalog
 
-    # Build section entries as (key, rendered_text) for budget enforcement
+
+def _build_playbook_section_entries(
+    catalog: _PlaybookCatalog, phase: str, tables: set[str] | None
+) -> list[tuple[str, str]]:
+    event_narrative = _render_event_narrative(catalog.events_data)
+    logon_narrative = _render_logon_narrative(catalog.logon_types_data)
+    priority_narrative = _render_priority_narrative(catalog.priority_events)
+    schema_narrative = _render_schema_narrative(catalog.schema_notes)
+    fp_narrative = _render_fp_narrative(catalog.fp_guidance)
+    extractor_narrative = _render_extractor_narrative(catalog.extractors)
+    app_narrative = _render_app_catalog_narrative(catalog.app_mappings)
+    artifact_narrative = _render_artifact_inference_narrative(catalog.artifact_data)
+    ioc_narrative = _render_ioc_catalog_narrative(catalog.ioc_data)
+    include_fp, include_app, include_artifact, include_ioc = _playbook_include_flags(
+        phase, tables
+    )
+
     section_entries: list[tuple[str, str]] = [
         (
             "preamble",
@@ -541,86 +546,110 @@ def _dfir_playbook(
                 f"## False-Positive Reduction Guidance\n{fp_narrative or 'No FP reduction guidance.'}",
             )
         )
-    if include_app_catalog:
+    if include_app:
         section_entries.append(
             (
                 "app",
                 f"## Application Catalog (process categorization)\n{app_narrative or 'No app catalog available.'}",
             )
         )
-    if include_artifact_inference:
+    if include_artifact:
         section_entries.append(
             (
                 "artifact",
                 f"## Artifact-to-Application Inference\n{artifact_narrative or 'No artifact inference data available.'}",
             )
         )
-    if include_ioc_catalog:
+    if include_ioc:
         section_entries.append(
             ("ioc", f"## IOC Catalog\n{ioc_narrative or 'No IOC catalog available.'}")
         )
+    return section_entries
 
-    # -- Section-key filtering (caller-specified) --
-    if sections is not None:
-        section_entries = [
-            (key, text)
-            for key, text in section_entries
-            if key == "preamble" or _SECTION_KEY_MAP.get(key, key) in sections
-        ]
 
-    base_playbook = "\n".join(text for _, text in section_entries) + "\n"
+def _filter_playbook_sections(
+    section_entries: list[tuple[str, str]], sections: set[str] | None
+) -> list[tuple[str, str]]:
+    if sections is None:
+        return section_entries
+    return [
+        (key, text)
+        for key, text in section_entries
+        if key == "preamble" or _SECTION_KEY_MAP.get(key, key) in sections
+    ]
 
-    # -- Budget enforcement --
-    budget = get_system_prompt_budget_chars()
+
+def _join_playbook_entries(section_entries: list[tuple[str, str]]) -> str:
+    return "\n".join(text for _, text in section_entries) + "\n"
+
+
+def _priority_event_ids(priority_events: list[Any]) -> list[int]:
+    priority_ids: list[int] = []
+    for entry in priority_events or []:
+        for eid in entry.get("event_ids", []) if isinstance(entry, dict) else []:
+            try:
+                eid_int = int(eid)
+            except TypeError, ValueError:
+                continue
+            if eid_int not in priority_ids:
+                priority_ids.append(eid_int)
+    return priority_ids
+
+
+def _truncate_events_to_priority(
+    section_entries: list[tuple[str, str]], catalog: _PlaybookCatalog
+) -> tuple[list[tuple[str, str]], bool]:
+    priority_ids = _priority_event_ids(catalog.priority_events)
+    if not priority_ids:
+        return section_entries, False
+    trimmed = {
+        key: value
+        for key, value in catalog.events_data.items()
+        if (int(key) if isinstance(key, str) and key.isdigit() else key) in priority_ids
+    }
+    if not trimmed or len(trimmed) >= len(catalog.events_data):
+        return section_entries, False
+    trimmed_narrative = _render_event_narrative(trimmed)
+    return [
+        (
+            key,
+            "## Event ID Reference (priority events only; full list omitted for budget)\n"
+            + trimmed_narrative,
+        )
+        if key == "events"
+        else (key, value)
+        for key, value in section_entries
+    ], True
+
+
+def _apply_playbook_budget(
+    *,
+    section_entries: list[tuple[str, str]],
+    catalog: _PlaybookCatalog,
+    event_ids: set[int] | None,
+    phase: str,
+    budget: int,
+) -> _PlaybookBudgetResult:
+    base_playbook = _join_playbook_entries(section_entries)
+    pre_budget_chars = len(base_playbook)
     dropped: list[str] = []
-    _pre_budget_chars = len(base_playbook)
 
-    # Step 1: if the Event ID Reference alone busts the budget (no case profile
-    # supplied, so no event-id filtering happened), shrink it to the events the
-    # declarative priority list marks as most important instead of letting the
-    # serial drop loop discard every guidance section just to remove this one.
     if (
         len(base_playbook) > budget
         and event_ids is None
-        and isinstance(events_data, dict)
+        and isinstance(catalog.events_data, dict)
     ):
-        priority_ids: list[int] = []
-        for entry in priority_events or []:
-            for eid in entry.get("event_ids", []) if isinstance(entry, dict) else []:
-                try:
-                    eid_int = int(eid)
-                except TypeError, ValueError:
-                    continue
-                if eid_int not in priority_ids:
-                    priority_ids.append(eid_int)
-        if priority_ids:
-            trimmed = {
-                key: value
-                for key, value in events_data.items()
-                if (int(key) if isinstance(key, str) and key.isdigit() else key)
-                in priority_ids
-            }
-            if trimmed and len(trimmed) < len(events_data):
-                trimmed_narrative = _render_event_narrative(trimmed)
-                section_entries = [
-                    (
-                        k,
-                        f"## Event ID Reference (priority events only; full list omitted for budget)\n{trimmed_narrative}",
-                    )
-                    if k == "events"
-                    else (k, v)
-                    for k, v in section_entries
-                ]
-                base_playbook = "\n".join(text for _, text in section_entries) + "\n"
-                dropped.append("events:truncated-to-priority")
+        section_entries, did_trim = _truncate_events_to_priority(section_entries, catalog)
+        if did_trim:
+            base_playbook = _join_playbook_entries(section_entries)
+            dropped.append("events:truncated-to-priority")
 
-    # Step 2: drop whole sections in priority order until under budget.
     if len(base_playbook) > budget:
         for key in _PLAYBOOK_SECTION_DROP_ORDER:
             if len(base_playbook) <= budget:
                 break
             section_entries = [(k, v) for k, v in section_entries if k != key]
-            base_playbook = "\n".join(text for _, text in section_entries) + "\n"
+            base_playbook = _join_playbook_entries(section_entries)
             dropped.append(key)
         if dropped:
             logging.info(
@@ -631,7 +660,17 @@ def _dfir_playbook(
                 dropped,
             )
 
-    # -- Phase-specific playbook loaded from external MD file --
+    return _PlaybookBudgetResult(
+        section_entries=section_entries,
+        base_playbook=base_playbook,
+        pre_budget_chars=pre_budget_chars,
+        dropped=dropped,
+    )
+
+
+def _load_phase_playbook(phase: str) -> str:
+    from pathlib import Path
+
     playbook_dir = Path(__file__).parent.parent / "rulepacks" / "_schema" / "playbook"
     phase_file = playbook_dir / f"{phase}.md"
     phase_narrative = ""
@@ -640,25 +679,31 @@ def _dfir_playbook(
             phase_narrative = phase_file.read_text(encoding="utf-8")
         except Exception:
             pass
-    phase_narrative = re.sub(
+    return re.sub(
         r"\n?<!-- AUTO-FROM: (?:event_ids|app_catalog)\.yaml -->.*?<!-- END-AUTO -->\n?",
         "\n",
         phase_narrative,
         flags=re.DOTALL,
     )
-    result = base_playbook + phase_narrative
 
-    # -- Telemetry --
-    section_sizes = {k: len(v) for k, v in section_entries}
+
+def _log_playbook_telemetry(
+    *,
+    phase: str,
+    sections: set[str] | None,
+    budget_result: _PlaybookBudgetResult,
+    result: str,
+) -> None:
+    section_sizes = {k: len(v) for k, v in budget_result.section_entries}
     if sections is not None:
         logging.debug(
             "[_dfir_playbook] phase=%s sections=%s pre_budget=%d post_budget=%d total=%d dropped=%s",
             phase,
             sorted(sections),
-            _pre_budget_chars,
-            len(base_playbook),
+            budget_result.pre_budget_chars,
+            len(budget_result.base_playbook),
             len(result),
-            dropped,
+            budget_result.dropped,
         )
     else:
         logging.debug(
@@ -666,8 +711,58 @@ def _dfir_playbook(
             phase,
             len(result),
             section_sizes,
-            dropped,
+            budget_result.dropped,
         )
+
+
+def _dfir_playbook(
+    phase: str,
+    *,
+    event_ids: set[int] | None = None,
+    tables: set[str] | None = None,
+    sections: set[str] | None = None,
+) -> str:
+    """Generate DFIR investigator playbook narrative for the given phase.
+
+    Phase is one of: 'broad_plan', 'hypothesis_plan', 'check', 'report_section',
+    'section_agent_plan', 'section_agent_check'.
+
+    Parameters
+    ----------
+    event_ids : optional set of ints
+        If provided, only those event IDs (union of case-present + hypothesis-referenced)
+        are rendered in the Event ID Reference section, capped at 40.
+        When None, all known event IDs are included.
+    tables : optional set of table names
+        If provided, the app/artifact/IOC sections are included only if a relevant
+        table is present in the case. None means include all (current behavior).
+    sections : optional set of str
+        If provided, only sections whose mapped key is in this set are included.
+        Valid keys: 'event_ids', 'logon_types', 'fp_guidance', 'schema',
+        'app_catalog', 'artifact_inference', 'ioc_catalog'.
+        When None, all sections are included (backward compatible).
+
+    Returns a narrative string optimized for weak LLMs.
+    """
+    from forensia.config import get_system_prompt_budget_chars
+
+    catalog = _load_playbook_catalog(event_ids)
+    section_entries = _build_playbook_section_entries(catalog, phase, tables)
+    section_entries = _filter_playbook_sections(section_entries, sections)
+    budget_result = _apply_playbook_budget(
+        section_entries=section_entries,
+        catalog=catalog,
+        event_ids=event_ids,
+        phase=phase,
+        budget=get_system_prompt_budget_chars(),
+    )
+    result = budget_result.base_playbook + _load_phase_playbook(phase)
+    _log_playbook_telemetry(
+        phase=phase,
+        sections=sections,
+        budget_result=budget_result,
+        result=result,
+    )
     return result
 
 
@@ -699,3 +794,8 @@ def _format_artifact_inference() -> str:
         lines.append("- (no artifact inference data loaded)")
     return "\n".join(lines) + "\n"
 
+PLAYBOOK_SECTION_DROP_ORDER = _PLAYBOOK_SECTION_DROP_ORDER
+dfir_playbook = _dfir_playbook
+load_dfir_yamls_cached = _load_dfir_yamls
+render_event_narrative = _render_event_narrative
+sections_for_hypothesis = _sections_for_hypothesis

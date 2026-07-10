@@ -538,3 +538,12 @@ def _quality_gate_section(
         if any(severe in gap for severe in _SEVERE_GATE_SUBSTRINGS):
             gated_confidence = min(gated_confidence, 0.2)
     return gated_gaps, gated_confidence
+
+
+GateContext = _GateCtx
+check_citation_token_no_finding_id = _check_citation_token_no_finding_id
+check_failure_spam = _check_failure_spam
+check_hedge_no_citation = _check_hedge_no_citation
+check_json_object_leak = _check_json_object_leak
+check_recommendations_strength = _check_recommendations_strength
+quality_gate_section = _quality_gate_section

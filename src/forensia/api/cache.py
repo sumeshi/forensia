@@ -25,7 +25,7 @@ from forensia.api.service import (
 )
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
-from forensia.report.writer import write_report_brief
+from forensia.report.report_brief import write_report_brief
 
 VOLATILE_SNAPSHOT_INTERVAL_S = 5.0
 

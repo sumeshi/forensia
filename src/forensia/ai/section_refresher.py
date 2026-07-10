@@ -22,21 +22,24 @@ from forensia.core.case import Case
 from forensia.core.memory import MemoryManager, memory_for_section
 from forensia.core.progress_event import progress_event
 from forensia.db.database import CaseDB
-from forensia.report.table_registry import render_table_block
-from forensia.report.writer import (
-    _assemble_section_body,
-    _body_starts_with_heading,
-    _collect_flat_evidence_rows,
+from forensia.report.answer_registry import ensure_universal_question_probes
+from forensia.report.report_brief import write_report_brief
+from forensia.report.section_assembly import (
+    assemble_section_body,
+    body_starts_with_heading,
+    prepare_section_request,
+)
+from forensia.report.section_finalize import finalize_section
+from forensia.report.section_quality import _verify_block_output, collect_gaps
+from forensia.report.section_store import (
     _dump_section_evidence_json,
     _dump_section_questions_json,
     _dump_section_trace_json,
-    _verify_block_output,
-    collect_gaps,
-    ensure_universal_question_probes,
-    finalize_section,
     load_report_sections_map,
-    prepare_section_request,
-    write_report_brief,
+)
+from forensia.report.table_registry import (
+    _collect_flat_evidence_rows,
+    render_table_block,
 )
 
 
@@ -312,7 +315,7 @@ async def _render_section_blocks(
                 raise
             block_body = block_result.body
             heading = str(block.get("heading") or "").strip()
-            if heading and not _body_starts_with_heading(block_body, heading):
+            if heading and not body_starts_with_heading(block_body, heading):
                 block_body = f"## {heading}\n\n{block_body}"
             rendered_bodies[index] = block_body
             if heading:
@@ -330,7 +333,7 @@ async def _render_section_blocks(
                     block_gaps.append(label)
 
         rendered_blocks = [rendered_bodies[index] for index in sorted(rendered_bodies)]
-        body = _assemble_section_body(
+        body = assemble_section_body(
             str(request.get("template_preamble") or ""), rendered_blocks
         )
         request["block_gaps"] = block_gaps
@@ -418,7 +421,7 @@ def _render_section_from_request(
             )
         block_body = block_result.body
         heading = str(block.get("heading") or "").strip()
-        if heading and not _body_starts_with_heading(block_body, heading):
+        if heading and not body_starts_with_heading(block_body, heading):
             block_body = f"## {heading}\n\n{block_body}"
         rendered_bodies[index] = block_body
         if heading:
@@ -435,7 +438,7 @@ def _render_section_from_request(
             if label not in block_gaps:
                 block_gaps.append(label)
     rendered_blocks = [rendered_bodies[index] for index in sorted(rendered_bodies)]
-    body = _assemble_section_body(
+    body = assemble_section_body(
         str(request.get("template_preamble") or ""), rendered_blocks
     )
     return body, all_evidence_results, block_gaps

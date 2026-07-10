@@ -304,3 +304,6 @@ def _resolve_evidence_results(
         )
     return results
 
+
+default_keypoints_for_section = _default_keypoints_for_section
+resolve_evidence_results = _resolve_evidence_results

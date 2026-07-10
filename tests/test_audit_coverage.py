@@ -123,9 +123,9 @@ class VerdictEnforcementTests(unittest.TestCase):
             assert_valid_verdict("bogus_verdict", "section_verdict")
 
     def test_benchmark_answer_normalization_enforces_taxonomy(self) -> None:
-        from forensia.report.answer_store import _normalize_structured_answer
+        from forensia.report.answer_store import normalize_structured_answer
 
-        result = _normalize_structured_answer(
+        result = normalize_structured_answer(
             {"status": "bogus_status"},
             section_key="6_appendix",
             block_heading="Q01: Test",

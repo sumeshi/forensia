@@ -17,7 +17,7 @@ from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, SessionState
 from forensia.core.textutil import normalize_text as _normalize_text
 from forensia.db.database import CaseDB
-from forensia.report.writer import fetch_report_sections
+from forensia.report.section_store import fetch_report_sections
 
 
 class GapHypothesisOutput(BaseModel):

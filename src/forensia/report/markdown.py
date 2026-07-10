@@ -367,3 +367,11 @@ def _build_host_note(clusters: list[dict[str, Any]]) -> str:
         last_active = max(c["last_seen"] for c in active)
         parts.append(f"minor activity ({last_active[:10]}, {total_active} events)")
     return " + ".join(parts)
+
+
+build_host_note = _build_host_note
+local_time_from_utc = _local_time_from_utc
+markdown_table = _markdown_table
+render_timestamp_with_timezone = _render_timestamp_with_timezone
+sort_markdown_table_by_first_column = _sort_markdown_table_by_first_column
+tz_offset_str = _tz_offset_str

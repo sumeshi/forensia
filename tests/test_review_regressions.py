@@ -271,27 +271,27 @@ class TimelineRegenerationIdempotenceTests(unittest.TestCase):
 
 
 class RowWithEvidenceIdsCitableTests(unittest.TestCase):
-    """_row_with_evidence_ids must tag rows as citable: False when no evidence_id is present."""
+    """row_with_evidence_ids must tag rows as citable: False when no evidence_id is present."""
 
     def test_row_without_evidence_id_gets_citable_false(self) -> None:
-        from forensia.report.evidence_refs import _row_with_evidence_ids
+        from forensia.report.evidence_refs import row_with_evidence_ids
 
         row = {"src_ip": "10.0.0.5", "computer": "host1", "event_id": 4624}
-        normalized = _row_with_evidence_ids(row)
+        normalized = row_with_evidence_ids(row)
         self.assertIs(False, normalized.get("citable"))
         self.assertNotIn("evidence_id", normalized)
         self.assertNotIn("evidence_ids", normalized)
 
     def test_row_with_evidence_id_does_not_get_citable_false(self) -> None:
-        from forensia.report.evidence_refs import _row_with_evidence_ids
+        from forensia.report.evidence_refs import row_with_evidence_ids
 
         row = {"src_ip": "10.0.0.5", "evidence_id": "evtx-security-000000000001"}
-        normalized = _row_with_evidence_ids(row)
+        normalized = row_with_evidence_ids(row)
         self.assertNotIn("citable", normalized)
         self.assertEqual("evtx-security-000000000001", normalized.get("evidence_id"))
 
-    def test_row_with_evidence_ids_list_does_not_get_citable_false(self) -> None:
-        from forensia.report.evidence_refs import _row_with_evidence_ids
+    def testrow_with_evidence_ids_list_does_not_get_citable_false(self) -> None:
+        from forensia.report.evidence_refs import row_with_evidence_ids
 
         row = {
             "src_ip": "10.0.0.5",
@@ -300,7 +300,7 @@ class RowWithEvidenceIdsCitableTests(unittest.TestCase):
                 "evtx-security-000000000002",
             ],
         }
-        normalized = _row_with_evidence_ids(row)
+        normalized = row_with_evidence_ids(row)
         self.assertNotIn("citable", normalized)
         self.assertIn("evtx-security-000000000001", normalized.get("evidence_ids", []))
 
@@ -433,15 +433,14 @@ if __name__ == "__main__":
 from pathlib import Path
 
 from forensia.ai.section_answers import _insufficient_evidence_placeholder
-from forensia.report.markdown import _build_host_note
-from forensia.report.quality_gates import _check_failure_spam
-from forensia.report.writer import (
-    _catalog_exe_globs,
-    _catalog_path_terms,
-    _exe_glob_sql,
-    _GateCtx,
-    _matches_exe_globs,
+from forensia.knowledge import (
+    catalog_exe_globs,
+    catalog_path_terms,
+    exe_glob_sql,
+    matches_exe_globs,
 )
+from forensia.report.markdown import build_host_note
+from forensia.report.quality_gates import GateContext, check_failure_spam
 from forensia.rules.engine import (
     _annotate_finding_benign_context,
     _co_occurs_satisfied,
@@ -453,11 +452,11 @@ class InsufficientEvidencePlaceholderTests(unittest.TestCase):
     """The skip placeholder must not trip the section quality gates."""
 
     def test_placeholder_passes_failure_spam_gate(self) -> None:
-        ctx = _GateCtx(
+        ctx = GateContext(
             section_key="2_timeline", title="t", evidence_results=None, db=None
         )
         body = _insufficient_evidence_placeholder()
-        note, cap = _check_failure_spam(body, ctx)
+        note, cap = check_failure_spam(body, ctx)
         self.assertIsNone(note)
         self.assertIsNone(cap)
 
@@ -480,20 +479,20 @@ class CatalogDrivenIndicatorTests(unittest.TestCase):
         self.assertNotIn("GOOGLEDRIVESYNC", source)
 
     def test_catalog_globs_cover_known_tool_families(self) -> None:
-        globs = _catalog_exe_globs("antiforensic_tools")
+        globs = catalog_exe_globs("antiforensic_tools")
         self.assertTrue(globs)
-        self.assertTrue(_matches_exe_globs("CCLEANER64.EXE", globs))
-        self.assertTrue(_matches_exe_globs("Eraser.exe", globs))
-        self.assertFalse(_matches_exe_globs("notepad.exe", globs))
+        self.assertTrue(matches_exe_globs("CCLEANER64.EXE", globs))
+        self.assertTrue(matches_exe_globs("Eraser.exe", globs))
+        self.assertFalse(matches_exe_globs("notepad.exe", globs))
 
     def test_exe_glob_sql_renders_like_predicates(self) -> None:
-        sql = _exe_glob_sql("executable_name", ("ccleaner*.exe", "eraser.exe"))
+        sql = exe_glob_sql("executable_name", ("ccleaner*.exe", "eraser.exe"))
         self.assertIn("LIKE 'ccleaner%.exe'", sql)
         self.assertIn("LIKE 'eraser.exe'", sql)
-        self.assertEqual("FALSE", _exe_glob_sql("executable_name", ()))
+        self.assertEqual("FALSE", exe_glob_sql("executable_name", ()))
 
     def test_catalog_path_terms_strip_env_tokens(self) -> None:
-        terms = _catalog_path_terms("cloud_sync_artifacts")
+        terms = catalog_path_terms("cloud_sync_artifacts")
         self.assertTrue(any("google/drive" in term for term in terms))
         self.assertFalse(any("%" in term for term in terms))
 
@@ -569,7 +568,7 @@ class HostNoteTests(unittest.TestCase):
                 "event_count": 5,
             },
         ]
-        note = _build_host_note(clusters)
+        note = build_host_note(clusters)
         self.assertIn("pre-deployment bulk (2010", note)
         self.assertIn("2015-03-25", note)
 
@@ -583,7 +582,7 @@ class HostNoteTests(unittest.TestCase):
                 "event_count": 4000,
             },
         ]
-        self.assertEqual("active", _build_host_note(clusters))
+        self.assertEqual("active", build_host_note(clusters))
 
 
 class SectionReviewerTests(unittest.TestCase):

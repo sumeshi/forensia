@@ -13,13 +13,13 @@ from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.normalize.timezone import infer_timezone
 from forensia.questions import extract_time_qualifiers
-from forensia.report.answer_store import _add_local_time_columns
-from forensia.report.markdown import _local_time_from_utc as _wt_local_time_from_utc
+from forensia.report.answer_store import add_local_time_columns
+from forensia.report.markdown import local_time_from_utc as wt_local_time_from_utc
 from forensia.report.markdown import (
-    _render_timestamp_with_timezone,
-    _tz_offset_str,
+    render_timestamp_with_timezone,
+    tz_offset_str,
 )
-from forensia.report.writer import _build_report_brief
+from forensia.report.report_brief import build_report_brief
 
 # ── Case timezone persistence ──────────────────────────────────────────────
 
@@ -71,12 +71,12 @@ class TestCaseTimezonePersistence:
 class TestTimestampRendering:
     def test_render_utc_only(self):
         case = Case(path=Path("/x"), source_timezone="UTC")
-        result = _render_timestamp_with_timezone("2026-03-25 15:31:00", case)
+        result = render_timestamp_with_timezone("2026-03-25 15:31:00", case)
         assert result == "2026-03-25 15:31:00 UTC"
 
     def test_render_with_timezone(self):
         case = Case(path=Path("/x"), source_timezone="America/New_York")
-        result = _render_timestamp_with_timezone("2026-03-25 15:31:00", case)
+        result = render_timestamp_with_timezone("2026-03-25 15:31:00", case)
         assert "UTC" in result
         assert "local" in result
         assert "11:31:00" in result  # UTC-4 in March
@@ -84,7 +84,7 @@ class TestTimestampRendering:
 
     def test_render_with_timezone_asia(self):
         case = Case(path=Path("/x"), source_timezone="Asia/Tokyo")
-        result = _render_timestamp_with_timezone("2026-03-25 15:31:00", case)
+        result = render_timestamp_with_timezone("2026-03-25 15:31:00", case)
         assert "UTC" in result
         assert "local" in result
         assert "UTC+9" in result
@@ -92,14 +92,14 @@ class TestTimestampRendering:
 
     def test_render_empty_timestamp(self):
         case = Case(path=Path("/x"), source_timezone="UTC")
-        assert _render_timestamp_with_timezone("", case) == "unknown"
-        assert _render_timestamp_with_timezone(None, case) == "unknown"
+        assert render_timestamp_with_timezone("", case) == "unknown"
+        assert render_timestamp_with_timezone(None, case) == "unknown"
 
-    def test_tz_offset_str_utc(self):
-        assert _tz_offset_str("UTC") == "UTC"
+    def testtz_offset_str_utc(self):
+        assert tz_offset_str("UTC") == "UTC"
 
-    def test_tz_offset_str_known(self):
-        offset = _tz_offset_str("America/New_York")
+    def testtz_offset_str_known(self):
+        offset = tz_offset_str("America/New_York")
         assert "UTC" in offset
 
 
@@ -108,18 +108,18 @@ class TestTimestampRendering:
 
 class TestLocalTimeConversion:
     def test_utc_to_ny(self):
-        result = _wt_local_time_from_utc("2026-03-25 15:31:00", "America/New_York")
+        result = wt_local_time_from_utc("2026-03-25 15:31:00", "America/New_York")
         assert result == "2026-03-25 11:31:00"
 
     def test_utc_to_tokyo(self):
-        result = _wt_local_time_from_utc("2026-03-25 15:31:00", "Asia/Tokyo")
+        result = wt_local_time_from_utc("2026-03-25 15:31:00", "Asia/Tokyo")
         assert result == "2026-03-26 00:31:00"
 
     def test_utc_stays_utc(self):
-        assert _wt_local_time_from_utc("2026-03-25 15:31:00", "UTC") is None
+        assert wt_local_time_from_utc("2026-03-25 15:31:00", "UTC") is None
 
     def test_invalid_timezone_returns_none(self):
-        assert _wt_local_time_from_utc("2026-03-25 15:31:00", "Invalid/Zone") is None
+        assert wt_local_time_from_utc("2026-03-25 15:31:00", "Invalid/Zone") is None
 
 
 # ── Structured answer local columns ────────────────────────────────────────
@@ -133,7 +133,7 @@ class TestStructuredAnswerLocalColumns:
             {"shutdown_time": "2026-03-25 16:00:00", "computer": "PC2"},
         ]
         columns = ["shutdown_time", "computer"]
-        updated_rows, updated_columns = _add_local_time_columns(rows, columns, case)
+        updated_rows, updated_columns = add_local_time_columns(rows, columns, case)
         assert "shutdown_time_local" in updated_columns
         assert updated_rows[0].get("shutdown_time_local") == "2026-03-25 11:31:00"
 
@@ -141,7 +141,7 @@ class TestStructuredAnswerLocalColumns:
         case = Case(path=Path("/x"), source_timezone="UTC")
         rows = [{"shutdown_time": "2026-03-25 15:31:00"}]
         columns = ["shutdown_time"]
-        updated_rows, updated_columns = _add_local_time_columns(rows, columns, case)
+        updated_rows, updated_columns = add_local_time_columns(rows, columns, case)
         assert "shutdown_time_local" not in updated_columns
         assert updated_columns == columns
         assert updated_rows == rows
@@ -155,7 +155,7 @@ class TestReportBriefTimezone:
         case = Case(path=tmp_path, source_timezone="America/New_York")
         with CaseDB(case) as db:
             db.execute("CREATE TABLE IF NOT EXISTS evtx_events (timestamp TIMESTAMP)")
-            brief = _build_report_brief(db, case)
+            brief = build_report_brief(db, case)
             assert brief.get("source_timezone") == "America/New_York"
             assert "timezone_offset" in brief
 

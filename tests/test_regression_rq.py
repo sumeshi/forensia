@@ -14,12 +14,9 @@ from forensia.ai.section_answers import (
 )
 from forensia.ai.section_exec import _coerce_plan_action
 from forensia.report.answer_builders_host import _load_event_class_definitions
-from forensia.report.quality_gates import _check_json_object_leak
-from forensia.report.writer import (
-    EVIDENCE_ID_PATTERN,
-    _extract_claim_texts,
-    _GateCtx,
-)
+from forensia.report.evidence_refs import EVIDENCE_ID_PATTERN
+from forensia.report.quality_gates import GateContext, check_json_object_leak
+from forensia.report.section_store import extract_claim_texts
 
 
 class TestRegressionRQ(unittest.TestCase):
@@ -85,13 +82,13 @@ class TestRegressionRQ(unittest.TestCase):
         self.assertNotEqual(result[0]["service_name"], "")
 
     def test_json_object_leak_detected(self):
-        ctx = _GateCtx(section_key="test", title="test", evidence_results=None, db=None)
-        msg, score = _check_json_object_leak('{"body": "some text"}', ctx)
+        ctx = GateContext(section_key="test", title="test", evidence_results=None, db=None)
+        msg, score = check_json_object_leak('{"body": "some text"}', ctx)
         self.assertIsNotNone(msg)
 
     def test_json_object_leak_clean(self):
-        ctx = _GateCtx(section_key="test", title="test", evidence_results=None, db=None)
-        msg, score = _check_json_object_leak("## Heading\n\nSome paragraph text.", ctx)
+        ctx = GateContext(section_key="test", title="test", evidence_results=None, db=None)
+        msg, score = check_json_object_leak("## Heading\n\nSome paragraph text.", ctx)
         self.assertIsNone(msg)
 
     def test_evidence_id_pattern_matches_evtx(self):
@@ -116,7 +113,7 @@ class TestRegressionRQ(unittest.TestCase):
 
     def test_scaffold_patterns_filter_claims(self):
         body = "**Status:** answered\n\nReal Content\n\nSome actual claim here."
-        claims = _extract_claim_texts(body)
+        claims = extract_claim_texts(body)
         self.assertIn("Real Content", claims)
         self.assertNotIn("**Status:**", " ".join(claims))
 
@@ -140,7 +137,7 @@ Substantive narrative claim with evidence evtx-security-000000000122.
 - JSON: structured/answers.json
 - CSV: structured/Q6.csv
 """
-        claims = _extract_claim_texts(body)
+        claims = extract_claim_texts(body)
         joined = " ".join(claims)
         self.assertIn("Substantive narrative claim", joined)
         self.assertNotIn("host_id", joined)

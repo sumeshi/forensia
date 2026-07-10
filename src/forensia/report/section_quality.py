@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
 from functools import cache, lru_cache
 from pathlib import Path
 from typing import Any
@@ -30,25 +29,12 @@ from forensia.report.quality_gates import (
     HTML_FILL_PATTERN,
     _first_heading_text,
 )
-
-
-@dataclass(frozen=True)
-class TemplateMeta:
-    behaviors: tuple[str, ...] = ()
-
-
-GAP_PATTERN = re.compile(
-    r"\[INSUFFICIENT EVIDENCE:\s*([^\]]+)\]",
-    re.IGNORECASE,
+from forensia.report.template_parsing import (
+    GAP_PATTERN,
+    RAW_EVIDENCE_HEADING_PATTERN,
+    TemplateMeta,
+    parse_frontmatter,
 )
-BLOCK_HINT_PATTERN = re.compile(
-    r"<!--\s*(?P<name>evidence_keypoints|mode|question_id|benchmark_id|answer_id|answer_spec|builder)\s*:\s*(?P<value>.*?)\s*-->",
-    re.IGNORECASE,
-)
-QUESTION_HINT_PATTERN = re.compile(
-    r"<!--\s*question(?:\s*:\s*(?P<value>.*?))?\s*-->", re.IGNORECASE
-)
-RAW_EVIDENCE_HEADING_PATTERN = re.compile(r"^#{2,6}\s*Raw Evidence\s*$", re.IGNORECASE)
 
 
 def _section_confidence(body: str) -> float:
@@ -338,8 +324,6 @@ def _load_template_meta(section_key: str) -> TemplateMeta:
     """Load template frontmatter metadata for a section key from the packaged template."""
     from importlib import resources
 
-    from forensia.report.writer import _parse_frontmatter
-
     try:
         text = (
             resources.files("forensia")
@@ -348,7 +332,7 @@ def _load_template_meta(section_key: str) -> TemplateMeta:
         )
     except Exception:
         return TemplateMeta()
-    meta = _parse_frontmatter(text)
+    meta = parse_frontmatter(text)
     behaviors = tuple(meta.get("behaviors") or [])
     return TemplateMeta(behaviors=behaviors)
 
@@ -563,3 +547,6 @@ def collect_gaps(filled_sections: dict[str, str]) -> list[str]:
                 gaps.append(gap)
     return gaps
 
+
+section_confidence = _section_confidence
+validate_body_evidence_ids = _validate_body_evidence_ids

@@ -47,10 +47,8 @@ from forensia.core.memory import MemoryManager
 from forensia.core.progress_event import progress_event
 from forensia.core.session import SessionState
 from forensia.db.database import CaseDB
-from forensia.report.writer import (
-    mark_report_sections_ai_exhausted,
-    render_written_report,
-)
+from forensia.report.section_store import mark_report_sections_ai_exhausted
+from forensia.report.writer import render_written_report
 from forensia.rules.loader import resolve_active_packs
 
 
@@ -399,4 +397,3 @@ async def investigate(
         "report_sections": _ctx_get_report_status(ctx, db, refresh=True),
         "report_refresh_failures": report_refresh_failures,
     }
-
