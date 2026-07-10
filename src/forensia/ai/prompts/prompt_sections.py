@@ -13,7 +13,7 @@ from forensia.ai.llm.schemas import (
     question_classify_schema,
     structured_classify_schema,
 )
-from forensia.ai.sql_schema import (
+from forensia.ai.prompts.sql_schema import (
     _load_app_catalog,
     build_investigation_framework,
 )
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from forensia.db.database import CaseDB
 
 
-from forensia.ai.prompt_context import (
+from forensia.ai.prompts.prompt_context import (
     _build_event_id_guidance,
     _build_schema_guidance,
     _collect_event_ids,
@@ -37,7 +37,7 @@ from forensia.ai.prompt_context import (
     _time_range_guidance,
     _truncate_context_sections,
 )
-from forensia.ai.prompt_playbook import (
+from forensia.ai.prompts.prompt_playbook import (
     _dfir_playbook,
     _format_artifact_inference,
     _load_schema_notes,

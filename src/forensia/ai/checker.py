@@ -23,7 +23,7 @@ from forensia.ai.check_normalize import (
     _parse_new_hypotheses,
 )
 from forensia.ai.llm import llm_gateway
-from forensia.ai.prompt_investigation import (
+from forensia.ai.prompts.prompt_investigation import (
     _load_benign_context_rules,
     build_finding_extractor_messages,
     build_memory_updater_messages,

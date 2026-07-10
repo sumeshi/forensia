@@ -5,8 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from forensia.ai.llm.schemas import PARAGRAPH_NARRATE_SCHEMA
-from forensia.ai.prompt_context import _slim_report_brief_for_section
-from forensia.ai.prompt_sections import build_paragraph_narrate_messages
+from forensia.ai.prompts.prompt_context import _slim_report_brief_for_section
+from forensia.ai.prompts.prompt_sections import build_paragraph_narrate_messages
 from forensia.ai.section_answers import (
     _build_daily_session_timeline,
     _extract_answer_by_shape,

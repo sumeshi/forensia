@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from forensia.ai.prompt_playbook import (
+from forensia.ai.prompts.prompt_playbook import (
     PLAYBOOK_SECTION_DROP_ORDER,
     dfir_playbook,
     load_dfir_yamls_cached,
@@ -204,7 +204,7 @@ def test_combined_filtering_reaches_budget(tmp_path: Any) -> None:
 
 def test_collect_event_ids_helper() -> None:
     """_collect_event_ids extracts ints from evidence result rows."""
-    from forensia.ai.prompt_context import _collect_event_ids
+    from forensia.ai.prompts.prompt_context import _collect_event_ids
 
     results = [
         {"sample_rows": [{"event_id": 4624}, {"event_id": 4625}]},
@@ -225,7 +225,7 @@ def test_no_profile_playbook_truncates_events_instead_of_dropping_everything():
     discarding every droppable section (the pre-fix behavior left only the
     Priority Investigation Order)."""
     from forensia.ai.case_profile import set_case_profile
-    from forensia.ai.prompt_playbook import dfir_playbook
+    from forensia.ai.prompts.prompt_playbook import dfir_playbook
     from forensia.config import get_system_prompt_budget_chars
 
     set_case_profile(None, None)
@@ -250,7 +250,7 @@ def testsections_for_hypothesis_auth_excludes_catalogs() -> None:
     evidence. Including them for a pure authentication hypothesis dilutes
     the prompt for weak local models without adding signal (G-1).
     """
-    from forensia.ai.prompt_playbook import sections_for_hypothesis
+    from forensia.ai.prompts.prompt_playbook import sections_for_hypothesis
     from forensia.core.session import Hypothesis
 
     auth = Hypothesis(
@@ -272,7 +272,7 @@ def testsections_for_hypothesis_auth_excludes_catalogs() -> None:
 
 def testsections_for_hypothesis_exec_includes_catalogs() -> None:
     """A hypothesis about executables keeps the catalog interpretation aids."""
-    from forensia.ai.prompt_playbook import sections_for_hypothesis
+    from forensia.ai.prompts.prompt_playbook import sections_for_hypothesis
     from forensia.core.session import Hypothesis
 
     exe = Hypothesis(
@@ -287,7 +287,7 @@ def testsections_for_hypothesis_exec_includes_catalogs() -> None:
 
 def testsections_for_hypothesis_no_signal_returns_none() -> None:
     """No event IDs and no entities → None (full playbook, backward safe)."""
-    from forensia.ai.prompt_playbook import sections_for_hypothesis
+    from forensia.ai.prompts.prompt_playbook import sections_for_hypothesis
     from forensia.core.session import Hypothesis
 
     assert sections_for_hypothesis(Hypothesis(id="H-003", description="x")) is None

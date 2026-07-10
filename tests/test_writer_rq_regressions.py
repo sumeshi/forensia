@@ -1738,7 +1738,7 @@ class WriterRQRegressionTests(unittest.TestCase):
 
     def test_structured_digest_in_prompt_for_overview(self) -> None:
         """Verify that build_paragraph_narrate_messages injects STRUCTURED_OBSERVATIONS for overview blocks."""
-        from forensia.ai.prompt_sections import build_paragraph_narrate_messages
+        from forensia.ai.prompts.prompt_sections import build_paragraph_narrate_messages
 
         messages, _schema = build_paragraph_narrate_messages(
             heading="Executive Summary",
@@ -1756,7 +1756,7 @@ class WriterRQRegressionTests(unittest.TestCase):
 
     def test_structured_digest_not_in_prompt_for_appendix(self) -> None:
         """Verify appendix blocks get no STRUCTURED_OBSERVATIONS."""
-        from forensia.ai.prompt_sections import build_paragraph_narrate_messages
+        from forensia.ai.prompts.prompt_sections import build_paragraph_narrate_messages
 
         messages, _schema = build_paragraph_narrate_messages(
             heading="Appendix Details",

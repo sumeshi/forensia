@@ -27,11 +27,11 @@ from forensia.ai.hypothesis_manager import (
     _interpolate_follow_up,
     _resolve_hypothesis,
 )
-from forensia.ai.prompt_sections import (
+from forensia.ai.prompts.prompt_sections import (
     build_paragraph_narrate_messages,
     build_section_outline_messages,
 )
-from forensia.ai.sql_templates import validate_select_sql
+from forensia.ai.prompts.sql_templates import validate_select_sql
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, SessionState
@@ -405,7 +405,7 @@ class VerdictLabeledKeyPointsTests(unittest.TestCase):
         self.assertTrue(labeled[0].startswith("[confirmed]"), labeled[0])
 
     def test_narrate_prompt_rules_contain_verdict_label_guidance(self) -> None:
-        from forensia.ai.prompt_sections import build_paragraph_narrate_messages
+        from forensia.ai.prompts.prompt_sections import build_paragraph_narrate_messages
 
         messages, schema = build_paragraph_narrate_messages(
             heading="Test Heading",
@@ -732,7 +732,7 @@ class SectionReviewerTests(unittest.TestCase):
         self.assertGreaterEqual(len(problems), 2)
 
     def test_build_section_review_messages_includes_problems(self) -> None:
-        from forensia.ai.prompt_sections import (
+        from forensia.ai.prompts.prompt_sections import (
             SECTION_REVIEW_SCHEMA,
             build_section_review_messages,
         )

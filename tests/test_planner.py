@@ -17,15 +17,18 @@ from forensia.ai.progress import (
     HypothesisProgressTracker,
     _query_fingerprint,
 )
-from forensia.ai.prompt_context import _truncate_context_sections
-from forensia.ai.prompt_sections import (
+from forensia.ai.prompts.prompt_context import _truncate_context_sections
+from forensia.ai.prompts.prompt_sections import (
     build_question_classify_messages,
     build_report_section_messages,
     build_structured_classify_messages,
 )
+from forensia.ai.prompts.sql_schema import build_investigation_framework
+from forensia.ai.prompts.sql_templates import (
+    _template_failed_logon_by_ip_window,
+    coerce_list,
+)
 from forensia.ai.section_exec import _question_report_brief
-from forensia.ai.sql_schema import build_investigation_framework
-from forensia.ai.sql_templates import _template_failed_logon_by_ip_window, coerce_list
 from forensia.config import (
     clear_llm_settings_cache,
     reload_settings,
@@ -1100,7 +1103,7 @@ class TestConfirmedFindingsBlock(unittest.TestCase):
     """Tests for the <CONFIRMED_FINDINGS> block in build_query_intent_messages."""
 
     def test_no_findings_omits_block(self) -> None:
-        from forensia.ai.prompt_investigation import build_query_intent_messages
+        from forensia.ai.prompts.prompt_investigation import build_query_intent_messages
         from forensia.core.session import Hypothesis
 
         h = Hypothesis(description="test", id="H-001")
@@ -1114,7 +1117,7 @@ class TestConfirmedFindingsBlock(unittest.TestCase):
         self.assertNotIn("<CONFIRMED_FINDINGS>", system_content)
 
     def test_none_findings_omits_block(self) -> None:
-        from forensia.ai.prompt_investigation import build_query_intent_messages
+        from forensia.ai.prompts.prompt_investigation import build_query_intent_messages
         from forensia.core.session import Hypothesis
 
         h = Hypothesis(description="test", id="H-001")
@@ -1128,7 +1131,7 @@ class TestConfirmedFindingsBlock(unittest.TestCase):
         self.assertNotIn("<CONFIRMED_FINDINGS>", system_content)
 
     def test_top5_by_severity(self) -> None:
-        from forensia.ai.prompt_investigation import build_query_intent_messages
+        from forensia.ai.prompts.prompt_investigation import build_query_intent_messages
         from forensia.core.session import Hypothesis
 
         h = Hypothesis(description="test", id="H-001")
@@ -1160,7 +1163,7 @@ class TestConfirmedFindingsBlock(unittest.TestCase):
             self.fail("No [high] finding line found in CONFIRMED_FINDINGS block")
 
     def test_evidence_ids_string_parsed(self) -> None:
-        from forensia.ai.prompt_investigation import build_query_intent_messages
+        from forensia.ai.prompts.prompt_investigation import build_query_intent_messages
         from forensia.core.session import Hypothesis
 
         h = Hypothesis(description="test", id="H-001")
@@ -1179,7 +1182,7 @@ class TestConfirmedFindingsBlock(unittest.TestCase):
         self.assertIn("evtx-002", system_content)
 
     def test_max_length_truncation(self) -> None:
-        from forensia.ai.prompt_investigation import build_query_intent_messages
+        from forensia.ai.prompts.prompt_investigation import build_query_intent_messages
         from forensia.core.session import Hypothesis
 
         h = Hypothesis(description="test", id="H-001")
@@ -1209,7 +1212,7 @@ class PriorAttemptsBlockTests(unittest.TestCase):
     """
 
     def test_render_prior_attempts_structured_fields(self) -> None:
-        from forensia.ai.prompt_investigation import _render_prior_attempts
+        from forensia.ai.prompts.prompt_investigation import _render_prior_attempts
 
         block = _render_prior_attempts(
             [
@@ -1239,7 +1242,7 @@ class PriorAttemptsBlockTests(unittest.TestCase):
 
     def test_render_prior_attempts_omits_absent_fields(self) -> None:
         """Fields missing from a row are omitted, never fabricated (Rule 12)."""
-        from forensia.ai.prompt_investigation import _render_prior_attempts
+        from forensia.ai.prompts.prompt_investigation import _render_prior_attempts
 
         block = _render_prior_attempts([{"verdict": "inconclusive"}])
         self.assertNotIn("query_id=", block)
@@ -1247,12 +1250,12 @@ class PriorAttemptsBlockTests(unittest.TestCase):
         self.assertNotIn("do_not_repeat_query_ids", block)
 
     def test_render_prior_attempts_empty_history(self) -> None:
-        from forensia.ai.prompt_investigation import _render_prior_attempts
+        from forensia.ai.prompts.prompt_investigation import _render_prior_attempts
 
         self.assertIn("(none)", _render_prior_attempts([]))
 
     def test_intent_messages_carry_structured_attempts(self) -> None:
-        from forensia.ai.prompt_investigation import build_query_intent_messages
+        from forensia.ai.prompts.prompt_investigation import build_query_intent_messages
         from forensia.core.session import Hypothesis
 
         msgs = build_query_intent_messages(

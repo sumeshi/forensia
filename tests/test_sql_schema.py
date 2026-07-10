@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from forensia.ai.sql_schema import (
+from forensia.ai.prompts.sql_schema import (
     _load_app_catalog,
     _load_fp_reduction_guidance,
     _load_logon_type_schema,

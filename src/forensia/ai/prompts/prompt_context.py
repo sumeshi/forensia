@@ -6,7 +6,7 @@ import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from forensia.ai.sql_schema import (
+from forensia.ai.prompts.sql_schema import (
     _build_live_schema_guidance,
 )
 from forensia.config import get_llm_settings

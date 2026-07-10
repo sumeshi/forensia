@@ -32,7 +32,7 @@ from forensia.ai.investigation_session import (
 from forensia.ai.memory_sync import _apply_memory_updates
 from forensia.ai.planner import plan_hypothesis_query
 from forensia.ai.progress import HypothesisProgressTracker, _query_fingerprint
-from forensia.ai.prompt_playbook import resolve_rule_context
+from forensia.ai.prompts.prompt_playbook import resolve_rule_context
 from forensia.core.case import Case
 from forensia.core.log import log as _log
 from forensia.core.memory import MemoryManager
@@ -80,7 +80,7 @@ def _unavailable_missing_event_ids(
     """
     if not available_event_ids or not missing_questions:
         return []
-    from forensia.ai.prompt_context import _load_event_id_hints
+    from forensia.ai.prompts.prompt_context import _load_event_id_hints
 
     vocabulary = set(_load_event_id_hints().keys())
     if not vocabulary:

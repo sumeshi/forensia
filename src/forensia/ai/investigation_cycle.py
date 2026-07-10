@@ -41,7 +41,7 @@ from forensia.ai.llm.llm_client import (
     LLMServerUnavailableError,
 )
 from forensia.ai.planner import _compute_uncovered_keypoints
-from forensia.ai.prompt_investigation import (
+from forensia.ai.prompts.prompt_investigation import (
     build_gap_identifier_messages,
     build_hypothesis_drafter_messages,
 )

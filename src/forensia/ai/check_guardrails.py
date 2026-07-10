@@ -16,7 +16,7 @@ from forensia.ai.check_normalize import (
     _parse_timestamp,
     _validate_extracted_findings,
 )
-from forensia.ai.prompt_investigation import (
+from forensia.ai.prompts.prompt_investigation import (
     _load_benign_context_rules,
 )
 
@@ -205,7 +205,7 @@ def _verify_verdict_consistency(
     # not event-id claims. Treat a number as a claimed event id only when it is
     # framed by "event ..." wording, or when it is a 4-5 digit number that
     # exists in the declared event-id vocabulary (event_ids.yaml).
-    from forensia.ai.prompt_context import _load_event_id_hints
+    from forensia.ai.prompts.prompt_context import _load_event_id_hints
 
     rationale_lower = rationale.lower()
     framed = {

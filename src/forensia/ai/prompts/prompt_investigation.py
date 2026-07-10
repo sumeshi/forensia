@@ -24,11 +24,11 @@ if TYPE_CHECKING:
     pass
 
 
-from forensia.ai.prompt_context import (
+from forensia.ai.prompts.prompt_context import (
     _case_profile_guidance,
     _time_range_guidance,
 )
-from forensia.ai.prompt_playbook import (
+from forensia.ai.prompts.prompt_playbook import (
     _dfir_playbook,
     _sections_for_hypothesis,
 )

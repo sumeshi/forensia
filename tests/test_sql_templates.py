@@ -4,7 +4,7 @@ import unittest
 
 import duckdb
 
-from forensia.ai.sql_templates import (
+from forensia.ai.prompts.sql_templates import (
     _template_failed_logon_by_ip_window,
     _template_logon_by_user_window,
     _template_powershell_after_logon,

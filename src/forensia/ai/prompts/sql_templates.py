@@ -7,7 +7,7 @@ from typing import Any
 
 import duckdb
 
-from forensia.ai.sql_schema import _LEGACY_ALLOWED_TABLES
+from forensia.ai.prompts.sql_schema import _LEGACY_ALLOWED_TABLES
 
 ALLOWED_IDENTIFIER_REFERENCES = _LEGACY_ALLOWED_TABLES | {
     "evidence_id",

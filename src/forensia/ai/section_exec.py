@@ -7,12 +7,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from forensia.ai.check_normalize import summarize_query_result
+from forensia.ai.prompts.sql_templates import (
+    query_template_catalog,
+    validate_select_sql,
+)
 from forensia.ai.section_run_store import (
     _load_cached_result,
     _store_cached_result,
     _store_section_run,
 )
-from forensia.ai.sql_templates import query_template_catalog, validate_select_sql
 from forensia.core.case import Case
 from forensia.core.session import PlannedQuery
 from forensia.db.database import CaseDB

@@ -8,16 +8,16 @@ from typing import Any
 
 from forensia.ai.hypothesis_store import _recent_reasoning_rows
 from forensia.ai.llm import llm_gateway
-from forensia.ai.prompt_context import (
+from forensia.ai.prompts.prompt_context import (
     _build_schema_guidance,
     _trim_dynamic_content,
 )
-from forensia.ai.prompt_investigation import (
+from forensia.ai.prompts.prompt_investigation import (
     build_query_intent_messages,
     build_sql_composer_messages,
     build_sql_self_check_messages,
 )
-from forensia.ai.sql_templates import (
+from forensia.ai.prompts.sql_templates import (
     coerce_list,
     query_template_catalog,
     render_query_template,

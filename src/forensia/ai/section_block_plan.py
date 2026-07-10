@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 from forensia.ai.llm import llm_gateway
-from forensia.ai.prompt_context import (
+from forensia.ai.prompts.prompt_context import (
     _enforce_system_budget,
 )
-from forensia.ai.prompt_sections import (
+from forensia.ai.prompts.prompt_sections import (
     build_section_agent_check_messages,
     build_section_agent_plan_messages,
 )

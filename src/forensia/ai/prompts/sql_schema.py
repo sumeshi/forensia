@@ -331,7 +331,7 @@ def _build_live_schema_guidance(db: CaseDB | None = None) -> str:
 @lru_cache(maxsize=1)
 def _load_logon_type_schema() -> dict:
     """Load logon type definitions from schema file."""
-    schema_dir = Path(__file__).parent.parent / "rulepacks" / "_schema"
+    schema_dir = Path(__file__).parent.parent.parent / "rulepacks" / "_schema"
     path = schema_dir / "logon_types.yaml"
     if path.exists():
         return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -341,7 +341,7 @@ def _load_logon_type_schema() -> dict:
 @lru_cache(maxsize=1)
 def _load_app_catalog() -> dict:
     """Load application catalog from schema file."""
-    schema_dir = Path(__file__).parent.parent / "rulepacks" / "_schema"
+    schema_dir = Path(__file__).parent.parent.parent / "rulepacks" / "_schema"
     path = schema_dir / "app_catalog.yaml"
     if path.exists():
         return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -351,7 +351,7 @@ def _load_app_catalog() -> dict:
 @lru_cache(maxsize=8)
 def _load_table_notes(table_name: str) -> dict:
     """Load notes dict from _schema/{table_name}.yaml."""
-    schema_dir = Path(__file__).parent.parent / "rulepacks" / "_schema"
+    schema_dir = Path(__file__).parent.parent.parent / "rulepacks" / "_schema"
     path = schema_dir / f"{table_name}.yaml"
     if path.exists():
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -362,7 +362,7 @@ def _load_table_notes(table_name: str) -> dict:
 @lru_cache(maxsize=1)
 def _load_fp_reduction_guidance() -> str:
     """Load false-positive reduction guidance from YAML schema file."""
-    schema_dir = Path(__file__).parent.parent / "rulepacks" / "_schema"
+    schema_dir = Path(__file__).parent.parent.parent / "rulepacks" / "_schema"
     path = schema_dir / "false_positive_rules.yaml"
     if not path.exists():
         return ""

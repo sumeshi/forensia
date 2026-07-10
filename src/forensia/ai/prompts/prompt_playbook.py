@@ -60,7 +60,7 @@ def _get_cached_rules() -> list[Any]:
 
     from forensia.rules.loader import load_rules_from_dir
 
-    rules_path = Path(__file__).parent.parent / "rulepacks"
+    rules_path = Path(__file__).parent.parent.parent / "rulepacks"
     return load_rules_from_dir(rules_path)
 
 
@@ -113,7 +113,7 @@ def _load_schema_notes() -> str:
 
     import yaml
 
-    schema_dir = Path(__file__).parent.parent / "rulepacks" / "_schema"
+    schema_dir = Path(__file__).parent.parent.parent / "rulepacks" / "_schema"
     notes: list[str] = []
 
     evtx_path = schema_dir / "evtx_events.yaml"
@@ -671,7 +671,7 @@ def _apply_playbook_budget(
 def _load_phase_playbook(phase: str) -> str:
     from pathlib import Path
 
-    playbook_dir = Path(__file__).parent.parent / "rulepacks" / "_schema" / "playbook"
+    playbook_dir = Path(__file__).parent.parent.parent / "rulepacks" / "_schema" / "playbook"
     phase_file = playbook_dir / f"{phase}.md"
     phase_narrative = ""
     if phase_file.exists():
