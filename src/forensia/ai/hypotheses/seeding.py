@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from forensia.ai.hypothesis_manager import _merge_active_hypotheses
+from forensia.ai.hypotheses.hypothesis_manager import _merge_active_hypotheses
 from forensia.core.case import Case
 from forensia.core.log import log as _log
 from forensia.core.session import Hypothesis, SessionState
@@ -25,8 +25,8 @@ def _seed_findings(
     case: Case, db: CaseDB, profile: str, active_pack_ids: set[str] | None = None
 ) -> int:
     """Run profile rules and replace rule-derived seed findings on resume."""
-    profile_path = Path(__file__).parent.parent / "profiles" / f"{profile}.yaml"
-    rules_dir = Path(__file__).parent.parent / "rulepacks"
+    profile_path = Path(__file__).parent.parent.parent / "profiles" / f"{profile}.yaml"
+    rules_dir = Path(__file__).parent.parent.parent / "rulepacks"
     if active_pack_ids is not None:
         pack_map = _get_pack_map()
         rules = [
@@ -195,7 +195,7 @@ def _prescreen_telemetry_availability(
     This prevents wasting 3+ LLM cycles on hypotheses that will ultimately
     become untestable due to missing telemetry.
     """
-    from forensia.ai.hypothesis_manager import _resolve_hypothesis
+    from forensia.ai.hypotheses.hypothesis_manager import _resolve_hypothesis
 
     # Compute the set of event_ids present in the case.
     try:

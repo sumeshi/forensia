@@ -10,7 +10,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 
-from forensia.ai.seeding import _prescreen_telemetry_availability
+from forensia.ai.hypotheses.seeding import _prescreen_telemetry_availability
 from forensia.core.case import Case
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB

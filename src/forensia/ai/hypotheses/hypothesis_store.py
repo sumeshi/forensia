@@ -6,7 +6,7 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from forensia.ai.hypothesis_model import (
+from forensia.ai.hypotheses.hypothesis_model import (
     _clean_confirm_when,
 )
 from forensia.core.session import Hypothesis, SessionState

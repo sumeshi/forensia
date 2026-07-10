@@ -6,13 +6,13 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
-from forensia.ai.hypothesis_manager import admit_new_hypothesis
-from forensia.ai.hypothesis_model import (
+from forensia.ai.hypotheses.hypothesis_manager import admit_new_hypothesis
+from forensia.ai.hypotheses.hypothesis_model import (
     _extract_entities_from_text,
     _gap_hypothesis_id,
     _propose_confirm_when,
 )
-from forensia.ai.hypothesis_store import _upsert_hypothesis
+from forensia.ai.hypotheses.hypothesis_store import _upsert_hypothesis
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, SessionState
 from forensia.core.textutil import normalize_text as _normalize_text

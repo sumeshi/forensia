@@ -1,7 +1,7 @@
 """Hypothesis lifecycle; helpers live in focused submodules.
 
 Kept for backward compatibility: existing code and tests import these
-names from forensia.ai.hypothesis_manager.
+names from forensia.ai.hypotheses.hypothesis_manager.
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from forensia.ai.hypothesis_model import (
+from forensia.ai.hypotheses.hypothesis_model import (
     _best_hypothesis_match,
     _clean_confirm_when,
     _extract_entities_from_text,
@@ -23,7 +23,7 @@ from forensia.ai.hypothesis_model import (
     _normalize_hypothesis_description,
     _propose_confirm_when,
 )
-from forensia.ai.hypothesis_store import (
+from forensia.ai.hypotheses.hypothesis_store import (
     _all_hypotheses,
     _next_hypothesis_id,
     _upsert_hypothesis,

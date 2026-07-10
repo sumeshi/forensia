@@ -22,7 +22,7 @@ from forensia.ai.check_guardrails import (
     _co_observation_satisfied,
     _verify_verdict_consistency,
 )
-from forensia.ai.hypothesis_manager import (
+from forensia.ai.hypotheses.hypothesis_manager import (
     _feed_verdict_to_timeline,
     _interpolate_follow_up,
     _resolve_hypothesis,

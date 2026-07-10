@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from forensia.ai.seeding import _seed_findings
+from forensia.ai.hypotheses.seeding import _seed_findings
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.normalize.evtx import normalize_evtx

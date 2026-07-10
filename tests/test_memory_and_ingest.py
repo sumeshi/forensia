@@ -949,7 +949,7 @@ class MemoryAndIngestTests(unittest.TestCase):
             with (
                 CaseDB(case) as db,
                 patch(
-                    "forensia.ai.hypothesis_store._recent_reasoning_rows"
+                    "forensia.ai.hypotheses.hypothesis_store._recent_reasoning_rows"
                 ) as mock_reasoning,
             ):
                 mock_reasoning.return_value = [

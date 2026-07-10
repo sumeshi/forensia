@@ -14,21 +14,24 @@ from forensia.ai.audit import LLMCallLogger
 from forensia.ai.case_profile import (
     get_profile_event_ids,
 )
-from forensia.ai.hypothesis_manager import (
+from forensia.ai.hypotheses.hypothesis_manager import (
     MAX_ACTIVE_HYPOTHESES,
     _guess_related_sections,
     _merge_active_hypotheses,
     admit_new_hypothesis,
 )
-from forensia.ai.hypothesis_model import (
+from forensia.ai.hypotheses.hypothesis_model import (
     _filter_valid_entities,
     _hypothesis_similarity,
 )
-from forensia.ai.hypothesis_runner import (
+from forensia.ai.hypotheses.hypothesis_runner import (
     _investigate_one_hypothesis,
     _observed_keypoints_from_findings,
 )
-from forensia.ai.hypothesis_store import _all_hypotheses
+from forensia.ai.hypotheses.hypothesis_store import _all_hypotheses
+from forensia.ai.hypotheses.seeding import (
+    _scan_report_keypoints,
+)
 from forensia.ai.investigation_session import (
     _call_with_outage_recovery,
     _Ctx,
@@ -44,9 +47,6 @@ from forensia.ai.planner import _compute_uncovered_keypoints
 from forensia.ai.prompts.prompt_investigation import (
     build_gap_identifier_messages,
     build_hypothesis_drafter_messages,
-)
-from forensia.ai.seeding import (
-    _scan_report_keypoints,
 )
 from forensia.core.case import Case
 from forensia.core.log import log as _log

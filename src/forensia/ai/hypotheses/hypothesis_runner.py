@@ -15,13 +15,13 @@ from forensia.ai.case_profile import (
 )
 from forensia.ai.check_normalize import summarize_query_result
 from forensia.ai.checker import check_query_result
-from forensia.ai.hypothesis_manager import (
+from forensia.ai.hypotheses.hypothesis_manager import (
     _guess_related_sections,
     _merge_active_hypotheses,
     _resolve_hypothesis,
     admit_new_hypothesis,
 )
-from forensia.ai.hypothesis_store import _upsert_hypothesis
+from forensia.ai.hypotheses.hypothesis_store import _upsert_hypothesis
 from forensia.ai.investigation_session import (
     _append_hypothesis_reasoning,
     _call_with_outage_recovery,

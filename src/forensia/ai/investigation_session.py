@@ -16,7 +16,11 @@ from uuid import uuid4
 import yaml
 
 from forensia.ai.audit import LLMCallLogger
-from forensia.ai.hypothesis_store import _load_persisted_hypotheses
+from forensia.ai.hypotheses.hypothesis_store import _load_persisted_hypotheses
+from forensia.ai.hypotheses.seeding import (
+    _seed_findings,
+    _seed_rule_hypotheses,
+)
 from forensia.ai.llm.llm_client import (
     LLMServerUnavailableError,
     chat_completion,
@@ -27,10 +31,6 @@ from forensia.ai.report_gap import (
     _overlay_report_status,
 )
 from forensia.ai.section_run_store import _findings_snapshot
-from forensia.ai.seeding import (
-    _seed_findings,
-    _seed_rule_hypotheses,
-)
 from forensia.config import get_llm_settings
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager

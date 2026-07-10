@@ -22,7 +22,7 @@ from forensia.ai.case_profile import (
     build_case_profile,
     set_case_profile,
 )
-from forensia.ai.hypothesis_store import _all_hypotheses
+from forensia.ai.hypotheses.hypothesis_store import _all_hypotheses
 from forensia.ai.investigation_cycle import (
     _run_cycle_body,
 )

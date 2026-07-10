@@ -12,7 +12,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 
-from forensia.ai.hypothesis_manager import (
+from forensia.ai.hypotheses.hypothesis_manager import (
     _MAX_SECTION_UPDATES,
     _mark_section_stale,
     _resolve_hypothesis,
