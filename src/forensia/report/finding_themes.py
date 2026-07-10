@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,32 @@ _FINDING_THEME_FILTER_SQL = """
       AND COALESCE(title, '') != ''
       AND title NOT LIKE '%:  @%'
 """
+
+
+@dataclass(frozen=True)
+class FindingThemeSpec:
+    """Describe one externally configured finding classification and its copy."""
+
+    key: str
+    rank: int
+    title: str
+    summary: str
+    recommended_action: str
+    any_terms: tuple[str, ...] = ()
+    all_term_groups: tuple[tuple[str, ...], ...] = ()
+    catalogs: tuple[str, ...] = ()
+
+    def matches(self, blob: str) -> bool:
+        """Return True when the normalized finding text matches this theme."""
+        if any(term in blob for term in self.any_terms):
+            return True
+        if any(all(term in blob for term in group) for group in self.all_term_groups):
+            return True
+        return any(
+            name.lower() in blob
+            for catalog in self.catalogs
+            for name in catalog_names(catalog)
+        )
 
 
 def _finding_theme_counts(db: CaseDB) -> dict[str, int]:
@@ -120,114 +147,132 @@ def _max_severity(left: str, right: str) -> str:
 
 
 def _finding_theme(item: dict[str, Any]) -> str:
+    """Classify a finding using the ordered rules in finding_themes.yaml."""
     blob = " ".join(
         str(item.get(key) or "").lower()
         for key in ("finding_id", "rule_id", "title", "summary")
     )
-    if "4648" in blob or "explicit credential" in blob:
-        return "explicit_credentials"
-    if (
-        "4722" in blob
-        or "4724" in blob
-        or "account lifecycle" in blob
-        or "account" in blob
-        and "user" in blob
-    ):
-        return "account_lifecycle"
-    if "4616" in blob or "system time" in blob:
-        return "time_change"
-    if (
-        "event log service stopped" in blob
-        or " log clear" in blob
-        or "1100" in blob
-        or "1102" in blob
-    ):
-        return "log_integrity"
-    if (
-        "anti-forensic" in blob
-        or "antiforensic" in blob
-        or any(name.lower() in blob for name in catalog_names("antiforensic_tools"))
-    ):
-        return "antiforensic_tools"
-    if (
-        "ost" in blob
-        or "outlook" in blob
-        or "browser" in blob
-        or "cloud" in blob
-        or "drive" in blob
-    ):
-        return "data_access"
+    for spec in _load_finding_theme_specs().values():
+        if spec.key != "other" and spec.matches(blob):
+            return spec.key
     return "other"
 
 
 def _finding_theme_rank(theme: str) -> int:
-    return {
-        "explicit_credentials": 0,
-        "account_lifecycle": 1,
-        "time_change": 2,
-        "log_integrity": 3,
-        "antiforensic_tools": 4,
-        "data_access": 5,
-        "other": 9,
-    }.get(theme, 9)
+    spec = _load_finding_theme_specs().get(theme)
+    return spec.rank if spec else 999
 
 
 def _finding_theme_title(theme: str, count: int) -> str:
     suffix = f" ({count})" if count > 1 else ""
-    return {
-        "explicit_credentials": f"Explicit credential usage observed{suffix}",
-        "account_lifecycle": f"User account change events{suffix}",
-        "time_change": f"System time change observed{suffix}",
-        "log_integrity": f"Log stop / clear candidate events{suffix}",
-        "antiforensic_tools": f"Wiping / cleaning tool traces{suffix}",
-        "data_access": f"Mail / browser / cloud-related traces{suffix}",
-        "other": f"Other priority findings{suffix}",
-    }.get(theme, f"Priority findings{suffix}")
+    spec = _load_finding_theme_specs().get(theme)
+    title = spec.title if spec else "Priority findings"
+    return f"{title}{suffix}"
 
 
 def _finding_theme_summary(theme: str) -> str:
-    return {
-        "explicit_credentials": "Credentials were used explicitly (not standard logon); correlate target user, host, and time.",
-        "account_lifecycle": "Account creation, activation, or password changes may enable privilege use or trace manipulation.",
-        "time_change": "Time changes affect timeline interpretation; correlate with surrounding auth and file events.",
-        "log_integrity": "Log stop/clear candidates alone do not confirm wiping; check proximity to cleaning tools and shutdown.",
-        "antiforensic_tools": "Cleaning tool traces do not reveal what was deleted, but are central supporting evidence for a wiping hypothesis.",
-        "data_access": "Mail/browser/cloud traces show information access and sync environment; confirm destinations and target files.",
-        "other": "Detailed conclusions require correlating individual evidence with surrounding events.",
-    }.get(
-        theme,
-        "Detailed conclusions require correlating individual evidence with surrounding events.",
-    )
+    spec = _load_finding_theme_specs().get(theme)
+    fallback = _load_finding_theme_specs().get("other")
+    if spec:
+        return spec.summary
+    return fallback.summary if fallback else "Detailed evidence correlation is required."
 
 
-@lru_cache(maxsize=1)
-def _load_finding_theme_specs() -> dict[str, dict[str, str]]:
-    import yaml
-
-    path = (
+def _theme_config_path() -> Path:
+    return (
         Path(__file__).resolve().parent.parent
         / "rulepacks"
         / "_schema"
         / "finding_themes.yaml"
     )
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except Exception:
-        return {}
+
+
+def _string_tuple(value: Any, *, field: str, theme: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"finding theme {theme}.{field} must be a list of strings")
+    return tuple(item.strip().lower() for item in value if item.strip())
+
+
+@lru_cache(maxsize=1)
+def _load_finding_theme_specs() -> dict[str, FindingThemeSpec]:
+    """Load and validate report theme rules and presentation copy from YAML."""
+    import yaml
+
+    path = _theme_config_path()
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict) or data.get("version") != 1:
+        raise ValueError(f"{path}: version must be 1")
     themes = data.get("themes") if isinstance(data, dict) else None
     if not isinstance(themes, dict):
-        return {}
-    return {
-        str(name): {str(k): str(v) for k, v in spec.items() if isinstance(v, str)}
-        for name, spec in themes.items()
-        if isinstance(spec, dict)
-    }
+        raise ValueError(f"{path}: themes must be a mapping")
+
+    loaded: dict[str, FindingThemeSpec] = {}
+    for name, raw in themes.items():
+        key = str(name).strip()
+        if not key or not isinstance(raw, dict):
+            raise ValueError(f"{path}: each theme must be a named mapping")
+        match = raw.get("match") or {}
+        if not isinstance(match, dict):
+            raise ValueError(f"finding theme {key}.match must be a mapping")
+        raw_groups = match.get("all_term_groups") or []
+        if not isinstance(raw_groups, list):
+            raise ValueError(
+                f"finding theme {key}.match.all_term_groups must be a list"
+            )
+        groups = tuple(
+            _string_tuple(group, field="match.all_term_groups", theme=key)
+            for group in raw_groups
+        )
+        if any(not group for group in groups):
+            raise ValueError(
+                f"finding theme {key}.match.all_term_groups cannot contain an empty group"
+            )
+        required = ("rank", "title", "summary", "recommended_action")
+        missing = [field for field in required if field not in raw]
+        if missing:
+            raise ValueError(f"finding theme {key} is missing: {', '.join(missing)}")
+        spec = FindingThemeSpec(
+            key=key,
+            rank=int(raw["rank"]),
+            title=str(raw["title"]).strip(),
+            summary=str(raw["summary"]).strip(),
+            recommended_action=str(raw["recommended_action"]).strip(),
+            any_terms=_string_tuple(
+                match.get("any_terms"), field="match.any_terms", theme=key
+            ),
+            all_term_groups=groups,
+            catalogs=_string_tuple(
+                match.get("catalogs"), field="match.catalogs", theme=key
+            ),
+        )
+        if not spec.title or not spec.summary or not spec.recommended_action:
+            raise ValueError(f"finding theme {key} presentation fields cannot be empty")
+        if key != "other" and not (
+            spec.any_terms or spec.all_term_groups or spec.catalogs
+        ):
+            raise ValueError(f"finding theme {key} must declare at least one matcher")
+        unknown_catalogs = [
+            catalog for catalog in spec.catalogs if not catalog_names(catalog)
+        ]
+        if unknown_catalogs:
+            raise ValueError(
+                f"finding theme {key} references empty or unknown catalogs: "
+                f"{', '.join(unknown_catalogs)}"
+            )
+        loaded[key] = spec
+    if "other" not in loaded:
+        raise ValueError(f"{path}: themes.other is required")
+    ranks = [spec.rank for spec in loaded.values()]
+    if len(ranks) != len(set(ranks)):
+        raise ValueError(f"{path}: theme ranks must be unique")
+    return dict(sorted(loaded.items(), key=lambda item: item[1].rank))
 
 
 def _finding_theme_recommended_action(theme: str, count: int) -> str:
-    declared = (
-        _load_finding_theme_specs().get(theme, {}).get("recommended_action") or ""
-    ).strip()
+    spec = _load_finding_theme_specs().get(theme)
+    declared = spec.recommended_action if spec else ""
     if declared:
         return declared
     return (
@@ -275,5 +320,6 @@ def _build_recommendations_table(db: CaseDB) -> list[dict[str, Any]]:
 
 
 build_recommendations_table = _build_recommendations_table
+classify_finding_theme = _finding_theme
 finding_theme_counts = _finding_theme_counts
 signal_finding_rows = _signal_finding_rows

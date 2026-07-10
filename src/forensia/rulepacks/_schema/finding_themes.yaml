@@ -1,13 +1,56 @@
+version: 1
+
+# Finding classification and human-facing report copy live together here so
+# Markdown tables and HTML summaries cannot drift. Themes are evaluated by
+# ascending rank. `any_terms` is OR; each `all_term_groups` entry is an AND.
 themes:
   explicit_credentials:
+    rank: 0
+    title: "Explicit credential usage observed"
+    summary: "Credentials were used explicitly (not standard logon); correlate target user, host, process, and time."
     recommended_action: "Separate loopback/local explicit-credential events from remote credential use, then correlate the remaining user, host, process, and logon sequence."
+    match:
+      any_terms: ["4648", "explicit credential"]
   account_lifecycle:
+    rank: 10
+    title: "User account change events"
+    summary: "Account creation, activation, password, or membership changes may enable privilege use or trace manipulation."
     recommended_action: "Review account creation, enablement, password change, and group membership events around the affected users, and verify whether each change has an authorized administrator path."
+    match:
+      any_terms: ["4720", "4722", "4723", "4724", "4728", "4731", "4756", "account lifecycle"]
+      all_term_groups:
+        - ["account", "user"]
   time_change:
+    rank: 20
+    title: "System time change observed"
+    summary: "Time changes affect timeline interpretation; correlate with independent timestamps and surrounding authentication and file events."
     recommended_action: "Anchor the timeline with independent timestamps before and after the time-change event, then re-evaluate nearby authentication, file, and execution activity."
+    match:
+      any_terms: ["4616", "system time", "time change"]
   log_integrity:
+    rank: 30
+    title: "Log stop / clear candidate events"
+    summary: "Log stop or clear candidates do not alone prove wiping; correlate the provider, process, nearby cleanup activity, and shutdown sequence."
     recommended_action: "Correlate log stop, clear, shutdown, and service-control events with the surrounding actor and process evidence before treating the gap as intentional tampering."
+    match:
+      any_terms: ["event log service stopped", " log clear", "log cleared", "1100", "1102"]
   antiforensic_tools:
+    rank: 40
+    title: "Wiping / cleaning tool traces"
+    summary: "Cleanup-tool traces support an anti-forensic hypothesis but do not identify deleted targets without configuration, filesystem, or timeline correlation."
     recommended_action: "Correlate cleanup-tool execution time with log stop/clear events, shutdown records, tool configuration files, and deleted MFT entries to identify likely deletion targets."
+    match:
+      any_terms: ["anti-forensic", "antiforensic"]
+      catalogs: ["antiforensic_tools"]
   data_access:
+    rank: 50
+    title: "Mail / browser / cloud-related traces"
+    summary: "Mail, browser, and cloud traces describe the access and synchronization environment; destinations and affected files still require confirmation."
     recommended_action: "Correlate cloud sync or transfer client execution with document access, archive creation, browser/download traces, and available network or provider logs."
+    match:
+      any_terms: ["ost", "outlook", "browser", "cloud", "drive", "archive staging", "file transfer"]
+  other:
+    rank: 999
+    title: "Other priority findings"
+    summary: "Detailed conclusions require correlating individual evidence with surrounding events."
+    recommended_action: "Correlate the priority findings by user, host, process, and time."

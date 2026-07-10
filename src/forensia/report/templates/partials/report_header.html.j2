@@ -1,0 +1,18 @@
+<header class="header">
+  <p class="eyebrow">Forensia · Incident Analysis</p>
+  <h1>{{ case_name }}</h1>
+  <dl class="header-meta">
+    <div>
+      <dt>Generated</dt>
+      <dd>{{ generated_at }}</dd>
+    </div>
+    <div>
+      <dt>Hosts</dt>
+      <dd>{{ hostnames|join(", ") if hostnames else "Not identified" }}</dd>
+    </div>
+    <div>
+      <dt>Evidence</dt>
+      <dd>{{ "{:,}".format(evtx_count + mft_count) }} records</dd>
+    </div>
+  </dl>
+</header>

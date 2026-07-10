@@ -243,3 +243,40 @@ class RenderHtmlReportTests(unittest.TestCase):
 
         self.assertIn("Explicit credential usage observed (2)", html)
         self.assertNotIn("Logon attempt with explicit credentials (4648): A -&gt; B", html)
+
+    def test_report_footer_uses_catalog_driven_tool_theme(self):
+        now = datetime.now(UTC).replace(tzinfo=None)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            (case.reports_dir / "report.md").write_text(
+                "# Report\n\nBody.", encoding="utf-8"
+            )
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO findings (
+                        finding_id, rule_id, title, summary, severity, confidence,
+                        status, tags, attack, evidence, ai_summary, missing_checks, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "f-cleaner",
+                        "generic-process-observation",
+                        "CCleaner execution observed",
+                        "Application execution trace",
+                        "medium",
+                        0.8,
+                        "accepted",
+                        "[]",
+                        "[]",
+                        "[]",
+                        "",
+                        "[]",
+                        now,
+                    ),
+                )
+                output = render_html_report(case, db)
+                html = output.read_text(encoding="utf-8")
+
+        self.assertIn("Wiping / cleaning tool traces", html)
+        self.assertIn("finding-item--medium", html)

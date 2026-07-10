@@ -59,6 +59,7 @@ where = ["src"]
 forensia = [
     "profiles/*.yaml",
     "report/templates/*.j2",
+    "report/templates/partials/*.j2",
     "report_template/*.md",
     "rulepacks/*/*.yaml",
     "rulepacks/_schema/*.yaml",

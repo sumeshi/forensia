@@ -27,6 +27,10 @@ sample/
 dist/
 test_output*
 templates/
+!src/forensia/report/templates/
+!src/forensia/report/templates/*.j2
+!src/forensia/report/templates/partials/
+!src/forensia/report/templates/partials/*.j2
 
 # Case/runtime outputs and forensic evidence that must not be committed.
 *.duckdb

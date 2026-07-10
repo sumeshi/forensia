@@ -21,6 +21,7 @@ from forensia.report.finding_themes import (
     _finding_theme_rank,
     _finding_theme_summary,
     _finding_theme_title,
+    classify_finding_theme,
 )
 
 
@@ -37,48 +38,12 @@ def _normalize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{key: normalize_value(value) for key, value in row.items()} for row in rows]
 
 
-def _finding_theme(row: dict[str, Any]) -> str:
-    blob = " ".join(
-        str(row.get(key) or "").lower()
-        for key in ("finding_id", "rule_id", "title", "summary")
-    )
-    if "4648" in blob or "explicit credential" in blob:
-        return "explicit_credentials"
-    if "4722" in blob or "4724" in blob or "account lifecycle" in blob:
-        return "account_lifecycle"
-    if "4616" in blob or "system time" in blob:
-        return "time_change"
-    if (
-        "event log service stopped" in blob
-        or " log clear" in blob
-        or "1100" in blob
-        or "1102" in blob
-    ):
-        return "log_integrity"
-    if (
-        "eraser" in blob
-        or "ccleaner" in blob
-        or "anti-forensic" in blob
-        or "antiforensic" in blob
-    ):
-        return "antiforensic_tools"
-    if (
-        "ost" in blob
-        or "outlook" in blob
-        or "browser" in blob
-        or "cloud" in blob
-        or "drive" in blob
-    ):
-        return "data_access"
-    return "other"
-
-
 def _group_findings_for_display(
     findings: list[dict[str, Any]], limit: int = 8
 ) -> list[dict[str, Any]]:
     grouped: dict[str, dict[str, Any]] = {}
     for row in findings:
-        theme = _finding_theme(row)
+        theme = classify_finding_theme(row)
         if theme == "other":
             continue
         item = grouped.setdefault(

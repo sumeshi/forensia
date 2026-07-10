@@ -1,0 +1,19 @@
+{% if finding_groups %}
+  <section class="footer-section" aria-labelledby="key-findings-title">
+    <div class="section-heading">
+      <p class="section-kicker">Evidence-led summary</p>
+      <h2 id="key-findings-title">Key Findings</h2>
+    </div>
+    <div class="finding-list">
+      {% for finding in finding_groups %}
+        <article class="finding-item finding-item--{{ finding.severity|lower }}">
+          <div class="finding-heading">
+            <h3 class="finding-name">{{ finding.title }}</h3>
+            <span class="badge">{{ finding.severity }}</span>
+          </div>
+          <p class="finding-meta">{{ finding.summary }}</p>
+        </article>
+      {% endfor %}
+    </div>
+  </section>
+{% endif %}

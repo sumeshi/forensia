@@ -20,6 +20,7 @@ from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.report.finding_themes import (
     build_recommendations_table,
+    classify_finding_theme,
     finding_theme_counts,
     signal_finding_rows,
 )
@@ -58,6 +59,29 @@ def _insert_finding(
             json.dumps(evidence or []),
         ),
     )
+
+
+class TestFindingThemeConfiguration(unittest.TestCase):
+    """The external theme catalog is the only classifier used by reports."""
+
+    def test_event_and_compound_rules_are_loaded_from_yaml(self) -> None:
+        self.assertEqual(
+            "explicit_credentials",
+            classify_finding_theme({"rule_id": "windows-security-4648"}),
+        )
+        self.assertEqual(
+            "account_lifecycle",
+            classify_finding_theme({"summary": "User account was enabled"}),
+        )
+
+    def test_named_tool_is_expanded_from_the_ioc_catalog(self) -> None:
+        self.assertEqual(
+            "antiforensic_tools",
+            classify_finding_theme({"title": "CCleaner execution observed"}),
+        )
+
+    def test_unmatched_finding_uses_declared_fallback(self) -> None:
+        self.assertEqual("other", classify_finding_theme({"title": "Unclassified"}))
 
 
 class TestFindingThemeCountsConsistency(unittest.TestCase):
