@@ -37,6 +37,3 @@ def normalize_value(value: Any) -> Any:
     return value
 
 
-def canonical_host(value: str) -> str:
-    """Canonicalize host name for aggregation grouping: trim whitespace, uppercase."""
-    return value.strip().upper()

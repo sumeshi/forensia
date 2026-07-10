@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Any
 
 from forensia.ai.check_normalize import summarize_query_result
@@ -85,12 +84,6 @@ def _is_valid_status(status: str) -> bool:
         "insufficient_evidence",
         "wrong_query",
     }
-
-
-@lru_cache(maxsize=1)
-def _load_question_routing() -> list[QuestionSpec]:
-    """Compatibility wrapper around the semantic QuestionSpec registry."""
-    return list(load_question_specs())
 
 
 def _question_routing_rule(
@@ -353,10 +346,6 @@ def _keypoint_catalog(
         seen.add(keypoint)
         catalog.append({"name": keypoint, "description": entry[0]})
     return catalog
-
-
-def _query_template_catalog() -> list[dict[str, Any]]:
-    return query_template_catalog()
 
 
 def _filter_template_catalog_by_section(

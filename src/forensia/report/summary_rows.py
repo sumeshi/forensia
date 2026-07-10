@@ -434,57 +434,6 @@ def _as_int(value: Any) -> int:
         return 0
 
 
-def _first_nonempty(rows: list[dict[str, Any]], key: str) -> str:
-    for row in rows:
-        text = str(row.get(key) or "").strip()
-        if text and text != "-":
-            return text
-    return ""
-
-
-def _sample_labels(rows: list[dict[str, Any]], key: str, limit: int = 3) -> list[str]:
-    labels: list[str] = []
-    for row in rows:
-        text = str(row.get(key) or "").strip()
-        if text and text != "-" and text not in labels:
-            labels.append(text)
-        if len(labels) >= limit:
-            break
-    return labels
-
-
-def _sentence_list(items: list[str]) -> str:
-    clean = [item for item in items if item]
-    if not clean:
-        return ""
-    if len(clean) == 1:
-        return clean[0]
-    return ", ".join(clean[:-1]) + ", and " + clean[-1]
-
-
-def _signal_executable_labels(rows: list[dict[str, Any]], limit: int = 4) -> list[str]:
-    """Pick high-signal executable labels, catalog families first (wipers, cloud, browsers)."""
-    glob_groups = (
-        catalog_exe_globs("antiforensic_tools"),
-        catalog_exe_globs("cloud_sync_artifacts"),
-        catalog_exe_globs("browser_artifacts", "email_artifacts"),
-    )
-    labels: list[str] = []
-    for globs in glob_groups:
-        for row in rows:
-            for key in ("executable_name", "file_name", "artifact"):
-                text = str(row.get(key) or "").strip()
-                if text and text not in labels and matches_exe_globs(text, globs):
-                    labels.append(text)
-                    break
-            if len(labels) >= limit:
-                return labels
-    return labels or (
-        _sample_labels(rows, "executable_name", limit)
-        or _sample_labels(rows, "file_name", limit)
-    )
-
-
 def _timeline_phase_rows(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
     evtx_rows = fetch_records(
         db,

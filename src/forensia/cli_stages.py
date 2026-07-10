@@ -12,8 +12,6 @@ from forensia.api.cache import (
 from forensia.cli_support import (
     _normalize_counts_summary,
     _prune_orphan_reviews,
-    _reset_case_tables,
-    _resolve_template_dir,
     _status,
 )
 from forensia.config import get_llm_settings
@@ -57,37 +55,6 @@ def _make_initial_progress_state(
             "total_body_chars": 0,
         },
     )
-
-
-def _run_init_stage(
-    case: Case,
-    db: CaseDB,
-    out: str,
-    llm_base_url: str | None,
-    model: str | None,
-    template_dir: str | None,
-    init: bool,
-) -> tuple[Case, CaseTasks, Path | None]:
-    """Initialize case, tasks, resolve template root and profile path."""
-    tasks = CaseTasks.for_case(case)
-    template_root = (
-        _resolve_template_dir(case, template_dir) if (llm_base_url and model) else None
-    )
-
-    if init:
-        _reset_case_tables(db)
-        case.clear_runtime_outputs(
-            preserve_memory=True, preserve_ai_logs=True, drop_database=False
-        )
-        case = Case.init(out)
-        tasks = CaseTasks.for_case(case)
-        template_root = (
-            _resolve_template_dir(case, template_dir)
-            if (llm_base_url and model)
-            else None
-        )
-
-    return case, tasks, template_root
 
 
 def _run_ingest_stage(

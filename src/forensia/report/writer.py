@@ -12,8 +12,6 @@ from forensia.report.section_store import fetch_report_sections
 __all__ = [
     "build_report_markdown_from_db",
     "render_written_report",
-    "write_report",
-    "write_report_from_db",
 ]
 
 
@@ -29,27 +27,6 @@ def build_report_markdown_from_db(db: CaseDB, case: Case | None = None) -> str:
     if not ordered:
         return ""
     return "\n\n".join(ordered).strip() + "\n"
-
-
-def write_report(case: Case, filled_sections: dict[str, str]) -> Path:
-    """Write the concatenated filled sections to reports/report.md in section-key order."""
-    ordered = [
-        filled_sections[key].strip()
-        for key in sorted(filled_sections)
-        if filled_sections[key].strip()
-    ]
-    report_md = "\n\n".join(ordered).strip() + "\n"
-    report_path = case.reports_dir / "report.md"
-    report_path.write_text(report_md, encoding="utf-8")
-    return report_path
-
-
-def write_report_from_db(case: Case, db: CaseDB) -> Path:
-    """Read report sections from the database and write the full report to reports/report.md."""
-    report_md = build_report_markdown_from_db(db, case=case)
-    report_path = case.reports_dir / "report.md"
-    report_path.write_text(report_md, encoding="utf-8")
-    return report_path
 
 
 def render_written_report(

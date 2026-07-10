@@ -260,19 +260,6 @@ def _parse_gap_hypothesis_output(
 # hypothesis_manager.py (shared with the unified admission gate).
 # Imported above.
 
-def _is_refuted_hypothesis(hypothesis, resolved_hypotheses: list) -> bool:
-    """Check if a hypothesis matches any resolved (refuted) hypothesis."""
-    for resolved in resolved_hypotheses:
-        if resolved.status == "refuted":
-            # Check similarity - if descriptions are similar, it's refuted content
-            if (hypothesis.description and resolved.description and
-                _normalize_text(hypothesis.description[:80]) == _normalize_text(resolved.description[:80])):
-                return True
-    return False
-
-
-
-
 def _inject_gap_hypotheses(
     db: CaseDB,
     state: SessionState,

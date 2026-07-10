@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from forensia.db.database import CaseDB
-from forensia.db.query import fetch_records, normalize_value
+from forensia.db.query import fetch_records
 from forensia.knowledge import catalog_exe_globs, exe_glob_sql
 from forensia.report.evidence_refs import (
     _extract_needed_evidence,
@@ -142,34 +142,6 @@ def _hypothesis_rows(
         """,
         params,
     )
-
-
-def _hypothesis_count(db: CaseDB, status: str) -> int:
-    row = db.execute(
-        "SELECT COUNT(*) FROM hypotheses WHERE status = ?", (status,)
-    ).fetchone()
-    return int(row[0] or 0) if row else 0
-
-
-def _section_gap_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for row in fetch_records(
-        db, "SELECT section_key, gaps FROM report_sections ORDER BY section_key"
-    ):
-        gaps = normalize_value(row.get("gaps")) or []
-        if not isinstance(gaps, list):
-            continue
-        for gap in gaps:
-            text = str(gap or "").strip()
-            if text:
-                rows.append(
-                    {
-                        "section": row.get("section_key"),
-                        "gap": text,
-                        "next_step": "Regenerate or verify this section with supporting evidence.",
-                    }
-                )
-    return rows[:limit]
 
 
 def _build_gaps_unresolved_table(db: CaseDB) -> list[dict[str, Any]]:

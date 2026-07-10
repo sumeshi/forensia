@@ -14,7 +14,6 @@ from forensia.ai.llm_client import LLMServerUnavailableError, chat_completion
 from forensia.ai.report_gap import _build_report_status
 from forensia.ai.section_agent import (
     async_run_section_block_agent,
-    run_section_block_agent,
 )
 from forensia.ai.section_exec import SectionBlockResult
 from forensia.api.cache import write_api_snapshots
@@ -342,106 +341,6 @@ async def _render_section_blocks(
     except asyncio.CancelledError:
         _log_report(f"{section_key} — cancelled")
         raise
-
-
-def _render_section_from_request(
-    *,
-    db: CaseDB,
-    request: dict[str, Any],
-    base_url: str,
-    model: str,
-    max_queries_per_section: int = 3,
-    audit_callback: Callable[[list[dict[str, str]], str], None] | None = None,
-) -> tuple[str, list[dict[str, Any]], list[str]]:
-    """Iterate block requests through the section agent and stitch them into a single section body with evidence results."""
-    memory = MemoryManager(
-        request["case"],
-        summarize=lambda messages, m: chat_completion(
-            messages=messages, model=m, base_url=base_url
-        ),
-    )
-    blocks: list[dict[str, Any]] = list(request.get("block_requests") or [])
-    rendered_bodies: dict[int, str] = {}
-    block_gaps: list[str] = []
-    block_outline: list[dict] = []
-    all_evidence_results: list[dict[str, Any]] = []
-    table_digest_parts: list[str] = []
-    # Two-pass render: deterministic table blocks first so narrative blocks
-    # can consume their data; assembly keeps template order.
-    for index in _table_first_order(blocks):
-        block = blocks[index]
-        block_mode = str(block.get("mode") or "").strip().casefold()
-        is_structured_mode = block_mode in {"question", "benchmark", "structured"} or bool(
-            block.get("answer_spec") or block.get("question")
-        )
-        block_result = None
-        if block_mode == "table":
-            table_body = render_table_block(db, str(block.get("builder") or ""))
-            if table_body is not None:
-                block_result = SectionBlockResult(
-                    body=table_body,
-                    evidence_results=[],
-                    iterations=0,
-                    status="answered",
-                )
-                _append_table_digest(
-                    table_digest_parts, str(block.get("heading") or ""), table_body
-                )
-        if block_result is None:
-            block_result = run_section_block_agent(
-                case=request["case"],
-                db=db,
-                section_key=str(request["section_key"]),
-                title=str(request["title"]),
-                block_heading=str(block.get("heading") or ""),
-                template_body=str(block.get("template_body") or ""),
-                context_sections={}
-                if is_structured_mode
-                else (request.get("context_sections") or {}),
-                current_section_outline=[] if is_structured_mode else block_outline,
-                report_brief=request.get("report_brief") or {},
-                base_url=base_url,
-                model=model,
-                memory=memory_for_section(memory, structured_mode=is_structured_mode),
-                max_queries_per_section=max_queries_per_section,
-                evidence_keypoints=list(block.get("evidence_keypoints") or []),
-                question_mode=is_structured_mode,
-                question_id=str(
-                    block.get("question_id") or block.get("answer_id") or ""
-                ),
-                answer_id=str(
-                    block.get("answer_id") or block.get("question_id") or ""
-                ),
-                answer_spec=str(block.get("answer_spec") or ""),
-                question=str(block.get("question") or ""),
-                section_table_digest=""
-                if is_structured_mode
-                else _section_table_digest(table_digest_parts),
-                audit_callback=audit_callback,
-            )
-        block_body = block_result.body
-        heading = str(block.get("heading") or "").strip()
-        if heading and not body_starts_with_heading(block_body, heading):
-            block_body = f"## {heading}\n\n{block_body}"
-        rendered_bodies[index] = block_body
-        if heading:
-            block_outline.append(
-                {
-                    "heading": heading,
-                    "summary": (block_body.split("\n", 1)[0])[:120],
-                }
-            )
-        all_evidence_results.extend(block_result.evidence_results)
-        block_level_gaps, _ = _verify_block_output(db, block_body)
-        for gap in block_level_gaps:
-            label = f"{heading}: {gap}" if heading else gap
-            if label not in block_gaps:
-                block_gaps.append(label)
-    rendered_blocks = [rendered_bodies[index] for index in sorted(rendered_bodies)]
-    body = assemble_section_body(
-        str(request.get("template_preamble") or ""), rendered_blocks
-    )
-    return body, all_evidence_results, block_gaps
 
 
 def _persist_section_result(

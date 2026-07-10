@@ -17,7 +17,6 @@ from typing import Any
 
 import yaml
 
-from forensia.core.log import log as _log
 from forensia.report.quality_gates import _detect_body_language
 
 _SCHEMA_DIR = Path(__file__).parent.parent / "rulepacks" / "_schema"
@@ -284,27 +283,3 @@ def validate_report(
     return all_findings
 
 
-def validate_report_file(
-    brief_path: str | Path,
-    *,
-    report_path: str | Path | None = None,
-    expected_language: str | None = None,
-) -> list[ValidationFinding]:
-    """Load a ``report_brief.json`` (and optional ``report.md``) and validate."""
-    brief: dict[str, Any] = {}
-    with open(brief_path) as f:
-        brief = json.load(f)
-    body: str | None = None
-    if report_path:
-        with open(report_path) as f:
-            body = f.read()
-    findings = validate_report(
-        brief, report_body=body, expected_language=expected_language
-    )
-
-    for finding in findings:
-        _log(
-            "VALIDATION",
-            f"[{finding.severity.upper()}] {finding.check_name}: {finding.message}",
-        )
-    return findings

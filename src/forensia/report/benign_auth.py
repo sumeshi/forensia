@@ -54,11 +54,6 @@ def _load_auth_event_ids() -> frozenset[str]:
     return _FALLBACK_AUTH_EVENT_IDS
 
 
-def clear_benign_auth_caches() -> None:
-    """Clear cached schema loads in this module. Call in test teardowns."""
-    _load_auth_event_ids.cache_clear()
-
-
 def _normalise_ip(value: Any) -> str:
     """Normalise an IP / host value to a lowercase string for comparison."""
     if value is None:

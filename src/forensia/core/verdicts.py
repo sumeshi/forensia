@@ -39,31 +39,3 @@ def assert_valid_verdict(verdict: str, category: str) -> None:
         )
 
 
-def map_verdict(verdict: str, mapping_name: str) -> str | None:
-    """Map a verdict value across taxonomy domains using a named mapping table."""
-    tax = _load_taxonomy()
-    mapping = tax.get("mapping", {})
-    table = mapping.get(mapping_name, {})
-    if not isinstance(table, dict):
-        return None
-    return table.get(verdict)
-
-
-def hypothesis_to_section(verdict: str) -> str | None:
-    return map_verdict(verdict, "hypothesis_to_section")
-
-
-def section_to_question(verdict: str) -> str | None:
-    return map_verdict(verdict, "section_to_question")
-
-
-def question_to_claim(verdict: str) -> str | None:
-    return map_verdict(verdict, "question_to_claim")
-
-
-def section_to_structured(verdict: str) -> str | None:
-    return map_verdict(verdict, "section_to_structured")
-
-
-def structured_to_claim(verdict: str) -> str | None:
-    return map_verdict(verdict, "structured_to_claim")

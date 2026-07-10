@@ -166,79 +166,7 @@ def _lang_instruction() -> str:
     )
 
 
-def _output_language() -> str:
-    return str(get_llm_settings()["output_language"]).lower()
-
-
 _RULE_INSTANCE_SUFFIX = re.compile(r"-(\d{4,})$")
-
-
-def _rule_pattern(finding_id: str) -> str:
-    """Collapse '...-0001' / '...-0042' suffix to '-*' so per-instance findings group."""
-    if not finding_id:
-        return ""
-    return _RULE_INSTANCE_SUFFIX.sub("-*", finding_id)
-
-
-def _slim_findings(
-    items: list[dict[str, Any]], max_findings: int
-) -> list[dict[str, Any]]:
-    """Compact a list of findings for prompt injection.
-
-    Findings sharing the same rule pattern (e.g. windows-security-4648-...-0001..0015)
-    collapse into a single summary row with `count` and a sample. This avoids dumping
-    the same alert N times when one rule fires repeatedly.
-    """
-    fields = ("finding_id", "title", "severity", "confidence", "status", "summary")
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    order: list[str] = []
-    for item in items:
-        pattern = _rule_pattern(str(item.get("finding_id") or ""))
-        key = pattern or str(item.get("finding_id") or "")
-        if key not in grouped:
-            grouped[key] = []
-            order.append(key)
-        grouped[key].append(item)
-
-    slimmed: list[dict[str, Any]] = []
-    for key in order:
-        bucket = grouped[key]
-        first = bucket[0]
-        row = {field: first.get(field) for field in fields}
-        if len(bucket) > 1:
-            row["finding_id"] = key
-            row["count"] = len(bucket)
-            row["sample_finding_id"] = first.get("finding_id")
-            last = bucket[-1]
-            if str(last.get("finding_id")) != str(first.get("finding_id")):
-                row["last_finding_id"] = last.get("finding_id")
-        slimmed.append(row)
-        if len(slimmed) >= max_findings:
-            break
-    return slimmed
-
-
-def _slim_hypothesis_dump(hypothesis: Any) -> dict[str, Any]:
-    """Drop null / empty-collection fields when serializing a Hypothesis for prompts.
-
-    The full Pydantic dump includes a lot of None / [] / '' fields that cost tokens
-    without carrying signal for the planner LLM. This trims them.
-    """
-    if hypothesis is None:
-        return {}
-    raw = (
-        hypothesis.model_dump()
-        if hasattr(hypothesis, "model_dump")
-        else dict(hypothesis)
-    )
-    out: dict[str, Any] = {}
-    for key, value in raw.items():
-        if value is None:
-            continue
-        if isinstance(value, (list, dict, str)) and len(value) == 0:
-            continue
-        out[key] = value
-    return out
 
 
 def _truncate_context_sections(
@@ -514,23 +442,6 @@ def _format_evidence_coverage(report_brief: dict[str, Any] | None) -> str:
         if compact:
             lines.append(f"- {section_key}: {compact}")
     return "\n".join(lines)
-
-
-def _slim_history(
-    items: list[dict[str, Any]], max_items: int = 10
-) -> list[dict[str, Any]]:
-    """Project history items to only the fields needed for broad planning context."""
-    slimmed: list[dict[str, Any]] = []
-    for item in items[:max_items]:
-        slimmed.append(
-            {
-                "query_id": item.get("query_id"),
-                "hypothesis_id": item.get("hypothesis_id"),
-                "verdict": item.get("verdict"),
-                "rationale": item.get("summary"),
-            }
-        )
-    return slimmed
 
 
 def _rows_to_markdown_table(rows: list[dict[str, Any]], max_rows: int = 30) -> str:

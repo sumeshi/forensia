@@ -34,11 +34,6 @@ def _resolve_structured_expected_shape(block_heading: str) -> dict | None:
     return spec.expected_answer_shape if spec is not None else None
 
 
-def _resolve_question_expected_shape(block_heading: str) -> dict | None:
-    """Compatibility wrapper for older question-block terminology."""
-    return _resolve_structured_expected_shape(block_heading)
-
-
 def _format_structured_answer(
     classification: dict,
     picked_rows: list[dict],
@@ -546,52 +541,6 @@ def _compact_narrative_value(value: Any, *, max_chars: int = 90) -> str:
     return text
 
 
-def _row_narrative(row: dict[str, Any]) -> str:
-    preferred_keys = (
-        "timestamp",
-        "event_id",
-        "computer",
-        "target_user",
-        "subject_user",
-        "src_ip",
-        "logon_type",
-        "process_name",
-        "command_line",
-        "service_name",
-        "executable_name",
-        "file_name",
-        "file_path",
-        "finding_id",
-        "title",
-        "severity",
-        "count",
-        "event_count",
-    )
-    parts: list[str] = []
-    seen: set[str] = set()
-    for key in preferred_keys:
-        if key not in row:
-            continue
-        value = _compact_narrative_value(row.get(key))
-        if not value:
-            continue
-        seen.add(key)
-        parts.append(f"{key}={value}")
-        if len(parts) >= 5:
-            break
-    if len(parts) < 3:
-        for key, raw_value in row.items():
-            if key in seen or str(key).startswith("_"):
-                continue
-            value = _compact_narrative_value(raw_value)
-            if not value:
-                continue
-            parts.append(f"{key}={value}")
-            if len(parts) >= 5:
-                break
-    return ", ".join(parts)
-
-
 def _result_source_label(result: dict[str, Any]) -> str:
     for key in ("keypoint", "source_kind", "source_ref", "description"):
         value = _compact_narrative_value(result.get(key), max_chars=64)
@@ -600,28 +549,6 @@ def _result_source_label(result: dict[str, Any]) -> str:
                 return "evidence_query"
             return value
     return "unknown_source"
-
-
-def _result_count_summary(
-    collected_results: list[dict[str, Any]],
-) -> tuple[int, list[str], list[str]]:
-    total_rows = 0
-    positive: list[str] = []
-    zero: list[str] = []
-    for result in collected_results:
-        if str(result.get("kind") or "rows") != "rows":
-            continue
-        label = _result_source_label(result)
-        try:
-            count = int(result.get("row_count") or 0)
-        except TypeError, ValueError:
-            count = 0
-        total_rows += max(count, 0)
-        target = positive if count > 0 else zero
-        item = f"{label}={count}"
-        if item not in target:
-            target.append(item)
-    return total_rows, positive, zero
 
 
 def _representative_ids(

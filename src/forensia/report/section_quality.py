@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from functools import cache, lru_cache
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -32,8 +32,6 @@ from forensia.report.quality_gates import (
 from forensia.report.template_parsing import (
     GAP_PATTERN,
     RAW_EVIDENCE_HEADING_PATTERN,
-    TemplateMeta,
-    parse_frontmatter,
 )
 
 
@@ -258,25 +256,6 @@ def _collect_section_coverage(db: CaseDB) -> dict[str, list[dict[str, Any]]]:
     }
 
 
-def _coverage_table_markdown(rows: list[dict[str, Any]]) -> str:
-    """Render a list of coverage rows as a Markdown table."""
-    if not rows:
-        return ""
-    header = "| Source | Queried | Rows | Used in answer |"
-    separator = "|---|---|---|---|"
-    lines = []
-    for row in rows:
-        rows_value = row.get("rows")
-        rows_text = "-" if rows_value in {None, ""} else str(rows_value)
-        lines.append(
-            f"| {str(row.get('source') or '').replace('|', '\\|')} | "
-            f"{str(row.get('queried') or 'No')} | "
-            f"{rows_text} | "
-            f"{str(row.get('used_in_answer') or 'No')} |"
-        )
-    return "\n".join([header, separator, *lines])
-
-
 def _validate_body_evidence_ids(db: CaseDB, body: str) -> list[str]:
     """Check that every evidence_id referenced in the body exists in evidence tables."""
     evidence_ids = sorted(set(EVIDENCE_ID_PATTERN.findall(body)))
@@ -317,24 +296,6 @@ def _verify_block_output(db: CaseDB, body: str) -> tuple[list[str], float]:
             gaps.append(note)
         confidence = min(confidence, 0.3)
     return gaps, confidence
-
-
-@cache
-def _load_template_meta(section_key: str) -> TemplateMeta:
-    """Load template frontmatter metadata for a section key from the packaged template."""
-    from importlib import resources
-
-    try:
-        text = (
-            resources.files("forensia")
-            .joinpath(f"report_template/{section_key}.md")
-            .read_text(encoding="utf-8")
-        )
-    except Exception:
-        return TemplateMeta()
-    meta = parse_frontmatter(text)
-    behaviors = tuple(meta.get("behaviors") or [])
-    return TemplateMeta(behaviors=behaviors)
 
 
 def _strip_narrative_status_lines(body: str) -> str:
@@ -527,12 +488,6 @@ def _sanitize_raw_evidence_body(section_key: str, body: str) -> tuple[str, bool]
     ):
         sanitized = re.sub(r"\n{3,}", "\n\n", sanitized)
     return sanitized, removed
-
-
-# ====================================================================
-# ORCHESTRATION (cont.) — write_report, render_written_report
-# Lines: ~6000-6078
-# ====================================================================
 
 
 def collect_gaps(filled_sections: dict[str, str]) -> list[str]:

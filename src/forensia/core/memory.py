@@ -28,10 +28,6 @@ class MemoryPaths:
         return f"memory/hypotheses/{hypothesis_id}.md"
 
     @staticmethod
-    def fact_detail(index: int) -> str:
-        return f"memory/details/fact-{index:03d}.md"
-
-    @staticmethod
     def entity(entity_type: str, name: str) -> str:
         return f"memory/entities/{entity_type}/{name}.md"
 

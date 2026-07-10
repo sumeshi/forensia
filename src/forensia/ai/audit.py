@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import UTC, datetime
 from typing import Any
 
 from forensia.core.case import Case
@@ -30,20 +29,6 @@ class LLMCallLogger:
             phase = key.split("-", 1)[1] if "-" in key else key
             result[phase] = result.get(phase, 0) + count
         return result
-
-    def log_prompt_budget(
-        self, phase: str, section_key: str, total_chars: int, part_sizes: dict[str, int]
-    ) -> None:
-        """Log system prompt budget telemetry."""
-        entry = {
-            "event": "prompt_budget",
-            "phase": phase,
-            "section_key": section_key,
-            "total_chars": total_chars,
-            "part_sizes": part_sizes,
-            "timestamp": datetime.now(UTC).isoformat(),
-        }
-        self._entries.append(entry)
 
     def write_summary(self) -> None:
         """Write per-phase call counts to ai_logs/<session>/summary.json."""

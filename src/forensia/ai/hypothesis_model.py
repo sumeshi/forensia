@@ -330,20 +330,6 @@ def _hypothesis_similarity(left: str, right: str) -> float:
     return max(surface_score, semantic_score)
 
 
-def _find_hypothesis_by_description(
-    hypotheses: list[Hypothesis],
-    description: str,
-) -> Hypothesis | None:
-    """Find a hypothesis in the list by exact normalized description match."""
-    target = _normalize_hypothesis_description(description)
-    if not target:
-        return None
-    for hypothesis in hypotheses:
-        if _normalize_hypothesis_description(hypothesis.description) == target:
-            return hypothesis
-    return None
-
-
 def _best_hypothesis_match(
     hypotheses: list[Hypothesis],
     description: str,

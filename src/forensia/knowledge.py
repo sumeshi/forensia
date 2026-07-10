@@ -492,13 +492,3 @@ def load_event_class_definitions() -> dict[str, dict[str, Any]]:
 # ── Cache management ───────────────────────────────────────────────────────
 
 
-def clear_caches() -> None:
-    """Clear all cached schema loads. Call in test teardowns to avoid cross-test leakage."""
-    load_dfir_yamls.cache_clear()
-    load_event_id_hints.cache_clear()
-    load_benign_context_rules.cache_clear()
-    load_finding_benign_context_rules.cache_clear()
-    load_schema_hints.cache_clear()
-    load_question_routing_raw.cache_clear()
-    ioc_catalog.cache_clear()
-    load_event_class_definitions.cache_clear()
