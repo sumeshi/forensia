@@ -10,6 +10,7 @@ from forensia.knowledge import catalog_exe_globs, exe_glob_sql
 from forensia.report.evidence_refs import (
     _extract_needed_evidence,
 )
+from forensia.report.formats import load_report_formats
 from forensia.report.report_brief import (
     _annotate_confirmed_hypotheses,
     _hypothesis_source_rule_ids,
@@ -35,45 +36,22 @@ def _forensic_gap_rows(db: CaseDB) -> list[dict[str, Any]]:
     except Exception:
         families = set()
 
+    gap_specs = load_report_formats(db.case.report_template_dir)["gaps"]
     gaps: list[dict[str, Any]] = []
     if "cloud_sync" in families:
-        gaps.append(
-            {
-                "gap": "Direct evidence of cloud sync destinations and targets",
-                "why_it_matters": "Cloud sync client traces show the environment exists but do not directly show sync targets, destinations, or completion status.",
-                "next_step": "Correlate sync client logs, local DB, and network logs.",
-            }
-        )
+        gaps.append(dict(gap_specs["cloud_sync"]))
     if "mailbox" in families:
-        gaps.append(
-            {
-                "gap": "Email content and send/receive verification",
-                "why_it_matters": "Email data file existence shows client usage but content and attachment movement need other evidence.",
-                "next_step": "Correlate email data file analysis results and server-side logs if available.",
-            }
-        )
+        gaps.append(dict(gap_specs["mailbox"]))
     antiforensic_findings = _count_findings_with_tag(
         db, "benign-context:", negate=True, tag_like="%antiforensic%"
     )
     if antiforensic_findings or _has_antiforensic_executions(db):
-        gaps.append(
-            {
-                "gap": "Scope of wiping tool execution",
-                "why_it_matters": "Cleaning tool execution traces are a strong candidate but do not reveal deletion targets or execution details alone.",
-                "next_step": "Correlate tool settings, task files, deleted MFT entries, and log stop times.",
-            }
-        )
+        gaps.append(dict(gap_specs["antiforensic"]))
     if network and not (
         _as_int(network[0].get("external_src_rows"))
         or _as_int(network[0].get("external_dst_rows"))
     ):
-        gaps.append(
-            {
-                "gap": "Insufficient normalized network evidence",
-                "why_it_matters": "EVTX alone is insufficient to determine external communication.",
-                "next_step": "Ingest firewall/proxy/DNS/cloud client logs if available.",
-            }
-        )
+        gaps.append(dict(gap_specs["network"]))
     return gaps
 
 

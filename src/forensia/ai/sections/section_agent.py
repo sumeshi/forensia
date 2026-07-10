@@ -209,7 +209,9 @@ def _try_question_structured_answer(
     if structured_answer is None:
         return None
     body = _render_structured_answer_markdown(
-        structured_answer, ctx.block_heading
+        structured_answer,
+        ctx.block_heading,
+        template_dir=ctx.case.report_template_dir,
     )
     body = _postprocess_block_body(
         body,
@@ -476,4 +478,3 @@ async def async_run_section_block_agent(
         audit_callback=audit_callback,
         review_audit_callback=review_audit_callback,
     )
-

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from forensia.ai.sections.section_answers import _is_effectively_empty_body
@@ -32,6 +33,39 @@ from forensia.report.section_finalize import (
 
 class SectionNarrativeTests(unittest.TestCase):
     """Narration fallbacks, block assembly, markdown preprocessing, question routing."""
+
+    def test_template_dir_overrides_report_wording_and_headings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            template_dir = Path(tmpdir)
+            formats_dir = template_dir / "_formats"
+            formats_dir.mkdir()
+            (formats_dir / "report.yaml").write_text(
+                """version: 1
+narrative_fallback:
+  unsupported: "CUSTOM EMPTY: {heading}"
+structured_answer:
+  headings:
+    answer: Custom Answer
+""",
+                encoding="utf-8",
+            )
+            fallback = _fallback_narrative_body(
+                heading="Network Activity",
+                status="not_found",
+                collected_results=[],
+                flat_evidence=[],
+                actual_query_count=1,
+                actual_query_row_counts=[0],
+                template_dir=template_dir,
+            )
+            structured = render_structured_answer_markdown(
+                {"id": "Q1", "status": "answered", "answer": ["value"]},
+                "Question",
+                template_dir=template_dir,
+            )
+
+        self.assertEqual("CUSTOM EMPTY: Network Activity", fallback)
+        self.assertIn("### Custom Answer", structured)
 
     def test_status_only_narration_gets_deterministic_fallback(self) -> None:
         self.assertTrue(_is_effectively_empty_body("**Status:** answered"))

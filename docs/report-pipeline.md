@@ -59,7 +59,13 @@ brief:
 
 The only contract field the current writer reads from frontmatter is `behaviors` (`brief.top_findings.ranking` is read by the report brief builder). Putting `section` / `title` / `prompt` / `evidence_queries` there does not affect durable keys or evidence access. The section title is extracted from the body heading, and per-block requirements are expressed via `##` headings and HTML comment hints (`evidence_keypoints` / `mode` / `answer_id` / `answer_spec` / `question`, plus `benchmark_id` for legacy evaluation template compatibility).
 
-### 2.3 Section identity and ordering
+### 2.3 Report wording and format policy
+
+User-editable deterministic report wording lives in `report_template/_formats/report.yaml`. It controls narrative fallback sentences, structured-answer headings and preview limits, and forensic-gap copy. `forensia templates-export <dir>` exports this file with the Markdown section templates, and `--template-dir <dir>` loads `_formats/report.yaml` from that directory as a recursive override of packaged defaults.
+
+Keep data selection, escaping, evidence validation, and Markdown table construction in Python. Move wording or limits to `_formats/` only when a report author may reasonably customize them. Internal logs, debug messages, SQL, and evidence-dependent branching remain code.
+
+### 2.4 Section identity and ordering
 
 - Templates are discovered via the filename pattern `[0-9]*_*.md`
 - Refill order is the lexical order of filenames
@@ -68,7 +74,7 @@ The only contract field the current writer reads from frontmatter is `behaviors`
 
 Treat the section key as a **stable identifier**. Renaming a file is less impactful than changing a key.
 
-### 2.4 What templates declare / do not declare
+### 2.5 What templates declare / do not declare
 
 Declare:
 - Report structure
@@ -84,7 +90,7 @@ Do not declare:
 
 Template authoring is kept in English. Scaffold headings, table headers, comments, and placeholders are all English. The output language is controlled at runtime via `LLM_OUTPUT_LANGUAGE`.
 
-### 2.5 DB integration
+### 2.6 DB integration
 
 - Filled section bodies are UPSERTed into `report_sections`
 - confidence is determined from the body's initial score, quality gates, evidence_id validation, claim support, and extra gaps
@@ -94,7 +100,7 @@ Template authoring is kept in English. Scaffold headings, table headers, comment
 - If a block has `question` / `answer_spec` / `mode: structured`, `questions.py` resolves it to a QuestionSpec in `question_routing.yaml` and saves the result to `section_questions`. Case-wide probes are saved with `section_key='__case_probe__'`
 - Structured answers are persisted to `reports/structured/answers.json` and CSV, and per-section resolution results are dumped to `reports/debug/<section>_questions.json`
 
-### 2.6 Separation of bundled templates and evaluation templates
+### 2.7 Separation of bundled templates and evaluation templates
 
 | Location | Purpose |
 |---|---|

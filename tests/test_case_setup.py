@@ -82,12 +82,16 @@ class CaseSetupTests(unittest.TestCase):
             self.assertTrue(
                 (case.report_template_dir / "5_recommendations.md").exists()
             )
+            self.assertTrue(
+                (case.report_template_dir / "_formats" / "report.yaml").exists()
+            )
 
     def test_export_packaged_report_templates_writes_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             written = export_packaged_report_templates(tmpdir)
             self.assertGreaterEqual(len(written), 6)
             self.assertTrue((Path(tmpdir) / "1_overview.md").exists())
+            self.assertTrue((Path(tmpdir) / "_formats" / "report.yaml").exists())
 
     def test_templates_export_command_writes_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -95,6 +99,7 @@ class CaseSetupTests(unittest.TestCase):
             result = runner.invoke(cli_module.app, ["templates-export", tmpdir])
             self.assertEqual(0, result.exit_code, result.output)
             self.assertTrue((Path(tmpdir) / "1_overview.md").exists())
+            self.assertTrue((Path(tmpdir) / "_formats" / "report.yaml").exists())
 
     def test_investigate_command_accepts_template_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -140,7 +140,11 @@ def _format_structured_answer(
     )
 
     _persist_structured_answer(case, normalized_answer)
-    return _render_structured_answer_markdown(normalized_answer, block_heading)
+    return _render_structured_answer_markdown(
+        normalized_answer,
+        block_heading,
+        template_dir=getattr(case, "report_template_dir", None),
+    )
 
 
 def _format_question_answer(
@@ -580,4 +584,3 @@ def _representative_ids(
         add_evidence(row.get("evidence_id"))
         add_finding(row.get("finding_id"))
     return evidence_ids[:3], finding_ids[:3]
-

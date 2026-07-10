@@ -27,6 +27,7 @@ from forensia.knowledge import (
     catalog_values,
 )
 from forensia.report.evidence_refs import _report_keypoint_rows, _sql_like_any
+from forensia.report.formats import load_report_formats
 from forensia.report.markdown import (
     _is_human_report_hidden_column,
     _local_time_from_utc,
@@ -207,15 +208,13 @@ def _resolve_max_rows() -> int:
 
 
 STRUCTURED_MARKDOWN_MAX_ROWS = _resolve_max_rows()
-STRUCTURED_MARKDOWN_MAX_LIST_ITEMS = 5
-STRUCTURED_MARKDOWN_MAX_CELL_CHARS = 240
-
-
-def _render_answer_cell(value: Any) -> str:
+def _render_answer_cell(value: Any, format_spec: dict[str, Any]) -> str:
+    max_list_items = max(1, int(format_spec["max_list_items"]))
+    max_cell_chars = max(30, int(format_spec["max_cell_chars"]))
     if isinstance(value, (list, tuple)):
         parts = [str(part).strip() for part in value if str(part).strip()]
-        extra = max(len(parts) - STRUCTURED_MARKDOWN_MAX_LIST_ITEMS, 0)
-        value = "; ".join(parts[:STRUCTURED_MARKDOWN_MAX_LIST_ITEMS])
+        extra = max(len(parts) - max_list_items, 0)
+        value = "; ".join(parts[:max_list_items])
         if extra:
             value = f"{value}; ... (+{extra} more)" if value else f"... (+{extra} more)"
     elif isinstance(value, dict):
@@ -226,11 +225,9 @@ def _render_answer_cell(value: Any) -> str:
         .replace("\n", " ")
         .strip()
     )
-    if len(text) > STRUCTURED_MARKDOWN_MAX_CELL_CHARS:
-        return (
-            text[: STRUCTURED_MARKDOWN_MAX_CELL_CHARS - 15].rstrip()
-            + " ... [truncated]"
-        )
+    if len(text) > max_cell_chars:
+        suffix = str(format_spec["truncated_cell_suffix"])
+        return text[: max_cell_chars - len(suffix)].rstrip() + suffix
     return text
 
 
@@ -239,11 +236,13 @@ def _render_answer_block(
     columns: Any = None,
     *,
     max_rows: int | None = None,
+    format_spec: dict[str, Any] | None = None,
 ) -> list[str]:
+    format_spec = format_spec or load_report_formats()["structured_answer"]
     if max_rows is None:
         max_rows = _resolve_max_rows()
     if not items:
-        return ["- no answer"]
+        return [str(format_spec["empty_answer"])]
     dicts = [item for item in items if isinstance(item, dict)]
     if dicts and len(dicts) == len(items):
         keys = [
@@ -252,12 +251,16 @@ def _render_answer_block(
             if not _is_human_report_hidden_column(key)
         ]
         if not keys:
-            return ["- no answer"]
+            return [str(format_spec["empty_answer"])]
         header = "| " + " | ".join(keys) + " |"
         divider = "| " + " | ".join(["---"] * len(keys)) + " |"
         preview = dicts[:max_rows] if max_rows > 0 else dicts
         body_rows = [
-            "| " + " | ".join(_render_answer_cell(item.get(key)) for key in keys) + " |"
+            "| "
+            + " | ".join(
+                _render_answer_cell(item.get(key), format_spec) for key in keys
+            )
+            + " |"
             for item in preview
         ]
         lines = [header, divider, *body_rows]
@@ -265,7 +268,9 @@ def _render_answer_block(
             lines.extend(
                 [
                     "",
-                    f"_Showing {len(preview)} of {len(dicts)} rows. Full data is available in the structured JSON/CSV export._",
+                    str(format_spec["row_preview_note"]).format(
+                        shown=len(preview), total=len(dicts)
+                    ),
                 ]
             )
         return lines
@@ -325,8 +330,12 @@ def _render_interpretation_template(template: str, answer: dict[str, Any]) -> st
 
 
 def _structured_answer_interpretation(
-    answer: dict[str, Any], block_heading: str, tz_name: str | None = None
+    answer: dict[str, Any],
+    block_heading: str,
+    tz_name: str | None = None,
+    format_spec: dict[str, Any] | None = None,
 ) -> str:
+    format_spec = format_spec or load_report_formats()["structured_answer"]
     rows = [item for item in list(answer.get("answer") or []) if isinstance(item, dict)]
     status = str(answer.get("status") or "").strip().lower()
     tz_basis = ""
@@ -335,11 +344,12 @@ def _structured_answer_interpretation(
     elif tz_name == "UTC":
         tz_basis = " (UTC, timezone undetermined)"
     if not rows:
-        base = (
-            "No rows directly matching this question were found. Before concluding 'not found', verify that the ingested logs and time range are sufficient."
+        key = (
+            "not_found_interpretation"
             if status == "not_found"
-            else "Insufficient rows were retrieved for this question. Review the missing reason in the table and determine whether additional evidence exists."
+            else "insufficient_interpretation"
         )
+        base = str(format_spec[key])
         return base + tz_basis
 
     row_count = len(rows)
@@ -348,17 +358,27 @@ def _structured_answer_interpretation(
     template = templates.get(answer_spec)
     if template:
         return _render_interpretation_template(template, answer) + tz_basis
-    return f"This question has {row_count} rows of structured evidence. The table supports the answer, but evaluate conclusions by correlating time, host, user, and related artifacts.{tz_basis}"
+    return str(format_spec["default_interpretation"]).format(
+        row_count=row_count, timezone_basis=tz_basis
+    )
 
 
 def _render_structured_answer_markdown(
-    answer: dict[str, Any], block_heading: str, tz_name: str | None = None
+    answer: dict[str, Any],
+    block_heading: str,
+    tz_name: str | None = None,
+    template_dir: str | Path | None = None,
 ) -> str:
+    format_spec = load_report_formats(template_dir)["structured_answer"]
+    headings = format_spec["headings"]
+    labels = format_spec["labels"]
     answer_block = _render_answer_block(
-        list(answer.get("answer") or []), answer.get("columns")
+        list(answer.get("answer") or []),
+        answer.get("columns"),
+        format_spec=format_spec,
     )
     interpretation = _structured_answer_interpretation(
-        answer, block_heading, tz_name=tz_name
+        answer, block_heading, tz_name=tz_name, format_spec=format_spec
     )
     missing_lines = [
         f"- {item}"
@@ -373,33 +393,33 @@ def _render_structured_answer_markdown(
     if answer.get("csv_path"):
         data_lines.append(f"- CSV: {answer.get('csv_path')}")
     if not data_lines:
-        data_lines = ["- none"]
+        data_lines = [f"- {labels['none']}"]
     if not query_lines:
-        query_lines = ["- none"]
+        query_lines = [f"- {labels['none']}"]
     lines = [
         f"## {block_heading}",
         "",
-        f"**ID:** {str(answer.get('id') or _structured_block_id(block_heading))}",
-        f"**Status:** {str(answer.get('status') or 'insufficient_evidence')}",
+        f"**{labels['id']}:** {str(answer.get('id') or _structured_block_id(block_heading))}",
+        f"**{labels['status']}:** {str(answer.get('status') or 'insufficient_evidence')}",
         "",
-        "### Interpretation",
+        f"### {headings['interpretation']}",
         interpretation,
         "",
-        "### Answer",
+        f"### {headings['answer']}",
         *answer_block,
         "",
     ]
     status = str(answer.get("status") or "").strip().lower()
     if status != "answered" or missing_lines:
-        lines.append("### Missing Reason")
-        lines.extend(missing_lines if missing_lines else ["- none"])
+        lines.append(f"### {headings['missing_reason']}")
+        lines.extend(missing_lines if missing_lines else [f"- {labels['none']}"])
         lines.append("")
     lines.extend(
         [
-            "### Queries Run",
+            f"### {headings['queries_run']}",
             *query_lines,
             "",
-            "### Structured Data",
+            f"### {headings['structured_data']}",
             *data_lines,
         ]
     )

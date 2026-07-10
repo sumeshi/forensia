@@ -61,6 +61,7 @@ forensia = [
     "report/templates/*.j2",
     "report/templates/partials/*.j2",
     "report_template/*.md",
+    "report_template/_formats/*.yaml",
     "rulepacks/*/*.yaml",
     "rulepacks/_schema/*.yaml",
     "rulepacks/_schema/suppression/*.yaml",

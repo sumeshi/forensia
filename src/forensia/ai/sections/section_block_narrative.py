@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from forensia.ai.llm import llm_gateway
@@ -34,6 +35,7 @@ from forensia.core.log import log as _log
 from forensia.core.textutil import normalize_localized_dates
 from forensia.report.answer_registry import build_structured_answer
 from forensia.report.answer_store import _render_structured_answer_markdown
+from forensia.report.formats import load_report_formats
 from forensia.report.narrative_review import review_narrative_body
 from forensia.report.quality_gates import _detect_body_language
 from forensia.report.table_registry import (
@@ -159,6 +161,7 @@ def _fallback_narrative_body(
     actual_query_count: int,
     actual_query_row_counts: list[int],
     key_points: list[str] | None = None,
+    template_dir: str | Path | None = None,
 ) -> str:
     """Build a deterministic paragraph when the LLM narrator returns an empty body.
 
@@ -170,21 +173,23 @@ def _fallback_narrative_body(
     primary material; evidence rows are the fallback. ``check_fallback_stub``
     in report_validation guards against the old phrasing reappearing.
     """
+    formats = load_report_formats(template_dir)["narrative_fallback"]
     evidence_ids, finding_ids = _representative_ids(collected_results, flat_evidence)
 
     if status in {"not_found", "not_searched"} or (
         actual_query_count > 0 and not any(actual_query_row_counts)
     ):
-        return (
-            f"No supporting evidence was found for {heading}. This item is "
-            "unsupported and is not part of the incident narrative."
-        )
+        return str(formats["unsupported"]).format(heading=heading)
 
     ref_text = ""
     if evidence_ids:
-        ref_text = f" (evidence: {', '.join(evidence_ids[:3])})"
+        ref_text = str(formats["evidence_reference"]).format(
+            ids=", ".join(evidence_ids[:3])
+        )
     elif finding_ids:
-        ref_text = f" (findings: {', '.join(finding_ids[:3])})"
+        ref_text = str(formats["finding_reference"]).format(
+            ids=", ".join(finding_ids[:3])
+        )
 
     # Prefer already-observed, verdict-labelled key points: these are report
     # statements, not review metadata.
@@ -210,21 +215,17 @@ def _fallback_narrative_body(
             if len(observed) >= 3:
                 break
         if observed:
-            paragraph = (
-                f"Observed activity relevant to {heading}: "
-                + "; ".join(observed)
-                + f".{ref_text}"
+            paragraph = str(formats["observed"]).format(
+                heading=heading,
+                observations="; ".join(observed),
+                reference=ref_text,
             )
         else:
-            paragraph = (
-                f"Evidence relevant to {heading} was collected, but the available "
-                f"rows do not contain enough report-visible detail for a stronger "
-                f"summary.{ref_text}"
+            paragraph = str(formats["insufficient_detail"]).format(
+                heading=heading, reference=ref_text
             )
     if status == "partial":
-        paragraph += (
-            " Additional correlation is needed before this is fully established."
-        )
+        paragraph += str(formats["partial_suffix"])
     return paragraph.strip()
 
 
@@ -499,7 +500,9 @@ def _write_question_block(
     if structured_answer is not None:
         status_inner = str(structured_answer.get("status") or status_inner)
         body = _render_structured_answer_markdown(
-            structured_answer, ctx.block_heading
+            structured_answer,
+            ctx.block_heading,
+            template_dir=ctx.case.report_template_dir,
         )
         messages = []
     else:
@@ -682,6 +685,7 @@ def _write_narrative_block(
                 actual_query_count=actual_query_count,
                 actual_query_row_counts=actual_query_row_counts,
                 key_points=all_key_points,
+                template_dir=ctx.case.report_template_dir,
             )
         body = _review_and_rewrite_narrative(
             ctx, body, narrate_messages, narrate_schema

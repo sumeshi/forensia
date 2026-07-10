@@ -1,0 +1,47 @@
+version: 1
+
+narrative_fallback:
+  unsupported: "No supporting evidence was found for {heading}. This item is unsupported and is not part of the incident narrative."
+  evidence_reference: " (evidence: {ids})"
+  finding_reference: " (findings: {ids})"
+  observed: "Observed activity relevant to {heading}: {observations}.{reference}"
+  insufficient_detail: "Evidence relevant to {heading} was collected, but the available rows do not contain enough report-visible detail for a stronger summary.{reference}"
+  partial_suffix: " Additional correlation is needed before this is fully established."
+
+structured_answer:
+  max_list_items: 5
+  max_cell_chars: 240
+  empty_answer: "- no answer"
+  truncated_cell_suffix: " ... [truncated]"
+  row_preview_note: "_Showing {shown} of {total} rows. Full data is available in the structured JSON/CSV export._"
+  not_found_interpretation: "No rows directly matching this question were found. Before concluding 'not found', verify that the ingested logs and time range are sufficient."
+  insufficient_interpretation: "Insufficient rows were retrieved for this question. Review the missing reason in the table and determine whether additional evidence exists."
+  default_interpretation: "This question has {row_count} rows of structured evidence. The table supports the answer, but evaluate conclusions by correlating time, host, user, and related artifacts.{timezone_basis}"
+  headings:
+    interpretation: Interpretation
+    answer: Answer
+    missing_reason: Missing Reason
+    queries_run: Queries Run
+    structured_data: Structured Data
+  labels:
+    id: ID
+    status: Status
+    none: none
+
+gaps:
+  cloud_sync:
+    gap: Direct evidence of cloud sync destinations and targets
+    why_it_matters: Cloud sync client traces show the environment exists but do not directly show sync targets, destinations, or completion status.
+    next_step: Correlate sync client logs, local DB, and network logs.
+  mailbox:
+    gap: Email content and send/receive verification
+    why_it_matters: Email data file existence shows client usage but content and attachment movement need other evidence.
+    next_step: Correlate email data file analysis results and server-side logs if available.
+  antiforensic:
+    gap: Scope of wiping tool execution
+    why_it_matters: Cleaning tool execution traces are a strong candidate but do not reveal deletion targets or execution details alone.
+    next_step: Correlate tool settings, task files, deleted MFT entries, and log stop times.
+  network:
+    gap: Insufficient normalized network evidence
+    why_it_matters: EVTX alone is insufficient to determine external communication.
+    next_step: Ingest firewall/proxy/DNS/cloud client logs if available.

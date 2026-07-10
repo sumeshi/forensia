@@ -423,7 +423,12 @@ def _refresh_appendix_structured_blocks(
         except Exception:
             answer = None
         rendered.append(
-            _render_structured_answer_markdown(answer, heading, tz_name=tz_name)
+            _render_structured_answer_markdown(
+                answer,
+                heading,
+                tz_name=tz_name,
+                template_dir=db.case.report_template_dir,
+            )
             if answer
             else chunk
         )
