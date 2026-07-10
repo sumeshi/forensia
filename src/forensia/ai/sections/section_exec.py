@@ -11,7 +11,7 @@ from forensia.ai.prompts.sql_templates import (
     query_template_catalog,
     validate_select_sql,
 )
-from forensia.ai.section_run_store import (
+from forensia.ai.sections.section_run_store import (
     _load_cached_result,
     _store_cached_result,
     _store_section_run,

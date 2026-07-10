@@ -40,7 +40,7 @@ from forensia.ai.report_gap import (
     _inject_gap_hypotheses,
     _report_cycle_progress,
 )
-from forensia.ai.section_refresher import async_refresh_report_sections
+from forensia.ai.sections.section_refresher import async_refresh_report_sections
 from forensia.config import get_llm_settings
 from forensia.core.case import Case
 from forensia.core.log import log as _log

@@ -12,7 +12,7 @@ from forensia.ai.prompts.prompt_sections import (
     build_section_review_messages,
     build_structured_classify_messages,
 )
-from forensia.ai.section_answers import (
+from forensia.ai.sections.section_answers import (
     _extract_answer_by_shape,
     _flatten_sample_rows,
     _format_structured_answer,
@@ -22,14 +22,14 @@ from forensia.ai.section_answers import (
     _representative_ids,
     _resolve_structured_expected_shape,
 )
-from forensia.ai.section_block_context import (
+from forensia.ai.sections.section_block_context import (
     _BlockContext,
 )
-from forensia.ai.section_block_plan import (
+from forensia.ai.sections.section_block_plan import (
     _select_columns_by_template,
 )
-from forensia.ai.section_exec import _classify_block_status
-from forensia.ai.section_run_store import _store_section_run
+from forensia.ai.sections.section_exec import _classify_block_status
+from forensia.ai.sections.section_run_store import _store_section_run
 from forensia.core.log import log as _log
 from forensia.core.textutil import normalize_localized_dates
 from forensia.report.answer_registry import build_structured_answer

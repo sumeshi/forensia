@@ -309,7 +309,9 @@ class VerdictLabeledKeyPointsTests(unittest.TestCase):
     """RC5: Verdict-labeled key points for narrative blocks."""
 
     def test_label_refuted_from_source_verdict(self) -> None:
-        from forensia.ai.section_block_narrative import _label_key_points_with_verdicts
+        from forensia.ai.sections.section_block_narrative import (
+            _label_key_points_with_verdicts,
+        )
 
         outline = [
             {
@@ -332,7 +334,9 @@ class VerdictLabeledKeyPointsTests(unittest.TestCase):
         self.assertTrue(labeled[0].startswith("[refuted]"), labeled[0])
 
     def test_label_confirmed_from_source_verdict(self) -> None:
-        from forensia.ai.section_block_narrative import _label_key_points_with_verdicts
+        from forensia.ai.sections.section_block_narrative import (
+            _label_key_points_with_verdicts,
+        )
 
         outline = [
             {
@@ -353,7 +357,9 @@ class VerdictLabeledKeyPointsTests(unittest.TestCase):
         self.assertTrue(labeled[0].startswith("[confirmed]"), labeled[0])
 
     def test_label_finding_confidence_from_confidence_field(self) -> None:
-        from forensia.ai.section_block_narrative import _label_key_points_with_verdicts
+        from forensia.ai.sections.section_block_narrative import (
+            _label_key_points_with_verdicts,
+        )
 
         outline = [
             {
@@ -375,7 +381,9 @@ class VerdictLabeledKeyPointsTests(unittest.TestCase):
         self.assertIn("0.85", labeled[0])
 
     def test_unlabeled_when_no_verdict_info(self) -> None:
-        from forensia.ai.section_block_narrative import _label_key_points_with_verdicts
+        from forensia.ai.sections.section_block_narrative import (
+            _label_key_points_with_verdicts,
+        )
 
         outline = [
             {
@@ -388,7 +396,9 @@ class VerdictLabeledKeyPointsTests(unittest.TestCase):
         self.assertEqual(["Generic observation"], labeled)
 
     def test_fallback_to_overall_verdict_when_no_per_result_verdicts(self) -> None:
-        from forensia.ai.section_block_narrative import _label_key_points_with_verdicts
+        from forensia.ai.sections.section_block_narrative import (
+            _label_key_points_with_verdicts,
+        )
 
         outline = [
             {
@@ -432,7 +442,7 @@ if __name__ == "__main__":
 
 from pathlib import Path
 
-from forensia.ai.section_answers import _insufficient_evidence_placeholder
+from forensia.ai.sections.section_answers import _insufficient_evidence_placeholder
 from forensia.knowledge import (
     catalog_exe_globs,
     catalog_path_terms,
@@ -636,11 +646,11 @@ class SectionReviewerTests(unittest.TestCase):
         import tempfile
         from unittest import mock
 
-        from forensia.ai import (
+        from forensia.ai.llm import llm_gateway
+        from forensia.ai.sections import (
             section_block_context,
             section_block_narrative,
         )
-        from forensia.ai.llm import llm_gateway
         from forensia.core.case import Case
         from forensia.db.database import CaseDB
 

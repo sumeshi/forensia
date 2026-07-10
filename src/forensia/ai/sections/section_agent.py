@@ -1,7 +1,7 @@
 """Section block agent entry point; helpers live in focused submodules.
 
 Kept for backward compatibility: existing code and tests import these
-names from forensia.ai.section_agent.
+names from forensia.ai.sections.section_agent.
 """
 
 from __future__ import annotations
@@ -9,28 +9,28 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from forensia.ai.section_block_context import (
+from forensia.ai.sections.section_block_context import (
     _BlockContext,
     _prepare_block_context,
 )
-from forensia.ai.section_block_narrative import (
+from forensia.ai.sections.section_block_narrative import (
     _postprocess_block_body,
     _write_block_body,
 )
-from forensia.ai.section_block_plan import (
+from forensia.ai.sections.section_block_plan import (
     _execute_block_plan,
     _run_block_check,
     _run_block_plan,
     _try_evidence_chain_fallback,
 )
-from forensia.ai.section_exec import (
+from forensia.ai.sections.section_exec import (
     SectionBlockResult,
     _execute_keypoint,
     _filter_template_catalog_by_section,
     _known_keypoints,
     _split_keypoint_names,
 )
-from forensia.ai.section_run_store import (
+from forensia.ai.sections.section_run_store import (
     _evidence_as_result,
     _facts_as_result,
     _load_prior_runs,

@@ -7,13 +7,13 @@ from dataclasses import dataclass
 from typing import Any
 
 # Block-support helpers live in section_answers / section_exec / section_run_store.
-from forensia.ai.section_exec import (
+from forensia.ai.sections.section_exec import (
     _filter_template_catalog_by_section,
     _keypoint_catalog,
     _structured_digest_from_answers,
     _structured_report_brief,
 )
-from forensia.ai.section_run_store import (
+from forensia.ai.sections.section_run_store import (
     _audit_bridge,
     _findings_snapshot,
     _load_reusable_section_evidence,

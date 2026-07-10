@@ -28,7 +28,7 @@ from forensia.ai.prompts.sql_templates import (
     _template_failed_logon_by_ip_window,
     coerce_list,
 )
-from forensia.ai.section_exec import _question_report_brief
+from forensia.ai.sections.section_exec import _question_report_brief
 from forensia.config import (
     clear_llm_settings_cache,
     reload_settings,

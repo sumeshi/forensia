@@ -30,7 +30,7 @@ from forensia.ai.report_gap import (
     _build_report_status,
     _overlay_report_status,
 )
-from forensia.ai.section_run_store import _findings_snapshot
+from forensia.ai.sections.section_run_store import _findings_snapshot
 from forensia.config import get_llm_settings
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager

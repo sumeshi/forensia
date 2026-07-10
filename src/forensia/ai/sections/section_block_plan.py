@@ -12,10 +12,10 @@ from forensia.ai.prompts.prompt_sections import (
     build_section_agent_check_messages,
     build_section_agent_plan_messages,
 )
-from forensia.ai.section_block_context import (
+from forensia.ai.sections.section_block_context import (
     _BlockContext,
 )
-from forensia.ai.section_exec import (
+from forensia.ai.sections.section_exec import (
     SectionPlanAction,
     _classify_block_status,
     _coerce_plan_action,
@@ -26,7 +26,7 @@ from forensia.ai.section_exec import (
     _split_keypoint_names,
     _summarize_sql_result,
 )
-from forensia.ai.section_run_store import (
+from forensia.ai.sections.section_run_store import (
     _store_section_evidence,
     _store_section_facts,
     _store_section_run,

@@ -317,7 +317,7 @@ class CollectSectionRequestsTests(unittest.TestCase):
     def test_stale_section_produces_render_request(self) -> None:
         from pathlib import Path
 
-        from forensia.ai.section_refresher import _collect_section_requests
+        from forensia.ai.sections.section_refresher import _collect_section_requests
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -363,7 +363,7 @@ class CollectSectionRequestsTests(unittest.TestCase):
     def test_force_all_returns_every_template(self) -> None:
         from pathlib import Path
 
-        from forensia.ai.section_refresher import _collect_section_requests
+        from forensia.ai.sections.section_refresher import _collect_section_requests
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)

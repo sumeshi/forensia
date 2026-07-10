@@ -7,12 +7,12 @@ from types import SimpleNamespace
 from forensia.ai.llm.schemas import PARAGRAPH_NARRATE_SCHEMA
 from forensia.ai.prompts.prompt_context import _slim_report_brief_for_section
 from forensia.ai.prompts.prompt_sections import build_paragraph_narrate_messages
-from forensia.ai.section_answers import (
+from forensia.ai.sections.section_answers import (
     _build_daily_session_timeline,
     _extract_answer_by_shape,
     _format_question_answer,
 )
-from forensia.ai.section_exec import _coerce_plan_action
+from forensia.ai.sections.section_exec import _coerce_plan_action
 from forensia.report.answer_builders_host import _load_event_class_definitions
 from forensia.report.evidence_refs import EVIDENCE_ID_PATTERN
 from forensia.report.quality_gates import GateContext, check_json_object_leak

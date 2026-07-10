@@ -7,17 +7,17 @@ import unittest
 from datetime import UTC, datetime
 from unittest.mock import patch
 
-from forensia.ai.section_agent import run_section_block_agent
-from forensia.ai.section_answers import _is_effectively_empty_body
-from forensia.ai.section_block_narrative import (
+from forensia.ai.sections.section_agent import run_section_block_agent
+from forensia.ai.sections.section_answers import _is_effectively_empty_body
+from forensia.ai.sections.section_block_narrative import (
     _fallback_narrative_body,
     _narrate_paragraph_with_retry,
 )
-from forensia.ai.section_exec import (
+from forensia.ai.sections.section_exec import (
     _question_routing_answer_spec,
     _structured_digest_from_answers,
 )
-from forensia.ai.section_run_store import _load_reusable_section_facts
+from forensia.ai.sections.section_run_store import _load_reusable_section_facts
 from forensia.config import clear_llm_settings_cache, reload_settings
 from forensia.core.case import Case
 from forensia.core.textutil import normalize_localized_dates
@@ -1210,7 +1210,7 @@ class WriterRQRegressionTests(unittest.TestCase):
         blocks through the LLM agent."""
         import asyncio
 
-        from forensia.ai.section_refresher import _render_section_blocks
+        from forensia.ai.sections.section_refresher import _render_section_blocks
         from forensia.core.memory import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1344,7 +1344,7 @@ class WriterRQRegressionTests(unittest.TestCase):
 
     def test_prepare_block_context_merges_section_table_digest(self) -> None:
         """R6-05: same-section table digest reaches the narrator context."""
-        from forensia.ai.section_block_context import _prepare_block_context
+        from forensia.ai.sections.section_block_context import _prepare_block_context
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -1375,8 +1375,8 @@ class WriterRQRegressionTests(unittest.TestCase):
         import asyncio
         from unittest import mock
 
-        from forensia.ai import section_refresher
-        from forensia.ai.section_exec import SectionBlockResult
+        from forensia.ai.sections import section_refresher
+        from forensia.ai.sections.section_exec import SectionBlockResult
         from forensia.core.memory import MemoryManager
 
         captured: dict = {}
@@ -1769,7 +1769,7 @@ class WriterRQRegressionTests(unittest.TestCase):
 
     def test_structured_digest_context_in_prepare_block_context(self) -> None:
         """Verify _prepare_block_context computes digest for overview and not for appendix."""
-        from forensia.ai.section_block_context import _prepare_block_context
+        from forensia.ai.sections.section_block_context import _prepare_block_context
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)

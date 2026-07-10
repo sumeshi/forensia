@@ -7,7 +7,7 @@ import re
 from functools import lru_cache
 from typing import Any
 
-from forensia.ai.section_exec import (
+from forensia.ai.sections.section_exec import (
     _is_valid_status,
 )
 from forensia.core.case import Case
