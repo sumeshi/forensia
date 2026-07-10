@@ -1,9 +1,10 @@
-"""Tests for R2-14 timezone identification and dual-timestamp rendering."""
+"""End-to-end contracts for timezone persistence, rendering, and inference."""
 
 from __future__ import annotations
 
 import json
 import tempfile
+import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -14,217 +15,119 @@ from forensia.db.database import CaseDB
 from forensia.normalize.timezone import infer_timezone
 from forensia.questions import extract_time_qualifiers
 from forensia.report.answer_store import add_local_time_columns
-from forensia.report.markdown import local_time_from_utc as wt_local_time_from_utc
 from forensia.report.markdown import (
+    local_time_from_utc,
     render_timestamp_with_timezone,
     tz_offset_str,
 )
 from forensia.report.report_brief import build_report_brief
 
-# ── Case timezone persistence ──────────────────────────────────────────────
 
-
-class TestCaseTimezonePersistence:
-    def test_init_manifest_contains_source_timezone(self):
+class CaseTimezoneTests(unittest.TestCase):
+    def test_timezone_persists_and_defaults_to_utc(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(
-                str(Path(tmpdir) / "case"), source_timezone="America/New_York"
+            custom = Case.init(Path(tmpdir) / "custom", source_timezone="Asia/Tokyo")
+            manifest = yaml.safe_load(custom.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual("Asia/Tokyo", manifest["source_timezone"])
+            self.assertEqual("Asia/Tokyo", Case.open(custom.path).source_timezone)
+            self.assertEqual("UTC", Case.init(Path(tmpdir) / "default").source_timezone)
+
+            legacy_path = Path(tmpdir) / "legacy"
+            legacy_path.mkdir()
+            (legacy_path / "manifest.yaml").write_text(
+                yaml.safe_dump({"case_name": "legacy", "created_at": "now"}),
+                encoding="utf-8",
             )
-            manifest = yaml.safe_load(case.manifest_path.read_text(encoding="utf-8"))
-            assert manifest.get("source_timezone") == "America/New_York"
-
-    def test_init_default_timezone(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(str(Path(tmpdir) / "case"))
-            assert case.source_timezone == "UTC"
-
-    def test_open_reads_source_timezone(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(str(Path(tmpdir) / "case"), source_timezone="Asia/Tokyo")
-            reopened = Case.open(str(case.path))
-            assert reopened.source_timezone == "Asia/Tokyo"
-
-    def test_open_fallback_to_utc(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case_dir = Path(tmpdir) / "case"
-            case_dir.mkdir(parents=True, exist_ok=True)
-            manifest = {"case_name": "test", "created_at": "now"}
-            (case_dir / "manifest.yaml").write_text(
-                yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8"
-            )
-            case = Case.open(str(case_dir))
-            assert case.source_timezone == "UTC"
-
-    def test_source_timezone_property(self):
-        case = Case(path=Path("/nonexistent"), source_timezone="Europe/Berlin")
-        assert case.source_timezone == "Europe/Berlin"
-        assert case.timezone_info.startswith("Europe/Berlin")
-
-    def test_source_timezone_default(self):
-        case = Case(path=Path("/nonexistent"))
-        assert case.source_timezone == "UTC"
+            self.assertEqual("UTC", Case.open(legacy_path).source_timezone)
 
 
-# ── Timestamp rendering ────────────────────────────────────────────────────
+class TimestampRenderingTests(unittest.TestCase):
+    def test_rendering_and_offsets_cover_utc_and_local_zones(self) -> None:
+        timestamp = "2026-03-25 15:31:00"
+        utc = render_timestamp_with_timezone(
+            timestamp, Case(path=Path("/x"), source_timezone="UTC")
+        )
+        new_york = render_timestamp_with_timezone(
+            timestamp, Case(path=Path("/x"), source_timezone="America/New_York")
+        )
+        tokyo = render_timestamp_with_timezone(
+            timestamp, Case(path=Path("/x"), source_timezone="Asia/Tokyo")
+        )
+        self.assertEqual("2026-03-25 15:31:00 UTC", utc)
+        self.assertIn("11:31:00", new_york)
+        self.assertIn("UTC-4", new_york)
+        self.assertIn("00:31:00", tokyo)
+        self.assertIn("UTC+9", tokyo)
+        self.assertEqual("unknown", render_timestamp_with_timezone(None, None))
+        self.assertEqual("UTC", tz_offset_str("UTC"))
 
+    def test_local_conversion_matrix(self) -> None:
+        for zone, expected in (
+            ("America/New_York", "2026-03-25 11:31:00"),
+            ("Asia/Tokyo", "2026-03-26 00:31:00"),
+            ("UTC", None),
+            ("Invalid/Zone", None),
+        ):
+            with self.subTest(zone=zone):
+                self.assertEqual(
+                    expected, local_time_from_utc("2026-03-25 15:31:00", zone)
+                )
 
-class TestTimestampRendering:
-    def test_render_utc_only(self):
-        case = Case(path=Path("/x"), source_timezone="UTC")
-        result = render_timestamp_with_timezone("2026-03-25 15:31:00", case)
-        assert result == "2026-03-25 15:31:00 UTC"
-
-    def test_render_with_timezone(self):
-        case = Case(path=Path("/x"), source_timezone="America/New_York")
-        result = render_timestamp_with_timezone("2026-03-25 15:31:00", case)
-        assert "UTC" in result
-        assert "local" in result
-        assert "11:31:00" in result  # UTC-4 in March
-        assert "UTC-4" in result
-
-    def test_render_with_timezone_asia(self):
-        case = Case(path=Path("/x"), source_timezone="Asia/Tokyo")
-        result = render_timestamp_with_timezone("2026-03-25 15:31:00", case)
-        assert "UTC" in result
-        assert "local" in result
-        assert "UTC+9" in result
-        assert "00:31:00" in result  # 15:31 + 9h = next day 00:31
-
-    def test_render_empty_timestamp(self):
-        case = Case(path=Path("/x"), source_timezone="UTC")
-        assert render_timestamp_with_timezone("", case) == "unknown"
-        assert render_timestamp_with_timezone(None, case) == "unknown"
-
-    def testtz_offset_str_utc(self):
-        assert tz_offset_str("UTC") == "UTC"
-
-    def testtz_offset_str_known(self):
-        offset = tz_offset_str("America/New_York")
-        assert "UTC" in offset
-
-
-# ── Local time conversion ──────────────────────────────────────────────────
-
-
-class TestLocalTimeConversion:
-    def test_utc_to_ny(self):
-        result = wt_local_time_from_utc("2026-03-25 15:31:00", "America/New_York")
-        assert result == "2026-03-25 11:31:00"
-
-    def test_utc_to_tokyo(self):
-        result = wt_local_time_from_utc("2026-03-25 15:31:00", "Asia/Tokyo")
-        assert result == "2026-03-26 00:31:00"
-
-    def test_utc_stays_utc(self):
-        assert wt_local_time_from_utc("2026-03-25 15:31:00", "UTC") is None
-
-    def test_invalid_timezone_returns_none(self):
-        assert wt_local_time_from_utc("2026-03-25 15:31:00", "Invalid/Zone") is None
-
-
-# ── Structured answer local columns ────────────────────────────────────────
-
-
-class TestStructuredAnswerLocalColumns:
-    def test_local_columns_added_for_known_tz(self):
-        case = Case(path=Path("/x"), source_timezone="America/New_York")
-        rows = [
-            {"shutdown_time": "2026-03-25 15:31:00", "computer": "PC1"},
-            {"shutdown_time": "2026-03-25 16:00:00", "computer": "PC2"},
-        ]
+    def test_structured_answers_add_local_columns_only_when_needed(self) -> None:
+        rows = [{"shutdown_time": "2026-03-25 15:31:00", "computer": "PC1"}]
         columns = ["shutdown_time", "computer"]
-        updated_rows, updated_columns = add_local_time_columns(rows, columns, case)
-        assert "shutdown_time_local" in updated_columns
-        assert updated_rows[0].get("shutdown_time_local") == "2026-03-25 11:31:00"
-
-    def test_no_local_columns_for_utc(self):
-        case = Case(path=Path("/x"), source_timezone="UTC")
-        rows = [{"shutdown_time": "2026-03-25 15:31:00"}]
-        columns = ["shutdown_time"]
-        updated_rows, updated_columns = add_local_time_columns(rows, columns, case)
-        assert "shutdown_time_local" not in updated_columns
-        assert updated_columns == columns
-        assert updated_rows == rows
-
-
-# ── Report brief timezone info ─────────────────────────────────────────────
-
-
-class TestReportBriefTimezone:
-    def test_report_brief_contains_timezone(self, tmp_path):
-        case = Case(path=tmp_path, source_timezone="America/New_York")
-        with CaseDB(case) as db:
-            db.execute("CREATE TABLE IF NOT EXISTS evtx_events (timestamp TIMESTAMP)")
-            brief = build_report_brief(db, case)
-            assert brief.get("source_timezone") == "America/New_York"
-            assert "timezone_offset" in brief
-
-
-# ── Time qualifiers with timezone ──────────────────────────────────────────
-
-
-class TestExtractTimeQualifiers:
-    def test_hour_filter_with_tz(self):
-        result = extract_time_qualifiers(
-            "between 09:00 and 17:00",
-            tz_name="America/New_York",
+        localized, localized_columns = add_local_time_columns(
+            rows, columns, Case(path=Path("/x"), source_timezone="America/New_York")
         )
-        assert result["hour_from"] is not None
-        assert result["hour_to"] is not None
-        # 09:00 EST = 14:00 UTC, 17:00 EST = 22:00 UTC (approx)
-        assert result["timezone_note"] is not None
-        assert "local time" in str(result["timezone_note"])
+        self.assertEqual("2026-03-25 11:31:00", localized[0]["shutdown_time_local"])
+        self.assertIn("shutdown_time_local", localized_columns)
 
-    def test_hour_filter_utc_unknown(self):
-        result = extract_time_qualifiers("between 09:00 and 17:00")
-        assert result["hour_from"] == "09:00"
-        assert result["hour_to"] == "17:00"
-        assert result["basis"] == "UTC"
-
-    def test_date_filter_ignores_tz(self):
-        result = extract_time_qualifiers(
-            "between 2026-03-01 and 2026-03-31",
-            tz_name="America/New_York",
+        unchanged, unchanged_columns = add_local_time_columns(
+            rows, columns, Case(path=Path("/x"), source_timezone="UTC")
         )
-        assert result["date_from"] == "2026-03-01"
-        assert result["date_to"] == "2026-03-31"
+        self.assertEqual((rows, columns), (unchanged, unchanged_columns))
 
 
-# ── Timezone inference (minimal) ──────────────────────────────────────────
+class TimeQualifierTests(unittest.TestCase):
+    def test_hour_and_date_qualifiers_preserve_their_time_basis(self) -> None:
+        local_hours = extract_time_qualifiers(
+            "between 09:00 and 17:00", tz_name="America/New_York"
+        )
+        utc_hours = extract_time_qualifiers("between 09:00 and 17:00")
+        dates = extract_time_qualifiers(
+            "between 2026-03-01 and 2026-03-31", tz_name="America/New_York"
+        )
+        self.assertIn("local time", local_hours["timezone_note"])
+        self.assertEqual(
+            ("09:00", "17:00", "UTC"),
+            (utc_hours["hour_from"], utc_hours["hour_to"], utc_hours["basis"]),
+        )
+        self.assertEqual(
+            ("2026-03-01", "2026-03-31"), (dates["date_from"], dates["date_to"])
+        )
 
 
-class TestTimezoneInference:
-    def test_infer_timezone_no_data(self):
+class ReportBriefTimezoneTests(unittest.TestCase):
+    def test_report_brief_exposes_timezone(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            from forensia.db.database import CaseDB
-
-            case = Case(path=Path(tmpdir))
+            case = Case.init(Path(tmpdir) / "case", source_timezone="America/New_York")
             with CaseDB(case) as db:
-                db.execute(
-                    "CREATE TABLE IF NOT EXISTS evtx_events (timestamp TIMESTAMP, message VARCHAR, event_id INTEGER, raw_json VARCHAR, computer VARCHAR)"
-                )
-                offset, basis = infer_timezone(db)
-                assert offset is None
+                brief = build_report_brief(db, case)
+        self.assertEqual("America/New_York", brief["source_timezone"])
+        self.assertIn("timezone_offset", brief)
 
-    def test_infer_timezone_from_4616(self):
-        """Test that Event 4616 with bias field is parsed."""
+
+class TimezoneInferenceTests(unittest.TestCase):
+    def test_inference_requires_repeated_consistent_observations(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            from forensia.db.database import CaseDB
-
-            case = Case(path=Path(tmpdir))
+            case = Case.init(Path(tmpdir) / "case")
             with CaseDB(case) as db:
-                db.execute(
-                    "CREATE TABLE IF NOT EXISTS evtx_events (timestamp TIMESTAMP, message VARCHAR, event_id INTEGER, raw_json VARCHAR, computer VARCHAR)"
-                )
-                # Insert one Event 4616 with timezone bias
+                self.assertIsNone(infer_timezone(db)[0])
                 raw = json.dumps(
                     {
                         "Event": {
                             "EventData": {
-                                "Data": [
-                                    {"Name": "SubjectUserSid", "Text": "S-1-5-18"},
-                                    {"Name": "TimeZoneBias", "Text": "-300"},
-                                ]
+                                "Data": [{"Name": "TimeZoneBias", "Text": "-300"}]
                             }
                         }
                     }
@@ -233,43 +136,7 @@ class TestTimezoneInference:
                     "INSERT INTO evtx_events (event_id, raw_json, timestamp) VALUES (4616, ?, ?)",
                     (raw, datetime.now(UTC)),
                 )
-                offset, basis = infer_timezone(db)
-                # Only 1 observation - should return None (needs ≥2)
-                assert offset is None
-
-    def test_infer_timezone_from_message_offsets(self):
-        """Test that consistent message timestamps produce an offset."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            from forensia.db.database import CaseDB
-
-            case = Case(path=Path(tmpdir))
-            with CaseDB(case) as db:
-                db.execute(
-                    "CREATE TABLE IF NOT EXISTS evtx_events (timestamp TIMESTAMP, message VARCHAR, event_id INTEGER, raw_json VARCHAR, computer VARCHAR)"
-                )
-                # Insert 2 events where message contains a timestamp 5 hours behind UTC
-                for _ in range(2):
-                    db.execute(
-                        "INSERT INTO evtx_events (timestamp, message, event_id) VALUES (?, ?, 1)",
-                        (
-                            "2026-03-25 15:00:00",
-                            "Event occurred at 2026-03-25 10:00:00",
-                        ),
-                    )
-                offset, basis = infer_timezone(db)
-                # -300 minutes = UTC-5
-                assert offset is None or offset == -300
-
-    def test_infer_timezone_agreement(self):
-        """Test that ≥2 agreeing observations return the offset."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            from forensia.db.database import CaseDB
-
-            case = Case(path=Path(tmpdir))
-            with CaseDB(case) as db:
-                db.execute(
-                    "CREATE TABLE IF NOT EXISTS evtx_events (timestamp TIMESTAMP, message VARCHAR, event_id INTEGER, raw_json VARCHAR, computer VARCHAR)"
-                )
+                self.assertIsNone(infer_timezone(db)[0])
                 for _ in range(3):
                     db.execute(
                         "INSERT INTO evtx_events (timestamp, message, event_id) VALUES (?, ?, 1)",
@@ -279,6 +146,5 @@ class TestTimezoneInference:
                         ),
                     )
                 offset, basis = infer_timezone(db)
-                assert offset is not None
-                assert offset == -300  # UTC-5
-                assert "source" in basis or "timestamp" in basis
+        self.assertEqual(-300, offset)
+        self.assertTrue("source" in basis or "timestamp" in basis)

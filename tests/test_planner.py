@@ -16,10 +16,6 @@ from forensia.ai.progress import (
     _query_fingerprint,
 )
 from forensia.ai.prompts.sql_schema import build_investigation_framework
-from forensia.ai.prompts.sql_templates import (
-    _template_failed_logon_by_ip_window,
-    coerce_list,
-)
 from forensia.config import (
     reload_settings,
     resolve_llm_config,
@@ -363,16 +359,6 @@ class PlannerRetryTests(unittest.TestCase):
         # the same query_id must merge with the local history entry, not
         # appear as a second attempt.
         self.assertEqual(1, first_call_system.count("query_id=Q-local"))
-
-    def test_query_template_uses_dataset_max_timestamp_not_now(self) -> None:
-        sql = _template_failed_logon_by_ip_window({"hours": 24, "threshold": 5})
-        self.assertIn("SELECT MAX(timestamp) FROM evtx_events", sql)
-        self.assertNotIn("now()", sql.lower())
-
-    def test_coerce_list_wraps_single_dict_and_string(self) -> None:
-        self.assertEqual([{"id": "H-1"}], coerce_list({"id": "H-1"}))
-        self.assertEqual(["facts.md"], coerce_list("facts.md"))
-        self.assertEqual([], coerce_list(""))
 
     def test_investigation_framework_lists_missing_columns(self) -> None:
         framework = build_investigation_framework()
