@@ -1,0 +1,20 @@
+version: 1
+
+# Deterministic local-auth policy used to demote routine authentication traces.
+# This never deletes evidence; it only adds the configured benign-context tag.
+local_auth:
+  finding_tag: benign-context:loopback-local-auth
+  local_source_values:
+    - "127.0.0.1"
+    - "::1"
+    - localhost
+    - "-"
+    - ""
+    - none
+  auth_event_class_terms:
+    - logon
+    - auth
+    - credential
+  fallback_auth_event_ids:
+    - 4624
+    - 4648

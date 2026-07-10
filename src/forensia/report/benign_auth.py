@@ -9,23 +9,60 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
 
-_LOOPBACK_VALUES: set[str] = {
-    "127.0.0.1",
-    "::1",
-    "localhost",
-    "-",
-    "",
-    "none",
-}
 
-# Hardcoded fallback used when schema loading fails.
-_FALLBACK_AUTH_EVENT_IDS: frozenset[str] = frozenset({"4624", "4648"})
+@dataclass(frozen=True, slots=True)
+class BenignAuthPolicy:
+    """Hold externally managed local-auth classification policy."""
+
+    local_source_values: frozenset[str]
+    auth_event_class_terms: tuple[str, ...]
+    fallback_auth_event_ids: frozenset[str]
+    finding_tag: str
+
+
+@lru_cache(maxsize=1)
+def _load_benign_auth_policy() -> BenignAuthPolicy:
+    """Load and validate local-auth policy from benign_auth.yaml."""
+    import yaml
+
+    path = (
+        Path(__file__).resolve().parent.parent
+        / "rulepacks"
+        / "_schema"
+        / "benign_auth.yaml"
+    )
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict) or data.get("version") != 1:
+        raise ValueError(f"{path}: version must be 1")
+    policy = data.get("local_auth")
+    if not isinstance(policy, dict):
+        raise ValueError(f"{path}: local_auth must be a mapping")
+
+    def _strings(name: str) -> tuple[str, ...]:
+        values = policy.get(name)
+        if not isinstance(values, list) or not all(
+            isinstance(value, (str, int)) for value in values
+        ):
+            raise ValueError(f"{path}: local_auth.{name} must be a list")
+        return tuple(str(value).strip().lower() for value in values)
+
+    tag = str(policy.get("finding_tag") or "").strip()
+    if not tag:
+        raise ValueError(f"{path}: local_auth.finding_tag is required")
+    return BenignAuthPolicy(
+        local_source_values=frozenset(_strings("local_source_values")),
+        auth_event_class_terms=_strings("auth_event_class_terms"),
+        fallback_auth_event_ids=frozenset(_strings("fallback_auth_event_ids")),
+        finding_tag=tag,
+    )
 
 
 @lru_cache(maxsize=1)
@@ -37,21 +74,17 @@ def _load_auth_event_ids() -> frozenset[str]:
     (case-insensitive). Falls back to the hardcoded set if schema loading
     fails.
     """
-    try:
-        from forensia.knowledge import load_event_class_definitions
+    from forensia.knowledge import load_event_class_definitions
 
-        classes = load_event_class_definitions()
-        ids: set[str] = set()
-        for class_name, class_def in classes.items():
-            name = class_name.lower()
-            if "logon" in name or "auth" in name or "credential" in name:
-                for eid in class_def.get("event_ids", []):
-                    ids.add(str(eid))
-        if ids:
-            return frozenset(ids)
-    except Exception:
-        pass
-    return _FALLBACK_AUTH_EVENT_IDS
+    policy = _load_benign_auth_policy()
+    classes = load_event_class_definitions()
+    ids = {
+        str(event_id)
+        for class_name, class_def in classes.items()
+        if any(term in class_name.lower() for term in policy.auth_event_class_terms)
+        for event_id in class_def.get("event_ids", [])
+    }
+    return frozenset(ids) or policy.fallback_auth_event_ids
 
 
 def _normalise_ip(value: Any) -> str:
@@ -108,7 +141,7 @@ def is_benign_local_auth(
     elif not assume_auth_event:
         return False
 
-    is_loopback = src_ip in _LOOPBACK_VALUES
+    is_loopback = src_ip in _load_benign_auth_policy().local_source_values
 
     # Loopback (127.0.0.1 / ::1) means the authentication originated on the
     # local machine itself. Lateral movement from another host cannot present
@@ -180,7 +213,7 @@ def tag_benign_local_auth_findings(db: CaseDB) -> int:
             except (json.JSONDecodeError, TypeError):
                 current_tags = []
 
-        tag = "benign-context:loopback-local-auth"
+        tag = _load_benign_auth_policy().finding_tag
         if tag not in current_tags:
             current_tags.append(tag)
             db.conn.execute(
