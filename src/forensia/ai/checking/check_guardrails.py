@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from forensia.ai.checking.check_normalize import (
@@ -19,6 +21,57 @@ from forensia.ai.checking.check_normalize import (
 from forensia.ai.prompts.prompt_investigation import (
     _load_benign_context_rules,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class VerdictTransitionRule:
+    """Declare one deterministic verdict transition and its audit note."""
+
+    name: str
+    source_verdicts: frozenset[str]
+    target_verdict: str
+    applies: Callable[[Mapping[str, Any]], bool]
+    note: Callable[[Mapping[str, Any]], str] | None = None
+
+    def evaluate(
+        self, verdict: str, context: Mapping[str, Any]
+    ) -> tuple[str, str | None]:
+        """Return the transitioned verdict and optional note when applicable."""
+        if verdict not in self.source_verdicts or not self.applies(context):
+            return verdict, None
+        return self.target_verdict, self.note(context) if self.note else None
+
+
+PAYLOAD_VERDICT_RULES = (
+    VerdictTransitionRule(
+        name="zero-evidence-positive-verdict",
+        source_verdicts=frozenset({"confirmed", "newlead"}),
+        target_verdict="inconclusive",
+        applies=lambda context: bool(context.get("zero_evidence")),
+    ),
+    VerdictTransitionRule(
+        name="fallback-evidence-confirmation-cap",
+        source_verdicts=frozenset({"confirmed"}),
+        target_verdict="newlead",
+        applies=lambda context: bool(context.get("fallback_info")),
+        note=lambda context: (
+            "downgraded from confirmed to newlead: rows from fallback search "
+            f"({(context.get('fallback_info') or {}).get('phase', 'unknown')})"
+        ),
+    ),
+)
+
+
+def _apply_verdict_transition_rules(
+    verdict: str, context: Mapping[str, Any]
+) -> tuple[str, list[str]]:
+    """Apply transition rules in declared order and collect audit notes."""
+    notes: list[str] = []
+    for rule in PAYLOAD_VERDICT_RULES:
+        verdict, note = rule.evaluate(verdict, context)
+        if note:
+            notes.append(note)
+    return verdict, notes
 
 
 def annotate_benign_context(
@@ -325,19 +378,15 @@ def _guardrail_check_payload(
     verdict = _normalize_verdict(parsed.get("verdict"))
     observed_evidence_ids = _collect_observed_evidence_ids(result_summary)
     zero_evidence = _has_zero_evidence(result_summary, observed_evidence_ids)
-    if zero_evidence and verdict in {"confirmed", "newlead"}:
-        verdict = "inconclusive"
-
-    if fallback_info and verdict == "confirmed":
-        verdict = "newlead"
-        phase = fallback_info.get("phase", "unknown")
-        existing_notes = str(parsed.get("notes") or "")
-        veto_note = (
-            f"downgraded from confirmed to newlead: rows from fallback search ({phase})"
+    verdict, transition_notes = _apply_verdict_transition_rules(
+        verdict,
+        {"zero_evidence": zero_evidence, "fallback_info": fallback_info},
+    )
+    if transition_notes:
+        existing_notes = str(parsed.get("notes") or "").strip()
+        parsed["notes"] = "; ".join(
+            part for part in (existing_notes, *transition_notes) if part
         )
-        if existing_notes:
-            veto_note = existing_notes + "; " + veto_note
-        parsed["notes"] = veto_note
 
     allowed_finding_ids = {
         str(item.get("finding_id") or "").strip()
@@ -370,4 +419,3 @@ def _guardrail_check_payload(
             observed_evidence_ids,
         ),
     }
-
