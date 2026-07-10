@@ -1,3 +1,5 @@
+"""Parse and repair JSON from LLM output: candidate extraction, cheap repair, retry prompts."""
+
 from __future__ import annotations
 
 import json

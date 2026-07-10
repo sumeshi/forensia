@@ -35,11 +35,6 @@ from forensia.report.keypoint_catalog import (
     _default_keypoints_for_section,
 )
 
-# ====================================================================
-# PLAN/CHECK — plan and check phase logic
-# Lines: ~1177-1400
-# ====================================================================
-
 
 def _run_block_plan(
     ctx: _BlockContext,

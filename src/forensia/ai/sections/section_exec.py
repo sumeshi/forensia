@@ -40,11 +40,6 @@ from forensia.report.section_taxonomy import (
     section_family as _section_family,
 )
 
-# ====================================================================
-# BLOCK CONTEXT + HELPERS — _BlockContext, status helpers, digest helpers
-# Lines: ~74-500
-# ====================================================================
-
 
 @dataclass(slots=True)
 class SectionBlockResult:

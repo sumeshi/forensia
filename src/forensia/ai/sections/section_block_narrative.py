@@ -41,12 +41,6 @@ from forensia.report.table_registry import (
     _summarize_flat_evidence_rows,
 )
 
-# ====================================================================
-# BLOCK EXECUTION — _write_block_body, run_section_block_agent
-# Lines: ~2082-2647
-# ====================================================================
-
-
 _NARRATE_RETRY_PROMPT = (
     "Your previous response had an empty or near-empty body. "
     'Retry: emit exactly one JSON object {"body": "<paragraph>"} '

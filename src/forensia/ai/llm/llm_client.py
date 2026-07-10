@@ -1,3 +1,5 @@
+"""HTTP chat-completion client with server-outage detection and wait-for-recovery."""
+
 from __future__ import annotations
 
 import asyncio

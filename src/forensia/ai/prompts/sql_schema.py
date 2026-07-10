@@ -1,3 +1,5 @@
+"""Live DB schema guidance for SQL prompts: allowed tables, per-table schema cards."""
+
 from __future__ import annotations
 
 from functools import lru_cache

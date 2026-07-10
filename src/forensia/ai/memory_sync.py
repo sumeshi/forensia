@@ -1,3 +1,5 @@
+"""Apply checker memory_updates to case memory: facts, timeline, tasks, entities, hypothesis cards."""
+
 from __future__ import annotations
 
 import re

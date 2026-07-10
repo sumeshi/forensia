@@ -1,3 +1,5 @@
+"""LLM call audit logging: persists prompts/responses per phase and tracks call counts."""
+
 from __future__ import annotations
 
 import json

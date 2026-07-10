@@ -1,3 +1,5 @@
+"""Session seeding: create initial findings and rule-derived hypotheses from profile rulepacks."""
+
 from __future__ import annotations
 
 import json

@@ -1,3 +1,5 @@
+"""Investigation progress heuristics: query fingerprinting, duplicate detection, auto-confirm checks."""
+
 from __future__ import annotations
 
 import hashlib

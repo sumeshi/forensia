@@ -1,3 +1,5 @@
+"""Deterministic section-body quality gates: placeholders, markers, language, timeline order."""
+
 from __future__ import annotations
 
 import json

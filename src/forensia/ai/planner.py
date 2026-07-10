@@ -1,3 +1,5 @@
+"""Hypothesis query planning: query-intent phase, SQL composition with validation retry."""
+
 from __future__ import annotations
 
 import logging

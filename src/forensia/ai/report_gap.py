@@ -1,3 +1,5 @@
+"""Report status and gap tracking: build per-section status, turn gaps into hypotheses."""
+
 from __future__ import annotations
 
 import json

@@ -1,3 +1,5 @@
+"""HTML report rendering: markdown-to-HTML fragment renderer and full report page build."""
+
 from __future__ import annotations
 
 import json

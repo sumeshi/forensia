@@ -27,11 +27,6 @@ from forensia.report.ranking import (
 from forensia.report.section_quality import _collect_section_coverage
 from forensia.report.section_store import _claim_text_key
 
-# ====================================================================
-# RENDER HELPERS — markdown table rendering, timestamp formatting
-# Lines: ~2206-2910
-# ====================================================================
-
 
 def _query_top_findings(
     db: CaseDB,

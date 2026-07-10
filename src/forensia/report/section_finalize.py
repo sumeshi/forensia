@@ -1,3 +1,5 @@
+"""Finalize a rendered section: quality gates, claim extraction, DB persistence, gap reporting."""
+
 from __future__ import annotations
 
 import re

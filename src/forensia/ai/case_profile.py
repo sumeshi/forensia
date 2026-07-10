@@ -1,3 +1,5 @@
+"""Case profile: summarize observed event IDs / artifact families and advise on profiles/rulepacks."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

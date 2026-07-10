@@ -1,3 +1,5 @@
+"""Query template catalog and SELECT validation/rendering (sqlglot-based)."""
+
 from __future__ import annotations
 
 import re

@@ -1,3 +1,5 @@
+"""Write the final report: concatenate persisted section bodies to report.md and render HTML."""
+
 from __future__ import annotations
 
 from pathlib import Path

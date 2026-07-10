@@ -1,3 +1,5 @@
+"""Assemble section render requests from templates: block requests, keypoints, context sections."""
+
 from __future__ import annotations
 
 from pathlib import Path

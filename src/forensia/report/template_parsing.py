@@ -1,3 +1,5 @@
+"""Parse report templates: frontmatter metadata, preamble/body split, block hints."""
+
 from __future__ import annotations
 
 import re
