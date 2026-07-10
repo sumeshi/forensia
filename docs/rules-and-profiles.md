@@ -138,6 +138,9 @@ This is a post-generation presentation / triage control, not a pre-filter.
 | `app_catalog.yaml` / `artifact_inference.yaml` | `prompts._dfir_playbook()` | Prefetch / MFT / Registry / File → application inference. Intentionally omitted in planning phases and injected only in interpretation phases |
 | `false_positive_rules.yaml` | rule engine + `prompts._dfir_playbook()` | Known FPs. Referenced only in interpretation-phase prompts |
 | `dfir_ioc_catalog.yaml` | `prompts._dfir_playbook()` | Auxiliary IOC dictionary for anti-forensics / cloud sync / email / Recycle Bin, etc. |
+| `finding_themes.yaml` | `report/finding_themes.py` | Finding theme definitions (classification keywords / rank / title / summary) used by the overview and HTML key-findings grouping |
+| `benign_auth.yaml` | `report/benign_auth.py` | Benign local-authentication policy (patterns that keep normal logons out of findings emphasis) |
+| `query_templates.yaml` | `ai/prompts/sql_templates.py` | SQL query template catalog offered to the planner/composer |
 | `question_routing.yaml` | `questions.py` + `section_agent.py` + `prompts.build_section_agent_*` + `prompts.build_structured_classify_messages` | The source of truth for QuestionSpecs. Declares `expected_answer_shape` per `question_type` / `answer_spec` (consumed by the code-side `_format_structured_answer`), `evidence_chain` (deterministically tried by `_execute_evidence_chain` when the primary returns 0 rows), required/render fields, and status rules |
 | `question_routing_eval.yaml` | `scripts/audit_schema_coverage.py --strict` | A mutation corpus for QuestionSpec routing. Audits whether headings / body / language changes still resolve to a stable `answer_spec` |
 | `verdict_taxonomy.yaml` | `core/verdicts.py` | Verdict value whitelist and cross-layer mapping |

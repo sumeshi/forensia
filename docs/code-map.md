@@ -78,7 +78,7 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 | Path | Responsibilities |
 |---|---|
 | [src/forensia/ai/llm/](../src/forensia/ai/llm/) | LLM transport: `llm_client.py` (HTTP + outage recovery), `llm_gateway.py` (`request_llm_json`), `json_response.py` (JSON parse/repair), `schemas.py` (output JSON schemas) |
-| [src/forensia/ai/prompts/](../src/forensia/ai/prompts/) | Prompt builders: `prompt_investigation.py` (planner/checker), `prompt_sections.py` (section agent), `prompt_context.py` (context slimming, budget guard), `prompt_playbook.py` (`_dfir_playbook`), `sql_schema.py` (schema cards, allowed tables), `sql_templates.py` (SQL cookbook + `validate_select_sql`) |
+| [src/forensia/ai/prompts/](../src/forensia/ai/prompts/) | Prompt builders: `prompt_investigation.py` (planner/checker), `prompt_sections.py` (section agent), `prompt_context.py` (context slimming, budget guard), `prompt_playbook.py` (`_dfir_playbook`), `sql_schema.py` (schema cards, allowed tables), `sql_templates.py` (query template catalog from `_schema/query_templates.yaml` + `validate_select_sql`) |
 | [src/forensia/ai/hypotheses/](../src/forensia/ai/hypotheses/) | Hypothesis lifecycle: `hypothesis_model.py` (parsing), `hypothesis_manager.py` (merge/dedup/resolve), `hypothesis_store.py` (DB persistence), `hypothesis_runner.py` (per-hypothesis investigate loop), `seeding.py` (rule-seeded findings/hypotheses) |
 | [src/forensia/ai/checking/](../src/forensia/ai/checking/) | Query-result checking: `checker.py` (`check_query_result`: verdict → finding extraction → memory updates), `check_guardrails.py` (verdict consistency gates, `_co_observation_satisfied`), `check_normalize.py` (result summarization), `check_apply.py` (DB application) |
 | [src/forensia/ai/sections/](../src/forensia/ai/sections/) | Report-section agents: `section_refresher.py` (refresh entry point), `section_agent.py` (per-block agent), `section_block_plan.py` / `section_block_context.py` / `section_block_narrative.py` (plan / context / narrate phases), `section_exec.py` (query execution), `section_answers.py` (structured answer formatting), `section_run_store.py` (run/evidence/fact persistence) |
@@ -103,10 +103,10 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 | [src/forensia/report/markdown.py](../src/forensia/report/markdown.py) | Markdown table utilities, timestamp rendering with timezone |
 | [src/forensia/report/html.py](../src/forensia/report/html.py) | Markdown → HTML rendering + report page build (jinja2 templates in [templates/](../src/forensia/report/templates/)) |
 | [src/forensia/report/evidence_refs.py](../src/forensia/report/evidence_refs.py) / [evidence_map.py](../src/forensia/report/evidence_map.py) | evidence_id patterns / evidence map export |
-| [src/forensia/report/finding_themes.py](../src/forensia/report/finding_themes.py) | Finding theme classification / titles for overview & HTML |
+| [src/forensia/report/finding_themes.py](../src/forensia/report/finding_themes.py) | Finding theme classification / titles for overview & HTML (definitions in `_schema/finding_themes.yaml`) |
 | [src/forensia/report/gap_tables.py](../src/forensia/report/gap_tables.py) / [summary_rows.py](../src/forensia/report/summary_rows.py) / [table_registry.py](../src/forensia/report/table_registry.py) | Deterministic table builders (`mode: table` blocks) |
 | [src/forensia/report/report_validation.py](../src/forensia/report/report_validation.py) | Final report output validation (doctor self-check) |
-| [src/forensia/report/benign_auth.py](../src/forensia/report/benign_auth.py) / [narrative_review.py](../src/forensia/report/narrative_review.py) / [section_taxonomy.py](../src/forensia/report/section_taxonomy.py) | Benign-auth scoping / narrative review / section family taxonomy |
+| [src/forensia/report/benign_auth.py](../src/forensia/report/benign_auth.py) / [narrative_review.py](../src/forensia/report/narrative_review.py) / [section_taxonomy.py](../src/forensia/report/section_taxonomy.py) | Benign-auth scoping (policy in `_schema/benign_auth.yaml`) / narrative review / section family taxonomy |
 
 ## API / Web
 
@@ -127,4 +127,4 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 | [tests/](../tests/) | pytest tests (split per module under test) |
 | [src/forensia/rulepacks/_schema/](../src/forensia/rulepacks/_schema/) | Schema definition YAML (`evtx_events.yaml`, `question_routing.yaml`, `verdict_taxonomy.yaml`, `playbook/`, etc.) |
 | [src/forensia/report_template/](../src/forensia/report_template/) | Default report template Markdown (copied into each case) |
-| [src/forensia/report/templates/](../src/forensia/report/templates/) | jinja2 templates for the HTML report page |
+| [src/forensia/report/templates/](../src/forensia/report/templates/) | jinja2 templates for the HTML report page (`report.html.j2` + `report.css.j2` + `partials/`) |

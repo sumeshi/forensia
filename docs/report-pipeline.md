@@ -177,7 +177,7 @@ Gap hypotheses emitted by the report writer pass through `_inject_gap_hypotheses
 Two-stage call: `build_query_intent_messages` → `build_sql_composer_messages`.
 
 - **schema cards** (`<SCHEMA_CARDS>`): `core_columns` (a short list shown to the planner, 5–13 columns) + `column_descriptions` (one-line descriptions) + `columns` (full list for the SQL validator) from `rulepacks/_schema/*.yaml`. The intent planner's `target_table` is chosen mainly from `evtx_events` / `mft_entries` / `mft_timeline` / `prefetch_executions`, and the composer looks at the schema_card and live schema of the target table. The validator's allowlist is built by `get_allowed_tables(db)` from the live DB and also permits derived tables such as `findings` / `prefetch_timeline` / `report_*` / `section_*` as needed
-- **SQL cookbook** (`<SQL_COOKBOOK>`): 6 SELECT templates — event_id enumeration / time range / GROUP BY / COALESCE / MFT path LIKE / Prefetch. Weak LLMs are expected to copy-edit these rather than synthesize from scratch
+- **SQL cookbook** (`<SQL_COOKBOOK>`): SELECT templates (catalog in `_schema/query_templates.yaml`) — event_id enumeration / time range / GROUP BY / COALESCE / MFT path LIKE / Prefetch. Weak LLMs are expected to copy-edit these rather than synthesize from scratch
 - **SQL retry**: When `validate_select_sql` (or the EXPLAIN dry-run) rejects a query, `_retry_sql_composer` re-invokes only `sql_composer` up to `_PLANNER_SQL_MAX_RETRIES = 3` times. The intent stage is not re-executed
 - **Fallback**: If retries still do not yield valid SQL, the plan result carries `stop_reason: "SQL composition failed after retries"` and the hypothesis attempt is recorded as unplannable (no deterministic SQL synthesis fallback in the current implementation)
 
