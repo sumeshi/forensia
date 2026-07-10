@@ -325,75 +325,73 @@ def investigate(
     print(f"Investigation complete. Report: {report_path}")
 
 
-def _doctor_schema_coverage_check() -> tuple[str, bool]:
-    _status("Schema coverage audit...")
+def _run_doctor_script_check(
+    label: str,
+    status_line: str,
+    script_name: str,
+    extra_args: list[str],
+    timeout: int,
+    ok_message: str,
+    fail_heading: str,
+) -> tuple[str, bool]:
+    """Run a scripts/*.py health check in a subprocess and report pass/fail."""
+    _status(status_line)
     try:
         result = subprocess.run(
             [
                 sys.executable,
-                str(_project_root() / "scripts" / "audit_schema_coverage.py"),
-                "--strict",
+                str(_project_root() / "scripts" / script_name),
+                *extra_args,
             ],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=timeout,
         )
         ok = result.returncode == 0
         if ok:
-            print("  ✓ All event IDs and question types covered")
+            print(f"  ✓ {ok_message}")
         else:
-            print(f"  ✗ Uncovered entries:\n{result.stdout}")
-        return "Schema coverage", ok
+            print(f"  ✗ {fail_heading}:\n{result.stdout}")
+        return label, ok
     except Exception as exc:
         print(f"  ✗ Error: {exc}")
-        return "Schema coverage", False
+        return label, False
+
+
+def _doctor_schema_coverage_check() -> tuple[str, bool]:
+    return _run_doctor_script_check(
+        "Schema coverage",
+        "Schema coverage audit...",
+        "audit_schema_coverage.py",
+        ["--strict"],
+        60,
+        "All event IDs and question types covered",
+        "Uncovered entries",
+    )
 
 
 def _doctor_playbook_drift_check() -> tuple[str, bool]:
-    _status("Playbook MD/YAML drift check...")
-    try:
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(_project_root() / "scripts" / "regenerate_playbook.py"),
-                "--check",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        ok = result.returncode == 0
-        if ok:
-            print("  ✓ All playbook files up to date")
-        else:
-            print(f"  ✗ Drift detected:\n{result.stdout}")
-        return "Playbook drift", ok
-    except Exception as exc:
-        print(f"  ✗ Error: {exc}")
-        return "Playbook drift", False
+    return _run_doctor_script_check(
+        "Playbook drift",
+        "Playbook MD/YAML drift check...",
+        "regenerate_playbook.py",
+        ["--check"],
+        30,
+        "All playbook files up to date",
+        "Drift detected",
+    )
 
 
 def _doctor_import_layer_check() -> tuple[str, bool]:
-    _status("Import layer contract (R4)...")
-    try:
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(_project_root() / "scripts" / "check_imports.py"),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        ok = result.returncode == 0
-        if ok:
-            print("  ✓ No forbidden import edges")
-        else:
-            print(f"  ✗ Layer violations:\n{result.stdout}")
-        return "Import layers", ok
-    except Exception as exc:
-        print(f"  ✗ Error: {exc}")
-        return "Import layers", False
+    return _run_doctor_script_check(
+        "Import layers",
+        "Import layer contract (R4)...",
+        "check_imports.py",
+        [],
+        30,
+        "No forbidden import edges",
+        "Layer violations",
+    )
 
 
 def _doctor_verdict_taxonomy_check() -> tuple[str, bool]:

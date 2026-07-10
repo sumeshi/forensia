@@ -382,12 +382,17 @@ def _store_section_facts(
         )
 
 
-def _findings_snapshot(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
-    """Fetch top findings ordered by confidence for use in section agent prompts."""
+def _findings_snapshot(
+    db: CaseDB, limit: int = 12, *, include_evidence: bool = False
+) -> list[dict[str, Any]]:
+    """Fetch top findings ordered by confidence for use in prompts and memory sync."""
+    columns = "finding_id, title, severity, confidence, status, summary"
+    if include_evidence:
+        columns += ", evidence"
     return fetch_records(
         db,
-        """
-        SELECT finding_id, title, severity, confidence, status, summary
+        f"""
+        SELECT {columns}
         FROM findings
         ORDER BY confidence DESC, created_at DESC
         LIMIT ?

@@ -15,6 +15,11 @@ from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.db.query import normalize_value
 from forensia.report.evidence_refs import EVIDENCE_ID_PATTERN
+from forensia.report.finding_themes import (
+    _finding_theme_rank,
+    _finding_theme_summary,
+    _finding_theme_title,
+)
 
 
 def _fetch_records(
@@ -64,46 +69,6 @@ def _finding_theme(row: dict[str, Any]) -> str:
     ):
         return "data_access"
     return "other"
-
-
-def _finding_theme_title(theme: str, count: int) -> str:
-    suffix = f" ({count})" if count > 1 else ""
-    return {
-        "explicit_credentials": f"Explicit credential usage observed{suffix}",
-        "account_lifecycle": f"User account change events{suffix}",
-        "time_change": f"System time change observed{suffix}",
-        "log_integrity": f"Log stop / clear candidate events{suffix}",
-        "antiforensic_tools": f"Wiping / cleaning tool traces{suffix}",
-        "data_access": f"Mail / browser / cloud-related traces{suffix}",
-        "other": f"Other priority findings{suffix}",
-    }.get(theme, f"Priority findings{suffix}")
-
-
-def _finding_theme_summary(theme: str) -> str:
-    return {
-        "explicit_credentials": "Credentials were used explicitly (not standard logon); correlate target user, host, and time.",
-        "account_lifecycle": "Account creation, activation, or password changes may enable privilege use or trace manipulation.",
-        "time_change": "Time changes affect timeline interpretation; correlate with surrounding auth and file events.",
-        "log_integrity": "Log stop/clear candidates alone do not confirm wiping; check proximity to cleaning tools and shutdown.",
-        "antiforensic_tools": "Cleaning tool traces do not reveal what was deleted, but are central supporting evidence for a wiping hypothesis.",
-        "data_access": "Mail/browser/cloud traces show information access and sync environment; confirm destinations and target files.",
-        "other": "Detailed conclusions require correlating individual evidence with surrounding events.",
-    }.get(
-        theme,
-        "Detailed conclusions require correlating individual evidence with surrounding events.",
-    )
-
-
-def _finding_theme_rank(theme: str) -> int:
-    return {
-        "explicit_credentials": 0,
-        "account_lifecycle": 1,
-        "time_change": 2,
-        "log_integrity": 3,
-        "antiforensic_tools": 4,
-        "data_access": 5,
-        "other": 9,
-    }.get(theme, 9)
 
 
 def _group_findings_for_display(

@@ -1,13 +1,30 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
+from forensia.normalize.timeline_sql import (
+    build_timeline_stage_sql,
+    delete_existing_timeline_entries_sql,
+    duckdb_path_literal,
+    insert_timeline_sql,
+)
 
-
-def _duckdb_path_literal(path: Path) -> str:
-    return path.as_posix().replace("'", "''")
+_TIMELINE_COLUMNS: list[tuple[str, str]] = [
+    ("timeline_id", "json_extract_string(json, '$.timeline_id')"),
+    ("evidence_id", "json_extract_string(json, '$.evidence_id')"),
+    (
+        "record_number",
+        "try_cast(nullif(json_extract_string(json, '$.record_number'), '') AS BIGINT)",
+    ),
+    ("file_path", "json_extract_string(json, '$.file_path')"),
+    ("file_name", "json_extract_string(json, '$.file_name')"),
+    (
+        "timestamp",
+        "try_cast(nullif(json_extract_string(json, '$.timestamp'), '') AS TIMESTAMP)",
+    ),
+    ("timestamp_type", "json_extract_string(json, '$.timestamp_type')"),
+    ("source_file", "json_extract_string(json, '$.source_file')"),
+]
 
 
 def _build_stage_table_sql(path_sql: str) -> str:
@@ -111,46 +128,6 @@ def _insert_entries_sql() -> str:
     """
 
 
-def _build_timeline_stage_sql(path_sql: str) -> str:
-    # mft2es timeline_mode=True emits ECS-shaped JSON; ingest enriches the records
-    # with forensia-flat fields at the top level (timeline_id, evidence_id, etc.).
-    return f"""
-        CREATE OR REPLACE TEMP TABLE mft_timeline_stage AS
-        WITH raw AS (
-            SELECT json
-            FROM read_ndjson_objects('{path_sql}')
-        )
-        SELECT
-            json_extract_string(json, '$.timeline_id')   AS timeline_id,
-            json_extract_string(json, '$.evidence_id')   AS evidence_id,
-            try_cast(nullif(json_extract_string(json, '$.record_number'), '') AS BIGINT) AS record_number,
-            json_extract_string(json, '$.file_path')     AS file_path,
-            json_extract_string(json, '$.file_name')     AS file_name,
-            try_cast(nullif(json_extract_string(json, '$.timestamp'), '') AS TIMESTAMP) AS timestamp,
-            json_extract_string(json, '$.timestamp_type') AS timestamp_type,
-            json_extract_string(json, '$.source_file')   AS source_file
-        FROM raw
-        WHERE json_extract_string(json, '$.timeline_id') IS NOT NULL
-    """
-
-
-def _insert_timeline_sql() -> str:
-    return """
-        INSERT INTO mft_timeline (
-            timeline_id, evidence_id, record_number, file_path, file_name,
-            timestamp, timestamp_type, source_file
-        )
-        SELECT
-            timeline_id, evidence_id, record_number, file_path, file_name,
-            timestamp, timestamp_type, source_file
-        FROM mft_timeline_stage
-    """
-
-
-def _delete_existing_timeline_entries() -> str:
-    return "DELETE FROM mft_timeline WHERE evidence_id IN (SELECT DISTINCT evidence_id FROM mft_timeline_stage WHERE evidence_id IS NOT NULL)"
-
-
 def normalize_mft(case: Case, db: CaseDB) -> tuple[int, int]:
     entry_paths = sorted({*case.raw_dir.glob("mft-entries-*.jsonl")})
     timeline_paths = sorted({*case.raw_dir.glob("mft-timeline-*.jsonl")})
@@ -159,16 +136,26 @@ def normalize_mft(case: Case, db: CaseDB) -> tuple[int, int]:
     total_entries = 0
     total_timeline = 0
     for path in entry_paths:
-        path_sql = _duckdb_path_literal(path)
+        path_sql = duckdb_path_literal(path)
         db.execute(_build_stage_table_sql(path_sql))
         db.execute(_delete_existing_entries_sql())
         db.execute(_insert_entries_sql())
         total_entries += db.execute("SELECT COUNT(*) FROM mft_stage").fetchone()[0]
     for path in timeline_paths:
-        path_sql = _duckdb_path_literal(path)
-        db.execute(_build_timeline_stage_sql(path_sql))
-        db.execute(_delete_existing_timeline_entries())
-        db.execute(_insert_timeline_sql())
+        path_sql = duckdb_path_literal(path)
+        db.execute(
+            build_timeline_stage_sql("mft_timeline_stage", path_sql, _TIMELINE_COLUMNS)
+        )
+        db.execute(
+            delete_existing_timeline_entries_sql("mft_timeline", "mft_timeline_stage")
+        )
+        db.execute(
+            insert_timeline_sql(
+                "mft_timeline",
+                "mft_timeline_stage",
+                [name for name, _ in _TIMELINE_COLUMNS],
+            )
+        )
         total_timeline += db.execute(
             "SELECT COUNT(*) FROM mft_timeline_stage"
         ).fetchone()[0]

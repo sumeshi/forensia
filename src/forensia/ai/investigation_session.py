@@ -26,6 +26,7 @@ from forensia.ai.report_gap import (
     _build_report_status,
     _overlay_report_status,
 )
+from forensia.ai.section_run_store import _findings_snapshot
 from forensia.ai.seeding import (
     _seed_findings,
     _seed_rule_hypotheses,
@@ -35,7 +36,6 @@ from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
-from forensia.db.query import fetch_records
 
 
 def _to_json(value: Any) -> str:
@@ -288,17 +288,8 @@ def _ensure_profile_objective(
 
 
 def _finding_snapshot(db: CaseDB, limit: int = 20) -> list[dict[str, Any]]:
-    """Fetch the top findings ordered by confidence and recency."""
-    return fetch_records(
-        db,
-        """
-        SELECT finding_id, title, summary, severity, confidence, status, evidence
-        FROM findings
-        ORDER BY confidence DESC, created_at DESC
-        LIMIT ?
-        """,
-        (limit,),
-    )
+    """Fetch the top findings (with evidence) ordered by confidence and recency."""
+    return _findings_snapshot(db, limit, include_evidence=True)
 
 
 def _keypoint_card_id(index: int) -> str:

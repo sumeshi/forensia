@@ -1,53 +1,30 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
+from forensia.normalize.timeline_sql import (
+    build_timeline_stage_sql,
+    delete_existing_timeline_entries_sql,
+    duckdb_path_literal,
+    insert_timeline_sql,
+)
 
-
-def _duckdb_path_literal(path: Path) -> str:
-    return path.as_posix().replace("'", "''")
-
-
-def _build_timeline_stage_sql(path_sql: str) -> str:
-    # prefetch2es timeline_mode emits ECS-shaped JSON; ingest enriches the records
-    # with forensia-flat fields at the top level (timeline_id, evidence_id, etc.).
-    return f"""
-        CREATE OR REPLACE TEMP TABLE prefetch_timeline_stage AS
-        WITH raw AS (
-            SELECT json
-            FROM read_ndjson_objects('{path_sql}')
-        )
-        SELECT
-            json_extract_string(json, '$.timeline_id')      AS timeline_id,
-            json_extract_string(json, '$.evidence_id')      AS evidence_id,
-            json_extract_string(json, '$.executable_name')  AS executable_name,
-            json_extract_string(json, '$.prefetch_hash')    AS prefetch_hash,
-            try_cast(nullif(json_extract_string(json, '$.exec_time'), '') AS TIMESTAMP) AS exec_time,
-            try_cast(nullif(json_extract_string(json, '$.exec_index'), '') AS INTEGER) AS exec_index,
-            json_extract_string(json, '$.source_file')      AS source_file,
-            CAST('[]' AS JSON)                              AS tags
-        FROM raw
-        WHERE json_extract_string(json, '$.timeline_id') IS NOT NULL
-    """
-
-
-def _insert_timeline_sql() -> str:
-    return """
-        INSERT INTO prefetch_timeline (
-            timeline_id, evidence_id, executable_name, prefetch_hash,
-            exec_time, exec_index, source_file, tags
-        )
-        SELECT
-            timeline_id, evidence_id, executable_name, prefetch_hash,
-            exec_time, exec_index, source_file, tags
-        FROM prefetch_timeline_stage
-    """
-
-
-def _delete_existing_timeline_entries() -> str:
-    return "DELETE FROM prefetch_timeline WHERE evidence_id IN (SELECT DISTINCT evidence_id FROM prefetch_timeline_stage WHERE evidence_id IS NOT NULL)"
+_TIMELINE_COLUMNS: list[tuple[str, str]] = [
+    ("timeline_id", "json_extract_string(json, '$.timeline_id')"),
+    ("evidence_id", "json_extract_string(json, '$.evidence_id')"),
+    ("executable_name", "json_extract_string(json, '$.executable_name')"),
+    ("prefetch_hash", "json_extract_string(json, '$.prefetch_hash')"),
+    (
+        "exec_time",
+        "try_cast(nullif(json_extract_string(json, '$.exec_time'), '') AS TIMESTAMP)",
+    ),
+    (
+        "exec_index",
+        "try_cast(nullif(json_extract_string(json, '$.exec_index'), '') AS INTEGER)",
+    ),
+    ("source_file", "json_extract_string(json, '$.source_file')"),
+    ("tags", "CAST('[]' AS JSON)"),
+]
 
 
 def normalize_prefetch(case: Case, db: CaseDB) -> tuple[int, int]:
@@ -98,10 +75,24 @@ def normalize_prefetch(case: Case, db: CaseDB) -> tuple[int, int]:
 
     total_timeline = 0
     for path in sorted(case.raw_dir.glob("prefetch-timeline-*.jsonl")):
-        path_sql = _duckdb_path_literal(path)
-        db.execute(_build_timeline_stage_sql(path_sql))
-        db.execute(_delete_existing_timeline_entries())
-        db.execute(_insert_timeline_sql())
+        path_sql = duckdb_path_literal(path)
+        db.execute(
+            build_timeline_stage_sql(
+                "prefetch_timeline_stage", path_sql, _TIMELINE_COLUMNS
+            )
+        )
+        db.execute(
+            delete_existing_timeline_entries_sql(
+                "prefetch_timeline", "prefetch_timeline_stage"
+            )
+        )
+        db.execute(
+            insert_timeline_sql(
+                "prefetch_timeline",
+                "prefetch_timeline_stage",
+                [name for name, _ in _TIMELINE_COLUMNS],
+            )
+        )
         total_timeline += db.execute(
             "SELECT COUNT(*) FROM prefetch_timeline_stage"
         ).fetchone()[0]
