@@ -5,20 +5,8 @@ from datetime import datetime
 from typing import Any
 
 
-def infer_timezone(db) -> tuple[int | None, str]:
-    """Infer the source timezone offset in minutes from available evidence.
-
-    Methods used (in order):
-      1. Event 4616 (System Time Change) — extract timezone bias from raw_json.
-      2. Embedded ISO timestamps in event message bodies — compare with UTC.
-      3. Paired 6005/6013 uptime records — validate clock consistency.
-
-    Conservative: returns None unless ≥2 independent agreeing observations.
-    Returns (tz_offset_minutes | None, basis_string).
-    """
-    observations: list[tuple[int, str]] = []
-
-    # ── Method 1: Event 4616 timezone bias ──────────────────────────────
+def _observe_4616_biases(db) -> list[tuple[int, str]]:
+    """Method 1: extract timezone bias observations from Event 4616 raw_json."""
     rows = db.execute(
         """
         SELECT raw_json
@@ -28,7 +16,7 @@ def infer_timezone(db) -> tuple[int | None, str]:
         LIMIT 50
         """
     ).fetchall()
-
+    observations: list[tuple[int, str]] = []
     for (raw_json,) in rows:
         if not raw_json:
             continue
@@ -39,9 +27,12 @@ def infer_timezone(db) -> tuple[int | None, str]:
         bias = _extract_4616_bias(data)
         if bias is not None:
             observations.append((bias, "Event 4616 system time change"))
+    return observations
 
-    # ── Method 2: Embedded timestamps in event message bodies ──────────
-    rows2 = db.execute(
+
+def _observe_message_offsets(db) -> list[int]:
+    """Method 2: offsets (minutes) between embedded message-body ISO timestamps and UTC."""
+    rows = db.execute(
         """
         SELECT timestamp, message
         FROM evtx_events
@@ -50,10 +41,9 @@ def infer_timezone(db) -> tuple[int | None, str]:
         LIMIT 5000
         """
     ).fetchall()
-
     iso_pattern = re.compile(r"(?<!\d)(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?!\d)")
     msg_offsets: list[int] = []
-    for utc_ts, message in rows2:
+    for utc_ts, message in rows:
         if not message:
             continue
         try:
@@ -75,14 +65,12 @@ def infer_timezone(db) -> tuple[int | None, str]:
             offset_min = round(offset_sec / 60)
             if -720 <= offset_min <= 720:
                 msg_offsets.append(offset_min)
+    return msg_offsets
 
-    if len(msg_offsets) >= 2:
-        offset = _most_common_agreeing(msg_offsets, tolerance=30)
-        if offset is not None:
-            observations.append((offset, "Event message body timestamps"))
 
-    # ── Method 3: Paired 6005/6013 uptime records ──────────────────────
-    rows3 = db.execute(
+def _observe_uptime_offsets(db) -> list[int]:
+    """Method 3: offsets (minutes) from paired 6005/6013 uptime clock-consistency checks."""
+    rows = db.execute(
         """
         SELECT timestamp, message
         FROM evtx_events
@@ -92,9 +80,8 @@ def infer_timezone(db) -> tuple[int | None, str]:
         LIMIT 50
         """
     ).fetchall()
-
     uptime_offsets: list[int] = []
-    for utc_ts, message in rows3:
+    for utc_ts, message in rows:
         if not message:
             continue
         m = re.search(r"uptime is (\d+) seconds?", str(message), re.IGNORECASE)
@@ -140,16 +127,18 @@ def infer_timezone(db) -> tuple[int | None, str]:
         if gap_sec > 3600:
             offset_hours = round(gap_sec / 3600)
             uptime_offsets.append(offset_hours * 60)
+    return uptime_offsets
 
-    if len(uptime_offsets) >= 2:
-        offset = _most_common_agreeing(uptime_offsets, tolerance=30)
-        if offset is not None:
-            observations.append((offset, "Paired 6005/6013 uptime records"))
 
-    # ── Aggregate ──────────────────────────────────────────────────────
-    # Two-path aggregation:
-    #   a) ≥2 methods agree on the same offset → strong signal.
-    #   b) Single method with ≥2 agreeing raw data points → accepted.
+def _aggregate_observations(
+    observations: list[tuple[int, str]], msg_offsets: list[int]
+) -> tuple[int | None, str]:
+    """Two-path aggregation of timezone observations.
+
+    a) ≥2 methods agree on the same offset → strong signal.
+    b) Single method (message-body timestamps) with ≥2 agreeing raw data
+       points → accepted.
+    """
     method_offsets = [o for o, _ in observations]
     agreed_method = (
         _all_agree(method_offsets, tolerance=30) if len(method_offsets) >= 2 else None
@@ -163,8 +152,6 @@ def infer_timezone(db) -> tuple[int | None, str]:
             agreed_method,
             f"Inferred from {len(source_set)} sources: {', '.join(sorted(source_set))}",
         )
-
-    # Single-method: message body timestamps with ≥2 agreeing data points
     if len(msg_offsets) >= 2:
         agreed = _most_common_agreeing(msg_offsets, tolerance=30)
         if agreed is not None:
@@ -172,8 +159,35 @@ def infer_timezone(db) -> tuple[int | None, str]:
                 agreed,
                 f"Inferred from {len(msg_offsets)} event message timestamps",
             )
-
     return (None, "Could not determine timezone from available events")
+
+
+def infer_timezone(db) -> tuple[int | None, str]:
+    """Infer the source timezone offset in minutes from available evidence.
+
+    Methods used (in order):
+      1. Event 4616 (System Time Change) — extract timezone bias from raw_json.
+      2. Embedded ISO timestamps in event message bodies — compare with UTC.
+      3. Paired 6005/6013 uptime records — validate clock consistency.
+
+    Conservative: returns None unless ≥2 independent agreeing observations.
+    Returns (tz_offset_minutes | None, basis_string).
+    """
+    observations = _observe_4616_biases(db)
+
+    msg_offsets = _observe_message_offsets(db)
+    if len(msg_offsets) >= 2:
+        offset = _most_common_agreeing(msg_offsets, tolerance=30)
+        if offset is not None:
+            observations.append((offset, "Event message body timestamps"))
+
+    uptime_offsets = _observe_uptime_offsets(db)
+    if len(uptime_offsets) >= 2:
+        offset = _most_common_agreeing(uptime_offsets, tolerance=30)
+        if offset is not None:
+            observations.append((offset, "Paired 6005/6013 uptime records"))
+
+    return _aggregate_observations(observations, msg_offsets)
 
 
 def _all_agree(values: list[int], tolerance: int = 30) -> int | None:

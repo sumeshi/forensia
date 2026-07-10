@@ -7,6 +7,7 @@ names from forensia.cli.
 import asyncio
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import typer
@@ -152,6 +153,118 @@ def report(
     print(f"HTML report written to {path}")
 
 
+def _open_or_init_case(case_dir: str, input_dir: str | None, timezone: str) -> Case:
+    """Open an existing case or initialize a new one (requires input_dir)."""
+    case_path = Path(case_dir)
+    if (case_path / "manifest.yaml").exists():
+        return _open_case_or_die(case_dir, timezone=timezone)
+    if input_dir is None:
+        raise typer.BadParameter("New case requires an input_dir argument")
+    tz_val = _resolve_timezone(timezone, None)
+    case = Case.init(case_dir, source_timezone=tz_val)
+    clear_api_snapshots(case)
+    _status(f"Initialized case at {case.path}")
+    return case
+
+
+def _rerun_reset(case: Case, case_dir: str, timezone: str) -> Case:
+    """Reset case tables and runtime outputs for --rerun, preserving raw/ and memory."""
+    _status("Resetting case tables for rerun (preserving raw/ for re-normalize)")
+    with CaseDB(case) as db:
+        _reset_case_tables(db)
+    case.clear_runtime_outputs(
+        preserve_memory=True,
+        preserve_ai_logs=True,
+        drop_database=False,
+        preserve_raw=True,
+    )
+    # Preserve the manifest timezone across rerun unless --timezone overrides it.
+    tz_val = _resolve_timezone(timezone, case)
+    case = Case.init(case_dir, source_timezone=tz_val)
+    clear_api_snapshots(case)
+    _status(f"Re-initialized case at {case.path}")
+    return case
+
+
+def _run_evidence_stages(
+    case: Case,
+    db: CaseDB,
+    tasks: CaseTasks,
+    profile: str,
+    input_dir: str | None,
+    rerun: bool,
+    push_progress: Callable[..., None],
+) -> None:
+    """(Re)build evidence tables: ingest from input_dir, or re-normalize from raw/.
+
+    - `input_dir` given: full ingest from input_dir, then normalize + analyze
+    - `rerun` with raw/ already populated: skip ingest, just re-run normalize + analyze
+    """
+    raw_has_files = any(case.raw_dir.iterdir()) if case.raw_dir.exists() else False
+    needs_normalize_from_raw = rerun and input_dir is None and raw_has_files
+
+    if input_dir is not None:
+        profile_path = _resolve_profile_path(profile)
+        ingest_counts = _run_ingest_stage(case, db, tasks, input_dir, push_progress)
+        normalized_this_run = _run_normalize_stage(
+            case, db, tasks, rerun, ingest_counts, push_progress
+        )
+        _run_analyze_stage(
+            case,
+            db,
+            tasks,
+            profile,
+            profile_path,
+            rerun,
+            normalized_this_run,
+            push_progress,
+        )
+    elif needs_normalize_from_raw:
+        profile_path = _resolve_profile_path(profile)
+        _status("Re-normalizing from existing raw/ (no input_dir provided)")
+        normalized_this_run = _run_normalize_stage(
+            case, db, tasks, True, {}, push_progress
+        )
+        _run_analyze_stage(
+            case,
+            db,
+            tasks,
+            profile,
+            profile_path,
+            True,
+            normalized_this_run,
+            push_progress,
+        )
+
+
+def _print_pre_investigation_hints(case: Case, profile: str, db: CaseDB) -> None:
+    """Print profile advice and a conservative timezone hint before investigating."""
+    advice = profile_advisor(profile, db)
+    if advice:
+        # rich's print would swallow [bracketed] pack names as markup tags.
+        from rich.markup import escape
+
+        print(escape(advice))
+    if case.source_timezone == "UTC":
+        # R2-14: surface a conservative timezone hint when no explicit
+        # timezone was provided; rendering stays UTC-only until the
+        # analyst confirms via --timezone.
+        try:
+            from forensia.normalize.timezone import infer_timezone
+
+            offset_minutes, basis = infer_timezone(db)
+            if offset_minutes is not None:
+                sign = "+" if offset_minutes >= 0 else "-"
+                hours, minutes = divmod(abs(offset_minutes), 60)
+                _status(
+                    f"Timezone hint: evidence suggests UTC{sign}{hours}"
+                    + (f":{minutes:02d}" if minutes else "")
+                    + f" ({basis}). Re-run with --timezone <IANA name> to render local times."
+                )
+        except Exception:
+            pass
+
+
 @app.command()
 def investigate(
     case_dir: str,
@@ -193,35 +306,9 @@ def investigate(
 ) -> None:
     """Run full investigation pipeline: ingest, normalize, analyze, investigate, and report."""
     llm_base_url, model = resolve_llm_config(llm_base_url, model)
-
-    case_path = Path(case_dir)
-    case_exists = (case_path / "manifest.yaml").exists()
-
-    if not case_exists:
-        if input_dir is None:
-            raise typer.BadParameter("New case requires an input_dir argument")
-        tz_val = _resolve_timezone(timezone, None)
-        case = Case.init(case_dir, source_timezone=tz_val)
-        clear_api_snapshots(case)
-        _status(f"Initialized case at {case.path}")
-    else:
-        case = _open_case_or_die(case_dir, timezone=timezone)
-
+    case = _open_or_init_case(case_dir, input_dir, timezone)
     if rerun:
-        _status("Resetting case tables for rerun (preserving raw/ for re-normalize)")
-        with CaseDB(case) as db:
-            _reset_case_tables(db)
-        case.clear_runtime_outputs(
-            preserve_memory=True,
-            preserve_ai_logs=True,
-            drop_database=False,
-            preserve_raw=True,
-        )
-        # Preserve the manifest timezone across rerun unless --timezone overrides it.
-        tz_val = _resolve_timezone(timezone, case)
-        case = Case.init(case_dir, source_timezone=tz_val)
-        clear_api_snapshots(case)
-        _status(f"Re-initialized case at {case.path}")
+        case = _rerun_reset(case, case_dir, timezone)
 
     with CaseDB(case) as db:
         clear_progress_events(db)
@@ -238,70 +325,11 @@ def investigate(
             else None
         )
 
-        # Determine if we need to (re)build evidence tables.
-        # - `input_dir` given: full ingest from input_dir, then normalize + analyze
-        # - `rerun` with raw/ already populated: skip ingest, just re-run normalize + analyze
-        raw_has_files = any(case.raw_dir.iterdir()) if case.raw_dir.exists() else False
-        needs_normalize_from_raw = rerun and input_dir is None and raw_has_files
-
-        if input_dir is not None and not report_only:
-            profile_path = _resolve_profile_path(profile)
-            ingest_counts = _run_ingest_stage(case, db, tasks, input_dir, push_progress)
-            normalized_this_run = _run_normalize_stage(
-                case, db, tasks, rerun, ingest_counts, push_progress
-            )
-            _run_analyze_stage(
-                case,
-                db,
-                tasks,
-                profile,
-                profile_path,
-                rerun,
-                normalized_this_run,
-                push_progress,
-            )
-        elif needs_normalize_from_raw and not report_only:
-            profile_path = _resolve_profile_path(profile)
-            _status("Re-normalizing from existing raw/ (no input_dir provided)")
-            normalized_this_run = _run_normalize_stage(
-                case, db, tasks, True, {}, push_progress
-            )
-            _run_analyze_stage(
-                case,
-                db,
-                tasks,
-                profile,
-                profile_path,
-                True,
-                normalized_this_run,
-                push_progress,
-            )
-
         if not report_only:
-            advice = profile_advisor(profile, db)
-            if advice:
-                # rich's print would swallow [bracketed] pack names as markup tags.
-                from rich.markup import escape
-
-                print(escape(advice))
-            if case.source_timezone == "UTC":
-                # R2-14: surface a conservative timezone hint when no explicit
-                # timezone was provided; rendering stays UTC-only until the
-                # analyst confirms via --timezone.
-                try:
-                    from forensia.normalize.timezone import infer_timezone
-
-                    offset_minutes, basis = infer_timezone(db)
-                    if offset_minutes is not None:
-                        sign = "+" if offset_minutes >= 0 else "-"
-                        hours, minutes = divmod(abs(offset_minutes), 60)
-                        _status(
-                            f"Timezone hint: evidence suggests UTC{sign}{hours}"
-                            + (f":{minutes:02d}" if minutes else "")
-                            + f" ({basis}). Re-run with --timezone <IANA name> to render local times."
-                        )
-                except Exception:
-                    pass
+            _run_evidence_stages(
+                case, db, tasks, profile, input_dir, rerun, push_progress
+            )
+            _print_pre_investigation_hints(case, profile, db)
             _run_investigate_stage(
                 case,
                 db,

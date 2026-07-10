@@ -322,85 +322,58 @@ def _parse_planner_output(
     return parsed_hypothesis, planned_query
 
 
-def plan_hypothesis_query(
-    state: SessionState,
-    hypothesis: Hypothesis,
+def _load_prior_check_feedback(db: CaseDB | None, hypothesis: Hypothesis) -> str:
+    """Summarize the last check-phase reasoning entries for this hypothesis.
+
+    Free text is a supplement only — the structured attempt history
+    (<PRIOR_ATTEMPTS> in the intent prompt) carries the signal.
+    """
+    if db is None or not hypothesis.id:
+        return ""
+    recent_checks = db.execute(
+        """
+        SELECT body FROM hypothesis_reasoning
+        WHERE hypothesis_id = ? AND phase = 'check'
+        ORDER BY created_at DESC LIMIT 2
+    """,
+        (hypothesis.id,),
+    ).fetchall()
+    if not recent_checks:
+        return ""
+    return "\n".join(f"- {row[0][:120]}" for row in recent_checks)
+
+
+def _consume_execution_error_block(state: SessionState) -> str:
+    """Format (and clear) the last SQL execution error as a prompt block."""
+    if not state.last_execution_error:
+        return ""
+    block = (
+        f"\n<EXECUTION_ERROR>\n"
+        f"The previous SQL failed at execute time. Do NOT repeat the same SQL.\n"
+        f"query_id: {state.last_execution_error['query_id']}\n"
+        f"failing_sql: {state.last_execution_error['sql']}\n"
+        f"error: {state.last_execution_error['error']}\n"
+        f"</EXECUTION_ERROR>\n"
+    )
+    state.last_execution_error = None
+    return block
+
+
+def _plan_query_intent(
+    *,
     memory: MemoryManager,
+    intent_messages_builder: Callable[[str], list[dict[str, str]]],
     base_url: str,
     model: str,
-    db: CaseDB | None = None,
-    overview_md: str | None = None,
-    default_context_md: str | None = None,
-    status_callback: Callable[[str], None] | None = None,
-    audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None]
-    | None = None,
-    query_index: int = 1,
-    time_range: dict[str, str] | None = None,
-    case_profile: str | None = None,
-) -> HypothesisPlanResult:
-    """Plan the next query for a single hypothesis.
+    default_context_md: str,
+    db: CaseDB | None,
+    status_callback: Callable[[str], None] | None,
+    audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None,
+) -> tuple[dict[str, Any], str]:
+    """Phase 1: plan the query intent, retrying once if the SQL self-check blocks.
 
-    Two-phase split (PRM-010):
-    1. query_intent_planner: decides WHAT data to fetch
-    2. sql_composer: produces the SELECT statement
-
-    Phase 1 uses read_more context expansion; phase 2 is idempotent with
-    SQL validation retry."""
-
-    overview_md = overview_md if overview_md is not None else memory.load_overview()
-    default_context_md = _resolve_planner_context(
-        memory, hypothesis, default_context_md, initial_context=None
-    )
-    extra_context_holder = {"value": ""}
-    hypothesis_history, seen_query_ids = _build_hypothesis_history(
-        state, hypothesis, db, limit=10
-    )
-    schema_card = _build_schema_guidance("evtx_events", db=db)
-
-    prior_check_feedback = ""
-    if db is not None and hypothesis.id:
-        recent_checks = db.execute(
-            """
-            SELECT body FROM hypothesis_reasoning
-            WHERE hypothesis_id = ? AND phase = 'check'
-            ORDER BY created_at DESC LIMIT 2
-        """,
-            (hypothesis.id,),
-        ).fetchall()
-        if recent_checks:
-            # Free text is a supplement only — the structured attempt history
-            # (<PRIOR_ATTEMPTS> in the intent prompt) carries the signal.
-            prior_check_feedback = "\n".join(
-                f"- {row[0][:120]}" for row in recent_checks
-            )
-
-    execution_error_block = ""
-    if state.last_execution_error:
-        execution_error_block = (
-            f"\n<EXECUTION_ERROR>\n"
-            f"The previous SQL failed at execute time. Do NOT repeat the same SQL.\n"
-            f"query_id: {state.last_execution_error['query_id']}\n"
-            f"failing_sql: {state.last_execution_error['sql']}\n"
-            f"error: {state.last_execution_error['error']}\n"
-            f"</EXECUTION_ERROR>\n"
-        )
-        state.last_execution_error = None
-
-    # Phase 1: Query Intent Planning (WHAT data to fetch)
-    def intent_messages_builder(extra_context: str) -> list[dict[str, str]]:
-        extra_context_holder["value"] = extra_context
-        return build_query_intent_messages(
-            hypothesis=hypothesis,
-            recent_history=hypothesis_history,
-            active_hypotheses=state.active_hypotheses,
-            time_range=time_range or {},
-            schema_context=schema_card,
-            extra_context_md=extra_context + execution_error_block,
-            prior_check_feedback=prior_check_feedback,
-            case_profile=case_profile,
-            findings_snapshot=state.findings_snapshot,
-        )
-
+    Returns (intent_response, composer_schema_card for the chosen target table).
+    """
     intent_response = _request_with_optional_context(
         memory=memory,
         messages_builder=intent_messages_builder,
@@ -410,7 +383,6 @@ def plan_hypothesis_query(
         status_callback=status_callback,
         audit_callback=audit_callback,
     )
-
     target_table = str(intent_response.get("target_table") or "evtx_events").strip()
     composer_schema_card = _build_schema_guidance(target_table, db=db)
 
@@ -440,8 +412,25 @@ def plan_hypothesis_query(
             status_callback=status_callback,
             audit_callback=audit_callback,
         )
+    return intent_response, composer_schema_card
 
-    # Phase 2: SQL Composition (HOW to write the query)
+
+def _compose_sql(
+    *,
+    intent_response: dict[str, Any],
+    composer_schema_card: str,
+    time_range: dict[str, str] | None,
+    prior_check_feedback: str,
+    execution_error_block: str,
+    hypothesis: Hypothesis,
+    query_index: int,
+    base_url: str,
+    model: str,
+    db: CaseDB | None,
+    status_callback: Callable[[str], None] | None,
+    audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None,
+) -> dict[str, Any]:
+    """Phase 2: compose the SELECT statement, with SQL validation retry."""
     composer_messages = build_sql_composer_messages(
         intent=intent_response,
         table_schema_card=composer_schema_card,
@@ -454,8 +443,7 @@ def plan_hypothesis_query(
             {"role": "user", "content": execution_error_block.strip()}
         )
     composer_messages = _trim_dynamic_content(composer_messages)
-
-    composer_response = _retry_sql_composer(
+    return _retry_sql_composer(
         base_messages=composer_messages,
         hypothesis_id=hypothesis.id,
         query_index=query_index,
@@ -466,7 +454,14 @@ def plan_hypothesis_query(
         db=db,
     )
 
-    # Build PlannedQuery from composer response via shared helper
+
+def _build_hypothesis_plan_result(
+    hypothesis: Hypothesis,
+    query_index: int,
+    intent_response: dict[str, Any],
+    composer_response: dict[str, Any],
+) -> HypothesisPlanResult:
+    """Build a PlannedQuery from the composer response and wrap it as a plan result."""
     wrapper = {
         "hypothesis": None,
         "query": {
@@ -481,9 +476,7 @@ def plan_hypothesis_query(
         else None,
     }
     _, planned_query = _parse_planner_output(wrapper)
-
     read_more = [str(item) for item in coerce_list(intent_response.get("read_more"))]
-
     return HypothesisPlanResult(
         read_more=read_more,
         hypothesis=None,
@@ -491,4 +484,80 @@ def plan_hypothesis_query(
         needs_more=planned_query is not None,
         stop_reason=None if planned_query else "SQL composition failed after retries",
         raw_response=composer_response,
+    )
+
+
+def plan_hypothesis_query(
+    state: SessionState,
+    hypothesis: Hypothesis,
+    memory: MemoryManager,
+    base_url: str,
+    model: str,
+    db: CaseDB | None = None,
+    overview_md: str | None = None,
+    default_context_md: str | None = None,
+    status_callback: Callable[[str], None] | None = None,
+    audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None]
+    | None = None,
+    query_index: int = 1,
+    time_range: dict[str, str] | None = None,
+    case_profile: str | None = None,
+) -> HypothesisPlanResult:
+    """Plan the next query for a single hypothesis.
+
+    Two-phase split (PRM-010):
+    1. query_intent_planner: decides WHAT data to fetch
+    2. sql_composer: produces the SELECT statement
+
+    Phase 1 uses read_more context expansion; phase 2 is idempotent with
+    SQL validation retry."""
+    default_context_md = _resolve_planner_context(
+        memory, hypothesis, default_context_md, initial_context=None
+    )
+    hypothesis_history, _seen_query_ids = _build_hypothesis_history(
+        state, hypothesis, db, limit=10
+    )
+    schema_card = _build_schema_guidance("evtx_events", db=db)
+    prior_check_feedback = _load_prior_check_feedback(db, hypothesis)
+    execution_error_block = _consume_execution_error_block(state)
+
+    def intent_messages_builder(extra_context: str) -> list[dict[str, str]]:
+        return build_query_intent_messages(
+            hypothesis=hypothesis,
+            recent_history=hypothesis_history,
+            active_hypotheses=state.active_hypotheses,
+            time_range=time_range or {},
+            schema_context=schema_card,
+            extra_context_md=extra_context + execution_error_block,
+            prior_check_feedback=prior_check_feedback,
+            case_profile=case_profile,
+            findings_snapshot=state.findings_snapshot,
+        )
+
+    intent_response, composer_schema_card = _plan_query_intent(
+        memory=memory,
+        intent_messages_builder=intent_messages_builder,
+        base_url=base_url,
+        model=model,
+        default_context_md=default_context_md,
+        db=db,
+        status_callback=status_callback,
+        audit_callback=audit_callback,
+    )
+    composer_response = _compose_sql(
+        intent_response=intent_response,
+        composer_schema_card=composer_schema_card,
+        time_range=time_range,
+        prior_check_feedback=prior_check_feedback,
+        execution_error_block=execution_error_block,
+        hypothesis=hypothesis,
+        query_index=query_index,
+        base_url=base_url,
+        model=model,
+        db=db,
+        status_callback=status_callback,
+        audit_callback=audit_callback,
+    )
+    return _build_hypothesis_plan_result(
+        hypothesis, query_index, intent_response, composer_response
     )

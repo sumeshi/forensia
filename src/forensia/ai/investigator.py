@@ -9,6 +9,7 @@ from __future__ import annotations
 import signal
 import traceback
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -182,24 +183,35 @@ def _check_termination(
     return None, no_progress_count
 
 
-async def investigate(
-    case: Case,
-    db: CaseDB,
-    base_url: str,
-    model: str,
-    max_iter: int = 20,
-    no_progress_limit: int = 3,
-    profile: str = "windows-basic",
-    max_queries_per_hypothesis: int = 5,
-    progress_callback: Callable[[dict[str, Any]], None] | None = None,
-    report_every_n_cycles: int = 1,
-    report_only: bool = False,
-    template_root: Path | None = None,
-    report_max_queries_per_section: int = 3,
-    max_llm_calls: int = 200,
-    auto_rulepacks: bool = True,
-) -> dict[str, Any]:
-    """Run the full investigation loop: broad plan → hypothesis loop → report refresh, with termination checks and LLM budget enforcement."""
+@dataclass
+class _InvestigateEnv:
+    """Session-wide objects and knobs shared by the investigate() phase helpers."""
+
+    case: Case
+    db: CaseDB
+    base_url: str
+    model: str
+    state: Any
+    ctx: Any
+    memory: MemoryManager
+    llm_logger: LLMCallLogger
+    session_id: str
+    template_root: Path
+    case_profile_str: str
+    progress_callback: Callable[[dict[str, Any]], None] | None
+    max_iter: int
+    no_progress_limit: int
+    max_queries_per_hypothesis: int
+    report_every_n_cycles: int
+    report_only: bool
+    report_max_queries_per_section: int
+    max_llm_calls: int
+
+
+def _resolve_rulepacks(
+    profile: str, db: CaseDB, auto_rulepacks: bool
+) -> set[str]:
+    """Resolve active rulepack ids for the profile, logging auto-enabled packs."""
     profile_path = Path(__file__).parent.parent / "profiles" / f"{profile}.yaml"
     active_pack_ids = resolve_active_packs(
         profile_path if profile_path.exists() else None,
@@ -221,6 +233,190 @@ async def investigate(
                 "PLAN",
                 f"auto-rulepacks enabled: {sorted(auto_enabled)} (detected families trigger pack activation)",
             )
+    return active_pack_ids
+
+
+def _prepare_case_profile(case: Case, db: CaseDB) -> str:
+    """Extract the case time range and register the case profile globally."""
+    case.extract_time_range(db.conn)
+    case_profile_dict = build_case_profile(db)
+    case_profile_str = _format_case_profile(case_profile_dict)
+    profile_event_ids = {
+        e["event_id"]
+        for e in case_profile_dict.get("event_ids", [])
+        if isinstance(e.get("event_id"), int)
+    }
+    set_case_profile(case_profile_str, profile_event_ids)
+    return case_profile_str
+
+
+def _enforce_llm_budget(llm_logger: LLMCallLogger, max_llm_calls: int) -> None:
+    """Raise RuntimeError when the session's LLM call budget is exhausted."""
+    if max_llm_calls > 0 and llm_logger.total_calls >= max_llm_calls:
+        raise RuntimeError(
+            f"LLM call budget exceeded: {llm_logger.total_calls} calls >= {max_llm_calls} max. "
+            f"Per-phase: {llm_logger.count_by_phase()}. "
+            "Increase --max-llm-calls (or pass 0 for unlimited) or investigate the cause of excessive calls."
+        )
+
+
+async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int]:
+    """Run plan cycles until completion, interrupt, or no-progress limit.
+
+    Returns (status, report_refresh_failures).
+    """
+    no_progress_count = 0
+    report_refresh_failures = 0
+    for plan_cycle in range(1, env.max_iter + 1):
+        _enforce_llm_budget(env.llm_logger, env.max_llm_calls)
+        env.state.iteration = plan_cycle
+        env.state.findings_snapshot = _finding_snapshot(env.db)
+        _sync_keypoint_cards(env.memory, env.state.findings_snapshot)
+        _log(
+            "PLAN",
+            f"Cycle {plan_cycle}/{env.max_iter} — broad planning (active={len(env.state.active_hypotheses)} resolved={len(env.state.resolved_hypotheses)})",
+        )
+        if env.ctx.interrupted:
+            return "stopped", report_refresh_failures
+        (
+            broad_plan_stop,
+            cycle_progress,
+            focus_sections,
+            report_before,
+        ) = await _run_cycle_body(
+            state=env.state,
+            ctx=env.ctx,
+            db=env.db,
+            case=env.case,
+            session_id=env.session_id,
+            base_url=env.base_url,
+            model=env.model,
+            memory=env.memory,
+            llm_logger=env.llm_logger,
+            progress_callback=env.progress_callback,
+            max_queries_per_hypothesis=env.max_queries_per_hypothesis,
+            plan_cycle=plan_cycle,
+            max_iter=env.max_iter,
+            report_only=env.report_only,
+            case_profile_str=env.case_profile_str,
+        )
+        if env.ctx.interrupted:
+            return "stopped", report_refresh_failures
+        (
+            report_after,
+            report_cycle_progress,
+            refresh_status,
+        ) = await _run_report_phase(
+            case=env.case,
+            db=env.db,
+            session_id=env.session_id,
+            plan_cycle=plan_cycle,
+            report_every_n_cycles=env.report_every_n_cycles,
+            template_root=env.template_root,
+            base_url=env.base_url,
+            model=env.model,
+            llm_logger=env.llm_logger,
+            progress_callback=env.progress_callback,
+            focus_sections=focus_sections,
+            report_max_queries_per_section=env.report_max_queries_per_section,
+            state=env.state,
+            report_before=report_before,
+            memory=env.memory,
+        )
+        if refresh_status.startswith("failed"):
+            report_refresh_failures += 1
+        env.ctx.report_status = report_after
+        cycle_progress = cycle_progress or report_cycle_progress
+        env.memory.regenerate_timeline_from_db(env.db)
+        terminal_status, no_progress_count = _check_termination(
+            report_only=env.report_only,
+            broad_plan_stop=broad_plan_stop,
+            active_hypotheses=env.state.active_hypotheses,
+            db=env.db,
+            report_after=report_after,
+            no_progress_count=no_progress_count,
+            no_progress_limit=env.no_progress_limit,
+            cycle_progress=cycle_progress,
+        )
+        if terminal_status is not None:
+            return terminal_status, report_refresh_failures
+    return "completed", report_refresh_failures
+
+
+async def _final_report_refresh(env: _InvestigateEnv) -> int:
+    """Render every section once at the final DB state. Returns 1 on failure, else 0.
+
+    R5-03: run after loop termination so stale sections from late-cycle
+    resolutions reach the rendered report. R7-04: force_all=True bypasses the
+    update_count cap (it guards per-cycle loops, not the closing render).
+    """
+    try:
+        template_paths = sorted(env.template_root.glob("[0-9]*_*.md"))
+        await async_refresh_report_sections(
+            case=env.case,
+            db=env.db,
+            session_id=env.session_id,
+            iteration=env.max_iter + 1,
+            base_url=env.base_url,
+            model=env.model,
+            template_paths=template_paths,
+            llm_logger=env.llm_logger,
+            progress_callback=env.progress_callback,
+            focus_sections=[],
+            max_queries_per_section=env.report_max_queries_per_section,
+            force_all=True,
+        )
+        render_written_report(env.case, env.db)
+        env.memory.regenerate_timeline_from_db(env.db)
+        return 0
+    except Exception as exc:
+        print(f"[yellow][final-refresh] failed: {type(exc).__name__}: {exc}[/yellow]")
+        print(traceback.format_exc())
+        return 1
+
+
+def _build_investigate_result(
+    env: _InvestigateEnv, status: str, report_refresh_failures: int
+) -> dict[str, Any]:
+    """Assemble the investigate() result payload, warning about refresh failures."""
+    if report_refresh_failures:
+        print(
+            f"[red][report] {report_refresh_failures} report refresh phase(s) failed during this "
+            f"session — see tracebacks above. Stale sections persist and are retried on later "
+            f"cycles and the final refresh.[/red]"
+        )
+    return {
+        "session_id": env.session_id,
+        "status": status,
+        "iteration": env.state.iteration,
+        "depth": env.state.focus_depth,
+        "focus_hypothesis_id": env.state.focus_hypothesis_id,
+        "summary": _final_summary(env.state),
+        "hypotheses": [item.model_dump() for item in _all_hypotheses(env.state)],
+        "report_sections": _ctx_get_report_status(env.ctx, env.db, refresh=True),
+        "report_refresh_failures": report_refresh_failures,
+    }
+
+
+async def investigate(
+    case: Case,
+    db: CaseDB,
+    base_url: str,
+    model: str,
+    max_iter: int = 20,
+    no_progress_limit: int = 3,
+    profile: str = "windows-basic",
+    max_queries_per_hypothesis: int = 5,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    report_every_n_cycles: int = 1,
+    report_only: bool = False,
+    template_root: Path | None = None,
+    report_max_queries_per_section: int = 3,
+    max_llm_calls: int = 200,
+    auto_rulepacks: bool = True,
+) -> dict[str, Any]:
+    """Run the full investigation loop: broad plan → hypothesis loop → report refresh, with termination checks and LLM budget enforcement."""
+    active_pack_ids = _resolve_rulepacks(profile, db, auto_rulepacks)
     state, ctx, memory, llm_logger, session_id, started_at, template_root = (
         _init_session(
             case,
@@ -232,141 +428,37 @@ async def investigate(
             active_pack_ids=active_pack_ids if auto_rulepacks else None,
         )
     )
-    case.extract_time_range(db.conn)
-    case_profile_dict = build_case_profile(db)
-    case_profile_str = _format_case_profile(case_profile_dict)
-    profile_event_ids = {
-        e["event_id"]
-        for e in case_profile_dict.get("event_ids", [])
-        if isinstance(e.get("event_id"), int)
-    }
-    set_case_profile(case_profile_str, profile_event_ids)
+    env = _InvestigateEnv(
+        case=case,
+        db=db,
+        base_url=base_url,
+        model=model,
+        state=state,
+        ctx=ctx,
+        memory=memory,
+        llm_logger=llm_logger,
+        session_id=session_id,
+        template_root=template_root,
+        case_profile_str=_prepare_case_profile(case, db),
+        progress_callback=progress_callback,
+        max_iter=max_iter,
+        no_progress_limit=no_progress_limit,
+        max_queries_per_hypothesis=max_queries_per_hypothesis,
+        report_every_n_cycles=report_every_n_cycles,
+        report_only=report_only,
+        report_max_queries_per_section=report_max_queries_per_section,
+        max_llm_calls=max_llm_calls,
+    )
     status = "running"
-    no_progress_count = 0
     report_refresh_failures = 0
     previous_sigint = signal.getsignal(signal.SIGINT)
     signal.signal(
         signal.SIGINT, lambda signum, frame: setattr(ctx, "interrupted", True)
     )
-
-    def _check_llm_budget() -> None:
-        if max_llm_calls > 0 and llm_logger.total_calls >= max_llm_calls:
-            raise RuntimeError(
-                f"LLM call budget exceeded: {llm_logger.total_calls} calls >= {max_llm_calls} max. "
-                f"Per-phase: {llm_logger.count_by_phase()}. "
-                "Increase --max-llm-calls (or pass 0 for unlimited) or investigate the cause of excessive calls."
-            )
-
     try:
-        for plan_cycle in range(1, max_iter + 1):
-            _check_llm_budget()
-            state.iteration = plan_cycle
-            state.findings_snapshot = _finding_snapshot(db)
-            _sync_keypoint_cards(memory, state.findings_snapshot)
-            _log(
-                "PLAN",
-                f"Cycle {plan_cycle}/{max_iter} — broad planning (active={len(state.active_hypotheses)} resolved={len(state.resolved_hypotheses)})",
-            )
-            if ctx.interrupted:
-                status = "stopped"
-                break
-            (
-                broad_plan_stop,
-                cycle_progress,
-                focus_sections,
-                report_before,
-            ) = await _run_cycle_body(
-                state=state,
-                ctx=ctx,
-                db=db,
-                case=case,
-                session_id=session_id,
-                base_url=base_url,
-                model=model,
-                memory=memory,
-                llm_logger=llm_logger,
-                progress_callback=progress_callback,
-                max_queries_per_hypothesis=max_queries_per_hypothesis,
-                plan_cycle=plan_cycle,
-                max_iter=max_iter,
-                report_only=report_only,
-                case_profile_str=case_profile_str,
-            )
-            if ctx.interrupted:
-                status = "stopped"
-                break
-            (
-                report_after,
-                report_cycle_progress,
-                refresh_status,
-            ) = await _run_report_phase(
-                case=case,
-                db=db,
-                session_id=session_id,
-                plan_cycle=plan_cycle,
-                report_every_n_cycles=report_every_n_cycles,
-                template_root=template_root,
-                base_url=base_url,
-                model=model,
-                llm_logger=llm_logger,
-                progress_callback=progress_callback,
-                focus_sections=focus_sections,
-                report_max_queries_per_section=report_max_queries_per_section,
-                state=state,
-                report_before=report_before,
-                memory=memory,
-            )
-            if refresh_status.startswith("failed"):
-                report_refresh_failures += 1
-            ctx.report_status = report_after
-            cycle_progress = cycle_progress or report_cycle_progress
-            memory.regenerate_timeline_from_db(db)
-            terminal_status, no_progress_count = _check_termination(
-                report_only=report_only,
-                broad_plan_stop=broad_plan_stop,
-                active_hypotheses=state.active_hypotheses,
-                db=db,
-                report_after=report_after,
-                no_progress_count=no_progress_count,
-                no_progress_limit=no_progress_limit,
-                cycle_progress=cycle_progress,
-            )
-            if terminal_status is not None:
-                status = terminal_status
-                break
-        else:
-            status = "completed"
-
-        # R5-03: Final report refresh pass after loop termination, so stale
-        # sections from late-cycle resolutions reach the rendered report.
-        # R7-04: Use force_all=True so every section renders at one DB state,
-        # bypassing the update_count cap (it guards per-cycle loops, not the
-        # closing render). Skipped on user interrupt.
+        status, report_refresh_failures = await _run_investigation_loop(env)
         if status == "completed" and not ctx.interrupted:
-            try:
-                template_paths = sorted(template_root.glob("[0-9]*_*.md"))
-                await async_refresh_report_sections(
-                    case=case,
-                    db=db,
-                    session_id=session_id,
-                    iteration=max_iter + 1,
-                    base_url=base_url,
-                    model=model,
-                    template_paths=template_paths,
-                    llm_logger=llm_logger,
-                    progress_callback=progress_callback,
-                    focus_sections=[],
-                    max_queries_per_section=report_max_queries_per_section,
-                    force_all=True,
-                )
-                render_written_report(case, db)
-                memory.regenerate_timeline_from_db(db)
-            except Exception as exc:
-                report_refresh_failures += 1
-                print(
-                    f"[yellow][final-refresh] failed: {type(exc).__name__}: {exc}[/yellow]"
-                )
-                print(traceback.format_exc())
+            report_refresh_failures += await _final_report_refresh(env)
     except Exception:
         status = "failed"
         raise
@@ -379,21 +471,4 @@ async def investigate(
             "UPDATE investigation_sessions SET finished_at = ?, iterations = ?, status = ? WHERE session_id = ?",
             (finished_at, state.iteration, status, session_id),
         )
-    if report_refresh_failures:
-        print(
-            f"[red][report] {report_refresh_failures} report refresh phase(s) failed during this "
-            f"session — see tracebacks above. Stale sections persist and are retried on later "
-            f"cycles and the final refresh.[/red]"
-        )
-    summary = _final_summary(state)
-    return {
-        "session_id": session_id,
-        "status": status,
-        "iteration": state.iteration,
-        "depth": state.focus_depth,
-        "focus_hypothesis_id": state.focus_hypothesis_id,
-        "summary": summary,
-        "hypotheses": [item.model_dump() for item in _all_hypotheses(state)],
-        "report_sections": _ctx_get_report_status(ctx, db, refresh=True),
-        "report_refresh_failures": report_refresh_failures,
-    }
+    return _build_investigate_result(env, status, report_refresh_failures)
