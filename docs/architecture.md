@@ -45,11 +45,18 @@ Output: DuckDB normalized tables (`evtx_events`, `mft_entries`, `mft_timeline`, 
 
 | Input | Parser | Output table |
 |---|---|---|
-| `*.evtx` | `evtx_dump` → JSONL | `evtx_events` |
-| `$MFT` | `analyzeMFT` → CSV | `mft_entries` + `mft_timeline` |
+| `*.evtx` | `evtx2es` → JSONL | `evtx_events` |
+| `$MFT` | `mft2es` → entries JSONL | `mft_entries` + derived `mft_timeline` |
 | `*.pf` | `prefetch2es` → JSONL | `prefetch_executions` + `prefetch_timeline` |
 
 Each row carries an `evidence_id`, which is the identifier that ties evidence together across the entire pipeline (see [data-model.md](data-model.md#11-normalized-evidence-data) for the naming convention).
+
+`ingest_all` passes the hash keys of newly generated JSONL files to
+`normalize_all`. Normalization therefore replaces only added/updated sources;
+calling `normalize_all` without keys remains the explicit full-rebuild path.
+Artifact replacement uses set-based `INSERT ... SELECT` inside a transaction.
+MFT timeline rows are expanded from the eight normalized entry timestamps in
+DuckDB, avoiding a second parser pass and duplicate timeline JSONL.
 
 At ingest completion, `case.extract_time_range(db.conn)` stores the MIN/MAX timestamp from `evtx_events` into `case._time_range_*`, which is later passed to SQL generation prompts.
 

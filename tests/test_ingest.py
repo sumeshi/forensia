@@ -65,8 +65,10 @@ class IngestTests(unittest.TestCase):
                 ).fetchone()[0]
 
             self.assertEqual(3, first["new_files"])
+            self.assertEqual(3, len(first["new_source_keys"]))
             self.assertEqual(0, first["skipped_files"])
             self.assertEqual(0, second["new_files"])
+            self.assertEqual([], second["new_source_keys"])
             self.assertEqual(3, second["skipped_files"])
             self.assertEqual(1, third["new_files"])
             self.assertEqual(4, forced["new_files"])
@@ -162,6 +164,47 @@ class IngestTests(unittest.TestCase):
             self.assertEqual(0, inserted)
             self.assertEqual(0, row_count)
 
+    def test_normalize_evtx_can_process_only_new_source_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+
+            def write_event(key: str, record_id: int) -> Path:
+                path = case.raw_dir / f"evtx-{key}-security.jsonl"
+                path.write_text(
+                    json.dumps(
+                        {
+                            "evidence_id": f"evtx-security-{record_id}",
+                            "source_file": f"source-{key}.evtx",
+                            "winlog": {
+                                "channel": "Security",
+                                "event_id": 4624,
+                                "record_id": record_id,
+                            },
+                        }
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                return path
+
+            old_path = write_event("aaaaaaaaaaaa", 1)
+            write_event("bbbbbbbbbbbb", 2)
+            with CaseDB(case) as db:
+                self.assertEqual(
+                    1, normalize_evtx(case, db, source_keys={"aaaaaaaaaaaa"})
+                )
+                # If differential selection regresses, this malformed old file
+                # makes the second normalization fail instead of being skipped.
+                old_path.write_text("not-json\n", encoding="utf-8")
+                self.assertEqual(
+                    1, normalize_evtx(case, db, source_keys={"bbbbbbbbbbbb"})
+                )
+                rows = db.execute(
+                    "SELECT record_id FROM evtx_events ORDER BY record_id"
+                ).fetchall()
+
+            self.assertEqual([(1,), (2,)], rows)
+
     def test_normalize_mft_uses_sql_projection_for_entries_and_timeline(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -206,7 +249,7 @@ class IngestTests(unittest.TestCase):
                 ).fetchone()
 
             self.assertEqual(1, entries)
-            self.assertEqual(0, timeline)
+            self.assertEqual(8, timeline)
             self.assertEqual((42, "example.txt", "txt", False, False), entry)
 
     def test_cli_add_and_run_surface_prefetch_counts(self) -> None:

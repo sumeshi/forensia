@@ -5,6 +5,7 @@ import sys
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from tqdm import tqdm
 
@@ -27,7 +28,7 @@ def ingest_all(
     db: CaseDB | None = None,
     force: bool = False,
     progress_callback: Callable[[str], None] | None = None,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     base = Path(input_dir)
     if not base.exists():
         raise FileNotFoundError(f"Input directory not found: {base}")
@@ -38,6 +39,9 @@ def ingest_all(
         "prefetch_files": 0,
         "new_files": 0,
         "skipped_files": 0,
+        # Raw JSONL filenames include this key. Passing only newly generated
+        # keys to normalization avoids re-reading every artifact in the case.
+        "new_source_keys": [],
     }
     adapters = get_artifact_adapters()
     candidates: list[tuple[Path, object]] = []
@@ -99,6 +103,7 @@ def ingest_all(
                     )
                 continue
             counts[f"{adapter.name}_files"] += 1
+            counts["new_source_keys"].append(sha256[:12])
 
             db.execute(
                 """

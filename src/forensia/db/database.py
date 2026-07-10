@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any
 
 import duckdb
@@ -209,6 +210,40 @@ class CaseDB:
         if not rows:
             return
         self.conn.executemany(query, rows)
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Commit a group of writes atomically, rolling back on failure."""
+        self.conn.execute("BEGIN TRANSACTION")
+        try:
+            yield
+        except BaseException:
+            self.conn.execute("ROLLBACK")
+            raise
+        else:
+            self.conn.execute("COMMIT")
+
+    @contextmanager
+    def bulk_load_mode(self) -> Iterator[None]:
+        """Bound memory during wide JSON loads, then restore connection settings."""
+        previous_threads = int(
+            self.conn.execute("SELECT current_setting('threads')").fetchone()[0]
+        )
+        previous_order = bool(
+            self.conn.execute(
+                "SELECT current_setting('preserve_insertion_order')"
+            ).fetchone()[0]
+        )
+        self.conn.execute("SET threads = 1")
+        self.conn.execute("SET preserve_insertion_order = false")
+        try:
+            yield
+        finally:
+            self.conn.execute(f"SET threads = {previous_threads}")
+            self.conn.execute(
+                "SET preserve_insertion_order = "
+                + ("true" if previous_order else "false")
+            )
 
     def close(self) -> None:
         self.conn.close()

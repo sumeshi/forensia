@@ -44,9 +44,9 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 |---|---|
 | [src/forensia/ingest/__init__.py](../src/forensia/ingest/__init__.py) | `ingest_all` entry point. Scans input and dispatches to the appropriate parser |
 | [src/forensia/ingest/evtx.py](../src/forensia/ingest/evtx.py) / [mft.py](../src/forensia/ingest/mft.py) / [prefetch.py](../src/forensia/ingest/prefetch.py) | Artifact → `raw/*.jsonl` extraction |
-| [src/forensia/normalize/__init__.py](../src/forensia/normalize/__init__.py) | `normalize_all`: raw JSONL → normalized DuckDB tables |
+| [src/forensia/normalize/__init__.py](../src/forensia/normalize/__init__.py) | `normalize_all`: raw JSONL → normalized DuckDB tables; optional source-key differential selection |
 | [src/forensia/normalize/evtx.py](../src/forensia/normalize/evtx.py) / [mft.py](../src/forensia/normalize/mft.py) / [prefetch.py](../src/forensia/normalize/prefetch.py) | Per-artifact normalization SQL |
-| [src/forensia/normalize/timeline_sql.py](../src/forensia/normalize/timeline_sql.py) | Shared timeline-staging SQL builders used by mft/prefetch |
+| [src/forensia/normalize/timeline_sql.py](../src/forensia/normalize/timeline_sql.py) | Timeline-staging SQL for Prefetch and legacy MFT timeline-only JSONL |
 | [src/forensia/normalize/timezone.py](../src/forensia/normalize/timezone.py) | `infer_timezone`: source timezone inference from evidence |
 
 ## Rules

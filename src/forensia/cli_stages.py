@@ -111,7 +111,8 @@ def _run_normalize_stage(
     else:
         _status("Stage 2/4: normalize into DuckDB")
         push_progress("[normalize] starting", stage="normalize", status="running")
-        normalized = normalize_all(case, db)
+        source_keys = ingest_counts.get("new_source_keys") or None
+        normalized = normalize_all(case, db, source_keys=source_keys)
         note = _normalize_counts_summary(normalized)
         tasks.mark_done("normalize", note)
         _status(
@@ -277,4 +278,3 @@ def _run_report_stage(
         summary=f"Report: {report_path}",
     )
     return report_path
-

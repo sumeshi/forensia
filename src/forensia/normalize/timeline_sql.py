@@ -25,9 +25,7 @@ def build_timeline_stage_sql(
 
     `columns` is a list of (column_name, select_expression) pairs.
     """
-    select_lines = ",\n".join(
-        f"            {expr} AS {name}" for name, expr in columns
-    )
+    select_lines = ",\n".join(f"            {expr} AS {name}" for name, expr in columns)
     return f"""
         CREATE OR REPLACE TEMP TABLE {stage_table} AS
         WITH raw AS (
@@ -64,7 +62,7 @@ def delete_existing_timeline_entries_sql(
 ) -> str:
     """Return SQL removing rows for evidence that is being re-ingested."""
     return (
-        f"DELETE FROM {target_table} WHERE evidence_id IN "
-        f"(SELECT DISTINCT evidence_id FROM {stage_table} "
-        "WHERE evidence_id IS NOT NULL)"
+        f"DELETE FROM {target_table} WHERE source_file IN "
+        f"(SELECT DISTINCT source_file FROM {stage_table} "
+        "WHERE source_file IS NOT NULL)"
     )

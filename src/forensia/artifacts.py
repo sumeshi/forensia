@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -35,7 +35,12 @@ class ArtifactAdapter(Protocol):
         progress_callback: Callable[[str], None] | None = None,
     ) -> IngestResult: ...
 
-    def normalize(self, case: Case, db: CaseDB) -> NormalizeResult: ...
+    def normalize(
+        self,
+        case: Case,
+        db: CaseDB,
+        source_keys: Collection[str] | None = None,
+    ) -> NormalizeResult: ...
 
 
 class EvtxArtifactAdapter:
@@ -60,11 +65,18 @@ class EvtxArtifactAdapter:
             ),
         )
 
-    def normalize(self, case: Case, db: CaseDB) -> NormalizeResult:
+    def normalize(
+        self,
+        case: Case,
+        db: CaseDB,
+        source_keys: Collection[str] | None = None,
+    ) -> NormalizeResult:
         from forensia.normalize.evtx import normalize_evtx
 
         return NormalizeResult(
-            source_kind=self.name, rows=normalize_evtx(case, db), aux_rows=0
+            source_kind=self.name,
+            rows=normalize_evtx(case, db, source_keys=source_keys),
+            aux_rows=0,
         )
 
 
@@ -91,10 +103,15 @@ class MftArtifactAdapter:
             raw_path=entries_path,
         )
 
-    def normalize(self, case: Case, db: CaseDB) -> NormalizeResult:
+    def normalize(
+        self,
+        case: Case,
+        db: CaseDB,
+        source_keys: Collection[str] | None = None,
+    ) -> NormalizeResult:
         from forensia.normalize.mft import normalize_mft
 
-        entries, timeline_rows = normalize_mft(case, db)
+        entries, timeline_rows = normalize_mft(case, db, source_keys=source_keys)
         return NormalizeResult(
             source_kind=self.name, rows=entries, aux_rows=timeline_rows
         )
@@ -123,10 +140,15 @@ class PrefetchArtifactAdapter:
             raw_path=entries_path,
         )
 
-    def normalize(self, case: Case, db: CaseDB) -> NormalizeResult:
+    def normalize(
+        self,
+        case: Case,
+        db: CaseDB,
+        source_keys: Collection[str] | None = None,
+    ) -> NormalizeResult:
         from forensia.normalize.prefetch import normalize_prefetch
 
-        entries, timeline_rows = normalize_prefetch(case, db)
+        entries, timeline_rows = normalize_prefetch(case, db, source_keys=source_keys)
         return NormalizeResult(
             source_kind=self.name, rows=entries, aux_rows=timeline_rows
         )
