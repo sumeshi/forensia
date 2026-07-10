@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from forensia.ai.llm.llm_client import (
@@ -20,6 +21,28 @@ _TRAILING_COMMA_RE = re.compile(r",\s*([\]}])")
 _LINE_COMMENT_RE = re.compile(r"//[^\n\"]*\n")
 MAX_JSON_REPAIR_ATTEMPTS = 3
 MAX_JSON_COMPLETION_ATTEMPTS = 3
+
+
+@dataclass(frozen=True, slots=True)
+class JsonRepairPipeline:
+    """Normalize common model-output defects before strict object parsing."""
+
+    stages: tuple[Callable[[str], str], ...]
+
+    def normalize(self, text: str) -> str:
+        """Apply deterministic repair stages in declaration order."""
+        for stage in self.stages:
+            text = stage(text)
+        return text
+
+    def parse_object(self, text: str) -> dict[str, Any]:
+        """Parse normalized text and require a JSON object at the top level."""
+        parsed = json.loads(self.normalize(text))
+        if not isinstance(parsed, dict):
+            raise RuntimeError(
+                "LLM returned JSON, but top-level value was not an object"
+            )
+        return parsed
 
 
 def _cheap_repair(text: str) -> str:
@@ -43,17 +66,16 @@ def _extract_candidate(text: str) -> str:
     return stripped
 
 
-def _request_json_repair(
-    broken_output: str,
-    parse_error: Exception,
-    base_url: str,
-    model: str,
-    status_callback: Callable[[str], None] | None = None,
-) -> str:
-    """Send malformed JSON to the LLM for repair; returns a corrected string."""
-    if status_callback:
-        status_callback("Malformed JSON returned by LLM. Requesting JSON repair.")
-    messages = [
+JSON_REPAIR_PIPELINE = JsonRepairPipeline(
+    stages=(_extract_candidate, _cheap_repair),
+)
+
+
+def _json_repair_messages(
+    broken_output: str, parse_error: Exception
+) -> list[dict[str, str]]:
+    """Build the shared sync/async malformed-JSON repair request."""
+    return [
         {
             "role": "system",
             "content": (
@@ -66,11 +88,23 @@ def _request_json_repair(
             "role": "user",
             "content": (
                 "Repair this malformed JSON into one valid JSON object.\n"
-                f"Parse error: {parse_error}\n\n"
-                f"{broken_output}"
+                f"Parse error: {parse_error}\n\n{broken_output}"
             ),
         },
     ]
+
+
+def _request_json_repair(
+    broken_output: str,
+    parse_error: Exception,
+    base_url: str,
+    model: str,
+    status_callback: Callable[[str], None] | None = None,
+) -> str:
+    """Send malformed JSON to the LLM for repair; returns a corrected string."""
+    if status_callback:
+        status_callback("Malformed JSON returned by LLM. Requesting JSON repair.")
+    messages = _json_repair_messages(broken_output, parse_error)
     return chat_completion(
         messages=messages,
         model=model,
@@ -89,24 +123,7 @@ async def _async_request_json_repair(
     """Async variant of _request_json_repair for parallel LLM repair calls."""
     if status_callback:
         status_callback("Malformed JSON returned by LLM. Requesting JSON repair.")
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You repair malformed JSON. Return exactly one valid JSON object. "
-                "Do not add markdown, explanation, or surrounding text. "
-                "Preserve keys and values as much as possible."
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                "Repair this malformed JSON into one valid JSON object.\n"
-                f"Parse error: {parse_error}\n\n"
-                f"{broken_output}"
-            ),
-        },
-    ]
+    messages = _json_repair_messages(broken_output, parse_error)
     return await async_chat_completion(
         messages=messages,
         model=model,
@@ -126,7 +143,9 @@ def parse_llm_json(
     current_error: Exception | None = None
     for repair_attempt in range(1, MAX_JSON_REPAIR_ATTEMPTS + 1):
         try:
-            parsed = json.loads(_cheap_repair(_extract_candidate(current_output)))
+            parsed = JSON_REPAIR_PIPELINE.parse_object(current_output)
+        except RuntimeError:
+            raise
         except Exception as parse_error:
             current_error = parse_error
             if repair_attempt >= MAX_JSON_REPAIR_ATTEMPTS:
@@ -139,10 +158,6 @@ def parse_llm_json(
                 status_callback=status_callback,
             )
             continue
-        if not isinstance(parsed, dict):
-            raise RuntimeError(
-                "LLM returned JSON, but top-level value was not an object"
-            )
         return parsed
 
     raise RuntimeError(
@@ -161,7 +176,9 @@ async def async_parse_llm_json(
     current_error: Exception | None = None
     for repair_attempt in range(1, MAX_JSON_REPAIR_ATTEMPTS + 1):
         try:
-            parsed = json.loads(_cheap_repair(_extract_candidate(current_output)))
+            parsed = JSON_REPAIR_PIPELINE.parse_object(current_output)
+        except RuntimeError:
+            raise
         except Exception as parse_error:
             current_error = parse_error
             if repair_attempt >= MAX_JSON_REPAIR_ATTEMPTS:
@@ -174,10 +191,6 @@ async def async_parse_llm_json(
                 status_callback=status_callback,
             )
             continue
-        if not isinstance(parsed, dict):
-            raise RuntimeError(
-                "LLM returned JSON, but top-level value was not an object"
-            )
         return parsed
 
     raise RuntimeError(
