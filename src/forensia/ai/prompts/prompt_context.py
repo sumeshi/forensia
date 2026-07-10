@@ -11,6 +11,7 @@ from forensia.ai.prompts.sql_schema import (
 )
 from forensia.config import get_llm_settings
 from forensia.knowledge import (
+    expand_catalog_sql_placeholders,
     load_event_id_hints,
     load_schema_hints,
 )
@@ -302,10 +303,15 @@ LIMIT 100;
 -- Recent application executions (Prefetch) --
 SELECT executable_name, exec_count, last_exec_time
 FROM prefetch_executions
-WHERE LOWER(executable_name) IN ('eraser.exe', 'ccleaner.exe', 'ccsetup.exe', 'bleachbit.exe')
+WHERE {{catalog_exe_sql:antiforensic_tools:executable_name}}
 ORDER BY last_exec_time DESC;
 </SQL_COOKBOOK>
 """
+
+
+def _sql_cookbook() -> str:
+    """Render catalog-backed predicates into the prompt SQL cookbook."""
+    return expand_catalog_sql_placeholders(_SQL_COOKBOOK)
 
 
 def _format_schema_card(table_hints: dict[str, Any]) -> str:
@@ -362,7 +368,7 @@ def _build_schema_guidance(
     live = _build_live_schema_guidance(db)
     if live:
         blocks.append(live)
-    return "\n".join(blocks) + "\n" + _SQL_COOKBOOK
+    return "\n".join(blocks) + "\n" + _sql_cookbook()
 
 
 def _collect_event_ids(evidence_results: list[dict[str, Any]]) -> list[int]:
@@ -479,4 +485,3 @@ def _format_evidence_row(e: dict[str, Any]) -> str:
     ]
     parts = ", ".join(f"{k}={e[k]}" for k in keys[:8])
     return f"- {evid}: {parts}"
-
