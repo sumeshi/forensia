@@ -18,7 +18,7 @@ import unittest
 from typing import Any
 
 from forensia.ai.case_profile import get_profile_event_ids, set_case_profile
-from forensia.ai.check_guardrails import (
+from forensia.ai.checking.check_guardrails import (
     _co_observation_satisfied,
     _verify_verdict_consistency,
 )

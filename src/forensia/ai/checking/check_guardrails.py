@@ -6,7 +6,7 @@ import re
 from collections import Counter
 from typing import Any
 
-from forensia.ai.check_normalize import (
+from forensia.ai.checking.check_normalize import (
     _collect_observed_evidence_ids,
     _filter_evidence_references,
     _filter_memory_updates,

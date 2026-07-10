@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from forensia.ai.check_normalize import summarize_query_result
+from forensia.ai.checking.check_normalize import summarize_query_result
 from forensia.ai.prompts.sql_templates import (
     query_template_catalog,
     validate_select_sql,

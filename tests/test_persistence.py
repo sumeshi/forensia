@@ -11,7 +11,7 @@ import yaml
 from typer.testing import CliRunner
 
 from forensia import cli as cli_module
-from forensia.ai.check_apply import _insert_investigation_finding
+from forensia.ai.checking.check_apply import _insert_investigation_finding
 from forensia.ai.hypotheses.hypothesis_manager import _merge_active_hypotheses
 from forensia.ai.hypotheses.hypothesis_store import _load_persisted_hypotheses
 from forensia.ai.investigation_session import _append_hypothesis_reasoning

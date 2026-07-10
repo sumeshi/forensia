@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from forensia.ai.check_normalize import _parse_new_hypotheses
-from forensia.ai.checker import check_query_result
+from forensia.ai.checking.check_normalize import _parse_new_hypotheses
+from forensia.ai.checking.checker import check_query_result
 from forensia.ai.investigation_cycle import _select_focus_hypotheses
 from forensia.ai.planner import (
     _request_with_optional_context,
@@ -567,7 +567,7 @@ class PlannerRetryTests(unittest.TestCase):
                     },
                 ),
                 patch(
-                    "forensia.ai.checker.apply_check_result", return_value=(0, False)
+                    "forensia.ai.checking.checker.apply_check_result", return_value=(0, False)
                 ),
             ):
                 result = check_query_result(
@@ -620,7 +620,7 @@ class PlannerRetryTests(unittest.TestCase):
                     "forensia.ai.llm.llm_gateway.request_llm_json",
                     side_effect=responses,
                 ),
-                patch("forensia.ai.checker.apply_check_result", side_effect=_capture),
+                patch("forensia.ai.checking.checker.apply_check_result", side_effect=_capture),
             ):
                 check_query_result(
                     case=case,
@@ -675,7 +675,7 @@ class PlannerRetryTests(unittest.TestCase):
                     "forensia.ai.llm.llm_gateway.request_llm_json",
                     side_effect=responses,
                 ),
-                patch("forensia.ai.checker.apply_check_result", side_effect=_capture),
+                patch("forensia.ai.checking.checker.apply_check_result", side_effect=_capture),
             ):
                 check_query_result(
                     case=case,
@@ -727,7 +727,7 @@ class PlannerRetryTests(unittest.TestCase):
                     "forensia.ai.llm.llm_gateway.request_llm_json",
                     side_effect=responses,
                 ),
-                patch("forensia.ai.checker.apply_check_result", side_effect=_capture),
+                patch("forensia.ai.checking.checker.apply_check_result", side_effect=_capture),
             ):
                 check_query_result(
                     case=case,
@@ -795,7 +795,7 @@ class PlannerRetryTests(unittest.TestCase):
                     "forensia.ai.llm.llm_gateway.request_llm_json",
                     side_effect=responses,
                 ),
-                patch("forensia.ai.checker.apply_check_result", side_effect=_capture),
+                patch("forensia.ai.checking.checker.apply_check_result", side_effect=_capture),
             ):
                 check_query_result(
                     case=case,
@@ -885,7 +885,7 @@ class PlannerRetryTests(unittest.TestCase):
                         "report_text": "text",
                     },
                 ),
-                patch("forensia.ai.checker.apply_check_result", side_effect=_capture),
+                patch("forensia.ai.checking.checker.apply_check_result", side_effect=_capture),
             ):
                 check_query_result(
                     case=case,

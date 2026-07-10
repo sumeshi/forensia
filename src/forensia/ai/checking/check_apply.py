@@ -6,7 +6,7 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from forensia.ai.check_normalize import (
+from forensia.ai.checking.check_normalize import (
     CheckResult,
     _clamp_confidence,
     _collect_observed_evidence_ids,

@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 from typer.testing import CliRunner
 
 from forensia import cli as cli_module
-from forensia.ai.check_normalize import summarize_query_result
+from forensia.ai.checking.check_normalize import summarize_query_result
 from forensia.ai.investigation_session import _sync_keypoint_cards
 from forensia.ai.memory_sync import _apply_memory_updates
 from forensia.artifacts import MftArtifactAdapter, PrefetchArtifactAdapter

@@ -5,12 +5,12 @@ from __future__ import annotations
 import datetime
 from typing import Any
 
-from forensia.ai.check_guardrails import (
+from forensia.ai.checking.check_guardrails import (
     _guardrail_check_payload,
     _verify_verdict_consistency,
     annotate_benign_context,
 )
-from forensia.ai.check_normalize import (
+from forensia.ai.checking.check_normalize import (
     _filter_memory_updates,
     _validate_extracted_findings,
 )

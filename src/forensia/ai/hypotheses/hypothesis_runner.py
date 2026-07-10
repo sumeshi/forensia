@@ -13,8 +13,8 @@ from forensia.ai.audit import LLMCallLogger
 from forensia.ai.case_profile import (
     get_profile_event_ids,
 )
-from forensia.ai.check_normalize import summarize_query_result
-from forensia.ai.checker import check_query_result
+from forensia.ai.checking.check_normalize import summarize_query_result
+from forensia.ai.checking.checker import check_query_result
 from forensia.ai.hypotheses.hypothesis_manager import (
     _guess_related_sections,
     _merge_active_hypotheses,

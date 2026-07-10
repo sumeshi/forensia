@@ -1,7 +1,7 @@
 """Checker entry point; helpers live in focused submodules.
 
 Kept for backward compatibility: existing code and tests import these
-names from forensia.ai.checker.
+names from forensia.ai.checking.checker.
 """
 
 from __future__ import annotations
@@ -9,15 +9,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from forensia.ai.check_apply import (
+from forensia.ai.checking.check_apply import (
     apply_check_result,
 )
-from forensia.ai.check_guardrails import (
+from forensia.ai.checking.check_guardrails import (
     _guardrail_check_payload,
     _verify_verdict_consistency,
     annotate_benign_context,
 )
-from forensia.ai.check_normalize import (
+from forensia.ai.checking.check_normalize import (
     CheckResult,
     _normalize_verdict,
     _parse_new_hypotheses,
