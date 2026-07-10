@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
+from string import Formatter
 from typing import Any
 
 import duckdb
@@ -130,7 +132,8 @@ class QueryTemplateSpec:
     template_id: str
     description: str
     required_params: tuple[str, ...]
-    sql_builder: Callable[[dict[str, Any]], str]
+    parameters: dict[str, dict[str, Any]]
+    sql: str
 
 
 def _sql_int(value: Any, default: int) -> int:
@@ -147,114 +150,68 @@ def _sql_text(value: Any, default: str = "") -> str:
     return text.replace("'", "''")
 
 
-def _template_failed_logon_by_ip_window(params: dict[str, Any]) -> str:
-    """Build SQL for failed logons grouped by src_ip within a recent time window."""
-    event_id = _sql_int(params.get("event_id"), 4625)
-    hours = max(1, _sql_int(params.get("hours"), 24))
-    threshold = max(1, _sql_int(params.get("threshold"), 5))
-    return f"""
-SELECT src_ip, COUNT(*) AS failed_count
-FROM evtx_events
-WHERE event_id = {event_id}
-  AND timestamp >= (SELECT MAX(timestamp) FROM evtx_events) - INTERVAL '{hours} hours'
-  AND coalesce(src_ip, '') != ''
-GROUP BY src_ip
-HAVING COUNT(*) >= {threshold}
-ORDER BY failed_count DESC
-LIMIT 50
-""".strip()
+def _query_template_path() -> Path:
+    return Path(__file__).resolve().parents[2] / "rulepacks/_schema/query_templates.yaml"
 
 
-def _template_logon_by_user_window(params: dict[str, Any]) -> str:
-    """Build SQL for recent successful logons for one user."""
-    event_id = _sql_int(params.get("event_id"), 4624)
-    hours = max(1, _sql_int(params.get("hours"), 24))
-    user = _sql_text(params.get("user"))
-    if not user:
-        raise ValueError("q_logon_by_user_window requires user")
-    return f"""
-SELECT timestamp, computer, src_ip, logon_type, target_user
-FROM evtx_events
-WHERE event_id = {event_id}
-  AND timestamp >= (SELECT MAX(timestamp) FROM evtx_events) - INTERVAL '{hours} hours'
-  AND lower(coalesce(target_user, '')) = lower('{user}')
-ORDER BY timestamp DESC
-LIMIT 100
-""".strip()
+@lru_cache(maxsize=1)
+def _load_query_templates() -> dict[str, QueryTemplateSpec]:
+    """Load and validate declarative investigation query templates."""
+    import yaml
+
+    path = _query_template_path()
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    raw_templates = data.get("templates") if isinstance(data, dict) else None
+    if data.get("version") != 1 or not isinstance(raw_templates, dict):
+        raise ValueError(f"{path}: expected version 1 and a templates mapping")
+    loaded: dict[str, QueryTemplateSpec] = {}
+    for template_id, raw in raw_templates.items():
+        if not isinstance(raw, dict):
+            raise ValueError(f"{path}: {template_id} must be a mapping")
+        description = str(raw.get("description") or "").strip()
+        sql = str(raw.get("sql") or "").strip()
+        parameters = raw.get("parameters") or {}
+        if not description or not sql or not isinstance(parameters, dict):
+            raise ValueError(f"{path}: {template_id} has invalid metadata")
+        placeholders = {
+            name for _, name, _, _ in Formatter().parse(sql) if name is not None
+        }
+        if placeholders != set(parameters):
+            raise ValueError(
+                f"{path}: {template_id} placeholders must match parameters"
+            )
+        required = tuple(
+            str(name)
+            for name, declaration in parameters.items()
+            if isinstance(declaration, dict) and declaration.get("required") is True
+        )
+        loaded[str(template_id)] = QueryTemplateSpec(
+            template_id=str(template_id),
+            description=description,
+            required_params=required,
+            parameters={str(name): dict(value) for name, value in parameters.items()},
+            sql=sql,
+        )
+    return loaded
 
 
-def _template_powershell_after_logon(params: dict[str, Any]) -> str:
-    """Build SQL for process/PowerShell execution within 15 minutes after a user logon."""
-    user = _sql_text(params.get("user"))
-    hours = max(1, _sql_int(params.get("hours"), 24))
-    if not user:
-        raise ValueError("q_powershell_after_logon requires user")
-    return f"""
-WITH logons AS (
-    SELECT timestamp, computer, target_user
-    FROM evtx_events
-    WHERE event_id = 4624
-      AND timestamp >= (SELECT MAX(timestamp) FROM evtx_events) - INTERVAL '{hours} hours'
-      AND lower(coalesce(target_user, '')) = lower('{user}')
-),
-ps AS (
-    SELECT timestamp, computer, process_name, command_line, evidence_id
-    FROM evtx_events
-    WHERE event_id IN (4688, 4104)
-)
-SELECT ps.timestamp, ps.computer, ps.process_name, ps.command_line, ps.evidence_id
-FROM ps
-JOIN logons
-  ON ps.computer = logons.computer
- AND ps.timestamp BETWEEN logons.timestamp AND logons.timestamp + INTERVAL '15 minutes'
-ORDER BY ps.timestamp DESC
-LIMIT 100
-""".strip()
-
-
-def _template_service_or_task_after_host_logon(params: dict[str, Any]) -> str:
-    """Build SQL for service install or scheduled task creation on one host within a recent window."""
-    computer = _sql_text(params.get("computer"))
-    hours = max(1, _sql_int(params.get("hours"), 24))
-    if not computer:
-        raise ValueError("q_service_or_task_after_host_logon requires computer")
-    return f"""
-SELECT timestamp, event_id, service_name, process_name, command_line, evidence_id
-FROM evtx_events
-WHERE event_id IN (4697, 7045, 4698)
-  AND timestamp >= (SELECT MAX(timestamp) FROM evtx_events) - INTERVAL '{hours} hours'
-  AND lower(coalesce(computer, '')) = lower('{computer}')
-ORDER BY timestamp DESC
-LIMIT 100
-""".strip()
-
-
-QUERY_TEMPLATES: dict[str, QueryTemplateSpec] = {
-    "q_failed_logon_by_ip_window": QueryTemplateSpec(
-        template_id="q_failed_logon_by_ip_window",
-        description="Failed logons grouped by src_ip within a recent time window.",
-        required_params=("hours", "threshold"),
-        sql_builder=_template_failed_logon_by_ip_window,
-    ),
-    "q_logon_by_user_window": QueryTemplateSpec(
-        template_id="q_logon_by_user_window",
-        description="Recent successful logons for one user.",
-        required_params=("user", "hours"),
-        sql_builder=_template_logon_by_user_window,
-    ),
-    "q_powershell_after_logon": QueryTemplateSpec(
-        template_id="q_powershell_after_logon",
-        description="Process or PowerShell execution within 15 minutes after a user's logon.",
-        required_params=("user", "hours"),
-        sql_builder=_template_powershell_after_logon,
-    ),
-    "q_service_or_task_after_host_logon": QueryTemplateSpec(
-        template_id="q_service_or_task_after_host_logon",
-        description="Service install or scheduled task creation on one host.",
-        required_params=("computer", "hours"),
-        sql_builder=_template_service_or_task_after_host_logon,
-    ),
-}
+def _render_template_params(
+    spec: QueryTemplateSpec, params: dict[str, Any]
+) -> dict[str, int | str]:
+    """Normalize declared parameters for safe SQL interpolation."""
+    rendered: dict[str, int | str] = {}
+    for name, declaration in spec.parameters.items():
+        if declaration.get("required") is True and params.get(name) in (None, ""):
+            raise ValueError(f"Missing template params for {spec.template_id}: {name}")
+        raw = params.get(name, declaration.get("default"))
+        if declaration.get("type") == "integer":
+            value = _sql_int(raw, _sql_int(declaration.get("default"), 0))
+            rendered[name] = max(_sql_int(declaration.get("minimum"), value), value)
+        elif declaration.get("type") == "text":
+            rendered[name] = _sql_text(raw, str(declaration.get("default") or ""))
+        else:
+            raise ValueError(f"{spec.template_id}.{name} has unsupported type")
+    return rendered
 
 
 def coerce_list(value: Any) -> list[Any]:
@@ -371,18 +328,13 @@ def query_template_catalog() -> list[dict[str, Any]]:
             "description": spec.description,
             "required_params": list(spec.required_params),
         }
-        for spec in QUERY_TEMPLATES.values()
+        for spec in _load_query_templates().values()
     ]
 
 
 def render_query_template(template_id: str, params: dict[str, Any]) -> str:
     """Render a named query template with validated params, returning validated SQL."""
-    spec = QUERY_TEMPLATES.get(template_id)
+    spec = _load_query_templates().get(template_id)
     if spec is None:
         raise ValueError(f"Unknown query template: {template_id}")
-    missing = [key for key in spec.required_params if params.get(key) in (None, "")]
-    if missing:
-        raise ValueError(
-            f"Missing template params for {template_id}: {', '.join(missing)}"
-        )
-    return validate_select_sql(spec.sql_builder(params))
+    return validate_select_sql(spec.sql.format(**_render_template_params(spec, params)))

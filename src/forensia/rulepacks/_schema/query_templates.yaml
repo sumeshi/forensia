@@ -1,0 +1,70 @@
+version: 1
+templates:
+  q_failed_logon_by_ip_window:
+    description: Failed logons grouped by src_ip within a recent time window.
+    parameters:
+      event_id: {type: integer, default: 4625}
+      hours: {type: integer, required: true, default: 24, minimum: 1}
+      threshold: {type: integer, required: true, default: 5, minimum: 1}
+    sql: |-
+      SELECT src_ip, COUNT(*) AS failed_count
+      FROM evtx_events
+      WHERE event_id = {event_id}
+        AND timestamp >= (SELECT MAX(timestamp) FROM evtx_events) - INTERVAL '{hours} hours'
+        AND coalesce(src_ip, '') != ''
+      GROUP BY src_ip
+      HAVING COUNT(*) >= {threshold}
+      ORDER BY failed_count DESC
+      LIMIT 50
+  q_logon_by_user_window:
+    description: Recent successful logons for one user.
+    parameters:
+      event_id: {type: integer, default: 4624}
+      hours: {type: integer, required: true, default: 24, minimum: 1}
+      user: {type: text, required: true}
+    sql: |-
+      SELECT timestamp, computer, src_ip, logon_type, target_user
+      FROM evtx_events
+      WHERE event_id = {event_id}
+        AND timestamp >= (SELECT MAX(timestamp) FROM evtx_events) - INTERVAL '{hours} hours'
+        AND lower(coalesce(target_user, '')) = lower('{user}')
+      ORDER BY timestamp DESC
+      LIMIT 100
+  q_powershell_after_logon:
+    description: Process or PowerShell execution within 15 minutes after a user's logon.
+    parameters:
+      hours: {type: integer, required: true, default: 24, minimum: 1}
+      user: {type: text, required: true}
+    sql: |-
+      WITH logons AS (
+          SELECT timestamp, computer, target_user
+          FROM evtx_events
+          WHERE event_id = 4624
+            AND timestamp >= (SELECT MAX(timestamp) FROM evtx_events) - INTERVAL '{hours} hours'
+            AND lower(coalesce(target_user, '')) = lower('{user}')
+      ),
+      ps AS (
+          SELECT timestamp, computer, process_name, command_line, evidence_id
+          FROM evtx_events
+          WHERE event_id IN (4688, 4104)
+      )
+      SELECT ps.timestamp, ps.computer, ps.process_name, ps.command_line, ps.evidence_id
+      FROM ps
+      JOIN logons
+        ON ps.computer = logons.computer
+       AND ps.timestamp BETWEEN logons.timestamp AND logons.timestamp + INTERVAL '15 minutes'
+      ORDER BY ps.timestamp DESC
+      LIMIT 100
+  q_service_or_task_after_host_logon:
+    description: Service install or scheduled task creation on one host.
+    parameters:
+      computer: {type: text, required: true}
+      hours: {type: integer, required: true, default: 24, minimum: 1}
+    sql: |-
+      SELECT timestamp, event_id, service_name, process_name, command_line, evidence_id
+      FROM evtx_events
+      WHERE event_id IN (4697, 7045, 4698)
+        AND timestamp >= (SELECT MAX(timestamp) FROM evtx_events) - INTERVAL '{hours} hours'
+        AND lower(coalesce(computer, '')) = lower('{computer}')
+      ORDER BY timestamp DESC
+      LIMIT 100
