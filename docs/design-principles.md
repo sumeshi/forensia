@@ -99,9 +99,7 @@ Verdict strings are an allow-list. Allowed values are declared in `src/forensia/
 | `section_verdict` | `ai/sections/section_run_store.py:_store_section_run()` |
 | `structured_status` | `report/answer_store.py:_normalize_structured_answer()` |
 
-To add a new verdict value, edit `verdict_taxonomy.yaml`. Bypassing the validator from Python is treated as a bug.
-
-The taxonomy file also declares cross-layer mappings (`hypothesis_to_section` etc.), but the code-side `map_verdict()` helper was removed as unused — the mappings are currently declaration-only. If you need cross-layer conversion, reintroduce a reader for the taxonomy mappings rather than hardcoding a table in Python.
+To add a new verdict value, edit `verdict_taxonomy.yaml`. Bypassing the validator from Python is treated as a bug. The taxonomy contains layer-specific allow-lists only; it does not imply conversions between layers. If a cross-layer conversion becomes necessary, introduce its YAML declaration and consuming reader together.
 
 ---
 
