@@ -10,7 +10,7 @@ from forensia.rules.models import Rule, RulePackMetadata
 
 def _expand_rule_query(rule: Rule) -> Rule:
     """Expand catalog SQL placeholders ({{catalog_exe_sql:...}}) in a rule's query."""
-    from forensia.knowledge import expand_catalog_sql_placeholders
+    from forensia.knowledge.catalog import expand_catalog_sql_placeholders
 
     rule.query = expand_catalog_sql_placeholders(rule.query)
     return rule

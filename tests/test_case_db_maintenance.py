@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from forensia import cli as cli_module
-from forensia.cli_support import (
+from forensia.cli import app as cli_module
+from forensia.cli.support import (
     _progress_pusher,
     _reset_case_tables,
 )
@@ -27,7 +27,6 @@ class CaseDbMaintenanceTests(unittest.TestCase):
     @staticmethod
     def _llm_base_url() -> str:
         return resolve_llm_config()[0] or "http://test-llm.invalid"
-
 
     def test_schema_backfill_migration_runs_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -83,8 +82,8 @@ class CaseDbMaintenanceTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with (
                 CaseDB(case) as db,
-                patch("forensia.cli_support.write_progress_snapshot") as mock_progress,
-                patch("forensia.cli_support.write_api_snapshots") as mock_full,
+                patch("forensia.cli.support.write_progress_snapshot") as mock_progress,
+                patch("forensia.cli.support.write_api_snapshots") as mock_full,
             ):
                 push = _progress_pusher(
                     db,
@@ -215,7 +214,7 @@ class CaseDbMaintenanceTests(unittest.TestCase):
 
             with (
                 patch(
-                    "forensia.cli_stages.ingest_all",
+                    "forensia.cli.stages.ingest_all",
                     return_value={
                         "new_files": 1,
                         "skipped_files": 0,
@@ -225,7 +224,7 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                     },
                 ),
                 patch(
-                    "forensia.cli_stages.normalize_all",
+                    "forensia.cli.stages.normalize_all",
                     return_value={
                         "evtx_rows": 1,
                         "mft_entries": 0,
@@ -233,18 +232,18 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                         "prefetch_executions": 0,
                     },
                 ),
-                patch("forensia.cli.resolve_llm_config", return_value=(None, None)),
-                patch("forensia.cli_stages.load_rules_from_dir", return_value=[]),
+                patch("forensia.cli.app.resolve_llm_config", return_value=(None, None)),
+                patch("forensia.cli.stages.load_rules_from_dir", return_value=[]),
                 patch(
-                    "forensia.cli_stages.render_written_report",
+                    "forensia.cli.stages.render_written_report",
                     return_value=(
                         output_dir / "reports" / "report.md",
                         output_dir / "reports" / "report.html",
                     ),
                 ) as mock_render_written,
-                patch("forensia.cli.render_html_report") as mock_render_html,
-                patch("forensia.cli_stages.write_api_snapshots"),
-                patch("forensia.cli_support.write_api_snapshots"),
+                patch("forensia.cli.app.render_html_report") as mock_render_html,
+                patch("forensia.cli.stages.write_api_snapshots"),
+                patch("forensia.cli.support.write_api_snapshots"),
             ):
                 cli_module.investigate(
                     case_dir=str(output_dir),

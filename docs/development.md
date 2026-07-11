@@ -153,7 +153,7 @@ Changing `CREATE TABLE IF NOT EXISTS` in `db/schema.py` is not applied to existi
 
 ### 5.2 Event Volume API contract
 
-`GET /api/event-volume` accepts `bucket=year|month|day|hour`, `source=all|detected`, and optional `start` / `end` ISO timestamps. Resolution order in [web.py](../src/forensia/web.py):
+`GET /api/event-volume` accepts `bucket=year|month|day|hour`, `source=all|detected`, and optional `start` / `end` ISO timestamps. Resolution order in [web/app.py](../src/forensia/web/app.py):
 
 1. For a full-range query, a snapshot file (`reports/api/event_volume_<bucket>_<source>.json`)
 2. A live `CaseDB` query

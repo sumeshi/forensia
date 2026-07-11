@@ -24,8 +24,8 @@ from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.db.database import CaseDB
-from forensia.report.section_quality import collect_gaps, section_confidence
-from forensia.report.section_store import extract_claim_texts
+from forensia.report.sections.section_quality import collect_gaps, section_confidence
+from forensia.report.sections.section_store import extract_claim_texts
 
 
 def _agent_plan_router(*_args, **kwargs):

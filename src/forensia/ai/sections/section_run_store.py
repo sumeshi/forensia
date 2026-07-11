@@ -9,7 +9,7 @@ from typing import Any
 
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
-from forensia.questions import (
+from forensia.knowledge.questions import (
     QuestionSpec,
 )
 
@@ -551,4 +551,3 @@ def _evidence_as_result(reusable_evidence: list[dict[str, Any]]) -> dict[str, An
         "hypothesis_ids": [],
         "sample_rows": _safe_rows(reusable_evidence, limit=30),
     }
-

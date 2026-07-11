@@ -15,8 +15,11 @@ from markupsafe import Markup
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
-from forensia.report.evidence_map import build_evidence_map, render_evidence_references
-from forensia.report.html import render_html_report, render_markdown_fragment
+from forensia.report.render.evidence_map import (
+    build_evidence_map,
+    render_evidence_references,
+)
+from forensia.report.render.html import render_html_report, render_markdown_fragment
 
 
 class RenderMarkdownFragmentTests(unittest.TestCase):
@@ -143,7 +146,9 @@ class EvidenceMapTests(unittest.TestCase):
 
 
 class RenderHtmlReportTests(unittest.TestCase):
-    def test_report_document_links_evidence_to_record_and_removes_reference_appendix(self):
+    def test_report_document_links_evidence_to_record_and_removes_reference_appendix(
+        self,
+    ):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             (case.reports_dir / "report.md").write_text(
@@ -200,7 +205,9 @@ class RenderHtmlReportTests(unittest.TestCase):
         now = datetime.now(UTC).replace(tzinfo=None)
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
-            (case.reports_dir / "report.md").write_text("# Report\n\nBody.", encoding="utf-8")
+            (case.reports_dir / "report.md").write_text(
+                "# Report\n\nBody.", encoding="utf-8"
+            )
             with CaseDB(case) as db:
                 for finding_id, title, confidence in (
                     (
@@ -242,7 +249,9 @@ class RenderHtmlReportTests(unittest.TestCase):
                 html = output.read_text(encoding="utf-8")
 
         self.assertIn("Explicit credential usage observed (2)", html)
-        self.assertNotIn("Logon attempt with explicit credentials (4648): A -&gt; B", html)
+        self.assertNotIn(
+            "Logon attempt with explicit credentials (4648): A -&gt; B", html
+        )
 
     def test_report_footer_uses_catalog_driven_tool_theme(self):
         now = datetime.now(UTC).replace(tzinfo=None)

@@ -9,7 +9,6 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryContextMixin:
-
     def _memory_line(
         self,
         text: str,
@@ -47,7 +46,9 @@ class MemoryContextMixin:
             text = text[2:]
         # Strip trailing metadata brackets: [confirmed | evidence: ...]
         # or [provisional | evidence: ...]
-        meta_match = re.search(r"\s*\[(?:confirmed|provisional)(?:\s*\|.*)?\]\s*$", text)
+        meta_match = re.search(
+            r"\s*\[(?:confirmed|provisional)(?:\s*\|.*)?\]\s*$", text
+        )
         if meta_match:
             text = text[: meta_match.start()]
         # Strip detail IDs like [fact-001] that are unique per entry
@@ -89,7 +90,7 @@ class MemoryContextMixin:
                             break
                         if MemoryContextMixin._tokenize(line) & relevance_terms:
                             return True
-        except (OSError, UnicodeDecodeError):
+        except OSError, UnicodeDecodeError:
             pass
         return False
 
@@ -134,7 +135,8 @@ class MemoryContextMixin:
             ent_files = self._markdown_files(self.entities_dir)
             if relevance_terms:
                 ent_files = [
-                    f for f in ent_files
+                    f
+                    for f in ent_files
                     if self._file_matches_relevance(f, self.base_dir, relevance_terms)
                 ]
             files.extend(ent_files)
@@ -142,7 +144,8 @@ class MemoryContextMixin:
             kp_files = self._markdown_files(self.keypoints_dir)
             if relevance_terms:
                 kp_files = [
-                    f for f in kp_files
+                    f
+                    for f in kp_files
                     if self._file_matches_relevance(f, self.base_dir, relevance_terms)
                 ]
             files.extend(kp_files)
@@ -202,7 +205,9 @@ class MemoryContextMixin:
             return self.PRIORITY_P0
         if relative_path.startswith("scratch/"):
             return self.PRIORITY_P3
-        if relative_path.startswith("entities/") or relative_path.startswith("keypoints/"):
+        if relative_path.startswith("entities/") or relative_path.startswith(
+            "keypoints/"
+        ):
             return self.PRIORITY_P2
         # timeline, tasks, archive/*, etc.
         return self.PRIORITY_P1
@@ -250,9 +255,7 @@ class MemoryContextMixin:
             return _assemble(file_data)
 
         # Sort files by priority descending (P3 first) for cutting order.
-        cut_order = sorted(
-            original_order, key=lambda r: -file_data[r][0]
-        )
+        cut_order = sorted(original_order, key=lambda r: -file_data[r][0])
 
         for rel in cut_order:
             priority, lines = file_data.get(rel, (self.PRIORITY_P3, []))
@@ -265,7 +268,9 @@ class MemoryContextMixin:
                 if len(_assemble(test).encode("utf-8")) <= budget:
                     logger.info(
                         "memory trim: removed %s (P%d) to fit budget %d bytes",
-                        rel, priority, budget,
+                        rel,
+                        priority,
+                        budget,
                     )
                     file_data.pop(rel, None)
                     return _assemble(file_data)
@@ -283,7 +288,10 @@ class MemoryContextMixin:
                 if len(_assemble(file_data).encode("utf-8")) <= budget:
                     logger.info(
                         "memory trim: truncated %s (P%d) %d → %d lines",
-                        rel, priority, len(lines), keep_count,
+                        rel,
+                        priority,
+                        len(lines),
+                        keep_count,
                     )
                     return _assemble(file_data)
 
@@ -292,7 +300,8 @@ class MemoryContextMixin:
                 file_data.pop(rel, None)
                 logger.info(
                     "memory trim: removed %s (P%d) entirely (min lines reached)",
-                    rel, priority,
+                    rel,
+                    priority,
                 )
                 if len(_assemble(file_data).encode("utf-8")) <= budget:
                     return _assemble(file_data)
@@ -300,6 +309,7 @@ class MemoryContextMixin:
         # Budget still exceeded — return what we have.
         logger.warning(
             "memory trim: budget %d bytes still exceeded after all cuts (%d bytes)",
-            budget, len(_assemble(file_data).encode("utf-8")),
+            budget,
+            len(_assemble(file_data).encode("utf-8")),
         )
         return _assemble(file_data)

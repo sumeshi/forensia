@@ -63,7 +63,14 @@ class LocalAuthClassificationTests(unittest.TestCase):
         cases = (
             ({"src_ip": "127.0.0.1", "event_id": "4648"}, True),
             ({"src_ip": "::1", "event_id": "4624"}, True),
-            ({"src_ip": "localhost", "process_name": "winlogon.exe", "event_id": "4624"}, True),
+            (
+                {
+                    "src_ip": "localhost",
+                    "process_name": "winlogon.exe",
+                    "event_id": "4624",
+                },
+                True,
+            ),
             ({"src_ip": None, "event_id": "4648"}, True),
             ({"src_ip": "None", "event_id": "4648"}, True),
             ({"src_ip": "-", "event_id": "4648"}, True),
@@ -89,9 +96,7 @@ class LocalAuthClassificationTests(unittest.TestCase):
         self.assertFalse(is_benign_local_auth(base))
         self.assertTrue(is_benign_local_auth(base, assume_auth_event=True))
         self.assertFalse(
-            is_benign_local_auth(
-                {**base, "event_id": "4688"}, assume_auth_event=True
-            )
+            is_benign_local_auth({**base, "event_id": "4688"}, assume_auth_event=True)
         )
         self.assertFalse(
             is_benign_local_auth(
@@ -141,7 +146,9 @@ class FindingTaggingTests(unittest.TestCase):
                 _insert_finding(db, "no-evidence", None)
 
                 self.assertEqual(1, tag_benign_local_auth_findings(db))
-                rows = dict(db.execute("SELECT finding_id, tags FROM findings").fetchall())
+                rows = dict(
+                    db.execute("SELECT finding_id, tags FROM findings").fetchall()
+                )
 
         self.assertEqual({"existing", BENIGN_TAG}, set(json.loads(rows["benign"])))
         self.assertNotIn(BENIGN_TAG, json.loads(rows["mixed"]))

@@ -35,7 +35,10 @@ class NormalizeValueTests(unittest.TestCase):
             ("[1, 2, 3]", [1, 2, 3]),
             ('{"a": 1}', {"a": 1}),
             ('[{"x": 1}, {"x": 2}]', [{"x": 1}, {"x": 2}]),
-            ('{"outer": {"inner": [1, {"flag": true}]}}', {"outer": {"inner": [1, {"flag": True}]}}),
+            (
+                '{"outer": {"inner": [1, {"flag": true}]}}',
+                {"outer": {"inner": [1, {"flag": True}]}},
+            ),
             ("[1, 2, broken", "[1, 2, broken"),
             ('{"a": broken', '{"a": broken'),
             ("[", "["),

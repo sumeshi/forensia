@@ -137,15 +137,15 @@ def test_budget_enforcement_drops_sections_in_order(tmp_path: Any) -> None:
 def test_budget_drop_order_is_stable() -> None:
     """Drop order is deterministic: IOC → app → artifact → extractor → FP → logon → schema → events."""
     expected = [
-        "ioc",      # first to drop
-        "app",      # application catalog
-        "artifact", # artifact inference
-        "logon",    # logon types
-        "events",   # event IDs
-        "priority", # priority investigation order
-        "fp",       # false-positive guidance
-        "extractor",# JSON extractors
-        "schema",   # schema notes — highest priority, last to drop
+        "ioc",  # first to drop
+        "app",  # application catalog
+        "artifact",  # artifact inference
+        "logon",  # logon types
+        "events",  # event IDs
+        "priority",  # priority investigation order
+        "fp",  # false-positive guidance
+        "extractor",  # JSON extractors
+        "schema",  # schema notes — highest priority, last to drop
     ]
     assert PLAYBOOK_SECTION_DROP_ORDER == expected
 

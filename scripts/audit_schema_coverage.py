@@ -20,7 +20,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from forensia.knowledge import expand_catalog_sql_placeholders
+from forensia.knowledge.catalog import expand_catalog_sql_placeholders
 
 SCHEMA_DIR = REPO_ROOT / "src" / "forensia" / "rulepacks" / "_schema"
 RULES_DIR = REPO_ROOT / "src" / "forensia" / "rulepacks"
@@ -193,9 +193,11 @@ def _validate_question_sql(sql: str, table_columns: dict[str, set[str]]) -> list
 
 def _structured_builder_specs() -> set[str]:
     try:
-        from forensia.report.answer_registry import _STRUCTURED_ANSWER_BUILDERS
+        from forensia.report.answers.answer_registry import (
+            structured_answer_builder_names,
+        )
 
-        return set(_STRUCTURED_ANSWER_BUILDERS)
+        return set(structured_answer_builder_names())
     except Exception:
         return set()
 
@@ -298,7 +300,7 @@ def _audit_question_routing_eval() -> list[str]:
     if not isinstance(cases, list) or not cases:
         return ["question_routing_eval.yaml has no cases"]
     try:
-        from forensia.questions import resolve_question_spec
+        from forensia.knowledge.questions import resolve_question_spec
     except Exception as exc:
         return [f"could not import question registry: {exc}"]
     issues: list[str] = []

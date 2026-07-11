@@ -159,7 +159,9 @@ class PlannerRetryTests(unittest.TestCase):
             },
         ]
 
-        with patch("forensia.ai.llm.llm_gateway.request_llm_json", side_effect=responses):
+        with patch(
+            "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=responses
+        ):
             result = plan_hypothesis_query(
                 state=state,
                 hypothesis=hypothesis,
@@ -254,7 +256,9 @@ class PlannerRetryTests(unittest.TestCase):
         ]
 
         with (
-            patch("forensia.ai.llm.llm_gateway.request_llm_json", side_effect=responses),
+            patch(
+                "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=responses
+            ),
             self.assertLogs("forensia.ai.planner", level="DEBUG") as logs,
         ):
             result = plan_hypothesis_query(
@@ -290,7 +294,8 @@ class PlannerRetryTests(unittest.TestCase):
                     """
                 )
                 with patch(
-                    "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=responses
+                    "forensia.ai.llm.llm_gateway.request_llm_json",
+                    side_effect=responses,
                 ) as mock_request:
                     plan_hypothesis_query(
                         state=state,
@@ -340,7 +345,8 @@ class PlannerRetryTests(unittest.TestCase):
                     """
                 )
                 with patch(
-                    "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=responses
+                    "forensia.ai.llm.llm_gateway.request_llm_json",
+                    side_effect=responses,
                 ) as mock_request:
                     plan_hypothesis_query(
                         state=state,
@@ -409,7 +415,9 @@ class PlannerRetryTests(unittest.TestCase):
             },
         ]
 
-        with patch("forensia.ai.llm.llm_gateway.request_llm_json", side_effect=responses):
+        with patch(
+            "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=responses
+        ):
             result = plan_hypothesis_query(
                 state=state,
                 hypothesis=hypothesis,
@@ -439,7 +447,8 @@ class PlannerRetryTests(unittest.TestCase):
             return [{"role": "user", "content": extra_context}]
 
         with patch(
-            "forensia.ai.llm.llm_gateway.request_llm_json", return_value={"read_more": []}
+            "forensia.ai.llm.llm_gateway.request_llm_json",
+            return_value={"read_more": []},
         ):
             _request_with_optional_context(
                 memory=_MemoryStub(),

@@ -48,8 +48,8 @@ from forensia.core.memory import MemoryManager
 from forensia.core.progress_event import progress_event
 from forensia.core.session import SessionState
 from forensia.db.database import CaseDB
-from forensia.report.section_store import mark_report_sections_ai_exhausted
-from forensia.report.writer import render_written_report
+from forensia.report.render.writer import render_written_report
+from forensia.report.sections.section_store import mark_report_sections_ai_exhausted
 from forensia.rules.loader import resolve_active_packs
 
 
@@ -208,9 +208,7 @@ class _InvestigateEnv:
     max_llm_calls: int
 
 
-def _resolve_rulepacks(
-    profile: str, db: CaseDB, auto_rulepacks: bool
-) -> set[str]:
+def _resolve_rulepacks(profile: str, db: CaseDB, auto_rulepacks: bool) -> set[str]:
     """Resolve active rulepack ids for the profile, logging auto-enabled packs."""
     profile_path = Path(__file__).parent.parent / "profiles" / f"{profile}.yaml"
     active_pack_ids = resolve_active_packs(

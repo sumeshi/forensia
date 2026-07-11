@@ -90,9 +90,7 @@ def _prepare_block_seed_data(
                 )
                 if str(result.get("kind") or "rows") == "rows":
                     actual_query_count += 1
-                    actual_query_row_counts.append(
-                        int(result.get("row_count") or 0)
-                    )
+                    actual_query_row_counts.append(int(result.get("row_count") or 0))
                     _store_section_evidence(
                         ctx.db,
                         section_key=ctx.section_key,
@@ -175,14 +173,16 @@ def _run_plan_execute_check_loop(
         if verdict in {"block_supported", "block_contradicted"}:
             break
     return verdict, rationale, missing_questions, status, actual_query_count
-from forensia.report.answer_registry import (
+
+
+from forensia.report.answers.answer_registry import (
     _feed_structured_to_timeline,
     build_structured_answer,
 )
-from forensia.report.answer_store import (
+from forensia.report.answers.answer_store import (
     _render_structured_answer_markdown,
 )
-from forensia.report.keypoint_catalog import (
+from forensia.report.answers.keypoint_catalog import (
     _default_keypoints_for_section,
 )
 
@@ -238,16 +238,12 @@ def _try_question_structured_answer(
         and ctx.question_spec is not None
         and ctx.question_spec.timeline
     ):
-        _feed_structured_to_timeline(
-            ctx.db, ctx.answer_spec, structured_answer
-        )
+        _feed_structured_to_timeline(ctx.db, ctx.answer_spec, structured_answer)
     return SectionBlockResult(
         body=body,
         evidence_results=[],
         iterations=1,
-        status=str(
-            structured_answer.get("status") or "insufficient_evidence"
-        ),
+        status=str(structured_answer.get("status") or "insufficient_evidence"),
     )
 
 
@@ -263,8 +259,7 @@ def _try_fast_path_write(
     Returns *None* when the fast path does not apply.
     """
     if not collected_results or not any(
-        str(r.get("kind") or "rows") == "rows"
-        and int(r.get("row_count") or 0) > 0
+        str(r.get("kind") or "rows") == "rows" and int(r.get("row_count") or 0) > 0
         for r in collected_results
     ):
         return None
@@ -303,11 +298,16 @@ def _run_block_pipeline(
     collected_results: list[dict[str, Any]] = []
     actual_query_row_counts: list[int] = []
     actual_query_count, executed_seed_keypoints = _prepare_block_seed_data(
-        ctx, collected_results, actual_query_row_counts,
+        ctx,
+        collected_results,
+        actual_query_row_counts,
     )
     # R3-07: Fast path — skip plan loop if we already have evidence rows
     fast_result = _try_fast_path_write(
-        ctx, collected_results, actual_query_count, actual_query_row_counts,
+        ctx,
+        collected_results,
+        actual_query_count,
+        actual_query_row_counts,
         audit_callback=audit_callback,
     )
     if fast_result is not None:

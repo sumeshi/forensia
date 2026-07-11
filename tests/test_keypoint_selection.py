@@ -19,7 +19,7 @@ from datetime import datetime
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
-from forensia.report.keypoint_catalog import REPORT_KEYPOINTS
+from forensia.report.answers.keypoint_catalog import REPORT_KEYPOINTS
 
 
 def _insert_event(

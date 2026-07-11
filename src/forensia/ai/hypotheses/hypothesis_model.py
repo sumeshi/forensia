@@ -15,6 +15,7 @@ from forensia.db.database import CaseDB
 # and the drafter parser can share one copy without circular imports)
 # ---------------------------------------------------------------------------
 
+
 @functools.lru_cache(maxsize=1)
 def _known_db_columns() -> frozenset[str]:
     """Whitelist of valid DB column names sourced from rulepacks/_schema/*.yaml.
@@ -234,8 +235,7 @@ def _hypothesis_evidence_strength(hypothesis: Hypothesis) -> int:
     if not hypothesis.source_rule_ids:
         return 0
     has_evidence = bool(
-        hypothesis.confirm_when
-        and hypothesis.confirm_when != {"zero_rows": True}
+        hypothesis.confirm_when and hypothesis.confirm_when != {"zero_rows": True}
     ) or bool(hypothesis.refute_when)
     return 2 if has_evidence else 1
 
@@ -349,6 +349,7 @@ def _best_hypothesis_match(
 # Unified hypothesis admission gate
 # ---------------------------------------------------------------------------
 
+
 def _extract_refuted_tokens(descriptions: list[str]) -> set[str]:
     """Extract key entity tokens from refuted hypothesis descriptions.
 
@@ -367,9 +368,7 @@ def _extract_refuted_tokens(descriptions: list[str]) -> set[str]:
     # IPv4 addresses
     ip_pattern = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
     # Registry key paths
-    reg_pattern = re.compile(
-        r"(?:HKLM|HKCU|HKEY_[A-Z_]+)\\[^\s\]]+", re.IGNORECASE
-    )
+    reg_pattern = re.compile(r"(?:HKLM|HKCU|HKEY_[A-Z_]+)\\[^\s\]]+", re.IGNORECASE)
     for desc in descriptions:
         if not desc:
             continue
@@ -401,4 +400,3 @@ def _gap_references_refuted(text: str, refuted_tokens: set[str]) -> bool:
         if token in lowered:
             return True
     return False
-

@@ -8,11 +8,11 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from forensia import cli as cli_module
-from forensia.artifacts import MftArtifactAdapter, PrefetchArtifactAdapter
+from forensia.cli import app as cli_module
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.ingest import ingest_all
+from forensia.ingest.artifacts import MftArtifactAdapter, PrefetchArtifactAdapter
 from forensia.normalize import normalize_all
 from forensia.normalize.evtx import normalize_evtx
 from forensia.normalize.mft import normalize_mft
@@ -260,7 +260,7 @@ class IngestTests(unittest.TestCase):
             runner = CliRunner()
 
             with patch(
-                "forensia.cli.ingest_all",
+                "forensia.cli.app.ingest_all",
                 return_value={
                     "new_files": 1,
                     "skipped_files": 0,
@@ -279,7 +279,7 @@ class IngestTests(unittest.TestCase):
             output_dir = Path(tmpdir) / "case-run"
             with (
                 patch(
-                    "forensia.cli_stages.ingest_all",
+                    "forensia.cli.stages.ingest_all",
                     return_value={
                         "new_files": 1,
                         "skipped_files": 0,
@@ -289,7 +289,7 @@ class IngestTests(unittest.TestCase):
                     },
                 ),
                 patch(
-                    "forensia.cli_stages.normalize_all",
+                    "forensia.cli.stages.normalize_all",
                     return_value={
                         "evtx_rows": 0,
                         "mft_entries": 0,
@@ -297,20 +297,20 @@ class IngestTests(unittest.TestCase):
                         "prefetch_executions": 2,
                     },
                 ),
-                patch("forensia.cli.resolve_llm_config", return_value=(None, None)),
+                patch("forensia.cli.app.resolve_llm_config", return_value=(None, None)),
                 patch(
-                    "forensia.cli_stages.load_rules_from_dir",
+                    "forensia.cli.stages.load_rules_from_dir",
                     return_value=[],
                 ),
                 patch(
-                    "forensia.cli_stages.render_written_report",
+                    "forensia.cli.stages.render_written_report",
                     return_value=(
                         output_dir / "reports" / "report.md",
                         output_dir / "reports" / "report.html",
                     ),
                 ),
-                patch("forensia.cli_stages.write_api_snapshots"),
-                patch("forensia.cli_support.write_api_snapshots"),
+                patch("forensia.cli.stages.write_api_snapshots"),
+                patch("forensia.cli.support.write_api_snapshots"),
             ):
                 run_result = runner.invoke(
                     cli_module.app, ["investigate", str(output_dir), str(input_dir)]

@@ -84,9 +84,8 @@ class TestThesisAlignment:
         strong = [
             h
             for h in confirmed
-            if h.get("source_rule_ids") and not any(
-                "benign" in str(t) for t in (h.get("tags") or [])
-            )
+            if h.get("source_rule_ids")
+            and not any("benign" in str(t) for t in (h.get("tags") or []))
         ]
         assert len(strong) > 0, (
             "Executive Summary uses intrusion language but no strong confirmed "

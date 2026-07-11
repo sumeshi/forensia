@@ -54,7 +54,7 @@ from forensia.core.memory import MemoryManager
 from forensia.core.progress_event import progress_event
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
-from forensia.report.keypoint_catalog import REPORT_KEYPOINTS
+from forensia.report.answers.keypoint_catalog import REPORT_KEYPOINTS
 from forensia.rules.loader import _get_rule_cache
 
 
@@ -223,7 +223,7 @@ def _parse_hypothesis_from_drafter(parsed: dict[str, Any]) -> Hypothesis | None:
                 for eid in co_ids:
                     try:
                         numeric_ids.append(int(str(eid).strip()))
-                    except (TypeError, ValueError):
+                    except TypeError, ValueError:
                         continue
                 filtered = [eid for eid in numeric_ids if eid in available_ids]
                 if len(filtered) < len(numeric_ids) or len(numeric_ids) < len(co_ids):
@@ -247,9 +247,7 @@ def _parse_hypothesis_from_drafter(parsed: dict[str, Any]) -> Hypothesis | None:
         return None
 
 
-def _broad_plan_observed_labels(
-    observed_keypoints: list[dict[str, Any]]
-) -> list[str]:
+def _broad_plan_observed_labels(observed_keypoints: list[dict[str, Any]]) -> list[str]:
     return [
         f"{item['keypoint']} (rows={item['row_count']})" for item in observed_keypoints
     ]
@@ -300,9 +298,7 @@ async def _identify_broad_plan_gaps(ctx: _BroadPlanContext) -> list[dict[str, An
                 ctx.state.proposed_keypoints.get(kpid, 0) + 1
             )
 
-    valid_gap_areas = [
-        g for g in gap_areas if g.get("keypoint_id") in REPORT_KEYPOINTS
-    ]
+    valid_gap_areas = [g for g in gap_areas if g.get("keypoint_id") in REPORT_KEYPOINTS]
     if len(valid_gap_areas) < len(gap_areas):
         _log(
             "PLAN",
@@ -556,9 +552,7 @@ async def _run_cycle_body(
                 summary=summary,
                 focus_hypothesis_id=state.focus_hypothesis_id,
                 hypotheses=[h.model_dump() for h in _all_hypotheses(state)],
-                report_sections=_ctx_get_report_status(
-                    ctx, db, **(report_kw or {})
-                ),
+                report_sections=_ctx_get_report_status(ctx, db, **(report_kw or {})),
                 **extras,
             )
         )

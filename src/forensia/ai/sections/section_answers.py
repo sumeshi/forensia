@@ -12,15 +12,15 @@ from forensia.ai.sections.section_exec import (
 )
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
-from forensia.knowledge import catalog_marker_map as _catalog_marker_map
-from forensia.knowledge import catalog_names as _catalog_names
-from forensia.questions import (
+from forensia.knowledge.catalog import catalog_marker_map as _catalog_marker_map
+from forensia.knowledge.catalog import catalog_names as _catalog_names
+from forensia.knowledge.questions import (
     resolve_question_spec,
 )
-from forensia.report.answer_builders_host import (
+from forensia.report.answers.answer_builders_host import (
     _build_daily_session_timeline_rows,
 )
-from forensia.report.answer_store import (
+from forensia.report.answers.answer_store import (
     _normalize_structured_answer,
     _persist_structured_answer,
     _render_structured_answer_markdown,

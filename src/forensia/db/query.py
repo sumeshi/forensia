@@ -35,5 +35,3 @@ def normalize_value(value: Any) -> Any:
             except json.JSONDecodeError:
                 return value
     return value
-
-

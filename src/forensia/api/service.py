@@ -32,8 +32,8 @@ from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.db.evidence_lookup import lookup_evidence_record
 from forensia.db.query import fetch_records, normalize_value
-from forensia.report.evidence_map import build_evidence_map
-from forensia.report.html import (
+from forensia.report.render.evidence_map import build_evidence_map
+from forensia.report.render.html import (
     _inject_evidence_interactivity,
     render_markdown_fragment,
 )

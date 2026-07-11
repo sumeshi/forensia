@@ -16,16 +16,16 @@ from forensia.report.benign_auth import finding_is_auth_scoped, is_benign_local_
 from forensia.report.evidence_refs import (
     _extract_evidence_ids_from_value,
 )
-from forensia.report.markdown import (
-    _render_timestamp_with_timezone,
-    _tz_offset_str,
-)
 from forensia.report.ranking import (
     load_top_findings_priority_keywords,
     priority_rank,
 )
-from forensia.report.section_quality import _collect_section_coverage
-from forensia.report.section_store import _claim_text_key
+from forensia.report.render.markdown import (
+    _render_timestamp_with_timezone,
+    _tz_offset_str,
+)
+from forensia.report.sections.section_quality import _collect_section_coverage
+from forensia.report.sections.section_store import _claim_text_key
 
 
 def _query_top_findings(
@@ -150,7 +150,7 @@ def _sanitize_evidence_paths(evidence: Any) -> Any:
     if isinstance(evidence, str):
         try:
             evidence = json.loads(evidence)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             return evidence
     if not isinstance(evidence, list):
         return evidence

@@ -19,7 +19,7 @@ from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, SessionState
 from forensia.core.textutil import normalize_text as _normalize_text
 from forensia.db.database import CaseDB
-from forensia.report.section_store import fetch_report_sections
+from forensia.report.sections.section_store import fetch_report_sections
 
 
 class GapHypothesisOutput(BaseModel):
@@ -64,7 +64,7 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
@@ -261,6 +261,7 @@ def _parse_gap_hypothesis_output(
 # _extract_refuted_tokens and _gap_references_refuted moved to
 # hypothesis_manager.py (shared with the unified admission gate).
 # Imported above.
+
 
 def _inject_gap_hypotheses(
     db: CaseDB,

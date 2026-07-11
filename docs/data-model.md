@@ -192,4 +192,4 @@ Defined as Pydantic models in `src/forensia/api/dto.py`. The `extra="ignore"` se
 | `MftTimelineDTO` | One MFT timeline row | `mft_timeline` |
 | `AIReviewDTO` | LLM review result | `ai_reviews` |
 
-For which API endpoint uses which DTO, see [src/forensia/web.py](../src/forensia/web.py). For the snapshot-based serving mechanism, see the "API snapshots and UI" section of [architecture.md](architecture.md).
+For which API endpoint uses which DTO, see [src/forensia/web/app.py](../src/forensia/web/app.py). For the snapshot-based serving mechanism, see the "API snapshots and UI" section of [architecture.md](architecture.md).

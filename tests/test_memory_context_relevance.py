@@ -1,4 +1,5 @@
 """Tests for hypothesis-scoped entity/keypoint selection (G-3)."""
+
 from __future__ import annotations
 
 import tempfile
@@ -60,18 +61,14 @@ class FileMatchesRelevanceTests(unittest.TestCase):
     def test_filename_no_match(self):
         terms = {"alice"}
         self.assertFalse(
-            MemoryManager._file_matches_relevance(
-                self.rel_path_bob, self.tmpdir, terms
-            )
+            MemoryManager._file_matches_relevance(self.rel_path_bob, self.tmpdir, terms)
         )
 
     def test_content_match(self):
         # "service" is in Bob's content, not filename
         terms = {"service"}
         self.assertTrue(
-            MemoryManager._file_matches_relevance(
-                self.rel_path_bob, self.tmpdir, terms
-            )
+            MemoryManager._file_matches_relevance(self.rel_path_bob, self.tmpdir, terms)
         )
 
     def test_content_no_match(self):
@@ -95,7 +92,9 @@ class BuildRelevanceTermsTests(unittest.TestCase):
     """Unit tests for MemoryManager.build_relevance_terms_from_hypothesis."""
 
     def test_none_hypothesis(self):
-        self.assertEqual(MemoryManager.build_relevance_terms_from_hypothesis(None), set())
+        self.assertEqual(
+            MemoryManager.build_relevance_terms_from_hypothesis(None), set()
+        )
 
     def test_extracts_description_tokens(self):
         hyp = SimpleNamespace(
@@ -147,10 +146,18 @@ class InvestigationContextFilesRelevanceTests(unittest.TestCase):
         )
         # 8 unrelated
         for name in [
-            "BOB_JONES", "CHARLIE_BROWN", "DAVE_WILSON", "EVE_ADAMS",
-            "FRANK_MILLER", "GRACE_HOPPER", "HELEN_PARK", "IVAN_PETROV",
+            "BOB_JONES",
+            "CHARLIE_BROWN",
+            "DAVE_WILSON",
+            "EVE_ADAMS",
+            "FRANK_MILLER",
+            "GRACE_HOPPER",
+            "HELEN_PARK",
+            "IVAN_PETROV",
         ]:
-            subdir = ent_user_dir if name in ("BOB_JONES", "CHARLIE_BROWN") else ent_ip_dir
+            subdir = (
+                ent_user_dir if name in ("BOB_JONES", "CHARLIE_BROWN") else ent_ip_dir
+            )
             subdir.mkdir(parents=True, exist_ok=True)
             (subdir / f"{name}.md").write_text(
                 f"# {name}\n- Some unrelated entity\n", encoding="utf-8"
@@ -171,8 +178,10 @@ class InvestigationContextFilesRelevanceTests(unittest.TestCase):
     def test_no_relevance_returns_all_entities(self):
         """Without relevance_terms, all entity files are included."""
         files = self.mm.investigation_context_files(
-            include_overview=False, include_archive=False,
-            include_keypoints=False, include_scratch=False,
+            include_overview=False,
+            include_archive=False,
+            include_keypoints=False,
+            include_scratch=False,
         )
         entity_files = [f for f in files if f.startswith("entities/")]
         self.assertEqual(len(entity_files), 10)
@@ -181,8 +190,10 @@ class InvestigationContextFilesRelevanceTests(unittest.TestCase):
         """Empty relevance_terms should include all entity files (backward compat)."""
         files = self.mm.investigation_context_files(
             relevance_terms=set(),
-            include_overview=False, include_archive=False,
-            include_keypoints=False, include_scratch=False,
+            include_overview=False,
+            include_archive=False,
+            include_keypoints=False,
+            include_scratch=False,
         )
         entity_files = [f for f in files if f.startswith("entities/")]
         self.assertEqual(len(entity_files), 10)
@@ -192,8 +203,10 @@ class InvestigationContextFilesRelevanceTests(unittest.TestCase):
         terms = {"alice"}
         files = self.mm.investigation_context_files(
             relevance_terms=terms,
-            include_overview=False, include_archive=False,
-            include_keypoints=False, include_scratch=False,
+            include_overview=False,
+            include_archive=False,
+            include_keypoints=False,
+            include_scratch=False,
         )
         entity_files = [f for f in files if f.startswith("entities/")]
         self.assertEqual(len(entity_files), 2)
@@ -206,8 +219,10 @@ class InvestigationContextFilesRelevanceTests(unittest.TestCase):
         terms = {"alice"}
         files = self.mm.investigation_context_files(
             relevance_terms=terms,
-            include_overview=False, include_archive=False,
-            include_entities=False, include_scratch=False,
+            include_overview=False,
+            include_archive=False,
+            include_entities=False,
+            include_scratch=False,
         )
         kp_files = [f for f in files if f.startswith("keypoints/")]
         self.assertEqual(len(kp_files), 1)
@@ -218,7 +233,9 @@ class InvestigationContextFilesRelevanceTests(unittest.TestCase):
         terms = {"alice"}
         files = self.mm.investigation_context_files(
             relevance_terms=terms,
-            include_overview=False, include_archive=False, include_scratch=False,
+            include_overview=False,
+            include_archive=False,
+            include_scratch=False,
         )
         entity_files = [f for f in files if f.startswith("entities/")]
         kp_files = [f for f in files if f.startswith("keypoints/")]
@@ -230,7 +247,8 @@ class InvestigationContextFilesRelevanceTests(unittest.TestCase):
         terms = {"alice"}
         files = self.mm.investigation_context_files(
             relevance_terms=terms,
-            include_entities=False, include_keypoints=False,
+            include_entities=False,
+            include_keypoints=False,
         )
         # overview.md, facts.md, timeline.md, tasks.md should always be present
         self.assertIn("overview.md", files)
@@ -241,7 +259,9 @@ class InvestigationContextFilesRelevanceTests(unittest.TestCase):
         terms = {"zzzznonexistent"}
         files = self.mm.investigation_context_files(
             relevance_terms=terms,
-            include_overview=False, include_archive=False, include_scratch=False,
+            include_overview=False,
+            include_archive=False,
+            include_scratch=False,
         )
         entity_files = [f for f in files if f.startswith("entities/")]
         kp_files = [f for f in files if f.startswith("keypoints/")]
@@ -272,8 +292,10 @@ class LoadInvestigationContextRelevanceTests(unittest.TestCase):
         """load_investigation_context should pass relevance_terms through."""
         context = self.mm.load_investigation_context(
             relevance_terms={"alice"},
-            include_overview=False, include_archive=False,
-            include_keypoints=False, include_scratch=False,
+            include_overview=False,
+            include_archive=False,
+            include_keypoints=False,
+            include_scratch=False,
             max_bytes=100_000,
         )
         # Should contain alice file but not bob file

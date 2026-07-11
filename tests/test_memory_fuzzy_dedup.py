@@ -1,4 +1,5 @@
 """Tests for near-duplicate suppression in facts/timeline tracking (G-4)."""
+
 from __future__ import annotations
 
 import tempfile
@@ -84,15 +85,11 @@ class FuzzyDedupTests(unittest.TestCase):
 
     def test_extract_line_text(self):
         line = "- [fact-001] User logged in [confirmed | evidence: E-001]"
-        self.assertEqual(
-            MemoryManager._extract_line_text(line), "User logged in"
-        )
+        self.assertEqual(MemoryManager._extract_line_text(line), "User logged in")
 
     def test_extract_evidence_ids(self):
         line = "- User logged in [confirmed | evidence: E-001, E-002]"
-        self.assertEqual(
-            MemoryManager._extract_evidence_ids(line), ["E-001", "E-002"]
-        )
+        self.assertEqual(MemoryManager._extract_evidence_ids(line), ["E-001", "E-002"])
 
     def test_extract_evidence_ids_none(self):
         line = "- User logged in [confirmed]"
@@ -143,9 +140,7 @@ class AppendTimelineFuzzyDedupTests(unittest.TestCase):
     def test_same_event_different_words_skipped(self):
         mm = self._make_manager()
         mm.append_timeline_anchor("2026-01-01 12:00", "User logged in", ["E-001"])
-        mm.append_timeline_anchor(
-            "2026-01-01 12:00", "The user logged in", ["E-001"]
-        )
+        mm.append_timeline_anchor("2026-01-01 12:00", "The user logged in", ["E-001"])
         content = mm.timeline_path.read_text()
         self.assertEqual(content.count("- 2026-01-01"), 1)
 

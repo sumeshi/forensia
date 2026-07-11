@@ -10,7 +10,7 @@ from typing import Any
 import yaml
 
 from forensia.core.timeutil import parse_timestamp
-from forensia.report_templates import export_packaged_report_templates
+from forensia.report.template_export import export_packaged_report_templates
 
 ALLOWLIST_STUB = """# Rule-scoped suppression rules.
 # Each entry matches one rule_id and one or more row fields from finding.evidence[0].

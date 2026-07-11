@@ -224,4 +224,3 @@ def _upsert_hypothesis(
 
 def _all_hypotheses(state: SessionState) -> list[Hypothesis]:
     return [*state.active_hypotheses, *state.resolved_hypotheses]
-

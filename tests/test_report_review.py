@@ -14,10 +14,10 @@ from forensia.ai.prompts.sql_templates import validate_select_sql
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.db.database import CaseDB
-from forensia.knowledge import catalog_exe_globs, matches_exe_globs
+from forensia.knowledge.catalog import catalog_exe_globs, matches_exe_globs
 from forensia.report.evidence_refs import row_with_evidence_ids
-from forensia.report.markdown import build_host_note
-from forensia.report.narrative_review import review_narrative_body
+from forensia.report.render.markdown import build_host_note
+from forensia.report.sections.narrative_review import review_narrative_body
 
 
 class ReportSafetyContracts(unittest.TestCase):

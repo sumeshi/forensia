@@ -1,62 +1,88 @@
-"""Check intra-package import layer contract.
+"""Enforce the declared dependency direction between forensia layers."""
 
-Usage: python scripts/check_imports.py  (from repo root)
-"""
+from __future__ import annotations
 
 import ast
 import sys
 from pathlib import Path
 
-PACKAGES = frozenset({"core", "ai", "report", "db", "rules", "api", "knowledge"})
+# Larger numbers are closer to users. Code may depend on the same or a lower
+# layer; dependencies pointing upward require an exact, documented exception.
+LAYERS: tuple[tuple[str, frozenset[str]], ...] = (
+    ("platform", frozenset({"core", "db", "api", "config"})),
+    ("evidence", frozenset({"ingest", "normalize"})),
+    ("knowledge", frozenset({"rules", "knowledge", "profiles", "rulepacks"})),
+    ("reporting", frozenset({"report"})),
+    ("workflow", frozenset({"ai"})),
+    ("interface", frozenset({"cli", "web"})),
+)
 
-FORBIDDEN = [
-    ("core", "ai"),
-    ("core", "report"),
-    ("report", "ai"),
-    ("db", "ai"),
-    ("db", "report"),
-]
+PACKAGE_LAYER = {
+    package: index
+    for index, (_layer_name, packages) in enumerate(LAYERS)
+    for package in packages
+}
 
-ALLOWED_REPORT_AI_FILES = frozenset({"writer.py"})
+# (source path relative to src/forensia, imported top-level package).
+# Every entry must correspond to a real upward edge; stale exceptions fail.
+KNOWN_EXCEPTIONS: frozenset[tuple[str, str]] = frozenset(
+    {
+        # API snapshots expose report DTOs to the interface layer.
+        ("api/cache.py", "report"),
+        ("api/service.py", "report"),
+        # Case initialization exports packaged report templates.
+        ("core/case.py", "report"),
+    }
+)
 
-MAX_LINES = 2500
+MAX_LINES = 1000
 
 
-def _pkg_of(file: Path, root: Path) -> str | None:
-    """Return the top-level package name for a file under src/forensia/."""
+def _package_of(file: Path, root: Path) -> str | None:
     rel = file.relative_to(root)
-    parts = rel.parts
-    if len(parts) < 2:
-        return None
-    pkg = parts[0]
-    return pkg if pkg in PACKAGES else None
+    if len(rel.parts) == 1:
+        return rel.stem if rel.stem in PACKAGE_LAYER else None
+    return rel.parts[0] if rel.parts[0] in PACKAGE_LAYER else None
 
 
-def _import_targets(tree: ast.AST) -> list[str]:
-    """Yield top-level forensia sub-packages imported by this file."""
-    targets: list[str] = []
+def _import_targets(tree: ast.AST) -> set[str]:
+    targets: set[str] = set()
     for node in ast.walk(tree):
+        modules: list[str] = []
         if isinstance(node, ast.Import):
-            for alias in node.names:
-                parts = alias.name.split(".")
-                if len(parts) >= 2 and parts[0] == "forensia" and parts[1] in PACKAGES:
-                    targets.append(parts[1])
-        elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                parts = node.module.split(".")
-                if len(parts) >= 2 and parts[0] == "forensia" and parts[1] in PACKAGES:
-                    targets.append(parts[1])
+            modules.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            modules.append(node.module)
+        for module in modules:
+            parts = module.split(".")
+            if len(parts) >= 2 and parts[0] == "forensia":
+                target = parts[1]
+                if target in PACKAGE_LAYER:
+                    targets.add(target)
     return targets
 
 
-def _check_forbidden(source_pkg: str, file_name: str, targets: list[str]) -> list[str]:
+def _upward_edges(root: Path) -> tuple[set[tuple[str, str]], list[str]]:
+    edges: set[tuple[str, str]] = set()
     errors: list[str] = []
-    for src, tgt in FORBIDDEN:
-        if source_pkg == src and tgt in targets:
-            if src == "report" and tgt == "ai" and file_name in ALLOWED_REPORT_AI_FILES:
-                continue
-            errors.append(f"  FORBIDDEN: {src} → {tgt}  ({file_name})")
-    return errors
+    for file in sorted(root.rglob("*.py")):
+        source_package = _package_of(file, root)
+        if source_package is None:
+            continue
+        relative = file.relative_to(root).as_posix()
+        source = file.read_text(encoding="utf-8")
+        line_count = source.count("\n") + 1
+        if line_count > MAX_LINES:
+            errors.append(f"OVERSIZED: {relative} ({line_count} > {MAX_LINES} lines)")
+        try:
+            tree = ast.parse(source)
+        except SyntaxError as exc:
+            errors.append(f"SYNTAX: {relative}: {exc}")
+            continue
+        for target_package in _import_targets(tree):
+            if PACKAGE_LAYER[source_package] < PACKAGE_LAYER[target_package]:
+                edges.add((relative, target_package))
+    return edges, errors
 
 
 def main() -> int:
@@ -65,51 +91,24 @@ def main() -> int:
         print("ERROR: run from repo root (src/forensia/ not found)", file=sys.stderr)
         return 1
 
-    files = sorted(root.rglob("*.py"))
-    errors: list[str] = []
-    warnings: list[str] = []
-
-    for file in files:
-        source_pkg = _pkg_of(file, root)
-        if source_pkg is None:
-            continue
-
-        source = file.read_text(encoding="utf-8")
-        lines = source.count("\n")
-
-        if lines > MAX_LINES:
-            warnings.append(f"  WARNING: {file.relative_to(root)} ({lines} lines)")
-
-        try:
-            tree = ast.parse(source)
-        except SyntaxError as exc:
-            errors.append(f"  SYNTAX ERROR: {file.relative_to(root)}: {exc}")
-            continue
-
-        targets = _import_targets(tree)
-        if not targets:
-            continue
-
-        file_name = file.name
-        errors.extend(_check_forbidden(source_pkg, file_name, targets))
-
-    if warnings:
-        print(f"Soft warnings (files > {MAX_LINES} lines):")
-        for w in warnings:
-            print(w)
-        print()
+    upward_edges, errors = _upward_edges(root)
+    for source, target in sorted(upward_edges - KNOWN_EXCEPTIONS):
+        errors.append(f"UNDECLARED: {source} -> {target}")
+    for source, target in sorted(KNOWN_EXCEPTIONS - upward_edges):
+        errors.append(f"STALE EXCEPTION: {source} -> {target}")
 
     if errors:
-        print("Forbidden import edges found:")
-        for e in errors:
-            print(e)
-        print()
-        print("FAILED")
+        print("Import layer contract violations:")
+        for error in errors:
+            print(f"  {error}")
         return 1
 
-    print("OK — no forbidden import edges")
+    print(
+        "OK — layer direction enforced; "
+        f"{len(KNOWN_EXCEPTIONS)} documented exception(s)"
+    )
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

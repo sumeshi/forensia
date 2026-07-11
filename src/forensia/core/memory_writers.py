@@ -14,7 +14,6 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryWriterMixin:
-
     def _append_markdown_entry(
         self, path: Path, heading: str, line: str, *, fuzzy_dedup: bool = False
     ) -> bool:
@@ -211,7 +210,9 @@ class MemoryWriterMixin:
             hypothesis_id=hypothesis_id,
             provisional=False,
         )
-        if self._append_markdown_entry(self.facts_path, "# Facts", shared_line, fuzzy_dedup=True):
+        if self._append_markdown_entry(
+            self.facts_path, "# Facts", shared_line, fuzzy_dedup=True
+        ):
             self._write_fact_detail(detail_id, body, normalized_ids)
             self._fact_hashes.add(fact_hash)
 

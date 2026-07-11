@@ -41,7 +41,7 @@ Each template is a Markdown file with optional YAML frontmatter.
 | `behaviors` | List of quality gate / behavior flags (e.g. `require_chronological_table`) |
 | `brief.top_findings.ranking` | Ordering policy for `top_findings` (= leading thesis) in `report_brief.json`. Write this on sections that draw overview / executive summaries |
 
-When adding `behaviors`, extend the `_GateCtx.behaviors` judgment in [report/quality_gates.py](../src/forensia/report/quality_gates.py) in a single place only; do not hardcode it per section_key.
+When adding `behaviors`, extend the `GateContext.behaviors` judgment in [report/sections/quality_gates.py](../src/forensia/report/sections/quality_gates.py) and register a self-contained check with `register_quality_check`; do not hardcode it per section_key.
 
 `brief.top_findings.ranking` is interpreted by [report/ranking.py](../src/forensia/report/ranking.py). You can choose `policy: severity` (default = case-independent order of severity → ATT&CK → confidence) or `policy: priority_keywords` (arrange in narrative order using ordered keyword groups). **Case-specific vocabulary (`4648` / `ccleaner` etc.) belongs in this frontmatter, not in the core.** The bundled generic templates declare no policy (= severity default), and the `forensia doctor` "Report template policy" check ensures `priority_keywords` never leaks into bundled templates. A malformed policy warns at runtime and falls back to the default; for bundled templates, doctor hard-fails.
 
@@ -113,7 +113,7 @@ Benchmark evaluation also uses the normal `--template-dir` path. Because the pub
 
 ## 3. Report quality gates
 
-After each section body is filled, `_quality_gate_section` ([report/quality_gates.py](../src/forensia/report/quality_gates.py)) runs static checks, adding a gap per detection and lowering confidence down to a cap. The checks are template-independent and apply to all sections.
+After each section body is filled, `quality_gate_section` ([report/sections/quality_gates.py](../src/forensia/report/sections/quality_gates.py)) runs registered static checks, adding a gap per detection and lowering confidence down to a cap. The checks are template-independent and apply to all sections.
 
 Section-specific behavior is declared via the `behaviors:` frontmatter. Examples: `require_chronological_table` / `require_recommendations_strength` / `canonical_evidence_scope`. Firing conditions branch on `_GateCtx.behaviors`. Do not hardcode section_keys in Python.
 

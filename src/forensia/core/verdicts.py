@@ -37,5 +37,3 @@ def assert_valid_verdict(verdict: str, category: str) -> None:
         raise ValueError(
             f"Invalid verdict '{verdict}' for {category}. Allowed: {allowed}"
         )
-
-

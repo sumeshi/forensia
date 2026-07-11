@@ -399,4 +399,3 @@ def _init_session(
         (session_id, started_at, None, 0, "running"),
     )
     return state, ctx, memory, llm_logger, session_id, started_at, template_root
-

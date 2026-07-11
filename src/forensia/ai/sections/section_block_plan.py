@@ -31,7 +31,7 @@ from forensia.ai.sections.section_run_store import (
     _store_section_facts,
     _store_section_run,
 )
-from forensia.report.keypoint_catalog import (
+from forensia.report.answers.keypoint_catalog import (
     _default_keypoints_for_section,
 )
 
@@ -345,4 +345,3 @@ def _try_evidence_chain_fallback(
         )
         return actual_query_count + 1
     return actual_query_count
-

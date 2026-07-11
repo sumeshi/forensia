@@ -103,7 +103,6 @@ class MemorySyncTests(unittest.TestCase):
             self.assertIn("## Reasoning", active_text)
             self.assertNotIn("## Reasoning", resolved_text)
 
-
     def test_r2_10_overview_writes_only_on_state_transitions(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -616,8 +615,12 @@ class MemorySyncTests(unittest.TestCase):
             result = memory.load_compact_context(files, max_bytes=300)
 
             # P0 files must survive — overview and facts content should be present
-            self.assertIn("key finding", result, "P0 overview must survive budget pressure")
-            self.assertIn("confirmed fact", result, "P0 facts must survive budget pressure")
+            self.assertIn(
+                "key finding", result, "P0 overview must survive budget pressure"
+            )
+            self.assertIn(
+                "confirmed fact", result, "P0 facts must survive budget pressure"
+            )
             # P3 scratch should be removed first
             self.assertNotIn("scratch item", result, "P3 scratch should be removed")
 
@@ -631,13 +634,27 @@ class MemorySyncTests(unittest.TestCase):
             self.assertEqual(memory._file_priority("facts.md"), memory.PRIORITY_P0)
             self.assertEqual(memory._file_priority("timeline.md"), memory.PRIORITY_P1)
             self.assertEqual(memory._file_priority("tasks.md"), memory.PRIORITY_P1)
-            self.assertEqual(memory._file_priority("archive/refuted.md"), memory.PRIORITY_P1)
-            self.assertEqual(memory._file_priority("archive/resolved_gaps.md"), memory.PRIORITY_P1)
-            self.assertEqual(memory._file_priority("entities/user/alice.md"), memory.PRIORITY_P2)
-            self.assertEqual(memory._file_priority("entities/ip/10-0-0-5.md"), memory.PRIORITY_P2)
-            self.assertEqual(memory._file_priority("keypoints/KP-001.md"), memory.PRIORITY_P2)
-            self.assertEqual(memory._file_priority("scratch/global/notes.md"), memory.PRIORITY_P3)
-            self.assertEqual(memory._file_priority("scratch/H-001/scratch.md"), memory.PRIORITY_P3)
+            self.assertEqual(
+                memory._file_priority("archive/refuted.md"), memory.PRIORITY_P1
+            )
+            self.assertEqual(
+                memory._file_priority("archive/resolved_gaps.md"), memory.PRIORITY_P1
+            )
+            self.assertEqual(
+                memory._file_priority("entities/user/alice.md"), memory.PRIORITY_P2
+            )
+            self.assertEqual(
+                memory._file_priority("entities/ip/10-0-0-5.md"), memory.PRIORITY_P2
+            )
+            self.assertEqual(
+                memory._file_priority("keypoints/KP-001.md"), memory.PRIORITY_P2
+            )
+            self.assertEqual(
+                memory._file_priority("scratch/global/notes.md"), memory.PRIORITY_P3
+            )
+            self.assertEqual(
+                memory._file_priority("scratch/H-001/scratch.md"), memory.PRIORITY_P3
+            )
 
     def test_p0_never_fully_removed_under_extreme_budget(self) -> None:
         """Even with a near-zero budget, P0 files keep at least _P0_MIN_LINES lines."""

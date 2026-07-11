@@ -249,7 +249,7 @@ def block_language_conformity(
 
     sections = json.loads(sections_path.read_text())
 
-    from forensia.report.quality_gates import _detect_body_language
+    from forensia.report.sections.quality_gates import _detect_body_language
 
     total_blocks = 0
     conforming = 0

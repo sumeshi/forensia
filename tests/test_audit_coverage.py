@@ -10,7 +10,7 @@ from scripts.audit_schema_coverage import (
     _extract_event_ids_from_sql,
 )
 
-from forensia.knowledge import expand_catalog_sql_placeholders
+from forensia.knowledge.catalog import expand_catalog_sql_placeholders
 
 
 class AuditCoverageTests(unittest.TestCase):
@@ -123,7 +123,7 @@ class VerdictEnforcementTests(unittest.TestCase):
             assert_valid_verdict("bogus_verdict", "section_verdict")
 
     def test_benchmark_answer_normalization_enforces_taxonomy(self) -> None:
-        from forensia.report.answer_store import normalize_structured_answer
+        from forensia.report.answers.answer_store import normalize_structured_answer
 
         result = normalize_structured_answer(
             {"status": "bogus_status"},

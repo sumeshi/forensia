@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from forensia.api.progress import record_progress_event
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
-from forensia.web import create_app
+from forensia.web.app import create_app
 
 
 class WebApiTests(unittest.TestCase):
@@ -388,7 +388,7 @@ class WebApiTests(unittest.TestCase):
             )
             app = create_app(case)
             client = TestClient(app)
-            import forensia.web as web_module
+            import forensia.web.app as web_module
 
             with mock.patch.object(
                 web_module,

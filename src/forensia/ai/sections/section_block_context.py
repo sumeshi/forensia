@@ -23,7 +23,7 @@ from forensia.ai.sections.section_run_store import (
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.db.database import CaseDB
-from forensia.questions import (
+from forensia.knowledge.questions import (
     QuestionSpec,
     resolve_question_spec,
 )
@@ -171,4 +171,3 @@ def _prepare_block_context(
         structured_digest=structured_digest,
         review_audit=review_audit,
     )
-

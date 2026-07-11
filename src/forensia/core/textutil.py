@@ -134,8 +134,7 @@ def normalize_localized_dates(text: str) -> str:
         if hour is None or minute is None:
             return date_part
         return (
-            f"{date_part} {int(hour):02d}:{int(minute):02d}:"
-            f"{int(second or 0):02d} UTC"
+            f"{date_part} {int(hour):02d}:{int(minute):02d}:{int(second or 0):02d} UTC"
         )
 
     return _JP_DATE_TIME_RE.sub(_replace, str(text))

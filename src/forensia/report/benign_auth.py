@@ -74,7 +74,7 @@ def _load_auth_event_ids() -> frozenset[str]:
     (case-insensitive). Falls back to the hardcoded set if schema loading
     fails.
     """
-    from forensia.knowledge import load_event_class_definitions
+    from forensia.knowledge.catalog import load_event_class_definitions
 
     policy = _load_benign_auth_policy()
     classes = load_event_class_definitions()
@@ -187,7 +187,7 @@ def tag_benign_local_auth_findings(db: CaseDB) -> int:
                 if isinstance(evidence_raw, str)
                 else evidence_raw
             )
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             continue
         if not isinstance(evidence_list, list):
             continue
@@ -210,7 +210,7 @@ def tag_benign_local_auth_findings(db: CaseDB) -> int:
                     if isinstance(tags_raw, str)
                     else (list(tags_raw) if isinstance(tags_raw, (list, tuple)) else [])
                 )
-            except (json.JSONDecodeError, TypeError):
+            except json.JSONDecodeError, TypeError:
                 current_tags = []
 
         tag = _load_benign_auth_policy().finding_tag

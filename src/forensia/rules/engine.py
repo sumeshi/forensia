@@ -14,10 +14,10 @@ from forensia.core.case import Case
 from forensia.core.textutil import sanitize_ingest_path
 from forensia.core.timeutil import parse_timestamp
 from forensia.db.database import CaseDB
-from forensia.knowledge import (
+from forensia.knowledge.catalog import (
     load_event_id_hints as _load_event_id_hints,
 )
-from forensia.knowledge import (
+from forensia.knowledge.catalog import (
     load_finding_benign_context_rules as _load_finding_benign_context_rules,
 )
 from forensia.rules.models import Finding, FindingTemplate, Rule

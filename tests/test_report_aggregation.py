@@ -18,19 +18,19 @@ from pathlib import Path
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
+from forensia.report.answers.gap_tables import build_evidence_gaps_table
+from forensia.report.answers.summary_rows import antiforensic_rows
 from forensia.report.finding_themes import (
     build_recommendations_table,
     classify_finding_theme,
     finding_theme_counts,
     signal_finding_rows,
 )
-from forensia.report.gap_tables import build_evidence_gaps_table
 from forensia.report.ranking import (
     audit_packaged_report_templates,
     load_top_findings_priority_keywords,
 )
 from forensia.report.report_brief import query_top_findings
-from forensia.report.summary_rows import antiforensic_rows
 
 
 def _insert_finding(
@@ -129,9 +129,7 @@ class TestFindingThemeCountsConsistency(unittest.TestCase):
             if "Explicit credential usage observed" in r["finding"]
         )
         action_plan_row = next(
-            r
-            for r in action_plan
-            if r.get("evidence_or_gap") == "explicit_credentials"
+            r for r in action_plan if r.get("evidence_or_gap") == "explicit_credentials"
         )
         self.assertIn("(5)", key_findings_row["finding"])
         self.assertIn("loopback/local", action_plan_row["action"])
@@ -360,9 +358,7 @@ class TestLocalMachineAccount4648Demotion(unittest.TestCase):
 
         titles = [item["title"] for item in top_findings]
         eraser_idx = titles.index("Anti-forensic tool detected: ERASER.EXE")
-        benign_idx = next(
-            i for i, t in enumerate(titles) if "INFORMANT-PC$" in t
-        )
+        benign_idx = next(i for i, t in enumerate(titles) if "INFORMANT-PC$" in t)
         self.assertLess(
             eraser_idx,
             benign_idx,

@@ -13,10 +13,10 @@ from forensia.ai.sections.section_answers import (
     _format_question_answer,
 )
 from forensia.ai.sections.section_exec import _coerce_plan_action
-from forensia.report.answer_builders_host import _load_event_class_definitions
+from forensia.report.answers.answer_builders_host import _load_event_class_definitions
 from forensia.report.evidence_refs import EVIDENCE_ID_PATTERN
-from forensia.report.quality_gates import GateContext, check_json_object_leak
-from forensia.report.section_store import extract_claim_texts
+from forensia.report.sections.quality_gates import GateContext, check_json_object_leak
+from forensia.report.sections.section_store import extract_claim_texts
 
 
 class TestRegressionRQ(unittest.TestCase):
@@ -82,12 +82,16 @@ class TestRegressionRQ(unittest.TestCase):
         self.assertNotEqual(result[0]["service_name"], "")
 
     def test_json_object_leak_detected(self):
-        ctx = GateContext(section_key="test", title="test", evidence_results=None, db=None)
+        ctx = GateContext(
+            section_key="test", title="test", evidence_results=None, db=None
+        )
         msg, score = check_json_object_leak('{"body": "some text"}', ctx)
         self.assertIsNotNone(msg)
 
     def test_json_object_leak_clean(self):
-        ctx = GateContext(section_key="test", title="test", evidence_results=None, db=None)
+        ctx = GateContext(
+            section_key="test", title="test", evidence_results=None, db=None
+        )
         msg, score = check_json_object_leak("## Heading\n\nSome paragraph text.", ctx)
         self.assertIsNone(msg)
 

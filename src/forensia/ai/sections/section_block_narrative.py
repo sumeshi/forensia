@@ -33,15 +33,15 @@ from forensia.ai.sections.section_exec import _classify_block_status
 from forensia.ai.sections.section_run_store import _store_section_run
 from forensia.core.log import log as _log
 from forensia.core.textutil import normalize_localized_dates
-from forensia.report.answer_registry import build_structured_answer
-from forensia.report.answer_store import _render_structured_answer_markdown
-from forensia.report.formats import load_report_formats
-from forensia.report.narrative_review import review_narrative_body
-from forensia.report.quality_gates import _detect_body_language
-from forensia.report.table_registry import (
+from forensia.report.answers.answer_registry import build_structured_answer
+from forensia.report.answers.answer_store import _render_structured_answer_markdown
+from forensia.report.answers.table_registry import (
     _collect_flat_evidence_rows,
     _summarize_flat_evidence_rows,
 )
+from forensia.report.render.formats import load_report_formats
+from forensia.report.sections.narrative_review import review_narrative_body
+from forensia.report.sections.quality_gates import _detect_body_language
 
 _NARRATE_RETRY_PROMPT = (
     "Your previous response had an empty or near-empty body. "
@@ -461,12 +461,22 @@ def _write_block_body(
 
     if ctx.question_mode:
         body, messages, status_inner = _write_question_block(
-            ctx, raw_rows, prompt_rows, collected_results, status_inner,
+            ctx,
+            raw_rows,
+            prompt_rows,
+            collected_results,
+            status_inner,
         )
     else:
         body, messages = _write_narrative_block(
-            ctx, raw_rows, prompt_rows, collected_results,
-            verdict, status_inner, actual_query_count, actual_query_row_counts,
+            ctx,
+            raw_rows,
+            prompt_rows,
+            collected_results,
+            verdict,
+            status_inner,
+            actual_query_count,
+            actual_query_row_counts,
         )
 
     if audit_callback:
@@ -480,6 +490,7 @@ def _write_block_body(
         payload={"evidence_count": len(collected_results), "body_preview": body[:400]},
     )
     return body, status_inner
+
 
 def _write_question_block(
     ctx: _BlockContext,
@@ -576,11 +587,7 @@ def _write_question_block(
             queries_run=queries_run,
             evidence_rows=prompt_rows or [],
             answer_spec=ctx.answer_spec
-            or (
-                ctx.question_spec.answer_spec
-                if ctx.question_spec is not None
-                else ""
-            ),
+            or (ctx.question_spec.answer_spec if ctx.question_spec is not None else ""),
         )
         messages = (
             classify_messages
@@ -694,5 +701,5 @@ def _write_narrative_block(
     return body, messages
 
     body = _postprocess_block_body(
-    body, section_key=ctx.section_key, block_heading=ctx.block_heading
+        body, section_key=ctx.section_key, block_heading=ctx.block_heading
     )

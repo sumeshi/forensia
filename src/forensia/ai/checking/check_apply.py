@@ -343,4 +343,3 @@ def apply_check_result(
         new_leads > 0 or significant_delta or len(check_result.new_hypotheses) > 0
     )
     return new_leads, progress
-

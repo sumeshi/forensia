@@ -281,8 +281,13 @@ class TestConfirmedFindingsBlock(unittest.TestCase):
         h = Hypothesis(description="test", id="H-001")
         # 10 findings with various severities
         findings = [
-            {"severity": "low", "title": f"finding-{i}", "hypothesis_id": f"H-{i:03d}",
-             "finding_id": f"f-{i:03d}", "evidence_ids": [f"evtx-{i:03d}"]}
+            {
+                "severity": "low",
+                "title": f"finding-{i}",
+                "hypothesis_id": f"H-{i:03d}",
+                "finding_id": f"f-{i:03d}",
+                "evidence_ids": [f"evtx-{i:03d}"],
+            }
             for i in range(1, 11)
         ]
         # Insert critical/high in positions 6,7 so they should bubble to top
@@ -311,8 +316,13 @@ class TestConfirmedFindingsBlock(unittest.TestCase):
 
         h = Hypothesis(description="test", id="H-001")
         findings = [
-            {"severity": "high", "title": "test finding", "hypothesis_id": "H-001",
-             "finding_id": "f-001", "evidence_ids": "evtx-001,evtx-002"},
+            {
+                "severity": "high",
+                "title": "test finding",
+                "hypothesis_id": "H-001",
+                "finding_id": "f-001",
+                "evidence_ids": "evtx-001,evtx-002",
+            },
         ]
         msgs = build_query_intent_messages(
             hypothesis=h,
@@ -330,8 +340,13 @@ class TestConfirmedFindingsBlock(unittest.TestCase):
         h = Hypothesis(description="test", id="H-001")
         # Finding with very long title
         findings = [
-            {"severity": "critical", "title": "A" * 200, "hypothesis_id": "H-001",
-             "finding_id": "f-001", "evidence_ids": []},
+            {
+                "severity": "critical",
+                "title": "A" * 200,
+                "hypothesis_id": "H-001",
+                "finding_id": "f-001",
+                "evidence_ids": [],
+            },
         ]
         msgs = build_query_intent_messages(
             hypothesis=h,
@@ -342,7 +357,6 @@ class TestConfirmedFindingsBlock(unittest.TestCase):
         system_content = msgs[0]["content"]
         # Should contain truncated title (truncated to ~80 chars)
         self.assertIn("A" * 80, system_content)  # First 80 chars kept
-
 
 
 class PriorAttemptsBlockTests(unittest.TestCase):

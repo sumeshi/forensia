@@ -8,12 +8,12 @@ from unittest.mock import patch
 import yaml
 from typer.testing import CliRunner
 
-from forensia import cli as cli_module
+from forensia.cli import app as cli_module
 from forensia.config import (
     resolve_llm_config,
 )
 from forensia.core.case import Case
-from forensia.report_templates import export_packaged_report_templates
+from forensia.report.template_export import export_packaged_report_templates
 
 
 def _agent_plan_router(*_args, **kwargs):
@@ -122,10 +122,11 @@ class CaseSetupTests(unittest.TestCase):
 
             with (
                 patch(
-                    "forensia.cli_stages.investigate_loop", side_effect=fake_investigate_loop
+                    "forensia.cli.stages.investigate_loop",
+                    side_effect=fake_investigate_loop,
                 ),
                 patch(
-                    "forensia.cli_stages.render_written_report",
+                    "forensia.cli.stages.render_written_report",
                     return_value=(
                         case.path / "reports" / "report.md",
                         case.path / "reports" / "report.html",
@@ -195,7 +196,7 @@ class CaseSetupTests(unittest.TestCase):
 
             with (
                 patch(
-                    "forensia.cli_stages.ingest_all",
+                    "forensia.cli.stages.ingest_all",
                     return_value={
                         "new_files": 0,
                         "skipped_files": 0,
@@ -205,7 +206,7 @@ class CaseSetupTests(unittest.TestCase):
                     },
                 ),
                 patch(
-                    "forensia.cli_stages.normalize_all",
+                    "forensia.cli.stages.normalize_all",
                     return_value={
                         "evtx_rows": 0,
                         "mft_entries": 0,
@@ -213,13 +214,13 @@ class CaseSetupTests(unittest.TestCase):
                         "prefetch_executions": 0,
                     },
                 ),
-                patch("forensia.cli_stages.load_rules_from_dir", return_value=[]),
+                patch("forensia.cli.stages.load_rules_from_dir", return_value=[]),
                 patch(
-                    "forensia.cli_stages.investigate_loop",
+                    "forensia.cli.stages.investigate_loop",
                     side_effect=fake_investigate_loop,
                 ),
                 patch(
-                    "forensia.cli_stages.render_written_report",
+                    "forensia.cli.stages.render_written_report",
                     return_value=(
                         output_dir / "reports" / "report.md",
                         output_dir / "reports" / "report.html",

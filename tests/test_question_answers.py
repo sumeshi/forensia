@@ -8,18 +8,18 @@ from datetime import UTC, datetime
 from forensia.ai.sections.section_agent import run_section_block_agent
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
-from forensia.report.answer_registry import build_structured_answer
-from forensia.report.keypoint_catalog import resolve_evidence_results
-from forensia.report.quality_gates import (
+from forensia.report.answers.answer_registry import build_structured_answer
+from forensia.report.answers.keypoint_catalog import resolve_evidence_results
+from forensia.report.sections.quality_gates import (
     GateContext,
     check_citation_token_no_finding_id,
     check_hedge_no_citation,
 )
-from forensia.report.section_finalize import (
+from forensia.report.sections.section_finalize import (
     validate_section_evidence_ids,
 )
-from forensia.report.section_quality import validate_body_evidence_ids
-from forensia.report.section_store import dump_section_questions_json
+from forensia.report.sections.section_quality import validate_body_evidence_ids
+from forensia.report.sections.section_store import dump_section_questions_json
 
 
 class QuestionAnswerTests(unittest.TestCase):
@@ -606,7 +606,9 @@ class QuestionAnswerTests(unittest.TestCase):
             )
 
     def test_citation_gate_accepts_evtx_and_mft_evidence_ids(self) -> None:
-        ctx = GateContext(section_key="test", title="test", evidence_results=None, db=None)
+        ctx = GateContext(
+            section_key="test", title="test", evidence_results=None, db=None
+        )
         body = (
             "This may indicate suspicious activity supported by "
             "evtx-security-000000000001 and mft-000000000002-01."
@@ -617,7 +619,9 @@ class QuestionAnswerTests(unittest.TestCase):
         self.assertIsNone(msg)
 
     def test_citation_gate_flags_citation_token_without_ids(self) -> None:
-        ctx = GateContext(section_key="test", title="test", evidence_results=None, db=None)
+        ctx = GateContext(
+            section_key="test", title="test", evidence_results=None, db=None
+        )
         body = "The evidence suggests an incident, but the narrative does not name a concrete citation."
         msg, score = check_citation_token_no_finding_id(body, ctx)
         self.assertIsNotNone(msg)

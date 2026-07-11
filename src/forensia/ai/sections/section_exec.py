@@ -20,23 +20,23 @@ from forensia.core.case import Case
 from forensia.core.session import PlannedQuery
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
-from forensia.knowledge import expand_catalog_sql_placeholders
-from forensia.questions import (
+from forensia.knowledge.catalog import expand_catalog_sql_placeholders
+from forensia.knowledge.questions import (
     QuestionSpec,
     extract_time_qualifiers,
     load_question_specs,
     resolve_question_spec,
 )
-from forensia.report.answer_store import (
+from forensia.report.answers.answer_store import (
     _load_structured_answers,
 )
-from forensia.report.keypoint_catalog import (
+from forensia.report.answers.keypoint_catalog import (
     REPORT_KEYPOINT_ALIASES,
     REPORT_KEYPOINTS,
     _default_keypoints_for_section,
     _resolve_evidence_results,
 )
-from forensia.report.section_taxonomy import (
+from forensia.report.sections.section_taxonomy import (
     section_family as _section_family,
 )
 
@@ -631,4 +631,3 @@ def _execute_evidence_chain(
                 except Exception:
                     continue
     return []
-

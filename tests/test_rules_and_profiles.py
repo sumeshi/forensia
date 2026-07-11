@@ -34,7 +34,7 @@ class RuleProfileTests(unittest.TestCase):
         in the rule SQL, the catalog would stop being the single source of
         truth for tool knowledge.
         """
-        from forensia.knowledge import catalog_exe_globs
+        from forensia.knowledge.catalog import catalog_exe_globs
 
         rules_dir = Path("src/forensia/rulepacks")
         profile_path = Path("src/forensia/profiles/windows-basic.yaml")

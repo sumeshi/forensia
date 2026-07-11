@@ -10,7 +10,7 @@ from forensia.ai.prompts.sql_schema import (
     _build_live_schema_guidance,
 )
 from forensia.config import get_llm_settings
-from forensia.knowledge import (
+from forensia.knowledge.catalog import (
     expand_catalog_sql_placeholders,
     load_event_id_hints,
     load_schema_hints,

@@ -42,7 +42,7 @@ dependencies = [
 ]
 
 [project.scripts]
-forensia = "forensia.cli:app"
+forensia = "forensia.cli.app:app"
 
 [project.urls]
 Homepage = "https://github.com/sumeshi/forensia"
@@ -58,15 +58,15 @@ where = ["src"]
 [tool.setuptools.package-data]
 forensia = [
     "profiles/*.yaml",
-    "report/templates/*.j2",
-    "report/templates/partials/*.j2",
+    "report/render/templates/*.j2",
+    "report/render/templates/partials/*.j2",
     "report_template/*.md",
     "report_template/_formats/*.yaml",
     "rulepacks/*/*.yaml",
     "rulepacks/_schema/*.yaml",
     "rulepacks/_schema/suppression/*.yaml",
     "rulepacks/_schema/playbook/*.md",
-    "static/**/*",
+    "web/static/**/*",
 ]
 
 [dependency-groups]

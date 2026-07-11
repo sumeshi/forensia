@@ -37,9 +37,7 @@ from forensia.core.session import (
 )
 from forensia.db.database import CaseDB
 
-CheckAuditCallback = Callable[
-    [str, list[dict[str, str]], str, dict[str, Any]], None
-]
+CheckAuditCallback = Callable[[str, list[dict[str, str]], str, dict[str, Any]], None]
 
 
 def _load_check_context(
@@ -146,9 +144,7 @@ def _apply_verdict_consistency_gate(
     verdict = veto_verdict
     existing_rationale = str(verdict_parsed.get("rationale") or "")
     verdict_parsed["rationale"] = (
-        existing_rationale + " | " + veto_reason
-        if existing_rationale
-        else veto_reason
+        existing_rationale + " | " + veto_reason if existing_rationale else veto_reason
     )
     existing_notes = str(verdict_parsed.get("notes") or "")
     verdict_parsed["notes"] = (

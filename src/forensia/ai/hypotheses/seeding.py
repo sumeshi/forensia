@@ -13,7 +13,10 @@ from forensia.core.log import log as _log
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
-from forensia.report.keypoint_catalog import REPORT_KEYPOINTS, _resolve_evidence_results
+from forensia.report.answers.keypoint_catalog import (
+    REPORT_KEYPOINTS,
+    _resolve_evidence_results,
+)
 from forensia.rules.engine import (
     clear_rule_findings,
     generate_findings,
@@ -220,7 +223,7 @@ def _prescreen_telemetry_availability(
         for eid in co_observed:
             try:
                 required_ids.add(int(eid))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
         if not required_ids:
             continue

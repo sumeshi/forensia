@@ -55,7 +55,8 @@ class CheckerVerdictTests(unittest.TestCase):
                     },
                 ),
                 patch(
-                    "forensia.ai.checking.checker.apply_check_result", return_value=(0, False)
+                    "forensia.ai.checking.checker.apply_check_result",
+                    return_value=(0, False),
                 ),
             ):
                 result = check_query_result(
@@ -108,7 +109,10 @@ class CheckerVerdictTests(unittest.TestCase):
                     "forensia.ai.llm.llm_gateway.request_llm_json",
                     side_effect=responses,
                 ),
-                patch("forensia.ai.checking.checker.apply_check_result", side_effect=_capture),
+                patch(
+                    "forensia.ai.checking.checker.apply_check_result",
+                    side_effect=_capture,
+                ),
             ):
                 check_query_result(
                     case=case,
@@ -163,7 +167,10 @@ class CheckerVerdictTests(unittest.TestCase):
                     "forensia.ai.llm.llm_gateway.request_llm_json",
                     side_effect=responses,
                 ),
-                patch("forensia.ai.checking.checker.apply_check_result", side_effect=_capture),
+                patch(
+                    "forensia.ai.checking.checker.apply_check_result",
+                    side_effect=_capture,
+                ),
             ):
                 check_query_result(
                     case=case,
@@ -215,7 +222,10 @@ class CheckerVerdictTests(unittest.TestCase):
                     "forensia.ai.llm.llm_gateway.request_llm_json",
                     side_effect=responses,
                 ),
-                patch("forensia.ai.checking.checker.apply_check_result", side_effect=_capture),
+                patch(
+                    "forensia.ai.checking.checker.apply_check_result",
+                    side_effect=_capture,
+                ),
             ):
                 check_query_result(
                     case=case,
@@ -283,7 +293,10 @@ class CheckerVerdictTests(unittest.TestCase):
                     "forensia.ai.llm.llm_gateway.request_llm_json",
                     side_effect=responses,
                 ),
-                patch("forensia.ai.checking.checker.apply_check_result", side_effect=_capture),
+                patch(
+                    "forensia.ai.checking.checker.apply_check_result",
+                    side_effect=_capture,
+                ),
             ):
                 check_query_result(
                     case=case,
@@ -373,7 +386,10 @@ class CheckerVerdictTests(unittest.TestCase):
                         "report_text": "text",
                     },
                 ),
-                patch("forensia.ai.checking.checker.apply_check_result", side_effect=_capture),
+                patch(
+                    "forensia.ai.checking.checker.apply_check_result",
+                    side_effect=_capture,
+                ),
             ):
                 check_query_result(
                     case=case,

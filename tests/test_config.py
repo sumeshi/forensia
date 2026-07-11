@@ -5,7 +5,7 @@ from unittest import mock
 
 from forensia import config
 from forensia.ai.llm import llm_client
-from forensia.report import answer_store
+from forensia.report.answers import answer_store
 
 
 def test_reload_settings_updates_existing_imported_reference() -> None:

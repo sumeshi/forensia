@@ -216,9 +216,7 @@ def _resolve_zero_row_fallbacks(
                             for r in fb_rows[:20]:
                                 if isinstance(r, dict):
                                     r["_fallback_phase"] = ph
-                                    r["_fallback_source_rule_id"] = (
-                                        source_rule_id
-                                    )
+                                    r["_fallback_source_rule_id"] = source_rule_id
                             rows = fb_rows[:20]
                             fallback_info = {
                                 "phase": ph,
@@ -228,9 +226,7 @@ def _resolve_zero_row_fallbacks(
                 if fallback_info:
                     break
     if len(rows) == 0 and fallback_info is None:
-        fb_rows, fb_info = execute_event_keyword_fallback_search(
-            db, planned_query.sql
-        )
+        fb_rows, fb_info = execute_event_keyword_fallback_search(db, planned_query.sql)
         if fb_rows:
             _log(
                 "FALLBACK",
@@ -317,9 +313,7 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
     )
     if hypothesis_plan.hypothesis is not None:
         hypothesis = rs.hypothesis = hypothesis_plan.hypothesis
-        _upsert_hypothesis(
-            db, hypothesis, origin="broad_plan", session_id=session_id
-        )
+        _upsert_hypothesis(db, hypothesis, origin="broad_plan", session_id=session_id)
     if not hypothesis_plan.query:
         if not hypothesis_plan.needs_more:
             return "break"
@@ -369,9 +363,7 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
     except Exception as exc:
         err_msg = str(exc)
         tracker.record(query_fp, verdict="exec_error", row_count=0)
-        print(
-            f"[red]SQL execution error — {planned_query.query_id}: {err_msg}[/red]"
-        )
+        print(f"[red]SQL execution error — {planned_query.query_id}: {err_msg}[/red]")
         if emit_fn:
             emit_fn(
                 "investigate/do",
@@ -452,7 +444,9 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
             ),
         )
     except Exception as exc:
-        err_msg = f"[check] LLM failed for {hypothesis.id}/{planned_query.query_id}: {exc}"
+        err_msg = (
+            f"[check] LLM failed for {hypothesis.id}/{planned_query.query_id}: {exc}"
+        )
         print(f"[red]{err_msg}[/red]")
         _append_hypothesis_reasoning(
             db=db,
@@ -623,9 +617,7 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
         output_json={
             "verdict": check_result.verdict,
             "active_hypotheses": [h.model_dump() for h in state.active_hypotheses],
-            "resolved_hypotheses": [
-                h.model_dump() for h in state.resolved_hypotheses
-            ],
+            "resolved_hypotheses": [h.model_dump() for h in state.resolved_hypotheses],
         },
         suffix=f"{planned_query.query_id}-{query_index:02d}",
     )
@@ -653,10 +645,7 @@ def _phase_track_progress(rs: _HypothesisRunState) -> None:
     missing_signature = "|".join(
         sorted(str(q).lower().strip() for q in missing_checks_raw if q)
     ) or _rationale_signature(
-        str(
-            check_result.report_text
-            or check_result.raw_response.get("rationale", "")
-        )
+        str(check_result.report_text or check_result.raw_response.get("rationale", ""))
     )
     tracker.register_check(check_result.verdict, row_count, missing_signature)
     rs.missing_checks_raw = missing_checks_raw
@@ -837,4 +826,3 @@ async def _investigate_one_hypothesis(
         if query_index >= limit:
             break
     return rs.cycle_progress, rs.state, rs.focus_sections
-

@@ -8,7 +8,7 @@ __pycache__/
 
 web_ui/node_modules/
 web_ui/dist/
-src/forensia/static
+src/forensia/web/static
 
 .env
 .env.*

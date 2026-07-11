@@ -99,9 +99,7 @@ class PrescreenTelemetryAvailabilityTests(unittest.TestCase):
                 # Should remain active (some required IDs exist)
                 self.assertEqual(1, len(state.active_hypotheses))
                 self.assertEqual(0, len(state.resolved_hypotheses))
-                self.assertEqual(
-                    "draft-rule-1-decl-1", state.active_hypotheses[0].id
-                )
+                self.assertEqual("draft-rule-1-decl-1", state.active_hypotheses[0].id)
 
     def test_hypothesis_without_confirm_when_is_skipped(self) -> None:
         """A hypothesis without confirm_when is not affected."""
@@ -177,9 +175,7 @@ class PrescreenTelemetryAvailabilityTests(unittest.TestCase):
                 self.assertEqual("hyp-active", state.active_hypotheses[0].id)
                 self.assertEqual(1, len(state.resolved_hypotheses))
                 self.assertEqual("hyp-untestable", state.resolved_hypotheses[0].id)
-                self.assertEqual(
-                    "untestable", state.resolved_hypotheses[0].verdict
-                )
+                self.assertEqual("untestable", state.resolved_hypotheses[0].verdict)
 
     def test_untestable_verdict_is_not_refuted(self) -> None:
         """The verdict taxonomy is preserved: untestable != refuted."""
@@ -226,9 +222,7 @@ class PrescreenTelemetryAvailabilityTests(unittest.TestCase):
                 # With no available event_ids, ALL required are missing → untestable
                 self.assertEqual(0, len(state.active_hypotheses))
                 self.assertEqual(1, len(state.resolved_hypotheses))
-                self.assertEqual(
-                    "untestable", state.resolved_hypotheses[0].verdict
-                )
+                self.assertEqual("untestable", state.resolved_hypotheses[0].verdict)
 
     def test_empty_co_observed_event_ids_is_skipped(self) -> None:
         """A hypothesis with an empty co_observed_event_ids list is skipped."""

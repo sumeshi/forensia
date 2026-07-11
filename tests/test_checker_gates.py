@@ -45,7 +45,9 @@ class TestVerifyVerdictConsistency(unittest.TestCase):
                 "matching events",
                 "confirmed",
                 _hypothesis(confirm_when={"co_observed_event_ids": [4625, 4624]}),
-                _summary([{"target_user": "alice", "evidence_id": "ev-1"}], [4625, 4624]),
+                _summary(
+                    [{"target_user": "alice", "evidence_id": "ev-1"}], [4625, 4624]
+                ),
                 "confirmed",
             ),
             (
@@ -113,7 +115,9 @@ class TestVerifyVerdictConsistency(unittest.TestCase):
                 {
                     "event_id": 4624,
                     "computer": second_host,
-                    "timestamp": (base + datetime.timedelta(minutes=minutes)).isoformat(),
+                    "timestamp": (
+                        base + datetime.timedelta(minutes=minutes)
+                    ).isoformat(),
                 },
             ]
             with self.subTest(name=name):
@@ -242,7 +246,13 @@ class TestExtractedFindingValidation(unittest.TestCase):
                 1,
             ),
             (
-                [{"title": "Unobserved", "severity": "medium", "evidence_ids": ["ev-9"]}],
+                [
+                    {
+                        "title": "Unobserved",
+                        "severity": "medium",
+                        "evidence_ids": ["ev-9"],
+                    }
+                ],
                 set(),
                 1,
             ),
@@ -250,7 +260,11 @@ class TestExtractedFindingValidation(unittest.TestCase):
         for items, observed, expected in cases:
             with self.subTest(items=items):
                 result = _validate_extracted_findings(items, observed)
-                assert result == expected if isinstance(expected, list) else len(result) == expected
+                assert (
+                    result == expected
+                    if isinstance(expected, list)
+                    else len(result) == expected
+                )
 
 
 class TestBenignAnnotation(unittest.TestCase):
@@ -275,9 +289,12 @@ class TestBenignAnnotation(unittest.TestCase):
         for rows, when, expected in cases:
             rule_id = next(iter(expected.values()))[0]
             with self.subTest(rule=rule_id):
-                assert annotate_benign_context(
-                    rows, [{"id": rule_id, "when": when, "note": "test"}]
-                ) == expected
+                assert (
+                    annotate_benign_context(
+                        rows, [{"id": rule_id, "when": when, "note": "test"}]
+                    )
+                    == expected
+                )
 
     def test_empty_missing_and_null_inputs_do_not_match(self) -> None:
         rule = {

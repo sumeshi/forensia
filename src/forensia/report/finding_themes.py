@@ -9,7 +9,7 @@ from typing import Any
 
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
-from forensia.knowledge import catalog_names
+from forensia.knowledge.catalog import catalog_names
 from forensia.report.report_brief import (
     _has_benign_context_tag,
     _query_top_findings,
@@ -175,7 +175,9 @@ def _finding_theme_summary(theme: str) -> str:
     fallback = _load_finding_theme_specs().get("other")
     if spec:
         return spec.summary
-    return fallback.summary if fallback else "Detailed evidence correlation is required."
+    return (
+        fallback.summary if fallback else "Detailed evidence correlation is required."
+    )
 
 
 def _theme_config_path() -> Path:
@@ -275,9 +277,7 @@ def _finding_theme_recommended_action(theme: str, count: int) -> str:
     declared = spec.recommended_action if spec else ""
     if declared:
         return declared
-    return (
-        f"Correlate {_finding_theme_title(theme, count)} by user, host, and time"
-    )
+    return f"Correlate {_finding_theme_title(theme, count)} by user, host, and time"
 
 
 def _build_key_findings_table(db: CaseDB) -> list[dict[str, Any]]:
@@ -308,9 +308,7 @@ def _build_recommendations_table(db: CaseDB) -> list[dict[str, Any]]:
         rows.append(
             {
                 "priority": "High" if _finding_theme_rank(theme) <= 2 else "Medium",
-                "action": _finding_theme_recommended_action(
-                    theme, theme_counts[theme]
-                ),
+                "action": _finding_theme_recommended_action(theme, theme_counts[theme]),
                 "rationale": _finding_theme_summary(theme),
                 "evidence_or_gap": theme,
             }

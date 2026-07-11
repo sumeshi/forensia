@@ -10,7 +10,6 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryCompactionMixin:
-
     def _rotate_timeline(self, max_lines: int = 100, keep_lines: int = 80) -> None:
         """Move older timeline entries to the archive when the timeline exceeds max_lines."""
         if not self.timeline_path.exists():

@@ -359,4 +359,3 @@ def _validate_extracted_findings(
                 {"title": title, "severity": severity, "evidence_ids": evidence_ids}
             )
     return validated
-

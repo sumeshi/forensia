@@ -646,4 +646,3 @@ def build_section_review_messages(
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ], SECTION_REVIEW_SCHEMA
-

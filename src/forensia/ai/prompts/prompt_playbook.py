@@ -9,19 +9,17 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
 from forensia.core.session import Hypothesis
-from forensia.knowledge import (
+from forensia.knowledge.catalog import (
     load_dfir_yamls,
     load_event_class_definitions,
     load_question_routing_raw,
 )
-from forensia.report.section_taxonomy import (
+from forensia.report.sections.section_taxonomy import (
     SECTION_KEY_PLAYBOOK_MAP as _SECTION_KEY_MAP,
 )
 
 if TYPE_CHECKING:
     pass
-
-
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,15 +308,15 @@ def _render_ioc_catalog_narrative(ioc_data: dict) -> str:
 
 
 _PLAYBOOK_SECTION_DROP_ORDER = [
-    "ioc",      # first to drop — auxiliary catalog
-    "app",      # application catalog — interpretation aid
-    "artifact", # artifact inference — interpretation aid
-    "logon",    # logon types — lowest-priority core section
-    "events",   # event IDs
-    "priority", # priority investigation order
-    "fp",       # false-positive guidance
-    "extractor",# JSON extractors
-    "schema",   # schema notes — highest priority, last to drop
+    "ioc",  # first to drop — auxiliary catalog
+    "app",  # application catalog — interpretation aid
+    "artifact",  # artifact inference — interpretation aid
+    "logon",  # logon types — lowest-priority core section
+    "events",  # event IDs
+    "priority",  # priority investigation order
+    "fp",  # false-positive guidance
+    "extractor",  # JSON extractors
+    "schema",  # schema notes — highest priority, last to drop
 ]
 
 # Mapping from internal section keys to user-facing keys used by the
@@ -494,7 +492,12 @@ def _playbook_include_flags(
         include_app_catalog = include_app_catalog and has_evtx
         include_artifact_inference = include_artifact_inference and has_mft_or_prefetch
         include_ioc_catalog = include_ioc_catalog and has_mft_or_prefetch
-    return include_fp, include_app_catalog, include_artifact_inference, include_ioc_catalog
+    return (
+        include_fp,
+        include_app_catalog,
+        include_artifact_inference,
+        include_ioc_catalog,
+    )
 
 
 def _build_playbook_section_entries(
@@ -639,7 +642,9 @@ def _apply_playbook_budget(
         and event_ids is None
         and isinstance(catalog.events_data, dict)
     ):
-        section_entries, did_trim = _truncate_events_to_priority(section_entries, catalog)
+        section_entries, did_trim = _truncate_events_to_priority(
+            section_entries, catalog
+        )
         if did_trim:
             base_playbook = _join_playbook_entries(section_entries)
             dropped.append("events:truncated-to-priority")
@@ -671,7 +676,9 @@ def _apply_playbook_budget(
 def _load_phase_playbook(phase: str) -> str:
     from pathlib import Path
 
-    playbook_dir = Path(__file__).parent.parent.parent / "rulepacks" / "_schema" / "playbook"
+    playbook_dir = (
+        Path(__file__).parent.parent.parent / "rulepacks" / "_schema" / "playbook"
+    )
     phase_file = playbook_dir / f"{phase}.md"
     phase_narrative = ""
     if phase_file.exists():
@@ -793,6 +800,7 @@ def _format_artifact_inference() -> str:
     if len(lines) == 1:
         lines.append("- (no artifact inference data loaded)")
     return "\n".join(lines) + "\n"
+
 
 PLAYBOOK_SECTION_DROP_ORDER = _PLAYBOOK_SECTION_DROP_ORDER
 dfir_playbook = _dfir_playbook

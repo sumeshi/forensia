@@ -42,7 +42,9 @@ class QueryTemplateCatalogTests(unittest.TestCase):
         )
         for entry in catalog:
             self.assertTrue(entry["description"])
-            self.assertTrue(all(isinstance(value, str) for value in entry["required_params"]))
+            self.assertTrue(
+                all(isinstance(value, str) for value in entry["required_params"])
+            )
 
 
 class RenderQueryTemplateTests(unittest.TestCase):

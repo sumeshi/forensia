@@ -31,7 +31,7 @@ flowchart LR
 ```
 
 Entry points:
-- User perspective: `forensia investigate <case> <input_dir>` ([src/forensia/cli.py](../src/forensia/cli.py))
+- User perspective: `forensia investigate <case> <input_dir>` ([src/forensia/cli/app.py](../src/forensia/cli/app.py))
 - Internal implementation: `await investigate(...)` ([src/forensia/ai/investigator.py](../src/forensia/ai/investigator.py))
 
 ---
@@ -60,7 +60,38 @@ DuckDB, avoiding a second parser pass and duplicate timeline JSONL.
 
 At ingest completion, `case.extract_time_range(db.conn)` stores the MIN/MAX timestamp from `evtx_events` into `case._time_range_*`, which is later passed to SQL generation prompts.
 
-### 2.2 Rule Engine
+### 2.2 Dependency layers
+
+Dependencies point downward in this order; a lower layer must not import a
+higher layer:
+
+```mermaid
+flowchart TD
+    interface["interface: cli, web"] --> workflow["workflow: ai"]
+    workflow --> reporting["reporting: report"]
+    reporting --> knowledge["knowledge: rules, knowledge, profiles, rulepacks"]
+    knowledge --> evidence["evidence: ingest, normalize"]
+    evidence --> platform["platform: core, db, api, config"]
+```
+
+`scripts/check_imports.py` enforces this direction and rejects stale exception
+entries. Current exceptions are limited to API snapshot/report DTO integration
+and case-time template export; do not add one without documenting why the
+responsibility cannot move to the higher layer.
+
+Placement decision:
+
+1. HTTP or command handling goes in `web/` or `cli/`.
+2. Investigation orchestration and LLM loops go in `ai/`.
+3. Report evidence selection, section lifecycle, or rendering goes in the
+   corresponding `report/answers`, `report/sections`, or `report/render` family.
+4. Declarative forensic vocabulary and readers go in `rulepacks/`, `rules/`, or
+   `knowledge/`.
+5. Artifact parsing/loading goes in `ingest/` or `normalize/`.
+6. Reusable storage, DTO, configuration, and case primitives go in the platform
+   packages only when they do not depend on workflow behavior.
+
+### 2.3 Rule Engine
 
 Input: normalized tables + YAML under [src/forensia/rulepacks/](../src/forensia/rulepacks/)
 Output: `findings` table
@@ -81,7 +112,7 @@ query: |
 
 The engine runs the SQL, fills the `finding` template with the rows, and INSERTs into `findings`. The `attack` field is kept as a JSON string and later aggregated into a tactic × technique matrix by `list_attack_coverage_dto` in downstream stages.
 
-### 2.3 Investigation Loop
+### 2.4 Investigation Loop
 
 The main loop in [ai/investigator.py](../src/forensia/ai/investigator.py) (cycle body in [ai/investigation_cycle.py](../src/forensia/ai/investigation_cycle.py)) runs 7 steps per `plan_cycle`.
 
@@ -128,7 +159,7 @@ For the input/output schema of each LLM role, see [llm-roles.md](llm-roles.md).
 - **auto-rulepacks**: `resolve_active_packs` ([rules/loader.py](../src/forensia/rules/loader.py)) automatically enables rulepacks whose `applies_when.artifact_families` match the case's evidence families. Use `--no-auto-rulepacks` for the legacy behavior. Controlled by the `auto_rulepacks` argument of `investigator.investigate`.
 - **playbook budget control**: `_dfir_playbook` ([ai/prompts/prompt_playbook.py](../src/forensia/ai/prompts/prompt_playbook.py)) narrows Event ID narratives to IDs that exist in the case so they stay under `FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS` (default 24000), and drops sections in priority order when the budget is exceeded.
 - **automatic timeline assembly**: The `case_timeline` table ([db/schema.py](../src/forensia/db/schema.py)) is deterministically fed with the first-evidence timestamp of findings (severity ≥ medium) and the decisive query row of resolved hypotheses (`feed_findings_to_timeline` in [rules/engine.py](../src/forensia/rules/engine.py)). `memory/timeline.md` is a projection regenerated from this table.
-- **timezone support**: `infer_timezone` ([normalize/timezone.py](../src/forensia/normalize/timezone.py)) infers the offset from events such as 4616 system time changes. It is stored in `case.source_timezone` ([core/case.py](../src/forensia/core/case.py)), and `_render_timestamp_with_timezone` ([report/markdown.py](../src/forensia/report/markdown.py)) renders a dual UTC + local display.
+- **timezone support**: `infer_timezone` ([normalize/timezone.py](../src/forensia/normalize/timezone.py)) infers the offset from events such as 4616 system time changes. It is stored in `case.source_timezone` ([core/case.py](../src/forensia/core/case.py)), and `_render_timestamp_with_timezone` ([report/markdown.py](../src/forensia/report/render/markdown.py)) renders a dual UTC + local display.
 
 ### 2.4 Section Agent (report generation)
 
@@ -157,7 +188,7 @@ Per-block processing:
 - **structured**: Routed by the question template (`question_routing.yaml`) and executes SQL / builder / extraction logic deterministically. Output is a tabular Markdown + JSON/CSV export
 - **narrative**: `section_outliner` fixes the layout → `paragraph_narrator` generates one paragraph → if the body is empty it retries once with a coaching turn → if still empty, `_fallback_narrative_body` generates it locally
 
-The final Markdown is assembled by `build_report_markdown_from_db` ([report/writer.py](../src/forensia/report/writer.py)) from `report_sections`, and `_strip_narrative_status_lines` ([report/section_quality.py](../src/forensia/report/section_quality.py)) strips internal metadata (such as `**Status:**` lines) from non-appendix sections.
+The final Markdown is assembled by `build_report_markdown_from_db` ([report/writer.py](../src/forensia/report/render/writer.py)) from `report_sections`, and `_strip_narrative_status_lines` ([report/section_quality.py](../src/forensia/report/sections/section_quality.py)) strips internal metadata (such as `**Status:**` lines) from non-appendix sections.
 
 ---
 
@@ -180,7 +211,7 @@ Each section is decomposed into multiple **blocks** (heading units) and processe
 
 ### 3.2 Keypoint catalog
 
-`REPORT_KEYPOINTS` ([report/keypoint_catalog.py](../src/forensia/report/keypoint_catalog.py)) registers "predefined queries available to a section" as a mapping. Each entry is a `(label, resolver)` pair where `resolver(db) → list[dict]`. Representative examples:
+`REPORT_KEYPOINTS` ([report/keypoint_catalog.py](../src/forensia/report/answers/keypoint_catalog.py)) registers "predefined queries available to a section" as a mapping. Each entry is a `(label, resolver)` pair where `resolver(db) → list[dict]`. Representative examples:
 
 - `overview_top_findings` — high/critical findings sorted by confidence
 - `overview_hosts` — `evtx_events.computer` aggregation
@@ -191,7 +222,7 @@ Each section is decomposed into multiple **blocks** (heading units) and processe
 - `recommendations_findings` — all findings sorted by severity
 - `appendix_findings_catalog` — full catalog for the appendix
 
-`_default_keypoints_for_section` ([report/keypoint_catalog.py](../src/forensia/report/keypoint_catalog.py)) selects a keypoint by section_key prefix and block-heading keywords.
+`_default_keypoints_for_section` ([report/keypoint_catalog.py](../src/forensia/report/answers/keypoint_catalog.py)) selects a keypoint by section_key prefix and block-heading keywords.
 
 ### 3.3 Structured Answer
 
@@ -202,8 +233,8 @@ Each question in the `6_appendix` section is processed as a structured answer.
 | Question template definition | `src/forensia/rulepacks/_schema/question_routing.yaml` |
 | answer_spec → builder routing | `questions.resolve_question_spec` |
 | SQL execution / extractor call | `ai/sections/section_answers.py` (`_format_structured_answer` / `_format_question_answer`) |
-| Markdown rendering | `report/answer_store.py` (`_render_structured_answer_markdown`) |
-| JSON / CSV export | `report/answer_store.py` (`_persist_structured_answer` → `reports/structured/`) |
+| Markdown rendering | `report/answers/answer_store.py` (`_render_structured_answer_markdown`) |
+| JSON / CSV export | `report/answers/answer_store.py` (`_persist_structured_answer` → `reports/structured/`) |
 
 Status is one of `answered` / `partial` / `not_found` / `not_searched` / `wrong_query` / `insufficient_evidence`. `### Missing Reason` is omitted when status=answered and the result is effectively empty (`[]` / `["none"]` / `["no match"]` etc).
 
@@ -219,7 +250,7 @@ To keep the Web UI up to date during an investigation, `reports/api/*.json` is w
 | `write_progress_snapshot` | on every progress emit | `progress_events.json` |
 | `write_full_api_snapshots` | at CLI exit + when section_refresher completes | above + `case.json`, `sessions.json`, `claims.json`, `mft_timeline.json`, `session_steps.json`, `ai_reviews.json`, `report_brief.json`, `event_volume_*.json` |
 
-FastAPI handlers ([src/forensia/web.py](../src/forensia/web.py)) read snapshots first and fall back to direct live DB reads only when a snapshot is absent.
+FastAPI handlers ([src/forensia/web/app.py](../src/forensia/web/app.py)) read snapshots first and fall back to direct live DB reads only when a snapshot is absent.
 
 The UI ([web_ui/](../web_ui/)) polls snapshots through Svelte stores and updates the display reactively.
 

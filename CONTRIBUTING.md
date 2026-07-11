@@ -1,7 +1,7 @@
 # Contributing to forensia
 
 Thank you for your interest in contributing to forensia.
-This document is a short guide on "what, where, and how to write." For implementation details, see [docs/](docs/); for development environment setup, test commands, and CLI flags, see [docs/development.md](docs/development.md).
+This document is a short guide on "what, where, and how to write." For implementation details, see [docs/](docs/); for development environment setup, test commands, and CLI flags, see [docs/development.md](docs/development.md). For concrete extension recipes, start with [docs/extending.md](docs/extending.md).
 
 ## Setup
 
@@ -65,7 +65,7 @@ forensia doctor
   `tests/test_checker_gates.py` (verdict consistency gates, fallback downgrade, memory filter, finding verification),
   `tests/test_untestable_resolution.py` (early untestable resolution).
 - When you change rule YAML or `question_routing.yaml`, confirm that `scripts/audit_schema_coverage.py --strict` (included in `forensia doctor`) passes.
-- The import layer contracts (`core→ai` forbidden, `report→ai` forbidden, etc.) are checked by `scripts/check_imports.py` (included in `forensia doctor`). When you add a new module, confirm it passes.
+- The directional import layer contract is checked by `scripts/check_imports.py` (included in `forensia doctor`). When you add a new module, confirm it passes without adding an exception.
 
 ## Templates
 

@@ -32,10 +32,10 @@ from forensia.core.log import log as _log
 from forensia.core.session import Hypothesis, SessionState
 from forensia.core.textutil import normalize_text as _normalize_text
 from forensia.db.database import CaseDB
-from forensia.report.section_taxonomy import (
+from forensia.report.sections.section_taxonomy import (
     guess_related_sections as _guess_related_sections,
 )
-from forensia.report.section_taxonomy import (
+from forensia.report.sections.section_taxonomy import (
     sections_for_keypoint as _sections_for_keypoint,
 )
 from forensia.rules.loader import load_rule_by_id
@@ -449,9 +449,7 @@ def admit_new_hypothesis(
 
     # --- 3. Check against REFUTED hypothesis tokens ----------------------
     refuted_descriptions = [
-        h.description
-        for h in state.resolved_hypotheses
-        if h.status == "refuted"
+        h.description for h in state.resolved_hypotheses if h.status == "refuted"
     ]
     refuted_tokens = _extract_refuted_tokens(refuted_descriptions)
     if _gap_references_refuted(description, refuted_tokens):
@@ -475,4 +473,3 @@ def admit_new_hypothesis(
             return False, "invalid-entities"
 
     return True, "accepted"
-

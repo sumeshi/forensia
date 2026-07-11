@@ -129,9 +129,7 @@ class TestLocalPathLeak:
 
     def test_error_when_mnt_path_in_body(self) -> None:
         """Body containing '/mnt/c/' → finding."""
-        findings = check_local_path_leak(
-            "Evidence from /mnt/c/Users/test/evidence/"
-        )
+        findings = check_local_path_leak("Evidence from /mnt/c/Users/test/evidence/")
         assert len(findings) == 1
         assert findings[0].check_name == "local_path_leak"
 
@@ -201,9 +199,7 @@ class TestRefutedLeakage:
     def test_error_when_token_leaks_to_gaps(self) -> None:
         """Refuted .exe token appearing in gaps → finding."""
         brief = _brief(
-            refuted_hypotheses=[
-                {"description": "suspicious_tool.exe was downloaded"}
-            ],
+            refuted_hypotheses=[{"description": "suspicious_tool.exe was downloaded"}],
             evidence_gaps=[{"item": "Locate suspicious_tool.exe in MFT"}],
         )
         findings = check_refuted_leakage(brief)
@@ -213,9 +209,7 @@ class TestRefutedLeakage:
     def test_pass_when_no_token_overlap(self) -> None:
         """No token overlap between refuted and gaps → no finding."""
         brief = _brief(
-            refuted_hypotheses=[
-                {"description": "suspicious_tool.exe was downloaded"}
-            ],
+            refuted_hypotheses=[{"description": "suspicious_tool.exe was downloaded"}],
             evidence_gaps=[{"item": "Identify network connections"}],
         )
         findings = check_refuted_leakage(brief)

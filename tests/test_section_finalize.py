@@ -12,19 +12,19 @@ from forensia.config import (
 )
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
-from forensia.report.answer_registry import ensure_universal_question_probes
-from forensia.report.keypoint_catalog import (
+from forensia.report.answers.answer_registry import ensure_universal_question_probes
+from forensia.report.answers.keypoint_catalog import (
     default_keypoints_for_section,
     resolve_evidence_results,
 )
-from forensia.report.markdown import sort_markdown_table_by_first_column
-from forensia.report.quality_gates import quality_gate_section
+from forensia.report.answers.table_registry import collect_flat_evidence_rows
+from forensia.report.render.markdown import sort_markdown_table_by_first_column
+from forensia.report.render.writer import build_report_markdown_from_db
 from forensia.report.report_brief import build_report_brief
-from forensia.report.section_assembly import prepare_section_request
-from forensia.report.section_finalize import finalize_section
-from forensia.report.table_registry import collect_flat_evidence_rows
-from forensia.report.writer import build_report_markdown_from_db
-from forensia.report_templates import export_packaged_report_templates
+from forensia.report.sections.quality_gates import quality_gate_section
+from forensia.report.sections.section_assembly import prepare_section_request
+from forensia.report.sections.section_finalize import finalize_section
+from forensia.report.template_export import export_packaged_report_templates
 from forensia.rules.engine import execute_event_keyword_fallback_search
 
 

@@ -24,24 +24,24 @@ from forensia.core.case import Case
 from forensia.core.memory import MemoryManager, memory_for_section
 from forensia.core.progress_event import progress_event
 from forensia.db.database import CaseDB
-from forensia.report.answer_registry import ensure_universal_question_probes
+from forensia.report.answers.answer_registry import ensure_universal_question_probes
+from forensia.report.answers.table_registry import (
+    _collect_flat_evidence_rows,
+    render_table_block,
+)
 from forensia.report.report_brief import write_report_brief
-from forensia.report.section_assembly import (
+from forensia.report.sections.section_assembly import (
     assemble_section_body,
     body_starts_with_heading,
     prepare_section_request,
 )
-from forensia.report.section_finalize import finalize_section
-from forensia.report.section_quality import _verify_block_output, collect_gaps
-from forensia.report.section_store import (
+from forensia.report.sections.section_finalize import finalize_section
+from forensia.report.sections.section_quality import _verify_block_output, collect_gaps
+from forensia.report.sections.section_store import (
     _dump_section_evidence_json,
     _dump_section_questions_json,
     _dump_section_trace_json,
     load_report_sections_map,
-)
-from forensia.report.table_registry import (
-    _collect_flat_evidence_rows,
-    render_table_block,
 )
 
 
@@ -134,9 +134,7 @@ def _emit_section_failure(
                 "running",
                 iteration=iteration,
                 summary=f"[report] section failed: {exc}",
-                report_sections=_build_report_status(
-                    db, focus_sections=focus_sections
-                ),
+                report_sections=_build_report_status(db, focus_sections=focus_sections),
             )
         )
 

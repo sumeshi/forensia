@@ -16,7 +16,7 @@ from forensia.ai.llm.schemas import (
     hypothesis_drafter_schema,
 )
 from forensia.core.session import Hypothesis
-from forensia.knowledge import (
+from forensia.knowledge.catalog import (
     load_benign_context_rules,
 )
 
@@ -34,9 +34,7 @@ from forensia.ai.prompts.prompt_playbook import (
 )
 
 
-def _render_prior_attempts(
-    recent_history: list[dict[str, Any]], limit: int = 5
-) -> str:
+def _render_prior_attempts(recent_history: list[dict[str, Any]], limit: int = 5) -> str:
     """Render hypothesis attempt history as a compact structured block.
 
     Accepts both HistoryEntry dumps (query_id / verdict / summary /
@@ -133,7 +131,7 @@ def build_query_intent_messages(
             if isinstance(evidence_ids, str):
                 try:
                     evidence_ids = json.loads(evidence_ids)
-                except (json.JSONDecodeError, TypeError):
+                except json.JSONDecodeError, TypeError:
                     evidence_ids = [evidence_ids] if evidence_ids else []
             evidence_str = ",".join(str(e) for e in (evidence_ids or [])[:3])
             severity = str(f.get("severity") or "unknown").lower()
@@ -638,4 +636,3 @@ def build_hypothesis_drafter_messages(
             f"[hypothesis_drafter] prompt size: {total_chars} chars / ~{total_chars // 4} tokens"
         )
     return messages, schema
-

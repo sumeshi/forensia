@@ -19,14 +19,14 @@ from forensia.config import clear_llm_settings_cache, reload_settings
 from forensia.core.case import Case
 from forensia.core.textutil import normalize_localized_dates
 from forensia.db.database import CaseDB
-from forensia.questions import resolve_question_spec
-from forensia.report.answer_store import render_structured_answer_markdown
-from forensia.report.quality_gates import (
+from forensia.knowledge.questions import resolve_question_spec
+from forensia.report.answers.answer_store import render_structured_answer_markdown
+from forensia.report.sections.quality_gates import (
     GateContext,
     check_recommendations_strength,
 )
-from forensia.report.section_assembly import assemble_section_body
-from forensia.report.section_finalize import (
+from forensia.report.sections.section_assembly import assemble_section_body
+from forensia.report.sections.section_finalize import (
     preprocess_section_body,
 )
 
@@ -280,7 +280,9 @@ structured_answer:
             {"role": "system", "content": "narrate system"},
             {"role": "user", "content": "narrate user"},
         ]
-        with patch("forensia.ai.llm.llm_gateway.request_llm_json", side_effect=fake_llm):
+        with patch(
+            "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=fake_llm
+        ):
             body = _narrate_paragraph_with_retry(
                 narrate_messages=base_messages,
                 narrate_schema={"type": "object"},
@@ -304,7 +306,9 @@ structured_answer:
                 "body": "A concrete paragraph long enough to pass the empty-body check."
             }
 
-        with patch("forensia.ai.llm.llm_gateway.request_llm_json", side_effect=fake_llm):
+        with patch(
+            "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=fake_llm
+        ):
             _narrate_paragraph_with_retry(
                 narrate_messages=[{"role": "system", "content": "s"}],
                 narrate_schema={"type": "object"},

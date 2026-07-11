@@ -17,7 +17,7 @@ from typing import Any
 
 import yaml
 
-from forensia.report.quality_gates import _detect_body_language
+from forensia.report.sections.quality_gates import _detect_body_language
 
 _SCHEMA_DIR = Path(__file__).parent.parent / "rulepacks" / "_schema"
 _VOCAB_PATH = _SCHEMA_DIR / "report_validation_vocab.yaml"
@@ -222,13 +222,17 @@ def check_language_consistency(
     ]
 
 
-def check_verdict_contradiction(report_brief: dict[str, Any]) -> list[ValidationFinding]:
+def check_verdict_contradiction(
+    report_brief: dict[str, Any],
+) -> list[ValidationFinding]:
     """Detect identical claims in both confirmed and refuted hypotheses."""
     findings: list[ValidationFinding] = []
     confirmed = report_brief.get("confirmed_hypotheses") or []
     refuted = report_brief.get("refuted_hypotheses") or []
 
-    confirmed_descs = {_normalize_for_compare(h.get("description", "")) for h in confirmed}
+    confirmed_descs = {
+        _normalize_for_compare(h.get("description", "")) for h in confirmed
+    }
     refuted_descs = {_normalize_for_compare(h.get("description", "")) for h in refuted}
 
     overlap = confirmed_descs & refuted_descs
@@ -281,5 +285,3 @@ def validate_report(
                 check_language_consistency(report_body, expected_language)
             )
     return all_findings
-
-

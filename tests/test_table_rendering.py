@@ -10,15 +10,17 @@ from forensia.ai.sections.section_exec import (
 )
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
+from forensia.report.answers.gap_tables import hypothesis_rows
+from forensia.report.answers.keypoint_catalog import (
+    REPORT_KEYPOINTS,
+    resolve_evidence_results,
+)
 from forensia.report.evidence_refs import extract_needed_evidence
-from forensia.report.gap_tables import hypothesis_rows
-from forensia.report.keypoint_catalog import REPORT_KEYPOINTS, resolve_evidence_results
-from forensia.report.template_parsing import parse_block_hints
+from forensia.report.sections.template_parsing import parse_block_hints
 
 
 class TableRenderingTests(unittest.TestCase):
     """Table block rendering, digests, block hints, reasoning rows, HTML anchors."""
-
 
     def test_parse_block_hints_combined_comment_syntax(self) -> None:
         """R5-04 follow-up: the packaged templates use the combined one-comment
@@ -102,7 +104,7 @@ class TableRenderingTests(unittest.TestCase):
 
     def test_render_rows_template_grammar(self) -> None:
         """R6-03: shared placeholder grammar for captions and interpretations."""
-        from forensia.report.markdown import render_rows_template
+        from forensia.report.render.markdown import render_rows_template
 
         rows = [
             {"host": "alpha", "events": 10},
@@ -116,7 +118,7 @@ class TableRenderingTests(unittest.TestCase):
 
     def test_render_table_block_prepends_caption(self) -> None:
         """R6-03: a mode:table block renders a declarative caption above the table."""
-        from forensia.report.table_registry import render_table_block
+        from forensia.report.answers.table_registry import render_table_block
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -133,7 +135,7 @@ class TableRenderingTests(unittest.TestCase):
 
     def test_render_table_block_empty_rows_render_declared_text(self) -> None:
         """R6-03: an empty result renders the declared empty text, not a bare table."""
-        from forensia.report.table_registry import render_table_block
+        from forensia.report.answers.table_registry import render_table_block
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -144,7 +146,7 @@ class TableRenderingTests(unittest.TestCase):
         self.assertIn("untestable", body)
 
     def test_render_table_block_unknown_builder_returns_none(self) -> None:
-        from forensia.report.table_registry import render_table_block
+        from forensia.report.answers.table_registry import render_table_block
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -153,7 +155,7 @@ class TableRenderingTests(unittest.TestCase):
 
     def test_markdown_table_truncation_marker_outside_table(self) -> None:
         """R6-06: the Showing-N-of-M marker must not be a fake table row."""
-        from forensia.report.markdown import markdown_table
+        from forensia.report.render.markdown import markdown_table
 
         rows = [{"a": i, "b": i} for i in range(20)]
         table = markdown_table(rows, [("a", "A"), ("b", "B")], max_rows=5)
@@ -163,7 +165,7 @@ class TableRenderingTests(unittest.TestCase):
 
     def testexecution_rows_aggregate_per_executable(self) -> None:
         """R6-06: one table row per executable name, exec counts summed."""
-        from forensia.report.summary_rows import execution_rows
+        from forensia.report.answers.summary_rows import execution_rows
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -671,7 +673,7 @@ class TableRenderingTests(unittest.TestCase):
 
 class HtmlEvidenceIdAnchorTests(unittest.TestCase):
     def test_html_evidence_id_anchor_rendering(self):
-        from forensia.report.html import _render_inline_markdown
+        from forensia.report.render.html import _render_inline_markdown
 
         html = _render_inline_markdown("See evtx-security-000000000001.")
         self.assertIn('href="#ev-evtx-security-000000000001"', html)
@@ -682,7 +684,7 @@ class HtmlEvidenceIdAnchorTests(unittest.TestCase):
 
     def test_markdown_table_max_rows_zero_is_unlimited(self) -> None:
         """R7-02: max_rows=0 renders all rows without truncation marker."""
-        from forensia.report.markdown import markdown_table
+        from forensia.report.render.markdown import markdown_table
 
         rows = [{"a": i, "b": i * 10} for i in range(50)]
         table = markdown_table(rows, [("a", "A"), ("b", "B")], max_rows=0)
@@ -691,7 +693,7 @@ class HtmlEvidenceIdAnchorTests(unittest.TestCase):
 
     def test_structured_answer_increased_max_rows(self) -> None:
         """R7-02: structured answer with 68 rows renders all 68 (no truncation below 200)."""
-        from forensia.report.answer_store import render_answer_block
+        from forensia.report.answers.answer_store import render_answer_block
 
         items = [{"idx": i} for i in range(68)]
         lines = render_answer_block(items, columns=["idx"], max_rows=200)

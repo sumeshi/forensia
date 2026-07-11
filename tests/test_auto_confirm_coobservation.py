@@ -106,9 +106,9 @@ class TestHeuristicConfirmWhenNeverAutoConfirms:
                 "timestamp": "2024-01-01T00:00:00Z",
             }
         ]
-        assert (
-            tracker.should_auto_confirm(None, rows, hypothesis) is False
-        ), "heuristic confirm_when must never force a confirmed verdict"
+        assert tracker.should_auto_confirm(None, rows, hypothesis) is False, (
+            "heuristic confirm_when must never force a confirmed verdict"
+        )
 
     def test_vetted_confirm_when_unaffected_by_guard(self) -> None:
         """A rule-declared confirm_when (no heuristic marker) still confirms."""

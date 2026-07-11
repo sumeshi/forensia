@@ -9,9 +9,9 @@ from typing import Any
 
 from tqdm import tqdm
 
-from forensia.artifacts import get_artifact_adapters
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
+from forensia.ingest.artifacts import get_artifact_adapters
 
 
 def _sha256_file(path: Path) -> str:

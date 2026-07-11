@@ -151,7 +151,9 @@ def _sql_text(value: Any, default: str = "") -> str:
 
 
 def _query_template_path() -> Path:
-    return Path(__file__).resolve().parents[2] / "rulepacks/_schema/query_templates.yaml"
+    return (
+        Path(__file__).resolve().parents[2] / "rulepacks/_schema/query_templates.yaml"
+    )
 
 
 @lru_cache(maxsize=1)
