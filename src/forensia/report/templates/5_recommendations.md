@@ -1,6 +1,9 @@
 ---
-behaviors:
-  - require_recommendations_strength
+type: report-section-template
+title: Recommendations
+description: Prioritized containment, eradication, recovery, validation, and risk-reduction actions.
+tags: [incident-response, recommendations, containment, recovery]
+timestamp: 2026-07-12
 instructions: |
   Recommend proportionate, actionable measures derived from findings and gaps.
   Order actions by urgency and dependency across containment, evidence preservation,

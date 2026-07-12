@@ -11,7 +11,11 @@ from typing import Any
 
 @dataclass(frozen=True)
 class TemplateMeta:
-    behaviors: tuple[str, ...] = ()
+    type: str = ""
+    title: str = ""
+    description: str = ""
+    tags: tuple[str, ...] = ()
+    timestamp: str = ""
     instructions: str = ""
 
 
@@ -55,9 +59,19 @@ def parse_template(template_path: str) -> tuple[str, TemplateMeta]:
         body = parts[2].strip() if len(parts) == 3 else text.strip()
     else:
         body = text.strip()
-    behaviors = tuple(meta.get("behaviors") or [])
     instructions = str(meta.get("instructions") or "").strip()
-    return body, TemplateMeta(behaviors=behaviors, instructions=instructions)
+    raw_tags = meta.get("tags") or []
+    if isinstance(raw_tags, str):
+        raw_tags = [raw_tags]
+    tags = tuple(str(tag).strip() for tag in raw_tags if str(tag).strip())
+    return body, TemplateMeta(
+        type=str(meta.get("type") or "").strip(),
+        title=str(meta.get("title") or "").strip(),
+        description=str(meta.get("description") or "").strip(),
+        tags=tags,
+        timestamp=str(meta.get("timestamp") or "").strip(),
+        instructions=instructions,
+    )
 
 
 def parse_block_hints(block_body: str) -> dict[str, Any]:

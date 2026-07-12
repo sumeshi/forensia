@@ -1,6 +1,9 @@
 ---
-behaviors:
-  - require_chronological_table
+type: report-section-template
+title: Activity Timeline
+description: Time-normalized chronology, source coverage, log integrity, and incident phases.
+tags: [incident-response, timeline, chronology, log-integrity]
+timestamp: 2026-07-12
 instructions: |
   Reconstruct the incident in chronological order using normalized timestamps.
   Make the timezone and evidence coverage explicit. Separate observed events from

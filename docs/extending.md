@@ -93,8 +93,9 @@ normal fallback; registered builders must render deterministically.
 Write a side-effect-free `QualityCheck` receiving `(body, GateContext)` and
 returning `(gap_note, confidence_cap)`. Register it once with
 `register_quality_check(check)` or place it before a specific existing check.
-Keep section-specific activation in template `behaviors`, not section-key
-branches. Add a test proving both the gap and confidence cap.
+Infer applicability from the Markdown structure or content the check validates;
+do not add template-only feature flags or section-key branches. Add a test proving
+the applicable and non-applicable cases, gap note, and confidence cap.
 
 ## Verification
 

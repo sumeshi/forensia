@@ -143,11 +143,23 @@ def _doctor_report_template_policy_check() -> tuple[str, bool]:
         problems = []
         for path in sorted(report_templates_dir().glob("[0-9]*_*.md")):
             _body, meta = parse_template(str(path))
-            if not meta.instructions:
-                problems.append(f"{path.name}: missing section instructions")
+            missing = [
+                name
+                for name, value in (
+                    ("type", meta.type),
+                    ("title", meta.title),
+                    ("description", meta.description),
+                    ("tags", meta.tags),
+                    ("timestamp", meta.timestamp),
+                    ("instructions", meta.instructions),
+                )
+                if not value
+            ]
+            if missing:
+                problems.append(f"{path.name}: missing {', '.join(missing)}")
         ok = not problems
         if ok:
-            print("  ✓ Packaged templates include editable section instructions")
+            print("  ✓ Packaged templates include knowledge metadata and instructions")
         else:
             print("  ✗ Invalid packaged templates:\n" + "\n".join(f"      - {p}" for p in problems))
         return "Report template contract", ok

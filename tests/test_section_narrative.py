@@ -199,7 +199,6 @@ structured_answer:
             title="Recommendations",
             evidence_results=[],
             db=None,
-            behaviors=("require_recommendations_strength",),
         )
         note, cap = check_recommendations_strength(
             "Perform additional verification and correlation checks; consider containment after verification.",

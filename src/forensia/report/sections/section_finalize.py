@@ -9,10 +9,7 @@ from forensia.core.textutil import normalize_localized_dates
 from forensia.db.database import CaseDB
 from forensia.db.query import normalize_value
 from forensia.report.evidence_refs import EVIDENCE_ID_PATTERN
-from forensia.report.render.markdown import (
-    _render_json_table_blocks,
-    _sort_markdown_table_by_first_column,
-)
+from forensia.report.render.markdown import _render_json_table_blocks
 from forensia.report.sections.quality_gates import (
     FINDING_ID_PATTERN,
     _quality_gate_section,
@@ -31,13 +28,11 @@ from forensia.report.sections.section_store import (
     _upsert_claims,
     _upsert_report_section,
 )
-from forensia.report.sections.template_parsing import TemplateMeta
 
 
 def preprocess_section_body(
     section_key: str,
     body: str,
-    template_meta: TemplateMeta | None = None,
 ) -> tuple[str, bool]:
     body = re.sub(r"^\*\*Status:\*\*.*$", "", body, flags=re.MULTILINE).strip()
     body = normalize_localized_dates(body)
@@ -47,8 +42,6 @@ def preprocess_section_body(
     )
     if sanitized_body != body:
         body = sanitized_body
-    if template_meta and "require_chronological_table" in template_meta.behaviors:
-        body = _sort_markdown_table_by_first_column(body)
     return body, removed_raw_evidence
 
 
@@ -178,12 +171,9 @@ def finalize_section(
     evidence_results: list[dict[str, Any]] | None = None,
     session_id: str | None = None,
     extra_gaps: list[str] | None = None,
-    template_meta: TemplateMeta | None = None,
 ) -> dict[str, Any]:
     """UPSERT the section into DuckDB. Returns gap list and confidence."""
-    body, removed_raw = preprocess_section_body(
-        section_key, body, template_meta=template_meta
-    )
+    body, removed_raw = preprocess_section_body(section_key, body)
     if db is not None and body:
         body, id_gaps = validate_section_evidence_ids(db, body)
     else:
@@ -202,7 +192,6 @@ def finalize_section(
         candidate_confidence,
         evidence_results,
         db=db,
-        behaviors=template_meta.behaviors if template_meta else (),
     )
     if removed_raw:
         note = "Raw evidence rows were moved to reports/evidence JSON and replaced with normalized summaries in the section body."

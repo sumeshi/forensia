@@ -1,4 +1,9 @@
 ---
+type: report-section-template
+title: Technical Analysis
+description: Evidence-based technical reconstruction of systems, accounts, activity, and artifacts.
+tags: [incident-response, technical-analysis, systems, artifacts]
+timestamp: 2026-07-12
 instructions: |
   Explain how the evidence fits together technically, not as a raw artifact dump.
   Identify affected systems and accounts, relevant techniques, and indicators with

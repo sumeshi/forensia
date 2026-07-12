@@ -38,13 +38,20 @@ Each template is a Markdown file with optional YAML frontmatter.
 
 | Field | Role |
 |---|---|
-| `behaviors` | List of quality gate / behavior flags (e.g. `require_chronological_table`) |
+| `type` | Document kind. Bundled sections use `report-section-template` |
+| `title` | Human-readable knowledge-document title |
+| `description` | Short statement of the section's purpose and coverage |
+| `tags` | Searchable topic labels for catalogs and external knowledge tools |
+| `timestamp` | Last intentional template revision date (`YYYY-MM-DD`) |
 | `instructions` | Natural-language, section-wide writing guidance. It is supplied to the LLM for every block in the section and is not rendered into the report |
-
-When adding `behaviors`, extend the `GateContext.behaviors` judgment in [report/sections/quality_gates.py](../src/forensia/report/sections/quality_gates.py) and register a self-contained check with `register_quality_check`; do not hardcode it per section_key.
 
 ```yaml
 ---
+type: report-section-template
+title: Investigation Overview
+description: Executive incident assessment, scope, impact, and conclusion.
+tags: [incident-response, executive-summary, scope, impact]
+timestamp: 2026-07-12
 instructions: |
   Write for decision-makers. Distinguish observed facts from assessments,
   explain material uncertainty, and do not infer impact beyond the evidence.
@@ -119,7 +126,10 @@ are managed in a local working directory. See [BENCHMARK.md](../BENCHMARK.md) /
 
 After each section body is filled, `quality_gate_section` ([report/sections/quality_gates.py](../src/forensia/report/sections/quality_gates.py)) runs registered static checks, adding a gap per detection and lowering confidence down to a cap. The checks are template-independent and apply to all sections.
 
-Section-specific behavior is declared via the `behaviors:` frontmatter. The bundled templates currently use `require_chronological_table` and `require_recommendations_strength`. Firing conditions branch on `_GateCtx.behaviors`. Do not add a behavior unless code consumes it and a test demonstrates its effect.
+Quality checks infer their applicability from the generated Markdown structure and
+evidence context. Templates do not expose Python feature flags. Timeline checks
+recognize timestamp-first tables; recommendation checks recognize relevant
+headings and titles.
 
 ### 3.1 Check list
 
@@ -128,8 +138,8 @@ Section-specific behavior is declared via the `behaviors:` frontmatter. The bund
 | Placeholder entity | matches `PLACEHOLDER_ENTITY_PATTERN` | 0.5 |
 | Template marker leak | matches `HTML_FILL_PATTERN` | 0.3 |
 | Heading / title mismatch | The leading `#` heading of the body diverges from `report_sections.title` | 0.65 |
-| Timeline ordering | A section with `require_chronological_table` has a non-monotonic date column | 0.6 |
-| Recommendations strength | A section with `require_recommendations_strength` lacks `confirmed` / `may indicate` / verification-related words | 0.65 |
+| Timeline ordering | A timestamp-first Markdown table is non-monotonic | 0.6 |
+| Recommendations strength | Recommendation/action headings lack evidence-strength or verification-related wording | 0.65 |
 | Verdict inflation | The source verdict has no `confirmed`, but the body uses strong assertive wording | 0.6 |
 | Raw evidence dump | A raw evidence table full of NULL / None is mixed in | 0.55 |
 | Output language drift | The body language diverges from `LLM_OUTPUT_LANGUAGE` | 0.4 |

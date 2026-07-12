@@ -1,4 +1,9 @@
 ---
+type: report-section-template
+title: Investigation Gaps
+description: Material limitations, unresolved questions, evidence gaps, and required follow-up.
+tags: [incident-response, limitations, evidence-gaps, follow-up]
+timestamp: 2026-07-12
 instructions: |
   Describe limitations candidly and in terms of their effect on conclusions.
   Do not treat missing evidence as proof that activity did not occur. Prioritize

@@ -63,21 +63,30 @@ def _first_heading_text(body: str) -> str:
 
 
 def _timeline_rows_are_chronological(body: str) -> bool:
-    """Verify that timeline Markdown table rows are sorted by first-column timestamp."""
+    """Verify timestamp-first Markdown tables are chronologically sorted."""
     timestamps: list[str] = []
-    for line in body.splitlines():
-        if not line.startswith("|"):
+    lines = body.splitlines()
+    index = 0
+    while index + 1 < len(lines):
+        header = lines[index].strip()
+        separator = lines[index + 1].strip()
+        if not header.startswith("|") or not separator.startswith("|---"):
+            index += 1
             continue
-        stripped = line.strip()
-        if stripped.startswith("|---") or "Timestamp" in stripped:
-            continue
-        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
-        if not cells:
-            continue
-        first = cells[0]
-        if not first or "<!--" in first:
-            continue
-        timestamps.append(first)
+        header_cells = [cell.strip().casefold() for cell in header.strip("|").split("|")]
+        is_timeline = bool(header_cells) and header_cells[0] in {
+            "time",
+            "timestamp",
+            "date/time",
+            "datetime",
+        }
+        index += 2
+        while index < len(lines) and lines[index].strip().startswith("|"):
+            if is_timeline:
+                cells = [cell.strip() for cell in lines[index].strip().strip("|").split("|")]
+                if cells and cells[0] and "<!--" not in cells[0]:
+                    timestamps.append(cells[0])
+            index += 1
     return timestamps == sorted(timestamps)
 
 
@@ -131,7 +140,6 @@ class _GateCtx:
     title: str
     evidence_results: list[dict[str, Any]] | None
     db: CaseDB | None
-    behaviors: tuple[str, ...] = ()
 
 
 QualityCheck = Callable[[str, _GateCtx], tuple[str | None, float | None]]
@@ -170,10 +178,7 @@ def _check_heading_mismatch(
 def _check_timeline_ordering(
     body: str, ctx: _GateCtx
 ) -> tuple[str | None, float | None]:
-    if (
-        "require_chronological_table" in ctx.behaviors
-        and not _timeline_rows_are_chronological(body)
-    ):
+    if not _timeline_rows_are_chronological(body):
         return (
             "Timeline ordering requires review; events are not strictly chronological.",
             0.6,
@@ -184,7 +189,15 @@ def _check_timeline_ordering(
 def _check_recommendations_strength(
     body: str, ctx: _GateCtx
 ) -> tuple[str | None, float | None]:
-    if "require_recommendations_strength" in ctx.behaviors:
+    recommendation_heading = re.search(
+        r"^#{1,6}\s+.*(?:recommend|action plan|containment|eradication|recovery|risk reduction|residual risk)",
+        body,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    recommendation_title = re.search(
+        r"recommend|remediation|response action", ctx.title, re.IGNORECASE
+    )
+    if recommendation_heading or recommendation_title:
         lowered = body.lower()
         strength_markers = (
             "confirmed",
@@ -534,7 +547,6 @@ def _quality_gate_section(
     confidence: float,
     evidence_results: list[dict[str, Any]] | None = None,
     db: CaseDB | None = None,
-    behaviors: tuple[str, ...] = (),
 ) -> tuple[list[str], float]:
     """Apply quality-gating checks to a section body, returning augmented gaps and adjusted confidence."""
     ctx = _GateCtx(
@@ -542,7 +554,6 @@ def _quality_gate_section(
         title=title,
         evidence_results=evidence_results,
         db=db,
-        behaviors=behaviors,
     )
     gated_gaps = list(gaps)
     gated_confidence = confidence

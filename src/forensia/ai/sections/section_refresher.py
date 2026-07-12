@@ -402,7 +402,6 @@ def _persist_section_result(
         evidence_results=request.get("evidence_results") or [],
         session_id=session_id,
         extra_gaps=request.get("block_gaps") or [],
-        template_meta=request.get("template_meta"),
     )
     write_all_snapshots(case, db)
     if progress_callback:

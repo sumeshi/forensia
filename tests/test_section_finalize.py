@@ -285,7 +285,6 @@ class SectionFinalizeTests(unittest.TestCase):
             body,
             [],
             1.0,
-            behaviors=("require_chronological_table",),
         )
 
         self.assertTrue(any("Placeholder entity values detected" in g for g in gaps))
@@ -836,7 +835,6 @@ class SectionFinalizeTests(unittest.TestCase):
             body,
             [],
             1.0,
-            behaviors=("require_recommendations_strength",),
         )
 
         self.assertTrue(

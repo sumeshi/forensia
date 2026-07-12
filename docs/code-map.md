@@ -94,7 +94,7 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 | [src/forensia/report/sections/section_assembly.py](../src/forensia/report/sections/section_assembly.py) | Section render request assembly (`prepare_section_request`, block requests, keypoints) |
 | [src/forensia/report/sections/section_finalize.py](../src/forensia/report/sections/section_finalize.py) | `finalize_section`: quality gates → claims → persistence → gaps |
 | [src/forensia/report/sections/section_quality.py](../src/forensia/report/sections/section_quality.py) | Section body validation: evidence-id checks, claim gaps, confidence, `collect_gaps` |
-| [src/forensia/report/sections/quality_gates.py](../src/forensia/report/sections/quality_gates.py) | `_quality_gate_section`: deterministic per-body checks (`_GateCtx.behaviors`) |
+| [src/forensia/report/sections/quality_gates.py](../src/forensia/report/sections/quality_gates.py) | `_quality_gate_section`: deterministic checks inferred from report Markdown and evidence context |
 | [src/forensia/report/sections/section_store.py](../src/forensia/report/sections/section_store.py) | `report_sections` / `claims` DB access + debug JSON dumps |
 | [src/forensia/report/answers/keypoint_catalog.py](../src/forensia/report/answers/keypoint_catalog.py) | `REPORT_KEYPOINTS` catalog + `_default_keypoints_for_section` |
 | [src/forensia/report/answers/keypoint_sql.py](../src/forensia/report/answers/keypoint_sql.py) + [keypoints_*.py](../src/forensia/report/answers/) | Keypoint resolver implementations (activity / host-account / overview-IOC / report-meta) |

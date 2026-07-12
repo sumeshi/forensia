@@ -1,4 +1,9 @@
 ---
+type: report-section-template
+title: Investigation Overview
+description: Executive incident assessment, scope, impact, key findings, and conclusion.
+tags: [incident-response, executive-summary, scope, impact]
+timestamp: 2026-07-12
 instructions: |
   Write this section for decision-makers who may read no other part of the report.
   State what is known, what is assessed, and what remains unknown. Keep the summary

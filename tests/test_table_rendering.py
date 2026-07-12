@@ -54,7 +54,10 @@ class TableRenderingTests(unittest.TestCase):
             case = Case.init(tmpdir)
             template = case.path / "custom.md"
             template.write_text(
-                "---\ninstructions: |\n  Separate facts from assessments.\n"
+                "---\ntype: report-section-template\ntitle: Report\n"
+                "description: Test report section.\ntags: [test, report]\n"
+                "timestamp: 2026-07-12\n"
+                "instructions: |\n  Separate facts from assessments.\n"
                 "---\n# Report\n\n## Finding\n<!-- mode: narrative -->\n",
                 encoding="utf-8",
             )
@@ -65,6 +68,8 @@ class TableRenderingTests(unittest.TestCase):
             "Separate facts from assessments.",
             request["template_meta"].instructions,
         )
+        self.assertEqual("report-section-template", request["template_meta"].type)
+        self.assertEqual(("test", "report"), request["template_meta"].tags)
         block_body = request["block_requests"][0]["template_body"]
         self.assertIn("section_instructions", block_body)
         self.assertIn("Separate facts from assessments.", block_body)
