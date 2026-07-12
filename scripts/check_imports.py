@@ -29,9 +29,6 @@ KNOWN_EXCEPTIONS: frozenset[tuple[str, str]] = frozenset(
     {
         # API snapshots expose report DTOs to the interface layer.
         ("api/cache.py", "report"),
-        ("api/service.py", "report"),
-        # Case initialization exports packaged report templates.
-        ("core/case.py", "report"),
     }
 )
 

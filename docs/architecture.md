@@ -75,9 +75,9 @@ flowchart TD
 ```
 
 `scripts/check_imports.py` enforces this direction and rejects stale exception
-entries. Current exceptions are limited to API snapshot/report DTO integration
-and case-time template export; do not add one without documenting why the
-responsibility cannot move to the higher layer.
+entries. The only current exception is `api/cache.py → report`, where API
+snapshots assemble report-owned projections. Do not add an exception without
+documenting why the responsibility cannot move to the higher layer.
 
 Placement decision:
 
@@ -159,7 +159,7 @@ For the input/output schema of each LLM role, see [llm-roles.md](llm-roles.md).
 - **auto-rulepacks**: `resolve_active_packs` ([rules/loader.py](../src/forensia/rules/loader.py)) automatically enables rulepacks whose `applies_when.artifact_families` match the case's evidence families. Use `--no-auto-rulepacks` for the legacy behavior. Controlled by the `auto_rulepacks` argument of `investigator.investigate`.
 - **playbook budget control**: `_dfir_playbook` ([ai/prompts/prompt_playbook.py](../src/forensia/ai/prompts/prompt_playbook.py)) narrows Event ID narratives to IDs that exist in the case so they stay under `FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS` (default 24000), and drops sections in priority order when the budget is exceeded.
 - **automatic timeline assembly**: The `case_timeline` table ([db/schema.py](../src/forensia/db/schema.py)) is deterministically fed with the first-evidence timestamp of findings (severity ≥ medium) and the decisive query row of resolved hypotheses (`feed_findings_to_timeline` in [rules/engine.py](../src/forensia/rules/engine.py)). `memory/timeline.md` is a projection regenerated from this table.
-- **timezone support**: `infer_timezone` ([normalize/timezone.py](../src/forensia/normalize/timezone.py)) infers the offset from events such as 4616 system time changes. It is stored in `case.source_timezone` ([core/case.py](../src/forensia/core/case.py)), and `_render_timestamp_with_timezone` ([report/markdown.py](../src/forensia/report/render/markdown.py)) renders a dual UTC + local display.
+- **timezone support**: `infer_timezone` ([normalize/timezone.py](../src/forensia/normalize/timezone.py)) infers the offset from events such as 4616 system time changes. It is stored in `case.source_timezone` ([core/case.py](../src/forensia/core/case.py)), and `_render_timestamp_with_timezone` ([report/render/markdown.py](../src/forensia/report/render/markdown.py)) renders a dual UTC + local display.
 
 ### 2.4 Section Agent (report generation)
 
@@ -188,7 +188,7 @@ Per-block processing:
 - **structured**: Routed by the question template (`question_routing.yaml`) and executes SQL / builder / extraction logic deterministically. Output is a tabular Markdown + JSON/CSV export
 - **narrative**: `section_outliner` fixes the layout → `paragraph_narrator` generates one paragraph → if the body is empty it retries once with a coaching turn → if still empty, `_fallback_narrative_body` generates it locally
 
-The final Markdown is assembled by `build_report_markdown_from_db` ([report/writer.py](../src/forensia/report/render/writer.py)) from `report_sections`, and `_strip_narrative_status_lines` ([report/section_quality.py](../src/forensia/report/sections/section_quality.py)) strips internal metadata (such as `**Status:**` lines) from non-appendix sections.
+The final Markdown is assembled by `build_report_markdown_from_db` ([report/render/writer.py](../src/forensia/report/render/writer.py)) from `report_sections`, and `_strip_narrative_status_lines` ([report/sections/section_quality.py](../src/forensia/report/sections/section_quality.py)) strips internal metadata (such as `**Status:**` lines) from non-appendix sections.
 
 ---
 
@@ -211,7 +211,7 @@ Each section is decomposed into multiple **blocks** (heading units) and processe
 
 ### 3.2 Keypoint catalog
 
-`REPORT_KEYPOINTS` ([report/keypoint_catalog.py](../src/forensia/report/answers/keypoint_catalog.py)) registers "predefined queries available to a section" as a mapping. Each entry is a `(label, resolver)` pair where `resolver(db) → list[dict]`. Representative examples:
+`REPORT_KEYPOINTS` ([report/answers/keypoint_catalog.py](../src/forensia/report/answers/keypoint_catalog.py)) registers "predefined queries available to a section" as a mapping. Each entry is a `(label, resolver)` pair where `resolver(db) → list[dict]`. Representative examples:
 
 - `overview_top_findings` — high/critical findings sorted by confidence
 - `overview_hosts` — `evtx_events.computer` aggregation
@@ -222,7 +222,7 @@ Each section is decomposed into multiple **blocks** (heading units) and processe
 - `recommendations_findings` — all findings sorted by severity
 - `appendix_findings_catalog` — full catalog for the appendix
 
-`_default_keypoints_for_section` ([report/keypoint_catalog.py](../src/forensia/report/answers/keypoint_catalog.py)) selects a keypoint by section_key prefix and block-heading keywords.
+`_default_keypoints_for_section` ([report/answers/keypoint_catalog.py](../src/forensia/report/answers/keypoint_catalog.py)) selects a keypoint by section_key prefix and block-heading keywords.
 
 ### 3.3 Structured Answer
 

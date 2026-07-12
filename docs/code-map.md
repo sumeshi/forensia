@@ -97,9 +97,9 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 | [src/forensia/report/sections/quality_gates.py](../src/forensia/report/sections/quality_gates.py) | `_quality_gate_section`: deterministic per-body checks (`_GateCtx.behaviors`) |
 | [src/forensia/report/sections/section_store.py](../src/forensia/report/sections/section_store.py) | `report_sections` / `claims` DB access + debug JSON dumps |
 | [src/forensia/report/answers/keypoint_catalog.py](../src/forensia/report/answers/keypoint_catalog.py) | `REPORT_KEYPOINTS` catalog + `_default_keypoints_for_section` |
-| [src/forensia/report/answers/keypoint_sql.py](../src/forensia/report/answers/keypoint_sql.py) + [keypoints_*.py](../src/forensia/report/) | Keypoint resolver implementations (activity / host-account / overview-IOC / report-meta) |
+| [src/forensia/report/answers/keypoint_sql.py](../src/forensia/report/answers/keypoint_sql.py) + [keypoints_*.py](../src/forensia/report/answers/) | Keypoint resolver implementations (activity / host-account / overview-IOC / report-meta) |
 | [src/forensia/report/answers/answer_store.py](../src/forensia/report/answers/answer_store.py) | Structured answer normalization, Markdown rendering, JSON/CSV persistence (`reports/structured/`) |
-| [src/forensia/report/answers/answer_registry.py](../src/forensia/report/answers/answer_registry.py) + [answer_builders_*.py](../src/forensia/report/) | Deterministic answer builders (host / artifact questions) + universal question probes |
+| [src/forensia/report/answers/answer_registry.py](../src/forensia/report/answers/answer_registry.py) + [answer_builders_*.py](../src/forensia/report/answers/) | Deterministic answer builders (host / artifact questions) + universal question probes |
 | [src/forensia/report/report_brief.py](../src/forensia/report/report_brief.py) | `report_brief.json` builder (LLM context summary) |
 | [src/forensia/report/ranking.py](../src/forensia/report/ranking.py) | `brief.top_findings.ranking` frontmatter policy interpreter + packaged-template policy audit |
 | [src/forensia/report/render/markdown.py](../src/forensia/report/render/markdown.py) | Markdown table utilities, timestamp rendering with timezone |
@@ -118,6 +118,7 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 | [src/forensia/api/service.py](../src/forensia/api/service.py) | DB → DTO conversion. Aggregation queries for UI / report_brief |
 | [src/forensia/api/cache.py](../src/forensia/api/cache.py) | API snapshot writes (`write_volatile_api_snapshots` / `write_full_api_snapshots` / `write_progress_snapshot`) |
 | [src/forensia/api/progress.py](../src/forensia/api/progress.py) | Persist and list progress events |
+| [src/forensia/report/section_views.py](../src/forensia/report/section_views.py) | Report-section DTO projection and server-side Markdown/HTML body rendering |
 | [src/forensia/web/app.py](../src/forensia/web/app.py) | FastAPI router. Returns `/api/*` from snapshot or DB fallback |
 | [web_ui/](../web_ui/) | Svelte + Vite + Tailwind frontend. UI updates via snapshot polling |
 

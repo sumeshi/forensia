@@ -44,6 +44,7 @@ from forensia.report.render.html import render_html_report
 from forensia.report.render.writer import render_written_report
 from forensia.report.template_export import (
     export_packaged_report_templates,
+    seed_case_report_templates,
 )
 from forensia.web.app import create_app
 
@@ -159,6 +160,7 @@ def _open_or_init_case(case_dir: str, input_dir: str | None, timezone: str) -> C
         raise typer.BadParameter("New case requires an input_dir argument")
     tz_val = _resolve_timezone(timezone, None)
     case = Case.init(case_dir, source_timezone=tz_val)
+    seed_case_report_templates(case)
     clear_api_snapshots(case)
     _status(f"Initialized case at {case.path}")
     return case
@@ -178,6 +180,7 @@ def _rerun_reset(case: Case, case_dir: str, timezone: str) -> Case:
     # Preserve the manifest timezone across rerun unless --timezone overrides it.
     tz_val = _resolve_timezone(timezone, case)
     case = Case.init(case_dir, source_timezone=tz_val)
+    seed_case_report_templates(case)
     clear_api_snapshots(case)
     _status(f"Re-initialized case at {case.path}")
     return case

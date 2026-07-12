@@ -20,11 +20,11 @@ from forensia.api.service import (
     aggregate_event_volume,
     list_attack_coverage_dto,
     list_entity_cards_dto,
-    list_report_sections_dto,
     list_section_questions_dto,
 )
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
+from forensia.report.section_views import list_report_sections_dto
 
 
 def _make_mock_result(columns, rows):
@@ -432,7 +432,7 @@ class TestListReportSectionsDtoBodyHtml(unittest.TestCase):
         result = list_report_sections_dto(db)
         self.assertEqual(result[0].body_html, "")
 
-    @patch("forensia.api.service.build_evidence_map")
+    @patch("forensia.report.section_views.build_evidence_map")
     def test_body_html_contains_evidence_ref_links(self, mock_build_evidence_map):
         mock_build_evidence_map.return_value = {
             "evtx-security-000000000120": {

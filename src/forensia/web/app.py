@@ -52,7 +52,6 @@ from forensia.api.service import (
     list_hypothesis_reasoning_dto,
     list_latest_hypothesis_reasoning_dto,
     list_mft_timeline_dto,
-    list_report_sections_dto,
     list_sessions_dto,
     list_steps_dto,
 )
@@ -62,6 +61,7 @@ from forensia.report.render.html import render_html_report
 from forensia.report.render.writer import (
     build_report_markdown_from_db,
 )
+from forensia.report.section_views import list_report_sections_dto
 from forensia.report.sections.section_store import set_report_section_status
 
 load_dotenv()

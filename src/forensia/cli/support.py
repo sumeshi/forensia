@@ -19,6 +19,7 @@ from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.report.template_export import (
     has_report_templates,
+    seed_case_report_templates,
 )
 
 PROFILE_ROOT = Path(__file__).parent.parent / "profiles"
@@ -114,7 +115,7 @@ def _resolve_template_dir(case: Case, template_dir: str | None) -> Path:
                 f"template_dir must contain at least one template matching [0-9]*_*.md: {path}"
             )
         return path
-    case.ensure_report_templates()
+    seed_case_report_templates(case)
     if case.report_template_dir.exists() and has_report_templates(
         case.report_template_dir
     ):

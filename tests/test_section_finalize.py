@@ -708,7 +708,8 @@ class SectionFinalizeTests(unittest.TestCase):
             self.assertIn("raw evidence rows were moved", str(gaps).lower())
 
     def test_finding_and_report_section_dtos_include_evidence_counts(self) -> None:
-        from forensia.api.service import list_findings_dto, list_report_sections_dto
+        from forensia.api.service import list_findings_dto
+        from forensia.report.section_views import list_report_sections_dto
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -775,7 +776,7 @@ class SectionFinalizeTests(unittest.TestCase):
             self.assertEqual(2, section.evidence_count)
 
     def test_finalize_section_upserts_section_and_returns_gaps(self) -> None:
-        from forensia.api.service import list_report_sections_dto
+        from forensia.report.section_views import list_report_sections_dto
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)

@@ -342,7 +342,10 @@ If you want to add detection knowledge, investigation hints, schema cards, repor
 
 Core code should stay focused on generic mechanisms. Case-specific pieces such as individual rules may be better discussed first. They tend to move quickly, and some may be better maintained as external profiles or forks tuned for a specific user, dataset, or engagement.
 
-See `CONTRIBUTING.md` for development guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the package map, call-flow diagrams,
+and development guidelines. Concrete extension recipes are in
+[docs/extending.md](docs/extending.md), with the full document index in
+[docs/README.md](docs/README.md).
 
 ## Benchmarks
 

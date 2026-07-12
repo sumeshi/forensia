@@ -14,6 +14,100 @@ uv sync
 For LLM connectivity, copy `.env.example` to `.env` and edit it with your local values. Do not commit `.env` or case artifacts.
 For Web UI setup, see [docs/development.md](docs/development.md).
 
+## Package map
+
+The following is the package-level map contributors usually need. See
+[docs/code-map.md](docs/code-map.md) only when you need file-level detail.
+
+| Package / directory | What belongs there |
+|---|---|
+| `src/forensia/cli/` | Typer commands, pipeline stage runners, CLI-only validation and diagnostics |
+| `src/forensia/web/` | FastAPI routes and packaged static assets |
+| `src/forensia/core/` | Case, session, memory, verdict, time, and progress primitives without workflow policy |
+| `src/forensia/db/` | DuckDB schema, migrations, connections, and generic query/evidence access |
+| `src/forensia/api/` | UI-facing DTOs, DB projections, progress records, and API snapshot cache |
+| `src/forensia/ingest/` | Artifact discovery, parser adapters, and raw JSONL production |
+| `src/forensia/normalize/` | Raw parser output to normalized DuckDB tables |
+| `src/forensia/rules/` | Rule models, YAML loading, rule execution, and finding generation |
+| `src/forensia/knowledge/` | Readers for shared declarative catalogs and structured questions |
+| `src/forensia/rulepacks/` | Detection rules and shared DFIR/schema knowledge in YAML/Markdown |
+| `src/forensia/profiles/` | YAML policies selecting rulepacks and investigation behavior |
+| `src/forensia/ai/` | Investigation orchestration, LLM access, prompts, checking, hypotheses, and section agents |
+| `src/forensia/report/answers/` | Deterministic structured answers, keypoints, and table builders |
+| `src/forensia/report/sections/` | Report-template parsing, section assembly, quality gates, and persistence |
+| `src/forensia/report/render/` | Final Markdown/HTML rendering, formats, evidence maps, and Jinja templates |
+| `src/forensia/report/` | Cross-cutting report projections, ranking, validation, and template export |
+| `src/forensia/report_template/` | Packaged default report-section templates and format policy |
+| `web_ui/` | Svelte frontend source |
+| `tests/` | Deterministic unit, integration, regression, and extension-point tests |
+| `scripts/` | Repository audits and maintenance commands used by `forensia doctor` |
+| `docs/` | Architecture, development, extension, and operation documentation |
+
+The allowed dependency direction is broadly `interface → workflow → reporting
+→ knowledge → evidence → platform`. `scripts/check_imports.py` enforces it. If a
+new import points in the opposite direction, move the behavior to its owning
+layer instead of adding a convenience re-export.
+
+## Main call flows
+
+The full pipeline entered through `forensia run` / `forensia investigate` is:
+
+```mermaid
+flowchart LR
+    CLI["cli<br/>command and stages"] --> ING["ingest<br/>artifact adapters"]
+    ING --> NORM["normalize<br/>typed evidence"]
+    NORM --> DB[("db<br/>case.duckdb")]
+    DB --> RULES["rules<br/>YAML rule engine"]
+    RULES -->|findings and seeds| AI["ai<br/>investigation loop"]
+    AI -->|planned SQL| DB
+    DB -->|evidence rows| AI
+    AI --> SECTIONS["ai/sections<br/>section agents"]
+    SECTIONS --> REPORT["report<br/>answers + sections"]
+    REPORT --> RENDER["report/render<br/>Markdown + HTML"]
+    RENDER --> OUT["reports/"]
+    DB --> API["api<br/>DTOs + snapshots"]
+    API --> WEB["web<br/>FastAPI + UI"]
+```
+
+Within one hypothesis, control moves through a small PDCA loop:
+
+```mermaid
+sequenceDiagram
+    participant I as Investigator
+    participant P as Planner / LLM
+    participant D as DuckDB
+    participant C as Checker
+    participant M as Memory + trace DB
+
+    I->>P: Build or refine hypothesis and query intent
+    P-->>I: Validated SELECT plan
+    I->>D: Execute evidence query
+    D-->>I: Normalized evidence rows
+    I->>C: Check sufficiency and verdict
+    C-->>I: Verdict, findings, memory updates
+    I->>M: Persist reasoning and durable facts
+    I->>I: Resolve, pivot, or plan the next query
+```
+
+Report generation then follows this path:
+
+```mermaid
+flowchart LR
+    T["report_template<br/>Markdown blocks"] --> A["ai/sections<br/>plan and fetch evidence"]
+    K["report/answers<br/>keypoints and builders"] --> A
+    DB[(DuckDB)] --> A
+    A --> Q["report/sections<br/>quality gates + finalize"]
+    Q --> DB
+    Q --> R["report/render"]
+    R --> MD[report.md]
+    R --> HTML[report.html]
+```
+
+For a new feature, start in the package that owns the data or policy. In
+particular, prefer `rulepacks/` declarations and the public registries described
+in [docs/extending.md](docs/extending.md) over adding branches to orchestration
+code.
+
 ## Design principles to know before making changes
 
 See [docs/design-principles.md](docs/design-principles.md) for details. The following are the points most scrutinized during review.

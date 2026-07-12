@@ -24,6 +24,7 @@ A set of design documents objectively describing the current implementation of f
 | Document | Contents |
 |---|---|
 | [development.md](development.md) | Development environment setup, testing policy, auxiliary scripts, CLI flags, UI details |
+| [extending.md](extending.md) | Cookbook for adding artifacts, rules, questions, report blocks, tables, and quality gates |
 
 ## Publication and operational notes
 

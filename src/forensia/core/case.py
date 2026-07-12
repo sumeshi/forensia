@@ -10,7 +10,6 @@ from typing import Any
 import yaml
 
 from forensia.core.timeutil import parse_timestamp
-from forensia.report.template_export import export_packaged_report_templates
 
 ALLOWLIST_STUB = """# Rule-scoped suppression rules.
 # Each entry matches one rule_id and one or more row fields from finding.evidence[0].
@@ -283,13 +282,6 @@ class Case:
         tz = self.source_timezone or "UTC"
         return f"{tz} (DST observed for appropriate regions)"
 
-    def ensure_report_templates(self, overwrite: bool = False) -> list[Path]:
-        """Export packaged report templates into the case directory."""
-        self.report_template_dir.mkdir(parents=True, exist_ok=True)
-        return export_packaged_report_templates(
-            self.report_template_dir, overwrite=overwrite
-        )
-
     def clear_runtime_outputs(
         self,
         preserve_memory: bool = True,
@@ -343,7 +335,6 @@ class Case:
             case.report_template_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
-        case.ensure_report_templates()
 
         if not case.manifest_path.exists():
             manifest = {

@@ -3,6 +3,10 @@ from __future__ import annotations
 import shutil
 from importlib import resources
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from forensia.core.case import Case
 
 
 def _packaged_report_template_root():
@@ -53,6 +57,19 @@ def export_packaged_report_templates(
             shutil.copyfileobj(src, dst)
         written.append(target_path)
     return sorted(written)
+
+
+def seed_case_report_templates(case: Case, *, overwrite: bool = False) -> list[Path]:
+    """Export the packaged report templates into ``case``'s template directory.
+
+    This lives in the reporting layer so the platform-level ``Case`` type does
+    not depend on report internals. Interface/workflow bootstrap code calls this
+    after ``Case.init``.
+    """
+    case.report_template_dir.mkdir(parents=True, exist_ok=True)
+    return export_packaged_report_templates(
+        case.report_template_dir, overwrite=overwrite
+    )
 
 
 def has_report_templates(directory: str | Path) -> bool:

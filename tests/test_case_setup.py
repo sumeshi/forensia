@@ -13,7 +13,10 @@ from forensia.config import (
     resolve_llm_config,
 )
 from forensia.core.case import Case
-from forensia.report.template_export import export_packaged_report_templates
+from forensia.report.template_export import (
+    export_packaged_report_templates,
+    seed_case_report_templates,
+)
 
 
 def _agent_plan_router(*_args, **kwargs):
@@ -75,9 +78,10 @@ class CaseSetupTests(unittest.TestCase):
             preserved = case.allowlist_path.read_text(encoding="utf-8")
             self.assertEqual("rules:\n  - rule_id: custom\n", preserved)
 
-    def test_case_init_seeds_report_templates(self) -> None:
+    def test_report_bootstrap_seeds_case_templates(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
+            seed_case_report_templates(case)
             self.assertTrue((case.report_template_dir / "1_overview.md").exists())
             self.assertTrue(
                 (case.report_template_dir / "5_recommendations.md").exists()

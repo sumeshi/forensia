@@ -18,7 +18,6 @@ from forensia.api.service import (
     list_hypothesis_reasoning_map_dto,
     list_latest_hypothesis_reasoning_dto,
     list_mft_timeline_dto,
-    list_report_sections_dto,
     list_section_questions_dto,
     list_sessions_dto,
     list_steps_dto,
@@ -26,6 +25,7 @@ from forensia.api.service import (
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.report.report_brief import write_report_brief
+from forensia.report.section_views import list_report_sections_dto
 
 VOLATILE_SNAPSHOT_INTERVAL_S = 5.0
 
@@ -70,7 +70,6 @@ def write_volatile_api_snapshots(case: Case, db: CaseDB) -> None:
         list_hypotheses_dto,
         list_hypothesis_reasoning_map_dto,
         list_latest_hypothesis_reasoning_dto,
-        list_report_sections_dto,
         list_section_questions_dto,
     )
 

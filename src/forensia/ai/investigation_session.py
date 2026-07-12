@@ -36,6 +36,7 @@ from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
+from forensia.report.template_export import seed_case_report_templates
 
 
 def _to_json(value: Any) -> str:
@@ -375,7 +376,7 @@ def _init_session(
     )
     profile_config = _load_profile_config(profile)
     if template_root is None:
-        case.ensure_report_templates()
+        seed_case_report_templates(case)
         template_root = case.report_template_dir
     _seed_findings(case, db, profile, active_pack_ids=active_pack_ids)
     _initialize_overview(memory, case, profile_config)
