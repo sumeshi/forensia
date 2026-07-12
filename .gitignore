@@ -55,3 +55,4 @@ reports/
 ai_logs/
 memory/
 .tokensave
+.serena

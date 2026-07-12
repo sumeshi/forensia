@@ -157,7 +157,7 @@ forensia doctor
 - **Do not write tests that make real LLM calls or hit a real LLM server** (see the "Test policy" section in [docs/development.md](docs/development.md) for the rationale).
 - When you change a determinism gate, update the corresponding regression tests:
   `tests/test_checker_gates.py` (verdict consistency gates, fallback downgrade, memory filter, finding verification),
-  `tests/test_untestable_resolution.py` (early untestable resolution).
+  `tests/test_hypothesis_seeding.py` (early untestable resolution at seeding time).
 - When you change rule YAML or `question_routing.yaml`, confirm that `scripts/audit_schema_coverage.py --strict` (included in `forensia doctor`) passes.
 - The directional import layer contract is checked by `scripts/check_imports.py` (included in `forensia doctor`). When you add a new module, confirm it passes without adding an exception.
 

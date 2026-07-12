@@ -49,7 +49,7 @@ def _log_report(message: str) -> None:
     print(f"[bold white][REPORT][/bold white] {message}")
 
 
-def _collect_section_requests(
+def collect_section_requests(
     case: Case,
     db: CaseDB,
     template_paths: list[Path],
@@ -306,7 +306,7 @@ def _collect_block_output(
     return block_body
 
 
-async def _render_section_blocks(
+async def render_section_blocks(
     request: dict[str, Any],
     case: Case,
     db: CaseDB,
@@ -456,14 +456,14 @@ async def async_refresh_report_sections(
             messages=messages, model=m, base_url=base_url
         ),
     )
-    requests = _collect_section_requests(
+    requests = collect_section_requests(
         case, db, template_paths, prior_filled, report_brief, force_all=force_all
     )
     requests = _sort_section_requests(requests)
     filled_sections: dict[str, str] = {}
     for request in requests:
         try:
-            request, body = await _render_section_blocks(
+            request, body = await render_section_blocks(
                 request,
                 case,
                 db,

@@ -17,12 +17,12 @@ from forensia.ai.case_profile import (
 from forensia.ai.hypotheses.hypothesis_manager import (
     MAX_ACTIVE_HYPOTHESES,
     _guess_related_sections,
-    _merge_active_hypotheses,
     admit_new_hypothesis,
+    merge_active_hypotheses,
 )
 from forensia.ai.hypotheses.hypothesis_model import (
     _filter_valid_entities,
-    _hypothesis_similarity,
+    hypothesis_similarity,
 )
 from forensia.ai.hypotheses.hypothesis_runner import (
     _investigate_one_hypothesis,
@@ -33,11 +33,11 @@ from forensia.ai.hypotheses.seeding import (
     _scan_report_keypoints,
 )
 from forensia.ai.investigation_session import (
+    Ctx,
     _call_with_outage_recovery,
-    _Ctx,
     _ctx_get_report_status,
-    _ctx_refresh_caches,
     _save_step,
+    ctx_refresh_caches,
 )
 from forensia.ai.llm import llm_gateway
 from forensia.ai.llm.llm_client import (
@@ -151,7 +151,7 @@ def _hypothesis_focus_score(
     )
 
 
-def _select_focus_hypotheses(
+def select_focus_hypotheses(
     state: SessionState, max_items: int = 2
 ) -> list[Hypothesis]:
     ranked = sorted(
@@ -173,7 +173,7 @@ def _dedup_new_hypotheses(
         is_duplicate = False
         for existing in active_hypotheses:
             if (
-                _hypothesis_similarity(new_h.description, existing.description)
+                hypothesis_similarity(new_h.description, existing.description)
                 > threshold
             ):
                 is_duplicate = True
@@ -191,7 +191,7 @@ def _parse_hypothesis_from_drafter(parsed: dict[str, Any]) -> Hypothesis | None:
     The drafter returns ``{"hypothesis": {"description": "...", "required_entities": [...], "source_rule_ids": [...], "confirm_when": {...}, "refute_when": {...}}}``.
     Tolerates LLMs that return ``confirm_when`` / ``refute_when`` as strings by
     coercing to the schema's dict shape. Assigns a placeholder id that
-    ``_merge_active_hypotheses`` will replace.
+    ``merge_active_hypotheses`` will replace.
     """
     hyp_raw = parsed.get("hypothesis")
     if not isinstance(hyp_raw, dict):
@@ -392,7 +392,7 @@ def _admit_broad_plan_hypotheses(
                 "HYPOTHESIS",
                 f"broad_plan rejected: '{hyp.description[:80]}' reason={reason}",
             )
-    ctx.state.active_hypotheses = _merge_active_hypotheses(
+    ctx.state.active_hypotheses = merge_active_hypotheses(
         db=ctx.db,
         current=ctx.state.active_hypotheses,
         updates=admitted,
@@ -514,7 +514,7 @@ async def _run_broad_plan_step(
 async def _run_cycle_body(
     *,
     state: SessionState,
-    ctx: _Ctx,
+    ctx: Ctx,
     db: CaseDB,
     case: Case,
     session_id: str,
@@ -601,13 +601,13 @@ async def _run_cycle_body(
         focus_max = max(
             2, (len(state.active_hypotheses) + remaining_cycles - 1) // remaining_cycles
         )
-        focus_hypotheses = _select_focus_hypotheses(state, max_items=focus_max)
+        focus_hypotheses = select_focus_hypotheses(state, max_items=focus_max)
         for hypothesis in focus_hypotheses:
             if ctx.interrupted:
                 break
             state.focus_hypothesis_id = hypothesis.id
             state.focus_depth = 0
-            _ctx_refresh_caches(ctx, memory, base_url, model, hypothesis=hypothesis)
+            ctx_refresh_caches(ctx, memory, base_url, model, hypothesis=hypothesis)
             focus_sections = _guess_related_sections(hypothesis.description)
             _log("HYPOTHESIS", f"{hypothesis.id} — {hypothesis.description}")
             _emit(

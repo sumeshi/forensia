@@ -4,17 +4,23 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from forensia.ai.sections.section_answers import _is_effectively_empty_body
+from forensia.ai.sections.section_answers import (
+    extract_answer_by_shape,
+    format_question_answer,
+    is_effectively_empty_body,
+)
 from forensia.ai.sections.section_block_narrative import (
-    _fallback_narrative_body,
-    _narrate_paragraph_with_retry,
+    fallback_narrative_body,
+    narrate_paragraph_with_retry,
 )
 from forensia.ai.sections.section_exec import (
-    _question_routing_answer_spec,
+    coerce_plan_action,
+    question_routing_answer_spec,
 )
-from forensia.ai.sections.section_run_store import _load_reusable_section_facts
+from forensia.ai.sections.section_run_store import load_reusable_section_facts
 from forensia.config import clear_llm_settings_cache, reload_settings
 from forensia.core.case import Case
 from forensia.core.textutil import normalize_localized_dates
@@ -23,12 +29,14 @@ from forensia.knowledge.questions import resolve_question_spec
 from forensia.report.answers.answer_store import render_structured_answer_markdown
 from forensia.report.sections.quality_gates import (
     GateContext,
+    check_json_object_leak,
     check_recommendations_strength,
 )
 from forensia.report.sections.section_assembly import assemble_section_body
 from forensia.report.sections.section_finalize import (
     preprocess_section_body,
 )
+from forensia.report.sections.section_store import extract_claim_texts
 
 
 class SectionNarrativeTests(unittest.TestCase):
@@ -49,7 +57,7 @@ structured_answer:
 """,
                 encoding="utf-8",
             )
-            fallback = _fallback_narrative_body(
+            fallback = fallback_narrative_body(
                 heading="Network Activity",
                 status="not_found",
                 collected_results=[],
@@ -68,10 +76,10 @@ structured_answer:
         self.assertIn("### Custom Answer", structured)
 
     def test_status_only_narration_gets_deterministic_fallback(self) -> None:
-        self.assertTrue(_is_effectively_empty_body("**Status:** answered"))
+        self.assertTrue(is_effectively_empty_body("**Status:** answered"))
         with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "en"}):
             reload_settings()
-            body = _fallback_narrative_body(
+            body = fallback_narrative_body(
                 heading="Executive Summary",
                 status="partial",
                 collected_results=[
@@ -114,7 +122,7 @@ structured_answer:
     def test_not_found_fallback_does_not_emit_block_skipped_marker(self) -> None:
         with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "en"}):
             reload_settings()
-            body = _fallback_narrative_body(
+            body = fallback_narrative_body(
                 heading="Network Activity",
                 status="not_found",
                 collected_results=[
@@ -149,8 +157,8 @@ structured_answer:
                         ('sf-section', 'observation', 'section_fact', '{}', '["evtx-security-000000000002"]', 'keypoint:test', '1_overview', 0.8, now(), now())
                     """
                 )
-                normal = _load_reusable_section_facts(db, "1_overview")
-                with_case_probe = _load_reusable_section_facts(
+                normal = load_reusable_section_facts(db, "1_overview")
+                with_case_probe = load_reusable_section_facts(
                     db, "1_overview", include_case_probe=True
                 )
 
@@ -203,14 +211,14 @@ structured_answer:
     def test_question_routing_resolves_specific_shutdown_and_logon_specs(self) -> None:
         self.assertEqual(
             "last_shutdown_event",
-            _question_routing_answer_spec("Last recorded shutdown time", ""),
+            question_routing_answer_spec("Last recorded shutdown time", ""),
         )
         self.assertEqual(
-            "last_human_logon", _question_routing_answer_spec("Last logged-on user", "")
+            "last_human_logon", question_routing_answer_spec("Last logged-on user", "")
         )
         self.assertEqual(
             "daily_session_activity",
-            _question_routing_answer_spec(
+            question_routing_answer_spec(
                 "Startup, shutdown, logon, and logoff history", ""
             ),
         )
@@ -283,7 +291,7 @@ structured_answer:
         with patch(
             "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=fake_llm
         ):
-            body = _narrate_paragraph_with_retry(
+            body = narrate_paragraph_with_retry(
                 narrate_messages=base_messages,
                 narrate_schema={"type": "object"},
                 model="m",
@@ -309,7 +317,7 @@ structured_answer:
         with patch(
             "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=fake_llm
         ):
-            _narrate_paragraph_with_retry(
+            narrate_paragraph_with_retry(
                 narrate_messages=[{"role": "system", "content": "s"}],
                 narrate_schema={"type": "object"},
                 model="m",
@@ -366,7 +374,7 @@ structured_answer:
         """
         with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "en"}):
             clear_llm_settings_cache()
-            body = _fallback_narrative_body(
+            body = fallback_narrative_body(
                 heading="Executive Summary",
                 status="partial",
                 collected_results=[
@@ -438,7 +446,7 @@ structured_answer:
         facts, never review-metadata like 'returned N related rows'."""
         with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "en"}):
             clear_llm_settings_cache()
-            body = _fallback_narrative_body(
+            body = fallback_narrative_body(
                 heading="Executive Summary",
                 status="answered",
                 collected_results=[],
@@ -524,6 +532,124 @@ structured_answer:
         self.assertNotIn("mft-000000000001-00", markdown)
         self.assertNotIn("source_file", markdown)
         self.assertNotIn("raw.evtx", markdown)
+
+
+class AnswerFormattingTests(unittest.TestCase):
+    """Plan-action coercion and structured question-answer formatting."""
+
+    def test_comma_separated_keypoint(self):
+        result = coerce_plan_action(
+            {"action": "keypoint", "keypoint": "benchmark_hosts, benchmark_recent_lnk"},
+            section_key="test",
+            iteration=0,
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.keypoint, "benchmark_hosts, benchmark_recent_lnk")
+
+    def test_format_question_answer_uses_classifier_status(self):
+        case = SimpleNamespace(reports_dir=Path(tempfile.mkdtemp()))
+        body = format_question_answer(
+            {"status": "answered", "picked_row_indices": [], "rationale": "ok"},
+            [{"host_id": "INFORMANT-PC"}],
+            {"fields": ["host_id"]},
+            "6_appendix",
+            "1. host",
+            "not_found",
+            case,
+            question_id="Q6",
+        )
+        self.assertIn("**Status:** answered", body)
+        self.assertIn("INFORMANT-PC", body)
+
+    def test_format_question_answer_missing_reason_string_not_split(self):
+        case = SimpleNamespace(reports_dir=Path(tempfile.mkdtemp()))
+        body = format_question_answer(
+            {
+                "status": "answered",
+                "picked_row_indices": [],
+                "rationale": "empty answer rationale",
+            },
+            [],
+            {"fields": ["host_id"]},
+            "6_appendix",
+            "1. host",
+            "answered",
+            case,
+            question_id="Q6",
+        )
+        self.assertIn("**Status:** wrong_query", body)
+        self.assertIn("- empty answer rationale", body)
+        self.assertNotIn("- e\n- m", body)
+
+    def test_extract_answer_by_shape_does_not_make_empty_rows(self):
+        rows = [
+            {
+                "summary": "file_path=Windows/Prefetch/GOOGLEDRIVESYNC.EXE-841A0D94.pf evidence_id=mft-000000005619-00"
+            }
+        ]
+        result = extract_answer_by_shape(
+            rows,
+            {
+                "format": "enumerated_services",
+                "fields": ["service_name", "exe_found", "paths_found", "config_found"],
+            },
+            "enumerated_services",
+        )
+        self.assertEqual(result[0]["service_name"], "Google Drive")
+        self.assertNotEqual(result[0]["service_name"], "")
+
+
+class SectionBodyQualityTests(unittest.TestCase):
+    """JSON-leak gate and claim extraction over rendered section bodies."""
+
+    def test_json_object_leak_detected(self):
+        ctx = GateContext(
+            section_key="test", title="test", evidence_results=None, db=None
+        )
+        msg, score = check_json_object_leak('{"body": "some text"}', ctx)
+        self.assertIsNotNone(msg)
+
+    def test_json_object_leak_clean(self):
+        ctx = GateContext(
+            section_key="test", title="test", evidence_results=None, db=None
+        )
+        msg, score = check_json_object_leak("## Heading\n\nSome paragraph text.", ctx)
+        self.assertIsNone(msg)
+
+    def test_scaffold_patterns_filter_claims(self):
+        body = "**Status:** answered\n\nReal Content\n\nSome actual claim here."
+        claims = extract_claim_texts(body)
+        self.assertIn("Real Content", claims)
+        self.assertNotIn("**Status:**", " ".join(claims))
+
+    def test_claim_extraction_skips_tables_and_structured_metadata(self):
+        body = """
+## 1. Endpoint identity
+
+**Status:** answered
+
+### Answer
+Substantive narrative claim with evidence evtx-security-000000000122.
+
+| host_id | evidence_count |
+| --- | --- |
+| informant-PC | 10 |
+
+### Queries Run
+- structured:host_identity:evtx_distinct_hosts
+
+### Structured Data
+- JSON: structured/answers.json
+- CSV: structured/Q6.csv
+"""
+        claims = extract_claim_texts(body)
+        joined = " ".join(claims)
+        self.assertIn("Substantive narrative claim", joined)
+        self.assertNotIn("host_id", joined)
+        self.assertNotIn("informant-PC", joined)
+        self.assertNotIn("structured:host_identity", joined)
+        self.assertNotIn("structured/answers.json", joined)
+        self.assertNotIn("### Queries Run", joined)
 
 
 if __name__ == "__main__":

@@ -580,7 +580,7 @@ _VOLUME_MAX_YEAR = _date.today().year + 5
 _BUCKET_RANK = {"year": 0, "month": 1, "day": 2, "hour": 3}
 
 
-def _trunc_key(timestamp_iso: str, bucket: str) -> str:
+def trunc_key(timestamp_iso: str, bucket: str) -> str:
     t = timestamp_iso.replace(" ", "T")
     if bucket == "year":
         return t[:4] + "-01-01T00:00:00"
@@ -611,7 +611,7 @@ def aggregate_event_volume(
             continue
         if end and ts >= end:
             continue
-        key = (_trunc_key(ts, target_bucket), item.series)
+        key = (trunc_key(ts, target_bucket), item.series)
         grouped[key] = grouped.get(key, 0) + item.count
     result = [
         EventVolumePointDTO(bucket=k[0], series=k[1], count=v)
@@ -621,7 +621,7 @@ def aggregate_event_volume(
     return result
 
 
-def _build_range_filter(start: str | None, end: str | None) -> tuple[str, list[Any]]:
+def build_range_filter(start: str | None, end: str | None) -> tuple[str, list[Any]]:
     """Build SQL range filter clause and parameters for volume queries."""
     range_clauses: list[str] = [
         f"EXTRACT(year FROM timestamp) BETWEEN {_VOLUME_MIN_YEAR} AND {_VOLUME_MAX_YEAR}",
@@ -674,7 +674,7 @@ def _detected_volume_points(
                 continue
             if end and timestamp >= end:
                 continue
-            key = _trunc_key(timestamp, bucket)
+            key = trunc_key(timestamp, bucket)
             bucket_counts[key] = bucket_counts.get(key, 0) + 1
     return [
         EventVolumePointDTO(bucket=bucket_key, series="detected", count=count)
@@ -718,7 +718,7 @@ def _mft_volume_points(
     )
 
 
-def _normalize_volume_rows(rows: list[dict[str, Any]]) -> list[EventVolumePointDTO]:
+def normalize_volume_rows(rows: list[dict[str, Any]]) -> list[EventVolumePointDTO]:
     """Normalize raw DB rows into EventVolumePointDTO list."""
     normalized = []
     for row in rows:
@@ -743,7 +743,7 @@ def list_event_volume_dto(
     bucket_expr = bucket if bucket in _VALID_BUCKETS else "day"
     if source == "detected":
         return _detected_volume_points(db, bucket_expr, start, end)
-    range_sql, range_params = _build_range_filter(start, end)
+    range_sql, range_params = build_range_filter(start, end)
     rows: list[dict[str, Any]] = []
     if source in {"evtx", "all"}:
         rows.extend(_evtx_volume_points(db, bucket_expr, range_sql, range_params))
@@ -751,7 +751,7 @@ def list_event_volume_dto(
         rows.extend(
             _mft_volume_points(db, bucket_expr, range_sql, range_params, source)
         )
-    return _normalize_volume_rows(rows)
+    return normalize_volume_rows(rows)
 
 
 def get_evidence_record_dto(db: CaseDB, evidence_id: str) -> EvidenceRecordDTO | None:
@@ -781,13 +781,13 @@ def list_entity_cards_dto(case: Case) -> list[EntityCardDTO]:
                     kind=kind,
                     name=path.stem,
                     mention_count=None,
-                    summary=_entity_card_summary(path),
+                    summary=entity_card_summary(path),
                 )
             )
     return result
 
 
-def _entity_card_summary(
+def entity_card_summary(
     path: Path, max_lines: int = 3, max_chars: int = 240
 ) -> str | None:
     """Extract a short human-readable preview from an entity card markdown file.

@@ -14,8 +14,8 @@ from forensia.ai.llm.schemas import (
     structured_classify_schema,
 )
 from forensia.ai.prompts.sql_schema import (
-    _load_app_catalog,
     build_investigation_framework,
+    load_app_catalog,
 )
 from forensia.config import get_llm_settings
 
@@ -26,16 +26,16 @@ if TYPE_CHECKING:
 from forensia.ai.prompts.prompt_context import (
     _build_event_id_guidance,
     _build_schema_guidance,
-    _collect_event_ids,
     _collect_source_verdicts,
     _format_evidence_coverage,
     _format_evidence_row,
     _lang_instruction,
     _rows_to_markdown_table,
-    _slim_report_brief_for_section,
     _summarize_context_sections,
     _time_range_guidance,
-    _truncate_context_sections,
+    collect_event_ids,
+    slim_report_brief_for_section,
+    truncate_context_sections,
 )
 from forensia.ai.prompts.prompt_playbook import (
     _dfir_playbook,
@@ -119,7 +119,7 @@ def build_report_section_messages(
     app_cat = (
         ", ".join(
             f"{e}={i.get('category', '?')}"
-            for e, i in _load_app_catalog().get("mappings", {}).items()
+            for e, i in load_app_catalog().get("mappings", {}).items()
         )
         or "see investigation framework"
     )
@@ -128,7 +128,7 @@ def build_report_section_messages(
 
     _pb_ids: set[int] | None = get_profile_event_ids()
     if _pb_ids is not None:
-        collected = _collect_event_ids(evidence_results)
+        collected = collect_event_ids(evidence_results)
         if collected:
             _pb_ids.update(collected)
     exec_rules = ""
@@ -162,7 +162,7 @@ def build_report_section_messages(
         raw_block = f"\nnormalized_evidence_rows (summaries only; do not mirror raw tables):\n{_rows_to_markdown_table(raw_evidence_rows)}\n"
     user = (
         f"section_meta: {section_meta}\ncurrent_subsection: {section_heading or '(full section)'}\n"
-        f"report_brief: {_slim_report_brief_for_section(report_brief or {}, str(section_meta.get('section') or ''))}\n"
+        f"report_brief: {slim_report_brief_for_section(report_brief or {}, str(section_meta.get('section') or ''))}\n"
         f"{_section_context_block(context_sections, current_section_outline or [])}"
         f"{_section_verification_block(verification_notes)}"
         f"evidence_results: {evidence}\n{raw_block}\n"
@@ -368,8 +368,8 @@ Output: {"action": "keypoint", "keypoint": "overview_hosts", "purpose": "List ho
         f"block_heading: {block_heading}\n\n"
         f"template_block:\n{template_body}\n\n"
         f"structured_memory_context:\n{memory_context_md}\n\n"
-        f"report_brief: {_slim_report_brief_for_section(report_brief, section_key)}\n\n"
-        f"previous_sections: {_truncate_context_sections(context_sections)}\n\n"
+        f"report_brief: {slim_report_brief_for_section(report_brief, section_key)}\n\n"
+        f"previous_sections: {truncate_context_sections(context_sections)}\n\n"
         f"current_section_outline: {_format_outline(current_section_outline or [])}\n\n"
         f"findings_snapshot: {findings_snapshot[:10]}\n\n"
         f"reusable_section_facts: {reusable_facts[:12]}\n\n"

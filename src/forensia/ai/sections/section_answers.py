@@ -147,7 +147,7 @@ def _format_structured_answer(
     )
 
 
-def _format_question_answer(
+def format_question_answer(
     classification: dict,
     picked_rows: list[dict],
     expected_shape: dict | None,
@@ -236,7 +236,7 @@ def _cloud_service_marker_map() -> dict[str, tuple[str, ...]]:
     )
 
 
-def _build_daily_session_timeline(
+def build_daily_session_timeline(
     db: CaseDB,
     qualifiers: dict[str, str | None] | None = None,
 ) -> list[dict[str, Any]]:
@@ -448,7 +448,7 @@ def _extract_full_scan(
     return [item for item in rows if not _all_values_empty(item)]
 
 
-def _extract_answer_by_shape(
+def extract_answer_by_shape(
     raw_rows: list[dict],
     expected_shape: dict | None,
     shape_format: str,
@@ -503,7 +503,7 @@ def _flatten_sample_rows(
     return flat
 
 
-def _is_effectively_empty_body(body: str) -> bool:
+def is_effectively_empty_body(body: str) -> bool:
     """Return True when narration produced no useful prose beyond a status marker."""
     text = str(body or "").strip()
     if not text:

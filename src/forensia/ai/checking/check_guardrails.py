@@ -11,12 +11,12 @@ from typing import Any
 from forensia.ai.checking.check_normalize import (
     _collect_observed_evidence_ids,
     _filter_evidence_references,
-    _filter_memory_updates,
     _has_zero_evidence,
     _normalize_finding_updates,
     _normalize_verdict,
     _parse_timestamp,
-    _validate_extracted_findings,
+    filter_memory_updates,
+    validate_extracted_findings,
 )
 from forensia.ai.prompts.prompt_investigation import (
     _load_benign_context_rules,
@@ -232,7 +232,7 @@ def _co_observation_satisfied(
     return (False, "; ".join(parts))
 
 
-def _verify_verdict_consistency(
+def verify_verdict_consistency(
     verdict: str,
     rationale: str,
     hypothesis,
@@ -363,7 +363,7 @@ def _verify_verdict_consistency(
     return verdict, None
 
 
-def _guardrail_check_payload(
+def guardrail_check_payload(
     parsed: dict[str, Any],
     finding_candidates: list[dict[str, Any]],
     result_summary: dict[str, Any],
@@ -408,13 +408,13 @@ def _guardrail_check_payload(
             observed_evidence_ids,
         ),
         "new_hypotheses": parsed.get("new_hypotheses"),
-        "memory_updates": _filter_memory_updates(
+        "memory_updates": filter_memory_updates(
             parsed.get("memory_updates"),
             observed_evidence_ids,
             sample_rows=result_summary.get("sample_rows"),
         ),
         "report_text": parsed.get("report_text") or "",
-        "extracted_findings": _validate_extracted_findings(
+        "extracted_findings": validate_extracted_findings(
             parsed.get("extracted_findings"),
             observed_evidence_ids,
         ),

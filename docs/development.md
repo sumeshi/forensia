@@ -75,7 +75,7 @@ Keep the test suite finishing in seconds.
 - **Do not write tests that make real LLM calls**. A full cycle of `investigate(...)` or a real-server-dependent section refresh has too many side effects (DuckDB writes, memory I/O, file walks) to stay lightweight. When exercising `run_section_block_agent` and similar, keep it within structured answer / deterministic builder / mocked JSON responses
 - **Do not write tests that hit a real LLM server**. The previous `tests/test_benchmark_e2e_real_llm.py` (gated by `FORENSIA_LLM_BASE_URL`) was removed for the same reason
 - Instead, cover with: unit tests for pure-function helpers (`_quality_gate_section`, `_render_structured_answer_markdown`, etc.), DB-only persistence tests, and CLI / HTTP tests that do not import the LLM module
-- **Determinism-gate regression tests**: verdict consistency gates, fallback demotion, memory filters, and extracted finding validation are covered in `tests/test_checker_gates.py`; early untestable resolution is covered in `tests/test_untestable_resolution.py`. Whenever you change these gates, update them at the same time
+- **Determinism-gate regression tests**: verdict consistency gates, fallback demotion, memory filters, and extracted finding validation are covered in `tests/test_checker_gates.py`; early untestable resolution is covered in `tests/test_hypothesis_seeding.py`. Whenever you change these gates, update them at the same time
 - When you genuinely want to observe investigation-loop behavior, run `forensia investigate ...` against a local model and inspect `ai_logs/` by eye. Do not turn it into a pytest
 
 ---

@@ -1,4 +1,4 @@
-"""Tests for G-8: Pre-screen telemetry availability at seeding time.
+"""Tests for pre-screening telemetry availability at hypothesis seeding time.
 
 Verifies that hypotheses requiring event IDs absent from the case are
 immediately resolved as 'untestable' during seeding, avoiding wasted LLM
@@ -10,14 +10,14 @@ from __future__ import annotations
 import tempfile
 import unittest
 
-from forensia.ai.hypotheses.seeding import _prescreen_telemetry_availability
+from forensia.ai.hypotheses.seeding import prescreen_telemetry_availability
 from forensia.core.case import Case
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
 
 
 class PrescreenTelemetryAvailabilityTests(unittest.TestCase):
-    """_prescreen_telemetry_availability resolves hypotheses with
+    """prescreen_telemetry_availability resolves hypotheses with
     entirely missing event IDs as untestable at seeding time."""
 
     def _make_session(
@@ -59,7 +59,7 @@ class PrescreenTelemetryAvailabilityTests(unittest.TestCase):
                 )
                 state.active_hypotheses = [hyp]
 
-                _prescreen_telemetry_availability(db, state, "test-session")
+                prescreen_telemetry_availability(db, state, "test-session")
 
                 # Should be resolved as untestable
                 self.assertEqual(0, len(state.active_hypotheses))
@@ -94,7 +94,7 @@ class PrescreenTelemetryAvailabilityTests(unittest.TestCase):
                 )
                 state.active_hypotheses = [hyp]
 
-                _prescreen_telemetry_availability(db, state, "test-session")
+                prescreen_telemetry_availability(db, state, "test-session")
 
                 # Should remain active (some required IDs exist)
                 self.assertEqual(1, len(state.active_hypotheses))
@@ -115,7 +115,7 @@ class PrescreenTelemetryAvailabilityTests(unittest.TestCase):
                 )
                 state.active_hypotheses = [hyp]
 
-                _prescreen_telemetry_availability(db, state, "test-session")
+                prescreen_telemetry_availability(db, state, "test-session")
 
                 self.assertEqual(1, len(state.active_hypotheses))
                 self.assertEqual(0, len(state.resolved_hypotheses))
@@ -135,7 +135,7 @@ class PrescreenTelemetryAvailabilityTests(unittest.TestCase):
                 )
                 state.active_hypotheses = [hyp]
 
-                _prescreen_telemetry_availability(db, state, "test-session")
+                prescreen_telemetry_availability(db, state, "test-session")
 
                 self.assertEqual(1, len(state.active_hypotheses))
                 self.assertEqual(0, len(state.resolved_hypotheses))
@@ -169,7 +169,7 @@ class PrescreenTelemetryAvailabilityTests(unittest.TestCase):
                 )
                 state.active_hypotheses = [hyp_active, hyp_untestable]
 
-                _prescreen_telemetry_availability(db, state, "test-session")
+                prescreen_telemetry_availability(db, state, "test-session")
 
                 self.assertEqual(1, len(state.active_hypotheses))
                 self.assertEqual("hyp-active", state.active_hypotheses[0].id)
@@ -192,7 +192,7 @@ class PrescreenTelemetryAvailabilityTests(unittest.TestCase):
                 )
                 state.active_hypotheses = [hyp]
 
-                _prescreen_telemetry_availability(db, state, "test-session")
+                prescreen_telemetry_availability(db, state, "test-session")
 
                 resolved = state.resolved_hypotheses[0]
                 self.assertEqual("untestable", resolved.verdict)
@@ -217,7 +217,7 @@ class PrescreenTelemetryAvailabilityTests(unittest.TestCase):
                 state.active_hypotheses = [hyp]
 
                 # Should not crash
-                _prescreen_telemetry_availability(db, state, "test-session")
+                prescreen_telemetry_availability(db, state, "test-session")
 
                 # With no available event_ids, ALL required are missing → untestable
                 self.assertEqual(0, len(state.active_hypotheses))
@@ -239,7 +239,7 @@ class PrescreenTelemetryAvailabilityTests(unittest.TestCase):
                 )
                 state.active_hypotheses = [hyp]
 
-                _prescreen_telemetry_availability(db, state, "test-session")
+                prescreen_telemetry_availability(db, state, "test-session")
 
                 self.assertEqual(1, len(state.active_hypotheses))
                 self.assertEqual(0, len(state.resolved_hypotheses))

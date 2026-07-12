@@ -70,7 +70,7 @@ def _filter_valid_entities(raw: list[Any]) -> list[str]:
 
 # Hypothesis-construction helpers (moved from report_gap.py to break the
 # report_gap <-> hypothesis_manager import cycle; report_gap re-imports them).
-def _gap_hypothesis_id(description: str) -> str:
+def gap_hypothesis_id(description: str) -> str:
     """Generate a deterministic hypothesis ID from a gap description using SHA-1."""
     digest = hashlib.sha1(description.encode("utf-8")).hexdigest()[:10]
     return f"gap-{digest}"
@@ -215,7 +215,7 @@ def _merge_hypothesis_fields(existing: Hypothesis, incoming: Hypothesis) -> Hypo
     )
 
 
-def _hypothesis_evidence_strength(hypothesis: Hypothesis) -> int:
+def hypothesis_evidence_strength(hypothesis: Hypothesis) -> int:
     """Score the evidence footing of a hypothesis.
 
     Returns an integer score used for conflict resolution when a new
@@ -250,7 +250,7 @@ def _hypothesis_tokens(description: str) -> set[str]:
     }
 
 
-def _extract_semantic_triple(description: str) -> dict[str, str]:
+def extract_semantic_triple(description: str) -> dict[str, str]:
     """Extract (actor, action, target) triple from a hypothesis description."""
     text = str(description or "").strip().casefold()
     actor = ""
@@ -295,8 +295,8 @@ def _extract_semantic_triple(description: str) -> dict[str, str]:
 
 def _semantic_hypothesis_similarity(left: str, right: str) -> float:
     """Compute similarity using (actor, action, target) triples."""
-    left_triple = _extract_semantic_triple(left)
-    right_triple = _extract_semantic_triple(right)
+    left_triple = extract_semantic_triple(left)
+    right_triple = extract_semantic_triple(right)
     matches = 0
     for key in ("actor", "action", "target"):
         lv = left_triple.get(key, "").strip().lower()
@@ -309,7 +309,7 @@ def _semantic_hypothesis_similarity(left: str, right: str) -> float:
     return matches / 3
 
 
-def _hypothesis_similarity(left: str, right: str) -> float:
+def hypothesis_similarity(left: str, right: str) -> float:
     """Compute similarity between two hypothesis descriptions using token overlap and semantic triples."""
     left_tokens = _hypothesis_tokens(left)
     right_tokens = _hypothesis_tokens(right)
@@ -320,8 +320,8 @@ def _hypothesis_similarity(left: str, right: str) -> float:
         return 0.0
     surface_score = len(left_tokens & right_tokens) / len(union)
     semantic_score = _semantic_hypothesis_similarity(left, right)
-    left_triple = _extract_semantic_triple(left)
-    right_triple = _extract_semantic_triple(right)
+    left_triple = extract_semantic_triple(left)
+    right_triple = extract_semantic_triple(right)
     all_unknown = all(v == "unknown" for v in left_triple.values()) or all(
         v == "unknown" for v in right_triple.values()
     )
@@ -338,7 +338,7 @@ def _best_hypothesis_match(
     best_hypothesis: Hypothesis | None = None
     best_score = 0.0
     for hypothesis in hypotheses:
-        score = _hypothesis_similarity(hypothesis.description, description)
+        score = hypothesis_similarity(hypothesis.description, description)
         if score > best_score:
             best_score = score
             best_hypothesis = hypothesis

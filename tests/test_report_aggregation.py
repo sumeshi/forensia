@@ -1,4 +1,4 @@
-"""Tests for report aggregation consistency (RPT-03, RPT-04).
+"""Tests for report aggregation consistency.
 
 Why this matters: the report's Key Findings table (Overview) and Action Plan
 table (Recommendations) must report the same `(N)` count for a given finding
@@ -85,7 +85,7 @@ class TestFindingThemeConfiguration(unittest.TestCase):
 
 
 class TestFindingThemeCountsConsistency(unittest.TestCase):
-    """RPT-03: Key Findings and Action Plan must read the same theme counts."""
+    """Key Findings and Action Plan must read the same theme counts."""
 
     def test_theme_counts_match_across_key_findings_and_action_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -245,7 +245,7 @@ class TestAntiforensicTableDeduplication(unittest.TestCase):
 
 
 class TestLocalMachineAccount4648Demotion(unittest.TestCase):
-    """RPT-04: self-host machine-account 4648 should not top the rankings,
+    """Self-host machine-account 4648 should not top the rankings,
     and exact duplicate finding titles must be collapsed."""
 
     def test_local_machine_account_4648_is_not_top_ranked(self) -> None:

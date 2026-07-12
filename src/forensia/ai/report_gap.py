@@ -11,8 +11,8 @@ from pydantic import BaseModel, Field, field_validator
 from forensia.ai.hypotheses.hypothesis_manager import admit_new_hypothesis
 from forensia.ai.hypotheses.hypothesis_model import (
     _extract_entities_from_text,
-    _gap_hypothesis_id,
     _propose_confirm_when,
+    gap_hypothesis_id,
 )
 from forensia.ai.hypotheses.hypothesis_store import _upsert_hypothesis
 from forensia.core.memory import MemoryManager
@@ -92,7 +92,7 @@ def _build_report_status(
                 "update_count": int(row.get("update_count") or 0),
                 "gap_count": len(gaps) if isinstance(gaps, list) else 0,
                 "gaps": gaps if isinstance(gaps, list) else [],
-                "gap_hypothesis_ids": [_gap_hypothesis_id(str(gap)) for gap in gaps]
+                "gap_hypothesis_ids": [gap_hypothesis_id(str(gap)) for gap in gaps]
                 if isinstance(gaps, list)
                 else [],
                 "body": str(row.get("body") or ""),
@@ -136,7 +136,7 @@ def _overlay_report_status(
     }
 
 
-def _report_cycle_progress(previous: dict[str, int], current: dict[str, int]) -> bool:
+def report_cycle_progress(previous: dict[str, int], current: dict[str, int]) -> bool:
     """Check whether the report made progress (fewer gaps or more content) since the last cycle."""
     return current.get("total_gaps", 0) < previous.get("total_gaps", 0) or current.get(
         "total_body_chars", 0
@@ -175,7 +175,7 @@ def _has_internal_db_signals(text: str) -> bool:
     return False
 
 
-def _classify_gap_kind(description: str) -> str:
+def classify_gap_kind(description: str) -> str:
     """Determine whether a gap requires external lookup, human decision, or internal DB check.
 
     Routing priority:
@@ -263,7 +263,7 @@ def _parse_gap_hypothesis_output(
 # Imported above.
 
 
-def _inject_gap_hypotheses(
+def inject_gap_hypotheses(
     db: CaseDB,
     state: SessionState,
     gaps: list[str],
@@ -290,7 +290,7 @@ def _inject_gap_hypotheses(
 
         # Build a candidate hypothesis for the unified admission gate
         candidate = Hypothesis(
-            id=_gap_hypothesis_id(gap),
+            id=gap_hypothesis_id(gap),
             description=gap,
             status="active",
             verdict=None,
@@ -304,7 +304,7 @@ def _inject_gap_hypotheses(
         if not ok:
             continue
 
-        gap_kind = _classify_gap_kind(gap)
+        gap_kind = classify_gap_kind(gap)
         if gap_kind != "internal_db_check":
             if memory is not None:
                 memory.append_task(gap, gap_kind)

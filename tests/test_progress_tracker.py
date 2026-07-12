@@ -1,4 +1,4 @@
-"""Unit tests for RPT-01: co-occurrence auto-confirm gate (progress.py).
+"""Unit tests for the co-occurrence auto-confirm gate in ai/progress.py.
 
 Co-occurrence of event IDs is correlation, not proof of maliciousness.
 Gap/follow-up-derived hypotheses (empty source_rule_ids) often get a

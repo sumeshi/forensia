@@ -3,21 +3,21 @@ from __future__ import annotations
 import unittest
 
 from forensia.ai.prompts.sql_schema import (
-    _load_app_catalog,
-    _load_fp_reduction_guidance,
-    _load_logon_type_schema,
     build_investigation_framework,
+    load_app_catalog,
+    load_fp_reduction_guidance,
+    load_logon_type_schema,
 )
 
 
 class SqlSchemaYamlLoadingTests(unittest.TestCase):
     def setUp(self):
-        _load_logon_type_schema.cache_clear()
-        _load_app_catalog.cache_clear()
-        _load_fp_reduction_guidance.cache_clear()
+        load_logon_type_schema.cache_clear()
+        load_app_catalog.cache_clear()
+        load_fp_reduction_guidance.cache_clear()
 
     def test_load_logon_type_schema_returns_known_types(self):
-        schema = _load_logon_type_schema()
+        schema = load_logon_type_schema()
         self.assertIn("types", schema)
         types = schema["types"]
         for key in ("2", "3", "5", "10"):
@@ -28,12 +28,12 @@ class SqlSchemaYamlLoadingTests(unittest.TestCase):
         self.assertEqual(types["10"]["name"], "RemoteInteractive")
 
     def test_load_logon_type_schema_priority_events(self):
-        schema = _load_logon_type_schema()
+        schema = load_logon_type_schema()
         self.assertIn("priority_events", schema)
         self.assertGreaterEqual(len(schema["priority_events"]), 6)
 
     def test_load_app_catalog_returns_mappings_and_benign(self):
-        cat = _load_app_catalog()
+        cat = load_app_catalog()
         self.assertIn("mappings", cat)
         self.assertIn("benign_known", cat)
         self.assertIn("SCHTASKS.EXE", cat["mappings"])
@@ -42,13 +42,13 @@ class SqlSchemaYamlLoadingTests(unittest.TestCase):
         )
 
     def test_load_app_catalog_common_patterns(self):
-        cat = _load_app_catalog()
+        cat = load_app_catalog()
         self.assertIn("common_patterns", cat)
         self.assertIn("windows_update", cat["common_patterns"])
         self.assertIn("cloud_sync", cat["common_patterns"])
 
     def test_load_fp_reduction_guidance_returns_non_empty(self):
-        guidance = _load_fp_reduction_guidance()
+        guidance = load_fp_reduction_guidance()
         self.assertIsInstance(guidance, str)
         self.assertTrue(guidance.startswith("False-positive reduction"))
         self.assertIn("NORMAL", guidance)
@@ -56,7 +56,7 @@ class SqlSchemaYamlLoadingTests(unittest.TestCase):
         self.assertIn("Lower confidence", guidance)
 
     def test_load_fp_reduction_guidance_contains_yaml_content(self):
-        guidance = _load_fp_reduction_guidance()
+        guidance = load_fp_reduction_guidance()
         self.assertIn("LogonType=3", guidance)
         self.assertIn("LogonType=5", guidance)
         self.assertIn("ADMIN$", guidance)
@@ -90,16 +90,16 @@ class SqlSchemaYamlLoadingTests(unittest.TestCase):
         self.assertIn("= RemoteInteractive", framework)
 
     def test_repeated_calls_return_consistent_results(self):
-        schema_a = _load_logon_type_schema()
-        schema_b = _load_logon_type_schema()
+        schema_a = load_logon_type_schema()
+        schema_b = load_logon_type_schema()
         self.assertIs(schema_a, schema_b)
 
-        cat_a = _load_app_catalog()
-        cat_b = _load_app_catalog()
+        cat_a = load_app_catalog()
+        cat_b = load_app_catalog()
         self.assertIs(cat_a, cat_b)
 
-        fp_a = _load_fp_reduction_guidance()
-        fp_b = _load_fp_reduction_guidance()
+        fp_a = load_fp_reduction_guidance()
+        fp_b = load_fp_reduction_guidance()
         self.assertIs(fp_a, fp_b)
 
         fw_a = build_investigation_framework()

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from forensia.ai.memory_sync import _apply_memory_updates
+from forensia.ai.memory_sync import apply_memory_updates
 from forensia.config import (
     reload_settings,
     resolve_llm_config,
@@ -38,7 +38,7 @@ class MemorySyncTests(unittest.TestCase):
                     ) VALUES ('HR-1', 'H-1', 'S-1', 1, 'check', 'confirmed', 'Q-1', 'Reasoning body', now())
                     """
                 )
-                _apply_memory_updates(
+                apply_memory_updates(
                     memory=memory,
                     active_hypotheses=[
                         Hypothesis(
@@ -73,7 +73,7 @@ class MemorySyncTests(unittest.TestCase):
                         "body": "body",
                     }
                 ]
-                _apply_memory_updates(
+                apply_memory_updates(
                     memory=memory,
                     active_hypotheses=[
                         Hypothesis(
@@ -103,7 +103,7 @@ class MemorySyncTests(unittest.TestCase):
             self.assertIn("## Reasoning", active_text)
             self.assertNotIn("## Reasoning", resolved_text)
 
-    def test_r2_10_overview_writes_only_on_state_transitions(self) -> None:
+    def test_overview_writes_only_on_state_transitions(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
@@ -114,7 +114,7 @@ class MemorySyncTests(unittest.TestCase):
 
             # 5 inconclusive checks → overview unchanged
             for i in range(5):
-                _apply_memory_updates(
+                apply_memory_updates(
                     memory=memory,
                     active_hypotheses=[
                         Hypothesis(
@@ -138,7 +138,7 @@ class MemorySyncTests(unittest.TestCase):
             )
 
             # 1 confirmed → overview grows
-            _apply_memory_updates(
+            apply_memory_updates(
                 memory=memory,
                 active_hypotheses=[
                     Hypothesis(
@@ -161,7 +161,7 @@ class MemorySyncTests(unittest.TestCase):
                 "overview should grow after confirmed verdict",
             )
 
-    def test_r2_10_new_nonobserved_entity_triggers_overview(self) -> None:
+    def test_new_nonobserved_entity_triggers_overview(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
@@ -170,7 +170,7 @@ class MemorySyncTests(unittest.TestCase):
             )
 
             # Inconclusive but with a new entity (role ≠ observed_user)
-            _apply_memory_updates(
+            apply_memory_updates(
                 memory=memory,
                 active_hypotheses=[
                     Hypothesis(
@@ -200,7 +200,7 @@ class MemorySyncTests(unittest.TestCase):
                 "new entity with role ≠ observed_user triggers overview",
             )
 
-    def test_r2_10_first_artifact_family_triggers_overview(self) -> None:
+    def test_first_artifact_family_triggers_overview(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
@@ -208,7 +208,7 @@ class MemorySyncTests(unittest.TestCase):
                 "# Investigation Overview\n\n## Key Findings\n- none\n"
             )
 
-            _apply_memory_updates(
+            apply_memory_updates(
                 memory=memory,
                 active_hypotheses=[
                     Hypothesis(
@@ -233,7 +233,7 @@ class MemorySyncTests(unittest.TestCase):
                 "first artifact family triggers overview",
             )
 
-    def test_r2_10_fact_truncation_at_word_boundary(self) -> None:
+    def test_fact_truncation_at_word_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
@@ -272,7 +272,7 @@ class MemorySyncTests(unittest.TestCase):
                     len(preview), 160, "untruncated preview ≤ 160 chars"
                 )
 
-    def test_r2_10_fact_truncation_never_mid_word(self) -> None:
+    def test_fact_truncation_never_mid_word(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
@@ -303,7 +303,7 @@ class MemorySyncTests(unittest.TestCase):
                         "truncation should occur at a space word boundary",
                     )
 
-    def test_r2_10_task_jaccard_dedup(self) -> None:
+    def test_task_jaccard_dedup(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
@@ -336,7 +336,7 @@ class MemorySyncTests(unittest.TestCase):
                 "only 2 unique tasks after dedup (2 paraphrased → 1, + 1 unique)",
             )
 
-    def test_r2_10_task_human_decision_cap_at_10(self) -> None:
+    def test_task_human_decision_cap_at_10(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
@@ -529,7 +529,7 @@ class MemorySyncTests(unittest.TestCase):
             self.assertGreater(content_idx, scope_idx)
             self.assertLess(content_idx, kf_idx)
 
-    def test_r2_10_inconclusive_without_transition_writes_nothing(self) -> None:
+    def test_inconclusive_without_transition_writes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
@@ -539,7 +539,7 @@ class MemorySyncTests(unittest.TestCase):
             overview_before = memory.load_overview()
 
             # Inconclusive with no new entities, no new families
-            _apply_memory_updates(
+            apply_memory_updates(
                 memory=memory,
                 active_hypotheses=[
                     Hypothesis(

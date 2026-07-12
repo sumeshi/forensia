@@ -121,7 +121,7 @@ def _row_to_hypothesis(row: dict[str, Any]) -> Hypothesis:
     )
 
 
-def _load_persisted_hypotheses(db: CaseDB) -> tuple[list[Hypothesis], list[Hypothesis]]:
+def load_persisted_hypotheses(db: CaseDB) -> tuple[list[Hypothesis], list[Hypothesis]]:
     """Load all hypotheses from the database, partitioned into active and resolved."""
     rows = fetch_records(
         db,

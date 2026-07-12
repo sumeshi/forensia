@@ -1,4 +1,4 @@
-"""Tests for log-integrity keypoint selection (RPT-08).
+"""Tests for log-integrity keypoint selection,
 
 Why this matters: the report's "Log Integrity" section is seeded from
 `timeline_log_clearing` / `gaps_log_integrity_events`. If these keypoints do

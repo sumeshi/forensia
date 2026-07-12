@@ -5,16 +5,16 @@ import unittest
 from datetime import UTC, datetime
 from unittest.mock import patch
 
-from forensia.ai.checking.check_apply import _insert_investigation_finding
-from forensia.ai.hypotheses.hypothesis_manager import _merge_active_hypotheses
-from forensia.ai.hypotheses.hypothesis_store import _load_persisted_hypotheses
-from forensia.ai.investigation_session import _append_hypothesis_reasoning
-from forensia.ai.investigator import _final_summary
+from forensia.ai.checking.check_apply import insert_investigation_finding
+from forensia.ai.hypotheses.hypothesis_manager import merge_active_hypotheses
+from forensia.ai.hypotheses.hypothesis_store import load_persisted_hypotheses
+from forensia.ai.investigation_session import append_hypothesis_reasoning
+from forensia.ai.investigator import final_summary
 from forensia.ai.report_gap import (
-    _classify_gap_kind,
-    _gap_hypothesis_id,
-    _inject_gap_hypotheses,
-    _report_cycle_progress,
+    classify_gap_kind,
+    gap_hypothesis_id,
+    inject_gap_hypotheses,
+    report_cycle_progress,
 )
 from forensia.config import (
     reload_settings,
@@ -111,7 +111,7 @@ class PersistenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                first = _append_hypothesis_reasoning(
+                first = append_hypothesis_reasoning(
                     db=db,
                     hypothesis_id="H-1",
                     session_id="S-1",
@@ -120,7 +120,7 @@ class PersistenceTests(unittest.TestCase):
                     query_id="q-1",
                     body="look for 4625 burst",
                 )
-                second = _append_hypothesis_reasoning(
+                second = append_hypothesis_reasoning(
                     db=db,
                     hypothesis_id="H-1",
                     session_id="S-1",
@@ -161,7 +161,7 @@ class PersistenceTests(unittest.TestCase):
                         now,
                     ),
                 )
-                active, resolved = _load_persisted_hypotheses(db)
+                active, resolved = load_persisted_hypotheses(db)
 
             self.assertEqual(0, len(active))
             self.assertEqual(1, len(resolved))
@@ -230,7 +230,7 @@ class PersistenceTests(unittest.TestCase):
                         summary="done",
                     ),
                 ]
-                merged = _merge_active_hypotheses(
+                merged = merge_active_hypotheses(
                     db=db,
                     current=current,
                     updates=updates,
@@ -263,7 +263,7 @@ class PersistenceTests(unittest.TestCase):
                         ('H-010', 'RDP lateral movement to deploy service', 'active', NULL, '', 'broad_plan', 'S-1', NULL, now(), now(), '["rule-1"]', '["host"]', NULL)
                     """
                 )
-                merged = _merge_active_hypotheses(
+                merged = merge_active_hypotheses(
                     db=db,
                     current=[
                         Hypothesis(
@@ -296,13 +296,13 @@ class PersistenceTests(unittest.TestCase):
 
     def test_report_cycle_progress_can_be_true_from_gap_reduction_alone(self) -> None:
         self.assertTrue(
-            _report_cycle_progress(
+            report_cycle_progress(
                 {"total_gaps": 3, "total_body_chars": 120},
                 {"total_gaps": 2, "total_body_chars": 120},
             )
         )
         self.assertFalse(
-            _report_cycle_progress(
+            report_cycle_progress(
                 {"total_gaps": 2, "total_body_chars": 120},
                 {"total_gaps": 2, "total_body_chars": 120},
             )
@@ -313,10 +313,10 @@ class PersistenceTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 state = SessionState(session_id="session-test")
-                added = _inject_gap_hypotheses(
+                added = inject_gap_hypotheses(
                     db, state, ["foo bar"], session_id="session-test"
                 )
-                duplicate = _inject_gap_hypotheses(
+                duplicate = inject_gap_hypotheses(
                     db, state, ["foo bar"], session_id="session-test"
                 )
                 rows = db.execute(
@@ -327,10 +327,10 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual(0, duplicate)
             self.assertEqual(1, len(state.active_hypotheses))
             self.assertEqual(
-                _gap_hypothesis_id("foo bar"), state.active_hypotheses[0].id
+                gap_hypothesis_id("foo bar"), state.active_hypotheses[0].id
             )
             self.assertEqual(
-                [(_gap_hypothesis_id("foo bar"), "report_gap", "active", "foo bar")],
+                [(gap_hypothesis_id("foo bar"), "report_gap", "active", "foo bar")],
                 rows,
             )
 
@@ -340,7 +340,7 @@ class PersistenceTests(unittest.TestCase):
             memory = MemoryManager(case)
             with CaseDB(case) as db:
                 state = SessionState(session_id="session-test")
-                added = _inject_gap_hypotheses(
+                added = inject_gap_hypotheses(
                     db,
                     state,
                     ["Check src_ip ownership", "Manager interview needed"],
@@ -350,10 +350,10 @@ class PersistenceTests(unittest.TestCase):
                 row_count = db.execute("SELECT COUNT(*) FROM hypotheses").fetchone()[0]
 
             self.assertEqual(
-                "external_lookup", _classify_gap_kind("Check src_ip ownership")
+                "external_lookup", classify_gap_kind("Check src_ip ownership")
             )
             self.assertEqual(
-                "human_decision", _classify_gap_kind("Manager interview needed")
+                "human_decision", classify_gap_kind("Manager interview needed")
             )
             self.assertEqual(0, added)
             self.assertEqual(0, row_count)
@@ -370,20 +370,20 @@ class PersistenceTests(unittest.TestCase):
             "Perform geo lookup for the source IP",
             "This requires external internet confirmation",
         ):
-            self.assertEqual("external_lookup", _classify_gap_kind(phrase))
+            self.assertEqual("external_lookup", classify_gap_kind(phrase))
         for phrase in (
             "Need manager approval before concluding",
             "Confirm with the business owner",
             "Schedule a stakeholder hearing for this finding",
         ):
-            self.assertEqual("human_decision", _classify_gap_kind(phrase))
+            self.assertEqual("human_decision", classify_gap_kind(phrase))
 
     def test_final_summary_fallback_follows_output_language(self) -> None:
         with patch.dict("os.environ", {"LLM_OUTPUT_LANGUAGE": "en"}):
             reload_settings()
             self.assertEqual(
                 "No additional progress was made during this investigation.",
-                _final_summary(SessionState(session_id="S-1")),
+                final_summary(SessionState(session_id="S-1")),
             )
             reload_settings()
 
@@ -399,7 +399,7 @@ class PersistenceTests(unittest.TestCase):
             with patch.dict("os.environ", {"LLM_OUTPUT_LANGUAGE": "ja"}):
                 reload_settings()
                 with CaseDB(case) as db:
-                    finding_id = _insert_investigation_finding(
+                    finding_id = insert_investigation_finding(
                         db=db,
                         session_id="S-1",
                         planned_query=planned_query,

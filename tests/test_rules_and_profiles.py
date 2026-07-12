@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from forensia.ai.hypotheses.seeding import _seed_findings
+from forensia.ai.hypotheses.seeding import seed_findings
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.normalize.evtx import normalize_evtx
@@ -90,7 +90,7 @@ class RuleProfileTests(unittest.TestCase):
                     ),
                 )
 
-                _seed_findings(case, db, "windows-basic")
+                seed_findings(case, db, "windows-basic")
                 row = db.execute(
                     """
                     SELECT evidence FROM findings

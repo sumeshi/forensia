@@ -18,13 +18,13 @@ from forensia.ai.sections.section_block_context import (
 from forensia.ai.sections.section_exec import (
     SectionPlanAction,
     _classify_block_status,
-    _coerce_plan_action,
     _execute_evidence_chain,
     _execute_keypoint,
     _execute_sql,
     _is_valid_status,
     _split_keypoint_names,
     _summarize_sql_result,
+    coerce_plan_action,
 )
 from forensia.ai.sections.section_run_store import (
     _store_section_evidence,
@@ -96,7 +96,7 @@ def _run_block_plan(
         phase="plan",
         payload=plan,
     )
-    return _coerce_plan_action(
+    return coerce_plan_action(
         plan, section_key=ctx.section_key, iteration=iteration, db=ctx.db
     )
 

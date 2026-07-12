@@ -141,7 +141,7 @@ def _retry_sql_composer(
     return parsed
 
 
-def _request_with_optional_context(
+def request_with_optional_context(
     memory: MemoryManager,
     messages_builder: Callable[[str], list[dict[str, str]]],
     base_url: str,
@@ -376,7 +376,7 @@ def _plan_query_intent(
 
     Returns (intent_response, composer_schema_card for the chosen target table).
     """
-    intent_response = _request_with_optional_context(
+    intent_response = request_with_optional_context(
         memory=memory,
         messages_builder=intent_messages_builder,
         base_url=base_url,
@@ -404,7 +404,7 @@ def _plan_query_intent(
             status_callback(
                 f"SQL self-check blocked: {self_check.get('blockers', '')}. Retrying intent..."
             )
-        intent_response = _request_with_optional_context(
+        intent_response = request_with_optional_context(
             memory=memory,
             messages_builder=intent_messages_builder,
             base_url=base_url,

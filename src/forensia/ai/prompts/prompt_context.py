@@ -170,7 +170,7 @@ def _lang_instruction() -> str:
 _RULE_INSTANCE_SUFFIX = re.compile(r"-(\d{4,})$")
 
 
-def _truncate_context_sections(
+def truncate_context_sections(
     context_sections: dict[str, str], max_chars: int = 1500
 ) -> dict[str, str]:
     """Trim each section body to max_chars to fit within LLM token budget."""
@@ -203,7 +203,7 @@ def _slim_brief_items(
     return slim
 
 
-def _slim_report_brief_for_section(report_brief: dict, section_key: str) -> dict:
+def slim_report_brief_for_section(report_brief: dict, section_key: str) -> dict:
     """Return case-level report context scoped to the current section."""
     if not report_brief:
         return {}
@@ -371,7 +371,7 @@ def _build_schema_guidance(
     return "\n".join(blocks) + "\n" + _sql_cookbook()
 
 
-def _collect_event_ids(evidence_results: list[dict[str, Any]]) -> list[int]:
+def collect_event_ids(evidence_results: list[dict[str, Any]]) -> list[int]:
     event_ids: list[int] = []
     seen: set[int] = set()
     for result in evidence_results:
@@ -400,7 +400,7 @@ def _build_event_id_guidance(evidence_results: list[dict[str, Any]]) -> str:
     if not event_hints:
         return ""
     parts: list[str] = []
-    for event_id in _collect_event_ids(evidence_results):
+    for event_id in collect_event_ids(evidence_results):
         hint = event_hints.get(event_id)
         if not hint:
             continue

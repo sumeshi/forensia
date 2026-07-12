@@ -116,7 +116,7 @@ def _load_report_sections(db: CaseDB) -> tuple[list[dict[str, Any]], str]:
     return sections, report_markdown
 
 
-def _render_inline_markdown(text: str) -> str:
+def render_inline_markdown(text: str) -> str:
     """Render basic inline Markdown (code, bold, italic) to HTML, escaping the rest."""
     escaped = escape(text)
     rendered = re.sub(r"`([^`]+)`", r"<code>\1</code>", str(escaped))
@@ -254,13 +254,13 @@ def _render_table(table_lines: list[str]) -> str:
         if len(table_lines) >= 2 and _is_table_separator(table_lines[1])
         else table_lines[1:]
     )
-    thead = "".join(f"<th>{_render_inline_markdown(cell)}</th>" for cell in headers)
+    thead = "".join(f"<th>{render_inline_markdown(cell)}</th>" for cell in headers)
     rows = []
     for line in body_lines:
         cells = _split_table_row(line)
         td_list: list[str] = []
         for cell in cells:
-            cell_html = _render_inline_markdown(cell)
+            cell_html = render_inline_markdown(cell)
             m = _EVIDENCE_ONLY_CELL_RE.match(str(cell_html))
             if m:
                 cell_html = Markup(
@@ -287,7 +287,7 @@ def _flush_paragraph(state: _MdState) -> None:
     if not state.paragraph_lines:
         return
     content = "<br>".join(
-        _render_inline_markdown(line.strip())
+        render_inline_markdown(line.strip())
         for line in state.paragraph_lines
         if line.strip()
     )
@@ -303,7 +303,7 @@ def _flush_list(state: _MdState) -> None:
         return
     tag = "ol" if state.list_kind == "ol" else "ul"
     items = "".join(
-        f"<li>{_render_inline_markdown(item)}</li>" for item in state.list_items
+        f"<li>{render_inline_markdown(item)}</li>" for item in state.list_items
     )
     state.blocks.append(f"<{tag}>{items}</{tag}>")
     state.list_items = []
@@ -372,7 +372,7 @@ def _handle_heading(state: _MdState, stripped: str) -> bool:
     _flush_list(state)
     level = min(len(heading.group(1)) + 1, 6)
     state.blocks.append(
-        f"<h{level}>{_render_inline_markdown(heading.group(2).strip())}</h{level}>"
+        f"<h{level}>{render_inline_markdown(heading.group(2).strip())}</h{level}>"
     )
     return True
 

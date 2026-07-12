@@ -34,7 +34,7 @@ from forensia.ai.prompts.prompt_playbook import (
 )
 
 
-def _render_prior_attempts(recent_history: list[dict[str, Any]], limit: int = 5) -> str:
+def render_prior_attempts(recent_history: list[dict[str, Any]], limit: int = 5) -> str:
     """Render hypothesis attempt history as a compact structured block.
 
     Accepts both HistoryEntry dumps (query_id / verdict / summary /
@@ -163,7 +163,7 @@ def build_query_intent_messages(
         "<TASK>You are a query_intent_planner. Decide WHAT data to fetch for the given hypothesis. Do NOT write SQL.</TASK>\n"
         "<INPUT_SCHEMA>\n"
         f"hypothesis: {hypothesis.model_dump() if hasattr(hypothesis, 'model_dump') else hypothesis}\n"
-        f"{_render_prior_attempts(recent_history)}"
+        f"{render_prior_attempts(recent_history)}"
         f"time_range: {json.dumps(time_range, ensure_ascii=False, default=str)}\n"
         f"schema: {schema_context}\n"
         "</INPUT_SCHEMA>\n"

@@ -13,14 +13,14 @@ from forensia.ai.checking.check_apply import (
     apply_check_result,
 )
 from forensia.ai.checking.check_guardrails import (
-    _guardrail_check_payload,
-    _verify_verdict_consistency,
     annotate_benign_context,
+    guardrail_check_payload,
+    verify_verdict_consistency,
 )
 from forensia.ai.checking.check_normalize import (
     CheckResult,
     _normalize_verdict,
-    _parse_new_hypotheses,
+    parse_new_hypotheses,
 )
 from forensia.ai.llm import llm_gateway
 from forensia.ai.prompts.prompt_investigation import (
@@ -133,7 +133,7 @@ def _apply_verdict_consistency_gate(
     hypothesis: Hypothesis | None,
     result_summary: dict[str, Any],
 ) -> tuple[str, dict[str, Any]]:
-    veto_verdict, veto_reason = _verify_verdict_consistency(
+    veto_verdict, veto_reason = verify_verdict_consistency(
         verdict=verdict,
         rationale=verdict_parsed.get("rationale", ""),
         hypothesis=hypothesis,
@@ -238,7 +238,7 @@ def _build_guarded_check_result(
         "notes": "",
         "extracted_findings": extracted_findings,
     }
-    guarded = _guardrail_check_payload(
+    guarded = guardrail_check_payload(
         merged, finding_candidates, result_summary, fallback_info=fallback_info
     )
     result = CheckResult(
@@ -246,7 +246,7 @@ def _build_guarded_check_result(
         verdict=str(guarded.get("verdict") or "inconclusive"),
         finding_updates=guarded.get("finding_updates") or [],
         suspicious_evidence=guarded.get("suspicious_evidence") or [],
-        new_hypotheses=_parse_new_hypotheses(guarded.get("new_hypotheses")),
+        new_hypotheses=parse_new_hypotheses(guarded.get("new_hypotheses")),
         memory_updates=guarded.get("memory_updates") or {},
         report_text=str(guarded.get("report_text") or ""),
         new_leads=0,
@@ -277,7 +277,7 @@ def check_query_result(
     """Run the LLM-based query result check: verdict + memory + suspicious evidence.
 
     Uses phased checking (separate LLM calls for verdict, memory, and
-    suspicious evidence). Applies guardrails via _guardrail_check_payload
+    suspicious evidence). Applies guardrails via guardrail_check_payload
     and persists results via apply_check_result.
     """
     overview_md, memory_context_md = _load_check_context(

@@ -401,7 +401,7 @@ def _findings_snapshot(
     )
 
 
-def _load_reusable_section_facts(
+def load_reusable_section_facts(
     db: CaseDB,
     section_key: str,
     limit: int = 20,

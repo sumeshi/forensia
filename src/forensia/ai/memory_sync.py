@@ -292,7 +292,7 @@ def _rewrite_hypothesis_memories(ctx: _MemoryUpdateContext) -> None:
         ctx.memory.upsert_hypothesis(hypothesis.id, slug, content)
 
 
-def _apply_memory_updates(
+def apply_memory_updates(
     memory: MemoryManager,
     active_hypotheses: list[Hypothesis],
     resolved_hypotheses: list[Hypothesis],

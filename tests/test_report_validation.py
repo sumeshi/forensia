@@ -5,6 +5,7 @@ All tests use synthetic briefs — no dist/cfreds data required.
 
 from __future__ import annotations
 
+from forensia.report.evidence_refs import EVIDENCE_ID_PATTERN
 from forensia.report.report_validation import (
     check_fallback_stub,
     check_language_consistency,
@@ -267,3 +268,13 @@ class TestValidateReport:
         assert "refuted_leakage" in check_names
         assert "local_path_leak" in check_names
         assert len(findings) >= 4
+
+
+class TestEvidenceIdPattern:
+    def test_matches_current_evidence_id_formats(self) -> None:
+        assert EVIDENCE_ID_PATTERN.search("evtx-security-000000000120")
+        assert EVIDENCE_ID_PATTERN.search("mft-000000072008-00")
+
+    def test_rejects_old_evidence_id_formats(self) -> None:
+        assert EVIDENCE_ID_PATTERN.search("ev-0001") is None
+        assert EVIDENCE_ID_PATTERN.search("KP-0001") is None

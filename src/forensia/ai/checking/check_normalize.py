@@ -32,7 +32,7 @@ class CheckResult:
     raw_response: dict[str, Any]
 
 
-def _parse_new_hypotheses(items: Any) -> list[Hypothesis]:
+def parse_new_hypotheses(items: Any) -> list[Hypothesis]:
     """Parse LLM output into a list of Hypothesis objects, skipping invalid entries."""
     hypotheses: list[Hypothesis] = []
     if not isinstance(items, list):
@@ -225,7 +225,7 @@ def _filter_evidence_references(
     return filtered
 
 
-def _filter_memory_updates(
+def filter_memory_updates(
     updates: Any,
     observed_evidence_ids: set[str],
     sample_rows: list[dict[str, Any]] | None = None,
@@ -326,7 +326,7 @@ def _filter_memory_updates(
     return filtered
 
 
-def _validate_extracted_findings(
+def validate_extracted_findings(
     items: Any,
     observed_evidence_ids: set[str],
 ) -> list[dict[str, Any]]:

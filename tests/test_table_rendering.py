@@ -6,7 +6,7 @@ import unittest
 from datetime import datetime
 
 from forensia.ai.sections.section_exec import (
-    _structured_digest_from_answers,
+    structured_digest_from_answers,
 )
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
@@ -23,7 +23,7 @@ class TableRenderingTests(unittest.TestCase):
     """Table block rendering, digests, block hints, reasoning rows, HTML anchors."""
 
     def test_parse_block_hints_combined_comment_syntax(self) -> None:
-        """R5-04 follow-up: the packaged templates use the combined one-comment
+        """The packaged templates use the combined one-comment
         syntax `<!-- mode: table; builder: X -->`. The parser previously stored
         mode='table; builder: x' and never extracted the builder, so table mode
         silently never fired for any template that used it."""
@@ -48,12 +48,12 @@ class TableRenderingTests(unittest.TestCase):
         self.assertEqual("host_identity", separate["answer_spec"])
 
     def test_async_render_section_blocks_renders_table_mode_without_llm(self) -> None:
-        """R5-04 follow-up: the async render path (used by the investigate loop)
+        """The async render path (used by the investigate loop)
         must execute table builders deterministically instead of routing table
         blocks through the LLM agent."""
         import asyncio
 
-        from forensia.ai.sections.section_refresher import _render_section_blocks
+        from forensia.ai.sections.section_refresher import render_section_blocks
         from forensia.core.memory import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -85,7 +85,7 @@ class TableRenderingTests(unittest.TestCase):
                 # base_url points nowhere: if the table branch regresses into the
                 # LLM agent path, this test fails loudly instead of passing.
                 _, body = asyncio.run(
-                    _render_section_blocks(
+                    render_section_blocks(
                         request,
                         case,
                         db,
@@ -187,12 +187,12 @@ class TableRenderingTests(unittest.TestCase):
 
     def test_prepare_block_context_merges_section_table_digest(self) -> None:
         """R6-05: same-section table digest reaches the narrator context."""
-        from forensia.ai.sections.section_block_context import _prepare_block_context
+        from forensia.ai.sections.section_block_context import prepare_block_context
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                ctx = _prepare_block_context(
+                ctx = prepare_block_context(
                     case=case,
                     db=db,
                     section_key="2_timeline",
@@ -264,7 +264,7 @@ class TableRenderingTests(unittest.TestCase):
                     section_refresher, "async_run_section_block_agent", _stub_agent
                 ):
                     _, body = asyncio.run(
-                        section_refresher._render_section_blocks(
+                        section_refresher.render_section_blocks(
                             request,
                             case,
                             db,
@@ -518,7 +518,7 @@ class TableRenderingTests(unittest.TestCase):
     def test_structured_digest_empty_case(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
-            digest = _structured_digest_from_answers(case)
+            digest = structured_digest_from_answers(case)
             self.assertEqual("", digest)
 
     def test_structured_digest_from_synthetic_answers(self) -> None:
@@ -568,7 +568,7 @@ class TableRenderingTests(unittest.TestCase):
             answers_path.write_text(
                 json.dumps(synthetic, ensure_ascii=False), encoding="utf-8"
             )
-            digest = _structured_digest_from_answers(case)
+            digest = structured_digest_from_answers(case)
             self.assertIn("host_identity", digest)
             self.assertIn("antiforensic_activity", digest)
             self.assertNotIn("unused_spec", digest)
@@ -611,8 +611,8 @@ class TableRenderingTests(unittest.TestCase):
         self.assertNotIn("STRUCTURED_OBSERVATIONS", combined)
 
     def test_structured_digest_context_in_prepare_block_context(self) -> None:
-        """Verify _prepare_block_context computes digest for overview and not for appendix."""
-        from forensia.ai.sections.section_block_context import _prepare_block_context
+        """Verify prepare_block_context computes digest for overview and not for appendix."""
+        from forensia.ai.sections.section_block_context import prepare_block_context
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -635,7 +635,7 @@ class TableRenderingTests(unittest.TestCase):
                 encoding="utf-8",
             )
             with CaseDB(case) as db:
-                ctx_overview = _prepare_block_context(
+                ctx_overview = prepare_block_context(
                     case=case,
                     db=db,
                     section_key="1_overview",
@@ -651,7 +651,7 @@ class TableRenderingTests(unittest.TestCase):
                     audit_callback=None,
                     report_brief={},
                 )
-                ctx_appendix = _prepare_block_context(
+                ctx_appendix = prepare_block_context(
                     case=case,
                     db=db,
                     section_key="6_appendix",
@@ -673,9 +673,9 @@ class TableRenderingTests(unittest.TestCase):
 
 class HtmlEvidenceIdAnchorTests(unittest.TestCase):
     def test_html_evidence_id_anchor_rendering(self):
-        from forensia.report.render.html import _render_inline_markdown
+        from forensia.report.render.html import render_inline_markdown
 
-        html = _render_inline_markdown("See evtx-security-000000000001.")
+        html = render_inline_markdown("See evtx-security-000000000001.")
         self.assertIn('href="#ev-evtx-security-000000000001"', html)
         # Placeholder title (bare id); _inject_evidence_interactivity swaps in the
         # record summary when the evidence map is available.

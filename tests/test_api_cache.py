@@ -7,11 +7,11 @@ from pathlib import Path
 from unittest.mock import DEFAULT, MagicMock, patch
 
 from forensia.api.cache import (
-    _snapshot_dir,
-    _write_json,
     clear_api_snapshots,
     load_snapshot,
+    snapshot_dir,
     write_api_snapshots,
+    write_json,
 )
 
 
@@ -33,14 +33,14 @@ class TestSnapshotDir(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             case = MagicMock(spec=["reports_dir"])
             case.reports_dir = Path(td)
-            result = _snapshot_dir(case)
+            result = snapshot_dir(case)
             self.assertEqual(result, Path(td) / "api")
 
     def test_creates_directory_if_missing(self):
         with tempfile.TemporaryDirectory() as td:
             case = MagicMock(spec=["reports_dir"])
             case.reports_dir = Path(td) / "nonexistent"
-            result = _snapshot_dir(case)
+            result = snapshot_dir(case)
             self.assertTrue(result.exists())
 
     def test_returns_existing_directory(self):
@@ -48,7 +48,7 @@ class TestSnapshotDir(unittest.TestCase):
             (Path(td) / "api").mkdir(parents=True)
             case = MagicMock(spec=["reports_dir"])
             case.reports_dir = Path(td)
-            result = _snapshot_dir(case)
+            result = snapshot_dir(case)
             self.assertEqual(result, Path(td) / "api")
 
 
@@ -57,14 +57,14 @@ class TestWriteJson(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "test.json"
             data = {"a": 1, "b": [2, 3]}
-            _write_json(path, data)
+            write_json(path, data)
             self.assertTrue(path.exists())
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), data)
 
     def test_writes_with_indent(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "pretty.json"
-            _write_json(path, {"x": 1})
+            write_json(path, {"x": 1})
             text = path.read_text(encoding="utf-8")
             self.assertIn("\n", text)
 
@@ -72,7 +72,7 @@ class TestWriteJson(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "test.json"
             path.write_text('"old"', encoding="utf-8")
-            _write_json(path, {"new": "data"})
+            write_json(path, {"new": "data"})
             self.assertEqual(
                 json.loads(path.read_text(encoding="utf-8")), {"new": "data"}
             )
@@ -84,7 +84,7 @@ class TestLoadSnapshot(unittest.TestCase):
             case = MagicMock(spec=["reports_dir"])
             case.reports_dir = Path(td)
             data = {"key": "value", "num": 42}
-            _write_json(_snapshot_dir(case) / "test.json", data)
+            write_json(snapshot_dir(case) / "test.json", data)
             result = load_snapshot(case, "test.json")
             self.assertEqual(result, data)
 
@@ -100,7 +100,7 @@ class TestLoadSnapshot(unittest.TestCase):
             case = MagicMock(spec=["reports_dir"])
             case.reports_dir = Path(td)
             data = [{"id": 1}, {"id": 2}]
-            _write_json(_snapshot_dir(case) / "list.json", data)
+            write_json(snapshot_dir(case) / "list.json", data)
             result = load_snapshot(case, "list.json")
             self.assertEqual(result, data)
 
@@ -110,7 +110,7 @@ class TestClearApiSnapshots(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             case = MagicMock(spec=["reports_dir"])
             case.reports_dir = Path(td)
-            snap_dir = _snapshot_dir(case)
+            snap_dir = snapshot_dir(case)
             (snap_dir / "a.json").write_text("{}", encoding="utf-8")
             (snap_dir / "b.json").write_text("{}", encoding="utf-8")
             (snap_dir / "c.txt").write_text("x", encoding="utf-8")
@@ -123,7 +123,7 @@ class TestClearApiSnapshots(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             case = MagicMock(spec=["reports_dir"])
             case.reports_dir = Path(td)
-            snap_dir = _snapshot_dir(case)
+            snap_dir = snapshot_dir(case)
             (snap_dir / "nested").mkdir()
             (snap_dir / "nested" / "f.json").write_text("{}", encoding="utf-8")
             (snap_dir / "f.json").write_text("{}", encoding="utf-8")
@@ -135,7 +135,7 @@ class TestClearApiSnapshots(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             case = MagicMock(spec=["reports_dir"])
             case.reports_dir = Path(td)
-            _snapshot_dir(case)
+            snapshot_dir(case)
             clear_api_snapshots(case)
 
 
@@ -193,7 +193,7 @@ class TestWriteApiSnapshots(unittest.TestCase):
 
                 write_api_snapshots(case, MagicMock())
 
-            snap_dir = _snapshot_dir(case)
+            snap_dir = snapshot_dir(case)
             expected_files = [
                 "case.json",
                 "stats.json",
@@ -322,6 +322,6 @@ class TestWriteApiSnapshots(unittest.TestCase):
 
                 write_api_snapshots(case, MagicMock())
 
-            snap_dir = _snapshot_dir(case)
+            snap_dir = snapshot_dir(case)
             self.assertTrue((snap_dir / "case.json").exists())
             self.assertTrue((snap_dir / "progress_events.json").exists())

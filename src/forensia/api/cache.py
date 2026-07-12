@@ -30,14 +30,14 @@ from forensia.report.section_views import list_report_sections_dto
 VOLATILE_SNAPSHOT_INTERVAL_S = 5.0
 
 
-def _snapshot_dir(case: Case) -> Path:
+def snapshot_dir(case: Case) -> Path:
     """Return the API snapshot directory (creates if missing)."""
     path = case.reports_dir / "api"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def _write_json(path: Path, payload: Any) -> None:
+def write_json(path: Path, payload: Any) -> None:
     path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
     )
@@ -45,17 +45,17 @@ def _write_json(path: Path, payload: Any) -> None:
 
 def clear_api_snapshots(case: Case) -> None:
     """Remove all cached API snapshot files for this case."""
-    snapshot_dir = _snapshot_dir(case)
-    for path in snapshot_dir.glob("*"):
+    snap_dir = snapshot_dir(case)
+    for path in snap_dir.glob("*"):
         if path.is_file():
             path.unlink()
 
 
 def write_progress_snapshot(case: Case, db: CaseDB) -> None:
     """Write progress events snapshot to the cache directory."""
-    snapshot_dir = _snapshot_dir(case)
-    _write_json(
-        snapshot_dir / "progress_events.json",
+    snap_dir = snapshot_dir(case)
+    write_json(
+        snap_dir / "progress_events.json",
         list_progress_events(db, after_index=0, limit=1000),
     )
 
@@ -73,7 +73,7 @@ def write_volatile_api_snapshots(case: Case, db: CaseDB) -> None:
         list_section_questions_dto,
     )
 
-    snap_dir = _snapshot_dir(case)
+    snap_dir = snapshot_dir(case)
     snap_dir.mkdir(parents=True, exist_ok=True)
 
     data = {}
@@ -127,25 +127,25 @@ def write_volatile_api_snapshots(case: Case, db: CaseDB) -> None:
         pass
 
     for name, payload in data.items():
-        _write_json(snap_dir / f"{name}.json", payload)
+        write_json(snap_dir / f"{name}.json", payload)
 
 
 def write_full_api_snapshots(case: Case, db: CaseDB) -> None:
     """Write all API DTO snapshots (case, stats, findings, hypotheses, sessions, etc.) to the cache directory."""
-    snapshot_dir = _snapshot_dir(case)
-    _write_json(snapshot_dir / "case.json", get_case_dto(case).model_dump(mode="json"))
-    _write_json(
-        snapshot_dir / "stats.json", get_case_stats_dto(db).model_dump(mode="json")
+    snap_dir = snapshot_dir(case)
+    write_json(snap_dir / "case.json", get_case_dto(case).model_dump(mode="json"))
+    write_json(
+        snap_dir / "stats.json", get_case_stats_dto(db).model_dump(mode="json")
     )
-    _write_json(
-        snapshot_dir / "findings.json",
+    write_json(
+        snap_dir / "findings.json",
         [item.model_dump(mode="json") for item in list_findings_dto(db, limit=500)],
     )
     hypotheses = list_hypotheses_dto(db)
-    _write_json(snapshot_dir / "hypotheses.json", hypotheses.model_dump(mode="json"))
+    write_json(snap_dir / "hypotheses.json", hypotheses.model_dump(mode="json"))
     sessions = list_sessions_dto(db)
-    _write_json(
-        snapshot_dir / "sessions.json",
+    write_json(
+        snap_dir / "sessions.json",
         [item.model_dump(mode="json") for item in sessions],
     )
     hypotheses_reasoning = {
@@ -154,9 +154,9 @@ def write_full_api_snapshots(case: Case, db: CaseDB) -> None:
             db, limit_per_hypothesis=20
         ).items()
     }
-    _write_json(snapshot_dir / "hypothesis_reasoning.json", hypotheses_reasoning)
-    _write_json(
-        snapshot_dir / "hypotheses_reasoning_latest.json",
+    write_json(snap_dir / "hypothesis_reasoning.json", hypotheses_reasoning)
+    write_json(
+        snap_dir / "hypotheses_reasoning_latest.json",
         [
             item.model_dump(mode="json")
             for item in list_latest_hypothesis_reasoning_dto(db, limit=200)
@@ -169,45 +169,45 @@ def write_full_api_snapshots(case: Case, db: CaseDB) -> None:
         ]
         for session in sessions
     }
-    _write_json(snapshot_dir / "session_steps.json", steps_by_session)
-    _write_json(
-        snapshot_dir / "report_sections.json",
+    write_json(snap_dir / "session_steps.json", steps_by_session)
+    write_json(
+        snap_dir / "report_sections.json",
         [item.model_dump(mode="json") for item in list_report_sections_dto(db)],
     )
-    _write_json(
-        snapshot_dir / "section_questions.json",
+    write_json(
+        snap_dir / "section_questions.json",
         [item.model_dump(mode="json") for item in list_section_questions_dto(db)],
     )
-    _write_json(
-        snapshot_dir / "claims.json",
+    write_json(
+        snap_dir / "claims.json",
         [item.model_dump(mode="json") for item in list_claims_dto(db)],
     )
-    _write_json(
-        snapshot_dir / "mft_timeline.json",
+    write_json(
+        snap_dir / "mft_timeline.json",
         [item.model_dump(mode="json") for item in list_mft_timeline_dto(db, limit=500)],
     )
     for bucket in ("year", "month", "day", "hour"):
         for source in ("all", "detected"):
-            _write_json(
-                snapshot_dir / f"event_volume_{bucket}_{source}.json",
+            write_json(
+                snap_dir / f"event_volume_{bucket}_{source}.json",
                 [
                     item.model_dump(mode="json")
                     for item in list_event_volume_dto(db, bucket=bucket, source=source)
                 ],
             )
-    _write_json(
-        snapshot_dir / "entities.json",
+    write_json(
+        snap_dir / "entities.json",
         [item.model_dump(mode="json") for item in list_entity_cards_dto(case)],
     )
-    _write_json(
-        snapshot_dir / "attack_coverage.json",
+    write_json(
+        snap_dir / "attack_coverage.json",
         [item.model_dump(mode="json") for item in list_attack_coverage_dto(db)],
     )
-    _write_json(
-        snapshot_dir / "ai_reviews.json",
+    write_json(
+        snap_dir / "ai_reviews.json",
         [item.model_dump(mode="json") for item in list_ai_reviews_dto(db)],
     )
-    _write_json(snapshot_dir / "report_brief.json", write_report_brief(case, db))
+    write_json(snap_dir / "report_brief.json", write_report_brief(case, db))
 
 
 def write_api_snapshots(case: Case, db: CaseDB) -> None:
@@ -218,7 +218,7 @@ def write_api_snapshots(case: Case, db: CaseDB) -> None:
 
 def load_snapshot(case: Case, name: str) -> Any | None:
     """Load a previously cached API snapshot by filename; returns None if missing."""
-    path = _snapshot_dir(case) / name
+    path = snapshot_dir(case) / name
     if not path.exists():
         return None
     return json.loads(path.read_text(encoding="utf-8"))

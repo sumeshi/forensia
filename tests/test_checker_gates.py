@@ -7,13 +7,13 @@ import unittest
 from typing import Any
 
 from forensia.ai.checking.check_guardrails import (
-    _guardrail_check_payload,
-    _verify_verdict_consistency,
     annotate_benign_context,
+    guardrail_check_payload,
+    verify_verdict_consistency,
 )
 from forensia.ai.checking.check_normalize import (
-    _filter_memory_updates,
-    _validate_extracted_findings,
+    filter_memory_updates,
+    validate_extracted_findings,
 )
 from forensia.core.session import Hypothesis
 
@@ -85,7 +85,7 @@ class TestVerifyVerdictConsistency(unittest.TestCase):
         )
         for name, verdict, hypothesis, result, expected in cases:
             with self.subTest(name=name):
-                actual, reason = _verify_verdict_consistency(
+                actual, reason = verify_verdict_consistency(
                     verdict, "", hypothesis, result
                 )
                 assert actual == expected
@@ -121,7 +121,7 @@ class TestVerifyVerdictConsistency(unittest.TestCase):
                 },
             ]
             with self.subTest(name=name):
-                actual, _ = _verify_verdict_consistency(
+                actual, _ = verify_verdict_consistency(
                     "confirmed", "", hypothesis, _summary(rows, [25, 4624])
                 )
                 assert actual == expected
@@ -138,7 +138,7 @@ class TestVerifyVerdictConsistency(unittest.TestCase):
         )
         for name, verdict, rows, expected in cases:
             with self.subTest(name=name):
-                actual, _ = _verify_verdict_consistency(
+                actual, _ = verify_verdict_consistency(
                     verdict, "", _hypothesis(), _summary(rows, [4624])
                 )
                 assert actual == expected
@@ -166,7 +166,7 @@ class TestPayloadGuardrails(unittest.TestCase):
             ("newlead", "newlead"),
         ):
             with self.subTest(verdict=verdict):
-                guarded = _guardrail_check_payload(
+                guarded = guardrail_check_payload(
                     self._parsed(verdict),
                     finding_candidates=[],
                     result_summary=_summary([{"evidence_id": "ev-1"}], [4624]),
@@ -177,7 +177,7 @@ class TestPayloadGuardrails(unittest.TestCase):
     def test_zero_evidence_cannot_support_positive_verdicts(self) -> None:
         for verdict in ("confirmed", "newlead"):
             with self.subTest(verdict=verdict):
-                guarded = _guardrail_check_payload(
+                guarded = guardrail_check_payload(
                     self._parsed(verdict),
                     finding_candidates=[],
                     result_summary=_summary([], []),
@@ -215,7 +215,7 @@ class TestMemoryUpdateFiltering(unittest.TestCase):
                 ]
             }
             with self.subTest(name=name):
-                filtered = _filter_memory_updates(
+                filtered = filter_memory_updates(
                     updates, {"ev-1"}, sample_rows=sample_rows
                 )
                 assert bool(filtered.get("entities")) is expected
@@ -229,7 +229,7 @@ class TestExtractedFindingValidation(unittest.TestCase):
             {"title": "Bad severity", "severity": "urgent", "evidence_ids": ["ev-1"]},
             {"title": "Unknown evidence", "severity": "low", "evidence_ids": ["ev-9"]},
         ]
-        assert _validate_extracted_findings(items, {"ev-1"}) == [items[0]]
+        assert validate_extracted_findings(items, {"ev-1"}) == [items[0]]
 
     def test_tolerates_absent_or_malformed_evidence_lists(self) -> None:
         cases = (
@@ -259,7 +259,7 @@ class TestExtractedFindingValidation(unittest.TestCase):
         )
         for items, observed, expected in cases:
             with self.subTest(items=items):
-                result = _validate_extracted_findings(items, observed)
+                result = validate_extracted_findings(items, observed)
                 assert (
                     result == expected
                     if isinstance(expected, list)

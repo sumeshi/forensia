@@ -1,10 +1,10 @@
-"""Tests for R5-03: stale propagation from hypothesis resolution to report sections.
+"""Tests for hypothesis lifecycle in hypothesis_manager / hypothesis_model.
 
-Verifies that _resolve_hypothesis marks report sections stale via:
-  - target_keypoint_id → owning section
-  - description keyword matching (_guess_related_sections)
-  - rulepack declaration report_sections
-  - update_count cap enforcement
+Covers:
+  - similarity / semantic triple extraction used to merge duplicate hypotheses
+  - stale propagation from hypothesis resolution to report sections
+    (target_keypoint_id -> owning section, description keyword matching,
+    rulepack-declared report_sections, update_count cap enforcement)
 """
 
 from __future__ import annotations
@@ -13,14 +13,243 @@ import tempfile
 import unittest
 
 from forensia.ai.hypotheses.hypothesis_manager import (
-    _MAX_SECTION_UPDATES,
-    _mark_section_stale,
-    _resolve_hypothesis,
-    _sections_for_keypoint,
+    MAX_SECTION_UPDATES,
+    mark_section_stale,
+    merge_active_hypotheses,
+    resolve_hypothesis,
+)
+from forensia.ai.hypotheses.hypothesis_model import (
+    extract_semantic_triple,
+    hypothesis_evidence_strength,
+    hypothesis_similarity,
 )
 from forensia.core.case import Case
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
+from forensia.report.sections.section_taxonomy import sections_for_keypoint
+
+
+class TestExtractSemanticTriple:
+    def test_target_fallback_pattern_does_not_crash(self) -> None:
+        """Descriptions with a target keyword but no 'to/on/into/onto <word>' phrase
+        previously raised IndexError (fallback pattern had no capturing group)."""
+        triple = extract_semantic_triple(
+            "Repeated 4625 failures targeting one account indicate brute-force"
+        )
+        assert triple["target"] == "account"
+
+    def test_full_triple(self) -> None:
+        triple = extract_semantic_triple(
+            "Lateral movement by attacker to a server via stolen credentials"
+        )
+        assert triple["actor"] not in ("", None)
+        assert triple["action"] == "lateral movement"
+        assert triple["target"] == "server"
+
+    def test_empty_description(self) -> None:
+        triple = extract_semantic_triple("")
+        assert triple == {"actor": "unknown", "action": "unknown", "target": "unknown"}
+
+
+class TestHypothesisSimilarity:
+    def test_similarity_handles_keyword_only_descriptions(self) -> None:
+        """End-to-end: similarity between rule-seeded style descriptions must not raise."""
+        left = "Explicit credential logon for account informant may indicate misuse"
+        right = "Service installed shortly after logon suggests persistence"
+        score = hypothesis_similarity(left, right)
+        assert 0.0 <= score <= 1.0
+
+    def test_identical_descriptions_score_high(self) -> None:
+        text = "Repeated failed logons from a single source ip targeting one user"
+        assert hypothesis_similarity(text, text) >= 0.85
+
+
+class TestResolvedHypothesisDedup:
+    """Regression: near-duplicate of a resolved hypothesis must not create
+    a conflicting active hypothesis with opposite verdict."""
+
+    def test_similar_to_resolved_is_bound_not_duplicated(self, capsys) -> None:
+        """Hypothesis B with a near-identical description to a confirmed
+        resolved hypothesis A is bound to A, not added as a separate active."""
+        desc_a = "RDP lateral movement to deploy service on remote host"
+        desc_b = "RDP lateral movement was used to deploy service on remote host"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                # Persist H-001 as confirmed (resolved)
+                db.execute(
+                    """INSERT INTO hypotheses (
+                        hypothesis_id, description, status, verdict, summary, origin,
+                        created_session, resolved_session, created_at, updated_at,
+                        source_rule_ids, required_entities, confirm_when
+                    ) VALUES (
+                        'H-001', ?, 'confirmed', 'confirmed', 'done', 'broad_plan',
+                        'S-1', 'S-2', now(), now(), '["rule-1"]', '["host"]', NULL
+                    )""",
+                    (desc_a,),
+                )
+
+                resolved = [
+                    Hypothesis(
+                        id="H-001",
+                        description=desc_a,
+                        status="confirmed",
+                        verdict="confirmed",
+                        summary="done",
+                        source_rule_ids=["rule-1"],
+                    ),
+                ]
+
+                merged = merge_active_hypotheses(
+                    db=db,
+                    current=[],
+                    updates=[
+                        Hypothesis(
+                            id="H-new",
+                            description=desc_b,
+                            status="active",
+                            source_rule_ids=["rule-2"],
+                            required_entities=["host"],
+                        ),
+                    ],
+                    resolved=resolved,
+                    session_id="session-test",
+                    origin="broad_plan",
+                )
+
+                # B should NOT appear as a separate active hypothesis
+                assert len(merged) == 0, (
+                    f"expected no active hypotheses, got {len(merged)}: "
+                    f"{[h.description for h in merged]}"
+                )
+
+                # The resolved hypothesis should still be in DB with its verdict
+                rows = db.execute(
+                    "SELECT hypothesis_id, status, verdict "
+                    "FROM hypotheses ORDER BY hypothesis_id"
+                ).fetchall()
+                assert len(rows) == 1, f"expected 1 row, got {len(rows)}"
+                assert rows[0][0] == "H-001"
+                assert rows[0][1] == "confirmed", (
+                    f"resolved hypothesis status changed to {rows[0][1]}"
+                )
+                assert rows[0][2] == "confirmed"
+
+                # Verify log records the binding decision
+                captured = capsys.readouterr()
+                assert "bound to resolved H-001" in captured.out, (
+                    f"expected log about binding, got: {captured.out}"
+                )
+
+    def test_identical_to_resolved_not_duplicated(self, capsys) -> None:
+        """Exact description match against a resolved hypothesis
+        does not create a new active hypothesis."""
+        desc = "Backdoor via service install using explicit credentials"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """INSERT INTO hypotheses (
+                        hypothesis_id, description, status, verdict, summary, origin,
+                        created_session, resolved_session, created_at, updated_at,
+                        source_rule_ids, required_entities, confirm_when
+                    ) VALUES (
+                        'H-004', ?, 'confirmed', 'confirmed',
+                        'confirmed by evidence', 'broad_plan',
+                        'S-1', 'S-2', now(), now(),
+                        '["rule-backdoor"]', '["service"]',
+                        '{"co_observed_event_ids": ["E-001"]}'
+                    )""",
+                    (desc,),
+                )
+
+                resolved = [
+                    Hypothesis(
+                        id="H-004",
+                        description=desc,
+                        status="confirmed",
+                        verdict="confirmed",
+                        summary="confirmed by evidence",
+                        source_rule_ids=["rule-backdoor"],
+                        confirm_when={"co_observed_event_ids": ["E-001"]},
+                    ),
+                ]
+
+                merged = merge_active_hypotheses(
+                    db=db,
+                    current=[],
+                    updates=[
+                        Hypothesis(
+                            id="H-draft",
+                            description=desc,
+                            status="active",
+                            source_rule_ids=["rule-backdoor"],
+                            required_entities=["service"],
+                        ),
+                    ],
+                    resolved=resolved,
+                    session_id="session-test",
+                    origin="broad_plan",
+                )
+
+                # Should not be added to active
+                assert len(merged) == 0
+
+                captured = capsys.readouterr()
+                assert "bound to resolved H-004" in captured.out
+
+
+class TestHypothesisEvidenceStrength:
+    """Unit tests for hypothesis_evidence_strength scoring."""
+
+    def test_llm_speculated_scores_zero(self) -> None:
+        h = Hypothesis(
+            id="H-000",
+            description="LLM-speculated hypothesis",
+            status="active",
+        )
+        assert hypothesis_evidence_strength(h) == 0
+
+    def test_rule_seeded_only_scores_one(self) -> None:
+        h = Hypothesis(
+            id="H-001",
+            description="Rule-seeded hypothesis",
+            status="active",
+            source_rule_ids=["rule-1"],
+        )
+        assert hypothesis_evidence_strength(h) == 1
+
+    def test_rule_seeded_with_evidence_scores_two(self) -> None:
+        h = Hypothesis(
+            id="H-002",
+            description="Rule-seeded with evidence",
+            status="active",
+            source_rule_ids=["rule-1"],
+            confirm_when={"co_observed_event_ids": ["E-001"]},
+        )
+        assert hypothesis_evidence_strength(h) == 2
+
+    def test_zero_rows_placeholder_not_strong_evidence(self) -> None:
+        h = Hypothesis(
+            id="H-003",
+            description="Rule-seeded with zero_rows placeholder",
+            status="active",
+            source_rule_ids=["rule-1"],
+            confirm_when={"zero_rows": True},
+        )
+        assert hypothesis_evidence_strength(h) == 1
+
+    def test_refute_when_also_counts_as_evidence(self) -> None:
+        h = Hypothesis(
+            id="H-004",
+            description="Rule-seeded with refute criteria",
+            status="active",
+            source_rule_ids=["rule-1"],
+            refute_when={"co_observed_event_ids": ["E-002"]},
+        )
+        assert hypothesis_evidence_strength(h) == 2
 
 
 def _insert_section(db: CaseDB, section_key: str, update_count: int = 0) -> None:
@@ -49,7 +278,7 @@ class StalePropagationViaTargetKeypointTests(unittest.TestCase):
         mark section '3_technical' stale (family '3' owns that keypoint)."""
         keypoint = "host_execution_activity"
         # Expect family "3" which maps to section key 3_technical
-        owning_sections = _sections_for_keypoint(keypoint)
+        owning_sections = sections_for_keypoint(keypoint)
         self.assertIn(
             "3_technical",
             owning_sections,
@@ -72,7 +301,7 @@ class StalePropagationViaTargetKeypointTests(unittest.TestCase):
                         )
                     ],
                 )
-                _resolve_hypothesis(
+                resolve_hypothesis(
                     db=db,
                     state=state,
                     hypothesis_id="H-1",
@@ -88,7 +317,7 @@ class StalePropagationViaTargetKeypointTests(unittest.TestCase):
     def test_target_keypoint_marks_correct_section_only(self) -> None:
         """A timeline keypoint should only mark 2_timeline stale, not 3_technical."""
         keypoint = "timeline_log_clearing"
-        owning = _sections_for_keypoint(keypoint)
+        owning = sections_for_keypoint(keypoint)
         self.assertIn("2_timeline", owning)
         self.assertNotIn("3_technical", owning)
 
@@ -109,7 +338,7 @@ class StalePropagationViaTargetKeypointTests(unittest.TestCase):
                         )
                     ],
                 )
-                _resolve_hypothesis(
+                resolve_hypothesis(
                     db=db,
                     state=state,
                     hypothesis_id="H-2",
@@ -138,7 +367,7 @@ class StalePropagationViaTargetKeypointTests(unittest.TestCase):
                         )
                     ],
                 )
-                _resolve_hypothesis(
+                resolve_hypothesis(
                     db=db,
                     state=state,
                     hypothesis_id="H-3",
@@ -169,7 +398,7 @@ class StalePropagationViaDescriptionTests(unittest.TestCase):
                         )
                     ],
                 )
-                _resolve_hypothesis(
+                resolve_hypothesis(
                     db=db,
                     state=state,
                     hypothesis_id="H-4",
@@ -188,7 +417,7 @@ class StalePropagationUpdateCountCapTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                _insert_section(db, "3_technical", update_count=_MAX_SECTION_UPDATES)
+                _insert_section(db, "3_technical", update_count=MAX_SECTION_UPDATES)
                 state = SessionState(
                     session_id="S-1",
                     iteration=1,
@@ -201,7 +430,7 @@ class StalePropagationUpdateCountCapTests(unittest.TestCase):
                         )
                     ],
                 )
-                _resolve_hypothesis(
+                resolve_hypothesis(
                     db=db,
                     state=state,
                     hypothesis_id="H-5",
@@ -219,7 +448,7 @@ class StalePropagationUpdateCountCapTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 _insert_section(
-                    db, "3_technical", update_count=_MAX_SECTION_UPDATES - 1
+                    db, "3_technical", update_count=MAX_SECTION_UPDATES - 1
                 )
                 state = SessionState(
                     session_id="S-1",
@@ -233,7 +462,7 @@ class StalePropagationUpdateCountCapTests(unittest.TestCase):
                         )
                     ],
                 )
-                _resolve_hypothesis(
+                resolve_hypothesis(
                     db=db,
                     state=state,
                     hypothesis_id="H-6",
@@ -270,7 +499,7 @@ class StalePropagationRulepackDeclTests(unittest.TestCase):
                         )
                     ],
                 )
-                _resolve_hypothesis(
+                resolve_hypothesis(
                     db=db,
                     state=state,
                     hypothesis_id="H-7",
@@ -285,22 +514,22 @@ class StalePropagationRulepackDeclTests(unittest.TestCase):
 
 
 class MarkSectionStaleTests(unittest.TestCase):
-    """Direct tests for _mark_section_stale helper."""
+    """Direct tests for mark_section_stale helper."""
 
     def test_mark_section_stale_below_cap(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 _insert_section(db, "4_gaps", update_count=2)
-                _mark_section_stale(db, "4_gaps")
+                mark_section_stale(db, "4_gaps")
                 self.assertTrue(_stale_status(db, "4_gaps"))
 
     def test_mark_section_stale_at_cap(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                _insert_section(db, "4_gaps", update_count=_MAX_SECTION_UPDATES)
-                _mark_section_stale(db, "4_gaps")
+                _insert_section(db, "4_gaps", update_count=MAX_SECTION_UPDATES)
+                mark_section_stale(db, "4_gaps")
                 self.assertFalse(
                     _stale_status(db, "4_gaps"),
                     "at-cap section must not be marked stale",
@@ -317,7 +546,7 @@ class CollectSectionRequestsTests(unittest.TestCase):
     def test_stale_section_produces_render_request(self) -> None:
         from pathlib import Path
 
-        from forensia.ai.sections.section_refresher import _collect_section_requests
+        from forensia.ai.sections.section_refresher import collect_section_requests
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -346,7 +575,7 @@ class CollectSectionRequestsTests(unittest.TestCase):
                     "1_overview": "filled body text",
                     "4_gaps": "old gap body",
                 }
-                requests = _collect_section_requests(
+                requests = collect_section_requests(
                     case,
                     db,
                     sorted(template_dir.glob("[0-9]*_*.md")),
@@ -363,7 +592,7 @@ class CollectSectionRequestsTests(unittest.TestCase):
     def test_force_all_returns_every_template(self) -> None:
         from pathlib import Path
 
-        from forensia.ai.sections.section_refresher import _collect_section_requests
+        from forensia.ai.sections.section_refresher import collect_section_requests
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -390,7 +619,7 @@ class CollectSectionRequestsTests(unittest.TestCase):
                     "1_overview": "filled body text",
                     "4_gaps": "old gap body",
                 }
-                requests = _collect_section_requests(
+                requests = collect_section_requests(
                     case,
                     db,
                     sorted(template_dir.glob("[0-9]*_*.md")),
@@ -410,3 +639,7 @@ class CollectSectionRequestsTests(unittest.TestCase):
                 r["needs_refresh"],
                 f"force_all must mark {r['section_key']} as needs_refresh",
             )
+
+
+if __name__ == "__main__":
+    unittest.main()

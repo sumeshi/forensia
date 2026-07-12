@@ -26,14 +26,14 @@ from forensia.cli.stages import (
 )
 from forensia.cli.support import (
     _open_case_or_die,
-    _progress_pusher,
-    _reset_case_tables,
     _resolve_llm_or_die,
     _resolve_profile_path,
     _resolve_template_dir,
     _resolve_timezone,
     _seed_api_snapshots_if_possible,
     _status,
+    progress_pusher,
+    reset_case_tables,
 )
 from forensia.config import get_llm_settings, resolve_llm_config
 from forensia.core.case import Case
@@ -170,7 +170,7 @@ def _rerun_reset(case: Case, case_dir: str, timezone: str) -> Case:
     """Reset case tables and runtime outputs for --rerun, preserving raw/ and memory."""
     _status("Resetting case tables for rerun (preserving raw/ for re-normalize)")
     with CaseDB(case) as db:
-        _reset_case_tables(db)
+        reset_case_tables(db)
     case.clear_runtime_outputs(
         preserve_memory=True,
         preserve_ai_logs=True,
@@ -312,7 +312,7 @@ def investigate(
 
     with CaseDB(case) as db:
         clear_progress_events(db)
-        push_progress = _progress_pusher(
+        push_progress = progress_pusher(
             db,
             _make_initial_progress_state(model, llm_base_url),
         )

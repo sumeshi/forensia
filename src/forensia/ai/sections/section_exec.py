@@ -100,7 +100,7 @@ def _question_routing_keypoints(block_heading: str, template_body: str) -> list[
     return []
 
 
-def _question_routing_answer_spec(block_heading: str, template_body: str) -> str:
+def question_routing_answer_spec(block_heading: str, template_body: str) -> str:
     rule = _question_routing_rule(block_heading, template_body)
     return rule.answer_spec if rule is not None else ""
 
@@ -134,7 +134,7 @@ def _classify_block_status(
     return "insufficient_evidence"
 
 
-def _structured_digest_from_answers(case: Case) -> str:
+def structured_digest_from_answers(case: Case) -> str:
     """Build a compact <STRUCTURED_OBSERVATIONS> block from persisted structured answers.
 
     Returns a block (≤1.5 KB) listing each non-zero structured answer spec with
@@ -213,7 +213,7 @@ def _structured_digest_from_answers(case: Case) -> str:
     return digest
 
 
-def _question_report_brief(report_brief: dict[str, Any] | None) -> dict[str, Any]:
+def question_report_brief(report_brief: dict[str, Any] | None) -> dict[str, Any]:
     """Strip narrative-heavy fields from report_brief for question mode.
 
     Benchmark blocks must only receive factual inventories, not LLM-generated
@@ -245,7 +245,7 @@ def _question_report_brief(report_brief: dict[str, Any] | None) -> dict[str, Any
 
 def _structured_report_brief(report_brief: dict[str, Any] | None) -> dict[str, Any]:
     """Neutral alias for structured question blocks."""
-    return _question_report_brief(report_brief)
+    return question_report_brief(report_brief)
 
 
 def _keypoint_catalog(
@@ -514,7 +514,7 @@ def _execute_sql(db: CaseDB, sql: str) -> tuple[str, dict[str, Any]]:
     return source_query, result
 
 
-def _coerce_plan_action(
+def coerce_plan_action(
     plan: dict[str, Any], *, section_key: str, iteration: int, db: CaseDB | None = None
 ) -> SectionPlanAction | None:
     """Parse and normalize the LLM plan output into a typed SectionPlanAction.

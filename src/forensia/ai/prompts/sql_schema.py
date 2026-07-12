@@ -331,7 +331,7 @@ def _build_live_schema_guidance(db: CaseDB | None = None) -> str:
 
 # PROMPT-4: Load domain knowledge from YAML schema files
 @lru_cache(maxsize=1)
-def _load_logon_type_schema() -> dict:
+def load_logon_type_schema() -> dict:
     """Load logon type definitions from schema file."""
     schema_dir = Path(__file__).parent.parent.parent / "rulepacks" / "_schema"
     path = schema_dir / "logon_types.yaml"
@@ -341,7 +341,7 @@ def _load_logon_type_schema() -> dict:
 
 
 @lru_cache(maxsize=1)
-def _load_app_catalog() -> dict:
+def load_app_catalog() -> dict:
     """Load application catalog from schema file."""
     schema_dir = Path(__file__).parent.parent.parent / "rulepacks" / "_schema"
     path = schema_dir / "app_catalog.yaml"
@@ -362,7 +362,7 @@ def _load_table_notes(table_name: str) -> dict:
 
 
 @lru_cache(maxsize=1)
-def _load_fp_reduction_guidance() -> str:
+def load_fp_reduction_guidance() -> str:
     """Load false-positive reduction guidance from YAML schema file."""
     schema_dir = Path(__file__).parent.parent.parent / "rulepacks" / "_schema"
     path = schema_dir / "false_positive_rules.yaml"
@@ -409,8 +409,8 @@ def build_investigation_framework(db: CaseDB | None = None) -> str:
 
     PROMPT-4: Framework is built from YAML schema, not Python literals.
     """
-    logon_schema = _load_logon_type_schema()
-    app_catalog = _load_app_catalog()
+    logon_schema = load_logon_type_schema()
+    app_catalog = load_app_catalog()
 
     # Logon type reference
     logontype_lines = []

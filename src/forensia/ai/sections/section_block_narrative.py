@@ -14,14 +14,14 @@ from forensia.ai.prompts.prompt_sections import (
     build_structured_classify_messages,
 )
 from forensia.ai.sections.section_answers import (
-    _extract_answer_by_shape,
     _flatten_sample_rows,
     _format_structured_answer,
     _insufficient_evidence_placeholder,
-    _is_effectively_empty_body,
     _report_language,
     _representative_ids,
     _resolve_structured_expected_shape,
+    extract_answer_by_shape,
+    is_effectively_empty_body,
 )
 from forensia.ai.sections.section_block_context import (
     _BlockContext,
@@ -80,7 +80,7 @@ def _postprocess_block_body(body: str, *, section_key: str, block_heading: str) 
     return processed
 
 
-def _narrate_paragraph_with_retry(
+def narrate_paragraph_with_retry(
     *,
     narrate_messages: list[dict[str, str]],
     narrate_schema: dict,
@@ -114,14 +114,14 @@ def _narrate_paragraph_with_retry(
 
     if not target:
         body = _call(narrate_messages)
-        if not _is_effectively_empty_body(body):
+        if not is_effectively_empty_body(body):
             return body
         retry_messages = list(narrate_messages)
         retry_messages.append({"role": "user", "content": _NARRATE_RETRY_PROMPT})
         return _call(retry_messages)
 
     body = _call(narrate_messages)
-    if not _is_effectively_empty_body(body):
+    if not is_effectively_empty_body(body):
         detected = _detect_body_language(body)
         if detected not in ("unknown", target):
             # Language mismatch: retry once with coaching
@@ -133,7 +133,7 @@ def _narrate_paragraph_with_retry(
             retry_messages = list(narrate_messages)
             retry_messages.append({"role": "user", "content": coaching})
             body = _call(retry_messages)
-            if not _is_effectively_empty_body(body):
+            if not is_effectively_empty_body(body):
                 detected2 = _detect_body_language(body)
                 if detected2 not in ("unknown", target):
                     # second mismatch → return empty so caller falls back
@@ -145,14 +145,14 @@ def _narrate_paragraph_with_retry(
     retry_messages = list(narrate_messages)
     retry_messages.append({"role": "user", "content": _NARRATE_RETRY_PROMPT})
     body = _call(retry_messages)
-    if not _is_effectively_empty_body(body):
+    if not is_effectively_empty_body(body):
         detected = _detect_body_language(body)
         if detected not in ("unknown", target):
             return ""  # Language mismatch, fall back
     return body
 
 
-def _fallback_narrative_body(
+def fallback_narrative_body(
     *,
     heading: str,
     status: str,
@@ -391,7 +391,7 @@ def _review_and_rewrite_narrative(
                     ),
                 },
             ]
-            rewritten = _narrate_paragraph_with_retry(
+            rewritten = narrate_paragraph_with_retry(
                 narrate_messages=rewrite_msgs,
                 narrate_schema=narrate_schema,
                 model=ctx.model,
@@ -520,7 +520,7 @@ def _write_question_block(
         expected_shape = _resolve_structured_expected_shape(ctx.block_heading)
 
         extracted_rows = (
-            _extract_answer_by_shape(
+            extract_answer_by_shape(
                 raw_rows, expected_shape, expected_shape.get("format", "")
             )
             if raw_rows and expected_shape
@@ -670,7 +670,7 @@ def _write_narrative_block(
             template_body=ctx.template_body,
             structured_digest=ctx.structured_digest,
         )
-        body = _narrate_paragraph_with_retry(
+        body = narrate_paragraph_with_retry(
             narrate_messages=narrate_messages,
             narrate_schema=narrate_schema,
             model=ctx.model,
@@ -678,13 +678,13 @@ def _write_narrative_block(
             audit_callback=ctx.audit,
             target_language=_report_language(),
         )
-        if _is_effectively_empty_body(body):
+        if is_effectively_empty_body(body):
             _log(
                 "SECTION",
                 f"narrator returned empty body for '{ctx.block_heading}'; "
                 "using deterministic fallback",
             )
-            body = _fallback_narrative_body(
+            body = fallback_narrative_body(
                 heading=ctx.block_heading,
                 status=status_inner,
                 collected_results=collected_results,

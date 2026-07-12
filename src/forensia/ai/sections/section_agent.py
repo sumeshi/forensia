@@ -11,7 +11,7 @@ from typing import Any
 
 from forensia.ai.sections.section_block_context import (
     _BlockContext,
-    _prepare_block_context,
+    prepare_block_context,
 )
 from forensia.ai.sections.section_block_narrative import (
     _postprocess_block_body,
@@ -392,7 +392,7 @@ def run_section_block_agent(
     chains when all queries return zero rows.
     """
     max_queries = max(1, int(max_queries_per_section or 1))
-    ctx = _prepare_block_context(
+    ctx = prepare_block_context(
         case=case,
         db=db,
         section_key=section_key,

@@ -10,15 +10,15 @@ from typing import Any
 from forensia.ai.sections.section_exec import (
     _filter_template_catalog_by_section,
     _keypoint_catalog,
-    _structured_digest_from_answers,
     _structured_report_brief,
+    structured_digest_from_answers,
 )
 from forensia.ai.sections.section_run_store import (
     _audit_bridge,
     _findings_snapshot,
     _load_reusable_section_evidence,
-    _load_reusable_section_facts,
     _store_section_question,
+    load_reusable_section_facts,
 )
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
@@ -60,7 +60,7 @@ class _BlockContext:
     review_audit: Callable | None = None
 
 
-def _prepare_block_context(
+def prepare_block_context(
     *,
     case: Case,
     db: CaseDB,
@@ -117,7 +117,7 @@ def _prepare_block_context(
         evidence_keypoints=evidence_keypoints,
     )
     template_catalog = _filter_template_catalog_by_section([], section_key, [])
-    reusable_facts = _load_reusable_section_facts(
+    reusable_facts = load_reusable_section_facts(
         db,
         section_key,
         include_case_probe=section_key == "6_appendix",
@@ -134,7 +134,7 @@ def _prepare_block_context(
         else (report_brief or {})
     )
     structured_digest = (
-        _structured_digest_from_answers(case)
+        structured_digest_from_answers(case)
         if section_key in {"1_overview", "2_timeline"}
         else ""
     )

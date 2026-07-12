@@ -17,21 +17,21 @@ from forensia.ai.checking.check_normalize import summarize_query_result
 from forensia.ai.checking.checker import check_query_result
 from forensia.ai.hypotheses.hypothesis_manager import (
     _guess_related_sections,
-    _merge_active_hypotheses,
-    _resolve_hypothesis,
     admit_new_hypothesis,
+    merge_active_hypotheses,
+    resolve_hypothesis,
 )
 from forensia.ai.hypotheses.hypothesis_store import _upsert_hypothesis
 from forensia.ai.investigation_session import (
-    _append_hypothesis_reasoning,
+    Ctx,
     _call_with_outage_recovery,
-    _Ctx,
-    _ctx_refresh_caches,
     _save_step,
+    append_hypothesis_reasoning,
+    ctx_refresh_caches,
 )
-from forensia.ai.memory_sync import _apply_memory_updates
+from forensia.ai.memory_sync import apply_memory_updates
 from forensia.ai.planner import plan_hypothesis_query
-from forensia.ai.progress import HypothesisProgressTracker, _query_fingerprint
+from forensia.ai.progress import HypothesisProgressTracker, query_fingerprint
 from forensia.ai.prompts.prompt_playbook import resolve_rule_context
 from forensia.core.case import Case
 from forensia.core.log import log as _log
@@ -160,7 +160,7 @@ class _HypothesisRunState:
 
     hypothesis: Hypothesis
     state: SessionState
-    ctx: _Ctx
+    ctx: Ctx
     memory: MemoryManager
     db: CaseDB
     base_url: str
@@ -289,7 +289,7 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
     except Exception as exc:
         err_msg = f"[plan-hypothesis] LLM failed for {hypothesis.id}: {exc}"
         print(f"[red]{err_msg}[/red]")
-        _append_hypothesis_reasoning(
+        append_hypothesis_reasoning(
             db=db,
             hypothesis_id=hypothesis.id,
             session_id=session_id,
@@ -330,7 +330,7 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
     focus_sections, hypothesis_plan = rs.focus_sections, rs.hypothesis_plan
     tracker = rs.tracker
     planned_query = hypothesis_plan.query
-    reasoning_entry_id = _append_hypothesis_reasoning(
+    reasoning_entry_id = append_hypothesis_reasoning(
         db=db,
         hypothesis_id=hypothesis.id,
         session_id=session_id,
@@ -353,7 +353,7 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
             hypothesis_id=hypothesis.id,
             reasoning_entry_id=reasoning_entry_id,
         )
-    query_fp = _query_fingerprint(planned_query.sql)
+    query_fp = query_fingerprint(planned_query.sql)
     try:
         rows = fetch_records(db, planned_query.sql)
         _log("EXEC", f"{hypothesis.id} {planned_query.query_id} — {len(rows)} rows")
@@ -371,7 +371,7 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
                 iteration=plan_cycle,
                 hypothesis_id=hypothesis.id,
             )
-        _append_hypothesis_reasoning(
+        append_hypothesis_reasoning(
             db=db,
             hypothesis_id=hypothesis.id,
             session_id=session_id,
@@ -448,7 +448,7 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
             f"[check] LLM failed for {hypothesis.id}/{planned_query.query_id}: {exc}"
         )
         print(f"[red]{err_msg}[/red]")
-        _append_hypothesis_reasoning(
+        append_hypothesis_reasoning(
             db=db,
             hypothesis_id=hypothesis.id,
             session_id=session_id,
@@ -472,7 +472,7 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
         output_json=check_result.raw_response,
         suffix=f"{planned_query.query_id}-{query_index:02d}",
     )
-    reasoning_entry_id = _append_hypothesis_reasoning(
+    reasoning_entry_id = append_hypothesis_reasoning(
         db=db,
         hypothesis_id=hypothesis.id,
         session_id=session_id,
@@ -539,7 +539,7 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
                     f"check_new rejected: '{hyp.description[:80]}' reason={reason}",
                 )
         if admitted:
-            state.active_hypotheses = _merge_active_hypotheses(
+            state.active_hypotheses = merge_active_hypotheses(
                 db=db,
                 current=state.active_hypotheses,
                 updates=admitted,
@@ -548,7 +548,7 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
                 origin="check_new",
             )
     if check_result.verdict in {"confirmed", "refuted", "untestable"}:
-        _resolve_hypothesis(
+        resolve_hypothesis(
             db=db,
             state=state,
             hypothesis_id=hypothesis.id,
@@ -576,7 +576,7 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
             origin="check_new",
             session_id=session_id,
         )
-    _apply_memory_updates(
+    apply_memory_updates(
         memory=memory,
         active_hypotheses=state.active_hypotheses,
         resolved_hypotheses=state.resolved_hypotheses,
@@ -603,7 +603,7 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
         memory.archive_hypothesis_scratch(hypothesis.id)
     elif check_result.verdict == "untestable":
         memory.archive_untestable_hypothesis_scratch(hypothesis.id)
-    _ctx_refresh_caches(ctx, memory, base_url, model, hypothesis=hypothesis)
+    ctx_refresh_caches(ctx, memory, base_url, model, hypothesis=hypothesis)
     _save_step(
         db=db,
         session_id=session_id,
@@ -635,7 +635,7 @@ def _phase_track_progress(rs: _HypothesisRunState) -> None:
     check_result, planned_query = rs.check_result, rs.planned_query
     result_summary, tracker = rs.result_summary, rs.tracker
     row_count = int(result_summary.get("row_count") or 0)
-    query_fp = _query_fingerprint(planned_query.sql)
+    query_fp = query_fingerprint(planned_query.sql)
     tracker.record(query_fp, check_result.verdict, row_count)
     missing_checks_raw = (
         check_result.raw_response.get("missing_questions")
@@ -668,7 +668,7 @@ def _phase_auto_resolve(rs: _HypothesisRunState) -> str:
                 "RESOLVE",
                 f"{hypothesis.id} — untestable: missing event IDs [{id_list}] are not in case telemetry",
             )
-            _resolve_hypothesis(
+            resolve_hypothesis(
                 db=db,
                 state=state,
                 hypothesis_id=hypothesis.id,
@@ -713,7 +713,7 @@ def _phase_auto_resolve(rs: _HypothesisRunState) -> str:
             "RESOLVE",
             f"{hypothesis.id} — auto-{verdict} after 3+ consecutive 0-row inconclusive",
         )
-        _resolve_hypothesis(
+        resolve_hypothesis(
             db=db,
             state=state,
             hypothesis_id=hypothesis.id,
@@ -735,7 +735,7 @@ def _phase_auto_resolve(rs: _HypothesisRunState) -> str:
             "RESOLVE",
             f"{hypothesis.id} — auto-{verdict} after {tracker.consecutive_same_missing}+ consecutive same-missing checks",
         )
-        _resolve_hypothesis(
+        resolve_hypothesis(
             db=db,
             state=state,
             hypothesis_id=hypothesis.id,
@@ -751,7 +751,7 @@ def _phase_auto_resolve(rs: _HypothesisRunState) -> str:
                 "RESOLVE",
                 f"{hypothesis.id} — auto-confirmed via co_observed_event_ids",
             )
-            _resolve_hypothesis(
+            resolve_hypothesis(
                 db=db,
                 state=state,
                 hypothesis_id=hypothesis.id,
@@ -767,7 +767,7 @@ def _phase_auto_resolve(rs: _HypothesisRunState) -> str:
 async def _investigate_one_hypothesis(
     hypothesis: Hypothesis,
     state: SessionState,
-    ctx: _Ctx,
+    ctx: Ctx,
     memory: MemoryManager,
     db: CaseDB,
     base_url: str,

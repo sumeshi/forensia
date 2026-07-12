@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from forensia.ai.hypotheses.hypothesis_manager import _merge_active_hypotheses
+from forensia.ai.hypotheses.hypothesis_manager import merge_active_hypotheses
 from forensia.core.case import Case
 from forensia.core.log import log as _log
 from forensia.core.session import Hypothesis, SessionState
@@ -26,7 +26,7 @@ from forensia.rules.engine import (
 from forensia.rules.loader import _get_pack_map, _get_rule_cache, load_rules_from_dir
 
 
-def _seed_findings(
+def seed_findings(
     case: Case, db: CaseDB, profile: str, active_pack_ids: set[str] | None = None
 ) -> int:
     """Run profile rules and replace rule-derived seed findings on resume."""
@@ -67,7 +67,7 @@ def _seed_rule_hypotheses(
     For each rule with hypotheses[] that produced at least one finding,
     renders description placeholders from the first finding's evidence row,
     builds a Hypothesis with source_rule_ids and source_decl_id, and merges
-    into active hypotheses via _merge_active_hypotheses with origin 'rule'.
+    into active hypotheses via merge_active_hypotheses with origin 'rule'.
     Called once after initial findings are seeded.
 
     When active_pack_ids is provided, only rules from those packs are considered.
@@ -167,7 +167,7 @@ def _seed_rule_hypotheses(
             seeds_from_rule += 1
 
     if seeded:
-        state.active_hypotheses = _merge_active_hypotheses(
+        state.active_hypotheses = merge_active_hypotheses(
             db=db,
             current=state.active_hypotheses,
             updates=seeded,
@@ -181,10 +181,10 @@ def _seed_rule_hypotheses(
         )
     # G-8: Pre-screen telemetry availability to avoid wasting LLM cycles on
     # hypotheses whose required event IDs are entirely absent from the case.
-    _prescreen_telemetry_availability(db, state, session_id)
+    prescreen_telemetry_availability(db, state, session_id)
 
 
-def _prescreen_telemetry_availability(
+def prescreen_telemetry_availability(
     db: CaseDB,
     state: SessionState,
     session_id: str,
@@ -200,7 +200,7 @@ def _prescreen_telemetry_availability(
     This prevents wasting 3+ LLM cycles on hypotheses that will ultimately
     become untestable due to missing telemetry.
     """
-    from forensia.ai.hypotheses.hypothesis_manager import _resolve_hypothesis
+    from forensia.ai.hypotheses.hypothesis_manager import resolve_hypothesis
 
     # Compute the set of event_ids present in the case.
     try:
@@ -235,7 +235,7 @@ def _prescreen_telemetry_availability(
                 f"{hyp.id} — untestable (pre-screen): required event IDs [{id_list}] "
                 f"are not present in the available telemetry",
             )
-            _resolve_hypothesis(
+            resolve_hypothesis(
                 db=db,
                 state=state,
                 hypothesis_id=hyp.id,

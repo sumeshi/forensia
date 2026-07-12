@@ -11,9 +11,9 @@ from typing import Any
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.report.benign_auth import (
-    _normalise_ip,
     finding_is_auth_scoped,
     is_benign_local_auth,
+    normalise_ip,
     tag_benign_local_auth_findings,
 )
 
@@ -57,7 +57,7 @@ class LocalAuthClassificationTests(unittest.TestCase):
             ("-", "-"),
         ):
             with self.subTest(value=value):
-                self.assertEqual(expected, _normalise_ip(value))
+                self.assertEqual(expected, normalise_ip(value))
 
     def test_local_auth_decision_matrix(self) -> None:
         cases = (

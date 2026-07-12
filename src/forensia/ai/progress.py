@@ -18,7 +18,7 @@ except ImportError:  # pragma: no cover - optional until dependency is installed
 from forensia.ai.checking.check_guardrails import _co_observation_satisfied
 
 
-def _query_fingerprint(sql: str | None) -> str:
+def query_fingerprint(sql: str | None) -> str:
     """Generate a fingerprint for a query to detect duplicates.
 
     Uses sqlglot AST normalization when available so semantically equivalent

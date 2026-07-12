@@ -4,16 +4,16 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from forensia.ai.checking.check_normalize import _parse_new_hypotheses
-from forensia.ai.investigation_cycle import _select_focus_hypotheses
+from forensia.ai.checking.check_normalize import parse_new_hypotheses
+from forensia.ai.investigation_cycle import select_focus_hypotheses
 from forensia.ai.planner import (
-    _request_with_optional_context,
     plan_hypothesis_query,
+    request_with_optional_context,
     validate_select_sql,
 )
 from forensia.ai.progress import (
     HypothesisProgressTracker,
-    _query_fingerprint,
+    query_fingerprint,
 )
 from forensia.ai.prompts.sql_schema import build_investigation_framework
 from forensia.config import (
@@ -108,7 +108,7 @@ class PlannerRetryTests(unittest.TestCase):
             )
         )
 
-        selected = _select_focus_hypotheses(state, max_items=1)
+        selected = select_focus_hypotheses(state, max_items=1)
 
         self.assertEqual(["H-002"], [item.id for item in selected])
 
@@ -123,7 +123,7 @@ class PlannerRetryTests(unittest.TestCase):
             self.assertEqual(sql, validate_select_sql(sql))
 
     def test_checker_parses_new_hypotheses_leniently(self) -> None:
-        hypotheses = _parse_new_hypotheses(
+        hypotheses = parse_new_hypotheses(
             [
                 {
                     "id": "H-new",
@@ -450,7 +450,7 @@ class PlannerRetryTests(unittest.TestCase):
             "forensia.ai.llm.llm_gateway.request_llm_json",
             return_value={"read_more": []},
         ):
-            _request_with_optional_context(
+            request_with_optional_context(
                 memory=_MemoryStub(),
                 messages_builder=builder,
                 base_url=_llm_base_url(),
@@ -474,7 +474,7 @@ class PlannerRetryTests(unittest.TestCase):
                 side_effect=[{"read_more": ["archive/refuted.md"]}, {"read_more": []}],
             ),
         ):
-            _request_with_optional_context(
+            request_with_optional_context(
                 memory=memory,
                 messages_builder=lambda extra: [{"role": "user", "content": extra}],
                 base_url=_llm_base_url(),
@@ -484,20 +484,20 @@ class PlannerRetryTests(unittest.TestCase):
         mock_compact.assert_any_call(["archive/refuted.md"], max_bytes=memory.max_bytes)
 
     def test_query_fingerprint_normalizes_equivalent_ast_forms(self) -> None:
-        left = _query_fingerprint(
+        left = query_fingerprint(
             "SELECT * FROM evtx_events WHERE event_id = 4624 AND computer = 'HOST1'"
         )
-        right = _query_fingerprint(
+        right = query_fingerprint(
             "select * from evtx_events as e where computer = 'host1' and event_id in (4624)"
         )
 
         self.assertEqual(left, right)
 
     def test_query_fingerprint_changes_for_different_event_scope(self) -> None:
-        left = _query_fingerprint(
+        left = query_fingerprint(
             "SELECT * FROM evtx_events WHERE event_id = 4624 AND computer = 'HOST1'"
         )
-        right = _query_fingerprint(
+        right = query_fingerprint(
             "SELECT * FROM evtx_events WHERE event_id = 4634 AND computer = 'HOST1'"
         )
 

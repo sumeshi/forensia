@@ -4,14 +4,19 @@ import os
 import unittest
 from unittest.mock import patch
 
-from forensia.ai.prompts.prompt_context import _truncate_context_sections
+from forensia.ai.llm.schemas import PARAGRAPH_NARRATE_SCHEMA
+from forensia.ai.prompts.prompt_context import (
+    slim_report_brief_for_section,
+    truncate_context_sections,
+)
 from forensia.ai.prompts.prompt_sections import (
+    build_paragraph_narrate_messages,
     build_question_classify_messages,
     build_report_section_messages,
     build_structured_classify_messages,
 )
 from forensia.ai.prompts.sql_schema import build_investigation_framework
-from forensia.ai.sections.section_exec import _question_report_brief
+from forensia.ai.sections.section_exec import question_report_brief
 from forensia.config import (
     clear_llm_settings_cache,
     reload_settings,
@@ -48,7 +53,7 @@ class PromptMessageTests(unittest.TestCase):
     def test_truncate_context_sections_keeps_text_within_1500_chars(self) -> None:
         sections = {"2_timeline": "x" * 1500, "3_technical": "y" * 1501}
 
-        trimmed = _truncate_context_sections(sections)
+        trimmed = truncate_context_sections(sections)
 
         self.assertEqual("x" * 1500, trimmed["2_timeline"])
         self.assertEqual("y" * 1500, trimmed["3_technical"])
@@ -145,7 +150,7 @@ class PromptMessageTests(unittest.TestCase):
         self.assertIn("SCHTASKS.EXE=persistence_tool", framework)
 
     def test_benchmark_report_brief_strips_narrative_keys(self) -> None:
-        brief = _question_report_brief(
+        brief = question_report_brief(
             {
                 "investigation_objective": "Narrative objective",
                 "top_findings": [{"finding_id": "F-1"}],
@@ -360,7 +365,7 @@ class TestConfirmedFindingsBlock(unittest.TestCase):
 
 
 class PriorAttemptsBlockTests(unittest.TestCase):
-    """G-6: attempt history reaches the planner as structured fields, not prose.
+    """Attempt history reaches the planner as structured fields, not prose.
 
     Why: weak local models act reliably on structured lists (query_id /
     verdict / evidence_count) but often ignore clipped free text. The
@@ -368,9 +373,9 @@ class PriorAttemptsBlockTests(unittest.TestCase):
     """
 
     def test_render_prior_attempts_structured_fields(self) -> None:
-        from forensia.ai.prompts.prompt_investigation import _render_prior_attempts
+        from forensia.ai.prompts.prompt_investigation import render_prior_attempts
 
-        block = _render_prior_attempts(
+        block = render_prior_attempts(
             [
                 {
                     "query_id": "q-001",
@@ -398,17 +403,17 @@ class PriorAttemptsBlockTests(unittest.TestCase):
 
     def test_render_prior_attempts_omits_absent_fields(self) -> None:
         """Fields missing from a row are omitted, never fabricated (Rule 12)."""
-        from forensia.ai.prompts.prompt_investigation import _render_prior_attempts
+        from forensia.ai.prompts.prompt_investigation import render_prior_attempts
 
-        block = _render_prior_attempts([{"verdict": "inconclusive"}])
+        block = render_prior_attempts([{"verdict": "inconclusive"}])
         self.assertNotIn("query_id=", block)
         self.assertNotIn("evidence_count=", block)
         self.assertNotIn("do_not_repeat_query_ids", block)
 
     def test_render_prior_attempts_empty_history(self) -> None:
-        from forensia.ai.prompts.prompt_investigation import _render_prior_attempts
+        from forensia.ai.prompts.prompt_investigation import render_prior_attempts
 
-        self.assertIn("(none)", _render_prior_attempts([]))
+        self.assertIn("(none)", render_prior_attempts([]))
 
     def test_intent_messages_carry_structured_attempts(self) -> None:
         from forensia.ai.prompts.prompt_investigation import build_query_intent_messages
@@ -431,6 +436,61 @@ class PriorAttemptsBlockTests(unittest.TestCase):
         self.assertIn("query_id=q-009", system)
         # The raw JSON dump of history must be gone.
         self.assertNotIn("recent_history:", system)
+
+
+class NarratePromptContractTests(unittest.TestCase):
+    """Schema and brief-slimming contracts for narrative section prompts."""
+
+    def test_paragraph_narrate_schema_required_body(self):
+        self.assertIn("required", PARAGRAPH_NARRATE_SCHEMA)
+        self.assertIn("body", PARAGRAPH_NARRATE_SCHEMA["required"])
+        messages, _ = build_paragraph_narrate_messages(
+            heading="Executive Summary",
+            key_points=[],
+            evidence_rows=[],
+            template_body="## Executive Summary",
+        )
+        self.assertIn('{"body"', messages[0]["content"])
+        self.assertIn("Do not return a bare string", messages[0]["content"])
+
+    def test_slim_report_brief_keeps_case_level_context_for_narrative_sections(self):
+        brief = {
+            "time_range": {"start": "2015-03-22", "end": "2015-03-23"},
+            "source_timezone": "UTC",
+            "top_findings": [
+                {
+                    "finding_id": "finding-1",
+                    "title": "Explicit credential logon",
+                    "summary": "4648 activity involving informant.",
+                    "severity": "high",
+                    "confidence": 0.9,
+                    "evidence_ids": ["evtx-security-000000000122"],
+                    "large_unused_field": "x" * 200,
+                }
+            ],
+            "confirmed_hypotheses": [
+                {
+                    "hypothesis_id": "H-001",
+                    "description": "Explicit credentials were used.",
+                    "status": "confirmed",
+                    "verdict": "confirmed",
+                }
+            ],
+            "active_hypotheses": [
+                {"hypothesis_id": "H-002", "description": "Missing collection gap."}
+            ],
+        }
+
+        technical = slim_report_brief_for_section(brief, "3_technical")
+        gaps = slim_report_brief_for_section(brief, "4_gaps")
+
+        self.assertEqual(
+            "Explicit credential logon", technical["top_findings"][0]["title"]
+        )
+        self.assertIn("confirmed_hypotheses", technical)
+        self.assertNotIn("large_unused_field", technical["top_findings"][0])
+        self.assertEqual("H-002", gaps["active_hypotheses"][0]["hypothesis_id"])
+        self.assertNotIn("top_findings", gaps)
 
 
 if __name__ == "__main__":

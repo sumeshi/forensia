@@ -31,14 +31,14 @@ from forensia.ai.investigation_session import (
     _ctx_get_report_status,
     _finding_snapshot,
     _init_session,
-    _sync_keypoint_cards,
+    sync_keypoint_cards,
 )
 from forensia.ai.llm.llm_client import (
     LLMServerUnavailableError,
 )
 from forensia.ai.report_gap import (
-    _inject_gap_hypotheses,
-    _report_cycle_progress,
+    inject_gap_hypotheses,
+    report_cycle_progress,
 )
 from forensia.ai.sections.section_refresher import async_refresh_report_sections
 from forensia.config import get_llm_settings
@@ -53,7 +53,7 @@ from forensia.report.sections.section_store import mark_report_sections_ai_exhau
 from forensia.rules.loader import resolve_active_packs
 
 
-def _final_summary(state: SessionState) -> str:
+def final_summary(state: SessionState) -> str:
     """Build a human-readable summary of the investigation outcome."""
     if state.resolved_hypotheses:
         lines = []
@@ -144,7 +144,7 @@ async def _run_report_phase(
     if report_result is None:
         return report_before, cycle_progress, "ok"
     report_after = report_result["report_status"]
-    gap_new_hypotheses = _inject_gap_hypotheses(
+    gap_new_hypotheses = inject_gap_hypotheses(
         db=db,
         state=state,
         gaps=report_result["gaps"],
@@ -153,7 +153,7 @@ async def _run_report_phase(
     )
     if gap_new_hypotheses:
         cycle_progress = True
-    if _report_cycle_progress(report_before, report_after):
+    if report_cycle_progress(report_before, report_after):
         cycle_progress = True
     render_written_report(case, db)
     return report_after, cycle_progress, "ok"
@@ -269,7 +269,7 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int]:
         _enforce_llm_budget(env.llm_logger, env.max_llm_calls)
         env.state.iteration = plan_cycle
         env.state.findings_snapshot = _finding_snapshot(env.db)
-        _sync_keypoint_cards(env.memory, env.state.findings_snapshot)
+        sync_keypoint_cards(env.memory, env.state.findings_snapshot)
         _log(
             "PLAN",
             f"Cycle {plan_cycle}/{env.max_iter} — broad planning (active={len(env.state.active_hypotheses)} resolved={len(env.state.resolved_hypotheses)})",
@@ -389,7 +389,7 @@ def _build_investigate_result(
         "iteration": env.state.iteration,
         "depth": env.state.focus_depth,
         "focus_hypothesis_id": env.state.focus_hypothesis_id,
-        "summary": _final_summary(env.state),
+        "summary": final_summary(env.state),
         "hypotheses": [item.model_dump() for item in _all_hypotheses(env.state)],
         "report_sections": _ctx_get_report_status(env.ctx, env.db, refresh=True),
         "report_refresh_failures": report_refresh_failures,

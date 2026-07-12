@@ -15,13 +15,13 @@ from forensia.ai.hypotheses.hypothesis_model import (
     _extract_entities_from_text,
     _extract_refuted_tokens,
     _filter_valid_entities,
-    _gap_hypothesis_id,
     _gap_references_refuted,
-    _hypothesis_evidence_strength,
     _merge_hypothesis_fields,
     _merge_string_lists,
     _normalize_hypothesis_description,
     _propose_confirm_when,
+    gap_hypothesis_id,
+    hypothesis_evidence_strength,
 )
 from forensia.ai.hypotheses.hypothesis_store import (
     _all_hypotheses,
@@ -43,7 +43,7 @@ from forensia.rules.loader import load_rule_by_id
 MAX_ACTIVE_HYPOTHESES = 8
 
 
-def _merge_active_hypotheses(
+def merge_active_hypotheses(
     db: CaseDB,
     current: list[Hypothesis],
     updates: list[Hypothesis],
@@ -82,7 +82,7 @@ def _merge_active_hypotheses(
                 resolved_existing = best_resolved
                 resolved_score = best_resolved_score
         if resolved_existing is not None:
-            resolved_strength = _hypothesis_evidence_strength(resolved_existing)
+            resolved_strength = hypothesis_evidence_strength(resolved_existing)
 
             # Default: bind to resolved. The resolved hypothesis's verdict
             # stands — do NOT create a duplicate active hypothesis.
@@ -261,22 +261,22 @@ def _feed_verdict_to_timeline(
 # Re-exported via the import at the top of this file.
 
 
-_MAX_SECTION_UPDATES = 5
+MAX_SECTION_UPDATES = 5
 
 
 # _sections_for_keypoint: canonical implementation moved to report/section_taxonomy.py
 # Re-exported via the import at the top of this file.
 
 
-def _mark_section_stale(db: CaseDB, section_key: str) -> None:
+def mark_section_stale(db: CaseDB, section_key: str) -> None:
     """Mark a report section as stale, respecting the update_count cap."""
     db.execute(
         "UPDATE report_sections SET stale = TRUE WHERE section_key = ? AND update_count < ?",
-        (section_key, _MAX_SECTION_UPDATES),
+        (section_key, MAX_SECTION_UPDATES),
     )
 
 
-def _resolve_hypothesis(
+def resolve_hypothesis(
     db: CaseDB,
     state: SessionState,
     hypothesis_id: str,
@@ -364,7 +364,7 @@ def _resolve_hypothesis(
                             ):
                                 follow_up_hypotheses.append(
                                     Hypothesis(
-                                        id=_gap_hypothesis_id(rendered),
+                                        id=gap_hypothesis_id(rendered),
                                         description=rendered,
                                         status="active",
                                         verdict=None,
@@ -388,7 +388,7 @@ def _resolve_hypothesis(
         if section_key in seen_sections:
             continue
         seen_sections.add(section_key)
-        _mark_section_stale(db, section_key)
+        mark_section_stale(db, section_key)
 
     # DESIGN-4: Add follow-up hypotheses to active list
     for follow_up in follow_up_hypotheses:

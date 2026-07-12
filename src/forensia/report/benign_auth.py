@@ -87,7 +87,7 @@ def _load_auth_event_ids() -> frozenset[str]:
     return frozenset(ids) or policy.fallback_auth_event_ids
 
 
-def _normalise_ip(value: Any) -> str:
+def normalise_ip(value: Any) -> str:
     """Normalise an IP / host value to a lowercase string for comparison."""
     if value is None:
         return ""
@@ -131,7 +131,7 @@ def is_benign_local_auth(
     apply the predicate to rows whose SELECT did not include ``event_id``.
     A present-but-non-auth event_id is still rejected.
     """
-    src_ip = _normalise_ip(evidence_row.get("src_ip"))
+    src_ip = normalise_ip(evidence_row.get("src_ip"))
     event_id = str(evidence_row.get("event_id") or "").strip()
 
     # Only meaningful for logon events

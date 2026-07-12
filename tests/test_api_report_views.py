@@ -13,14 +13,14 @@ from forensia.api.dto import (
     SectionQuestionDTO,
 )
 from forensia.api.service import (
-    _build_range_filter,
-    _entity_card_summary,
-    _normalize_volume_rows,
-    _trunc_key,
     aggregate_event_volume,
+    build_range_filter,
+    entity_card_summary,
     list_attack_coverage_dto,
     list_entity_cards_dto,
     list_section_questions_dto,
+    normalize_volume_rows,
+    trunc_key,
 )
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
@@ -176,12 +176,12 @@ class TestNormalizeVolumeRows(unittest.TestCase):
         rows = [
             {"bucket": "2024-01-01 00:00:00+00:00", "series": "Security", "count": 10}
         ]
-        result = _normalize_volume_rows(rows)
+        result = normalize_volume_rows(rows)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].bucket, "2024-01-01 00:00:00")
 
     def test_handles_empty_list(self):
-        result = _normalize_volume_rows([])
+        result = normalize_volume_rows([])
         self.assertEqual(result, [])
 
     def test_sorts_by_bucket_then_series(self):
@@ -189,29 +189,29 @@ class TestNormalizeVolumeRows(unittest.TestCase):
             {"bucket": "2024-01-02 00:00:00", "series": "Sys", "count": 2},
             {"bucket": "2024-01-01 00:00:00", "series": "Sec", "count": 1},
         ]
-        result = _normalize_volume_rows(rows)
+        result = normalize_volume_rows(rows)
         self.assertEqual(result[0].bucket, "2024-01-01 00:00:00")
         self.assertEqual(result[1].bucket, "2024-01-02 00:00:00")
 
 
 class TestBuildRangeFilter(unittest.TestCase):
     def test_no_start_end(self):
-        sql, params = _build_range_filter(None, None)
+        sql, params = build_range_filter(None, None)
         self.assertIn("EXTRACT(year FROM timestamp)", sql)
         self.assertEqual(params, [])
 
     def test_with_start(self):
-        sql, params = _build_range_filter("2024-01-01", None)
+        sql, params = build_range_filter("2024-01-01", None)
         self.assertIn("timestamp >= ?", sql)
         self.assertIn("2024-01-01", params)
 
     def test_with_end(self):
-        sql, params = _build_range_filter(None, "2024-06-01")
+        sql, params = build_range_filter(None, "2024-06-01")
         self.assertIn("timestamp < ?", sql)
         self.assertIn("2024-06-01", params)
 
     def test_with_both(self):
-        sql, params = _build_range_filter("2024-01-01", "2024-06-01")
+        sql, params = build_range_filter("2024-01-01", "2024-06-01")
         self.assertIn("timestamp >= ?", sql)
         self.assertIn("timestamp < ?", sql)
         self.assertEqual(len([p for p in params if isinstance(p, str)]), 2)
@@ -220,27 +220,27 @@ class TestBuildRangeFilter(unittest.TestCase):
 class TestTruncKey(unittest.TestCase):
     def test_year(self):
         self.assertEqual(
-            _trunc_key("2024-06-15T10:30:00", "year"), "2024-01-01T00:00:00"
+            trunc_key("2024-06-15T10:30:00", "year"), "2024-01-01T00:00:00"
         )
 
     def test_month(self):
         self.assertEqual(
-            _trunc_key("2024-06-15T10:30:00", "month"), "2024-06-01T00:00:00"
+            trunc_key("2024-06-15T10:30:00", "month"), "2024-06-01T00:00:00"
         )
 
     def test_day(self):
         self.assertEqual(
-            _trunc_key("2024-06-15T10:30:00", "day"), "2024-06-15T00:00:00"
+            trunc_key("2024-06-15T10:30:00", "day"), "2024-06-15T00:00:00"
         )
 
     def test_hour(self):
         self.assertEqual(
-            _trunc_key("2024-06-15T10:30:00", "hour"), "2024-06-15T10:00:00"
+            trunc_key("2024-06-15T10:30:00", "hour"), "2024-06-15T10:00:00"
         )
 
     def test_replaces_space_with_t(self):
         self.assertEqual(
-            _trunc_key("2024-06-15 10:30:00", "hour"), "2024-06-15T10:00:00"
+            trunc_key("2024-06-15 10:30:00", "hour"), "2024-06-15T10:00:00"
         )
 
 
@@ -566,7 +566,7 @@ class TestEntityCardSummary(unittest.TestCase):
             "- notes: created malicious scheduled task at 03:14 UTC\n"
         )
         self.assertEqual(
-            _entity_card_summary(path),
+            entity_card_summary(path),
             "role: attacker · created malicious scheduled task at 03:14 UTC",
         )
 
@@ -575,12 +575,12 @@ class TestEntityCardSummary(unittest.TestCase):
             "# host: WIN10\n\nSeen on 4624 logon spike\nSecondary line\n"
         )
         self.assertEqual(
-            _entity_card_summary(path), "Seen on 4624 logon spike · Secondary line"
+            entity_card_summary(path), "Seen on 4624 logon spike · Secondary line"
         )
 
     def test_returns_none_for_card_with_only_heading(self):
         path = self._write("# user: alice\n\n- type: user\n- name: alice\n")
-        self.assertIsNone(_entity_card_summary(path))
+        self.assertIsNone(entity_card_summary(path))
 
 
 class TestListEntityCardsDto(unittest.TestCase):

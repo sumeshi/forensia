@@ -203,15 +203,15 @@ def test_combined_filtering_reaches_budget(tmp_path: Any) -> None:
 
 
 def test_collect_event_ids_helper() -> None:
-    """_collect_event_ids extracts ints from evidence result rows."""
-    from forensia.ai.prompts.prompt_context import _collect_event_ids
+    """collect_event_ids extracts ints from evidence result rows."""
+    from forensia.ai.prompts.prompt_context import collect_event_ids
 
     results = [
         {"sample_rows": [{"event_id": 4624}, {"event_id": 4625}]},
         {"sample_rows": [{"event_id": 4624, "computer": "X"}]},
         {"head_rows": [{"event_id": 4688}]},
     ]
-    ids = _collect_event_ids(results)
+    ids = collect_event_ids(results)
     assert 4624 in ids
     assert 4625 in ids
     assert 4688 in ids
@@ -248,7 +248,7 @@ def testsections_for_hypothesis_auth_excludes_catalogs() -> None:
 
     Why: catalog sections are interpretation aids for executable/file
     evidence. Including them for a pure authentication hypothesis dilutes
-    the prompt for weak local models without adding signal (G-1).
+    the prompt for weak local models without adding signal.
     """
     from forensia.ai.prompts.prompt_playbook import sections_for_hypothesis
     from forensia.core.session import Hypothesis

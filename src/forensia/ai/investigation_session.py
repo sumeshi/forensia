@@ -16,10 +16,10 @@ from uuid import uuid4
 import yaml
 
 from forensia.ai.audit import LLMCallLogger
-from forensia.ai.hypotheses.hypothesis_store import _load_persisted_hypotheses
+from forensia.ai.hypotheses.hypothesis_store import load_persisted_hypotheses
 from forensia.ai.hypotheses.seeding import (
-    _seed_findings,
     _seed_rule_hypotheses,
+    seed_findings,
 )
 from forensia.ai.llm.llm_client import (
     LLMServerUnavailableError,
@@ -44,7 +44,7 @@ def _to_json(value: Any) -> str:
 
 
 @dataclass
-class _Ctx:
+class Ctx:
     """Mutable per-session state shared across investigate() helpers."""
 
     interrupted: bool = False
@@ -80,7 +80,7 @@ async def _call_with_outage_recovery(
 
 
 def _ctx_get_report_status(
-    ctx: _Ctx,
+    ctx: Ctx,
     db: CaseDB,
     *,
     current_section: str | None = None,
@@ -97,8 +97,8 @@ def _ctx_get_report_status(
     )
 
 
-def _ctx_refresh_caches(
-    ctx: _Ctx,
+def ctx_refresh_caches(
+    ctx: Ctx,
     memory: MemoryManager,
     base_url: str,
     model: str,
@@ -185,7 +185,7 @@ def _reasoning_entry_id(
     return hashlib.sha1(body.encode("utf-8")).hexdigest()[:16]
 
 
-def _append_hypothesis_reasoning(
+def append_hypothesis_reasoning(
     db: CaseDB,
     hypothesis_id: str,
     session_id: str,
@@ -297,7 +297,7 @@ def _keypoint_card_id(index: int) -> str:
     return f"KP-{index:04d}"
 
 
-def _sync_keypoint_cards(
+def sync_keypoint_cards(
     memory: MemoryManager, findings_snapshot: list[dict[str, Any]]
 ) -> None:
     """Reconcile findings → keypoint-memory cards, removing stale entries."""
@@ -364,7 +364,7 @@ def _init_session(
     model: str,
     template_root: Path | None,
     active_pack_ids: set[str] | None = None,
-) -> tuple[SessionState, _Ctx, MemoryManager, LLMCallLogger, str, datetime, Path]:
+) -> tuple[SessionState, Ctx, MemoryManager, LLMCallLogger, str, datetime, Path]:
     """Initialize a new investigation session. Returns (state, ctx, memory, llm_logger, session_id, started_at, template_root)."""
     session_id = f"session-{uuid4().hex[:12]}"
     started_at = datetime.now(UTC).replace(tzinfo=None)
@@ -378,11 +378,11 @@ def _init_session(
     if template_root is None:
         seed_case_report_templates(case)
         template_root = case.report_template_dir
-    _seed_findings(case, db, profile, active_pack_ids=active_pack_ids)
+    seed_findings(case, db, profile, active_pack_ids=active_pack_ids)
     _initialize_overview(memory, case, profile_config)
     _ensure_profile_objective(memory, profile_config)
     llm_logger = LLMCallLogger(case, session_id)
-    active_hypotheses, resolved_hypotheses = _load_persisted_hypotheses(db)
+    active_hypotheses, resolved_hypotheses = load_persisted_hypotheses(db)
     state = SessionState(
         session_id=session_id,
         iteration=0,
@@ -391,10 +391,10 @@ def _init_session(
         resolved_hypotheses=resolved_hypotheses,
     )
     _seed_rule_hypotheses(db, state, session_id, active_pack_ids=active_pack_ids)
-    _sync_keypoint_cards(memory, state.findings_snapshot)
+    sync_keypoint_cards(memory, state.findings_snapshot)
     _sync_hypothesis_cards(memory, state.active_hypotheses, state.resolved_hypotheses)
-    ctx = _Ctx(report_status=_build_report_status(db))
-    _ctx_refresh_caches(ctx, memory, base_url, model)
+    ctx = Ctx(report_status=_build_report_status(db))
+    ctx_refresh_caches(ctx, memory, base_url, model)
     db.execute(
         "INSERT INTO investigation_sessions (session_id, started_at, finished_at, iterations, status) VALUES (?, ?, ?, ?, ?)",
         (session_id, started_at, None, 0, "running"),

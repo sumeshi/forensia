@@ -56,7 +56,7 @@ def _count_records(db: CaseDB) -> dict[str, int]:
     return {key: int(row[index] or 0) for index, key in enumerate(keys)}
 
 
-def _reset_case_tables(db: CaseDB) -> None:
+def reset_case_tables(db: CaseDB) -> None:
     """Delete all rows from every case table (destructive reset)."""
     for table in (
         "evtx_events",
@@ -176,7 +176,7 @@ def _open_case_or_die(case_dir: str, timezone: str | None = None) -> Case:
         ) from exc
 
 
-def _progress_pusher(db: CaseDB, initial_state: dict) -> Callable[..., None]:
+def progress_pusher(db: CaseDB, initial_state: dict) -> Callable[..., None]:
     """Return a closure that records progress events and writes snapshots."""
     state = dict(initial_state)
 

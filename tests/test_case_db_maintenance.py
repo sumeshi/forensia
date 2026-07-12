@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 from forensia.cli import app as cli_module
 from forensia.cli.support import (
-    _progress_pusher,
-    _reset_case_tables,
+    progress_pusher,
+    reset_case_tables,
 )
 from forensia.config import (
     reload_settings,
@@ -85,7 +85,7 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                 patch("forensia.cli.support.write_progress_snapshot") as mock_progress,
                 patch("forensia.cli.support.write_api_snapshots") as mock_full,
             ):
-                push = _progress_pusher(
+                push = progress_pusher(
                     db,
                     {
                         "stage": "investigate",
@@ -170,7 +170,7 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                     """
                 )
 
-                _reset_case_tables(db)
+                reset_case_tables(db)
 
                 self.assertEqual(
                     0, db.execute("SELECT COUNT(*) FROM ingested_files").fetchone()[0]

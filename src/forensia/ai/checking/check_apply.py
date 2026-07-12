@@ -82,7 +82,7 @@ def _record_hypothesis_assessment(
     )
 
 
-def _insert_investigation_finding(
+def insert_investigation_finding(
     db: CaseDB,
     session_id: str,
     planned_query: PlannedQuery,
@@ -276,7 +276,7 @@ def _apply_newlead_finding(
     notes: str,
 ) -> None:
     """Insert an investigation finding and its AI review for a newlead verdict."""
-    finding_id = _insert_investigation_finding(
+    finding_id = insert_investigation_finding(
         db=db,
         session_id=session_id,
         planned_query=planned_query,
