@@ -7,6 +7,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from forensia.knowledge.resources import schema_dir
+
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
@@ -26,7 +28,7 @@ _VALID_STRUCTURED_STATUSES = {
 
 def _schema_dir() -> Path:
     # knowledge/ is a sibling of the packaged rulepacks/ data directory.
-    return Path(__file__).resolve().parent.parent / "rulepacks" / "_schema"
+    return schema_dir()
 
 
 def _clean_text(value: Any) -> str:

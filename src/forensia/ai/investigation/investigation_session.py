@@ -36,6 +36,7 @@ from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
+from forensia.knowledge.resources import profile_path
 from forensia.report.template_export import seed_case_report_templates
 
 
@@ -224,10 +225,10 @@ def append_hypothesis_reasoning(
 
 def _load_profile_config(profile: str) -> dict[str, Any]:
     """Load the YAML configuration for a given profile name."""
-    profile_path = Path(__file__).parent.parent / "profiles" / f"{profile}.yaml"
-    if not profile_path.exists():
+    profile_file = profile_path(profile)
+    if not profile_file.exists():
         return {}
-    return yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
+    return yaml.safe_load(profile_file.read_text(encoding="utf-8")) or {}
 
 
 def _initialize_overview(

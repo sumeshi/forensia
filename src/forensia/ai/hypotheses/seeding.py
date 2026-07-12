@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 from typing import Any
 
 from forensia.ai.hypotheses.hypothesis_manager import merge_active_hypotheses
@@ -13,34 +12,39 @@ from forensia.core.log import log as _log
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
-from forensia.report.answers.keypoint_catalog import (
-    REPORT_KEYPOINTS,
-    _resolve_evidence_results,
-)
-from forensia.rules.engine import (
+from forensia.knowledge.resources import profile_path, rulepacks_dir
+from forensia.knowledge.rules.engine import (
     clear_rule_findings,
     generate_findings,
     run_rule,
     save_findings,
 )
-from forensia.rules.loader import _get_pack_map, _get_rule_cache, load_rules_from_dir
+from forensia.knowledge.rules.loader import (
+    _get_pack_map,
+    _get_rule_cache,
+    load_rules_from_dir,
+)
+from forensia.report.answers.keypoint_catalog import (
+    REPORT_KEYPOINTS,
+    _resolve_evidence_results,
+)
 
 
 def seed_findings(
     case: Case, db: CaseDB, profile: str, active_pack_ids: set[str] | None = None
 ) -> int:
     """Run profile rules and replace rule-derived seed findings on resume."""
-    profile_path = Path(__file__).parent.parent.parent / "profiles" / f"{profile}.yaml"
-    rules_dir = Path(__file__).parent.parent.parent / "rulepacks"
+    profile_file = profile_path(profile)
+    rules_dir = rulepacks_dir()
     if active_pack_ids is not None:
         pack_map = _get_pack_map()
         rules = [
             r
-            for r in load_rules_from_dir(rules_dir, profile_path)
+            for r in load_rules_from_dir(rules_dir, profile_file)
             if pack_map.get(r.id) in active_pack_ids
         ]
     else:
-        rules = load_rules_from_dir(rules_dir, profile_path)
+        rules = load_rules_from_dir(rules_dir, profile_file)
     total = 0
     for rule in rules:
         clear_rule_findings(case, db, rule.id)

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
-from forensia.normalize.mft import normalize_mft
+from forensia.evidence.mft import normalize_mft
 
 
 class NormalizeMftTests(unittest.TestCase):

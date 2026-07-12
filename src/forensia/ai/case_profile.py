@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from forensia.knowledge.resources import profile_path, profiles_dir, rulepacks_dir
+
 _PROFILE_CACHE: dict[str, dict[str, Any]] = {}
 
 
@@ -161,18 +163,17 @@ def profile_advisor(profile_name: str, db) -> str:
       executables in prefetch, .ost/.pst in MFT) and maps them to profiles that
       include the matching rulepacks.
     """
-    from pathlib import Path
 
     import yaml
 
-    rulepacks_dir = Path(__file__).parent.parent / "rulepacks"
+    rules_root = rulepacks_dir()
     all_packs = sorted(
-        d.name for d in rulepacks_dir.iterdir() if d.is_dir() and d.name != "_schema"
+        d.name for d in rules_root.iterdir() if d.is_dir() and d.name != "_schema"
     )
-    profile_path = Path(__file__).parent.parent / "profiles" / f"{profile_name}.yaml"
-    if not profile_path.exists():
+    profile_file = profile_path(profile_name)
+    if not profile_file.exists():
         return ""
-    profile = yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
+    profile = yaml.safe_load(profile_file.read_text(encoding="utf-8")) or {}
     enabled_packs = {str(p) for p in (profile.get("rulepacks") or [])}
     uncovered = [p for p in all_packs if p not in enabled_packs]
     if not uncovered:
@@ -214,7 +215,7 @@ def profile_advisor(profile_name: str, db) -> str:
 
     # Map uncovered packs to available profiles
     profile_pack_map: dict[str, set[str]] = {}
-    for pf_path in sorted((Path(__file__).parent.parent / "profiles").glob("*.yaml")):
+    for pf_path in sorted(profiles_dir().glob("*.yaml")):
         try:
             pf_data = yaml.safe_load(pf_path.read_text(encoding="utf-8")) or {}
             pf_name = str(pf_data.get("name") or pf_path.stem)

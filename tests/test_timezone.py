@@ -12,8 +12,8 @@ import yaml
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
+from forensia.evidence.timezone import infer_timezone
 from forensia.knowledge.questions import extract_time_qualifiers
-from forensia.normalize.timezone import infer_timezone
 from forensia.report.answers.answer_store import add_local_time_columns
 from forensia.report.render.markdown import (
     local_time_from_utc,

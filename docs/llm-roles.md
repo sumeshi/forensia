@@ -28,11 +28,11 @@ Raw logs of LLM input/output are saved to `ai_logs/<phase>-<id>.json`.
 
 ### 2.1 Hypothesis investigation loop
 
-`plan_hypothesis_query` ([ai/planner.py](../src/forensia/ai/planner.py)) is a two-phase composition of Phase 1 (intent) → Phase 2 (composer):
+`plan_hypothesis_query` ([ai/planner.py](../src/forensia/ai/investigation/planner.py)) is a two-phase composition of Phase 1 (intent) → Phase 2 (composer):
 
 | Phase | Role | Caller | Prompt builder | Output schema |
 |---|---|---|---|---|
-| Phase 1 | `query_intent_planner` | [planner.plan_hypothesis_query](../src/forensia/ai/planner.py) | `build_query_intent_messages` | `QUERY_INTENT_SCHEMA` |
+| Phase 1 | `query_intent_planner` | [planner.plan_hypothesis_query](../src/forensia/ai/investigation/planner.py) | `build_query_intent_messages` | `QUERY_INTENT_SCHEMA` |
 | Phase 1 | `sql_self_check` | same (intent gate) | `build_sql_self_check_messages` | `SQL_SELF_CHECK_SCHEMA` |
 | Phase 2 | `sql_composer` | same (up to 3 retries) | `build_sql_composer_messages` | `SQL_COMPOSER_SCHEMA` |
 | `verdict_reviewer` | [checking/checker.check_query_result](../src/forensia/ai/checking/checker.py) | `build_verdict_review_messages` | `VERDICT_REVIEW_SCHEMA` |
@@ -79,7 +79,7 @@ The schema bodies are centralized in [src/forensia/ai/llm/schemas.py](../src/for
 ```
 
 Each element of `memory_updates.entities[]` has `{entity_type, name, role, notes}`.
-See [`_apply_memory_updates`](../src/forensia/ai/memory_sync.py) for the application logic.
+See [`_apply_memory_updates`](../src/forensia/ai/investigation/memory_sync.py) for the application logic.
 
 ### 3.2 `VERDICT_REVIEW_SCHEMA`
 
@@ -128,9 +128,9 @@ Common helpers live in the [src/forensia/ai/prompts/](../src/forensia/ai/prompts
 | `_time_range_guidance(time_range)` ([prompt_investigation.py](../src/forensia/ai/prompts/prompt_investigation.py)) | Presents the case earliest/latest and explicitly forbids `datetime('now')` / `CURRENT_TIMESTAMP` |
 | `_build_schema_guidance(table_name, db)` ([prompt_context.py](../src/forensia/ai/prompts/prompt_context.py)) | Generates the `<SCHEMA_CARDS>` block + live `information_schema` + SQL Cookbook |
 | `_format_schema_card(table_hints)` ([sql_schema.py](../src/forensia/ai/prompts/sql_schema.py)) | A schema card for one table (core_columns + column_descriptions + notes) |
-| `_load_schema_hints()` ([sql_schema.py](../src/forensia/ai/prompts/sql_schema.py)) | Loads `rulepacks/_schema/*.yaml` (LRU cached) |
+| `_load_schema_hints()` ([sql_schema.py](../src/forensia/ai/prompts/sql_schema.py)) | Loads `knowledge/rulepacks/_schema/*.yaml` (LRU cached) |
 | `_slim_report_brief_for_section(brief, section_key)` ([prompt_context.py](../src/forensia/ai/prompts/prompt_context.py)) | Slims the brief for a report section (drops unrelated top-level information) |
-| `_render_entity_memory(...)` ([memory_sync.py](../src/forensia/ai/memory_sync.py)) | Markdown formatting of entity cards |
+| `_render_entity_memory(...)` ([memory_sync.py](../src/forensia/ai/investigation/memory_sync.py)) | Markdown formatting of entity cards |
 
 ---
 

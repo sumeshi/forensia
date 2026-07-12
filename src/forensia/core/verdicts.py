@@ -9,7 +9,7 @@ from typing import Any
 def _load_taxonomy() -> dict[str, Any]:
     """Load the verdict taxonomy YAML file (cached after first call)."""
     path = (
-        Path(__file__).parent.parent / "rulepacks" / "_schema" / "verdict_taxonomy.yaml"
+        Path(__file__).parent.parent / "knowledge" / "rulepacks" / "_schema" / "verdict_taxonomy.yaml"
     )
     if not path.exists():
         return {}

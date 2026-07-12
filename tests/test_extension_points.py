@@ -6,12 +6,12 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from forensia.ingest import artifacts
+from forensia.evidence import artifacts
 from forensia.knowledge import questions
+from forensia.knowledge.rules.loader import load_rules_from_dir
 from forensia.report.answers import answer_registry, keypoint_catalog, table_registry
 from forensia.report.sections import quality_gates
 from forensia.report.sections.template_parsing import parse_block_hints, parse_template
-from forensia.rules.loader import load_rules_from_dir
 
 
 def test_artifact_adapter_registration(monkeypatch) -> None:

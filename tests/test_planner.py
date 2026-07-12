@@ -5,13 +5,13 @@ import unittest
 from unittest.mock import patch
 
 from forensia.ai.checking.check_normalize import parse_new_hypotheses
-from forensia.ai.investigation_cycle import select_focus_hypotheses
-from forensia.ai.planner import (
+from forensia.ai.investigation.investigation_cycle import select_focus_hypotheses
+from forensia.ai.investigation.planner import (
     plan_hypothesis_query,
     request_with_optional_context,
     validate_select_sql,
 )
-from forensia.ai.progress import (
+from forensia.ai.investigation.progress import (
     HypothesisProgressTracker,
     query_fingerprint,
 )
@@ -259,7 +259,7 @@ class PlannerRetryTests(unittest.TestCase):
             patch(
                 "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=responses
             ),
-            self.assertLogs("forensia.ai.planner", level="DEBUG") as logs,
+            self.assertLogs("forensia.ai.investigation.planner", level="DEBUG") as logs,
         ):
             result = plan_hypothesis_query(
                 state=state,

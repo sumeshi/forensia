@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from forensia.ai.memory_sync import apply_memory_updates
+from forensia.ai.investigation.memory_sync import apply_memory_updates
 from forensia.config import (
     reload_settings,
     resolve_llm_config,

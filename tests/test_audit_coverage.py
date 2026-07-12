@@ -38,6 +38,7 @@ class AuditCoverageTests(unittest.TestCase):
             Path(__file__).resolve().parent.parent
             / "src"
             / "forensia"
+            / "knowledge"
             / "rulepacks"
             / "windows"
         )

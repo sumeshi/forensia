@@ -1,7 +1,7 @@
 """Investigation entry point; helpers live in focused submodules.
 
 Kept for backward compatibility: existing code and tests import these
-names from forensia.ai.investigator.
+names from forensia.ai.investigation.investigator.
 """
 
 from __future__ import annotations
@@ -23,10 +23,10 @@ from forensia.ai.case_profile import (
     set_case_profile,
 )
 from forensia.ai.hypotheses.hypothesis_store import _all_hypotheses
-from forensia.ai.investigation_cycle import (
+from forensia.ai.investigation.investigation_cycle import (
     _run_cycle_body,
 )
-from forensia.ai.investigation_session import (
+from forensia.ai.investigation.investigation_session import (
     _call_with_outage_recovery,
     _ctx_get_report_status,
     _finding_snapshot,
@@ -48,9 +48,10 @@ from forensia.core.memory import MemoryManager
 from forensia.core.progress_event import progress_event
 from forensia.core.session import SessionState
 from forensia.db.database import CaseDB
+from forensia.knowledge.resources import profile_path
+from forensia.knowledge.rules.loader import resolve_active_packs
 from forensia.report.render.writer import render_written_report
 from forensia.report.sections.section_store import mark_report_sections_ai_exhausted
-from forensia.rules.loader import resolve_active_packs
 
 
 def final_summary(state: SessionState) -> str:
@@ -210,19 +211,19 @@ class _InvestigateEnv:
 
 def _resolve_rulepacks(profile: str, db: CaseDB, auto_rulepacks: bool) -> set[str]:
     """Resolve active rulepack ids for the profile, logging auto-enabled packs."""
-    profile_path = Path(__file__).parent.parent / "profiles" / f"{profile}.yaml"
+    profile_file = profile_path(profile)
     active_pack_ids = resolve_active_packs(
-        profile_path if profile_path.exists() else None,
+        profile_file if profile_file.exists() else None,
         db,
         auto_rulepacks=auto_rulepacks,
     )
     if auto_rulepacks and active_pack_ids:
         expected = set()
-        if profile_path.exists():
+        if profile_file.exists():
             import yaml
 
             profile_data = (
-                yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
+                yaml.safe_load(profile_file.read_text(encoding="utf-8")) or {}
             )
             expected = set(profile_data.get("rulepacks") or [])
         auto_enabled = active_pack_ids - expected

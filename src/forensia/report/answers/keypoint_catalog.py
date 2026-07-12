@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import yaml
@@ -16,6 +15,7 @@ from forensia.knowledge.questions import (
     load_question_specs,
     project_rows_for_question_spec,
 )
+from forensia.knowledge.resources import schema_dir
 from forensia.report.answers.keypoints_activity import ACTIVITY_KEYPOINTS
 from forensia.report.answers.keypoints_host_account import HOST_ACCOUNT_KEYPOINTS
 from forensia.report.answers.keypoints_overview_ioc import OVERVIEW_IOC_KEYPOINTS
@@ -96,9 +96,7 @@ def _load_template_keypoint_aliases() -> dict[str, str]:
     be a keypoint registered in REPORT_KEYPOINTS or a generic alias above;
     a missing file simply means no extra aliases."""
     path = (
-        Path(__file__).parent.parent.parent
-        / "rulepacks"
-        / "_schema"
+        schema_dir()
         / "keypoint_aliases.yaml"
     )
     if not path.exists():

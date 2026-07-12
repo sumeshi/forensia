@@ -27,7 +27,7 @@ class InvestigateWiringTests(unittest.TestCase):
         set_case_profile(None, None)
 
     def test_report_only_cycle_completes_without_llm(self) -> None:
-        from forensia.ai import investigator as investigator_module
+        from forensia.ai.investigation import investigator as investigator_module
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -72,7 +72,7 @@ class ReportRefreshFailureTests(unittest.TestCase):
         from pathlib import Path
         from unittest import mock
 
-        from forensia.ai import investigator as investigator_module
+        from forensia.ai.investigation import investigator as investigator_module
         from forensia.core.memory import MemoryManager
         from forensia.core.session import SessionState
 
@@ -122,7 +122,7 @@ class ReportRefreshFailureTests(unittest.TestCase):
     def test_run_report_phase_skipped_off_cycle(self) -> None:
         from pathlib import Path
 
-        from forensia.ai import investigator as investigator_module
+        from forensia.ai.investigation import investigator as investigator_module
         from forensia.core.memory import MemoryManager
         from forensia.core.session import SessionState
 
@@ -158,8 +158,8 @@ class ReportRefreshFailureTests(unittest.TestCase):
         from pathlib import Path
         from unittest import mock
 
-        from forensia.ai import investigation_session
-        from forensia.ai import investigator as investigator_module
+        from forensia.ai.investigation import investigation_session
+        from forensia.ai.investigation import investigator as investigator_module
         from forensia.ai.llm.llm_client import LLMServerUnavailableError
         from forensia.core.memory import MemoryManager
         from forensia.core.session import SessionState

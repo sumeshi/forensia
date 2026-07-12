@@ -11,11 +11,11 @@ from typer.testing import CliRunner
 from forensia.cli import app as cli_module
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
-from forensia.ingest import ingest_all
-from forensia.ingest.artifacts import MftArtifactAdapter, PrefetchArtifactAdapter
-from forensia.normalize import normalize_all
-from forensia.normalize.evtx import normalize_evtx
-from forensia.normalize.mft import normalize_mft
+from forensia.evidence.artifacts import MftArtifactAdapter, PrefetchArtifactAdapter
+from forensia.evidence.evtx import normalize_evtx
+from forensia.evidence.ingest import ingest_all
+from forensia.evidence.mft import normalize_mft
+from forensia.evidence.normalize import normalize_all
 
 
 class IngestTests(unittest.TestCase):
@@ -47,9 +47,9 @@ class IngestTests(unittest.TestCase):
                 return output, None
 
             with (
-                patch("forensia.ingest.evtx.ingest_evtx_file", side_effect=fake_ingest),
+                patch("forensia.evidence.evtx.ingest_evtx_file", side_effect=fake_ingest),
                 patch(
-                    "forensia.ingest.mft.ingest_mft_file",
+                    "forensia.evidence.mft.ingest_mft_file",
                     side_effect=fake_ingest,
                 ),
             ):
@@ -95,7 +95,7 @@ class IngestTests(unittest.TestCase):
                 return output, None
 
             with patch(
-                "forensia.ingest.prefetch.ingest_prefetch_file", side_effect=fake_ingest
+                "forensia.evidence.prefetch.ingest_prefetch_file", side_effect=fake_ingest
             ):
                 counts = ingest_all(case, input_dir)
 
@@ -124,13 +124,13 @@ class IngestTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with (
                 CaseDB(case) as db,
-                patch("forensia.normalize.evtx.normalize_evtx", return_value=0),
+                patch("forensia.evidence.evtx.normalize_evtx", return_value=0),
                 patch(
-                    "forensia.normalize.mft.normalize_mft",
+                    "forensia.evidence.mft.normalize_mft",
                     return_value=(0, 0),
                 ),
                 patch(
-                    "forensia.normalize.prefetch.normalize_prefetch",
+                    "forensia.evidence.prefetch.normalize_prefetch",
                     return_value=(3, 0),
                 ),
             ):

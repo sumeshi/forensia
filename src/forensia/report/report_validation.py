@@ -12,14 +12,14 @@ from __future__ import annotations
 import json
 import re
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
 import yaml
 
+from forensia.knowledge.resources import schema_dir
 from forensia.report.sections.quality_gates import _detect_body_language
 
-_SCHEMA_DIR = Path(__file__).parent.parent / "rulepacks" / "_schema"
+_SCHEMA_DIR = schema_dir()
 _VOCAB_PATH = _SCHEMA_DIR / "report_validation_vocab.yaml"
 
 

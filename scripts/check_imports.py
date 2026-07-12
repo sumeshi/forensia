@@ -10,8 +10,8 @@ from pathlib import Path
 # layer; dependencies pointing upward require an exact, documented exception.
 LAYERS: tuple[tuple[str, frozenset[str]], ...] = (
     ("platform", frozenset({"core", "db", "api", "config"})),
-    ("evidence", frozenset({"ingest", "normalize"})),
-    ("knowledge", frozenset({"rules", "knowledge", "profiles", "rulepacks"})),
+    ("evidence", frozenset({"evidence"})),
+    ("knowledge", frozenset({"knowledge"})),
     ("reporting", frozenset({"report"})),
     ("workflow", frozenset({"ai"})),
     ("interface", frozenset({"cli", "web"})),

@@ -12,6 +12,7 @@ from forensia.config import (
 )
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
+from forensia.knowledge.rules.engine import execute_event_keyword_fallback_search
 from forensia.report.answers.answer_registry import ensure_universal_question_probes
 from forensia.report.answers.keypoint_catalog import (
     default_keypoints_for_section,
@@ -25,7 +26,6 @@ from forensia.report.sections.quality_gates import quality_gate_section
 from forensia.report.sections.section_assembly import prepare_section_request
 from forensia.report.sections.section_finalize import finalize_section
 from forensia.report.template_export import export_packaged_report_templates
-from forensia.rules.engine import execute_event_keyword_fallback_search
 
 
 def _agent_plan_router(*_args, **kwargs):

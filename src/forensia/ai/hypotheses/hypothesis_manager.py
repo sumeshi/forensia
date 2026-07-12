@@ -32,13 +32,13 @@ from forensia.core.log import log as _log
 from forensia.core.session import Hypothesis, SessionState
 from forensia.core.textutil import normalize_text as _normalize_text
 from forensia.db.database import CaseDB
+from forensia.knowledge.rules.loader import load_rule_by_id
 from forensia.report.sections.section_taxonomy import (
     guess_related_sections as _guess_related_sections,
 )
 from forensia.report.sections.section_taxonomy import (
     sections_for_keypoint as _sections_for_keypoint,
 )
-from forensia.rules.loader import load_rule_by_id
 
 MAX_ACTIVE_HYPOTHESES = 8
 

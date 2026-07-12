@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime
-from pathlib import Path
 from string import Formatter
 from typing import Any
 
@@ -20,15 +19,12 @@ from forensia.knowledge.catalog import (
 from forensia.knowledge.catalog import (
     load_finding_benign_context_rules as _load_finding_benign_context_rules,
 )
-from forensia.rules.models import Finding, FindingTemplate, Rule
+from forensia.knowledge.resources import schema_dir
+from forensia.knowledge.rules.models import Finding, FindingTemplate, Rule
 
 _MISSING_TEXT_VALUES = {"", "-", "n/a", "na", "none", "null", "unknown"}
 _BUILTIN_ALLOWLIST_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "rulepacks"
-    / "_schema"
-    / "suppression"
-    / "allowlist_services.yaml"
+    schema_dir() / "suppression" / "allowlist_services.yaml"
 )
 
 FALLBACK_PHASES = {"keyword_in_raw_json", "related_event_ids", "artifact_table"}

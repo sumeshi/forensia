@@ -6,10 +6,10 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
 from forensia.db.database import CaseDB
+from forensia.knowledge.resources import schema_dir
 from forensia.report.answers.gap_tables import (
     _build_evidence_gaps_table,
     _build_gaps_confirmed_table,
@@ -271,9 +271,7 @@ def _load_table_captions() -> dict[str, dict[str, str]]:
     import yaml
 
     path = (
-        Path(__file__).resolve().parent.parent.parent
-        / "rulepacks"
-        / "_schema"
+        schema_dir()
         / "report_tables.yaml"
     )
     try:

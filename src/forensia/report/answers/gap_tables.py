@@ -28,7 +28,7 @@ def _forensic_gap_rows(db: CaseDB) -> list[dict[str, Any]]:
     Each row is emitted only when the corresponding artifact family or signal
     is present in the evidence — no fixed scenario assumptions (Rule 16).
     """
-    from forensia.rules.loader import detect_artifact_families
+    from forensia.knowledge.rules.loader import detect_artifact_families
 
     network = _network_summary_rows(db)
     try:

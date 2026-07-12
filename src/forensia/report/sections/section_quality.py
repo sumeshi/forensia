@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 import re
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
+from forensia.knowledge.resources import schema_dir
 from forensia.report.answers.answer_registry import (
     build_structured_answer,
 )
@@ -98,9 +98,7 @@ def _load_event_id_hints() -> dict[int, dict[str, Any]]:
     import yaml
 
     path = (
-        Path(__file__).parent.parent.parent
-        / "rulepacks"
-        / "_schema"
+        schema_dir()
         / "event_ids.yaml"
     )
     if not path.exists():

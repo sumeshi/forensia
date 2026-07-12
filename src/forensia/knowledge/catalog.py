@@ -4,14 +4,15 @@ import fnmatch
 import logging
 import re
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
 import yaml
 
+from forensia.knowledge.resources import schema_dir
+
 logger = logging.getLogger(__name__)
 
-_SCHEMA_DIR = Path(__file__).parent.parent / "rulepacks" / "_schema"
+_SCHEMA_DIR = schema_dir()
 
 
 # ── DFIR YAML bulk loader ──────────────────────────────────────────────────

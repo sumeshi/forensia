@@ -25,7 +25,7 @@ Templates are a contract for sections defined by contributors, not durable repor
 
 ### 2.1 Ownership boundary
 
-- Template files live under `src/forensia/report_template/`
+- Template files live under `src/forensia/report/templates/`
 - When a new case is created, a case-local `report_template/` is copied from the package default
 - CLI report generation prefers the case-local templates when they exist
 - `report --write --template-dir` can specify external templates explicitly
@@ -61,7 +61,7 @@ The only contract field the current writer reads from frontmatter is `behaviors`
 
 ### 2.3 Report wording and format policy
 
-User-editable deterministic report wording lives in `report_template/_formats/report.yaml`. It controls narrative fallback sentences, structured-answer headings and preview limits, and forensic-gap copy. `forensia templates-export <dir>` exports this file with the Markdown section templates, and `--template-dir <dir>` loads `_formats/report.yaml` from that directory as a recursive override of packaged defaults.
+User-editable deterministic report wording lives in `report/templates/_formats/report.yaml` (packaged) or a case/template dir `_formats/report.yaml`. It controls narrative fallback sentences, structured-answer headings and preview limits, and forensic-gap copy. `forensia templates-export <dir>` exports this file with the Markdown section templates, and `--template-dir <dir>` loads `_formats/report.yaml` from that directory as a recursive override of packaged defaults.
 
 Keep data selection, escaping, evidence validation, and Markdown table construction in Python. Move wording or limits to `_formats/` only when a report author may reasonably customize them. Internal logs, debug messages, SQL, and evidence-dependent branching remain code.
 
@@ -104,7 +104,7 @@ Template authoring is kept in English. Scaffold headings, table headers, comment
 
 | Location | Purpose |
 |---|---|
-| `src/forensia/report_template/` | The generic incident report bundled with the package. Copied into each case's `report_template/` on new case creation |
+| `src/forensia/report/templates/` | The generic incident report bundled with the package. Copied into each case's `report_template/` on new case creation |
 | External template directory (`--template-dir`) | A working copy for local evaluation and case-specific reports. Run `forensia templates-export <dir>` to copy the default templates, then edit them |
 
 Benchmark evaluation also uses the normal `--template-dir` path. Because the public repository does not bundle real data or derived case directories, evaluation templates and artifacts are managed in a local working directory. See [BENCHMARK.md](../BENCHMARK.md) / [BENCHMARK-ANSWERS.md](../BENCHMARK-ANSWERS.md) for scored questions and expected values.
@@ -182,7 +182,7 @@ Gap hypotheses emitted by the report writer pass through `_inject_gap_hypotheses
 
 Two-stage call: `build_query_intent_messages` → `build_sql_composer_messages`.
 
-- **schema cards** (`<SCHEMA_CARDS>`): `core_columns` (a short list shown to the planner, 5–13 columns) + `column_descriptions` (one-line descriptions) + `columns` (full list for the SQL validator) from `rulepacks/_schema/*.yaml`. The intent planner's `target_table` is chosen mainly from `evtx_events` / `mft_entries` / `mft_timeline` / `prefetch_executions`, and the composer looks at the schema_card and live schema of the target table. The validator's allowlist is built by `get_allowed_tables(db)` from the live DB and also permits derived tables such as `findings` / `prefetch_timeline` / `report_*` / `section_*` as needed
+- **schema cards** (`<SCHEMA_CARDS>`): `core_columns` (a short list shown to the planner, 5–13 columns) + `column_descriptions` (one-line descriptions) + `columns` (full list for the SQL validator) from `knowledge/rulepacks/_schema/*.yaml`. The intent planner's `target_table` is chosen mainly from `evtx_events` / `mft_entries` / `mft_timeline` / `prefetch_executions`, and the composer looks at the schema_card and live schema of the target table. The validator's allowlist is built by `get_allowed_tables(db)` from the live DB and also permits derived tables such as `findings` / `prefetch_timeline` / `report_*` / `section_*` as needed
 - **SQL cookbook** (`<SQL_COOKBOOK>`): SELECT templates (catalog in `_schema/query_templates.yaml`) — event_id enumeration / time range / GROUP BY / COALESCE / MFT path LIKE / Prefetch. Weak LLMs are expected to copy-edit these rather than synthesize from scratch
 - **SQL retry**: When `validate_select_sql` (or the EXPLAIN dry-run) rejects a query, `_retry_sql_composer` re-invokes only `sql_composer` up to `_PLANNER_SQL_MAX_RETRIES = 3` times. The intent stage is not re-executed
 - **Fallback**: If retries still do not yield valid SQL, the plan result carries `stop_reason: "SQL composition failed after retries"` and the hypothesis attempt is recorded as unplannable (no deterministic SQL synthesis fallback in the current implementation)

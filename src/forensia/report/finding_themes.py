@@ -10,6 +10,7 @@ from typing import Any
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
 from forensia.knowledge.catalog import catalog_names
+from forensia.knowledge.resources import schema_dir
 from forensia.report.report_brief import (
     _has_benign_context_tag,
     _query_top_findings,
@@ -182,9 +183,7 @@ def _finding_theme_summary(theme: str) -> str:
 
 def _theme_config_path() -> Path:
     return (
-        Path(__file__).resolve().parent.parent
-        / "rulepacks"
-        / "_schema"
+        schema_dir()
         / "finding_themes.yaml"
     )
 

@@ -14,6 +14,7 @@ from forensia.knowledge.catalog import (
     load_event_class_definitions,
     load_question_routing_raw,
 )
+from forensia.knowledge.resources import rulepacks_dir, schema_dir
 from forensia.report.sections.section_taxonomy import (
     SECTION_KEY_PLAYBOOK_MAP as _SECTION_KEY_MAP,
 )
@@ -54,11 +55,10 @@ class _PlaybookBudgetResult:
 @lru_cache(maxsize=1)
 def _get_cached_rules() -> list[Any]:
     """Load and cache all rules at module level to avoid repeated file I/O."""
-    from pathlib import Path
 
-    from forensia.rules.loader import load_rules_from_dir
+    from forensia.knowledge.rules.loader import load_rules_from_dir
 
-    rules_path = Path(__file__).parent.parent.parent / "rulepacks"
+    rules_path = rulepacks_dir()
     return load_rules_from_dir(rules_path)
 
 
@@ -107,14 +107,13 @@ def resolve_rule_context(hypothesis: Hypothesis | None) -> RuleContext | None:
 @lru_cache(maxsize=1)
 def _load_schema_notes() -> str:
     """Load schema notes from evtx_events.yaml and prefetch_executions.yaml for section agent."""
-    from pathlib import Path
 
     import yaml
 
-    schema_dir = Path(__file__).parent.parent.parent / "rulepacks" / "_schema"
+    schema_root = schema_dir()
     notes: list[str] = []
 
-    evtx_path = schema_dir / "evtx_events.yaml"
+    evtx_path = schema_root / "evtx_events.yaml"
     if evtx_path.exists():
         try:
             data = yaml.safe_load(evtx_path.read_text(encoding="utf-8"))
@@ -131,7 +130,7 @@ def _load_schema_notes() -> str:
         except Exception:
             pass
 
-    prefetch_path = schema_dir / "prefetch_executions.yaml"
+    prefetch_path = schema_root / "prefetch_executions.yaml"
     if prefetch_path.exists():
         try:
             data = yaml.safe_load(prefetch_path.read_text(encoding="utf-8"))
@@ -674,10 +673,9 @@ def _apply_playbook_budget(
 
 
 def _load_phase_playbook(phase: str) -> str:
-    from pathlib import Path
 
     playbook_dir = (
-        Path(__file__).parent.parent.parent / "rulepacks" / "_schema" / "playbook"
+        schema_dir() / "playbook"
     )
     phase_file = playbook_dir / f"{phase}.md"
     phase_narrative = ""

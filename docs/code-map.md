@@ -39,39 +39,39 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 | [src/forensia/db/query.py](../src/forensia/db/query.py) | Query helpers (`fetch_records`, `normalize_value`) |
 | [src/forensia/db/schema.py](../src/forensia/db/schema.py) | Table DDL definitions (case tables + `trace.*` tables) |
 
-## Ingest / Normalize
+## Evidence (ingest + normalize)
 
 | Path | Responsibilities |
 |---|---|
-| [src/forensia/ingest/__init__.py](../src/forensia/ingest/__init__.py) | `ingest_all` entry point. Scans input and dispatches to the appropriate parser |
-| [src/forensia/ingest/artifacts.py](../src/forensia/ingest/artifacts.py) | Artifact adapter protocol, built-ins, and public registration point |
-| [src/forensia/ingest/evtx.py](../src/forensia/ingest/evtx.py) / [mft.py](../src/forensia/ingest/mft.py) / [prefetch.py](../src/forensia/ingest/prefetch.py) | Artifact → `raw/*.jsonl` extraction |
-| [src/forensia/normalize/__init__.py](../src/forensia/normalize/__init__.py) | `normalize_all`: raw JSONL → normalized DuckDB tables; optional source-key differential selection |
-| [src/forensia/normalize/evtx.py](../src/forensia/normalize/evtx.py) / [mft.py](../src/forensia/normalize/mft.py) / [prefetch.py](../src/forensia/normalize/prefetch.py) | Per-artifact normalization SQL |
-| [src/forensia/normalize/timeline_sql.py](../src/forensia/normalize/timeline_sql.py) | Timeline-staging SQL for Prefetch and legacy MFT timeline-only JSONL |
-| [src/forensia/normalize/timezone.py](../src/forensia/normalize/timezone.py) | `infer_timezone`: source timezone inference from evidence |
+| [src/forensia/evidence/ingest.py](../src/forensia/evidence/ingest.py) | `ingest_all` entry point. Scans input and dispatches to the appropriate parser |
+| [src/forensia/evidence/artifacts.py](../src/forensia/evidence/artifacts.py) | Artifact adapter protocol, built-ins, and public registration point |
+| [src/forensia/evidence/normalize.py](../src/forensia/evidence/normalize.py) | `normalize_all`: raw JSONL → normalized DuckDB tables; optional source-key differential selection |
+| [src/forensia/evidence/evtx.py](../src/forensia/evidence/evtx.py) / [mft.py](../src/forensia/evidence/mft.py) / [prefetch.py](../src/forensia/evidence/prefetch.py) | Per-artifact module: raw extraction (ingest half) + normalization SQL (normalize half) |
+| [src/forensia/evidence/timeline_sql.py](../src/forensia/evidence/timeline_sql.py) | Timeline-staging SQL for Prefetch and legacy MFT timeline-only JSONL |
+| [src/forensia/evidence/timezone.py](../src/forensia/evidence/timezone.py) | `infer_timezone`: source timezone inference from evidence |
 
-## Rules
-
-| Path | Responsibilities |
-|---|---|
-| [src/forensia/rules/loader.py](../src/forensia/rules/loader.py) | Loads `rulepacks/**/*.yaml` + profile filtering + `resolve_active_packs` (auto-rulepacks) |
-| [src/forensia/rules/models.py](../src/forensia/rules/models.py) | Pydantic models (`Rule`, `Finding`, `HypothesisDeclaration`, `AttackEntry`, ...) |
-| [src/forensia/rules/engine.py](../src/forensia/rules/engine.py) | Rule SQL execution + finding generation + `fallback_search` + timeline feeding |
-| [src/forensia/rulepacks/](../src/forensia/rulepacks/) | YAML rule definitions (windows/, leakage/, _schema/) |
-| [src/forensia/profiles/](../src/forensia/profiles/) | Profile YAML (rule selection policy) |
-
-## AI — investigation loop (`ai/` root)
+## Knowledge (rules / rulepacks / profiles)
 
 | Path | Responsibilities |
 |---|---|
-| [src/forensia/ai/investigator.py](../src/forensia/ai/investigator.py) | `investigate(...)` entry point: plan-cycle loop, report phase, termination, LLM budget |
-| [src/forensia/ai/investigation_cycle.py](../src/forensia/ai/investigation_cycle.py) | One plan cycle: broad plan (gap identify → hypothesis draft) + hypothesis loop body |
-| [src/forensia/ai/investigation_session.py](../src/forensia/ai/investigation_session.py) | Session setup, memory-context caches, step logging, keypoint-card sync |
-| [src/forensia/ai/planner.py](../src/forensia/ai/planner.py) | `plan_hypothesis_query`: query intent → SQL self-check → SQL composition (≤3 validation retries) |
-| [src/forensia/ai/memory_sync.py](../src/forensia/ai/memory_sync.py) | `_apply_memory_updates`: checker output → facts / timeline / tasks / entities / hypothesis cards |
+| [src/forensia/knowledge/resources.py](../src/forensia/knowledge/resources.py) | Canonical paths for packaged knowledge data (`rulepacks_dir`/`schema_dir`/`profiles_dir`/`profile_path`) |
+| [src/forensia/knowledge/rules/loader.py](../src/forensia/knowledge/rules/loader.py) | Loads `rulepacks/**/*.yaml` + profile filtering + `resolve_active_packs` (auto-rulepacks) |
+| [src/forensia/knowledge/rules/models.py](../src/forensia/knowledge/rules/models.py) | Pydantic models (`Rule`, `Finding`, `HypothesisDeclaration`, `AttackEntry`, ...) |
+| [src/forensia/knowledge/rules/engine.py](../src/forensia/knowledge/rules/engine.py) | Rule SQL execution + finding generation + `fallback_search` + timeline feeding |
+| [src/forensia/knowledge/rulepacks/](../src/forensia/knowledge/rulepacks/) | YAML rule definitions (windows/, leakage/, _schema/) |
+| [src/forensia/knowledge/profiles/](../src/forensia/knowledge/profiles/) | Profile YAML (rule selection policy) |
+
+## AI — investigation loop (`ai/investigation/`)
+
+| Path | Responsibilities |
+|---|---|
+| [src/forensia/ai/investigation/investigator.py](../src/forensia/ai/investigation/investigator.py) | `investigate(...)` entry point: plan-cycle loop, report phase, termination, LLM budget |
+| [src/forensia/ai/investigation/investigation_cycle.py](../src/forensia/ai/investigation/investigation_cycle.py) | One plan cycle: broad plan (gap identify → hypothesis draft) + hypothesis loop body |
+| [src/forensia/ai/investigation/investigation_session.py](../src/forensia/ai/investigation/investigation_session.py) | Session setup, memory-context caches, step logging, keypoint-card sync |
+| [src/forensia/ai/investigation/planner.py](../src/forensia/ai/investigation/planner.py) | `plan_hypothesis_query`: query intent → SQL self-check → SQL composition (≤3 validation retries) |
+| [src/forensia/ai/investigation/memory_sync.py](../src/forensia/ai/investigation/memory_sync.py) | `_apply_memory_updates`: checker output → facts / timeline / tasks / entities / hypothesis cards |
 | [src/forensia/ai/report_gap.py](../src/forensia/ai/report_gap.py) | Report status building + gap → hypothesis injection |
-| [src/forensia/ai/progress.py](../src/forensia/ai/progress.py) | `HypothesisProgressTracker`: query fingerprinting, auto-confirm / refute / pivot decisions |
+| [src/forensia/ai/investigation/progress.py](../src/forensia/ai/investigation/progress.py) | `HypothesisProgressTracker`: query fingerprinting, auto-confirm / refute / pivot decisions |
 | [src/forensia/ai/audit.py](../src/forensia/ai/audit.py) | `LLMCallLogger`: per-phase prompt/response logs under `ai_logs/`, call counting |
 | [src/forensia/ai/case_profile.py](../src/forensia/ai/case_profile.py) | Case profile (observed event IDs / artifact families) + profile advisor |
 
@@ -128,6 +128,6 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 |---|---|
 | [scripts/](../scripts/) | Auxiliary scripts (`audit_schema_coverage.py`, `regenerate_playbook.py`, `check_imports.py`, etc.) |
 | [tests/](../tests/) | pytest tests (split per module under test) |
-| [src/forensia/rulepacks/_schema/](../src/forensia/rulepacks/_schema/) | Schema definition YAML (`evtx_events.yaml`, `question_routing.yaml`, `verdict_taxonomy.yaml`, `playbook/`, etc.) |
-| [src/forensia/report_template/](../src/forensia/report_template/) | Default report template Markdown (copied into each case) |
+| [src/forensia/knowledge/rulepacks/_schema/](../src/forensia/knowledge/rulepacks/_schema/) | Schema definition YAML (`evtx_events.yaml`, `question_routing.yaml`, `verdict_taxonomy.yaml`, `playbook/`, etc.) |
+| [src/forensia/report/templates/](../src/forensia/report/templates/) | Default report template Markdown (copied into each case) |
 | [src/forensia/report/render/templates/](../src/forensia/report/render/templates/) | jinja2 templates for the HTML report page (`report.html.j2` + `report.css.j2`) |

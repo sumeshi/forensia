@@ -23,8 +23,8 @@ def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
 @lru_cache(maxsize=16)
 def load_report_formats(template_dir: str | Path | None = None) -> dict[str, Any]:
     """Load packaged formats, merged with `_formats/report.yaml` when present."""
-    packaged = resources.files("forensia").joinpath(
-        "report_template/_formats/report.yaml"
+    packaged = resources.files("forensia.report").joinpath(
+        "templates/_formats/report.yaml"
     )
     base = yaml.safe_load(packaged.read_text(encoding="utf-8")) or {}
     if not isinstance(base, dict) or base.get("version") != 1:

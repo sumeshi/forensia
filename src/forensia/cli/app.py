@@ -9,7 +9,7 @@ import uvicorn
 from rich import print
 
 from forensia.ai.case_profile import profile_advisor
-from forensia.ai.investigator import investigate as investigate_loop
+from forensia.ai.investigation.investigator import investigate as investigate_loop
 from forensia.api.cache import (
     clear_api_snapshots,
     write_api_snapshots,
@@ -39,7 +39,7 @@ from forensia.config import get_llm_settings, resolve_llm_config
 from forensia.core.case import Case
 from forensia.core.case_tasks import CaseTasks
 from forensia.db.database import CaseDB
-from forensia.ingest import ingest_all
+from forensia.evidence.ingest import ingest_all
 from forensia.report.render.html import render_html_report
 from forensia.report.render.writer import render_written_report
 from forensia.report.template_export import (
@@ -250,7 +250,7 @@ def _print_pre_investigation_hints(case: Case, profile: str, db: CaseDB) -> None
         # timezone was provided; rendering stays UTC-only until the
         # analyst confirms via --timezone.
         try:
-            from forensia.normalize.timezone import infer_timezone
+            from forensia.evidence.timezone import infer_timezone
 
             offset_minutes, basis = infer_timezone(db)
             if offset_minutes is not None:

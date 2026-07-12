@@ -26,18 +26,18 @@ The following is the package-level map contributors usually need. See
 | `src/forensia/core/` | Case, session, memory, verdict, time, and progress primitives without workflow policy |
 | `src/forensia/db/` | DuckDB schema, migrations, connections, and generic query/evidence access |
 | `src/forensia/api/` | UI-facing DTOs, DB projections, progress records, and API snapshot cache |
-| `src/forensia/ingest/` | Artifact discovery, parser adapters, and raw JSONL production |
-| `src/forensia/normalize/` | Raw parser output to normalized DuckDB tables |
-| `src/forensia/rules/` | Rule models, YAML loading, rule execution, and finding generation |
+| `src/forensia/evidence/` | Artifact discovery, parser adapters, and raw JSONL production |
+| `src/forensia/evidence/` | Raw parser output to normalized DuckDB tables |
+| `src/forensia/knowledge/rules/` | Rule models, YAML loading, rule execution, and finding generation |
 | `src/forensia/knowledge/` | Readers for shared declarative catalogs and structured questions |
-| `src/forensia/rulepacks/` | Detection rules and shared DFIR/schema knowledge in YAML/Markdown |
-| `src/forensia/profiles/` | YAML policies selecting rulepacks and investigation behavior |
+| `src/forensia/knowledge/rulepacks/` | Detection rules and shared DFIR/schema knowledge in YAML/Markdown |
+| `src/forensia/knowledge/profiles/` | YAML policies selecting rulepacks and investigation behavior |
 | `src/forensia/ai/` | Investigation orchestration, LLM access, prompts, checking, hypotheses, and section agents |
 | `src/forensia/report/answers/` | Deterministic structured answers, keypoints, and table builders |
 | `src/forensia/report/sections/` | Report-template parsing, section assembly, quality gates, and persistence |
 | `src/forensia/report/render/` | Final Markdown/HTML rendering, formats, evidence maps, and Jinja templates |
 | `src/forensia/report/` | Cross-cutting report projections, ranking, validation, and template export |
-| `src/forensia/report_template/` | Packaged default report-section templates and format policy |
+| `src/forensia/report/templates/` | Packaged default report-section templates and format policy |
 | `web_ui/` | Svelte frontend source |
 | `tests/` | Deterministic unit, integration, regression, and extension-point tests |
 | `scripts/` | Repository audits and maintenance commands used by `forensia doctor` |
@@ -93,7 +93,7 @@ Report generation then follows this path:
 
 ```mermaid
 flowchart LR
-    T["report_template<br/>Markdown blocks"] --> A["ai/sections<br/>plan and fetch evidence"]
+    T["report/templates<br/>Markdown blocks"] --> A["ai/sections<br/>plan and fetch evidence"]
     K["report/answers<br/>keypoints and builders"] --> A
     DB[(DuckDB)] --> A
     A --> Q["report/sections<br/>quality gates + finalize"]
@@ -104,7 +104,7 @@ flowchart LR
 ```
 
 For a new feature, start in the package that owns the data or policy. In
-particular, prefer `rulepacks/` declarations and the public registries described
+particular, prefer `knowledge/rulepacks/` declarations and the public registries described
 in [docs/extending.md](docs/extending.md) over adding branches to orchestration
 code.
 
@@ -114,11 +114,11 @@ See [docs/design-principles.md](docs/design-principles.md) for details. The foll
 
 ### 1. Declarative layer first
 
-DFIR knowledge such as Event ID descriptions, detection rules, fallback procedures, QuestionSpec, structured answer interpretation text (`interpretation_template`), and verdict vocabulary **belongs in YAML under `src/forensia/rulepacks/`**. PRs that add hardcoded branches for rule_id / event_id / host names on the Python side are generally not accepted.
+DFIR knowledge such as Event ID descriptions, detection rules, fallback procedures, QuestionSpec, structured answer interpretation text (`interpretation_template`), and verdict vocabulary **belongs in YAML under `src/forensia/knowledge/rulepacks/`**. PRs that add hardcoded branches for rule_id / event_id / host names on the Python side are generally not accepted.
 
-- New detection perspective → `rulepacks/<pack>/*.yaml`([docs/rules-and-profiles.md](docs/rules-and-profiles.md))
-- New canned question → `rulepacks/_schema/question_routing.yaml`
-- New table → schema card in `rulepacks/_schema/<table>.yaml`
+- New detection perspective → `knowledge/rulepacks/<pack>/*.yaml`([docs/rules-and-profiles.md](docs/rules-and-profiles.md))
+- New canned question → `knowledge/rulepacks/_schema/question_routing.yaml`
+- New table → schema card in `knowledge/rulepacks/_schema/<table>.yaml`
 
 ### 2. Do not pass deterministic processing to the LLM
 
@@ -128,7 +128,7 @@ The reverse direction is equally important: **never persist LLM output without v
 
 ### 3. verdict / status are enums, not free strings
 
-Allowed values and cross-layer mappings are authoritative in `rulepacks/_schema/verdict_taxonomy.yaml`. When adding a new value (e.g. `untestable`), edit the taxonomy and follow up with the Python-side Literal / validator. Bypassing the validator is treated as a bug.
+Allowed values and cross-layer mappings are authoritative in `knowledge/rulepacks/_schema/verdict_taxonomy.yaml`. When adding a new value (e.g. `untestable`), edit the taxonomy and follow up with the Python-side Literal / validator. Bypassing the validator is treated as a bug.
 
 Note that `refuted` (contradicted by evidence) and `untestable` (cannot be verified because the required telemetry is not present in the case) have different meanings. Do not record "no evidence" as a refutation.
 
@@ -163,7 +163,7 @@ forensia doctor
 
 ## Templates
 
-The package-bundled default templates have `src/forensia/report_template/` as the source of truth. When changing the standard report structure, update this directory and, if necessary, update the README / docs in the same PR.
+The package-bundled default templates have `src/forensia/report/templates/` as the source of truth. When changing the standard report structure, update this directory and, if necessary, update the README / docs in the same PR.
 
 To derive templates for local evaluation, create a working copy with `uv run forensia templates-export ./my-templates` and specify it explicitly with `--template-dir ./my-templates`. Only commit evaluation templates or case-specific templates whose content is suitable for publication as generic templates.
 

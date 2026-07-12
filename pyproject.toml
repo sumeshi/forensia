@@ -57,15 +57,15 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 forensia = [
-    "profiles/*.yaml",
+    "knowledge/profiles/*.yaml",
     "report/render/templates/*.j2",
     "report/render/templates/partials/*.j2",
-    "report_template/*.md",
-    "report_template/_formats/*.yaml",
-    "rulepacks/*/*.yaml",
-    "rulepacks/_schema/*.yaml",
-    "rulepacks/_schema/suppression/*.yaml",
-    "rulepacks/_schema/playbook/*.md",
+    "report/templates/*.md",
+    "report/templates/_formats/*.yaml",
+    "knowledge/rulepacks/*/*.yaml",
+    "knowledge/rulepacks/_schema/*.yaml",
+    "knowledge/rulepacks/_schema/suppression/*.yaml",
+    "knowledge/rulepacks/_schema/playbook/*.md",
     "web/static/**/*",
 ]
 

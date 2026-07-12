@@ -5,7 +5,8 @@ from pathlib import Path
 
 import yaml
 
-from forensia.rules.models import Rule, RulePackMetadata
+from forensia.knowledge.resources import rulepacks_dir
+from forensia.knowledge.rules.models import Rule, RulePackMetadata
 
 
 def _expand_rule_query(rule: Rule) -> Rule:
@@ -29,9 +30,9 @@ def _get_rule_cache() -> dict[str, Rule]:
 
 def _load_all_rules() -> list[Rule]:
     """Internal function to load all rules without caching."""
-    rulepacks_dir = Path(__file__).parent.parent / "rulepacks"
+    rules_root = rulepacks_dir()
     rules: list[Rule] = []
-    for path in sorted(rulepacks_dir.rglob("*.yaml")):
+    for path in sorted(rules_root.rglob("*.yaml")):
         if "_schema" in path.parts:
             continue
         if path.name == "pack.yaml":
@@ -66,7 +67,7 @@ def load_rules_from_dir(
     rule_id allowlists. Files in _schema directories and allowlist-kind YAML
     files are always skipped regardless of profile settings.
     """
-    from forensia.rules.models import Rule
+    from forensia.knowledge.rules.models import Rule
 
     directory = Path(directory)
     allowed_paths: set[str] | None = None
@@ -119,9 +120,9 @@ def load_all_pack_metadata() -> dict[str, RulePackMetadata]:
 
     Returns a mapping of pack_id → RulePackMetadata.
     """
-    rulepacks_dir = Path(__file__).parent.parent / "rulepacks"
+    rules_root = rulepacks_dir()
     packs: dict[str, RulePackMetadata] = {}
-    for pack_dir in sorted(rulepacks_dir.iterdir()):
+    for pack_dir in sorted(rules_root.iterdir()):
         if not pack_dir.is_dir() or pack_dir.name.startswith("_"):
             continue
         pack_yaml = pack_dir / "pack.yaml"
@@ -140,9 +141,9 @@ def _get_pack_map() -> dict[str, str]:
 
     Cached indefinitely after first call.
     """
-    rulepacks_dir = Path(__file__).parent.parent / "rulepacks"
+    rules_root = rulepacks_dir()
     pack_map: dict[str, str] = {}
-    for pack_dir in sorted(rulepacks_dir.iterdir()):
+    for pack_dir in sorted(rules_root.iterdir()):
         if not pack_dir.is_dir() or pack_dir.name.startswith("_"):
             continue
         pack_id = pack_dir.name
@@ -167,8 +168,8 @@ def detect_artifact_families(db) -> set[str]:
     Returns a set of family names (e.g. {'cloud_sync', 'mailbox', 'mft_user_files'}).
     """
     families: set[str] = set()
-    rulepacks_dir = Path(__file__).parent.parent / "rulepacks"
-    ioc_path = rulepacks_dir / "_schema" / "dfir_ioc_catalog.yaml"
+    rules_root = rulepacks_dir()
+    ioc_path = rules_root / "_schema" / "dfir_ioc_catalog.yaml"
     if not ioc_path.exists():
         return families
     ioc = yaml.safe_load(ioc_path.read_text(encoding="utf-8")) or {}

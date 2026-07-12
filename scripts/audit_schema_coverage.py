@@ -22,8 +22,8 @@ if str(SRC_ROOT) not in sys.path:
 
 from forensia.knowledge.catalog import expand_catalog_sql_placeholders
 
-SCHEMA_DIR = REPO_ROOT / "src" / "forensia" / "rulepacks" / "_schema"
-RULES_DIR = REPO_ROOT / "src" / "forensia" / "rulepacks"
+SCHEMA_DIR = REPO_ROOT / "src" / "forensia" / "knowledge" / "rulepacks" / "_schema"
+RULES_DIR = REPO_ROOT / "src" / "forensia" / "knowledge" / "rulepacks"
 TEMPLATES_DIR = REPO_ROOT / "src" / "forensia" / "report" / "templates"
 
 

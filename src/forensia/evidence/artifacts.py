@@ -56,7 +56,7 @@ class EvtxArtifactAdapter:
         source_sha: str | None = None,
         progress_callback: Callable[[str], None] | None = None,
     ) -> IngestResult:
-        from forensia.ingest.evtx import ingest_evtx_file
+        from forensia.evidence.evtx import ingest_evtx_file
 
         return IngestResult(
             source_kind=self.name,
@@ -71,7 +71,7 @@ class EvtxArtifactAdapter:
         db: CaseDB,
         source_keys: Collection[str] | None = None,
     ) -> NormalizeResult:
-        from forensia.normalize.evtx import normalize_evtx
+        from forensia.evidence.evtx import normalize_evtx
 
         return NormalizeResult(
             source_kind=self.name,
@@ -93,7 +93,7 @@ class MftArtifactAdapter:
         source_sha: str | None = None,
         progress_callback: Callable[[str], None] | None = None,
     ) -> IngestResult:
-        from forensia.ingest.mft import ingest_mft_file
+        from forensia.evidence.mft import ingest_mft_file
 
         entries_path, _timeline_path = ingest_mft_file(
             case, path, source_sha=source_sha, progress_callback=progress_callback
@@ -109,7 +109,7 @@ class MftArtifactAdapter:
         db: CaseDB,
         source_keys: Collection[str] | None = None,
     ) -> NormalizeResult:
-        from forensia.normalize.mft import normalize_mft
+        from forensia.evidence.mft import normalize_mft
 
         entries, timeline_rows = normalize_mft(case, db, source_keys=source_keys)
         return NormalizeResult(
@@ -130,7 +130,7 @@ class PrefetchArtifactAdapter:
         source_sha: str | None = None,
         progress_callback: Callable[[str], None] | None = None,
     ) -> IngestResult:
-        from forensia.ingest.prefetch import ingest_prefetch_file
+        from forensia.evidence.prefetch import ingest_prefetch_file
 
         entries_path, _timeline_path = ingest_prefetch_file(
             case, path, source_sha=source_sha, progress_callback=progress_callback
@@ -146,7 +146,7 @@ class PrefetchArtifactAdapter:
         db: CaseDB,
         source_keys: Collection[str] | None = None,
     ) -> NormalizeResult:
-        from forensia.normalize.prefetch import normalize_prefetch
+        from forensia.evidence.prefetch import normalize_prefetch
 
         entries, timeline_rows = normalize_prefetch(case, db, source_keys=source_keys)
         return NormalizeResult(

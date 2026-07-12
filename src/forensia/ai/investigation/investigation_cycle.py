@@ -32,18 +32,18 @@ from forensia.ai.hypotheses.hypothesis_store import _all_hypotheses
 from forensia.ai.hypotheses.seeding import (
     _scan_report_keypoints,
 )
-from forensia.ai.investigation_session import (
+from forensia.ai.investigation.investigation_session import (
     Ctx,
     _call_with_outage_recovery,
     _ctx_get_report_status,
     _save_step,
     ctx_refresh_caches,
 )
+from forensia.ai.investigation.planner import _compute_uncovered_keypoints
 from forensia.ai.llm import llm_gateway
 from forensia.ai.llm.llm_client import (
     LLMServerUnavailableError,
 )
-from forensia.ai.planner import _compute_uncovered_keypoints
 from forensia.ai.prompts.prompt_investigation import (
     build_gap_identifier_messages,
     build_hypothesis_drafter_messages,
@@ -54,8 +54,8 @@ from forensia.core.memory import MemoryManager
 from forensia.core.progress_event import progress_event
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
+from forensia.knowledge.rules.loader import _get_rule_cache
 from forensia.report.answers.keypoint_catalog import REPORT_KEYPOINTS
-from forensia.rules.loader import _get_rule_cache
 
 
 @dataclass(slots=True)

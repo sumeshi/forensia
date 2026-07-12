@@ -12,6 +12,7 @@ from typing import Any
 import duckdb
 
 from forensia.ai.prompts.sql_schema import _LEGACY_ALLOWED_TABLES
+from forensia.knowledge.resources import schema_dir
 
 ALLOWED_IDENTIFIER_REFERENCES = _LEGACY_ALLOWED_TABLES | {
     "evidence_id",
@@ -152,7 +153,7 @@ def _sql_text(value: Any, default: str = "") -> str:
 
 def _query_template_path() -> Path:
     return (
-        Path(__file__).resolve().parents[2] / "rulepacks/_schema/query_templates.yaml"
+        schema_dir() / "query_templates.yaml"
     )
 
 

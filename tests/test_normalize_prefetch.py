@@ -8,7 +8,7 @@ from pathlib import Path
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
-from forensia.normalize.prefetch import normalize_prefetch
+from forensia.evidence.prefetch import normalize_prefetch
 
 
 class NormalizePrefetchTests(unittest.TestCase):

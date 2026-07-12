@@ -8,8 +8,8 @@ from unittest.mock import patch
 from forensia.ai.checking.check_apply import insert_investigation_finding
 from forensia.ai.hypotheses.hypothesis_manager import merge_active_hypotheses
 from forensia.ai.hypotheses.hypothesis_store import load_persisted_hypotheses
-from forensia.ai.investigation_session import append_hypothesis_reasoning
-from forensia.ai.investigator import final_summary
+from forensia.ai.investigation.investigation_session import append_hypothesis_reasoning
+from forensia.ai.investigation.investigator import final_summary
 from forensia.ai.report_gap import (
     classify_gap_kind,
     gap_hypothesis_id,

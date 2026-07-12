@@ -26,6 +26,7 @@ from forensia.knowledge.catalog import (
     catalog_marker,
     catalog_values,
 )
+from forensia.knowledge.resources import schema_dir
 from forensia.report.evidence_refs import _report_keypoint_rows, _sql_like_any
 from forensia.report.render.formats import load_report_formats
 from forensia.report.render.markdown import (
@@ -299,9 +300,7 @@ def _load_interpretation_templates() -> dict[str, str]:
     import yaml
 
     path = (
-        Path(__file__).resolve().parent.parent.parent
-        / "rulepacks"
-        / "_schema"
+        schema_dir()
         / "question_routing.yaml"
     )
     try:

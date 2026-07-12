@@ -22,16 +22,19 @@ from forensia.ai.hypotheses.hypothesis_manager import (
     resolve_hypothesis,
 )
 from forensia.ai.hypotheses.hypothesis_store import _upsert_hypothesis
-from forensia.ai.investigation_session import (
+from forensia.ai.investigation.investigation_session import (
     Ctx,
     _call_with_outage_recovery,
     _save_step,
     append_hypothesis_reasoning,
     ctx_refresh_caches,
 )
-from forensia.ai.memory_sync import apply_memory_updates
-from forensia.ai.planner import plan_hypothesis_query
-from forensia.ai.progress import HypothesisProgressTracker, query_fingerprint
+from forensia.ai.investigation.memory_sync import apply_memory_updates
+from forensia.ai.investigation.planner import plan_hypothesis_query
+from forensia.ai.investigation.progress import (
+    HypothesisProgressTracker,
+    query_fingerprint,
+)
 from forensia.ai.prompts.prompt_playbook import resolve_rule_context
 from forensia.core.case import Case
 from forensia.core.log import log as _log
@@ -39,11 +42,11 @@ from forensia.core.memory import MemoryManager
 from forensia.core.session import HistoryEntry, Hypothesis, SessionState
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
-from forensia.rules.engine import (
+from forensia.knowledge.rules.engine import (
     execute_event_keyword_fallback_search,
     execute_fallback_search,
 )
-from forensia.rules.loader import load_rule_by_id
+from forensia.knowledge.rules.loader import load_rule_by_id
 
 
 def _has_zero_rows_refute_condition(hypothesis: Hypothesis) -> bool:

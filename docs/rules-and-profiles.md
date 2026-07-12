@@ -6,7 +6,7 @@ Detection rules, profile selection, suppression via allowlist, and the declarati
 
 ## 1. Rulepack
 
-A rulepack is a YAML definition under `src/forensia/rulepacks/windows/` (or similar). The Pydantic models in `src/forensia/rules/models.py` enforce the schema with `extra="forbid"`, so unknown fields are rejected at load time.
+A rulepack is a YAML definition under `src/forensia/knowledge/rulepacks/windows/` (or similar). The Pydantic models in `src/forensia/knowledge/rules/models.py` enforce the schema with `extra="forbid"`, so unknown fields are rejected at load time.
 
 ### 1.1 Detection part (required)
 
@@ -88,7 +88,7 @@ fallback_search:
 
 ## 2. Profile
 
-A profile is a rule selection policy. It lives under `src/forensia/profiles/`.
+A profile is a rule selection policy. It lives under `src/forensia/knowledge/profiles/`.
 
 | Field | Role |
 |---|---|
@@ -129,7 +129,7 @@ This is a post-generation presentation / triage control, not a pre-filter.
 
 ## 4. Declarative layer (`_schema/`)
 
-`src/forensia/rulepacks/_schema/` is not a rule directory; it is where schemas and DFIR knowledge shared by rules and prompts live. The loader skips it during enumeration.
+`src/forensia/knowledge/rulepacks/_schema/` is not a rule directory; it is where schemas and DFIR knowledge shared by rules and prompts live. The loader skips it during enumeration.
 
 | File | Consumer | Role |
 |---|---|---|
@@ -169,6 +169,6 @@ Files with a `kind:` prefix such as `kind: allowlist_services` are not rules; th
 
 ## 5. File placement conventions
 
-- Package defaults live under `src/forensia/report_template/` / `profiles/` / `rulepacks/`
+- Package defaults live under `src/forensia/report/templates/` / `profiles/` / `rulepacks/`
 - Treat case-local `report_template/` as an override input copied at initialization
 - Currently, case-local copies of profiles and rulepacks are not depended upon (they are resolved from the package tree)

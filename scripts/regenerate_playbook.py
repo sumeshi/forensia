@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SCHEMA_DIR = REPO_ROOT / "src" / "forensia" / "rulepacks" / "_schema"
+SCHEMA_DIR = REPO_ROOT / "src" / "forensia" / "knowledge" / "rulepacks" / "_schema"
 PLAYBOOK_DIR = SCHEMA_DIR / "playbook"
 
 

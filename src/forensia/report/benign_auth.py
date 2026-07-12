@@ -11,11 +11,11 @@ import json
 import re
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
+from forensia.knowledge.resources import schema_dir
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,9 +34,7 @@ def _load_benign_auth_policy() -> BenignAuthPolicy:
     import yaml
 
     path = (
-        Path(__file__).resolve().parent.parent
-        / "rulepacks"
-        / "_schema"
+        schema_dir()
         / "benign_auth.yaml"
     )
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}

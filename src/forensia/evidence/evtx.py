@@ -1,17 +1,18 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from collections.abc import Collection
+import json
+from collections.abc import Callable, Collection
 from datetime import UTC, datetime
+from itertools import chain
+from pathlib import Path
+
 from evtx2es.models.Evtx2es import Evtx2es
+
 from forensia.core.case import Case
 from forensia.core.evidence import make_evtx_evidence_id
 from forensia.db.database import CaseDB
-from forensia.normalize import select_source_paths
-from forensia.normalize.timeline_sql import duckdb_path_literal
-from itertools import chain
-from pathlib import Path
-import json
+from forensia.evidence.normalize import select_source_paths
+from forensia.evidence.timeline_sql import duckdb_path_literal
 
 
 def ingest_evtx_file(

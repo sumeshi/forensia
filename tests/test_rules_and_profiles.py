@@ -11,16 +11,16 @@ import yaml
 from forensia.ai.hypotheses.seeding import seed_findings
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
-from forensia.normalize.evtx import normalize_evtx
-from forensia.rules.engine import generate_findings, save_findings
-from forensia.rules.loader import load_rules_from_dir
-from forensia.rules.models import Finding, Rule
+from forensia.evidence.evtx import normalize_evtx
+from forensia.knowledge.rules.engine import generate_findings, save_findings
+from forensia.knowledge.rules.loader import load_rules_from_dir
+from forensia.knowledge.rules.models import Finding, Rule
 
 
 class RuleProfileTests(unittest.TestCase):
     def test_windows_rules_have_attack_mapping(self) -> None:
-        rules_dir = Path("src/forensia/rulepacks")
-        profile_path = Path("src/forensia/profiles/windows-basic.yaml")
+        rules_dir = Path("src/forensia/knowledge/rulepacks")
+        profile_path = Path("src/forensia/knowledge/profiles/windows-basic.yaml")
         rules = load_rules_from_dir(rules_dir, profile_path)
 
         self.assertEqual(115, len(rules))
@@ -36,8 +36,8 @@ class RuleProfileTests(unittest.TestCase):
         """
         from forensia.knowledge.catalog import catalog_exe_globs
 
-        rules_dir = Path("src/forensia/rulepacks")
-        profile_path = Path("src/forensia/profiles/windows-basic.yaml")
+        rules_dir = Path("src/forensia/knowledge/rulepacks")
+        profile_path = Path("src/forensia/knowledge/profiles/windows-basic.yaml")
         rules = {rule.id: rule for rule in load_rules_from_dir(rules_dir, profile_path)}
 
         for rule_id, section in (
@@ -103,8 +103,8 @@ class RuleProfileTests(unittest.TestCase):
         self.assertNotIn("sample/", row[0])
 
     def test_antiforensic_and_staging_rules_declare_seed_hypotheses(self) -> None:
-        rules_dir = Path("src/forensia/rulepacks")
-        profile_path = Path("src/forensia/profiles/windows-basic.yaml")
+        rules_dir = Path("src/forensia/knowledge/rulepacks")
+        profile_path = Path("src/forensia/knowledge/profiles/windows-basic.yaml")
         rules = {rule.id: rule for rule in load_rules_from_dir(rules_dir, profile_path)}
 
         for rule_id in (
@@ -120,8 +120,8 @@ class RuleProfileTests(unittest.TestCase):
             self.assertTrue(rule.hypotheses[0].confirm_when)
 
     def test_ransomware_profile_filters_rule_ids(self) -> None:
-        rules_dir = Path("src/forensia/rulepacks")
-        profile_path = Path("src/forensia/profiles/ransomware-basic.yaml")
+        rules_dir = Path("src/forensia/knowledge/rulepacks")
+        profile_path = Path("src/forensia/knowledge/profiles/ransomware-basic.yaml")
         rules = load_rules_from_dir(rules_dir, profile_path)
         rule_ids = {rule.id for rule in rules}
 
@@ -130,8 +130,8 @@ class RuleProfileTests(unittest.TestCase):
         self.assertNotIn("windows-security-4624-rdp-logon", rule_ids)
 
     def test_data_leakage_profile_loads_leakage_rulepack(self) -> None:
-        rules_dir = Path("src/forensia/rulepacks")
-        profile_path = Path("src/forensia/profiles/data-leakage.yaml")
+        rules_dir = Path("src/forensia/knowledge/rulepacks")
+        profile_path = Path("src/forensia/knowledge/profiles/data-leakage.yaml")
         rules = load_rules_from_dir(rules_dir, profile_path)
         rule_ids = {rule.id for rule in rules}
 
@@ -240,7 +240,7 @@ class RuleProfileTests(unittest.TestCase):
                 "message",
             },
         }
-        rules_dir = Path("src/forensia/rulepacks/windows")
+        rules_dir = Path("src/forensia/knowledge/rulepacks/windows")
         for filename, fields in expected.items():
             parsed = yaml.safe_load((rules_dir / filename).read_text(encoding="utf-8"))
             self.assertTrue(
@@ -248,8 +248,8 @@ class RuleProfileTests(unittest.TestCase):
             )
 
     def test_windows_allowlist_metadata_is_not_loaded_as_rule(self) -> None:
-        rules_dir = Path("src/forensia/rulepacks")
-        profile_path = Path("src/forensia/profiles/windows-basic.yaml")
+        rules_dir = Path("src/forensia/knowledge/rulepacks")
+        profile_path = Path("src/forensia/knowledge/profiles/windows-basic.yaml")
         rules = load_rules_from_dir(rules_dir, profile_path)
         rule_ids = {rule.id for rule in rules}
 
@@ -261,7 +261,7 @@ class RuleProfileTests(unittest.TestCase):
             profile_path = Path(tmpdir) / "profile.yaml"
             profile_path.write_text("rulepacks:\n  - nonexistent\n", encoding="utf-8")
 
-            rules = load_rules_from_dir("src/forensia/rulepacks", profile_path)
+            rules = load_rules_from_dir("src/forensia/knowledge/rulepacks", profile_path)
 
         self.assertEqual(0, len(rules))
 
@@ -380,7 +380,7 @@ class NormalizeEvtxTests(unittest.TestCase):
 
 class RuleExecutionTests(unittest.TestCase):
     def _run_rule_query(self, db: CaseDB, filename: str) -> list[dict[str, object]]:
-        rule_path = Path("src/forensia/rulepacks/windows") / filename
+        rule_path = Path("src/forensia/knowledge/rulepacks/windows") / filename
         query = yaml.safe_load(rule_path.read_text(encoding="utf-8"))["query"]
         result = db.execute(query)
         columns = [item[0] for item in result.description]

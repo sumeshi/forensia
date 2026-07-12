@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import yaml
+
+from forensia.knowledge.resources import schema_dir
 
 if TYPE_CHECKING:
     from forensia.db.database import CaseDB
@@ -333,8 +334,8 @@ def _build_live_schema_guidance(db: CaseDB | None = None) -> str:
 @lru_cache(maxsize=1)
 def load_logon_type_schema() -> dict:
     """Load logon type definitions from schema file."""
-    schema_dir = Path(__file__).parent.parent.parent / "rulepacks" / "_schema"
-    path = schema_dir / "logon_types.yaml"
+    schema_root = schema_dir()
+    path = schema_root / "logon_types.yaml"
     if path.exists():
         return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     return {}
@@ -343,8 +344,8 @@ def load_logon_type_schema() -> dict:
 @lru_cache(maxsize=1)
 def load_app_catalog() -> dict:
     """Load application catalog from schema file."""
-    schema_dir = Path(__file__).parent.parent.parent / "rulepacks" / "_schema"
-    path = schema_dir / "app_catalog.yaml"
+    schema_root = schema_dir()
+    path = schema_root / "app_catalog.yaml"
     if path.exists():
         return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     return {}
@@ -353,8 +354,8 @@ def load_app_catalog() -> dict:
 @lru_cache(maxsize=8)
 def _load_table_notes(table_name: str) -> dict:
     """Load notes dict from _schema/{table_name}.yaml."""
-    schema_dir = Path(__file__).parent.parent.parent / "rulepacks" / "_schema"
-    path = schema_dir / f"{table_name}.yaml"
+    schema_root = schema_dir()
+    path = schema_root / f"{table_name}.yaml"
     if path.exists():
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         return data.get("notes", {})
@@ -364,8 +365,8 @@ def _load_table_notes(table_name: str) -> dict:
 @lru_cache(maxsize=1)
 def load_fp_reduction_guidance() -> str:
     """Load false-positive reduction guidance from YAML schema file."""
-    schema_dir = Path(__file__).parent.parent.parent / "rulepacks" / "_schema"
-    path = schema_dir / "false_positive_rules.yaml"
+    schema_root = schema_dir()
+    path = schema_root / "false_positive_rules.yaml"
     if not path.exists():
         return ""
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}

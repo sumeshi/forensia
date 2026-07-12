@@ -8,10 +8,10 @@ cannot be expressed as data.
 
 | Scenario | Files normally touched | Registration |
 |---|---|---|
-| Artifact type | `ingest/<kind>.py`, `normalize/<kind>.py`, schema/migration, `ingest/artifacts.py`, test | `register_artifact_adapter(...)` once |
-| Detection rule/rulepack | `rulepacks/<pack>/*.yaml`; optionally profile YAML and `pack.yaml` | Automatic YAML discovery |
+| Artifact type | `evidence/<kind>.py` (ingest + normalize), schema/migration, `evidence/artifacts.py`, test | `register_artifact_adapter(...)` once |
+| Detection rule/rulepack | `knowledge/rulepacks/<pack>/*.yaml`; optionally profile YAML and `pack.yaml` | Automatic YAML discovery |
 | Structured question | `_schema/question_routing.yaml`; custom deterministic builder only when generic SQL is insufficient | Generic: none; custom: `register_structured_answer_builder(...)` once |
-| Report section/block | `report_template/<n>_<name>.md`; optional resolver module and registration | `register_report_keypoint(...)` once when a new resolver is needed |
+| Report section/block | `report/templates/<n>_<name>.md`; optional resolver module and registration | `register_report_keypoint(...)` once when a new resolver is needed |
 | Table block | Builder function, `_schema/report_tables.yaml`, template hint | `register_table_block(...)` once |
 | Quality gate | One check function and its focused test | `register_quality_check(...)` once |
 
@@ -22,19 +22,19 @@ runtime dispatch to one registration point.
 
 ## Add an artifact type
 
-1. Put raw parsing in `src/forensia/ingest/<kind>.py`. Produce traceable JSONL
+1. Put raw parsing in `src/forensia/evidence/<kind>.py`. Produce traceable JSONL
    rows with `source_file` and `evidence_id`.
-2. Put set-based DuckDB loading in `src/forensia/normalize/<kind>.py`.
+2. Put set-based DuckDB loading in `src/forensia/evidence/<kind>.py`.
 3. Add its table/schema card and a `CaseDB` migration when an existing table
    changes.
-4. Implement `ArtifactAdapter` in `ingest/artifacts.py` (or a plugin module) and
+4. Implement `ArtifactAdapter` in `evidence/artifacts.py` (or a plugin module) and
    call `register_artifact_adapter(AdapterClass)` once.
 5. Test detection, ingest metadata, differential normalization, and replacement
    of an already ingested source.
 
 ## Add a detection rule or rulepack
 
-Add a `Rule` YAML document under `src/forensia/rulepacks/<pack>/`. Loader
+Add a `Rule` YAML document under `src/forensia/knowledge/rulepacks/<pack>/`. Loader
 discovery is automatic; no Python registration is required. Add the pack to a
 profile only when it must be opt-in. Run:
 
@@ -47,7 +47,7 @@ placeholders.
 
 ## Add a structured question
 
-Add an entry to `rulepacks/_schema/question_routing.yaml`. Use
+Add an entry to `knowledge/rulepacks/_schema/question_routing.yaml`. Use
 `builder_policy: generic` plus an `evidence_chain` whenever SQL and declarative
 status rules are sufficient. That path requires no Python edit.
 
@@ -62,7 +62,7 @@ Do not add a new `if answer_spec == ...` branch.
 
 ## Add a report section or block
 
-Add `report_template/<n>_<section>.md`. Templates are discovered by filename.
+Add `report/templates/<n>_<section>.md`. Templates are discovered by filename.
 Use block comments such as:
 
 ```markdown
@@ -79,7 +79,7 @@ Test template parsing and resolver registration without invoking an LLM.
 
 Implement a function `builder(db) -> list[dict]`, register it with
 `register_table_block(...)`, add its editable caption/empty text to
-`rulepacks/_schema/report_tables.yaml`, and reference it from a template:
+`knowledge/rulepacks/_schema/report_tables.yaml`, and reference it from a template:
 
 ```markdown
 <!-- mode: table; builder: example_table -->

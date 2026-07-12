@@ -164,9 +164,9 @@ def load_top_findings_priority_keywords(
 
 
 def _packaged_report_template_dir() -> Path:
-    # ranking.py lives at src/forensia/report/ranking.py; templates are siblings
-    # of the report package under src/forensia/report_template/.
-    return Path(__file__).resolve().parent.parent / "report_template"
+    # ranking.py lives at src/forensia/report/ranking.py; the packaged section
+    # templates live in the sibling directory src/forensia/report/templates/.
+    return Path(__file__).resolve().parent / "templates"
 
 
 def audit_packaged_report_templates() -> list[str]:

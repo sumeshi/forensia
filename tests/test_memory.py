@@ -8,8 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from forensia.ai.checking.check_normalize import summarize_query_result
-from forensia.ai.investigation_session import sync_keypoint_cards
-from forensia.ai.memory_sync import apply_memory_updates
+from forensia.ai.investigation.investigation_session import sync_keypoint_cards
+from forensia.ai.investigation.memory_sync import apply_memory_updates
 from forensia.config import (
     get_llm_settings,
     reload_settings,
@@ -980,7 +980,7 @@ def test_ctx_refresh_caches_forwards_relevance_terms() -> None:
     """
     from unittest.mock import MagicMock
 
-    from forensia.ai.investigation_session import (
+    from forensia.ai.investigation.investigation_session import (
         Ctx,
         ctx_refresh_caches,
     )

@@ -13,7 +13,7 @@ backs the confirm_when.
 
 from __future__ import annotations
 
-from forensia.ai.progress import HypothesisProgressTracker
+from forensia.ai.investigation.progress import HypothesisProgressTracker
 from forensia.core.session import Hypothesis
 
 

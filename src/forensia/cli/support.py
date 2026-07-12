@@ -1,3 +1,5 @@
+from forensia.knowledge.resources import profiles_dir
+
 """Shared helpers for CLI commands: case/LLM resolution, progress, counts."""
 
 import time
@@ -22,7 +24,7 @@ from forensia.report.template_export import (
     seed_case_report_templates,
 )
 
-PROFILE_ROOT = Path(__file__).parent.parent / "profiles"
+PROFILE_ROOT = profiles_dir()
 
 
 def _status(message: str) -> None:

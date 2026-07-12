@@ -1,10 +1,12 @@
+from forensia.knowledge.resources import rulepacks_dir
+
 """Pipeline stage runners for the investigate command."""
 
 import asyncio
 import sys
 from pathlib import Path
 
-from forensia.ai.investigator import investigate as investigate_loop
+from forensia.ai.investigation.investigator import investigate as investigate_loop
 from forensia.ai.llm.llm_client import LLMServerUnavailableError
 from forensia.api.cache import (
     write_api_snapshots,
@@ -19,16 +21,16 @@ from forensia.core.case import Case
 from forensia.core.case_tasks import CaseTasks
 from forensia.core.progress_event import progress_event
 from forensia.db.database import CaseDB
-from forensia.ingest import ingest_all
-from forensia.normalize import normalize_all
-from forensia.report.render.writer import render_written_report
-from forensia.rules.engine import (
+from forensia.evidence.ingest import ingest_all
+from forensia.evidence.normalize import normalize_all
+from forensia.knowledge.rules.engine import (
     clear_rule_findings,
     generate_findings,
     run_rule,
     save_findings,
 )
-from forensia.rules.loader import load_rules_from_dir
+from forensia.knowledge.rules.loader import load_rules_from_dir
+from forensia.report.render.writer import render_written_report
 
 
 def _make_initial_progress_state(
@@ -149,7 +151,7 @@ def _run_analyze_stage(
         )
         return existing_findings
 
-    rules_dir = Path(__file__).parent.parent / "rulepacks"
+    rules_dir = rulepacks_dir()
     rules = load_rules_from_dir(rules_dir, profile_path)
     _status(f"Stage 3/4: analyze with profile={profile} ({len(rules)} rules)")
     push_progress(

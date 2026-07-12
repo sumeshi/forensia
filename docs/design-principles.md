@@ -60,7 +60,7 @@ For the list of LLM roles and their input/output schemas, see [llm-roles.md](llm
 
 ## 5. Place knobs in the rule declaration layer
 
-When adding new AI-driven behavior, first ask "can this be written as a one-sentence `<TASK>`?" and "can it be expressed on the code side?". If the answers are No / Yes, check whether it can be expressed as a rule declaration knob. Before increasing hardcoded branches on rule_id or event_id in Python, always consider the declaration layer (`src/forensia/rulepacks/_schema/`).
+When adding new AI-driven behavior, first ask "can this be written as a one-sentence `<TASK>`?" and "can it be expressed on the code side?". If the answers are No / Yes, check whether it can be expressed as a rule declaration knob. Before increasing hardcoded branches on rule_id or event_id in Python, always consider the declaration layer (`src/forensia/knowledge/rulepacks/_schema/`).
 
 The main knobs that can change behavior through rules:
 
@@ -79,7 +79,7 @@ The main knobs that can change behavior through rules:
 
 Provisional facts / timeline / tasks under verification are confined to `memory/scratch/<hypothesis_id>/`, promoted to shared memory on confirmed, and retreated to archive on refuted. Do not let provisional information from other hypotheses leak in.
 
-`_apply_memory_updates` ([ai/memory_sync.py](../src/forensia/ai/memory_sync.py)) routes the write destination based on `hypothesis_id` and `verdict`. Hypothesis-originated memory writes must always carry `hypothesis_id` (dropping it causes unconditional writes to shared memory and breaks this lifecycle).
+`_apply_memory_updates` ([ai/memory_sync.py](../src/forensia/ai/investigation/memory_sync.py)) routes the write destination based on `hypothesis_id` and `verdict`. Hypothesis-originated memory writes must always carry `hypothesis_id` (dropping it causes unconditional writes to shared memory and breaks this lifecycle).
 
 The same contamination prevention applies between report sections:
 - `_summarize_context_sections`: pass prior section bodies as title + first 120 characters only
@@ -91,7 +91,7 @@ The same contamination prevention applies between report sections:
 
 ## 7. Verdict values are an enum, not free strings
 
-Verdict strings are an allow-list. Allowed values are declared in `src/forensia/rulepacks/_schema/verdict_taxonomy.yaml` and enforced by `forensia.core.verdicts.assert_valid_verdict` at three write boundaries.
+Verdict strings are an allow-list. Allowed values are declared in `src/forensia/knowledge/rulepacks/_schema/verdict_taxonomy.yaml` and enforced by `forensia.core.verdicts.assert_valid_verdict` at three write boundaries.
 
 | Layer | Enforcement site |
 |---|---|

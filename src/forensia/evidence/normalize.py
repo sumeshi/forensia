@@ -5,7 +5,7 @@ from pathlib import Path
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
-from forensia.ingest.artifacts import get_artifact_adapters
+from forensia.evidence.artifacts import get_artifact_adapters
 
 
 def select_source_paths(

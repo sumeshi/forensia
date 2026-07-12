@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
 
 def _packaged_report_template_root():
-    return resources.files("forensia").joinpath("report_template")
+    return resources.files("forensia.report").joinpath("templates")
 
 
 def _copy_traversable_tree(
