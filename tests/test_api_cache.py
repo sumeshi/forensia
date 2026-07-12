@@ -10,8 +10,8 @@ from forensia.api.cache import (
     clear_api_snapshots,
     load_snapshot,
     snapshot_dir,
-    write_api_snapshots,
     write_json,
+    write_platform_snapshots,
 )
 
 
@@ -155,7 +155,6 @@ class TestWriteApiSnapshots(unittest.TestCase):
                 list_hypothesis_reasoning_map_dto=DEFAULT,
                 list_latest_hypothesis_reasoning_dto=DEFAULT,
                 list_steps_dto=DEFAULT,
-                list_report_sections_dto=DEFAULT,
                 list_section_questions_dto=DEFAULT,
                 list_claims_dto=DEFAULT,
                 list_mft_timeline_dto=DEFAULT,
@@ -163,7 +162,6 @@ class TestWriteApiSnapshots(unittest.TestCase):
                 list_entity_cards_dto=DEFAULT,
                 list_attack_coverage_dto=DEFAULT,
                 list_ai_reviews_dto=DEFAULT,
-                write_report_brief=DEFAULT,
                 list_progress_events=DEFAULT,
             ) as mocks:
                 mocks["get_case_dto"].return_value = _MockDTO({"id": "case1"})
@@ -180,7 +178,6 @@ class TestWriteApiSnapshots(unittest.TestCase):
                     "list_latest_hypothesis_reasoning_dto"
                 ].return_value = _mock_dto_list(1)
                 mocks["list_steps_dto"].return_value = _mock_dto_list(1)
-                mocks["list_report_sections_dto"].return_value = _mock_dto_list(1)
                 mocks["list_section_questions_dto"].return_value = _mock_dto_list(1)
                 mocks["list_claims_dto"].return_value = _mock_dto_list(1)
                 mocks["list_mft_timeline_dto"].return_value = _mock_dto_list(1)
@@ -188,10 +185,9 @@ class TestWriteApiSnapshots(unittest.TestCase):
                 mocks["list_entity_cards_dto"].return_value = _mock_dto_list(1)
                 mocks["list_attack_coverage_dto"].return_value = _mock_dto_list(1)
                 mocks["list_ai_reviews_dto"].return_value = _mock_dto_list(1)
-                mocks["write_report_brief"].return_value = {"summary": "brief"}
                 mocks["list_progress_events"].return_value = _mock_dto_list(1)
 
-                write_api_snapshots(case, MagicMock())
+                write_platform_snapshots(case, MagicMock())
 
             snap_dir = snapshot_dir(case)
             expected_files = [
@@ -203,14 +199,12 @@ class TestWriteApiSnapshots(unittest.TestCase):
                 "hypothesis_reasoning.json",
                 "hypotheses_reasoning_latest.json",
                 "session_steps.json",
-                "report_sections.json",
                 "section_questions.json",
                 "claims.json",
                 "mft_timeline.json",
                 "entities.json",
                 "attack_coverage.json",
                 "ai_reviews.json",
-                "report_brief.json",
                 "progress_events.json",
             ]
             for bucket in ("year", "month", "day", "hour"):
@@ -237,7 +231,6 @@ class TestWriteApiSnapshots(unittest.TestCase):
                 list_hypothesis_reasoning_map_dto=DEFAULT,
                 list_latest_hypothesis_reasoning_dto=DEFAULT,
                 list_steps_dto=DEFAULT,
-                list_report_sections_dto=DEFAULT,
                 list_section_questions_dto=DEFAULT,
                 list_claims_dto=DEFAULT,
                 list_mft_timeline_dto=DEFAULT,
@@ -245,7 +238,6 @@ class TestWriteApiSnapshots(unittest.TestCase):
                 list_entity_cards_dto=DEFAULT,
                 list_attack_coverage_dto=DEFAULT,
                 list_ai_reviews_dto=DEFAULT,
-                write_report_brief=DEFAULT,
                 list_progress_events=DEFAULT,
             ) as mocks:
                 mocks["get_case_dto"].return_value = _MockDTO({"id": "case1"})
@@ -258,7 +250,6 @@ class TestWriteApiSnapshots(unittest.TestCase):
                 mocks["list_hypothesis_reasoning_map_dto"].return_value = {}
                 mocks["list_latest_hypothesis_reasoning_dto"].return_value = []
                 mocks["list_steps_dto"].return_value = []
-                mocks["list_report_sections_dto"].return_value = []
                 mocks["list_section_questions_dto"].return_value = []
                 mocks["list_claims_dto"].return_value = []
                 mocks["list_mft_timeline_dto"].return_value = []
@@ -266,10 +257,9 @@ class TestWriteApiSnapshots(unittest.TestCase):
                 mocks["list_entity_cards_dto"].return_value = []
                 mocks["list_attack_coverage_dto"].return_value = []
                 mocks["list_ai_reviews_dto"].return_value = []
-                mocks["write_report_brief"].return_value = {}
                 mocks["list_progress_events"].return_value = []
 
-                write_api_snapshots(case, MagicMock())
+                write_platform_snapshots(case, MagicMock())
 
             mocks["list_progress_events"].assert_called_once()
 
@@ -288,7 +278,6 @@ class TestWriteApiSnapshots(unittest.TestCase):
                 list_hypothesis_reasoning_map_dto=DEFAULT,
                 list_latest_hypothesis_reasoning_dto=DEFAULT,
                 list_steps_dto=DEFAULT,
-                list_report_sections_dto=DEFAULT,
                 list_section_questions_dto=DEFAULT,
                 list_claims_dto=DEFAULT,
                 list_mft_timeline_dto=DEFAULT,
@@ -296,7 +285,6 @@ class TestWriteApiSnapshots(unittest.TestCase):
                 list_entity_cards_dto=DEFAULT,
                 list_attack_coverage_dto=DEFAULT,
                 list_ai_reviews_dto=DEFAULT,
-                write_report_brief=DEFAULT,
                 list_progress_events=DEFAULT,
             ) as mocks:
                 mocks["get_case_dto"].return_value = _MockDTO({})
@@ -309,7 +297,6 @@ class TestWriteApiSnapshots(unittest.TestCase):
                 mocks["list_hypothesis_reasoning_map_dto"].return_value = {}
                 mocks["list_latest_hypothesis_reasoning_dto"].return_value = []
                 mocks["list_steps_dto"].return_value = []
-                mocks["list_report_sections_dto"].return_value = []
                 mocks["list_section_questions_dto"].return_value = []
                 mocks["list_claims_dto"].return_value = []
                 mocks["list_mft_timeline_dto"].return_value = []
@@ -317,10 +304,9 @@ class TestWriteApiSnapshots(unittest.TestCase):
                 mocks["list_entity_cards_dto"].return_value = []
                 mocks["list_attack_coverage_dto"].return_value = []
                 mocks["list_ai_reviews_dto"].return_value = []
-                mocks["write_report_brief"].return_value = {}
                 mocks["list_progress_events"].return_value = []
 
-                write_api_snapshots(case, MagicMock())
+                write_platform_snapshots(case, MagicMock())
 
             snap_dir = snapshot_dir(case)
             self.assertTrue((snap_dir / "case.json").exists())

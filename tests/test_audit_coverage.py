@@ -123,6 +123,21 @@ class VerdictEnforcementTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             assert_valid_verdict("bogus_verdict", "section_verdict")
 
+    def test_taxonomy_raises_when_not_set(self) -> None:
+        """Library callers that never call set_taxonomy_path get a clear error."""
+        from forensia.core import verdicts as v
+        from forensia.core.verdicts import assert_valid_verdict
+
+        old_path, old_cache = v._taxonomy_path, v._taxonomy_cache
+        try:
+            v._taxonomy_path = None
+            v._taxonomy_cache = None
+            with self.assertRaises(RuntimeError):
+                assert_valid_verdict("confirmed", "hypothesis_verdict")
+        finally:
+            v._taxonomy_path = old_path
+            v._taxonomy_cache = old_cache
+
     def test_benchmark_answer_normalization_enforces_taxonomy(self) -> None:
         from forensia.report.answers.answer_store import normalize_structured_answer
 

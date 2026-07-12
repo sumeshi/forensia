@@ -12,10 +12,14 @@ from forensia.ai.case_profile import profile_advisor
 from forensia.ai.investigation.investigator import investigate as investigate_loop
 from forensia.api.cache import (
     clear_api_snapshots,
-    write_api_snapshots,
 )
 from forensia.api.progress import clear_progress_events
 from forensia.cli.doctor import run_doctor
+from forensia.core.verdicts import set_taxonomy_path
+from forensia.knowledge.resources import schema_dir
+from forensia.report.api_snapshot import write_all_snapshots
+
+set_taxonomy_path(schema_dir() / "verdict_taxonomy.yaml")
 from forensia.cli.stages import (
     _make_initial_progress_state,
     _run_analyze_stage,
@@ -146,7 +150,7 @@ def report(
         path = (
             render_html_report(case, db, output_path=output) if output else report_path
         )
-        write_api_snapshots(case, db)
+        write_all_snapshots(case, db)
     print(f"Markdown report written to {report_md}")
     print(f"HTML report written to {path}")
 

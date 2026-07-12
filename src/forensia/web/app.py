@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from forensia.api.cache import load_snapshot, write_api_snapshots
+from forensia.api.cache import load_snapshot
 from forensia.api.dto import (
     AIReviewDTO,
     AttackCoverageRowDTO,
@@ -57,6 +57,7 @@ from forensia.api.service import (
 )
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
+from forensia.report.api_snapshot import write_all_snapshots
 from forensia.report.render.html import render_html_report
 from forensia.report.render.writer import (
     build_report_markdown_from_db,
@@ -101,9 +102,11 @@ def _repo_root() -> Path:
 
 def _resolve_spa_dir() -> Path | None:
     """Locate the SPA build directory, checking common locations."""
+    from forensia.web.resources import static_dir
+
     candidates = [
         _repo_root() / "web_ui" / "dist",
-        Path(__file__).resolve().parent / "static",
+        static_dir(),
     ]
     for candidate in candidates:
         if candidate.exists() and (candidate / "index.html").exists():
@@ -318,7 +321,7 @@ def _register_report_routes(app: FastAPI, case: Case, cached):
                 raise HTTPException(
                     status_code=404, detail=f"report section not found: {section_key}"
                 )
-            write_api_snapshots(case, db)
+            write_all_snapshots(case, db)
             return rows[0]
 
     @app.get("/api/claims", response_model=list[ClaimDTO])

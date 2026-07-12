@@ -8,9 +8,6 @@ from pathlib import Path
 
 from forensia.ai.investigation.investigator import investigate as investigate_loop
 from forensia.ai.llm.llm_client import LLMServerUnavailableError
-from forensia.api.cache import (
-    write_api_snapshots,
-)
 from forensia.cli.support import (
     _normalize_counts_summary,
     _prune_orphan_reviews,
@@ -30,6 +27,7 @@ from forensia.knowledge.rules.engine import (
     save_findings,
 )
 from forensia.knowledge.rules.loader import load_rules_from_dir
+from forensia.report.api_snapshot import write_all_snapshots
 from forensia.report.render.writer import render_written_report
 
 
@@ -212,7 +210,7 @@ def _run_investigate_stage(
     push_progress(
         f"[investigate] starting - model={model}", stage="investigate", status="running"
     )
-    write_api_snapshots(case, db)
+    write_all_snapshots(case, db)
     try:
         result = asyncio.run(
             investigate_loop(
@@ -271,7 +269,7 @@ def _run_report_stage(
 ) -> Path:
     """Render the final written report."""
     report_md, report_path = render_written_report(case, db)
-    write_api_snapshots(case, db)
+    write_all_snapshots(case, db)
     tasks.mark_done("report", str(report_path))
     push_progress(
         f"[report] written: {report_path}",

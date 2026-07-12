@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from importlib import resources
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from forensia.report.resources import report_formats_path
 
 
 def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -23,9 +24,7 @@ def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
 @lru_cache(maxsize=16)
 def load_report_formats(template_dir: str | Path | None = None) -> dict[str, Any]:
     """Load packaged formats, merged with `_formats/report.yaml` when present."""
-    packaged = resources.files("forensia.report").joinpath(
-        "templates/_formats/report.yaml"
-    )
+    packaged = report_formats_path()
     base = yaml.safe_load(packaged.read_text(encoding="utf-8")) or {}
     if not isinstance(base, dict) or base.get("version") != 1:
         raise ValueError("packaged report format must be a version 1 mapping")

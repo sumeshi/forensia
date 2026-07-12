@@ -1,25 +1,43 @@
 from __future__ import annotations
 
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+_taxonomy_path: Path | None = None
+_taxonomy_cache: dict[str, Any] | None = None
 
-@lru_cache(maxsize=1)
+
+def set_taxonomy_path(path: Path) -> None:
+    """Set the path to the verdict taxonomy YAML (called at startup)."""
+    global _taxonomy_path, _taxonomy_cache
+    _taxonomy_path = path
+    _taxonomy_cache = None
+
+
 def _load_taxonomy() -> dict[str, Any]:
-    """Load the verdict taxonomy YAML file (cached after first call)."""
-    path = (
-        Path(__file__).parent.parent / "knowledge" / "rulepacks" / "_schema" / "verdict_taxonomy.yaml"
-    )
-    if not path.exists():
-        return {}
+    """Load the verdict taxonomy YAML file (cached after first call).
+
+    Raises ``RuntimeError`` if ``set_taxonomy_path`` was never called, and
+    ``FileNotFoundError`` / ``yaml.YAMLError`` on read failures.  Validation is
+    fail-closed: if the taxonomy cannot be loaded, verdicts are rejected.
+    """
+    global _taxonomy_cache
+    if _taxonomy_cache is not None:
+        return _taxonomy_cache
+
+    if _taxonomy_path is None:
+        raise RuntimeError(
+            "verdict taxonomy path not set; call set_taxonomy_path() at startup"
+        )
+    if not _taxonomy_path.exists():  # type: ignore[union-attr]
+        raise FileNotFoundError(f"verdict taxonomy not found: {_taxonomy_path}")
     import yaml
 
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    data = yaml.safe_load(_taxonomy_path.read_text(encoding="utf-8"))  # type: ignore[union-attr]
+    if not isinstance(data, dict):
+        raise ValueError(f"verdict taxonomy must be a mapping: {_taxonomy_path}")
+    _taxonomy_cache = data
+    return _taxonomy_cache
 
 
 def valid_verdicts(category: str) -> list[str]:

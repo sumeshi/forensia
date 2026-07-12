@@ -24,8 +24,6 @@ from forensia.api.service import (
 )
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
-from forensia.report.report_brief import write_report_brief
-from forensia.report.section_views import list_report_sections_dto
 
 VOLATILE_SNAPSHOT_INTERVAL_S = 5.0
 
@@ -93,10 +91,6 @@ def write_volatile_api_snapshots(case: Case, db: CaseDB) -> None:
         pass
     try:
         data["attack_coverage"] = [a.model_dump() for a in list_attack_coverage_dto(db)]
-    except Exception:
-        pass
-    try:
-        data["report_sections"] = [r.model_dump() for r in list_report_sections_dto(db)]
     except Exception:
         pass
     try:
@@ -171,10 +165,6 @@ def write_full_api_snapshots(case: Case, db: CaseDB) -> None:
     }
     write_json(snap_dir / "session_steps.json", steps_by_session)
     write_json(
-        snap_dir / "report_sections.json",
-        [item.model_dump(mode="json") for item in list_report_sections_dto(db)],
-    )
-    write_json(
         snap_dir / "section_questions.json",
         [item.model_dump(mode="json") for item in list_section_questions_dto(db)],
     )
@@ -207,10 +197,9 @@ def write_full_api_snapshots(case: Case, db: CaseDB) -> None:
         snap_dir / "ai_reviews.json",
         [item.model_dump(mode="json") for item in list_ai_reviews_dto(db)],
     )
-    write_json(snap_dir / "report_brief.json", write_report_brief(case, db))
 
 
-def write_api_snapshots(case: Case, db: CaseDB) -> None:
+def write_platform_snapshots(case: Case, db: CaseDB) -> None:
     """Convenience: write both full API and progress snapshots."""
     write_full_api_snapshots(case, db)
     write_progress_snapshot(case, db)

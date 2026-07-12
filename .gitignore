@@ -25,6 +25,7 @@ KNOWLEDGE.md
 
 sample/
 dist/
+build/
 test_output*
 templates/
 !src/forensia/report/templates/

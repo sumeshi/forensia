@@ -25,12 +25,7 @@ PACKAGE_LAYER = {
 
 # (source path relative to src/forensia, imported top-level package).
 # Every entry must correspond to a real upward edge; stale exceptions fail.
-KNOWN_EXCEPTIONS: frozenset[tuple[str, str]] = frozenset(
-    {
-        # API snapshots expose report DTOs to the interface layer.
-        ("api/cache.py", "report"),
-    }
-)
+KNOWN_EXCEPTIONS: frozenset[tuple[str, str]] = frozenset()
 
 MAX_LINES = 1000
 

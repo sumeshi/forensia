@@ -309,8 +309,8 @@ class IngestTests(unittest.TestCase):
                         output_dir / "reports" / "report.html",
                     ),
                 ),
-                patch("forensia.cli.stages.write_api_snapshots"),
-                patch("forensia.cli.support.write_api_snapshots"),
+                patch("forensia.cli.stages.write_all_snapshots"),
+                patch("forensia.cli.support.write_all_snapshots"),
             ):
                 run_result = runner.invoke(
                     cli_module.app, ["investigate", str(output_dir), str(input_dir)]

@@ -23,6 +23,7 @@ from forensia.report.finding_themes import (
     _finding_theme_title,
     classify_finding_theme,
 )
+from forensia.report.resources import render_templates_dir
 
 
 def _fetch_records(
@@ -442,7 +443,7 @@ def render_markdown_fragment(markdown: str) -> Markup:
 
 def _env() -> Environment:
     return Environment(
-        loader=FileSystemLoader(str(Path(__file__).parent / "templates")),
+        loader=FileSystemLoader(str(render_templates_dir())),
         autoescape=True,
     )
 

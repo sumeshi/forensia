@@ -46,6 +46,8 @@ from pathlib import Path
 
 import yaml
 
+from forensia.report.resources import report_templates_dir
+
 SECTION_TEMPLATE_GLOB = "[0-9]*_*.md"
 
 
@@ -164,9 +166,7 @@ def load_top_findings_priority_keywords(
 
 
 def _packaged_report_template_dir() -> Path:
-    # ranking.py lives at src/forensia/report/ranking.py; the packaged section
-    # templates live in the sibling directory src/forensia/report/templates/.
-    return Path(__file__).resolve().parent / "templates"
+    return report_templates_dir()
 
 
 def audit_packaged_report_templates() -> list[str]:

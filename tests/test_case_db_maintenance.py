@@ -83,7 +83,7 @@ class CaseDbMaintenanceTests(unittest.TestCase):
             with (
                 CaseDB(case) as db,
                 patch("forensia.cli.support.write_progress_snapshot") as mock_progress,
-                patch("forensia.cli.support.write_api_snapshots") as mock_full,
+                patch("forensia.cli.support.write_volatile_snapshots"),
             ):
                 push = progress_pusher(
                     db,
@@ -98,7 +98,6 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                 push("tick", stage="investigate")
 
             mock_progress.assert_called_once()
-            mock_full.assert_not_called()
 
     def test_reset_case_tables_clears_derived_report_and_ingest_tables(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -242,8 +241,8 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                     ),
                 ) as mock_render_written,
                 patch("forensia.cli.app.render_html_report") as mock_render_html,
-                patch("forensia.cli.stages.write_api_snapshots"),
-                patch("forensia.cli.support.write_api_snapshots"),
+                patch("forensia.cli.stages.write_all_snapshots"),
+                patch("forensia.cli.support.write_all_snapshots"),
             ):
                 cli_module.investigate(
                     case_dir=str(output_dir),

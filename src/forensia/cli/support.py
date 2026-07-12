@@ -11,14 +11,13 @@ from rich import print
 
 from forensia.api.cache import (
     VOLATILE_SNAPSHOT_INTERVAL_S,
-    write_api_snapshots,
     write_progress_snapshot,
-    write_volatile_api_snapshots,
 )
 from forensia.api.progress import record_progress_event
 from forensia.config import resolve_llm_config
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
+from forensia.report.api_snapshot import write_all_snapshots, write_volatile_snapshots
 from forensia.report.template_export import (
     has_report_templates,
     seed_case_report_templates,
@@ -194,7 +193,7 @@ def progress_pusher(db: CaseDB, initial_state: dict) -> Callable[..., None]:
         now = time.monotonic()
         if now - state.get("_last_volatile_at", 0.0) > VOLATILE_SNAPSHOT_INTERVAL_S:
             try:
-                write_volatile_api_snapshots(db.case, db)
+                write_volatile_snapshots(db.case, db)
             except Exception as exc:
                 _status(f"volatile snapshot skipped: {exc}")
             state["_last_volatile_at"] = now
@@ -206,6 +205,6 @@ def _seed_api_snapshots_if_possible(case: Case) -> None:
     """Try to write API snapshots; silently skip if the database is unavailable."""
     try:
         with CaseDB(case) as db:
-            write_api_snapshots(case, db)
+            write_all_snapshots(case, db)
     except Exception as exc:
         _status(f"serve snapshot refresh skipped: {exc}")

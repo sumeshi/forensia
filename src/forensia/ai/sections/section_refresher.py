@@ -19,7 +19,6 @@ from forensia.ai.sections.section_agent import (
     async_run_section_block_agent,
 )
 from forensia.ai.sections.section_exec import SectionBlockResult
-from forensia.api.cache import write_api_snapshots
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager, memory_for_section
 from forensia.core.progress_event import progress_event
@@ -29,6 +28,7 @@ from forensia.report.answers.table_registry import (
     _collect_flat_evidence_rows,
     render_table_block,
 )
+from forensia.report.api_snapshot import write_all_snapshots
 from forensia.report.report_brief import write_report_brief
 from forensia.report.sections.section_assembly import (
     assemble_section_body,
@@ -404,7 +404,7 @@ def _persist_section_result(
         extra_gaps=request.get("block_gaps") or [],
         template_meta=request.get("template_meta"),
     )
-    write_api_snapshots(case, db)
+    write_all_snapshots(case, db)
     if progress_callback:
         status = _build_report_status(db, focus_sections=focus_sections)
         progress_callback(

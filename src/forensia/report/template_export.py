@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import shutil
-from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from forensia.report.resources import report_templates_dir
 
 if TYPE_CHECKING:
     from forensia.core.case import Case
 
 
 def _packaged_report_template_root():
-    return resources.files("forensia.report").joinpath("templates")
+    return report_templates_dir()
 
 
 def _copy_traversable_tree(
