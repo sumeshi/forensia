@@ -9,6 +9,7 @@ Validates that:
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import zipfile
 from importlib.resources import files
@@ -97,8 +98,10 @@ class TestReportResources:
     def test_report_templates_contain_section_files(self) -> None:
         from forensia.report.resources import report_templates_dir
 
-        md_files = list(report_templates_dir().glob("[0-9]*_*.md"))
-        assert len(md_files) >= 6, "expected at least 6 section templates"
+        template_dir = report_templates_dir()
+        md_files = list(template_dir.glob("[0-9]*_*.md"))
+        assert len(md_files) == 5, "expected the 5 generic incident-report sections"
+        assert not (template_dir / "6_appendix.md").exists()
 
     def test_render_templates_contain_jinja(self) -> None:
         from forensia.report.resources import render_templates_dir
@@ -184,12 +187,17 @@ def wheel_paths(tmp_path_factory: pytest.TempPathFactory) -> set[str]:
     """Build a fresh wheel in a temp dir and return its file listing."""
     repo_root = Path(__file__).resolve().parent.parent
     dist_dir = tmp_path_factory.mktemp("wheel-dist")
-    subprocess.check_call(
-        ["uv", "build", "--wheel", "--out-dir", str(dist_dir)],
-        cwd=repo_root,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    build_dir = repo_root / "build"
+    shutil.rmtree(build_dir, ignore_errors=True)
+    try:
+        subprocess.check_call(
+            ["uv", "build", "--wheel", "--out-dir", str(dist_dir)],
+            cwd=repo_root,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    finally:
+        shutil.rmtree(build_dir, ignore_errors=True)
     wheels = list(dist_dir.glob("*.whl"))
     assert wheels, "wheel not found after build"
     with zipfile.ZipFile(wheels[0]) as zf:
@@ -210,6 +218,7 @@ class TestWheelArtifact:
 
     def test_wheel_contains_report_templates(self, wheel_paths: set[str]) -> None:
         assert any("report/templates/1_overview.md" in p for p in wheel_paths)
+        assert not any("report/templates/6_appendix.md" in p for p in wheel_paths)
 
     def test_wheel_contains_jinja_templates(self, wheel_paths: set[str]) -> None:
         assert any("report/render/templates/report.html.j2" in p for p in wheel_paths)

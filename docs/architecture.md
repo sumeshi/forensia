@@ -199,13 +199,16 @@ The final Markdown is assembled by `build_report_markdown_from_db` ([report/rend
 Markdown templates under `report_template_dir` declare the layout per `section_key`. The standard set is:
 
 ```
-1_overview        · Executive Summary, Evidence Scope, Key Findings
-2_timeline        · Log Integrity, Chronological Events
-3_technical       · Systems and Accounts, Execution and Persistence, Network Activity
-4_gaps            · Evidence Gaps, Recommended Next Steps
-5_recommendations · Immediate Actions, Short-Term Improvements, Long-Term Initiatives
-6_appendix        · Structured answers (Q1, Q2, ...)
+1_overview        · Executive Summary, Classification, Scope, Impact, Key Findings, Conclusion
+2_timeline        · Time Basis, Log Integrity, Phase Summary, Chronological Events
+3_technical       · Incident Progression, Systems/Accounts, Execution, Network, Files, Antiforensics
+4_gaps            · Limitations, Unresolved/Untestable Hypotheses, Evidence Gaps, Follow-up
+5_recommendations · Containment, Action Plan, Eradication/Recovery, Risk Reduction, Residual Risk
 ```
+
+The bundled generic report intentionally ends at section 5. `6_appendix` is an
+optional external-template convention used by the benchmark to render structured
+questions; it is not copied into ordinary cases or exported with bundled defaults.
 
 Each section is decomposed into multiple **blocks** (heading units) and processed sequentially by `run_section_block_agent` ([ai/sections/section_agent.py](../src/forensia/ai/sections/section_agent.py)).
 
@@ -226,7 +229,8 @@ Each section is decomposed into multiple **blocks** (heading units) and processe
 
 ### 3.3 Structured Answer
 
-Each question in the `6_appendix` section is processed as a structured answer.
+When an external template set defines `6_appendix`, each question in that section
+is processed as a structured answer.
 
 | Step | Location |
 |---|---|

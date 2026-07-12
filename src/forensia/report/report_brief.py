@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 from typing import Any
 
 from forensia.core.case import Case
@@ -15,10 +14,6 @@ from forensia.db.query import fetch_records, normalize_value
 from forensia.report.benign_auth import finding_is_auth_scoped, is_benign_local_auth
 from forensia.report.evidence_refs import (
     _extract_evidence_ids_from_value,
-)
-from forensia.report.ranking import (
-    load_top_findings_priority_keywords,
-    priority_rank,
 )
 from forensia.report.render.markdown import (
     _render_timestamp_with_timezone,
@@ -31,8 +26,6 @@ from forensia.report.sections.section_store import _claim_text_key
 def _query_top_findings(
     db: CaseDB,
     limit: int = 8,
-    *,
-    priority_keywords: list[list[str]] | None = None,
 ) -> list[dict[str, Any]]:
     rows = fetch_records(
         db,
@@ -67,21 +60,6 @@ def _query_top_findings(
         """,
         (max(limit * 6, limit),),
     )
-    # Presentation policy supplied by the active template set (report/ranking.py):
-    # when it declares a priority-keyword ordering, regroup the severity-ranked
-    # rows into those narrative tiers. The stable sort keeps the generic
-    # severity / confidence order within each tier, and with no policy the rows
-    # keep the case-agnostic default order — so an external question sheet's narrative order
-    # lives in its overview template's frontmatter, not in this core query.
-    if priority_keywords:
-        rows = sorted(
-            rows,
-            key=lambda r: priority_rank(
-                f"{r.get('finding_id', '')} {r.get('title', '')} "
-                f"{r.get('summary', '')}",
-                priority_keywords,
-            ),
-        )
     # RPT-04: a self-referential machine account ("<COMPUTER>$") using explicit
     # credentials (4648) locally on its own host is normal Windows behavior
     # (e.g. winlogon.exe credential prompts), not a lateral-movement signal.
@@ -346,23 +324,13 @@ def _annotate_confirmed_hypotheses(
 def _build_report_brief(
     db: CaseDB,
     case: Case | None = None,
-    *,
-    template_dir: Path | str | None = None,
 ) -> dict[str, Any]:
     """Assemble a structured brief of top findings, hypotheses, section excerpts, and coverage data for LLM context."""
     tz_name = getattr(case, "source_timezone", "UTC") if case else "UTC"
     tz_offset = _tz_offset_str(tz_name) if tz_name != "UTC" else ""
-    # The leading-thesis ordering policy travels with the active template set,
-    # not with this core builder (report/ranking.py). Fall back to the case's
-    # bundled templates when an explicit dir is not threaded in.
-    resolved_template_dir = template_dir or (
-        getattr(case, "report_template_dir", None) if case else None
-    )
-    priority_keywords = load_top_findings_priority_keywords(resolved_template_dir)
     return {
         "top_findings": [
-            normalize_value(item)
-            for item in _query_top_findings(db, priority_keywords=priority_keywords)
+            normalize_value(item) for item in _query_top_findings(db)
         ],
         "active_hypotheses": [
             normalize_value(item) for item in _query_hypotheses_by_status(db, "active")
@@ -390,10 +358,10 @@ def _build_report_brief(
 
 
 def write_report_brief(
-    case: Case, db: CaseDB, *, template_dir: Path | str | None = None
+    case: Case, db: CaseDB
 ) -> dict[str, Any]:
     """Write the report brief to reports/report_brief.json and return the dict."""
-    brief = _build_report_brief(db, case, template_dir=template_dir)
+    brief = _build_report_brief(db, case)
     overview_path = case.memory_dir / "overview.md"
     if overview_path.exists():
         overview_text = overview_path.read_text(encoding="utf-8")

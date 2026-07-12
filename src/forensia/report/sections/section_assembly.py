@@ -85,10 +85,20 @@ def prepare_section_request(
                 "builder": "",
             }
         ]
+    def with_section_instructions(block_body: str) -> str:
+        if not template_meta.instructions:
+            return block_body
+        return (
+            "<!-- section_instructions:\n"
+            f"{template_meta.instructions}\n"
+            "-->\n"
+            f"{block_body}"
+        )
+
     block_requests = [
         {
             "heading": block["heading"],
-            "template_body": block["template_body"],
+            "template_body": with_section_instructions(block["template_body"]),
             "evidence_keypoints": list(block.get("evidence_keypoints") or []),
             "mode": str(block.get("mode") or ""),
             "question_id": str(block.get("question_id") or ""),

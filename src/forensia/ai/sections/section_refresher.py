@@ -445,11 +445,7 @@ async def async_refresh_report_sections(
     """
     prior_filled = load_report_sections_map(db)
     ensure_universal_question_probes(case, db)
-    # The active template set governs the leading-thesis ranking policy
-    # (report/ranking.py reads it from the section templates' frontmatter), so
-    # pass the dir the templates were loaded from rather than letting core decide.
-    active_template_dir = template_paths[0].parent if template_paths else None
-    report_brief = write_report_brief(case, db, template_dir=active_template_dir)
+    report_brief = write_report_brief(case, db)
     memory = MemoryManager(
         case,
         summarize=lambda messages, m: chat_completion(

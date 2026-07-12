@@ -854,12 +854,12 @@ class SectionFinalizeTests(unittest.TestCase):
         sorted_body = sort_markdown_table_by_first_column(body)
         self.assertLess(sorted_body.find("09:00:00"), sorted_body.find("10:00:00"))
 
-    def test_export_packaged_templates_includes_appendix_template(self) -> None:
+    def test_export_packaged_templates_excludes_benchmark_appendix(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             written = export_packaged_report_templates(tmpdir, overwrite=True)
 
-            self.assertTrue(any(path.name == "6_appendix.md" for path in written))
-            self.assertTrue((Path(tmpdir) / "6_appendix.md").exists())
+            self.assertFalse(any(path.name == "6_appendix.md" for path in written))
+            self.assertFalse((Path(tmpdir) / "6_appendix.md").exists())
 
     def test_finalize_section_flags_duplicate_finding_mentions(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

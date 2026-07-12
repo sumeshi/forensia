@@ -93,7 +93,7 @@ class CaseSetupTests(unittest.TestCase):
     def test_export_packaged_report_templates_writes_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             written = export_packaged_report_templates(tmpdir)
-            self.assertGreaterEqual(len(written), 6)
+            self.assertGreaterEqual(len(written), 5)
             self.assertTrue((Path(tmpdir) / "1_overview.md").exists())
             self.assertTrue((Path(tmpdir) / "_formats" / "report.yaml").exists())
 

@@ -71,7 +71,7 @@ INSERTs into `section_evidence` happen in a single place: [`_store_section_evide
 
 `section_facts.source_section` takes:
 - A normal section key (e.g. `1_overview`)
-- The special value `__case_probe__` — the result of a universal_question (such as `last_human_logon`). By default it is filtered out by [`_load_reusable_section_facts`](../src/forensia/ai/sections/section_run_store.py) so it is not reused by other sections. Only `6_appendix` passes `include_case_probe=True`.
+- The special value `__case_probe__` — the result of a universal_question (such as `last_human_logon`). By default it is filtered out by [`_load_reusable_section_facts`](../src/forensia/ai/sections/section_run_store.py) so it is not reused by other sections. The optional external-template section `6_appendix` passes `include_case_probe=True`.
 
 ### 1.5 Review and audit
 

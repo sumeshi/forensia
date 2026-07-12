@@ -101,7 +101,6 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 | [src/forensia/report/answers/answer_store.py](../src/forensia/report/answers/answer_store.py) | Structured answer normalization, Markdown rendering, JSON/CSV persistence (`reports/structured/`) |
 | [src/forensia/report/answers/answer_registry.py](../src/forensia/report/answers/answer_registry.py) + [answer_builders_*.py](../src/forensia/report/answers/) | Deterministic answer builders (host / artifact questions) + universal question probes |
 | [src/forensia/report/report_brief.py](../src/forensia/report/report_brief.py) | `report_brief.json` builder (LLM context summary) |
-| [src/forensia/report/ranking.py](../src/forensia/report/ranking.py) | `brief.top_findings.ranking` frontmatter policy interpreter + packaged-template policy audit |
 | [src/forensia/report/render/markdown.py](../src/forensia/report/render/markdown.py) | Markdown table utilities, timestamp rendering with timezone |
 | [src/forensia/report/render/html.py](../src/forensia/report/render/html.py) | Markdown → HTML rendering + report page build (jinja2 templates in [templates/](../src/forensia/report/render/templates/)) |
 | [src/forensia/report/evidence_refs.py](../src/forensia/report/evidence_refs.py) / [evidence_map.py](../src/forensia/report/render/evidence_map.py) | evidence_id patterns / evidence map export |

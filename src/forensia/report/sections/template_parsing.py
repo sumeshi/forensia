@@ -12,6 +12,7 @@ from typing import Any
 @dataclass(frozen=True)
 class TemplateMeta:
     behaviors: tuple[str, ...] = ()
+    instructions: str = ""
 
 
 GAP_PATTERN = re.compile(
@@ -55,7 +56,8 @@ def parse_template(template_path: str) -> tuple[str, TemplateMeta]:
     else:
         body = text.strip()
     behaviors = tuple(meta.get("behaviors") or [])
-    return body, TemplateMeta(behaviors=behaviors)
+    instructions = str(meta.get("instructions") or "").strip()
+    return body, TemplateMeta(behaviors=behaviors, instructions=instructions)
 
 
 def parse_block_hints(block_body: str) -> dict[str, Any]:

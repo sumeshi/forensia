@@ -47,6 +47,29 @@ class TableRenderingTests(unittest.TestCase):
         self.assertEqual("Q6", separate["answer_id"])
         self.assertEqual("host_identity", separate["answer_spec"])
 
+    def test_section_instructions_reach_each_llm_block(self) -> None:
+        from forensia.report.sections.section_assembly import prepare_section_request
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            template = case.path / "custom.md"
+            template.write_text(
+                "---\ninstructions: |\n  Separate facts from assessments.\n"
+                "---\n# Report\n\n## Finding\n<!-- mode: narrative -->\n",
+                encoding="utf-8",
+            )
+            with CaseDB(case) as db:
+                request = prepare_section_request(case, db, template, {})
+
+        self.assertEqual(
+            "Separate facts from assessments.",
+            request["template_meta"].instructions,
+        )
+        block_body = request["block_requests"][0]["template_body"]
+        self.assertIn("section_instructions", block_body)
+        self.assertIn("Separate facts from assessments.", block_body)
+        self.assertIn("<!-- mode: narrative -->", block_body)
+
     def test_async_render_section_blocks_renders_table_mode_without_llm(self) -> None:
         """The async render path (used by the investigate loop)
         must execute table builders deterministically instead of routing table

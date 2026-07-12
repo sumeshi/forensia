@@ -135,23 +135,25 @@ def _doctor_verdict_taxonomy_check() -> tuple[str, bool]:
 
 
 def _doctor_report_template_policy_check() -> tuple[str, bool]:
-    _status("Report template policy...")
+    _status("Report template contract...")
     try:
-        from forensia.report.ranking import audit_packaged_report_templates
+        from forensia.report.resources import report_templates_dir
+        from forensia.report.sections.template_parsing import parse_template
 
-        problems = audit_packaged_report_templates()
+        problems = []
+        for path in sorted(report_templates_dir().glob("[0-9]*_*.md")):
+            _body, meta = parse_template(str(path))
+            if not meta.instructions:
+                problems.append(f"{path.name}: missing section instructions")
         ok = not problems
         if ok:
-            print("  ✓ Packaged templates carry no case-specific ranking policy")
+            print("  ✓ Packaged templates include editable section instructions")
         else:
-            print(
-                "  ✗ Case-specific policy / malformed frontmatter in packaged "
-                "templates:\n" + "\n".join(f"      - {p}" for p in problems)
-            )
-        return "Report template policy", ok
+            print("  ✗ Invalid packaged templates:\n" + "\n".join(f"      - {p}" for p in problems))
+        return "Report template contract", ok
     except Exception as exc:
         print(f"  ✗ Error: {exc}")
-        return "Report template policy", False
+        return "Report template contract", False
 
 
 def _doctor_report_validation_self_check() -> tuple[str, bool]:
