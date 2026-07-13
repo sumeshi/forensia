@@ -18,7 +18,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # On a published release, fail fast if the tag does not match the version
       # declared in pyproject.toml, so we never upload a mismatched artifact.
@@ -52,7 +52,7 @@ jobs:
 
       # --- Quality gate, then build sdist + wheel ---
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
       - name: Sync dependencies (Python 3.14 + dev group)
         run: uv sync --dev
       - name: Quality gate (ruff + doctor)
