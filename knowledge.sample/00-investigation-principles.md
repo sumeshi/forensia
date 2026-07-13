@@ -1,44 +1,43 @@
 ---
 type: knowledge
-title: イベントログ調査の原則
-description: Windowsイベントログ調査の前提・目的設定・スコープの切り方に関する一般原則。
+title: Event log investigation principles
+description: General principles for Windows event log investigations — assumptions, goal setting, and how to scope the work.
 tags: [windows, eventlog, methodology, principles]
 timestamp: 2026-07-13
 ---
-# イベントログ調査の原則
+# Event log investigation principles
 
-## 前提
+## Assumptions
 
-- イベントログは残存しているものしかわからない。デフォルトで記録されないイベントも多く（監査ポリシー依存）、古いイベントはローテート設定次第で上書きされる。侵害者によって削除される場合もある。
-- 残存ログを単独で事実として扱わず、他のアーティファクト（MFT、Prefetchなど）と突合しながら仮説を立て、検証する。
-- Securityログは上書きが早い。数時間分しか残っていないケースもある（ログオン失敗で埋め尽くされている等）。
-- ログの欠落を安易に「侵害者による削除」と断定しない。まずローテート設定・保持期間を確認する。
+- Event logs only show what survived. Many events are not recorded by default (audit-policy dependent), old events are overwritten depending on rotation settings, and an intruder may have deleted logs.
+- The Security log rotates quickly. In some cases only a few hours remain (e.g. flooded with failed logons).
+- Do not casually conclude that missing logs mean "deleted by the intruder". Check rotation settings and retention first.
 
-## 目的の明確化
+## Clarify the goal
 
-何を確かめたいのかわからないままログ調査はできない。調査目的をブレイクダウンする。
+You cannot investigate logs without knowing what you are trying to confirm. Break the investigation goal down:
 
-- 侵害は発生したのか（検知）
-- どこから侵入したのか（初期侵入）
-- どのように拡大したのか（横展開・持続化）
-- 何をされたのか（活動内容）
-- 何が影響を受けたのか（影響範囲）
-- なぜそれが可能だったのか（原因）
+- Did a compromise occur? (detection)
+- Where did the intruder get in? (initial access)
+- How did it spread? (lateral movement / persistence)
+- What was done? (activity)
+- What was affected? (impact)
+- Why was it possible? (root cause)
 
-「情報漏洩があったか」を知りたい場合、ログに「漏洩した」と書かれることはない。見るべきは、不審なログオン、ファイルアクセス、外部通信、リムーバブルメディア接続、管理共有アクセス、不審ツール実行など、漏洩につながる行動の痕跡である。
+If the question is "was data exfiltrated?", no log will say "data was exfiltrated". Look for the behaviors that lead to exfiltration: suspicious logons, file access, outbound connections, removable media, admin share access, suspicious tool execution.
 
-## スコープ
+## Scope
 
-最初にスコープを切る。足りなければ結果を見て広げればよい。
+Cut the scope first. If it turns out too narrow, widen it based on what you find.
 
-- どのホスト（サーバ / クライアント）
-- どの期間（侵害があったと思われる期間）
-- どのログ（Security / System / PowerShell / TaskScheduler など）
-- どのユーザ（管理者 / 一般 / サービスアカウント）
-- どのイベントID
+- Which hosts (servers / clients)
+- Which period (the suspected compromise window)
+- Which logs (Security / System / PowerShell / TaskScheduler, etc.)
+- Which users (administrators / regular users / service accounts)
+- Which event IDs
 
-## 調査の進め方
+## How to proceed
 
-- 網羅的に拾うのではなく「とっかかり」を見つける。起点となる怪しいイベントが分かれば、その前後の時系列を追う。
-- 調査開始時に、どのログがいつからいつまで残っているのかを一覧化する。「不審なログオンなし」と報告する前に、Securityログの残存期間を必ず確認する。
-- 平時にその機器がどう使われ、どんなイベントが記録されるかを把握することがノイズ削減の第一歩。
+- Do not try to collect everything; find a foothold. Once you have a suspicious starting event, follow the timeline around it.
+- At the start, list which logs exist and what period each covers. Before reporting "no suspicious logons", always check how far back the Security log goes.
+- Knowing how the machine is used in normal times, and which events it records, is the first step in cutting noise.

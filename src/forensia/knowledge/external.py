@@ -35,11 +35,18 @@ class KnowledgeDoc:
 
 @dataclass(frozen=True)
 class KnowledgeSection:
-    """One ``##``-delimited section extracted from a knowledge file."""
+    """One ``##``-delimited section extracted from a knowledge file.
+
+    ``title`` and ``summary`` carry the parent document's frontmatter so a
+    section can be injected as a self-contained fragment without exposing
+    file names or tags to the LLM.
+    """
 
     doc_name: str
     heading: str  # "" for lead text before the first ##
     text: str
+    title: str = ""
+    summary: str = ""
 
 
 def set_knowledge_docs(docs: list[KnowledgeDoc]) -> None:
@@ -113,43 +120,40 @@ def load_body(doc: KnowledgeDoc) -> str:
     return parts[2]
 
 
-def split_sections(doc_name: str, body: str) -> list[KnowledgeSection]:
+def split_sections(
+    doc_name: str, body: str, *, title: str = "", summary: str = ""
+) -> list[KnowledgeSection]:
     """Split *body* into sections at ``## `` headings.
 
     Text before the first ``##`` heading is included as a section with
     ``heading=""`` (the lead paragraph).  ``#`` (h1) headings are treated
-    as ordinary body text.
+    as ordinary body text.  *title* and *summary* (the parent document's
+    frontmatter) are attached to every section.
     """
     sections: list[KnowledgeSection] = []
     current_heading: str | None = None
     current_lines: list[str] = []
 
+    def _flush() -> None:
+        text = "\n".join(current_lines).strip()
+        if current_heading is not None or text:
+            sections.append(
+                KnowledgeSection(
+                    doc_name=doc_name,
+                    heading="" if current_heading is None else current_heading,
+                    text=text,
+                    title=title,
+                    summary=summary,
+                )
+            )
+
     for line in body.splitlines():
         if line.startswith("## "):
-            # flush previous
-            text = "\n".join(current_lines).strip()
-            if current_heading is not None or text:
-                sections.append(
-                    KnowledgeSection(
-                        doc_name=doc_name,
-                        heading="" if current_heading is None else current_heading,
-                        text=text,
-                    )
-                )
+            _flush()
             current_heading = line[3:].strip()
             current_lines = []
         else:
             current_lines.append(line)
 
-    # flush last
-    text = "\n".join(current_lines).strip()
-    if current_heading is not None or text:
-        sections.append(
-            KnowledgeSection(
-                doc_name=doc_name,
-                heading="" if current_heading is None else current_heading,
-                text=text,
-            )
-        )
-
+    _flush()
     return sections

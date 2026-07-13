@@ -126,6 +126,8 @@ def _inject_org_knowledge(
                             doc_name=sec.doc_name,
                             heading=sec.heading,
                             text=compacted,
+                            title=sec.title,
+                            summary=sec.summary,
                         )
                     )
                     break

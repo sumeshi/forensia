@@ -1,60 +1,60 @@
 ---
 type: knowledge
-title: プロセス実行・永続化イベント
-description: プロセス作成、PowerShell、WMI、サービス、スケジュールタスク、アカウント操作の主要イベントID。
+title: Process execution and persistence events
+description: Key event IDs for process creation, PowerShell, WMI, services, scheduled tasks, and account manipulation.
 tags: [windows, eventlog, execution, powershell, wmi, service, scheduled-task, persistence, account]
 timestamp: 2026-07-13
 ---
-# プロセス実行・永続化イベント
+# Process execution and persistence events
 
-## プロセス実行
+## Process execution
 
 - Security.evtx
-  - 4688: プロセス作成 / 4689: プロセス終了
+  - 4688: process creation / 4689: process termination
 
-4688は「Audit Process Creation」有効時のみ記録。コマンドラインは別途「Include command line in process creation events」の有効化が必要。無効環境が多いので、記録されていれば儲けもの。
+4688 is recorded only when "Audit Process Creation" is enabled. Command lines additionally require "Include command line in process creation events". Many environments have this disabled, so treat its presence as a bonus.
 
 ## PowerShell
 
-設定依存だが、記録されていれば必ず見る。定期実行によるノイズに注意。
+Configuration-dependent, but always check it when recorded. Watch out for noise from scheduled executions.
 
 - Windows PowerShell.evtx
-  - 400: エンジン開始 / 403: エンジン終了
+  - 400: engine started / 403: engine stopped
 - Microsoft-Windows-PowerShell%4Operational.evtx
-  - 4103: モジュールログ
-  - 4104: スクリプトブロックログ（実行内容そのものが残る。最重要）
+  - 4103: module logging
+  - 4104: script block logging (records the executed content itself; the most important)
 
 ## WMI
 
-ノイズ多め。永続化（EventFilter/Consumer）に使われることがある。
+Noisy. Sometimes used for persistence (EventFilter/Consumer).
 
 - Microsoft-Windows-WMI-Activity%4Operational.evtx
-  - 5857: WMI操作開始 / 5858: WMIクエリ失敗
+  - 5857: WMI operation started / 5858: WMI query failed
 
-## サービス変更
+## Service changes
 
-PsExec系ツール、永続化、EDR/AV停止、バックアップ製品停止の痕跡が残ることがある。
+May hold traces of PsExec-style tools, persistence, EDR/AV shutdown, and backup product shutdown.
 
 - Security.evtx
-  - 4697: サービスインストール
+  - 4697: service installed
 - System.evtx
-  - 7036: サービス開始/停止 / 7040: 開始種別変更 / 7045: サービスインストール
+  - 7036: service start/stop / 7040: start type changed / 7045: service installed
 
-## スケジュールタスク
+## Scheduled tasks
 
-マルウェアの永続化・遅延実行の定番。タスク名、実行コマンド、作成者、作成時刻を見る。
+A staple for malware persistence and delayed execution. Check task name, command, author, and creation time.
 
 - Security.evtx
-  - 4698: 作成 / 4699: 削除 / 4700: 有効化 / 4701: 無効化 / 4702: 更新
+  - 4698: created / 4699: deleted / 4700: enabled / 4701: disabled / 4702: updated
 - Microsoft-Windows-TaskScheduler%4Operational.evtx
-  - 106: 登録 / 141: 削除 / 129: プロセス作成 / 100: 開始 / 102: 完了
+  - 106: registered / 141: deleted / 129: process created / 100: started / 102: completed
 
-## アカウント・グループ・ポリシー変更
+## Account, group, and policy changes
 
-長期侵害では不審なアカウントが追加されていることが多い（MITRE T1136）。
+In long-term compromises a suspicious account has often been added (MITRE T1136).
 
 - Security.evtx
-  - 4720: アカウント作成 / 4722: 有効化 / 4726: 削除
-  - 4723 / 4724: パスワード変更・リセット試行
-  - 4728 / 4732 / 4756: グループへのメンバー追加（特に管理者グループ）
-  - 4719: 監査ポリシー変更 / 4740: ロックアウト
+  - 4720: account created / 4722: enabled / 4726: deleted
+  - 4723 / 4724: password change / reset attempts
+  - 4728 / 4732 / 4756: member added to a group (especially administrator groups)
+  - 4719: audit policy changed / 4740: account locked out

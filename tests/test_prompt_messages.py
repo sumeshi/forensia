@@ -581,7 +581,45 @@ def test_section_knowledge_selection_uses_latest_missing_question(tmp_path: Path
         )
     finally:
         set_knowledge_docs([])
-    assert "log-clearing" in system
+    # The fragment shows the document title, not the file name.
+    assert "Event 1102 log clearing" in system
+    assert "log-clearing" not in system
+
+
+def test_section_knowledge_llm_compaction_preserves_fragment_metadata(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from forensia.ai.sections.section_block_plan import _inject_org_knowledge
+    from forensia.knowledge.external import scan_knowledge_dir, set_knowledge_docs
+
+    (tmp_path / "log-clearing.md").write_text(
+        "---\ntype: knowledge\ntitle: Event 1102 log clearing\n"
+        "description: Security log removal reference\ntags: [windows]\n---\n"
+        "## Event 1102\n" + ("Check event 1102 and adjacent service events.\n" * 200),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "forensia.ai.compaction.llm_compact",
+        lambda text, budget, **kwargs: "Check event 1102 and adjacent service events.",
+    )
+    set_knowledge_docs(scan_knowledge_dir(tmp_path))
+    try:
+        ctx = SimpleNamespace(
+            title="Technical assessment",
+            block_heading="Open questions",
+            template_tags=("windows",),
+            base_url="http://llm.invalid",
+            model="test-model",
+        )
+        system = _inject_org_knowledge(
+            "SYSTEM\n", ctx, focus_terms=["event 1102 log clearing"]
+        )
+    finally:
+        set_knowledge_docs([])
+
+    assert "Topic: Event 1102 log clearing" in system
+    assert "Summary: Security log removal reference" in system
+    assert "log-clearing.md" not in system
 
 
 def test_prior_section_runs_keep_prefiltered_and_matching_history() -> None:

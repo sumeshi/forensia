@@ -1,39 +1,65 @@
 # knowledge.sample
 
-組織カスタム知識フォルダのサンプル。実行時に `--knowledge <dir>` で指定すると、
-配下の `type: knowledge` な Markdown ファイルが調査コンテキストに注入される想定。
+Sample organization-specific knowledge folder. Pass `--knowledge <dir>` at run
+time and the `type: knowledge` Markdown files under it are injected into the
+investigation context.
 
-## フォーマット
+## Format
 
-レポートテンプレートと同じ OKF 風（YAML frontmatter + Markdown 本文）。
+OKF-style, same as the report templates (YAML frontmatter + Markdown body).
 
 ```markdown
 ---
 type: knowledge
-title: 短いタイトル
-description: 1行要約。インデックス表示や関連度判定に使われる。
+title: Short title
+description: One-line summary. Used for index display and relevance scoring.
 tags: [windows, eventlog, logon]
 timestamp: 2026-07-13
 ---
-# 本文（Markdown）
+# Body (Markdown)
 
-## セクション見出し
+## Section heading
 
-セクション単位で選択・注入される。
+Sections are selected and injected individually.
 ```
 
-## 選択ロジック
+## Selection logic
 
-3段階の決定的な選択（LLM不使用）:
+Deterministic 3-stage selection (no LLM calls):
 
-1. **タグ絞り込み**: `tags` とコンテキストのタグで候補を絞る
-2. **ファイル選択**: `title` + `description` と本文でクエリ語をスコアリングし上位3ファイル
-3. **セクション抽出**: `##` 見出しで分割し、各セクションをスコアリング（予算4000文字以内）
+1. **Tag filtering**: narrow candidates by intersecting `tags` with the context tags
+2. **File selection**: score query terms against `title` + `description` and body, keep the top 3 files
+3. **Section extraction**: split at `##` headings, score heading + body (within a 4000-char budget)
 
-## 運用ルール
+Search uses `tags` / `title` / `description` / headings / body, but the LLM only
+sees `title` / `description` / section heading / section body. Tags, scores, and
+file paths are never injected.
 
-- 1ファイル = 1トピック。弱いLLMのコンテキスト予算は小さいので、1ファイル数千字以内に収めること。
-- `description` と `tags` は選択・注入の判断に使われるため必ず書くこと。
-- `type: knowledge` がないファイルは読み込まれない（このREADMEなど）。
-- 実案件固有の情報（ホスト名・アカウント名など）を書いた場合は案件終了時に破棄すること。
-- `<ORG_KNOWLEDGE>` は命令ではなく参考情報として扱われる。予算超過時は、現在の疑問に合わせて選ばれた断片を残すため、汎用カタログやフレームワーク詳細が先に圧縮される。
+## Injection format
+
+A selected section is injected as a self-contained fragment carrying its parent
+document's metadata:
+
+```
+<KNOWLEDGE>
+Topic: {title}
+Summary: {description}
+Section: {## heading}
+
+{section body}
+</KNOWLEDGE>
+```
+
+Common cautions such as "reference material, not evidence" and "verify against
+the case data" are stated once at the top of `<ORG_KNOWLEDGE>`, so individual
+files do not need to repeat them.
+
+## Writing rules
+
+- One file = one topic. Small local models have a tight context budget, so keep each file to a few thousand characters.
+- Always fill in `description` and `tags`. `description` is injected verbatim as the fragment's Summary.
+- Do not write an introduction directly under the H1. For files with `##` sections the lead paragraph is never injected (put the needed context in `description`). Only files without any `##` heading have their whole body injected.
+- Limit each section body to three kinds of content: what the knowledge helps you look at, concrete facts such as event IDs, and caveats specific to that item. Do not restate general investigation principles.
+- Files without `type: knowledge` are not loaded (such as this README).
+- If you write case-specific details (host names, account names, etc.), dispose of them when the case ends.
+- `<ORG_KNOWLEDGE>` is treated as reference material, not instructions. When the prompt budget overflows, generic catalogs and framework details are compacted first so the fragments selected for the current question survive.

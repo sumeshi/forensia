@@ -1,34 +1,31 @@
 ---
 type: knowledge
-title: SMB・横展開イベント
-description: 共有アクセス、管理共有、SMB経由のファイル操作・リモート操作の主要イベントID。
+title: SMB and lateral movement events
+description: Key event IDs for share access, administrative shares (ADMIN$, C$), and file/remote operations over SMB. Frequently abused in ransomware cases.
 tags: [windows, eventlog, smb, share, lateral-movement]
 timestamp: 2026-07-13
 ---
-# SMB・横展開イベント
-
-共有アクセス、管理共有（ADMIN$, C$）、SMB経由のリモート操作の痕跡を見る。
-ランサムウェア事案などで悪用されることが多いため要チェック。
+# SMB and lateral movement events
 
 ## Security.evtx
 
-- 5140: ネットワーク共有オブジェクトにアクセス
-- 5142 / 5143 / 5144: 共有の追加 / 変更 / 削除
-- 5145: 共有オブジェクト詳細アクセス（対象ファイル名・アクセス種別が残る）
+- 5140: network share object accessed
+- 5142 / 5143 / 5144: share added / modified / deleted
+- 5145: detailed share object access (target file name and access type are recorded)
 
-## Microsoft-Windows-SMBClient%4Connectivity.evtx（接続元側）
+## Microsoft-Windows-SMBClient%4Connectivity.evtx (source side)
 
-- 30800: サーバ名を解決できない
-- 30803: ネットワーク接続失敗
-- 30806: セッション再確立
+- 30800: server name could not be resolved
+- 30803: network connection failed
+- 30806: session re-established
 
-## Microsoft-Windows-SMBServer%4Security.evtx（接続先側）
+## Microsoft-Windows-SMBServer%4Security.evtx (destination side)
 
-- 551: SMBセッション認証失敗
-- 1006: 共有がアクセスを拒否
-- 1009: 匿名アクセスを拒否
+- 551: SMB session authentication failure
+- 1006: share denied access
+- 1009: anonymous access denied
 
-## 補足
+## Notes
 
-- 5140/5145 は監査設定依存。無効な環境も多い。
-- 接続先がWindows以外の可能性を示すもの: SMBClient%4Security.evtx の 32000 / 32002（SMBv1関連）。
+- 5140/5145 are audit-policy dependent. Many environments have them disabled.
+- Signals that the destination may not be Windows: 32000 / 32002 (SMBv1-related) in SMBClient%4Security.evtx.

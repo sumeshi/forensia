@@ -6,8 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from forensia.knowledge.external import KnowledgeDoc, scan_knowledge_dir
+from forensia.ai.prompts.prompt_context import _org_knowledge_guidance
+from forensia.knowledge.external import (
+    KnowledgeDoc,
+    KnowledgeSection,
+    scan_knowledge_dir,
+)
 from forensia.knowledge.retrieval import (
+    _section_overhead,
     knowledge_terms_for_hypothesis,
     select_snippets,
 )
@@ -43,7 +49,7 @@ class TestSelectSnippets:
         ]
 
     def test_char_budget_respected(self, sample_docs) -> None:
-        """Budget covers formatted size: '[doc #heading]' line + section text."""
+        """Budget covers formatted size: fragment header overhead + section text."""
         for budget in (500, 1000, 4000):
             snippets = select_snippets(
                 sample_docs,
@@ -51,26 +57,58 @@ class TestSelectSnippets:
                 tags=[],
                 char_budget=budget,
             )
-            total = sum(
-                len(s.doc_name) + len(s.heading) + 6 + len(s.text) for s in snippets
-            )
+            total = sum(_section_overhead(s) + len(s.text) for s in snippets)
+            total += max(0, len(snippets) - 1)
             assert total <= budget
 
-    def test_overflow_section_is_compacted_not_dropped(self, sample_docs) -> None:
+    def test_section_overhead_matches_rendered_fragment(self) -> None:
+        """Budget accounting matches the actual prompt fragment exactly."""
+        section = KnowledgeSection(
+            doc_name="source.md",
+            heading="Security.evtx",
+            text="BODY",
+            title="Logon events",
+            summary="Authentication reference",
+        )
+        rendered = _org_knowledge_guidance([section])
+        start = rendered.index("<KNOWLEDGE>")
+        end = rendered.index("</KNOWLEDGE>") + len("</KNOWLEDGE>")
+        fragment = rendered[start:end]
+        assert len(fragment) == _section_overhead(section) + len(section.text)
+
+    def test_combined_fragment_overhead_includes_joining_newline(self) -> None:
+        sections = [
+            KnowledgeSection("one.md", "One", "BODY 1", "Topic one", "Summary"),
+            KnowledgeSection("two.md", "Two", "BODY 2", "Topic two", "Summary"),
+        ]
+        rendered = _org_knowledge_guidance(sections)
+        start = rendered.index("<KNOWLEDGE>")
+        end = rendered.rindex("</KNOWLEDGE>") + len("</KNOWLEDGE>")
+        fragments = rendered[start:end]
+        expected = sum(_section_overhead(s) + len(s.text) for s in sections) + 1
+        assert len(fragments) == expected
+
+    def test_overflow_section_is_compacted_not_dropped(self, tmp_path: Path) -> None:
         """A section that overflows leftover budget is line-truncated, not skipped."""
         from forensia.core.compaction import TRUNCATION_MARKER
 
+        lines = "\n".join(f"- rdp detail line {i}" for i in range(100))
+        (tmp_path / "long.md").write_text(
+            "---\ntype: knowledge\ntitle: RDP long guide\n"
+            "description: RDP details\ntags: [rdp]\n---\n"
+            f"## RDP events\n{lines}\n",
+            encoding="utf-8",
+        )
         snippets = select_snippets(
-            sample_docs,
+            scan_knowledge_dir(tmp_path),
             query_terms=["rdp"],
             tags=[],
             char_budget=800,
         )
         assert snippets, "expected a compacted snippet within a small budget"
         assert any(s.text.endswith(TRUNCATION_MARKER) for s in snippets)
-        total = sum(
-            len(s.doc_name) + len(s.heading) + 6 + len(s.text) for s in snippets
-        )
+        total = sum(_section_overhead(s) + len(s.text) for s in snippets)
+        total += max(0, len(snippets) - 1)
         assert total <= 800
 
     def test_token_boundary_scoring(self) -> None:
@@ -143,9 +181,8 @@ class TestSelectSnippets:
         # Should still return something (fallback to all docs)
         assert len(snippets) > 0
 
-    def test_zero_score_lead_section_included(self, sample_docs) -> None:
-        """When no section has a hit, lead section (heading='') is included."""
-        # Use a very specific term that only appears in one doc's title/description
+    def test_sections_carry_parent_title_and_summary(self, sample_docs) -> None:
+        """Injected sections are self-contained: parent title/description attached."""
         snippets = select_snippets(
             sample_docs,
             query_terms=["rdp"],
@@ -153,8 +190,56 @@ class TestSelectSnippets:
             max_files=1,
             char_budget=10000,
         )
-        # At least one snippet from the rdp doc
-        assert any("rdp" in s.doc_name.lower() for s in snippets)
+        assert snippets
+        assert all(s.title for s in snippets)
+        assert all(s.summary for s in snippets)
+
+    def test_lead_used_only_for_docs_without_sections(self, tmp_path: Path) -> None:
+        """A doc with no ## sections still contributes its lead paragraph."""
+        path = tmp_path / "leadonly.md"
+        path.write_text(
+            "---\ntype: knowledge\ntitle: RDP quick note\n"
+            "description: RDP note without sections\ntags: [rdp]\n---\n"
+            "RDP lead-only prose.\n",
+            encoding="utf-8",
+        )
+        snippets = select_snippets(
+            scan_knowledge_dir(tmp_path), query_terms=["rdp"], tags=["rdp"]
+        )
+        assert snippets
+        assert all(s.heading == "" for s in snippets)
+
+    def test_lead_never_injected_alongside_sections(self, tmp_path: Path) -> None:
+        """When a doc has ## sections, its lead paragraph is not injected even
+        if it matches: the document description covers that context."""
+        path = tmp_path / "withlead.md"
+        path.write_text(
+            "---\ntype: knowledge\ntitle: RDP guide\n"
+            "description: RDP guide with lead\ntags: [rdp]\n---\n"
+            "RDP lead prose that matches the query.\n\n"
+            "## RDP checks\nRDP evidence details.\n",
+            encoding="utf-8",
+        )
+        snippets = select_snippets(
+            scan_knowledge_dir(tmp_path), query_terms=["rdp"], tags=["rdp"]
+        )
+        assert snippets
+        assert all(s.heading == "RDP checks" for s in snippets)
+
+    def test_heading_counts_toward_section_score(self, tmp_path: Path) -> None:
+        """A term appearing only in a ## heading still selects that section."""
+        path = tmp_path / "headhit.md"
+        path.write_text(
+            "---\ntype: knowledge\ntitle: Event guide\n"
+            "description: Windows events\ntags: [windows]\n---\n"
+            "## RDP\n- 4778: reconnect\n\n"
+            "## Other\n- unrelated\n",
+            encoding="utf-8",
+        )
+        snippets = select_snippets(
+            scan_knowledge_dir(tmp_path), query_terms=["rdp"], tags=[]
+        )
+        assert [s.heading for s in snippets] == ["RDP"]
 
     def test_lead_section_excluded_when_heading_matches(self, tmp_path: Path) -> None:
         path = tmp_path / "focused.md"

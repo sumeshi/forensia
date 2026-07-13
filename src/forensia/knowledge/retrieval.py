@@ -6,8 +6,10 @@ Stage 2 – File selection: score docs by query-term hits in title+description,
           then in body (top-K=20 only).  Select *max_files* by total score.
           Zero-score files are never selected.
 Stage 3 – Section extraction: split selected files into ``##`` sections,
-          score each by query-term hits, keep up to *max_sections_per_file*
-          within *char_budget*.
+          score each by query-term hits in heading+text, keep up to
+          *max_sections_per_file* within *char_budget*.  Each kept section
+          carries the parent document's title and description so it can be
+          injected as a self-contained fragment.
 
 All matching is case-insensitive substring.  Ties are broken by path
 ascending.  No LLM calls are made.
@@ -28,6 +30,19 @@ from forensia.knowledge.external import (
 
 # Sections smaller than this are not worth compacting into leftover budget.
 _MIN_COMPACT_CHARS = 200
+
+
+def _section_overhead(sec: KnowledgeSection) -> int:
+    """Exact formatted overhead of one ``<KNOWLEDGE>`` block."""
+    lines = ["<KNOWLEDGE>", f"Topic: {sec.title or sec.doc_name}"]
+    if sec.summary:
+        lines.append(f"Summary: {sec.summary}")
+    if sec.heading:
+        lines.append(f"Section: {sec.heading}")
+    # The first empty string is the blank line before the body; the second
+    # stands in for the body itself so only formatting overhead is counted.
+    lines.extend(("", "", "</KNOWLEDGE>"))
+    return len("\n".join(lines))
 
 
 @lru_cache(maxsize=1024)
@@ -129,20 +144,22 @@ def select_snippets(
         if budget_exhausted:
             break
         body = load_body(doc)
-        sections = split_sections(doc.name, body)
+        sections = split_sections(
+            doc.name, body, title=doc.title, summary=doc.description
+        )
 
-        # score each section
+        # score each section (heading counts: "## Security.evtx" should match)
         section_scores: list[tuple[int, KnowledgeSection]] = []
         for sec in sections:
-            score = _score_text(sec.text, terms)
+            score = _score_text(f"{sec.heading}\n{sec.text}", terms)
             section_scores.append((score, sec))
 
-        # Use the lead only as a fallback when no actual section matched.
-        # Including it alongside matching sections spends budget on unrelated
-        # prose and contradicts the Stage-3 selection contract.
-        matching_sections = [item for item in section_scores if item[0] > 0]
-        if matching_sections:
-            section_scores = matching_sections
+        # The lead paragraph is never injected alongside ``##`` sections: the
+        # document description already provides that context in the fragment
+        # header.  It is used only when the document has no ``##`` sections.
+        headed = [item for item in section_scores if item[1].heading]
+        if headed:
+            section_scores = [item for item in headed if item[0] > 0]
         else:
             section_scores = [item for item in section_scores if item[1].heading == ""]
 
@@ -153,7 +170,9 @@ def select_snippets(
         for score, sec in section_scores:
             if picked >= max_sections_per_file:
                 break
-            header_len = len(sec.doc_name) + len(sec.heading) + 6  # "[.. #..]\n"
+            # ``_org_knowledge_guidance`` joins adjacent fragments with one
+            # newline, which is part of the combined formatted output.
+            header_len = _section_overhead(sec) + (1 if result else 0)
             remaining = char_budget - total_chars - header_len
             if len(sec.text) > remaining:
                 # Stage-1 compaction: fit the section into the leftover
@@ -166,6 +185,8 @@ def select_snippets(
                                 doc_name=sec.doc_name,
                                 heading=sec.heading,
                                 text=compacted,
+                                title=sec.title,
+                                summary=sec.summary,
                             )
                         )
                         total_chars += header_len + len(compacted)

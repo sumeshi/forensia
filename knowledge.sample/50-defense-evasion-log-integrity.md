@@ -1,52 +1,52 @@
 ---
 type: knowledge
-title: 防御回避・ログ完全性イベント
-description: Defender検知・無効化、ログクリア、ログローテート、時刻変更・電源イベントの主要イベントIDと解釈。
+title: Defense evasion and log integrity events
+description: Key event IDs and interpretation for Defender detections/disabling, log clearing, log rotation, and time/power events.
 tags: [windows, eventlog, defender, log-tampering, anti-forensics, log-rotation, integrity]
 timestamp: 2026-07-13
 ---
-# 防御回避・ログ完全性イベント
+# Defense evasion and log integrity events
 
 ## Microsoft Defender
 
-検知名、対象パス、実行された処理、防御機能がいつ止められたかを見る。
-「検知はしたが駆除・隔離されず実行されてしまった」事例もそこそこある。evtxファイル名は環境によって異なることがある。
+Check detection names, target paths, actions taken, and when protection was turned off.
+Cases where "it was detected but executed anyway without removal or quarantine" are not rare. The evtx file name can differ by environment.
 
 - Microsoft-Windows-Windows Defender%4Operational.evtx
-  - 1116: マルウェア検出
-  - 1117: 脅威に対する処理を実行
-  - 5001: リアルタイム保護が無効化された
+  - 1116: malware detected
+  - 1117: action taken against a threat
+  - 5001: real-time protection disabled
 
-## ログクリア・痕跡削除
+## Log clearing and trace removal
 
 - Security.evtx
-  - 1102: Securityログクリア
-  - 1100: Event Logサービスのシャットダウン
-  - 1101: 監査イベントの破棄
+  - 1102: Security log cleared
+  - 1100: Event Log service shutdown
+  - 1101: audit events dropped
 - System.evtx
-  - 104: その他ログのクリア
+  - 104: other log cleared
 
-## ログローテート
+## Log rotation
 
-ログ欠落の原因判断に使う。Channelごとに最大容量と満杯時挙動が設定される。
+Use this to explain missing logs. Each channel has a maximum size and a when-full behavior.
 
-- 「必要に応じて上書き」: FIFOで古い領域を再利用。RecordIDの古い番号が欠落して見える。侵害者による削除と混同しないこと。
-- 「満杯時にアーカイブ」: Securityログに 1105 が記録される。
-- 「上書きしない」: 満杯以降記録されない。Securityログに 1104 が記録される。
-
-- Security.evtx
-  - 1104: セキュリティログが満杯
-  - 1105: イベントログが自動バックアップされた
-
-## 時刻・電源・再起動
-
-ログの時刻設定と、電源状態と他の痕跡の齟齬を見る。電源が落ちているはずの時刻に記録があれば、どちらかがおかしい。
+- "Overwrite as needed": FIFO reuse of the oldest area. Old RecordIDs appear to be missing. Do not confuse this with deletion by an intruder.
+- "Archive when full": event 1105 is recorded in the Security log.
+- "Do not overwrite": nothing is recorded once full. Event 1104 is recorded in the Security log.
 
 - Security.evtx
-  - 4616: システム時刻が変更された
+  - 1104: security log is full
+  - 1105: event log was automatically backed up
+
+## Time, power, and reboot
+
+Check the log's clock settings and mismatches between power state and other traces. If something is recorded at a time when the machine should have been off, one of the two is wrong.
+
+- Security.evtx
+  - 4616: system time was changed
 - System.evtx
-  - 12: OS起動 / 13: シャットダウン開始
-  - 41: 正常シャットダウンなしの再起動
-  - 1074: プロセス/ユーザによるシャットダウン・再起動
-  - 6005 / 6006: Event Logサービス開始 / 停止
-  - 6008: 直前のシャットダウンが予期しないもの
+  - 12: OS started / 13: shutdown started
+  - 41: reboot without clean shutdown
+  - 1074: shutdown/restart initiated by a process or user
+  - 6005 / 6006: Event Log service started / stopped
+  - 6008: previous shutdown was unexpected
