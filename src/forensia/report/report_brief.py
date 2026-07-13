@@ -329,9 +329,7 @@ def _build_report_brief(
     tz_name = getattr(case, "source_timezone", "UTC") if case else "UTC"
     tz_offset = _tz_offset_str(tz_name) if tz_name != "UTC" else ""
     return {
-        "top_findings": [
-            normalize_value(item) for item in _query_top_findings(db)
-        ],
+        "top_findings": [normalize_value(item) for item in _query_top_findings(db)],
         "active_hypotheses": [
             normalize_value(item) for item in _query_hypotheses_by_status(db, "active")
         ],
@@ -357,9 +355,7 @@ def _build_report_brief(
     }
 
 
-def write_report_brief(
-    case: Case, db: CaseDB
-) -> dict[str, Any]:
+def write_report_brief(case: Case, db: CaseDB) -> dict[str, Any]:
     """Write the report brief to reports/report_brief.json and return the dict."""
     brief = _build_report_brief(db, case)
     overview_path = case.memory_dir / "overview.md"

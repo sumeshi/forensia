@@ -261,7 +261,9 @@ class RuleProfileTests(unittest.TestCase):
             profile_path = Path(tmpdir) / "profile.yaml"
             profile_path.write_text("rulepacks:\n  - nonexistent\n", encoding="utf-8")
 
-            rules = load_rules_from_dir("src/forensia/knowledge/rulepacks", profile_path)
+            rules = load_rules_from_dir(
+                "src/forensia/knowledge/rulepacks", profile_path
+            )
 
         self.assertEqual(0, len(rules))
 

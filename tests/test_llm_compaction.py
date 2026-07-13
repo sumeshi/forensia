@@ -20,7 +20,9 @@ class TestExtractEssentialTokens:
         assert "4625" in tokens
 
     def test_table_names(self) -> None:
-        tokens = _extract_essential_tokens("SELECT * FROM evtx_events WHERE event_id = 4624")
+        tokens = _extract_essential_tokens(
+            "SELECT * FROM evtx_events WHERE event_id = 4624"
+        )
         assert "evtx_events" in tokens
 
     def test_windows_paths(self) -> None:
@@ -45,7 +47,9 @@ class TestExtractEssentialTokens:
 
 class TestEssentialTokensPresent:
     def test_all_present(self) -> None:
-        assert _essential_tokens_present({"4624", "evtx_events"}, "Event 4624 from evtx_events")
+        assert _essential_tokens_present(
+            {"4624", "evtx_events"}, "Event 4624 from evtx_events"
+        )
 
     def test_missing_token(self) -> None:
         assert not _essential_tokens_present({"4624", "4625"}, "Event 4624 only")
@@ -80,7 +84,9 @@ class TestLlmCompact:
     def test_llm_called_when_text_exceeds_threshold(self) -> None:
         text = "Event 4624 from evtx_events table. " * 50  # well over 1.5x budget
         llm_response = "Summarised: Event 4624 from evtx_events."
-        with patch("forensia.ai.compaction._call_llm", return_value=llm_response) as mock_llm:
+        with patch(
+            "forensia.ai.compaction._call_llm", return_value=llm_response
+        ) as mock_llm:
             result = llm_compact(text, 200, base_url="http://x", model="m")
         mock_llm.assert_called_once()
         assert "4624" in result
@@ -88,7 +94,9 @@ class TestLlmCompact:
 
     def test_fallback_on_llm_exception(self) -> None:
         text = "Event 4624 from evtx_events. " * 50
-        with patch("forensia.ai.compaction._call_llm", side_effect=RuntimeError("LLM down")):
+        with patch(
+            "forensia.ai.compaction._call_llm", side_effect=RuntimeError("LLM down")
+        ):
             result = llm_compact(text, 200, base_url="http://x", model="m")
         assert len(result) <= 200
         assert TRUNCATION_MARKER in result
@@ -127,7 +135,9 @@ class TestLlmCompact:
     def test_cache_hit_avoids_llm_call(self) -> None:
         text = "Event 4624 from evtx_events table. " * 50
         llm_response = "Summarised: Event 4624 from evtx_events."
-        with patch("forensia.ai.compaction._call_llm", return_value=llm_response) as mock_llm:
+        with patch(
+            "forensia.ai.compaction._call_llm", return_value=llm_response
+        ) as mock_llm:
             r1 = llm_compact(text, 200, base_url="http://x", model="m")
             r2 = llm_compact(text, 200, base_url="http://x", model="m")
         assert r1 == r2
@@ -137,7 +147,10 @@ class TestLlmCompact:
         text = "Event 4624 from evtx_events table. " * 50
         llm_response_200 = "A" * 180
         llm_response_300 = "B" * 280
-        with patch("forensia.ai.compaction._call_llm", side_effect=[llm_response_200, llm_response_300]) as mock_llm:
+        with patch(
+            "forensia.ai.compaction._call_llm",
+            side_effect=[llm_response_200, llm_response_300],
+        ) as mock_llm:
             r1 = llm_compact(text, 200, base_url="http://x", model="m")
             r2 = llm_compact(text, 300, base_url="http://x", model="m")
         assert mock_llm.call_count == 2
@@ -146,7 +159,9 @@ class TestLlmCompact:
     def test_budget_never_exceeded(self) -> None:
         text = "Event 4624 from evtx_events. " * 100
         for budget in (50, 100, 200, 500):
-            with patch("forensia.ai.compaction._call_llm", side_effect=RuntimeError("fail")):
+            with patch(
+                "forensia.ai.compaction._call_llm", side_effect=RuntimeError("fail")
+            ):
                 result = llm_compact(text, budget, base_url="http://x", model="m")
             assert len(result) <= budget, f"budget={budget} exceeded: len={len(result)}"
 
@@ -186,10 +201,7 @@ class TestEnforceSystemBudgetCompaction:
 
         playbook = "A" * 5000
         knowledge_lines = "\n".join(f"knowledge line {i}" for i in range(600))
-        system = (
-            f"{playbook}\n"
-            f"<ORG_KNOWLEDGE>\n{knowledge_lines}\n</ORG_KNOWLEDGE>\n"
-        )
+        system = f"{playbook}\n<ORG_KNOWLEDGE>\n{knowledge_lines}\n</ORG_KNOWLEDGE>\n"
         result = _enforce_system_budget(system, budget_chars=10000)
         assert len(result) <= 10000
         if "<ORG_KNOWLEDGE>" in result:

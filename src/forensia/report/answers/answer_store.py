@@ -299,10 +299,7 @@ def _meaningful_missing_reason_items(value: Any) -> list[str]:
 def _load_interpretation_templates() -> dict[str, str]:
     import yaml
 
-    path = (
-        schema_dir()
-        / "question_routing.yaml"
-    )
+    path = schema_dir() / "question_routing.yaml"
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except Exception:

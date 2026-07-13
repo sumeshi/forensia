@@ -97,10 +97,7 @@ def _load_event_id_hints() -> dict[int, dict[str, Any]]:
     """Load the event_id to hints mapping from _schema/event_ids.yaml."""
     import yaml
 
-    path = (
-        schema_dir()
-        / "event_ids.yaml"
-    )
+    path = schema_dir() / "event_ids.yaml"
     if not path.exists():
         return {}
     try:

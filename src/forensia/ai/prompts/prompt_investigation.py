@@ -556,7 +556,11 @@ def build_gap_identifier_messages(
             "gap_identifier: available_keypoint_names empty — check key names: observed has 'keypoint' vs prompt expects 'name'"
         )
     schema = gap_identifier_schema(available_keypoint_names)
-    _gap_extra = [kp.get("name") or kp.get("keypoint", "") for kp in (observed_keypoints + uncovered_keypoints)[:20] if kp.get("name") or kp.get("keypoint")]
+    _gap_extra = [
+        kp.get("name") or kp.get("keypoint", "")
+        for kp in (observed_keypoints + uncovered_keypoints)[:20]
+        if kp.get("name") or kp.get("keypoint")
+    ]
     system = (
         "<TASK>You are a gap_identifier. From available_keypoints, pick the ones that lack active hypothesis coverage.</TASK>\n"
         f"{_case_profile_guidance(case_profile)}"

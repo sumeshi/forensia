@@ -17,7 +17,9 @@ TRUNCATION_MARKER = "…[truncated]"
 _BLANK_RUN = re.compile(r"\n{3,}")
 
 
-def mechanical_compact(text: str, budget: int, *, marker: str = TRUNCATION_MARKER) -> str:
+def mechanical_compact(
+    text: str, budget: int, *, marker: str = TRUNCATION_MARKER
+) -> str:
     """Reduce *text* to at most *budget* characters, deterministically.
 
     Order of operations:

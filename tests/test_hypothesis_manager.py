@@ -447,9 +447,7 @@ class StalePropagationUpdateCountCapTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                _insert_section(
-                    db, "3_technical", update_count=MAX_SECTION_UPDATES - 1
-                )
+                _insert_section(db, "3_technical", update_count=MAX_SECTION_UPDATES - 1)
                 state = SessionState(
                     session_id="S-1",
                     iteration=1,

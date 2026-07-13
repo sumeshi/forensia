@@ -120,8 +120,12 @@ class TestWriteAllSnapshots(unittest.TestCase):
 
                 for v in core_mocks.values():
                     v.return_value = dto if hasattr(dto, "session_id") else []
-                core_mocks["get_case_dto"].return_value = MagicMock(model_dump=lambda **kw: {})
-                core_mocks["get_case_stats_dto"].return_value = MagicMock(model_dump=lambda **kw: {})
+                core_mocks["get_case_dto"].return_value = MagicMock(
+                    model_dump=lambda **kw: {}
+                )
+                core_mocks["get_case_stats_dto"].return_value = MagicMock(
+                    model_dump=lambda **kw: {}
+                )
                 hyp = MagicMock()
                 hyp.model_dump.return_value = {}
                 core_mocks["list_hypotheses_dto"].return_value = hyp
@@ -139,7 +143,9 @@ class TestWriteAllSnapshots(unittest.TestCase):
                 write_all_snapshots(case, MagicMock())
 
             assert (snap_dir / "case.json").exists(), "core snapshot missing"
-            assert (snap_dir / "report_sections.json").exists(), "report snapshot missing"
+            assert (snap_dir / "report_sections.json").exists(), (
+                "report snapshot missing"
+            )
             assert (snap_dir / "report_brief.json").exists(), "report brief missing"
 
 
@@ -153,8 +159,12 @@ class TestWriteVolatileSnapshots(unittest.TestCase):
                 _patch_cache_deps() as core_mocks,
                 _patch_report_deps() as report_mocks,
             ):
-                core_mocks["list_hypotheses_dto"].return_value = MagicMock(model_dump=lambda: {})
-                core_mocks["get_case_stats_dto"].return_value = MagicMock(model_dump=lambda: {})
+                core_mocks["list_hypotheses_dto"].return_value = MagicMock(
+                    model_dump=lambda: {}
+                )
+                core_mocks["get_case_stats_dto"].return_value = MagicMock(
+                    model_dump=lambda: {}
+                )
                 core_mocks["list_findings_dto"].return_value = []
                 core_mocks["list_attack_coverage_dto"].return_value = []
                 core_mocks["list_section_questions_dto"].return_value = []

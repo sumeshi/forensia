@@ -277,9 +277,7 @@ async def _render_single_block(
         section_table_digest=""
         if is_structured_mode
         else _section_table_digest(ctx.table_digest_parts),
-        template_tags=tuple(
-            getattr(request.get("template_meta"), "tags", ()) or ()
-        ),
+        template_tags=tuple(getattr(request.get("template_meta"), "tags", ()) or ()),
         audit_callback=_audit("report-section-block"),
         review_audit_callback=_audit("report-section-review"),
     )

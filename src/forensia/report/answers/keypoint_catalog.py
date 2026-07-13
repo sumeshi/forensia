@@ -95,10 +95,7 @@ def _load_template_keypoint_aliases() -> dict[str, str]:
     template/question-specific vocabulary (CLAUDE.md Rule 16). Each value must
     be a keypoint registered in REPORT_KEYPOINTS or a generic alias above;
     a missing file simply means no extra aliases."""
-    path = (
-        schema_dir()
-        / "keypoint_aliases.yaml"
-    )
+    path = schema_dir() / "keypoint_aliases.yaml"
     if not path.exists():
         return {}
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}

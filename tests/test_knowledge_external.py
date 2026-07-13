@@ -172,7 +172,11 @@ class TestSingleton:
     def test_set_and_get(self) -> None:
         set_knowledge_docs([])
         assert get_knowledge_docs() == []
-        docs = [KnowledgeDoc(path=Path("/fake"), name="x", title="X", description="d", tags=())]
+        docs = [
+            KnowledgeDoc(
+                path=Path("/fake"), name="x", title="X", description="d", tags=()
+            )
+        ]
         set_knowledge_docs(docs)
         assert len(get_knowledge_docs()) == 1
         set_knowledge_docs([])

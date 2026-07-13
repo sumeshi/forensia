@@ -73,7 +73,9 @@ def _timeline_rows_are_chronological(body: str) -> bool:
         if not header.startswith("|") or not separator.startswith("|---"):
             index += 1
             continue
-        header_cells = [cell.strip().casefold() for cell in header.strip("|").split("|")]
+        header_cells = [
+            cell.strip().casefold() for cell in header.strip("|").split("|")
+        ]
         is_timeline = bool(header_cells) and header_cells[0] in {
             "time",
             "timestamp",
@@ -83,7 +85,9 @@ def _timeline_rows_are_chronological(body: str) -> bool:
         index += 2
         while index < len(lines) and lines[index].strip().startswith("|"):
             if is_timeline:
-                cells = [cell.strip() for cell in lines[index].strip().strip("|").split("|")]
+                cells = [
+                    cell.strip() for cell in lines[index].strip().strip("|").split("|")
+                ]
                 if cells and cells[0] and "<!--" not in cells[0]:
                     timestamps.append(cells[0])
             index += 1

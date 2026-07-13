@@ -23,9 +23,7 @@ from forensia.knowledge.resources import schema_dir
 from forensia.knowledge.rules.models import Finding, FindingTemplate, Rule
 
 _MISSING_TEXT_VALUES = {"", "-", "n/a", "na", "none", "null", "unknown"}
-_BUILTIN_ALLOWLIST_PATH = (
-    schema_dir() / "suppression" / "allowlist_services.yaml"
-)
+_BUILTIN_ALLOWLIST_PATH = schema_dir() / "suppression" / "allowlist_services.yaml"
 
 FALLBACK_PHASES = {"keyword_in_raw_json", "related_event_ids", "artifact_table"}
 

@@ -182,10 +182,7 @@ def _finding_theme_summary(theme: str) -> str:
 
 
 def _theme_config_path() -> Path:
-    return (
-        schema_dir()
-        / "finding_themes.yaml"
-    )
+    return schema_dir() / "finding_themes.yaml"
 
 
 def _string_tuple(value: Any, *, field: str, theme: str) -> tuple[str, ...]:

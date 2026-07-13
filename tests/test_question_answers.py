@@ -746,41 +746,104 @@ class DailySessionTimelineBuilderTests(unittest.TestCase):
                 # Day 1: 2015-03-22
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-e1", 6005, datetime(2015, 3, 22, 8, 0, 0), "HOST1", None, None),
+                    (
+                        "evtx-e1",
+                        6005,
+                        datetime(2015, 3, 22, 8, 0, 0),
+                        "HOST1",
+                        None,
+                        None,
+                    ),
                 )
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-e2", 4624, datetime(2015, 3, 22, 8, 15, 0), "HOST1", "alice", "2"),
+                    (
+                        "evtx-e2",
+                        4624,
+                        datetime(2015, 3, 22, 8, 15, 0),
+                        "HOST1",
+                        "alice",
+                        "2",
+                    ),
                 )
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-e3", 4624, datetime(2015, 3, 22, 9, 0, 0), "HOST1", "bob", "10"),
+                    (
+                        "evtx-e3",
+                        4624,
+                        datetime(2015, 3, 22, 9, 0, 0),
+                        "HOST1",
+                        "bob",
+                        "10",
+                    ),
                 )
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-e4", 4634, datetime(2015, 3, 22, 17, 0, 0), "HOST1", "alice", "2"),
+                    (
+                        "evtx-e4",
+                        4634,
+                        datetime(2015, 3, 22, 17, 0, 0),
+                        "HOST1",
+                        "alice",
+                        "2",
+                    ),
                 )
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-e5", 1074, datetime(2015, 3, 22, 17, 30, 0), "HOST1", None, None),
+                    (
+                        "evtx-e5",
+                        1074,
+                        datetime(2015, 3, 22, 17, 30, 0),
+                        "HOST1",
+                        None,
+                        None,
+                    ),
                 )
 
                 # Day 2: 2015-03-23
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-e6", 12, datetime(2015, 3, 23, 7, 45, 0), "HOST1", None, None),
+                    (
+                        "evtx-e6",
+                        12,
+                        datetime(2015, 3, 23, 7, 45, 0),
+                        "HOST1",
+                        None,
+                        None,
+                    ),
                 )
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-e7", 4624, datetime(2015, 3, 23, 8, 5, 0), "HOST1", "charlie", "2"),
+                    (
+                        "evtx-e7",
+                        4624,
+                        datetime(2015, 3, 23, 8, 5, 0),
+                        "HOST1",
+                        "charlie",
+                        "2",
+                    ),
                 )
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-e8", 4647, datetime(2015, 3, 23, 16, 45, 0), "HOST1", "charlie", "2"),
+                    (
+                        "evtx-e8",
+                        4647,
+                        datetime(2015, 3, 23, 16, 45, 0),
+                        "HOST1",
+                        "charlie",
+                        "2",
+                    ),
                 )
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-e9", 6006, datetime(2015, 3, 23, 17, 0, 0), "HOST1", None, None),
+                    (
+                        "evtx-e9",
+                        6006,
+                        datetime(2015, 3, 23, 17, 0, 0),
+                        "HOST1",
+                        None,
+                        None,
+                    ),
                 )
 
                 rows = build_daily_session_timeline(db)
@@ -812,17 +875,38 @@ class DailySessionTimelineBuilderTests(unittest.TestCase):
             with CaseDB(case) as db:
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-e1", 6005, datetime(2015, 3, 22, 9, 5, 0), "HOST1", None, None),
+                    (
+                        "evtx-e1",
+                        6005,
+                        datetime(2015, 3, 22, 9, 5, 0),
+                        "HOST1",
+                        None,
+                        None,
+                    ),
                 )
                 # This logon is outside qualifier window (before 09:00) so should be excluded
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-e2", 4624, datetime(2015, 3, 22, 8, 0, 0), "HOST1", "bob", "2"),
+                    (
+                        "evtx-e2",
+                        4624,
+                        datetime(2015, 3, 22, 8, 0, 0),
+                        "HOST1",
+                        "bob",
+                        "2",
+                    ),
                 )
                 # This logon is within the window (09:00-18:00)
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("evtx-e3", 4624, datetime(2015, 3, 22, 9, 0, 0), "HOST1", "alice", "2"),
+                    (
+                        "evtx-e3",
+                        4624,
+                        datetime(2015, 3, 22, 9, 0, 0),
+                        "HOST1",
+                        "alice",
+                        "2",
+                    ),
                 )
 
                 qualifiers = {"hour_from": "09:00", "hour_to": "18:00"}

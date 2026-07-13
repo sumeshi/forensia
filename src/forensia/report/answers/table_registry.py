@@ -270,10 +270,7 @@ def _load_table_captions() -> dict[str, dict[str, str]]:
     """Load per-builder caption/empty templates from rulepacks/_schema/report_tables.yaml."""
     import yaml
 
-    path = (
-        schema_dir()
-        / "report_tables.yaml"
-    )
+    path = schema_dir() / "report_tables.yaml"
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except Exception:

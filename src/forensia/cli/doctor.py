@@ -161,7 +161,10 @@ def _doctor_report_template_policy_check() -> tuple[str, bool]:
         if ok:
             print("  ✓ Packaged templates include knowledge metadata and instructions")
         else:
-            print("  ✗ Invalid packaged templates:\n" + "\n".join(f"      - {p}" for p in problems))
+            print(
+                "  ✗ Invalid packaged templates:\n"
+                + "\n".join(f"      - {p}" for p in problems)
+            )
         return "Report template contract", ok
     except Exception as exc:
         print(f"  ✗ Error: {exc}")

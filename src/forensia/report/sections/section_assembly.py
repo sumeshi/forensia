@@ -85,6 +85,7 @@ def prepare_section_request(
                 "builder": "",
             }
         ]
+
     def with_section_instructions(block_body: str) -> str:
         if not template_meta.instructions:
             return block_body

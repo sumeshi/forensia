@@ -77,9 +77,7 @@ def scan_knowledge_dir(root: Path) -> list[KnowledgeDoc]:
             # Decode only the bounded prefix; an incomplete final code point is
             # irrelevant to frontmatter that must close inside this prefix.
             with md_path.open("rb") as fh:
-                raw = fh.read(_FRONTMATTER_READ_LIMIT).decode(
-                    "utf-8", errors="ignore"
-                )
+                raw = fh.read(_FRONTMATTER_READ_LIMIT).decode("utf-8", errors="ignore")
         except Exception as exc:
             logger.warning("knowledge: cannot read %s: %s", md_path, exc)
             continue

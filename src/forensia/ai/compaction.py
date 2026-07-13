@@ -58,9 +58,7 @@ def _extract_essential_tokens(text: str) -> set[str]:
     return {t for t in tokens if len(t) >= 3}
 
 
-def _essential_tokens_present(
-    original_tokens: set[str], compacted: str
-) -> bool:
+def _essential_tokens_present(original_tokens: set[str], compacted: str) -> bool:
     """Return True if all essential tokens from the original appear in *compacted*."""
     if not original_tokens:
         return True
@@ -207,7 +205,9 @@ def llm_compact(
     try:
         llm_output = _call_llm(text, budget, base_url=base_url, model=model)
     except Exception as exc:
-        logger.debug("llm_compact: LLM call failed (%s), falling back to mechanical", exc)
+        logger.debug(
+            "llm_compact: LLM call failed (%s), falling back to mechanical", exc
+        )
         result = mechanical_compact(text, budget)
         _cache_store(_cache_key(text, budget), result)
         return result

@@ -524,7 +524,9 @@ class NarratePromptContractTests(unittest.TestCase):
         self.assertNotIn("top_findings", gaps)
 
 
-def test_section_knowledge_selection_uses_template_frontmatter_tags(tmp_path: Path) -> None:
+def test_section_knowledge_selection_uses_template_frontmatter_tags(
+    tmp_path: Path,
+) -> None:
     from forensia.ai.sections.section_block_plan import _inject_org_knowledge
     from forensia.knowledge.external import scan_knowledge_dir, set_knowledge_docs
 
@@ -557,7 +559,9 @@ def test_section_knowledge_selection_uses_template_frontmatter_tags(tmp_path: Pa
     assert "blocked" not in system
 
 
-def test_section_knowledge_selection_uses_latest_missing_question(tmp_path: Path) -> None:
+def test_section_knowledge_selection_uses_latest_missing_question(
+    tmp_path: Path,
+) -> None:
     from forensia.ai.sections.section_block_plan import _inject_org_knowledge
     from forensia.knowledge.external import scan_knowledge_dir, set_knowledge_docs
 

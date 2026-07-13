@@ -674,9 +674,7 @@ def _apply_playbook_budget(
 
 def _load_phase_playbook(phase: str) -> str:
 
-    playbook_dir = (
-        schema_dir() / "playbook"
-    )
+    playbook_dir = schema_dir() / "playbook"
     phase_file = playbook_dir / f"{phase}.md"
     phase_narrative = ""
     if phase_file.exists():

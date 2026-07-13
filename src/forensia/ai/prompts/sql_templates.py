@@ -152,9 +152,7 @@ def _sql_text(value: Any, default: str = "") -> str:
 
 
 def _query_template_path() -> Path:
-    return (
-        schema_dir() / "query_templates.yaml"
-    )
+    return schema_dir() / "query_templates.yaml"
 
 
 @lru_cache(maxsize=1)

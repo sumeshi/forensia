@@ -47,7 +47,9 @@ class IngestTests(unittest.TestCase):
                 return output, None
 
             with (
-                patch("forensia.evidence.evtx.ingest_evtx_file", side_effect=fake_ingest),
+                patch(
+                    "forensia.evidence.evtx.ingest_evtx_file", side_effect=fake_ingest
+                ),
                 patch(
                     "forensia.evidence.mft.ingest_mft_file",
                     side_effect=fake_ingest,
@@ -95,7 +97,8 @@ class IngestTests(unittest.TestCase):
                 return output, None
 
             with patch(
-                "forensia.evidence.prefetch.ingest_prefetch_file", side_effect=fake_ingest
+                "forensia.evidence.prefetch.ingest_prefetch_file",
+                side_effect=fake_ingest,
             ):
                 counts = ingest_all(case, input_dir)
 

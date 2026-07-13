@@ -161,9 +161,7 @@ def _org_knowledge_guidance(snippets: list) -> str:
 _load_schema_hints = load_schema_hints
 
 
-def _enforce_system_budget(
-    system_str: str, budget_chars: int | None = None
-) -> str:
+def _enforce_system_budget(system_str: str, budget_chars: int | None = None) -> str:
     """Trim system message to fit budget by removing lower-priority sections.
 
     Applies after the playbook is already budget-constrained; drops additional
@@ -220,8 +218,12 @@ def _enforce_system_budget(
                 )
                 if compacted and closing_tag and not compacted.endswith(closing_tag):
                     compacted = compacted + "\n" + closing_tag
-                if compacted and len(text) - len(section_text) + len(compacted) + 1 <= budget_chars:
-                    text = text[:m.start()] + "\n" + compacted + text[m.end():]
+                if (
+                    compacted
+                    and len(text) - len(section_text) + len(compacted) + 1
+                    <= budget_chars
+                ):
+                    text = text[: m.start()] + "\n" + compacted + text[m.end() :]
                     text = re.sub(r"\n{3,}", "\n\n", text.strip())
                     continue
         # Fallback: remove the section entirely

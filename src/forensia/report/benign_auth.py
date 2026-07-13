@@ -33,10 +33,7 @@ def _load_benign_auth_policy() -> BenignAuthPolicy:
     """Load and validate local-auth policy from benign_auth.yaml."""
     import yaml
 
-    path = (
-        schema_dir()
-        / "benign_auth.yaml"
-    )
+    path = schema_dir() / "benign_auth.yaml"
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(data, dict) or data.get("version") != 1:
         raise ValueError(f"{path}: version must be 1")

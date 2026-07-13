@@ -229,9 +229,7 @@ class TestTruncKey(unittest.TestCase):
         )
 
     def test_day(self):
-        self.assertEqual(
-            trunc_key("2024-06-15T10:30:00", "day"), "2024-06-15T00:00:00"
-        )
+        self.assertEqual(trunc_key("2024-06-15T10:30:00", "day"), "2024-06-15T00:00:00")
 
     def test_hour(self):
         self.assertEqual(

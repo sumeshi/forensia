@@ -93,7 +93,9 @@ def test_report_block_discovers_template_and_registered_keypoint(
 
 
 def test_table_builder_registration(monkeypatch) -> None:
-    monkeypatch.setattr(table_registry, "TABLE_BLOCKS", dict(table_registry.TABLE_BLOCKS))
+    monkeypatch.setattr(
+        table_registry, "TABLE_BLOCKS", dict(table_registry.TABLE_BLOCKS)
+    )
     table_registry.register_table_block(
         "example_table",
         lambda _db: [{"name": "row"}],

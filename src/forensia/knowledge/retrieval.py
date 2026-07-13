@@ -95,9 +95,7 @@ def select_snippets(
     # ── Stage 1: tag filtering ──────────────────────────────────────
     if tags:
         tag_set = {t.lower() for t in tags}
-        candidates = [
-            d for d in docs if tag_set & {t.lower() for t in d.tags}
-        ]
+        candidates = [d for d in docs if tag_set & {t.lower() for t in d.tags}]
         if not candidates:
             candidates = list(docs)
     else:
@@ -108,9 +106,7 @@ def select_snippets(
 
     scored: list[tuple[float, str, KnowledgeDoc]] = []
     for doc in candidates:
-        meta_score = _score_text(
-            f"{doc.title} {doc.description}", terms
-        )
+        meta_score = _score_text(f"{doc.title} {doc.description}", terms)
         scored.append((meta_score, str(doc.path), doc))
 
     # sort by meta_score desc, then path asc for determinism
@@ -213,13 +209,64 @@ def knowledge_terms_for_hypothesis(
     import re
 
     _STOP = {
-        "the", "and", "for", "are", "but", "not", "you", "all", "can",
-        "has", "her", "was", "one", "our", "out", "this", "that", "with",
-        "have", "from", "they", "been", "said", "each", "which", "their",
-        "will", "other", "about", "many", "then", "them", "these", "some",
-        "would", "make", "like", "into", "could", "time", "very", "when",
-        "come", "made", "after", "also", "did", "just", "than", "what",
-        "how", "its", "over", "such", "any", "new", "most", "may",
+        "the",
+        "and",
+        "for",
+        "are",
+        "but",
+        "not",
+        "you",
+        "all",
+        "can",
+        "has",
+        "her",
+        "was",
+        "one",
+        "our",
+        "out",
+        "this",
+        "that",
+        "with",
+        "have",
+        "from",
+        "they",
+        "been",
+        "said",
+        "each",
+        "which",
+        "their",
+        "will",
+        "other",
+        "about",
+        "many",
+        "then",
+        "them",
+        "these",
+        "some",
+        "would",
+        "make",
+        "like",
+        "into",
+        "could",
+        "time",
+        "very",
+        "when",
+        "come",
+        "made",
+        "after",
+        "also",
+        "did",
+        "just",
+        "than",
+        "what",
+        "how",
+        "its",
+        "over",
+        "such",
+        "any",
+        "new",
+        "most",
+        "may",
     }
 
     raw = f"{title} {description}"

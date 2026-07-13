@@ -128,9 +128,7 @@ def write_full_api_snapshots(case: Case, db: CaseDB) -> None:
     """Write all API DTO snapshots (case, stats, findings, hypotheses, sessions, etc.) to the cache directory."""
     snap_dir = snapshot_dir(case)
     write_json(snap_dir / "case.json", get_case_dto(case).model_dump(mode="json"))
-    write_json(
-        snap_dir / "stats.json", get_case_stats_dto(db).model_dump(mode="json")
-    )
+    write_json(snap_dir / "stats.json", get_case_stats_dto(db).model_dump(mode="json"))
     write_json(
         snap_dir / "findings.json",
         [item.model_dump(mode="json") for item in list_findings_dto(db, limit=500)],

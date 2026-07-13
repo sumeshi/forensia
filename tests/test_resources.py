@@ -211,7 +211,10 @@ class TestWheelArtifact:
         assert any("knowledge/rulepacks/windows/" in p for p in wheel_paths)
 
     def test_wheel_contains_schema_yaml(self, wheel_paths: set[str]) -> None:
-        assert any("knowledge/rulepacks/_schema/verdict_taxonomy.yaml" in p for p in wheel_paths)
+        assert any(
+            "knowledge/rulepacks/_schema/verdict_taxonomy.yaml" in p
+            for p in wheel_paths
+        )
 
     def test_wheel_contains_profiles(self, wheel_paths: set[str]) -> None:
         assert any("knowledge/profiles/windows-basic.yaml" in p for p in wheel_paths)
