@@ -157,7 +157,7 @@ For the input/output schema of each LLM role, see [llm-roles.md](llm-roles.md).
 **Additional behavior:**
 
 - **auto-rulepacks**: `resolve_active_packs` ([rules/loader.py](../src/forensia/knowledge/rules/loader.py)) automatically enables rulepacks whose `applies_when.artifact_families` match the case's evidence families. Use `--no-auto-rulepacks` for the legacy behavior. Controlled by the `auto_rulepacks` argument of `investigator.investigate`.
-- **playbook budget control**: `_dfir_playbook` ([ai/prompts/prompt_playbook.py](../src/forensia/ai/prompts/prompt_playbook.py)) narrows Event ID narratives to IDs that exist in the case so they stay under `FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS` (default 24000), and drops sections in priority order when the budget is exceeded.
+- **playbook budget control**: `_dfir_playbook` ([ai/prompts/prompt_playbook.py](../src/forensia/ai/prompts/prompt_playbook.py)) narrows Event ID narratives to IDs that exist in the case so they stay under the user-configurable `FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS`, and drops sections in priority order when the budget is exceeded. The combined plan/check budget is independently configurable with `FORENSIA_PROMPT_BUDGET_TOKENS`; when unset it scales with the system-character budget.
 - **automatic timeline assembly**: The `case_timeline` table ([db/schema.py](../src/forensia/db/schema.py)) is deterministically fed with the first-evidence timestamp of findings (severity ≥ medium) and the decisive query row of resolved hypotheses (`feed_findings_to_timeline` in [rules/engine.py](../src/forensia/knowledge/rules/engine.py)). `memory/timeline.md` is a projection regenerated from this table.
 - **timezone support**: `infer_timezone` ([normalize/timezone.py](../src/forensia/evidence/timezone.py)) infers the offset from events such as 4616 system time changes. It is stored in `case.source_timezone` ([core/case.py](../src/forensia/core/case.py)), and `_render_timestamp_with_timezone` ([report/render/markdown.py](../src/forensia/report/render/markdown.py)) renders a dual UTC + local display.
 
@@ -187,6 +187,23 @@ flowchart TD
 Per-block processing:
 - **structured**: Routed by the question template (`question_routing.yaml`) and executes SQL / builder / extraction logic deterministically. Output is a tabular Markdown + JSON/CSV export
 - **narrative**: `section_outliner` fixes the layout → `paragraph_narrator` generates one paragraph → if the body is empty it retries once with a coaching turn → if still empty, `_fallback_narrative_body` generates it locally
+
+For narrative evidence gathering, each block persists its plan/query/check runs.
+The next iteration receives the latest runs, including the checker's
+`missing_questions`; those unresolved questions are also added to external
+knowledge retrieval terms. This makes retrieval progressively narrower instead
+of repeating the section title on every pass. System and combined-message limits
+follow the configured prompt budgets, preserving the task/schema, recent trace
+tail, and selected reference
+snippets while compacting broad catalogs and oversized dynamic data.
+
+Hypothesis memory uses a hierarchical, scope-tagged index for progressive
+disclosure. Core confirmed memory and relevant entity/keypoint cards are loaded
+first; the current hypothesis card/scratch can be requested by exact path. Other
+hypothesis scratch/history is excluded both from the index and by a loader-side
+allow-list. Memory-index, `read_more`, and report knowledge selections emit
+observational rows to the separate `trace.duckdb`; this telemetry never feeds
+ranking automatically.
 
 The final Markdown is assembled by `build_report_markdown_from_db` ([report/render/writer.py](../src/forensia/report/render/writer.py)) from `report_sections`, and `_strip_narrative_status_lines` ([report/sections/section_quality.py](../src/forensia/report/sections/section_quality.py)) strips internal metadata (such as `**Status:**` lines) from non-appendix sections.
 

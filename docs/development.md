@@ -32,6 +32,7 @@ cp .env.example .env
 | `LLM_REPORT_MAX_QUERIES_PER_SECTION` | Default query budget for each report-section block |
 | `LLM_REASONING_RESERVE_TOKENS` | Extra token buffer for reasoning models |
 | `FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS` | System-prompt budget for generated DFIR guidance |
+| `FORENSIA_PROMPT_BUDGET_TOKENS` | Total plan/check prompt budget; unset or `0` derives it from the system-character budget |
 | `STRUCTURED_MARKDOWN_MAX_ROWS` | Maximum rows rendered directly in structured-answer Markdown |
 | `LLM_OUTAGE_WALL_CLOCK_BUDGET_S` | Total time budget for waiting on LLM server recovery |
 | `LLM_OUTAGE_PROBE_INTERVAL_S` | Probe interval while waiting on LLM server recovery |
@@ -128,7 +129,7 @@ Keep the test suite finishing in seconds.
 - `report` is render only
 - `report --write` re-fills sections and then renders
 
-`_reset_case_tables()` invoked by `--rerun` must clear not only the evidence-derived normalized tables but also the derived workflow state. At minimum include `findings` / `hypotheses` / `report_sections` / `claims` / `section_facts` / `section_evidence` / `section_runs` / `section_questions` / `query_cache` / trace tables / `ingested_files` / `prefetch_timeline`. When you add a new mutable table, update `_reset_case_tables()` and the reset test in `tests/test_case_db_maintenance.py` at the same time.
+`_reset_case_tables()` invoked by `--rerun` must clear not only the evidence-derived normalized tables but also the derived workflow state. At minimum include `findings` / `hypotheses` / `report_sections` / `claims` / `section_facts` / `section_evidence` / `section_runs` / `section_questions` / `query_cache` / trace tables (including `retrieval_events`) / `ingested_files` / `prefetch_timeline`. When you add a new mutable table, update `_reset_case_tables()` and the reset test in `tests/test_case_db_maintenance.py` at the same time.
 
 ### 4.3 Schema changes and migrations
 

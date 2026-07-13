@@ -150,6 +150,8 @@ def request_with_optional_context(
     status_callback: Callable[[str], None] | None = None,
     audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None]
     | None = None,
+    hypothesis_id: str | None = None,
+    retrieval_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Request LLM with optional read_more context expansion.
 
@@ -177,12 +179,46 @@ def request_with_optional_context(
         status_callback=status_callback,
         audit_callback=audit_callback,
     )
-    read_more = [str(item) for item in coerce_list(parsed.get("read_more"))]
+    requested_paths = [str(item) for item in coerce_list(parsed.get("read_more"))]
+    scope_filter = getattr(memory, "filter_paths_for_scope", None)
+    if callable(scope_filter):
+        read_more, rejected_paths = scope_filter(requested_paths, hypothesis_id)
+    else:
+        read_more, rejected_paths = requested_paths, []
     if not read_more:
+        if retrieval_callback is not None and requested_paths:
+            retrieval_callback(
+                {
+                    "requested_refs": requested_paths,
+                    "selected_refs": [],
+                    "rejected_refs": rejected_paths,
+                    "selected_chars": 0,
+                    "budget": memory.max_bytes,
+                }
+            )
+        parsed["read_more"] = []
         return parsed
     extra_context = memory.load_compact_context(read_more, max_bytes=memory.max_bytes)
+    if retrieval_callback is not None:
+        retrieval_callback(
+            {
+                "requested_refs": requested_paths,
+                "selected_refs": read_more,
+                "rejected_refs": rejected_paths,
+                "selected_chars": len(extra_context),
+                "budget": memory.max_bytes,
+            }
+        )
+    separator = "\n\n<READ_MORE_CONTEXT>\n"
+    base_bytes = default_context.encode("utf-8")
+    separator_bytes = separator.encode("utf-8")
+    remaining = max(memory.max_bytes - len(base_bytes) - len(separator_bytes), 0)
+    extra_bytes = extra_context.encode("utf-8")[:remaining]
+    expanded_context = default_context
+    if extra_bytes:
+        expanded_context += separator + extra_bytes.decode("utf-8", errors="ignore")
     reparsed = llm_gateway.request_llm_json(
-        messages=messages_builder(extra_context),
+        messages=messages_builder(expanded_context),
         model=model,
         base_url=base_url,
         status_callback=status_callback,
@@ -371,11 +407,34 @@ def _plan_query_intent(
     db: CaseDB | None,
     status_callback: Callable[[str], None] | None,
     audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None,
+    hypothesis: Hypothesis,
+    session_id: str | None,
 ) -> tuple[dict[str, Any], str]:
     """Phase 1: plan the query intent, retrying once if the SQL self-check blocks.
 
     Returns (intent_response, composer_schema_card for the chosen target table).
     """
+
+    def retrieval_callback(event: dict[str, Any]) -> None:
+        if db is None:
+            return
+        from forensia.ai.retrieval_telemetry import record_retrieval_event
+
+        record_retrieval_event(
+            db,
+            session_id=session_id,
+            scope_kind="hypothesis",
+            scope_id=hypothesis.id,
+            phase="read_more",
+            source_kind="memory",
+            query_terms=[],
+            candidate_count=len(event["requested_refs"]),
+            selected_refs=event["selected_refs"],
+            rejected_refs=event["rejected_refs"],
+            selected_chars=event["selected_chars"],
+            budget=event["budget"],
+        )
+
     intent_response = request_with_optional_context(
         memory=memory,
         messages_builder=intent_messages_builder,
@@ -384,6 +443,8 @@ def _plan_query_intent(
         initial_context=default_context_md,
         status_callback=status_callback,
         audit_callback=audit_callback,
+        hypothesis_id=hypothesis.id,
+        retrieval_callback=retrieval_callback,
     )
     target_table = str(intent_response.get("target_table") or "evtx_events").strip()
     composer_schema_card = _build_schema_guidance(target_table, db=db)
@@ -413,6 +474,8 @@ def _plan_query_intent(
             + f"\n\n<SCHEMA_SELFCHECK_BLOCKERS>\n{self_check.get('blockers', '')}\n</SCHEMA_SELFCHECK_BLOCKERS>\n",
             status_callback=status_callback,
             audit_callback=audit_callback,
+            hypothesis_id=hypothesis.id,
+            retrieval_callback=retrieval_callback,
         )
     return intent_response, composer_schema_card
 
@@ -527,7 +590,7 @@ def plan_hypothesis_query(
         return build_query_intent_messages(
             hypothesis=hypothesis,
             recent_history=hypothesis_history,
-            active_hypotheses=state.active_hypotheses,
+            active_hypotheses=[hypothesis],
             time_range=time_range or {},
             schema_context=schema_card,
             extra_context_md=extra_context + execution_error_block,
@@ -545,6 +608,8 @@ def plan_hypothesis_query(
         db=db,
         status_callback=status_callback,
         audit_callback=audit_callback,
+        hypothesis=hypothesis,
+        session_id=state.session_id,
     )
     composer_response = _compose_sql(
         intent_response=intent_response,

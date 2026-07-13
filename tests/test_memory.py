@@ -919,6 +919,91 @@ class InvestigationContextFilesRelevanceTests(unittest.TestCase):
         self.assertIn("overview.md", files)
         self.assertIn("facts.md", files)
 
+    def test_core_memory_survives_when_overview_is_excluded(self):
+        files = self.mm.investigation_context_files(
+            include_overview=False,
+            include_entities=False,
+            include_keypoints=False,
+            include_scratch=False,
+            include_archive=False,
+        )
+        self.assertNotIn("overview.md", files)
+        self.assertIn("facts.md", files)
+        self.assertIn("timeline.md", files)
+        self.assertIn("tasks.md", files)
+
+    def test_memory_index_lists_paths_without_loading_bodies(self):
+        index = self.mm.build_memory_index(relevance_terms={"alice"})
+        self.assertIn('<MEMORY_INDEX scope="global">', index)
+        self.assertIn("entities/user/ALICE_SMITH.md", index)
+        self.assertLess(
+            index.find("entities/user/ALICE_SMITH.md"),
+            index.find("entities/user/BOB_JONES.md"),
+        )
+
+    def test_memory_index_is_hierarchical_and_hypothesis_scoped(self):
+        for hypothesis_id in ("H-A", "H-B"):
+            scratch = self.mm.scratch_dir / hypothesis_id
+            scratch.mkdir(parents=True, exist_ok=True)
+            (scratch / "tasks.md").write_text(
+                f"# {hypothesis_id} private work\n", encoding="utf-8"
+            )
+            (self.mm.hypotheses_dir / f"{hypothesis_id}.md").write_text(
+                f"# {hypothesis_id}\n", encoding="utf-8"
+            )
+
+        index = self.mm.build_memory_index("H-A", relevance_terms={"alice"})
+
+        self.assertIn('<MEMORY_INDEX scope="H-A">', index)
+        self.assertIn("<CATEGORIES>", index)
+        self.assertIn("- entities: 10", index)
+        self.assertIn("hypotheses/H-A.md", index)
+        self.assertIn("scratch/H-A/tasks.md", index)
+        self.assertNotIn("H-B", index)
+
+    def test_scoped_context_loads_only_current_hypothesis_scratch(self):
+        for scope in ("global", "H-A", "H-B"):
+            scratch = self.mm.scratch_dir / scope
+            scratch.mkdir(parents=True, exist_ok=True)
+            (scratch / "notes.md").write_text(f"# {scope}\n", encoding="utf-8")
+
+        files = self.mm.investigation_context_files(
+            "H-A",
+            include_overview=False,
+            include_core=False,
+            include_archive=False,
+            include_entities=False,
+            include_keypoints=False,
+        )
+
+        self.assertEqual(["scratch/H-A/notes.md"], files)
+
+    def test_scoped_read_more_rejects_other_hypothesis_and_archive(self):
+        allowed, rejected = self.mm.filter_paths_for_scope(
+            [
+                "facts.md",
+                "entities/user/ALICE_SMITH.md",
+                "scratch/H-A/tasks.md",
+                "hypotheses/H-A.md",
+                "scratch/H-B/tasks.md",
+                "hypotheses/H-B.md",
+                "archive/refuted.md",
+                "../secrets.md",
+            ],
+            "H-A",
+        )
+
+        self.assertEqual(
+            [
+                "facts.md",
+                "entities/user/ALICE_SMITH.md",
+                "scratch/H-A/tasks.md",
+                "hypotheses/H-A.md",
+            ],
+            allowed,
+        )
+        self.assertEqual(4, len(rejected))
+
     def test_no_matching_terms_returns_empty_entities(self):
         """If relevance_terms don't match anything, entity/keypoint lists are empty."""
         terms = {"zzzznonexistent"}
@@ -966,8 +1051,6 @@ class LoadInvestigationContextRelevanceTests(unittest.TestCase):
         # Should contain alice file but not bob file
         self.assertIn("alice-smith", context.lower())
         self.assertNotIn("bob-jones", context.lower())
-
-
 
 
 def test_ctx_refresh_caches_forwards_relevance_terms() -> None:

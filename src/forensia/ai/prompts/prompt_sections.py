@@ -256,7 +256,10 @@ def _filter_prior_runs_by_heading(
     heading_matches = [
         run
         for run in prior_runs
-        if str(run.get("block_heading") or "") == str(block_heading)
+        # Older callers already supplied block-filtered rows without carrying
+        # the heading. Keep those compatible while preferring explicit matches.
+        if not run.get("block_heading")
+        or str(run.get("block_heading")) == str(block_heading)
     ]
     return heading_matches[-limit:]
 

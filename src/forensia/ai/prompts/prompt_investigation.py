@@ -26,12 +26,55 @@ if TYPE_CHECKING:
 
 from forensia.ai.prompts.prompt_context import (
     _case_profile_guidance,
+    _org_knowledge_guidance,
     _time_range_guidance,
 )
 from forensia.ai.prompts.prompt_playbook import (
     _dfir_playbook,
     _sections_for_hypothesis,
 )
+from forensia.knowledge.retrieval import knowledge_terms_for_hypothesis, select_snippets
+
+
+def _profile_tags() -> list[str]:
+    """Knowledge tags derived from the active profile name (windows-basic → ["windows"])."""
+    from forensia.ai.case_profile import get_profile_name
+
+    name = get_profile_name()
+    return [name.split("-", 1)[0]] if name else []
+
+
+def _org_knowledge_block(
+    *,
+    title: str = "",
+    description: str = "",
+    tables: list[str] | None = None,
+    extra_words: list[str] | None = None,
+    tags: list[str] | None = None,
+) -> str:
+    """Build an ``<ORG_KNOWLEDGE>`` block from the global knowledge index.
+
+    Returns empty string if no knowledge docs are loaded.
+    """
+    from forensia.knowledge.external import get_knowledge_docs
+
+    docs = get_knowledge_docs()
+    if not docs:
+        return ""
+    terms = knowledge_terms_for_hypothesis(
+        title=title,
+        description=description,
+        tables=tables,
+        extra_words=extra_words,
+    )
+    if not terms:
+        return ""
+    snippets = select_snippets(
+        docs,
+        query_terms=terms,
+        tags=tags or [],
+    )
+    return _org_knowledge_guidance(snippets)
 
 
 def render_prior_attempts(recent_history: list[dict[str, Any]], limit: int = 5) -> str:
@@ -156,10 +199,19 @@ def build_query_intent_messages(
                 + "\n</CONFIRMED_FINDINGS>\n"
             )
 
+    knowledge_extra = list(getattr(hypothesis, "required_entities", []) or [])
+    if prior_check_feedback:
+        knowledge_extra.append(prior_check_feedback)
+    knowledge_extra.extend(
+        str(item.get("summary") or item.get("body") or item.get("purpose") or "")[:240]
+        for item in recent_history[-3:]
+        if isinstance(item, dict)
+    )
     system = (
         f"{_dfir_playbook('hypothesis_plan', event_ids=_pb_ids, sections=_sections_for_hypothesis(hypothesis))}\n"
         f"{_time_range_guidance(time_range)}"
         f"{_case_profile_guidance(case_profile)}"
+        f"{_org_knowledge_block(description=getattr(hypothesis, 'description', ''), extra_words=knowledge_extra, tags=_profile_tags())}"
         "<TASK>You are a query_intent_planner. Decide WHAT data to fetch for the given hypothesis. Do NOT write SQL.</TASK>\n"
         "<INPUT_SCHEMA>\n"
         f"hypothesis: {hypothesis.model_dump() if hasattr(hypothesis, 'model_dump') else hypothesis}\n"
@@ -504,9 +556,11 @@ def build_gap_identifier_messages(
             "gap_identifier: available_keypoint_names empty — check key names: observed has 'keypoint' vs prompt expects 'name'"
         )
     schema = gap_identifier_schema(available_keypoint_names)
+    _gap_extra = [kp.get("name") or kp.get("keypoint", "") for kp in (observed_keypoints + uncovered_keypoints)[:20] if kp.get("name") or kp.get("keypoint")]
     system = (
         "<TASK>You are a gap_identifier. From available_keypoints, pick the ones that lack active hypothesis coverage.</TASK>\n"
         f"{_case_profile_guidance(case_profile)}"
+        f"{_org_knowledge_block(extra_words=_gap_extra, tags=_profile_tags())}"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
         '  "gap_areas": [{"keypoint_id": "EXACT name from available_keypoints", "why_uncovered": "str", "required_entities": ["snake_case column names"]}]\n'
@@ -551,9 +605,11 @@ def build_hypothesis_drafter_messages(
     Goal: draft ONE hypothesis targeting the given gap_area.
     """
     schema = hypothesis_drafter_schema()
+    _gap_words = [gap_area.get("keypoint_id", "")]
     system = (
         "<TASK>You are a hypothesis_drafter. Draft ONE falsifiable hypothesis targeting the given gap_area.</TASK>\n"
         f"{_case_profile_guidance(case_profile)}"
+        f"{_org_knowledge_block(extra_words=_gap_words, tags=_profile_tags())}"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
         '  "hypothesis": {\n'

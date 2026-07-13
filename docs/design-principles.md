@@ -11,7 +11,7 @@ forensia separates three kinds of state that differ in trust level and lifetime.
 | Type | Location | Role |
 |---|---|---|
 | Case State | `db/case.duckdb` | Normalized evidence derived from ingested artifacts, plus the persistent investigation objects derived from it. Evidence rows are closer to immutable, but workflow state such as findings / hypotheses / report_sections is updated |
-| Trace State | `db/trace.duckdb` | Investigation session lifecycle, step I/O, and progress history. Append-only in principle |
+| Trace State | `db/trace.duckdb` | Investigation session lifecycle, step I/O, retrieval telemetry, and progress history. Append-only in principle |
 | Structured Memory | `memory/**/*.md` | Context reconstructed from Case and Trace for LLM consumption. Regeneratable |
 
 Hierarchy of authority:
@@ -78,6 +78,13 @@ The main knobs that can change behavior through rules:
 ## 6. Context isolation per hypothesis
 
 Provisional facts / timeline / tasks under verification are confined to `memory/scratch/<hypothesis_id>/`, promoted to shared memory on confirmed, and retreated to archive on refuted. Do not let provisional information from other hypotheses leak in.
+
+This is enforced when reading as well as writing. A scoped memory index lists
+only the current hypothesis, and `read_more` rejects other hypothesis scratch,
+cards, archives, path traversal, and global scratch. Query-intent prompts receive
+only the current hypothesis's attempt history. Retrieval observations are stored
+in `trace.retrieval_events`, but they do not automatically alter ranking or
+prompts.
 
 `_apply_memory_updates` ([ai/memory_sync.py](../src/forensia/ai/investigation/memory_sync.py)) routes the write destination based on `hypothesis_id` and `verdict`. Hypothesis-originated memory writes must always carry `hypothesis_id` (dropping it causes unconditional writes to shared memory and breaks this lifecycle).
 

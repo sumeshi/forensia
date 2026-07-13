@@ -53,6 +53,7 @@ Host identification:
 |---|---|---|
 | `investigation_sessions` (trace DB) | Execution unit of hypothesis investigation / report generation | `session_id`, `started_at`, `finished_at`, `iterations`, `status` |
 | `investigation_steps` (trace DB) | Each step within a session (plan / do / check) | `step_id`, `session_id`, `hypothesis_id`, `iteration`, `phase`, `input_json`, `output_json` |
+| `retrieval_events` (trace DB) | Observability for memory and external-knowledge retrieval; not used as ranking feedback | `event_id`, `session_id`, `scope_kind`, `scope_id`, `phase`, `source_kind`, `query_terms`, `candidate_count`, `selected_refs`, `rejected_refs`, `selected_chars`, `budget`, `created_at` |
 | `progress_events` | Progress event stream for the UI | `event_index`, `stage`, `status`, `iteration`, `current_query`, `summary`, `payload` |
 | `query_cache` | Result cache for SQL emitted by the LLM | `sql_hash`, `sql_text`, `result_json`, `executed_at` |
 
@@ -84,7 +85,17 @@ INSERTs into `section_evidence` happen in a single place: [`_store_section_evide
 
 ## 2. Memory files (`memory/*.md`)
 
-Read and written by `MemoryManager` ([src/forensia/core/memory.py](../src/forensia/core/memory.py)). They act as an "external brain" that the LLM reads and writes directly, and hold a structured format (anchor lines + free-form description).
+Read and written by `MemoryManager` ([src/forensia/core/memory.py](../src/forensia/core/memory.py)). DuckDB remains authoritative for evidence, hypotheses, findings, decisions, and recorded LLM update events. The Markdown files are a materialized working-memory layer: compact, human-readable projections plus provisional notes used to assemble prompts. They must not be treated as stronger evidence than their DB/evidence references.
+
+Prompt assembly uses progressive disclosure. Core long-term memory (`facts.md`,
+`timeline.md`, `tasks.md`) remains available even when the overview is omitted;
+entity/keypoint cards are relevance-filtered; a bounded hierarchical
+`<MEMORY_INDEX scope="H-NNN">` exposes counts and relevant exact paths; and
+`read_more` adds requested cards without replacing the initial context. In a
+hypothesis scope, only shared confirmed/core memory plus the current hypothesis
+card and scratch are readable. Other hypothesis scratch/cards and archives are
+rejected at the loader boundary and recorded in `trace.retrieval_events`. The
+final prompt is the volatile layer and is rebuilt for every role call.
 
 ### 2.1 File layout
 

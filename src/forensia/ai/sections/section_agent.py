@@ -381,6 +381,7 @@ def run_section_block_agent(
     answer_spec: str = "",
     question: str = "",
     section_table_digest: str = "",
+    template_tags: tuple[str, ...] = (),
     audit_callback=None,
     review_audit_callback=None,
 ) -> SectionBlockResult:
@@ -410,6 +411,7 @@ def run_section_block_agent(
         answer_spec=answer_spec,
         question=question,
         section_table_digest=section_table_digest,
+        template_tags=template_tags,
         audit_callback=audit_callback,
         review_audit_callback=review_audit_callback,
         report_brief=report_brief,
@@ -449,6 +451,7 @@ async def async_run_section_block_agent(
     answer_spec: str = "",
     question: str = "",
     section_table_digest: str = "",
+    template_tags: tuple[str, ...] = (),
     audit_callback=None,
     review_audit_callback=None,
 ) -> SectionBlockResult:
@@ -475,6 +478,7 @@ async def async_run_section_block_agent(
         answer_spec=answer_spec,
         question=question,
         section_table_digest=section_table_digest,
+        template_tags=template_tags,
         audit_callback=audit_callback,
         review_audit_callback=review_audit_callback,
     )

@@ -14,6 +14,8 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 | [src/forensia/config.py](../src/forensia/config.py) | `.env`-based settings retrieval (`get_llm_settings`) |
 | [src/forensia/knowledge/questions.py](../src/forensia/knowledge/questions.py) | Structured question specs and semantic routing |
 | [src/forensia/knowledge/catalog.py](../src/forensia/knowledge/catalog.py) | Declarative DFIR catalog readers and SQL expansion |
+| [src/forensia/knowledge/external.py](../src/forensia/knowledge/external.py) | Lazy scanning and section loading for an optional local knowledge folder |
+| [src/forensia/knowledge/retrieval.py](../src/forensia/knowledge/retrieval.py) | Deterministic query-term generation and bounded knowledge snippet selection |
 
 ## core/
 
@@ -23,7 +25,9 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 | [src/forensia/core/case_tasks.py](../src/forensia/core/case_tasks.py) | `CaseTasks`: per-stage task bookkeeping |
 | [src/forensia/core/memory.py](../src/forensia/core/memory.py) | `MemoryManager`. Read/write abstraction for `memory/*.md`, `EvidenceOnlyMemory` / `memory_for_section` |
 | [src/forensia/core/memory_compaction.py](../src/forensia/core/memory_compaction.py) | LLM-based compaction of oversized memory files |
-| [src/forensia/core/memory_context.py](../src/forensia/core/memory_context.py) | Context assembly from memory files for prompts |
+| [src/forensia/core/memory_context.py](../src/forensia/core/memory_context.py) | Scope-safe context assembly, hierarchical memory index, and `read_more` path allow-list |
+| [src/forensia/core/compaction.py](../src/forensia/core/compaction.py) | Deterministic text compaction and truncation markers |
+| [src/forensia/core/frontmatter.py](../src/forensia/core/frontmatter.py) | Markdown frontmatter parsing without workflow policy |
 | [src/forensia/core/memory_writers.py](../src/forensia/core/memory_writers.py) | Fact / timeline / task / entity-card write helpers |
 | [src/forensia/core/session.py](../src/forensia/core/session.py) | `SessionState` / `Hypothesis` / `PlannedQuery` Pydantic models |
 | [src/forensia/core/verdicts.py](../src/forensia/core/verdicts.py) | Verdict allow-list from `verdict_taxonomy.yaml`, `assert_valid_verdict` |
@@ -73,6 +77,8 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 | [src/forensia/ai/report_gap.py](../src/forensia/ai/report_gap.py) | Report status building + gap → hypothesis injection |
 | [src/forensia/ai/investigation/progress.py](../src/forensia/ai/investigation/progress.py) | `HypothesisProgressTracker`: query fingerprinting, auto-confirm / refute / pivot decisions |
 | [src/forensia/ai/audit.py](../src/forensia/ai/audit.py) | `LLMCallLogger`: per-phase prompt/response logs under `ai_logs/`, call counting |
+| [src/forensia/ai/compaction.py](../src/forensia/ai/compaction.py) | Fail-open LLM compaction with deterministic fallback and required-token validation |
+| [src/forensia/ai/retrieval_telemetry.py](../src/forensia/ai/retrieval_telemetry.py) | Observational memory/knowledge retrieval events written to `trace.duckdb` |
 | [src/forensia/ai/case_profile.py](../src/forensia/ai/case_profile.py) | Case profile (observed event IDs / artifact families) + profile advisor |
 
 ## AI — subpackages

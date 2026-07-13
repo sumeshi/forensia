@@ -26,8 +26,7 @@ The following is the package-level map contributors usually need. See
 | `src/forensia/core/` | Case, session, memory, verdict, time, and progress primitives without workflow policy |
 | `src/forensia/db/` | DuckDB schema, migrations, connections, and generic query/evidence access |
 | `src/forensia/api/` | UI-facing DTOs, DB projections, progress records, and API snapshot cache |
-| `src/forensia/evidence/` | Artifact discovery, parser adapters, and raw JSONL production |
-| `src/forensia/evidence/` | Raw parser output to normalized DuckDB tables |
+| `src/forensia/evidence/` | Artifact discovery, parser adapters, raw JSONL production, and normalization into DuckDB |
 | `src/forensia/knowledge/rules/` | Rule models, YAML loading, rule execution, and finding generation |
 | `src/forensia/knowledge/` | Readers for shared declarative catalogs and structured questions |
 | `src/forensia/knowledge/rulepacks/` | Detection rules and shared DFIR/schema knowledge in YAML/Markdown |
@@ -144,14 +143,27 @@ Durable conclusions (findings / claims / memory facts) must always be traceable 
 
 The CFReDS benchmark in BENCHMARK.md is **a measurement instrument, not an optimization target**. Adding code paths or prompts tied to specific questions, host names, file names, or timestamps is prohibited. When you find a gap in the benchmark, translate it into "which generic DFIR capability is missing" before implementing.
 
+### 7. Keep memory scopes isolated
+
+`case.duckdb` is authoritative; Markdown under `memory/` is an inspectable
+projection for prompt assembly, and `trace.duckdb` records how that context was
+selected. A hypothesis-scoped call may read shared confirmed memory, relevant
+entity/keypoint cards, and its own hypothesis card/scratch only.
+
+Do not solve context contamination with prompt wording alone. Path visibility
+and `read_more` access must both be enforced in code. Tests for memory changes
+must include two hypotheses and prove that the current scope cannot list or read
+the other scope's scratch, card, archive, or prior attempt history. Retrieval
+telemetry is observational and must not silently become ranking feedback.
+
 ## Tests
 
 ```bash
-# All tests (should complete in seconds)
-UV_CACHE_DIR=/tmp/uv-cache PYTHONPATH=src uv run python -m pytest tests/ -q
-
-# Declarative layer / documentation consistency audit
-forensia doctor
+# Full required verification
+timeout 300 env UV_CACHE_DIR=/tmp/uv-cache uv run pytest tests/ -q
+env UV_CACHE_DIR=/tmp/uv-cache uv run ruff check src/ tests/ scripts/
+env UV_CACHE_DIR=/tmp/uv-cache uv run python scripts/check_imports.py
+env UV_CACHE_DIR=/tmp/uv-cache uv run forensia doctor
 ```
 
 - **Do not write tests that make real LLM calls or hit a real LLM server** (see the "Test policy" section in [docs/development.md](docs/development.md) for the rationale).

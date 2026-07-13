@@ -20,6 +20,8 @@ class Settings:
     llm_report_max_queries_per_section: int = 3
     llm_reasoning_reserve_tokens: int = 0
     forensia_system_prompt_budget_chars: int = 24000
+    # 0 = derive from the configured system-character budget.
+    forensia_prompt_budget_tokens: int = 0
     forensia_ui_origins: str = ""
     structured_markdown_max_rows: int = 200
     llm_outage_wall_clock_budget_s: int = 28800
@@ -53,6 +55,9 @@ def _build_settings() -> Settings:
         ),
         forensia_system_prompt_budget_chars=_env_int(
             "FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS", 24000, minimum=1
+        ),
+        forensia_prompt_budget_tokens=_env_int(
+            "FORENSIA_PROMPT_BUDGET_TOKENS", 0, minimum=0
         ),
         forensia_ui_origins=os.getenv("FORENSIA_UI_ORIGINS", ""),
         structured_markdown_max_rows=_env_int(
@@ -104,3 +109,11 @@ def clear_llm_settings_cache() -> None:
 
 def get_system_prompt_budget_chars() -> int:
     return settings.forensia_system_prompt_budget_chars
+
+
+def get_prompt_budget_tokens() -> int:
+    """Return the total prompt budget, explicitly configured or auto-derived."""
+    configured = settings.forensia_prompt_budget_tokens
+    if configured > 0:
+        return configured
+    return max(512, settings.forensia_system_prompt_budget_chars // 2)

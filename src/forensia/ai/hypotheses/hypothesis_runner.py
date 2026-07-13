@@ -606,7 +606,15 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
         memory.archive_hypothesis_scratch(hypothesis.id)
     elif check_result.verdict == "untestable":
         memory.archive_untestable_hypothesis_scratch(hypothesis.id)
-    ctx_refresh_caches(ctx, memory, base_url, model, hypothesis=hypothesis)
+    ctx_refresh_caches(
+        ctx,
+        memory,
+        base_url,
+        model,
+        hypothesis=hypothesis,
+        db=db,
+        session_id=session_id,
+    )
     _save_step(
         db=db,
         session_id=session_id,

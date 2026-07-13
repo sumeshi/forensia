@@ -79,6 +79,7 @@ def reset_case_tables(db: CaseDB) -> None:
         "hypotheses",
         "report_sections",
         "progress_events",
+        "retrieval_events",
         "ingested_files",
     ):
         db.execute(f"DELETE FROM {table}")
@@ -122,6 +123,18 @@ def _resolve_template_dir(case: Case, template_dir: str | None) -> Path:
     ):
         return case.report_template_dir
     raise typer.BadParameter("no report templates are available")
+
+
+def _resolve_knowledge_dir(knowledge_dir: str | None) -> Path | None:
+    """Resolve and validate a knowledge directory, returning None if not specified."""
+    if not knowledge_dir or not isinstance(knowledge_dir, str):
+        return None
+    path = Path(knowledge_dir).resolve()
+    if not path.exists():
+        raise typer.BadParameter(f"knowledge directory not found: {path}")
+    if not path.is_dir():
+        raise typer.BadParameter(f"knowledge path is not a directory: {path}")
+    return path
 
 
 def _available_profiles() -> list[str]:

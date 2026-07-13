@@ -351,6 +351,25 @@ CREATE TABLE IF NOT EXISTS trace.hypothesis_reasoning (
 CREATE INDEX IF NOT EXISTS hypothesis_reasoning_by_hypothesis
     ON trace.hypothesis_reasoning(hypothesis_id, created_at);
 
+CREATE TABLE IF NOT EXISTS trace.retrieval_events (
+    event_id VARCHAR PRIMARY KEY,
+    session_id VARCHAR,
+    scope_kind VARCHAR,
+    scope_id VARCHAR,
+    phase VARCHAR,
+    source_kind VARCHAR,
+    query_terms JSON,
+    candidate_count INTEGER,
+    selected_refs JSON,
+    rejected_refs JSON,
+    selected_chars INTEGER,
+    budget INTEGER,
+    created_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS retrieval_events_by_scope
+    ON trace.retrieval_events(scope_kind, scope_id, created_at);
+
 CREATE TABLE IF NOT EXISTS trace.progress_events (
     event_index BIGINT PRIMARY KEY,
     stage VARCHAR,
@@ -372,4 +391,5 @@ TRACE_TABLES = {
     "investigation_steps",
     "hypothesis_reasoning",
     "progress_events",
+    "retrieval_events",
 }

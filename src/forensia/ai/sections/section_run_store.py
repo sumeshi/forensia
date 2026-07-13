@@ -193,7 +193,7 @@ def _load_prior_runs(
     """
     rows = db.execute(
         """
-        SELECT iteration, phase, payload, verdict, created_at
+        SELECT block_heading, iteration, phase, payload, verdict, created_at
         FROM section_runs
         WHERE section_key = ? AND block_heading = ?
         ORDER BY created_at, iteration
@@ -201,7 +201,7 @@ def _load_prior_runs(
         (section_key, block_heading),
     ).fetchall()
     items: list[dict[str, Any]] = []
-    for iteration, phase, payload, verdict, created_at in rows:
+    for stored_heading, iteration, phase, payload, verdict, created_at in rows:
         parsed_payload = payload
         if isinstance(payload, str):
             try:
@@ -210,6 +210,7 @@ def _load_prior_runs(
                 pass
         items.append(
             {
+                "block_heading": str(stored_heading or ""),
                 "iteration": iteration,
                 "phase": phase,
                 "payload": parsed_payload,

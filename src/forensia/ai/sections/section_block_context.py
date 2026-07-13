@@ -58,6 +58,7 @@ class _BlockContext:
     question: str = ""
     structured_digest: str = ""
     review_audit: Callable | None = None
+    template_tags: tuple[str, ...] = ()
 
 
 def prepare_block_context(
@@ -82,6 +83,7 @@ def prepare_block_context(
     audit_callback=None,
     review_audit_callback=None,
     report_brief: dict[str, Any] | None = None,
+    template_tags: tuple[str, ...] = (),
 ) -> _BlockContext:
     routing_text = f"{question}\n{template_body}".strip() if question else template_body
     question_spec, question_confidence = resolve_question_spec(
@@ -170,4 +172,5 @@ def prepare_block_context(
         question=question,
         structured_digest=structured_digest,
         review_audit=review_audit,
+        template_tags=tuple(template_tags),
     )

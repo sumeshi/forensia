@@ -172,3 +172,47 @@ Files with a `kind:` prefix such as `kind: allowlist_services` are not rules; th
 - Package defaults live under `src/forensia/report/templates/` / `profiles/` / `rulepacks/`
 - Treat case-local `report_template/` as an override input copied at initialization
 - Currently, case-local copies of profiles and rulepacks are not depended upon (they are resolved from the package tree)
+
+---
+
+## 6. External knowledge folder (`--knowledge <dir>`)
+
+An optional directory of Markdown knowledge files can be specified at runtime with `--knowledge <dir>`. Files are injected into investigation and report-generation prompts as `<ORG_KNOWLEDGE>` blocks.
+
+### 6.1 File format
+
+Each file uses YAML frontmatter + Markdown (same format as report templates):
+
+```markdown
+---
+type: knowledge
+title: Short title
+description: One-line summary used for relevance scoring.
+tags: [windows, eventlog, rdp]
+---
+# Body (Markdown)
+
+## Section heading
+
+Content under this heading.
+```
+
+- `type: knowledge` is required. Files without it (e.g. README) are skipped.
+- `description` and `tags` are used for selection — always fill them in.
+- One file = one topic. Keep each file under a few thousand characters for weak LLM context budgets.
+
+### 6.2 Selection logic
+
+Selection is deterministic (no LLM calls) and works in 3 stages:
+
+1. **Tag filtering**: Keep files whose tags intersect with the current context tags (profile name, section family). If no intersection, all files are candidates.
+2. **File scoring**: Score by case-insensitive token-boundary hits of query terms in title + description (meta), then in body for the top 20 meta-scored files. Select up to 3 files by total score.
+3. **Section extraction**: Split selected files at `## ` headings. Score each section by query-term hits, keep up to 3 sections per file within a 4000-character budget.
+
+Query terms are extracted from hypothesis text, section titles, block headings,
+recent check results, and unresolved questions. This lets later loop iterations
+retrieve more specific references than the first pass.
+
+### 6.3 Budget and priority
+
+`<ORG_KNOWLEDGE>` is treated as reference-only input, never as instructions. Generic catalogs and framework details are compacted first so the small, query-specific reference block can survive for weak models; the core task, output schema, and safety rules remain higher priority.

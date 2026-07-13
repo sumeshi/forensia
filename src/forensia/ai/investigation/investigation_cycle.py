@@ -607,7 +607,15 @@ async def _run_cycle_body(
                 break
             state.focus_hypothesis_id = hypothesis.id
             state.focus_depth = 0
-            ctx_refresh_caches(ctx, memory, base_url, model, hypothesis=hypothesis)
+            ctx_refresh_caches(
+                ctx,
+                memory,
+                base_url,
+                model,
+                hypothesis=hypothesis,
+                db=db,
+                session_id=session_id,
+            )
             focus_sections = _guess_related_sections(hypothesis.description)
             _log("HYPOTHESIS", f"{hypothesis.id} — {hypothesis.description}")
             _emit(

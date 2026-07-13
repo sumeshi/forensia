@@ -34,6 +34,11 @@ def set_case_profile(profile_name: str | None, event_ids: set[int] | None) -> No
     _profile = CaseEvidenceProfile(profile_name=profile_name or "", event_ids=event_ids)
 
 
+def get_profile_name() -> str:
+    """Return the active profile name (e.g. "windows-basic"), or "" if unset."""
+    return _profile.profile_name
+
+
 def get_profile_event_ids() -> set[int] | None:
     # Return a copy: several prompt builders extend the result with
     # hypothesis/row-derived IDs, and mutating the module-global set would

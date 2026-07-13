@@ -6,10 +6,10 @@ import asyncio
 import hashlib
 import inspect
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from re import sub
 from typing import Any
 from uuid import uuid4
 
@@ -105,6 +105,8 @@ def ctx_refresh_caches(
     model: str,
     current_hypothesis_id: str | None = None,
     hypothesis: Hypothesis | None = None,
+    db: CaseDB | None = None,
+    session_id: str | None = None,
 ) -> None:
     """Reload memory context caches and compact overview if needed.
 
@@ -125,18 +127,49 @@ def ctx_refresh_caches(
         else None
     )
     ctx.current_hypothesis_id = current_hypothesis_id
+    plan_budget = max(1024, memory.max_bytes // 3)
+    index_budget = min(2048, max(256, plan_budget // 4))
+    memory_index = memory.build_memory_index(
+        current_hypothesis_id,
+        relevance_terms=relevance_terms or None,
+        max_bytes=index_budget,
+    )
     ctx.memory_plan = memory.load_investigation_context(
         current_hypothesis_id,
         relevance_terms=relevance_terms or None,
-        max_bytes=max(1024, memory.max_bytes // 3),
+        max_bytes=max(768, plan_budget - len(memory_index.encode("utf-8"))),
         include_overview=False,
+        include_archive=current_hypothesis_id is None,
     )
+    if memory_index:
+        ctx.memory_plan = f"{ctx.memory_plan.rstrip()}\n\n{memory_index}".strip()
     ctx.memory_check = memory.load_investigation_context(
         current_hypothesis_id,
         relevance_terms=relevance_terms or None,
         max_bytes=max(1024, memory.max_bytes // 2),
         include_overview=False,
+        include_archive=current_hypothesis_id is None,
     )
+    if db is not None:
+        from forensia.ai.retrieval_telemetry import record_retrieval_event
+
+        selected_refs = re.findall(r"^- ([^:][^\n]*\.md)$", memory_index, re.MULTILINE)
+        record_retrieval_event(
+            db,
+            session_id=session_id,
+            scope_kind="hypothesis" if current_hypothesis_id else "global",
+            scope_id=current_hypothesis_id,
+            phase="index",
+            source_kind="memory",
+            query_terms=sorted(relevance_terms or []),
+            candidate_count=sum(
+                int(value)
+                for value in re.findall(r"^- [^:]+: (\d+)", memory_index, re.MULTILINE)
+            ),
+            selected_refs=selected_refs,
+            selected_chars=len(memory_index),
+            budget=index_budget,
+        )
 
 
 def _save_step(
@@ -349,7 +382,7 @@ def _sync_hypothesis_cards(
 ) -> None:
     """Remove hypothesis memory files that no longer correspond to active or resolved hypotheses."""
     valid_ids = {
-        sub(r"[^a-zA-Z0-9._-]+", "-", str(item.id).strip()).strip("-") or "unknown"
+        re.sub(r"[^a-zA-Z0-9._-]+", "-", str(item.id).strip()).strip("-") or "unknown"
         for item in [*active_hypotheses, *resolved_hypotheses]
     }
     for path in memory.hypotheses_dir.glob("*.md"):
@@ -395,7 +428,7 @@ def _init_session(
     sync_keypoint_cards(memory, state.findings_snapshot)
     _sync_hypothesis_cards(memory, state.active_hypotheses, state.resolved_hypotheses)
     ctx = Ctx(report_status=_build_report_status(db))
-    ctx_refresh_caches(ctx, memory, base_url, model)
+    ctx_refresh_caches(ctx, memory, base_url, model, db=db, session_id=session_id)
     db.execute(
         "INSERT INTO investigation_sessions (session_id, started_at, finished_at, iterations, status) VALUES (?, ?, ?, ?, ?)",
         (session_id, started_at, None, 0, "running"),

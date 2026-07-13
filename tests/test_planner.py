@@ -174,6 +174,50 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertEqual("q_failed_logon_by_ip_window", result.query.template_id)
         self.assertIn("GROUP BY src_ip", result.query.sql)
 
+    def test_query_intent_exposes_only_current_active_hypothesis(self) -> None:
+        current = Hypothesis(id="H-A", description="gap alpha private question")
+        other = Hypothesis(id="H-B", description="gap beta must not leak")
+        state = SessionState(
+            session_id="session-scope",
+            iteration=1,
+            active_hypotheses=[current, other],
+        )
+        responses = [
+            {
+                "read_more": [],
+                "intent": "inspect alpha",
+                "target_table": "evtx_events",
+                "filters_required": [],
+                "time_window": "case range",
+                "expected_row_shape": "event_id",
+            },
+            {"ready_to_compose": True, "blockers": ""},
+            {
+                "template_id": None,
+                "sql": "SELECT event_id FROM evtx_events LIMIT 1",
+                "params": {},
+                "purpose": "inspect alpha",
+            },
+        ]
+        seen_messages: list[list[dict[str, str]]] = []
+
+        def respond(**kwargs):
+            seen_messages.append(kwargs["messages"])
+            return responses[len(seen_messages) - 1]
+
+        with patch("forensia.ai.llm.llm_gateway.request_llm_json", side_effect=respond):
+            plan_hypothesis_query(
+                state=state,
+                hypothesis=current,
+                memory=_MemoryStub(),
+                base_url=_llm_base_url(),
+                model="test-model",
+            )
+
+        intent_prompt = "\n".join(message["content"] for message in seen_messages[0])
+        self.assertIn("gap alpha private question", intent_prompt)
+        self.assertNotIn("gap beta must not leak", intent_prompt)
+
     def test_retries_once_when_sql_validation_fails(self) -> None:
         state = SessionState(session_id="session-1", iteration=1)
         hypothesis = Hypothesis(id="H1", description="test hypothesis")
@@ -465,6 +509,7 @@ class PlannerRetryTests(unittest.TestCase):
         self,
     ) -> None:
         memory = _MemoryStub()
+        seen: list[str] = []
         with (
             patch.object(
                 memory, "load_compact_context", return_value="# compact extra"
@@ -476,12 +521,41 @@ class PlannerRetryTests(unittest.TestCase):
         ):
             request_with_optional_context(
                 memory=memory,
-                messages_builder=lambda extra: [{"role": "user", "content": extra}],
+                messages_builder=lambda extra: (
+                    seen.append(extra) or [{"role": "user", "content": extra}]
+                ),
                 base_url=_llm_base_url(),
                 model="test-model",
             )
 
         mock_compact.assert_any_call(["archive/refuted.md"], max_bytes=memory.max_bytes)
+        self.assertEqual(2, len(seen))
+        self.assertIn(seen[0], seen[1])
+        self.assertIn("# compact extra", seen[1])
+
+    def test_request_with_optional_context_enforces_hypothesis_scope(self) -> None:
+        case_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(case_dir.cleanup)
+        from forensia.core.memory import MemoryManager
+
+        memory = MemoryManager(Case.init(case_dir.name))
+        events: list[dict] = []
+        with patch(
+            "forensia.ai.llm.llm_gateway.request_llm_json",
+            return_value={"read_more": ["scratch/H-B/tasks.md"]},
+        ) as request:
+            result = request_with_optional_context(
+                memory=memory,
+                messages_builder=lambda extra: [{"role": "user", "content": extra}],
+                base_url=_llm_base_url(),
+                model="test-model",
+                hypothesis_id="H-A",
+                retrieval_callback=events.append,
+            )
+
+        self.assertEqual([], result["read_more"])
+        self.assertEqual(1, request.call_count)
+        self.assertEqual(["scratch/H-B/tasks.md"], events[0]["rejected_refs"])
 
     def test_query_fingerprint_normalizes_equivalent_ast_forms(self) -> None:
         left = query_fingerprint(

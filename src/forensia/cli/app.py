@@ -30,6 +30,7 @@ from forensia.cli.stages import (
 )
 from forensia.cli.support import (
     _open_case_or_die,
+    _resolve_knowledge_dir,
     _resolve_llm_or_die,
     _resolve_profile_path,
     _resolve_template_dir,
@@ -111,6 +112,11 @@ def report(
         help="Regenerate report sections using LLM-driven agentic writing",
     ),
     template_dir: str | None = typer.Option(None, "--template-dir"),
+    knowledge: str | None = typer.Option(
+        None,
+        "--knowledge",
+        help="Path to a directory of knowledge files (*.md with YAML frontmatter)",
+    ),
     llm_base_url: str | None = typer.Option(None, "--llm-base-url"),
     model: str | None = typer.Option(None, "--model"),
     report_max_queries_per_section: int = typer.Option(
@@ -120,6 +126,19 @@ def report(
     ),
 ) -> None:
     case = _open_case_or_die(case_dir)
+    knowledge_path = _resolve_knowledge_dir(knowledge)
+    from forensia.knowledge.external import scan_knowledge_dir, set_knowledge_docs
+
+    # CLI commands can be invoked repeatedly in one Python process (embedding,
+    # tests). Always replace the process-local index so an omitted option cannot
+    # inherit knowledge from a previous invocation.
+    set_knowledge_docs([])
+    if knowledge_path:
+        docs = scan_knowledge_dir(knowledge_path)
+        set_knowledge_docs(docs)
+        _status(f"knowledge: {len(docs)} files indexed from {knowledge_path}")
+        if not docs:
+            _status("WARNING: knowledge directory contains no valid knowledge files")
     with CaseDB(case) as db:
         if write:
             llm_base_url, model = _resolve_llm_or_die(llm_base_url, model)
@@ -279,6 +298,11 @@ def investigate(
     llm_base_url: str | None = typer.Option(None, "--llm-base-url"),
     model: str | None = typer.Option(None, "--model"),
     template_dir: str | None = typer.Option(None, "--template-dir"),
+    knowledge: str | None = typer.Option(
+        None,
+        "--knowledge",
+        help="Path to a directory of knowledge files (*.md with YAML frontmatter)",
+    ),
     rerun: bool = typer.Option(False, "--rerun", help="Reset case tables before rerun"),
     report_only: bool = typer.Option(
         False, "--report-only", help="Skip investigation, just write report"
@@ -313,6 +337,17 @@ def investigate(
     case = _open_or_init_case(case_dir, input_dir, timezone)
     if rerun:
         case = _rerun_reset(case, case_dir, timezone)
+
+    knowledge_path = _resolve_knowledge_dir(knowledge)
+    from forensia.knowledge.external import scan_knowledge_dir, set_knowledge_docs
+
+    set_knowledge_docs([])
+    if knowledge_path:
+        docs = scan_knowledge_dir(knowledge_path)
+        set_knowledge_docs(docs)
+        _status(f"knowledge: {len(docs)} files indexed from {knowledge_path}")
+        if not docs:
+            _status("WARNING: knowledge directory contains no valid knowledge files")
 
     with CaseDB(case) as db:
         clear_progress_events(db)

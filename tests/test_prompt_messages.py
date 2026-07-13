@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import os
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from forensia.ai.llm.schemas import PARAGRAPH_NARRATE_SCHEMA
 from forensia.ai.prompts.prompt_context import (
+    _trim_dynamic_content,
     slim_report_brief_for_section,
     truncate_context_sections,
 )
@@ -56,7 +59,8 @@ class PromptMessageTests(unittest.TestCase):
         trimmed = truncate_context_sections(sections)
 
         self.assertEqual("x" * 1500, trimmed["2_timeline"])
-        self.assertEqual("y" * 1500, trimmed["3_technical"])
+        self.assertLessEqual(len(trimmed["3_technical"]), 1500)
+        self.assertIn("…[truncated]", trimmed["3_technical"])
 
     def test_report_section_messages_truncate_previous_sections(self) -> None:
         messages = build_report_section_messages(
@@ -437,6 +441,33 @@ class PriorAttemptsBlockTests(unittest.TestCase):
         # The raw JSON dump of history must be gone.
         self.assertNotIn("recent_history:", system)
 
+    def test_intent_knowledge_terms_include_previous_check_feedback(self) -> None:
+        from forensia.ai.prompts.prompt_investigation import build_query_intent_messages
+
+        with patch(
+            "forensia.ai.prompts.prompt_investigation._org_knowledge_block",
+            return_value="",
+        ) as knowledge_block:
+            build_query_intent_messages(
+                hypothesis=Hypothesis(id="H-001", description="test hypothesis"),
+                recent_history=[{"summary": "prior answer about log clearing"}],
+                active_hypotheses=[],
+                prior_check_feedback="missing event_id 1102",
+            )
+        extra_words = knowledge_block.call_args.kwargs["extra_words"]
+        self.assertIn("missing event_id 1102", extra_words)
+        self.assertIn("prior answer about log clearing", extra_words)
+
+    def test_dynamic_context_trim_respects_effective_budget(self) -> None:
+        messages = [
+            {"role": "system", "content": "s" * 1000},
+            {"role": "user", "content": "u" * 20000},
+        ]
+        trimmed = _trim_dynamic_content(messages, max_total_tokens=1000)
+        self.assertLessEqual(sum(len(m["content"]) for m in trimmed), 4000)
+        self.assertIn("…[truncated]", trimmed[1]["content"])
+        self.assertEqual("u" * 20000, messages[1]["content"])
+
 
 class NarratePromptContractTests(unittest.TestCase):
     """Schema and brief-slimming contracts for narrative section prompts."""
@@ -491,6 +522,78 @@ class NarratePromptContractTests(unittest.TestCase):
         self.assertNotIn("large_unused_field", technical["top_findings"][0])
         self.assertEqual("H-002", gaps["active_hypotheses"][0]["hypothesis_id"])
         self.assertNotIn("top_findings", gaps)
+
+
+def test_section_knowledge_selection_uses_template_frontmatter_tags(tmp_path: Path) -> None:
+    from forensia.ai.sections.section_block_plan import _inject_org_knowledge
+    from forensia.knowledge.external import scan_knowledge_dir, set_knowledge_docs
+
+    (tmp_path / "allowed.md").write_text(
+        "---\ntype: knowledge\ntitle: Timeline notes\n"
+        "description: timeline\ntags: [template-tag]\n---\n"
+        "## Timeline\ntimeline evidence from allowed doc\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "blocked.md").write_text(
+        "---\ntype: knowledge\ntitle: Timeline timeline timeline\n"
+        "description: timeline timeline timeline\ntags: [section-family]\n---\n"
+        "## Timeline\ntimeline timeline timeline from blocked doc\n",
+        encoding="utf-8",
+    )
+    set_knowledge_docs(scan_knowledge_dir(tmp_path))
+    try:
+        ctx = SimpleNamespace(
+            title="Timeline",
+            block_heading="Timeline",
+            template_tags=("template-tag",),
+            base_url="",
+            model="",
+        )
+        system = _inject_org_knowledge("SYSTEM\n", ctx)
+    finally:
+        set_knowledge_docs([])
+
+    assert "allowed" in system
+    assert "blocked" not in system
+
+
+def test_section_knowledge_selection_uses_latest_missing_question(tmp_path: Path) -> None:
+    from forensia.ai.sections.section_block_plan import _inject_org_knowledge
+    from forensia.knowledge.external import scan_knowledge_dir, set_knowledge_docs
+
+    (tmp_path / "log-clearing.md").write_text(
+        "---\ntype: knowledge\ntitle: Event 1102 log clearing\n"
+        "description: Security log removal\ntags: [windows]\n---\n"
+        "## Event 1102\nCheck event 1102 and adjacent service events.\n",
+        encoding="utf-8",
+    )
+    set_knowledge_docs(scan_knowledge_dir(tmp_path))
+    try:
+        ctx = SimpleNamespace(
+            title="Technical assessment",
+            block_heading="Open questions",
+            template_tags=("windows",),
+            base_url="",
+            model="",
+        )
+        system = _inject_org_knowledge(
+            "SYSTEM\n", ctx, focus_terms=["missing event_id 1102 log clearing"]
+        )
+    finally:
+        set_knowledge_docs([])
+    assert "log-clearing" in system
+
+
+def test_prior_section_runs_keep_prefiltered_and_matching_history() -> None:
+    from forensia.ai.prompts.prompt_sections import _filter_prior_runs_by_heading
+
+    runs = [
+        {"block_heading": "Log Integrity", "payload": {"missing_questions": ["1102"]}},
+        {"block_heading": "Other", "payload": {}},
+        {"payload": {"legacy": True}},
+    ]
+    selected = _filter_prior_runs_by_heading(runs, "Log Integrity")
+    assert selected == [runs[0], runs[2]]
 
 
 if __name__ == "__main__":

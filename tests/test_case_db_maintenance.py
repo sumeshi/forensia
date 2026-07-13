@@ -59,6 +59,7 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                             'evtx_events_by_evidence_id',
                             'mft_entries_by_evidence_id',
                             'investigation_steps_by_session_hypothesis',
+                            'retrieval_events_by_scope',
                             'ai_reviews_by_finding'
                         )
                         """
@@ -72,6 +73,7 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                     "evtx_events_by_evidence_id",
                     "mft_entries_by_evidence_id",
                     "investigation_steps_by_session_hypothesis",
+                    "retrieval_events_by_scope",
                     "ai_reviews_by_finding",
                 },
                 names,
@@ -168,6 +170,16 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                     ) VALUES ('HR-1', 'H-1', 'S-1', 1, 'check', 'confirmed', 'Q-1', 'body', now())
                     """
                 )
+                db.execute(
+                    """
+                    INSERT INTO retrieval_events (
+                        event_id, session_id, scope_kind, scope_id, phase, source_kind,
+                        query_terms, candidate_count, selected_refs, rejected_refs,
+                        selected_chars, budget, created_at
+                    ) VALUES ('RE-1', 'S-1', 'hypothesis', 'H-1', 'index', 'memory',
+                              '[]', 1, '[]', '[]', 0, 1024, now())
+                    """
+                )
 
                 reset_case_tables(db)
 
@@ -202,6 +214,9 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                     db.execute("SELECT COUNT(*) FROM hypothesis_reasoning").fetchone()[
                         0
                     ],
+                )
+                self.assertEqual(
+                    0, db.execute("SELECT COUNT(*) FROM retrieval_events").fetchone()[0]
                 )
 
     def test_run_renders_report_once_via_render_written_report(self) -> None:

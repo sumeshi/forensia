@@ -8,6 +8,8 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
+from forensia.core.frontmatter import parse_frontmatter
+
 
 @dataclass(frozen=True)
 class TemplateMeta:
@@ -31,22 +33,6 @@ QUESTION_HINT_PATTERN = re.compile(
     r"<!--\s*question(?:\s*:\s*(?P<value>.*?))?\s*-->", re.IGNORECASE
 )
 RAW_EVIDENCE_HEADING_PATTERN = re.compile(r"^#{2,6}\s*Raw Evidence\s*$", re.IGNORECASE)
-
-
-def parse_frontmatter(text: str) -> dict:
-    """Extract YAML frontmatter dict from text starting with ---."""
-    if not text.startswith("---\n"):
-        return {}
-    parts = text.split("---\n", 2)
-    if len(parts) < 3:
-        return {}
-    import yaml
-
-    try:
-        meta = yaml.safe_load(parts[1])
-    except Exception:
-        meta = {}
-    return meta if isinstance(meta, dict) else {}
 
 
 @cache

@@ -2,6 +2,7 @@
 
 import logging
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -114,6 +115,7 @@ class MemoryContextMixin:
         relevance_terms: set[str] | None = None,
         include_archive: bool = True,
         include_overview: bool = True,
+        include_core: bool = True,
         include_entities: bool = True,
         include_keypoints: bool = True,
         include_scratch: bool = True,
@@ -128,7 +130,9 @@ class MemoryContextMixin:
         """
         files: list[str] = []
         if include_overview:
-            files.extend(["overview.md", "facts.md", "timeline.md", "tasks.md"])
+            files.append("overview.md")
+        if include_core:
+            files.extend(["facts.md", "timeline.md", "tasks.md"])
         if include_archive:
             files.extend(["archive/refuted.md", "archive/resolved_gaps.md"])
         if include_entities:
@@ -150,11 +154,12 @@ class MemoryContextMixin:
                 ]
             files.extend(kp_files)
         if include_scratch:
-            files.extend(self._markdown_files(self.scratch_global_dir))
             if hypothesis_id:
                 files.extend(
                     self._markdown_files(self._hypothesis_scratch_dir(hypothesis_id))
                 )
+            else:
+                files.extend(self._markdown_files(self.scratch_global_dir))
         deduped: list[str] = []
         seen: set[str] = set()
         for item in files:
@@ -172,6 +177,7 @@ class MemoryContextMixin:
         max_bytes: int | None = None,
         include_archive: bool = True,
         include_overview: bool = True,
+        include_core: bool = True,
         include_entities: bool = True,
         include_keypoints: bool = True,
         include_scratch: bool = True,
@@ -183,12 +189,149 @@ class MemoryContextMixin:
                 relevance_terms=relevance_terms,
                 include_archive=include_archive,
                 include_overview=include_overview,
+                include_core=include_core,
                 include_entities=include_entities,
                 include_keypoints=include_keypoints,
                 include_scratch=include_scratch,
             ),
             max_bytes=max_bytes,
         )
+
+    def build_memory_index(
+        self,
+        hypothesis_id: str | None = None,
+        *,
+        relevance_terms: set[str] | None = None,
+        max_entries: int = 80,
+        max_bytes: int = 2048,
+    ) -> str:
+        """Return a scope-safe hierarchical index for progressive disclosure.
+
+        A hypothesis-scoped index never advertises another hypothesis's card,
+        scratch space, or archived reasoning.  Entity and keypoint cards remain
+        discoverable, with relevant cards ranked first and exact paths suitable
+        for ``read_more``.
+        """
+        scope_key = self._scratch_key(hypothesis_id) if hypothesis_id else None
+        hypothesis_cards = (
+            [f"hypotheses/{scope_key}.md"]
+            if scope_key and (self.base_dir / f"hypotheses/{scope_key}.md").is_file()
+            else []
+        )
+        entities = self._markdown_files(self.entities_dir)
+        keypoints = self._markdown_files(self.keypoints_dir)
+        global_scratch = (
+            [] if scope_key else self._markdown_files(self.scratch_global_dir)
+        )
+        current_scratch = (
+            self._markdown_files(self._hypothesis_scratch_dir(scope_key))
+            if scope_key
+            else []
+        )
+        groups = {
+            "hypothesis/current": hypothesis_cards,
+            "entities": entities,
+            "keypoints": keypoints,
+            "scratch/global": global_scratch,
+            "scratch/current": current_scratch,
+        }
+        candidates = [path for paths in groups.values() for path in paths]
+        seen: set[str] = set()
+        unique: list[str] = []
+        for path in candidates:
+            if path in seen:
+                continue
+            seen.add(path)
+            unique.append(path)
+        if not unique:
+            return ""
+        if relevance_terms:
+            unique.sort(
+                key=lambda path: (
+                    not self._file_matches_relevance(
+                        path, self.base_dir, relevance_terms
+                    ),
+                    path,
+                )
+            )
+        else:
+            unique.sort()
+        entity_types = Counter(
+            Path(path).parts[1] if len(Path(path).parts) > 2 else "unknown"
+            for path in entities
+        )
+        scope_attr = f' scope="{scope_key}"' if scope_key else ' scope="global"'
+        lines = [
+            f"<MEMORY_INDEX{scope_attr}>",
+            "Use read_more with an exact relative path when a card is needed.",
+            "Only paths in this index are available in the current scope.",
+            "<CATEGORIES>",
+            f"- hypothesis/current: {len(hypothesis_cards)}",
+            f"- entities: {len(entities)}"
+            + (
+                " ("
+                + ", ".join(
+                    f"{key}={value}" for key, value in sorted(entity_types.items())
+                )
+                + ")"
+                if entity_types
+                else ""
+            ),
+            f"- keypoints: {len(keypoints)}",
+            f"- scratch/global: {len(global_scratch)}",
+            f"- scratch/current: {len(current_scratch)}",
+            "</CATEGORIES>",
+            "<AVAILABLE_PATHS>",
+        ]
+        closing_lines = ["</AVAILABLE_PATHS>", "</MEMORY_INDEX>"]
+        truncated = False
+        for path in unique[:max_entries]:
+            candidate = "\n".join([*lines, f"- {path}", "…[truncated]", *closing_lines])
+            if len(candidate.encode("utf-8")) > max_bytes:
+                truncated = True
+                break
+            lines.append(f"- {path}")
+        if truncated:
+            lines.append("…[truncated]")
+        lines.extend(closing_lines)
+        return "\n".join(lines)
+
+    def filter_paths_for_scope(
+        self, paths: list[str], hypothesis_id: str | None
+    ) -> tuple[list[str], list[str]]:
+        """Partition requested memory paths into allowed and rejected paths.
+
+        Hypothesis-scoped calls may read shared core/entity/keypoint memory,
+        the current hypothesis card/scratch only.  This is
+        an enforcement boundary, not merely prompt guidance.
+        """
+        if not hypothesis_id:
+            return paths, []
+        scope_key = self._scratch_key(hypothesis_id)
+        allowed_exact = {
+            "overview.md",
+            "facts.md",
+            "timeline.md",
+            "tasks.md",
+            f"hypotheses/{scope_key}.md",
+        }
+        allowed_prefixes = (
+            "entities/",
+            "keypoints/",
+            "details/",
+            "evidence/",
+            f"scratch/{scope_key}/",
+        )
+        allowed: list[str] = []
+        rejected: list[str] = []
+        for raw_path in paths:
+            path = str(raw_path).strip().replace("\\", "/")
+            safe = path and not path.startswith("/") and ".." not in Path(path).parts
+            if safe and (path in allowed_exact or path.startswith(allowed_prefixes)):
+                allowed.append(path)
+            else:
+                rejected.append(path)
+        return allowed, rejected
 
     # Priority constants for memory trimming — lower number = higher priority.
     PRIORITY_P0 = 0  # overview, facts — NEVER fully removed
