@@ -104,8 +104,7 @@ Other common operations:
 ```bash
 forensia investigate case001 --max-iter 50    # continue an existing case
 forensia add case001 ./new-input              # add more evidence
-forensia report case001                       # re-render report files from existing sections (no LLM)
-forensia report case001 --write               # regenerate report sections with the LLM, then render
+forensia report case001 --write               # regenerate report sections with the LLM (reports are also visible in the web UI)
 forensia templates-export ./my-templates      # export the packaged templates
 forensia serve case001 --port 8000            # open the local web UI (cockpit)
 ```
@@ -116,14 +115,14 @@ Each case produces a self-contained directory:
 
 ```
 dist/<case>/
-├─ raw/                 · Original artifacts (ingest input)
+├─ raw/                 · Parsed artifact records (JSONL) staged during ingest
 ├─ db/case.duckdb       · Normalized evidence + hypotheses + findings + report sections
 ├─ db/trace.duckdb      · Investigation steps and retrieval telemetry
 ├─ memory/              · LLM persistent memory (Markdown, human-readable)
 ├─ ai_logs/             · Raw LLM input/output logs (per-phase JSON)
 ├─ reports/             · report.md / report.html / structured CSV / UI snapshots
 ├─ findings/            · Per-rule finding details
-├─ allowlist.yaml       · Finding identifiers to suppress
+├─ allowlist.yaml       · Per-case suppression rules for known-benign findings
 └─ manifest.yaml        · Case metadata
 ```
 
@@ -137,14 +136,14 @@ dist/<case>/
 
 What works today:
 
-* Ingestion and normalization of EVTX, MFT, and Prefetch artifacts into DuckDB. The current adapter interface can be used to add additional artifact types, although it is not yet stable (see [docs/extending.md](docs/extending.md)).
+* Ingestion and normalization of EVTX, MFT, and Prefetch artifacts into DuckDB. These three are supported first because they fit the same unified pipeline (parse → staged JSONL → normalized DuckDB tables); more artifact types are planned on the same approach. The current adapter interface can be used to add your own, although it is not yet stable (see [docs/extending.md](docs/extending.md)).
 * A rule engine that produces findings, key points, and hypothesis seeds from declarative rulepacks.
 * An LLM-driven investigation loop: hypothesis seeding, SQL query planning and composition, execution with fallback search, verdict review, and finding extraction.
 * Incremental report generation from templates, refreshed as findings are confirmed, exported as Markdown and HTML.
 * A local web UI (`forensia serve`) showing investigation progress, findings, hypotheses, report sections, timeline data, and evidence references.
-* Knowledge injection from a local folder of Markdown files (`--knowledge`): the specified files are loaded and injected into prompts. There is no full-text indexing, search, or ranking yet.
+* Knowledge injection from a local folder of Markdown files (`--knowledge`), used to bring organization- or case-specific context into prompts.
 
-Not yet implemented (see [Roadmap](#roadmap)): indexed retrieval (full-text search, ranking, fragment selection) over a general-purpose local document collection, browser and email artifact adapters, and stable rule/template formats.
+Not yet implemented (see [Roadmap](#roadmap)): full-text indexing and search over large local document collections, browser and email artifact adapters, and stable rule/template formats.
 
 ### Tested model configurations
 
@@ -260,7 +259,10 @@ flowchart TB
     SHARED --> GATE{"Scope gate<br/>only shared memory and the<br/>current hypothesis pass"}
     SCRATCH --> GATE
 
+    KNOW["Knowledge files (--knowledge)<br/>org/case-specific Markdown"]
+
     GATE --> PROMPT["Per-call prompt<br/>rebuilt for every LLM call"]
+    KNOW --> PROMPT
     PROMPT --> LLM["Local LLM<br/>one narrow role at a time"]
 
     LLM -->|validated results only| CASE
@@ -276,7 +278,7 @@ The main lesson from this project so far: small local models need more than good
 
 The long-term direction is therefore strongly tied to retrieval:
 
-* A local "second brain". Today's `--knowledge` option only injects the specified Markdown files into prompts; the goal is general-purpose retrieval — indexing a folder of the user's own documents, notes, reports, and playbooks with full-text search, and pulling only the relevant fragments into prompts on demand. This is similar in spirit to the search engine explored in [sumeshi/roughsearch](https://github.com/sumeshi/roughsearch), which may eventually serve as the retrieval layer for this feature.
+* Scaling the knowledge layer into a local "second brain": adding full-text indexing and search on top of today's `--knowledge` injection, so that large collections of documents, notes, reports, and playbooks can be searched and only the relevant fragments pulled into prompts on demand.
 * More artifact adapters (browser data, email traces).
 * More declarative investigation profiles, and a clearer separation between generic engine logic and case-specific knowledge.
 * Better template documentation and more stable rule/template formats.
@@ -286,15 +288,16 @@ The long-term goal is not merely to automate reports. It is to build an offline 
 ## Benchmarks
 
 Benchmark-related notes are documented in [BENCHMARK.md](BENCHMARK.md).
-Ground-truth answers for the scored questions are documented in [BENCHMARK-ANSWERS.md](BENCHMARK-ANSWERS.md). These are derived from the public NIST CFReDS dataset and are intended for evaluation reference only — do not optimize code or prompts against specific answers (see [CONTRIBUTING.md](CONTRIBUTING.md)).
+Ground-truth answers for the scored questions are documented in [BENCHMARK-ANSWERS.md](BENCHMARK-ANSWERS.md). These are derived from the public NIST CFReDS dataset.
 
 The repository does not include large forensic datasets or derived case directories for size, license, and sensitivity reasons. Obtain benchmark data from the original public sources, extract artifacts into a local working directory, and run forensia against that local copy:
 
 ```bash
 forensia templates-export ./benchmark-templates
-forensia investigate benchmark-output ./path/to/extracted-artifacts --profile windows-basic --template-dir ./benchmark-templates
-forensia report benchmark-output   # render the report from the investigated sections (add --write to regenerate them)
+forensia investigate cfreds ./path/to/extracted-artifacts --profile windows-basic --template-dir ./benchmark-templates
 ```
+
+Reports are written during the investigation and can be browsed in the web UI (`forensia serve cfreds`).
 
 Benchmark-specific behavior should come from templates, profiles, or rules — never from hidden assumptions in the core engine.
 

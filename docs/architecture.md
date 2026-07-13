@@ -281,7 +281,7 @@ The UI ([web_ui/](../web_ui/)) polls snapshots through Svelte stores and updates
 
 ```
 dist/<case>/
-├─ raw/                 · Original artifacts (ingest input)
+├─ raw/                 · Parsed artifact records (JSONL) staged during ingest
 ├─ db/case.duckdb       · Normalized tables + hypotheses + findings + report_sections
 ├─ memory/              · LLM persistent memory (overview.md, facts.md, entities/, hypotheses/, scratch/)
 ├─ ai_logs/             · Raw LLM input/output logs (per-phase JSON, for debugging)
