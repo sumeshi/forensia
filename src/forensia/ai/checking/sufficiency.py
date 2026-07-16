@@ -357,7 +357,7 @@ def update_claim_support_for_hypothesis(
         if isinstance(ids, str):
             try:
                 ids = json.loads(ids)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 ids = []
         if hypothesis_id not in (ids if isinstance(ids, list) else []):
             continue

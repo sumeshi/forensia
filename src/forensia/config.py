@@ -32,7 +32,7 @@ def _env_int(name: str, default: int, *, minimum: int | None = None) -> int:
     raw_value = os.getenv(name)
     try:
         value = default if raw_value is None else int(raw_value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         value = default
     if minimum is not None:
         value = max(minimum, value)

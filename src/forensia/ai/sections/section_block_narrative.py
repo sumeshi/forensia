@@ -254,7 +254,7 @@ def _label_key_points_with_verdicts(
         if raw_conf is not None:
             try:
                 result_conf = float(raw_conf)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 pass
         if result_conf is None:
             for row in result.get("sample_rows") or []:
@@ -264,7 +264,7 @@ def _label_key_points_with_verdicts(
                         try:
                             result_conf = float(c)
                             break
-                        except (TypeError, ValueError):
+                        except TypeError, ValueError:
                             pass
 
         if verdict and evids:

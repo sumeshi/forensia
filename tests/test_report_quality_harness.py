@@ -108,7 +108,9 @@ class TestReportQualityContract(unittest.TestCase):
                     """
                 )
                 findings = check_sufficiency_consistency(db)
-                self.assertGreater(len(findings), 0, "Should detect confirmed+insufficient")
+                self.assertGreater(
+                    len(findings), 0, "Should detect confirmed+insufficient"
+                )
 
     def test_confirmed_without_evidence_links(self) -> None:
         """confirmed hypothesis without evidence links must be flagged."""
@@ -126,7 +128,8 @@ class TestReportQualityContract(unittest.TestCase):
                 findings = check_sufficiency_consistency(db)
                 error_findings = [f for f in findings if f.severity == "error"]
                 self.assertGreater(
-                    len(error_findings), 0,
+                    len(error_findings),
+                    0,
                     "Confirmed claims without evidence links must be fatal",
                 )
 
@@ -179,9 +182,7 @@ class TestReportQualityContract(unittest.TestCase):
                         "forensia.report.render.writer.render_html_report",
                         return_value=html_path,
                     ),
-                    patch(
-                        "forensia.report.render.evidence_map.write_evidence_map"
-                    ),
+                    patch("forensia.report.render.evidence_map.write_evidence_map"),
                 ):
                     render_written_report(
                         case,
@@ -229,7 +230,9 @@ class TestReportQualityContract(unittest.TestCase):
 
         findings = validate_report(report_brief, report_body=report_body)
         marker_findings = [f for f in findings if f.check_name == "failure_marker"]
-        self.assertGreater(len(marker_findings), 0, "Should detect failure marker in full validation")
+        self.assertGreater(
+            len(marker_findings), 0, "Should detect failure marker in full validation"
+        )
 
 
 class TestRuleSemanticsContract(unittest.TestCase):
@@ -242,7 +245,9 @@ class TestRuleSemanticsContract(unittest.TestCase):
         rules_dir = Path("src/forensia/knowledge/rulepacks")
         profile_path = Path("src/forensia/knowledge/profiles/windows-basic.yaml")
         rules = load_rules_from_dir(rules_dir, profile_path)
-        rule_1100 = next((r for r in rules if r.id == "windows-security-1100-evtlog-shutdown"), None)
+        rule_1100 = next(
+            (r for r in rules if r.id == "windows-security-1100-evtlog-shutdown"), None
+        )
         self.assertIsNotNone(rule_1100, "Rule 1100 should exist")
         self.assertEqual(rule_1100.severity, "low", "Event 1100 should be low severity")
 
@@ -254,10 +259,13 @@ class TestRuleSemanticsContract(unittest.TestCase):
         profile_path = Path("src/forensia/knowledge/profiles/windows-basic.yaml")
         rules = load_rules_from_dir(rules_dir, profile_path)
         rule_6005_6006 = next(
-            (r for r in rules if r.id == "windows-system-6005-6006-eventlog-service"), None
+            (r for r in rules if r.id == "windows-system-6005-6006-eventlog-service"),
+            None,
         )
         self.assertIsNotNone(rule_6005_6006, "Rule 6005/6006 should exist")
-        self.assertEqual(rule_6005_6006.severity, "low", "Events 6005/6006 should be low severity")
+        self.assertEqual(
+            rule_6005_6006.severity, "low", "Events 6005/6006 should be low severity"
+        )
 
     def test_4735_rule_separated_from_membership(self) -> None:
         """Group metadata events must be separate from membership and user changes."""
@@ -271,7 +279,12 @@ class TestRuleSemanticsContract(unittest.TestCase):
             (r for r in rules if r.id == "windows-security-4728-group-change"), None
         )
         rule_4735 = next(
-            (r for r in rules if r.id == "windows-security-4735-group-metadata-changed"), None
+            (
+                r
+                for r in rules
+                if r.id == "windows-security-4735-group-metadata-changed"
+            ),
+            None,
         )
         self.assertIsNotNone(rule_4728, "Rule 4728 should exist")
         self.assertIsNotNone(rule_4735, "Rule 4735 should exist")

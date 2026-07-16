@@ -55,7 +55,11 @@ def _check_row_count_invariant(
     has rows while row_count says 0). This indicates a path resolution failure
     in _update_source_status.
     """
-    table_map = {"evtx": "evtx_events", "mft": "mft_entries", "prefetch": "prefetch_executions"}
+    table_map = {
+        "evtx": "evtx_events",
+        "mft": "mft_entries",
+        "prefetch": "prefetch_executions",
+    }
     for family, sources in sources_by_family.items():
         table = table_map.get(family)
         if not table:

@@ -96,7 +96,7 @@ def _signal_finding_rows(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
             target["confidence"] = max(
                 float(target.get("confidence") or 0), float(item.get("confidence") or 0)
             )
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             pass
         for evidence_id in item.get("evidence_ids") or []:
             text = str(evidence_id or "").strip()
@@ -121,7 +121,7 @@ def _signal_finding_rows(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
         confidence = item.get("confidence")
         try:
             confidence = f"{float(confidence):.2f}"
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             confidence = str(confidence or "-")
         theme = str(item.get("theme") or "")
         rows.append(

@@ -111,7 +111,7 @@ def _load_event_id_hints() -> dict[int, dict[str, Any]]:
     for key, value in raw_events.items():
         try:
             event_id = int(key)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         if isinstance(value, dict):
             hints[event_id] = value
@@ -133,7 +133,7 @@ def _collect_event_ids_from_results(
                 continue
             try:
                 event_id = int(row.get("event_id"))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
             event_ids.add(event_id)
     return event_ids
@@ -245,7 +245,7 @@ def _collect_section_coverage(db: CaseDB) -> dict[str, list[dict[str, Any]]]:
         )
         try:
             row_count = int(row.get("row_count") or result.get("row_count") or 0)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             row_count = 0
         entry["rows"] = max(int(entry.get("rows") or 0), row_count)
         if str(row.get("used_in_answer") or result.get("kind") or "rows") != "Yes":

@@ -132,7 +132,9 @@ def _resolve_source_path(db: CaseDB, sha256: str, source_kind: str) -> str:
     # Fallback: return absolute path (will result in 0 count, logged below)
     logger.warning(
         "Source path resolution failed for %s (sha256=%s): no match in %s",
-        abs_path, sha256, table,
+        abs_path,
+        sha256,
+        table,
     )
     return abs_path
 
@@ -217,6 +219,4 @@ def _update_source_status(
                     max_time=max_time,
                 )
         except Exception as exc:
-            logger.warning(
-                "Failed to update source status for key %s: %s", key, exc
-            )
+            logger.warning("Failed to update source status for key %s: %s", key, exc)

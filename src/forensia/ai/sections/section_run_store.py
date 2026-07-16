@@ -36,7 +36,7 @@ def _coerce_confidence(value: Any, default: float = 0.5) -> float:
     if isinstance(value, (int, float)):
         try:
             return max(0.0, min(1.0, float(value)))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return default
     text = str(value).strip().lower()
     if not text:
@@ -486,7 +486,7 @@ def _facts_as_result(reusable_facts: list[dict[str, Any]]) -> dict[str, Any]:
         if c is not None:
             try:
                 max_confidence = max(max_confidence, float(c))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 pass
     return {
         "keypoint": "section_facts",

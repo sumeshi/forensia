@@ -50,7 +50,7 @@ def _observe_message_offsets(db) -> list[int]:
             utc_dt = datetime.fromisoformat(str(utc_ts).replace("Z", "+00:00")).replace(
                 tzinfo=None
             )
-        except (ValueError, TypeError, AttributeError):
+        except ValueError, TypeError, AttributeError:
             continue
         for match in iso_pattern.finditer(str(message)):
             try:
@@ -93,7 +93,7 @@ def _observe_uptime_offsets(db) -> list[int]:
             ).replace(tzinfo=None)
             uptime_sec = int(m.group(1))
             boot_calculated = boot_6013.replace(tzinfo=None)
-        except (ValueError, TypeError, AttributeError):
+        except ValueError, TypeError, AttributeError:
             continue
         # Compare with 6005 (EventLog service start) within a short time window
         nearby = db.execute(
@@ -118,7 +118,7 @@ def _observe_uptime_offsets(db) -> list[int]:
             boot_6005 = datetime.fromisoformat(
                 str(nearby[0]).replace("Z", "+00:00")
             ).replace(tzinfo=None)
-        except (ValueError, TypeError, AttributeError):
+        except ValueError, TypeError, AttributeError:
             continue
         expected_boot = boot_calculated - __import__("datetime").timedelta(
             seconds=uptime_sec
@@ -207,7 +207,7 @@ def get_timezone_info(db) -> dict[str, Any]:
             "offset_minutes": offset,
             "basis": basis,
             "confidence": 0.8,
-            "display_tz": f"UTC{offset//60:+d}" if offset != 0 else "UTC",
+            "display_tz": f"UTC{offset // 60:+d}" if offset != 0 else "UTC",
         }
     return {
         "status": "unknown",
@@ -247,14 +247,14 @@ def _extract_4616_bias(data: dict[str, Any]) -> int | None:
             }:
                 try:
                     return int(item.get("Text", item.get("#text", 0)))
-                except (ValueError, TypeError):
+                except ValueError, TypeError:
                     return None
     for key in ("NewTimeZoneBias", "TimeZoneBias", "Bias"):
         val = event_data.get(key)
         if val is not None:
             try:
                 return int(val)
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 return None
     return None
 

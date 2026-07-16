@@ -232,7 +232,7 @@ def prescreen_telemetry_availability(
         for eid in co_observed:
             try:
                 required_ids.add(int(eid))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
         if not required_ids:
             continue

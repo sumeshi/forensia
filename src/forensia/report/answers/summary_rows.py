@@ -151,7 +151,7 @@ def _account_summary_rows(db: CaseDB, limit: int = 10) -> list[dict[str, Any]]:
 def _event_interpretation(event_id: Any) -> str:
     try:
         event = int(event_id)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return "Event"
     return {
         4624: "Successful logon",
@@ -439,7 +439,7 @@ def _network_summary_rows(db: CaseDB) -> list[dict[str, Any]]:
 def _as_int(value: Any) -> int:
     try:
         return int(value or 0)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0
 
 

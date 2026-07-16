@@ -88,7 +88,9 @@ class TableValidationError:
     """Structured validation error for a table builder output."""
 
     builder_name: str
-    error_type: str  # "missing_required", "all_empty", "unknown_keys", "schema_mismatch"
+    error_type: (
+        str  # "missing_required", "all_empty", "unknown_keys", "schema_mismatch"
+    )
     message: str
     details: str | None = None
 
@@ -125,8 +127,7 @@ def _validate_table_output(
     required_cols = [(k, label) for k, label in columns if k not in optional_keys]
     for col_key, col_label in required_cols:
         all_empty = all(
-            row.get(col_key) in (None, "", "-", "None", "null", "N/A")
-            for row in rows
+            row.get(col_key) in (None, "", "-", "None", "null", "N/A") for row in rows
         )
         if all_empty:
             errors.append(
@@ -371,7 +372,7 @@ def render_table_block(
     if max_rows is None:
         try:
             max_rows = int(caption_spec.get("max_rows") or 0)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             max_rows = 0
     columns = _table_block_columns(builder_name, rows)
     validation_errors = _validate_table_output(

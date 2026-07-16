@@ -136,7 +136,7 @@ def _build_browser_usage(
             item["total_exec_count"] = int(item.get("total_exec_count") or 0) + int(
                 row.get("exec_count") or 0
             )
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             pass
         item["last_exec_time"] = max_text_time(
             item.get("last_exec_time"), row.get("last_exec_time")

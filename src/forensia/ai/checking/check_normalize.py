@@ -93,7 +93,7 @@ def summarize_query_result(
         try:
             eid = int(row.get("event_id"))
             event_id_set.add(eid)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             pass
 
     return {
@@ -148,7 +148,7 @@ def _normalize_status(value: Any, fallback: str = "accepted") -> str:
 def _coerce_float(value: Any) -> float:
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0.0
 
 

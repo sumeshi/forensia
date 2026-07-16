@@ -141,7 +141,7 @@ def _sql_int(value: Any, default: int) -> int:
     """Safely cast value to int, returning default on failure."""
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 

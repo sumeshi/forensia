@@ -124,7 +124,9 @@ def prepare_block_context(
         section_key,
         include_case_probe=section_key == "6_appendix",
     )
-    reusable_evidence = _load_reusable_section_evidence(db, section_key, block_heading=block_heading)
+    reusable_evidence = _load_reusable_section_evidence(
+        db, section_key, block_heading=block_heading
+    )
     if question_mode:
         reusable_facts = []
         reusable_evidence = []

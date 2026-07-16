@@ -18,7 +18,9 @@ from forensia.knowledge.rules.models import Finding, Rule
 
 
 class RuleProfileTests(unittest.TestCase):
-    def test_windows_rule_ids_are_unique_and_baseline_rules_have_no_attack_mapping(self) -> None:
+    def test_windows_rule_ids_are_unique_and_baseline_rules_have_no_attack_mapping(
+        self,
+    ) -> None:
         rules_dir = Path("src/forensia/knowledge/rulepacks")
         profile_path = Path("src/forensia/knowledge/profiles/windows-basic.yaml")
         rules = load_rules_from_dir(rules_dir, profile_path)

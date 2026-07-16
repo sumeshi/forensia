@@ -398,7 +398,7 @@ def build_verdict_review_messages(
             if ev is not None:
                 try:
                     _pb_ids.add(int(ev))
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     pass
 
     system = (
