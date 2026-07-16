@@ -11,6 +11,7 @@ from tqdm import tqdm
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
+from forensia.db.evidence_sources import register_evidence_source
 from forensia.evidence.artifacts import get_artifact_adapters
 
 
@@ -92,11 +93,41 @@ def ingest_all(
                         )
                     continue
 
-            result = adapter.ingest(
-                case, path, source_sha=sha256, progress_callback=adapter_callback
-            )
+            try:
+                result = adapter.ingest(
+                    case, path, source_sha=sha256, progress_callback=adapter_callback
+                )
+            except Exception as exc:
+                counts["skipped_files"] += 1
+                try:
+                    register_evidence_source(
+                        db,
+                        source_id=sha256,
+                        artifact_family=adapter.name,
+                        display_path=path.name,
+                        ingest_status="failed",
+                        parser_name=adapter.name,
+                        error_summary=str(exc),
+                    )
+                except Exception:
+                    pass
+                if progress_callback:
+                    progress_callback(
+                        f"ERROR ingesting {adapter.name}: {path}: {exc}"
+                    )
+                continue
+
             if result.raw_path is None:
                 counts["skipped_files"] += 1
+                register_evidence_source(
+                    db,
+                    source_id=sha256,
+                    artifact_family=adapter.name,
+                    display_path=path.name,
+                    ingest_status="empty",
+                    parser_name=adapter.name,
+                    row_count=0,
+                )
                 if progress_callback:
                     progress_callback(
                         f"WARNING: {adapter.name} produced no records: {path}"
@@ -124,6 +155,18 @@ def ingest_all(
                 ),
             )
             counts["new_files"] += 1
+            try:
+                register_evidence_source(
+                    db,
+                    source_id=sha256,
+                    artifact_family=adapter.name,
+                    display_path=path.name,
+                    ingest_status="parsed",
+                    parser_name=adapter.name,
+                    row_count=0,
+                )
+            except Exception:
+                pass
     finally:
         if owns_db:
             db.close()

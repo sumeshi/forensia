@@ -18,6 +18,11 @@
     reasoningCount: number;
     latestIteration: number | null;
     latestReasoningAt: string | null;
+    blockedReason: string | null;
+    sufficiencyStatus: string | null;
+    sufficiencyScore: number | null;
+    sufficiencyReason: string | null;
+    humanReviewRequired: boolean;
   };
 
   export let items: HypothesisThread[] = [];
@@ -107,6 +112,23 @@
                     <span class={`h-1.5 w-1.5 rounded-full ${reasoningToneClass(item.verdict)}`}></span>
                     {formatVerdict(item.verdict)}
                   </span>
+                {/if}
+                {#if item.sufficiencyStatus}
+                  <span
+                    class="chip text-semantic-fg-muted"
+                    title={item.sufficiencyReason ?? "Evidence sufficiency assessment"}
+                  >
+                    evidence: {item.sufficiencyStatus}
+                    {#if item.sufficiencyScore !== null}
+                      ({Math.round(item.sufficiencyScore * 100)}%)
+                    {/if}
+                  </span>
+                {/if}
+                {#if item.blockedReason}
+                  <span class="chip text-semantic-warn" title={item.blockedReason}>blocked</span>
+                {/if}
+                {#if item.humanReviewRequired}
+                  <span class="chip text-semantic-warn">human review</span>
                 {/if}
                 <p class="min-w-0 flex-1 truncate text-sm font-medium text-semantic-fg">{item.description}</p>
               </div>

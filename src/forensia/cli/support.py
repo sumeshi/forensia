@@ -81,6 +81,13 @@ def reset_case_tables(db: CaseDB) -> None:
         "progress_events",
         "retrieval_events",
         "ingested_files",
+        "evidence_sources",
+        "evidence_coverage",
+        "investigation_state",
+        "report_gaps",
+        "investigation_tasks",
+        "hypothesis_relations",
+        "hypothesis_evidence",
     ):
         db.execute(f"DELETE FROM {table}")
 

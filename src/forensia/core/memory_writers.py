@@ -257,6 +257,7 @@ class MemoryWriterMixin:
         normalized_kind = str(kind).strip()
         if normalized_kind not in {
             "internal_db_check",
+            "evidence_acquisition",
             "external_lookup",
             "human_decision",
         }:

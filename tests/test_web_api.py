@@ -217,6 +217,19 @@ class WebApiTests(unittest.TestCase):
                 "F-1", client.get("/api/findings/F-1").json()["finding_id"]
             )
             self.assertEqual(1, len(client.get("/api/hypotheses").json()["active"]))
+            hypothesis_payload = client.get("/api/hypotheses").json()["active"][0]
+            self.assertIn("sufficiency_status", hypothesis_payload)
+            self.assertIn("human_review_required", hypothesis_payload)
+            for endpoint in (
+                "/api/evidence-sources",
+                "/api/evidence-coverage",
+                "/api/report-gaps",
+                "/api/investigation-tasks",
+                "/api/hypothesis-relations",
+                "/api/hypothesis-evidence",
+            ):
+                self.assertEqual(200, client.get(endpoint).status_code)
+            self.assertEqual(200, client.get("/api/investigation-state").status_code)
             self.assertEqual(1, len(client.get("/api/sessions").json()))
             self.assertEqual(1, len(client.get("/api/sessions/S-1/steps").json()))
             self.assertEqual(1, len(client.get("/api/report-sections").json()))

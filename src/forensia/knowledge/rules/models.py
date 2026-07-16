@@ -20,6 +20,7 @@ class HypothesisDeclaration(BaseModel):
     required_entities: list[str] = Field(default_factory=list)
     confirm_when: dict[str, Any] | None = None
     refute_when: dict[str, Any] | None = None
+    evidence_requirements: dict[str, Any] | None = None
     follow_up_questions: list[str] = Field(default_factory=list)
     report_sections: list[str] = Field(default_factory=list)
 

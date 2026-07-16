@@ -28,6 +28,7 @@ from forensia.ai.hypotheses.hypothesis_store import (
     _next_hypothesis_id,
     _upsert_hypothesis,
 )
+from forensia.ai.hypotheses.relations import propagate_verdict
 from forensia.core.log import log as _log
 from forensia.core.session import Hypothesis, SessionState
 from forensia.core.textutil import normalize_text as _normalize_text
@@ -159,8 +160,10 @@ def merge_active_hypotheses(
             summary=item.summary,
             source_rule_ids=_merge_string_lists(item.source_rule_ids),
             source_decl_id=item.source_decl_id,
+            source_gap_id=item.source_gap_id,
             required_entities=_merge_string_lists(item.required_entities),
             confirm_when=_clean_confirm_when(item.confirm_when),
+            evidence_requirements=item.evidence_requirements,
             target_keypoint_id=item.target_keypoint_id,
         )
         by_id[assigned_id] = hypothesis
@@ -307,8 +310,11 @@ def resolve_hypothesis(
                 verdict=verdict,
                 summary=summary,
                 source_rule_ids=item.source_rule_ids,
+                source_decl_id=item.source_decl_id,
+                source_gap_id=item.source_gap_id,
                 required_entities=item.required_entities,
                 confirm_when=item.confirm_when,
+                evidence_requirements=item.evidence_requirements,
                 target_keypoint_id=item.target_keypoint_id,
             )
             state.resolved_hypotheses.append(resolved)
@@ -319,6 +325,8 @@ def resolve_hypothesis(
                 session_id=session_id,
                 resolved_session=session_id,
             )
+            # Propagate verdict through relations
+            propagate_verdict(db, hypothesis_id=hypothesis_id, verdict=verdict)
             _feed_verdict_to_timeline(
                 db, item.id, verdict, item.description, sample_rows
             )

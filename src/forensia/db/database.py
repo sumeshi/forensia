@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
@@ -52,6 +54,12 @@ class CaseDB:
         )
         self._apply_migration_once(
             "mft_entries_fn_name", self._apply_mft_entries_fn_name
+        )
+        self._apply_migration_once(
+            "m1_investigation_state", self._apply_m1_investigation_state
+        )
+        self._apply_migration_once(
+            "harness_state_v2_backfill", self._apply_harness_state_v2_backfill
         )
 
     def _apply_migration_once(
@@ -174,6 +182,260 @@ class CaseDB:
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_section_questions_spec ON section_questions(answer_spec)"
         )
+
+    def _apply_m1_investigation_state(self) -> None:
+        """Add investigation harness tables and hypothesis enrichment columns."""
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS evidence_sources (
+                source_id VARCHAR PRIMARY KEY,
+                artifact_family VARCHAR,
+                display_path VARCHAR,
+                ingest_status VARCHAR,
+                parser_name VARCHAR,
+                parser_version VARCHAR,
+                row_count INTEGER,
+                channel VARCHAR,
+                hosts JSON,
+                volume_id VARCHAR,
+                min_time TIMESTAMP,
+                max_time TIMESTAMP,
+                error_code VARCHAR,
+                error_summary VARCHAR,
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP
+            )
+            """
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_evidence_sources_family ON evidence_sources(artifact_family)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_evidence_sources_status ON evidence_sources(ingest_status)"
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS evidence_coverage (
+                capability VARCHAR,
+                host VARCHAR,
+                channel VARCHAR,
+                start_time TIMESTAMP,
+                end_time TIMESTAMP,
+                source_family VARCHAR,
+                state VARCHAR,
+                reason_code VARCHAR,
+                source_ids JSON,
+                confidence DOUBLE,
+                derived_at TIMESTAMP,
+                UNIQUE(capability, host, channel, source_family)
+            )
+            """
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_evidence_coverage_capability ON evidence_coverage(capability)"
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS investigation_state (
+                state_id VARCHAR PRIMARY KEY DEFAULT 'case',
+                objective VARCHAR,
+                status VARCHAR DEFAULT 'active',
+                termination_policy JSON,
+                stop_reason_code VARCHAR,
+                stop_reason VARCHAR,
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS report_gaps (
+                gap_id VARCHAR PRIMARY KEY,
+                section_key VARCHAR,
+                block_heading VARCHAR,
+                description VARCHAR,
+                kind VARCHAR,
+                status VARCHAR DEFAULT 'open',
+                source_claim_id VARCHAR,
+                hypothesis_id VARCHAR,
+                task_id VARCHAR,
+                coverage_reason VARCHAR,
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP
+            )
+            """
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_report_gaps_status ON report_gaps(status)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_report_gaps_section ON report_gaps(section_key)"
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS investigation_tasks (
+                task_id VARCHAR PRIMARY KEY,
+                kind VARCHAR,
+                description VARCHAR,
+                status VARCHAR DEFAULT 'open',
+                gap_id VARCHAR,
+                hypothesis_id VARCHAR,
+                required_capability VARCHAR,
+                reason VARCHAR,
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP
+            )
+            """
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_investigation_tasks_status ON investigation_tasks(status)"
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS hypothesis_relations (
+                from_hypothesis_id VARCHAR,
+                to_hypothesis_id VARCHAR,
+                relation_type VARCHAR,
+                origin VARCHAR,
+                confidence DOUBLE,
+                rationale VARCHAR,
+                created_session VARCHAR,
+                created_at TIMESTAMP,
+                UNIQUE(from_hypothesis_id, to_hypothesis_id, relation_type)
+            )
+            """
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_hypothesis_relations_from ON hypothesis_relations(from_hypothesis_id)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_hypothesis_relations_to ON hypothesis_relations(to_hypothesis_id)"
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS hypothesis_evidence (
+                link_id VARCHAR PRIMARY KEY,
+                hypothesis_id VARCHAR,
+                evidence_id VARCHAR,
+                finding_id VARCHAR,
+                query_id VARCHAR,
+                assessment_id VARCHAR,
+                role VARCHAR,
+                source_family VARCHAR,
+                source_file VARCHAR,
+                derivation_group VARCHAR,
+                strength VARCHAR,
+                created_session VARCHAR,
+                created_at TIMESTAMP
+            )
+            """
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_hypothesis_evidence_hypothesis ON hypothesis_evidence(hypothesis_id)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_hypothesis_evidence_evidence ON hypothesis_evidence(evidence_id)"
+        )
+        for col, typ in (
+            ("source_gap_id", "VARCHAR"),
+            ("selection_count", "INTEGER DEFAULT 0"),
+            ("last_selected_at", "TIMESTAMP"),
+            ("next_eligible_at", "TIMESTAMP"),
+            ("blocked_reason", "VARCHAR"),
+            ("sufficiency_status", "VARCHAR"),
+            ("sufficiency_score", "DOUBLE"),
+            ("sufficiency_reason", "VARCHAR"),
+            ("sufficiency_policy_id", "VARCHAR"),
+            ("human_review_required", "BOOLEAN DEFAULT FALSE"),
+            ("evidence_requirements", "JSON"),
+        ):
+            self.conn.execute(
+                f"ALTER TABLE hypotheses ADD COLUMN IF NOT EXISTS {col} {typ}"
+            )
+
+    def _apply_harness_state_v2_backfill(self) -> None:
+        """Backfill authoritative harness state for cases created before M1."""
+        self.conn.execute(
+            "ALTER TABLE hypotheses ADD COLUMN IF NOT EXISTS evidence_requirements JSON"
+        )
+        source_rows = self.conn.execute(
+            "SELECT sha256, path, source_kind FROM ingested_files"
+        ).fetchall()
+        for source_id, path, family in source_rows:
+            source_path = str(path or "")
+            lookup_path = (
+                source_path.rsplit("/", 1)[-1]
+                if str(family or "") == "prefetch"
+                else source_path
+            )
+            table = {
+                "evtx": "evtx_events",
+                "mft": "mft_entries",
+                "prefetch": "prefetch_executions",
+            }.get(str(family or ""))
+            count = 0
+            channel = ""
+            hosts: list[str] = []
+            min_time = None
+            max_time = None
+            if table:
+                count = int(
+                    self.conn.execute(
+                        f"SELECT COUNT(*) FROM {table} WHERE source_file = ?",
+                        [lookup_path],
+                    ).fetchone()[0]
+                )
+            if family == "evtx":
+                metadata = self.conn.execute(
+                    "SELECT MIN(timestamp), MAX(timestamp), list(DISTINCT channel), "
+                    "list(DISTINCT computer) FROM evtx_events WHERE source_file = ?",
+                    [lookup_path],
+                ).fetchone()
+                min_time, max_time = metadata[0], metadata[1]
+                channels = [str(item) for item in (metadata[2] or []) if item]
+                channel = channels[0] if len(channels) == 1 else ""
+                hosts = [str(item) for item in (metadata[3] or []) if item]
+            self.conn.execute(
+                "INSERT INTO evidence_sources (source_id, artifact_family, display_path, "
+                "ingest_status, parser_name, row_count, channel, hosts, min_time, "
+                "max_time, created_at, updated_at) "
+                "VALUES (?, ?, ?, 'normalized', ?, ?, ?, ?, ?, ?, now(), now()) "
+                "ON CONFLICT (source_id) DO NOTHING",
+                [
+                    source_id,
+                    family,
+                    source_path,
+                    family,
+                    count,
+                    channel,
+                    json.dumps(hosts),
+                    min_time,
+                    max_time,
+                ],
+            )
+
+        for section_key, raw_gaps in self.conn.execute(
+            "SELECT section_key, gaps FROM report_sections WHERE gaps IS NOT NULL"
+        ).fetchall():
+            gaps = raw_gaps
+            if isinstance(gaps, str):
+                try:
+                    gaps = json.loads(gaps)
+                except (TypeError, ValueError):
+                    gaps = []
+            for description in gaps if isinstance(gaps, list) else []:
+                text = str(description).strip()
+                if not text:
+                    continue
+                gap_id = "GAP-" + hashlib.sha256(text.encode()).hexdigest()[:16]
+                self.conn.execute(
+                    "INSERT INTO report_gaps (gap_id, section_key, description, kind, "
+                    "status, created_at, updated_at) VALUES (?, ?, ?, "
+                    "'internal_db_check', 'open', now(), now()) "
+                    "ON CONFLICT (gap_id) DO NOTHING",
+                    [gap_id, section_key, text],
+                )
 
     def _route_trace_write(self, query: str) -> str:
         """Rewrite unqualified INSERT/UPDATE/DELETE to use the trace schema prefix."""

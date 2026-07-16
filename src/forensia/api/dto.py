@@ -93,6 +93,12 @@ class HypothesisDTO(DTOModel):
     latest_iteration: int | None = None
     latest_reasoning_at: str | None = None
     latest_reasoning: list[HypothesisReasoningEntryDTO] = []
+    selection_count: int = 0
+    blocked_reason: str | None = None
+    sufficiency_status: str | None = None
+    sufficiency_score: float | None = None
+    sufficiency_reason: str | None = None
+    human_review_required: bool = False
 
 
 class HypothesesResponseDTO(DTOModel):
@@ -239,6 +245,94 @@ class EventVolumePointDTO(DTOModel):
     bucket: str
     series: str
     count: int
+
+
+class EvidenceSourceDTO(DTOModel):
+    source_id: str
+    artifact_family: str
+    display_path: str
+    ingest_status: str
+    parser_name: str
+    row_count: int
+    channel: str
+    hosts: list[str]
+    min_time: str | None
+    max_time: str | None
+    error_code: str
+    error_summary: str
+
+
+class EvidenceCoverageDTO(DTOModel):
+    capability: str
+    host: str
+    channel: str
+    source_family: str
+    state: str
+    reason_code: str
+    source_ids: list[str]
+    start_time: str | None
+    end_time: str | None
+    confidence: float
+
+
+class InvestigationStateDTO(DTOModel):
+    state_id: str
+    objective: str
+    status: str
+    termination_policy: dict | None
+    stop_reason_code: str
+    stop_reason: str
+    updated_at: str | None
+
+
+class ReportGapDTO(DTOModel):
+    gap_id: str
+    section_key: str
+    block_heading: str
+    description: str
+    kind: str
+    status: str
+    source_claim_id: str
+    hypothesis_id: str
+    task_id: str
+    coverage_reason: str
+    created_at: str | None
+    updated_at: str | None
+
+
+class InvestigationTaskDTO(DTOModel):
+    task_id: str
+    kind: str
+    description: str
+    status: str
+    gap_id: str
+    hypothesis_id: str
+    required_capability: str
+    reason: str
+    created_at: str | None
+    updated_at: str | None
+
+
+class HypothesisRelationDTO(DTOModel):
+    from_hypothesis_id: str
+    to_hypothesis_id: str
+    relation_type: str
+    origin: str
+    confidence: float
+    rationale: str
+
+
+class HypothesisEvidenceLinkDTO(DTOModel):
+    link_id: str
+    hypothesis_id: str
+    evidence_id: str
+    finding_id: str
+    query_id: str
+    assessment_id: str
+    role: str
+    source_family: str
+    derivation_group: str
+    strength: str
 
 
 HypothesisDTO.model_rebuild()

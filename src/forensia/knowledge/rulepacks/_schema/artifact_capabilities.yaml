@@ -1,0 +1,80 @@
+# Artifact capability declarations for coverage tracking.
+# Each family declares what investigation capabilities it can support,
+# what channels/audit caveats exist, and negative evidence policies.
+
+families:
+  evtx:
+    display_name: "Windows Event Log"
+    tables: [evtx_events]
+    capabilities:
+      process_execution:
+        event_ids: [4688, 4689]
+        channel: Security
+        caveat: "Requires Process Creation auditing to be enabled"
+        negative_policy: "absence is not disproof if audit policy unknown"
+      logon:
+        event_ids: [4624, 4625, 4634, 4647]
+        channel: Security
+        negative_policy: "0 rows is weak negative for target scope"
+      credential_access:
+        event_ids: [4625, 4771, 4776]
+        channel: Security
+        negative_policy: "0 rows is weak negative"
+      persistence:
+        event_ids: [4697, 4698, 7045]
+        channel: Security
+        negative_policy: "0 rows is weak negative"
+      lateral_movement:
+        event_ids: [4624, 4648]
+        channel: Security
+        logon_types: ["3", "9", "10"]
+        negative_policy: "requires same_host scope validation"
+      powershell:
+        event_ids: [4103, 4104]
+        channel: "Microsoft-Windows-PowerShell/Operational"
+        caveat: "Requires PowerShell logging to be enabled"
+        negative_policy: "absence is not disproof if logging unknown"
+      scheduled_task:
+        event_ids: [106, 140, 141]
+        channel: "Microsoft-Windows-TaskScheduler/Operational"
+        negative_policy: "0 rows is weak negative"
+      service_install:
+        event_ids: [7045]
+        channel: System
+        negative_policy: "0 rows is weak negative"
+      network_connection:
+        event_ids: [5156, 5157]
+        channel: Security
+        caveat: "Requires filtering platform auditing"
+        negative_policy: "absence is not disproof if audit policy unknown"
+
+  mft:
+    display_name: "NTFS Master File Table"
+    tables: [mft_entries, mft_timeline]
+    capabilities:
+      file_activity:
+        description: "File creation, modification, deletion timestamps"
+        negative_policy: "0 rows means no matching file activity in scope"
+        caveat: "No host column; assumes single volume"
+      persistence:
+        description: "File-based persistence indicators (startup folders, scheduled task XML)"
+        negative_policy: "0 rows is weak negative for file-based persistence"
+      process_execution:
+        description: "Executable file creation/modification timestamps"
+        negative_policy: "corroborates but cannot independently refute execution"
+
+  prefetch:
+    display_name: "Windows Prefetch"
+    tables: [prefetch_executions, prefetch_timeline]
+    capabilities:
+      process_execution:
+        description: "Execution history with timestamps and file references"
+        negative_policy: "0 rows is weak negative; Prefetch may not be generated for all executions"
+        caveat: "No host column; volume attribution may be uncertain"
+
+# Capability cross-references for multi-artifact corroboration
+cross_artifact_corroboration:
+  process_execution:
+    preferred_families: [prefetch, mft]
+    min_distinct_families: 1
+    note: "Prefetch + MFT provide independent corroboration for EVTX 4688"

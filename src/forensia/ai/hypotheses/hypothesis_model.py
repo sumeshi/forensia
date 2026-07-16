@@ -205,9 +205,13 @@ def _merge_hypothesis_fields(existing: Hypothesis, incoming: Hypothesis) -> Hypo
         summary=existing.summary or incoming.summary,
         source_rule_ids=source_rule_ids,
         source_decl_id=existing.source_decl_id or incoming.source_decl_id,
+        source_gap_id=existing.source_gap_id or incoming.source_gap_id,
         required_entities=required_entities,
         confirm_when=confirm_when if isinstance(confirm_when, dict) else None,
         refute_when=existing.refute_when or incoming.refute_when,
+        evidence_requirements=(
+            existing.evidence_requirements or incoming.evidence_requirements
+        ),
         fallback_phase=existing.fallback_phase or incoming.fallback_phase,
         fallback_source_rule_id=existing.fallback_source_rule_id
         or incoming.fallback_source_rule_id,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -15,6 +16,10 @@ from forensia.ai.case_profile import (
 )
 from forensia.ai.checking.check_normalize import summarize_query_result
 from forensia.ai.checking.checker import check_query_result
+from forensia.ai.checking.sufficiency import (
+    assess_and_persist_sufficiency,
+    create_evidence_links_for_query,
+)
 from forensia.ai.hypotheses.hypothesis_manager import (
     _guess_related_sections,
     admit_new_hypothesis,
@@ -22,6 +27,10 @@ from forensia.ai.hypotheses.hypothesis_manager import (
     resolve_hypothesis,
 )
 from forensia.ai.hypotheses.hypothesis_store import _upsert_hypothesis
+from forensia.ai.hypotheses.relations import (
+    get_relations_for_hypothesis,
+    insert_relation,
+)
 from forensia.ai.investigation.investigation_session import (
     Ctx,
     _call_with_outage_recovery,
@@ -517,7 +526,123 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
         )
     )
     rs.check_result = check_result
+    # Record evidence links for this query
+    if (
+        check_result
+        and hasattr(check_result, "suspicious_evidence")
+        and check_result.suspicious_evidence
+    ):
+        evidence_ids = [
+            e.get("evidence_id", "")
+            for e in check_result.suspicious_evidence
+            if e.get("evidence_id")
+        ]
+        if evidence_ids:
+            role = (
+                "contradictory" if check_result.verdict == "refuted" else "supporting"
+            )
+            strengths = {
+                str(item["evidence_id"]): str(item.get("strength") or "moderate")
+                if str(item.get("strength") or "moderate")
+                in {"weak", "moderate", "strong"}
+                else "moderate"
+                for item in check_result.suspicious_evidence
+                if item.get("evidence_id")
+            }
+            create_evidence_links_for_query(
+                db,
+                hypothesis_id=hypothesis.id,
+                evidence_ids=evidence_ids,
+                query_id=planned_query.query_id if planned_query else "",
+                role=role,
+                created_session=session_id,
+                strengths=strengths,
+            )
+            if role == "supporting":
+                for relation in get_relations_for_hypothesis(db, hypothesis.id):
+                    adjacent_id = (
+                        relation["to_hypothesis_id"]
+                        if relation["from_hypothesis_id"] == hypothesis.id
+                        else relation["from_hypothesis_id"]
+                    )
+                    related_role = ""
+                    if (
+                        relation["relation_type"] == "parent_of"
+                        and relation["to_hypothesis_id"] == hypothesis.id
+                    ):
+                        related_role = "corroborating"
+                    elif relation["relation_type"] == "contradicts":
+                        related_role = "contradictory"
+                    if related_role:
+                        create_evidence_links_for_query(
+                            db,
+                            hypothesis_id=adjacent_id,
+                            evidence_ids=evidence_ids,
+                            query_id=planned_query.query_id if planned_query else "",
+                            role=related_role,
+                            created_session=session_id,
+                            strengths=strengths,
+                        )
     return "ok"
+
+
+def _apply_sufficiency_guard(rs: _HypothesisRunState) -> None:
+    """Persist machine sufficiency and reconcile it before state settlement."""
+    check_result = rs.check_result
+    original_verdict = check_result.verdict
+    investigation_text = " ".join(
+        [
+            rs.planned_query.sql if rs.planned_query else "",
+            json.dumps(rs.hypothesis.confirm_when or {}, ensure_ascii=False),
+        ]
+    )
+    suff_result, final_verdict, reason, required_capabilities = (
+        assess_and_persist_sufficiency(
+            rs.db,
+            hypothesis_id=rs.hypothesis.id,
+            investigation_text=investigation_text,
+            evidence_requirements=rs.hypothesis.evidence_requirements,
+            llm_verdict=original_verdict,
+        )
+    )
+    check_result.verdict = final_verdict
+    append_hypothesis_reasoning(
+        rs.db,
+        rs.hypothesis.id,
+        rs.session_id,
+        rs.plan_cycle,
+        "sufficiency",
+        reason,
+        verdict=final_verdict,
+        query_id=rs.planned_query.query_id if rs.planned_query else None,
+    )
+    _save_step(
+        rs.db,
+        rs.session_id,
+        rs.plan_cycle,
+        "sufficiency",
+        rs.hypothesis.id,
+        {
+            "llm_verdict": original_verdict,
+            "required_capabilities": required_capabilities,
+        },
+        {
+            "machine_status": suff_result.status,
+            "score": suff_result.score,
+            "final_verdict": final_verdict,
+            "reasons": suff_result.reasons,
+            "missing_requirements": suff_result.missing_requirements,
+            "human_review_required": suff_result.human_review_required,
+        },
+        suffix=str(rs.query_index),
+    )
+    if final_verdict != original_verdict:
+        _log(
+            "SUFFICIENCY",
+            f"{rs.hypothesis.id} {original_verdict} -> {final_verdict}: {reason}",
+        )
+    if rs.state.history and rs.state.history[-1].hypothesis_id == rs.hypothesis.id:
+        rs.state.history[-1].verdict = final_verdict
 
 
 def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
@@ -529,6 +654,7 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
     plan_cycle, query_index = rs.plan_cycle, rs.query_index
     emit_fn, focus_sections = rs.emit_fn, rs.focus_sections
     state.history = state.history[-50:]
+    _apply_sufficiency_guard(rs)
     if check_result.new_hypotheses:
         # --- Unified admission gate (G-5) ---
         admitted = []
@@ -542,6 +668,7 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
                     f"check_new rejected: '{hyp.description[:80]}' reason={reason}",
                 )
         if admitted:
+            previous_ids = {item.id for item in state.active_hypotheses}
             state.active_hypotheses = merge_active_hypotheses(
                 db=db,
                 current=state.active_hypotheses,
@@ -550,6 +677,19 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
                 session_id=session_id,
                 origin="check_new",
             )
+            for child in state.active_hypotheses:
+                if child.id in previous_ids or child.id == hypothesis.id:
+                    continue
+                insert_relation(
+                    db,
+                    from_id=hypothesis.id,
+                    to_id=child.id,
+                    relation_type="parent_of",
+                    origin="code",
+                    confidence=1.0,
+                    rationale="Checker-derived follow-up hypothesis",
+                    created_session=session_id,
+                )
     if check_result.verdict in {"confirmed", "refuted", "untestable"}:
         resolve_hypothesis(
             db=db,
@@ -575,6 +715,13 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
                 status="active",
                 verdict=None,
                 summary=check_result.report_text,
+                source_rule_ids=hypothesis.source_rule_ids,
+                source_decl_id=hypothesis.source_decl_id,
+                source_gap_id=hypothesis.source_gap_id,
+                required_entities=hypothesis.required_entities,
+                confirm_when=hypothesis.confirm_when,
+                evidence_requirements=hypothesis.evidence_requirements,
+                target_keypoint_id=hypothesis.target_keypoint_id,
             ),
             origin="check_new",
             session_id=session_id,

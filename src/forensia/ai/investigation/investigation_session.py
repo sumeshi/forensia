@@ -36,6 +36,11 @@ from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
+from forensia.db.investigation_state import (
+    ensure_investigation_state,
+    mark_investigation_started,
+)
+from forensia.knowledge.coverage import refresh_evidence_coverage
 from forensia.knowledge.resources import profile_path
 from forensia.report.template_export import seed_case_report_templates
 
@@ -413,8 +418,14 @@ def _init_session(
         seed_case_report_templates(case)
         template_root = case.report_template_dir
     seed_findings(case, db, profile, active_pack_ids=active_pack_ids)
+    refresh_evidence_coverage(db)
     _initialize_overview(memory, case, profile_config)
     _ensure_profile_objective(memory, profile_config)
+    objective = ""
+    if profile_config:
+        objective = profile_config.get("objective", "")
+    ensure_investigation_state(db, objective=objective)
+    mark_investigation_started(db)
     llm_logger = LLMCallLogger(case, session_id)
     active_hypotheses, resolved_hypotheses = load_persisted_hypotheses(db)
     state = SessionState(

@@ -12,6 +12,11 @@
     reasoningCount: number;
     latestIteration: number | null;
     latestReasoningAt: string | null;
+    blockedReason: string | null;
+    sufficiencyStatus: string | null;
+    sufficiencyScore: number | null;
+    sufficiencyReason: string | null;
+    humanReviewRequired: boolean;
   };
 
   export let activeHypotheses: HypothesisThread[] = [];

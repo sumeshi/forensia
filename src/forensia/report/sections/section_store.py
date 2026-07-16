@@ -160,18 +160,32 @@ def _claim_support_status(
             return "orphaned_reference"
     if hypothesis_ids:
         placeholders = ", ".join("?" for _ in hypothesis_ids)
+        hypothesis_rows = db.execute(
+            f"SELECT hypothesis_id, sufficiency_status, human_review_required "
+            f"FROM hypotheses WHERE hypothesis_id IN ({placeholders})",
+            tuple(hypothesis_ids),
+        ).fetchall()
         found_hypothesis_ids = {
             str(row[0])
-            for row in db.execute(
-                f"SELECT hypothesis_id FROM hypotheses WHERE hypothesis_id IN ({placeholders})",
-                tuple(hypothesis_ids),
-            ).fetchall()
+            for row in hypothesis_rows
         }
         if any(
             hypothesis_id not in found_hypothesis_ids
             for hypothesis_id in hypothesis_ids
         ):
             return "orphaned_reference"
+        sufficiency_states = {
+            str(row[1] or "")
+            for row in hypothesis_rows
+        }
+        if "unobservable" in sufficiency_states:
+            return "unobservable"
+        if any(bool(row[2]) for row in hypothesis_rows):
+            return "needs_review"
+        if sufficiency_states & {"insufficient", "needs_review"}:
+            return "needs_review"
+        if "partial" in sufficiency_states:
+            return "partially_supported"
     if evidence_ids:
         placeholders = ", ".join("?" for _ in evidence_ids)
         found_evidence_ids = {

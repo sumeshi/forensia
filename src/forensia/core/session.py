@@ -60,8 +60,10 @@ class Hypothesis(BaseModel):
     required_entities: list[str] = Field(default_factory=list)
     target_keypoint_id: str | None = None
     source_decl_id: str | None = None
+    source_gap_id: str | None = None
     confirm_when: dict[str, Any] | None = None
     refute_when: dict[str, Any] | None = None
+    evidence_requirements: dict[str, Any] | None = None
     fallback_phase: str | None = None
     fallback_source_rule_id: str | None = None
 

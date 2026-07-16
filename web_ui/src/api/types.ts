@@ -72,6 +72,12 @@ export type HypothesisDTO = {
   latest_iteration?: number | null;
   latest_reasoning_at?: string | null;
   latest_reasoning: HypothesisReasoningEntryDTO[];
+  selection_count: number;
+  blocked_reason?: string | null;
+  sufficiency_status?: string | null;
+  sufficiency_score?: number | null;
+  sufficiency_reason?: string | null;
+  human_review_required: boolean;
 };
 
 export type HypothesisReasoningEntryDTO = {

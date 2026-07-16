@@ -121,7 +121,19 @@ CREATE TABLE IF NOT EXISTS hypotheses (
     source_rule_ids JSON,
     source_decl_id VARCHAR,
     required_entities JSON,
-    confirm_when JSON
+    confirm_when JSON,
+    evidence_requirements JSON,
+    source_gap_id VARCHAR,
+    selection_count INTEGER DEFAULT 0,
+    last_selected_at TIMESTAMP,
+    next_eligible_at TIMESTAMP,
+    blocked_reason VARCHAR,
+    sufficiency_status VARCHAR,
+    sufficiency_score DOUBLE,
+    sufficiency_reason VARCHAR,
+    sufficiency_policy_id VARCHAR,
+    human_review_required BOOLEAN DEFAULT FALSE,
+    target_keypoint_id VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS report_sections (
@@ -299,6 +311,117 @@ CREATE INDEX IF NOT EXISTS findings_by_status_confidence ON findings(status, con
 CREATE INDEX IF NOT EXISTS evtx_events_by_evidence_id ON evtx_events(evidence_id);
 CREATE INDEX IF NOT EXISTS mft_entries_by_evidence_id ON mft_entries(evidence_id);
 CREATE INDEX IF NOT EXISTS prefetch_executions_by_evidence_id ON prefetch_executions(evidence_id);
+
+CREATE TABLE IF NOT EXISTS evidence_sources (
+    source_id VARCHAR PRIMARY KEY,
+    artifact_family VARCHAR,
+    display_path VARCHAR,
+    ingest_status VARCHAR,
+    parser_name VARCHAR,
+    parser_version VARCHAR,
+    row_count INTEGER,
+    channel VARCHAR,
+    hosts JSON,
+    volume_id VARCHAR,
+    min_time TIMESTAMP,
+    max_time TIMESTAMP,
+    error_code VARCHAR,
+    error_summary VARCHAR,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_sources_family ON evidence_sources(artifact_family);
+CREATE INDEX IF NOT EXISTS idx_evidence_sources_status ON evidence_sources(ingest_status);
+
+CREATE TABLE IF NOT EXISTS evidence_coverage (
+    capability VARCHAR,
+    host VARCHAR,
+    channel VARCHAR,
+    start_time TIMESTAMP,
+    end_time TIMESTAMP,
+    source_family VARCHAR,
+    state VARCHAR,
+    reason_code VARCHAR,
+    source_ids JSON,
+    confidence DOUBLE,
+    derived_at TIMESTAMP,
+    UNIQUE(capability, host, channel, source_family)
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_coverage_capability ON evidence_coverage(capability);
+
+CREATE TABLE IF NOT EXISTS investigation_state (
+    state_id VARCHAR PRIMARY KEY DEFAULT 'case',
+    objective VARCHAR,
+    status VARCHAR DEFAULT 'active',
+    termination_policy JSON,
+    stop_reason_code VARCHAR,
+    stop_reason VARCHAR,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS report_gaps (
+    gap_id VARCHAR PRIMARY KEY,
+    section_key VARCHAR,
+    block_heading VARCHAR,
+    description VARCHAR,
+    kind VARCHAR,
+    status VARCHAR DEFAULT 'open',
+    source_claim_id VARCHAR,
+    hypothesis_id VARCHAR,
+    task_id VARCHAR,
+    coverage_reason VARCHAR,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_report_gaps_status ON report_gaps(status);
+CREATE INDEX IF NOT EXISTS idx_report_gaps_section ON report_gaps(section_key);
+
+CREATE TABLE IF NOT EXISTS investigation_tasks (
+    task_id VARCHAR PRIMARY KEY,
+    kind VARCHAR,
+    description VARCHAR,
+    status VARCHAR DEFAULT 'open',
+    gap_id VARCHAR,
+    hypothesis_id VARCHAR,
+    required_capability VARCHAR,
+    reason VARCHAR,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_investigation_tasks_status ON investigation_tasks(status);
+
+CREATE TABLE IF NOT EXISTS hypothesis_relations (
+    from_hypothesis_id VARCHAR,
+    to_hypothesis_id VARCHAR,
+    relation_type VARCHAR,
+    origin VARCHAR,
+    confidence DOUBLE,
+    rationale VARCHAR,
+    created_session VARCHAR,
+    created_at TIMESTAMP,
+    UNIQUE(from_hypothesis_id, to_hypothesis_id, relation_type)
+);
+CREATE INDEX IF NOT EXISTS idx_hypothesis_relations_from ON hypothesis_relations(from_hypothesis_id);
+CREATE INDEX IF NOT EXISTS idx_hypothesis_relations_to ON hypothesis_relations(to_hypothesis_id);
+
+CREATE TABLE IF NOT EXISTS hypothesis_evidence (
+    link_id VARCHAR PRIMARY KEY,
+    hypothesis_id VARCHAR,
+    evidence_id VARCHAR,
+    finding_id VARCHAR,
+    query_id VARCHAR,
+    assessment_id VARCHAR,
+    role VARCHAR,
+    source_family VARCHAR,
+    source_file VARCHAR,
+    derivation_group VARCHAR,
+    strength VARCHAR,
+    created_session VARCHAR,
+    created_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_hypothesis_evidence_hypothesis ON hypothesis_evidence(hypothesis_id);
+CREATE INDEX IF NOT EXISTS idx_hypothesis_evidence_evidence ON hypothesis_evidence(evidence_id);
 """
 
 TRACE_SCHEMA_SQL = """

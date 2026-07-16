@@ -48,6 +48,8 @@ from forensia.core.memory import MemoryManager
 from forensia.core.progress_event import progress_event
 from forensia.core.session import SessionState
 from forensia.db.database import CaseDB
+from forensia.db.investigation_state import save_stop_reason
+from forensia.knowledge.coverage import refresh_evidence_coverage
 from forensia.knowledge.resources import profile_path
 from forensia.knowledge.rules.loader import resolve_active_packs
 from forensia.report.render.writer import render_written_report
@@ -170,18 +172,18 @@ def _check_termination(
     no_progress_count: int,
     no_progress_limit: int,
     cycle_progress: bool,
-) -> tuple[str | None, int]:
-    """Check if the investigation loop should stop. Returns (terminal_status or None, updated_no_progress_count)."""
+) -> tuple[str | None, int, str]:
+    """Check if the investigation loop should stop. Returns (terminal_status or None, updated_no_progress_count, stop_reason_code)."""
     if report_only:
-        return "completed", no_progress_count
+        return "completed", no_progress_count, "report_only_mode"
     unresolved_gap_count = int(report_after.get("total_gaps", 0))
     if broad_plan_stop and not active_hypotheses and unresolved_gap_count == 0:
         mark_report_sections_ai_exhausted(db)
-        return "completed", no_progress_count
+        return "completed", no_progress_count, "no_gaps_no_hypotheses"
     no_progress_count = 0 if cycle_progress else no_progress_count + 1
     if no_progress_count >= no_progress_limit:
-        return "completed", no_progress_count
-    return None, no_progress_count
+        return "stopped", no_progress_count, "no_progress_limit"
+    return None, no_progress_count, ""
 
 
 @dataclass
@@ -259,13 +261,14 @@ def _enforce_llm_budget(llm_logger: LLMCallLogger, max_llm_calls: int) -> None:
         )
 
 
-async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int]:
+async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
     """Run plan cycles until completion, interrupt, or no-progress limit.
 
-    Returns (status, report_refresh_failures).
+    Returns (status, report_refresh_failures, stop_reason_code).
     """
     no_progress_count = 0
     report_refresh_failures = 0
+    stop_reason_code = ""
     for plan_cycle in range(1, env.max_iter + 1):
         _enforce_llm_budget(env.llm_logger, env.max_llm_calls)
         env.state.iteration = plan_cycle
@@ -276,7 +279,7 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int]:
             f"Cycle {plan_cycle}/{env.max_iter} — broad planning (active={len(env.state.active_hypotheses)} resolved={len(env.state.resolved_hypotheses)})",
         )
         if env.ctx.interrupted:
-            return "stopped", report_refresh_failures
+            return "stopped", report_refresh_failures, "interrupted"
         (
             broad_plan_stop,
             cycle_progress,
@@ -300,7 +303,7 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int]:
             case_profile_str=env.case_profile_str,
         )
         if env.ctx.interrupted:
-            return "stopped", report_refresh_failures
+            return "stopped", report_refresh_failures, "interrupted"
         (
             report_after,
             report_cycle_progress,
@@ -327,7 +330,8 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int]:
         env.ctx.report_status = report_after
         cycle_progress = cycle_progress or report_cycle_progress
         env.memory.regenerate_timeline_from_db(env.db)
-        terminal_status, no_progress_count = _check_termination(
+        refresh_evidence_coverage(env.db)
+        terminal_status, no_progress_count, stop_reason_code = _check_termination(
             report_only=env.report_only,
             broad_plan_stop=broad_plan_stop,
             active_hypotheses=env.state.active_hypotheses,
@@ -338,8 +342,8 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int]:
             cycle_progress=cycle_progress,
         )
         if terminal_status is not None:
-            return terminal_status, report_refresh_failures
-    return "completed", report_refresh_failures
+            return terminal_status, report_refresh_failures, stop_reason_code
+    return "stopped", report_refresh_failures, "max_iterations"
 
 
 async def _final_report_refresh(env: _InvestigateEnv) -> int:
@@ -449,19 +453,22 @@ async def investigate(
         max_llm_calls=max_llm_calls,
     )
     status = "running"
+    stop_reason_code = ""
     report_refresh_failures = 0
     previous_sigint = signal.getsignal(signal.SIGINT)
     signal.signal(
         signal.SIGINT, lambda signum, frame: setattr(ctx, "interrupted", True)
     )
     try:
-        status, report_refresh_failures = await _run_investigation_loop(env)
+        status, report_refresh_failures, stop_reason_code = await _run_investigation_loop(env)
         if status == "completed" and not ctx.interrupted:
             report_refresh_failures += await _final_report_refresh(env)
     except Exception:
         status = "failed"
+        stop_reason_code = "exception"
         raise
     finally:
+        save_stop_reason(db, status=status, stop_reason_code=stop_reason_code, stop_reason=f"Investigation {status}")
         memory.regenerate_timeline_from_db(db)
         signal.signal(signal.SIGINT, previous_sigint)
         llm_logger.write_summary()

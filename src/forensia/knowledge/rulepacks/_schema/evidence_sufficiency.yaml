@@ -1,0 +1,56 @@
+# Evidence sufficiency policy declarations.
+# Defines minimum evidence requirements for hypothesis verdicts.
+
+common_rules:
+  positive_verdict_requires_traceable_evidence: true
+  zero_rows_is_not_support: true
+  duplicate_evidence_not_counted: true
+  contradictory_evidence_must_be_addressed: true
+  fallback_only_confirmation_prohibited: true
+
+artifact_rules:
+  evtx:
+    negative_evidence_strength: moderate
+    typical_independence: single_source_per_channel
+    required_scope:
+      - host
+      - channel
+    parser_constraint: "evtx2es must successfully parse"
+  mft:
+    negative_evidence_strength: weak
+    typical_independence: single_volume
+    required_scope:
+      - volume
+    parser_constraint: "mft2es must successfully parse"
+  prefetch:
+    negative_evidence_strength: weak
+    typical_independence: single_source_per_binary
+    required_scope:
+      - volume
+    parser_constraint: "prefetch2es must successfully parse"
+
+default_sufficiency:
+  min_independent_groups: 1
+  min_distinct_families: 1
+  require_contradictory_resolution: true
+
+thresholds:
+  sufficient: 0.6
+  partial: 0.3
+
+scoring_weights:
+  supporting_groups: 0.3
+  family_diversity: 0.2
+  corroborating_groups: 0.15
+  no_contradiction: 0.15
+  multi_family_bonus: 0.2
+  contradictory_penalty_per_group: 0.3
+
+claim_support_taxonomy:
+  - supported
+  - partially_supported
+  - contradicted
+  - unobservable
+  - unsupported
+  - orphaned_reference
+  - needs_review

@@ -397,7 +397,9 @@ def list_hypotheses_dto(db: CaseDB) -> HypothesesResponseDTO:
         db,
         """
         SELECT hypothesis_id, description, status, verdict, summary, origin,
-               created_session, resolved_session, created_at, updated_at
+               created_session, resolved_session, created_at, updated_at,
+               selection_count, blocked_reason, sufficiency_status,
+               sufficiency_score, sufficiency_reason, human_review_required
         FROM hypotheses
         ORDER BY created_at, hypothesis_id
         """,

@@ -82,6 +82,7 @@ def _row_to_hypothesis(row: dict[str, Any]) -> Hypothesis:
     source_rule_ids = row.get("source_rule_ids")
     required_entities = row.get("required_entities")
     confirm_when = row.get("confirm_when")
+    evidence_requirements = row.get("evidence_requirements")
     if isinstance(source_rule_ids, str):
         try:
             import json
@@ -107,6 +108,11 @@ def _row_to_hypothesis(row: dict[str, Any]) -> Hypothesis:
             confirm_when = json.loads(confirm_when)
         except Exception:
             confirm_when = None
+    if isinstance(evidence_requirements, str):
+        try:
+            evidence_requirements = json.loads(evidence_requirements)
+        except Exception:
+            evidence_requirements = None
     return Hypothesis(
         id=str(row.get("hypothesis_id") or ""),
         description=str(row.get("description") or ""),
@@ -115,8 +121,14 @@ def _row_to_hypothesis(row: dict[str, Any]) -> Hypothesis:
         summary=str(row.get("summary") or ""),
         source_rule_ids=[str(item) for item in source_rule_ids if item],
         source_decl_id=row.get("source_decl_id"),
+        source_gap_id=row.get("source_gap_id"),
         required_entities=[str(item) for item in required_entities if item],
         confirm_when=confirm_when if isinstance(confirm_when, dict) else None,
+        evidence_requirements=(
+            evidence_requirements
+            if isinstance(evidence_requirements, dict)
+            else None
+        ),
         target_keypoint_id=row.get("target_keypoint_id"),
     )
 
@@ -126,7 +138,9 @@ def load_persisted_hypotheses(db: CaseDB) -> tuple[list[Hypothesis], list[Hypoth
     rows = fetch_records(
         db,
         """
-        SELECT hypothesis_id, description, status, verdict, summary, source_rule_ids, source_decl_id, required_entities, confirm_when, target_keypoint_id
+        SELECT hypothesis_id, description, status, verdict, summary, source_rule_ids,
+               source_decl_id, required_entities, confirm_when,
+               evidence_requirements, source_gap_id, target_keypoint_id
         FROM hypotheses
         ORDER BY created_at, hypothesis_id
         """,
@@ -182,8 +196,9 @@ def _upsert_hypothesis(
         INSERT INTO hypotheses (
             hypothesis_id, description, status, verdict, summary, origin,
             created_session, resolved_session, created_at, updated_at, source_rule_ids,
-            source_decl_id, required_entities, confirm_when, target_keypoint_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            source_decl_id, required_entities, confirm_when, evidence_requirements,
+            source_gap_id, target_keypoint_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (hypothesis_id) DO UPDATE SET
             description = excluded.description,
             status = excluded.status,
@@ -198,6 +213,8 @@ def _upsert_hypothesis(
             source_decl_id = excluded.source_decl_id,
             required_entities = excluded.required_entities,
             confirm_when = excluded.confirm_when,
+            evidence_requirements = excluded.evidence_requirements,
+            source_gap_id = COALESCE(excluded.source_gap_id, hypotheses.source_gap_id),
             target_keypoint_id = COALESCE(excluded.target_keypoint_id, hypotheses.target_keypoint_id)
         """,
         (
@@ -217,6 +234,10 @@ def _upsert_hypothesis(
             json.dumps(clean_confirm_when, ensure_ascii=False)
             if clean_confirm_when
             else None,
+            json.dumps(hypothesis.evidence_requirements, ensure_ascii=False)
+            if hypothesis.evidence_requirements
+            else None,
+            hypothesis.source_gap_id,
             hypothesis.target_keypoint_id,
         ),
     )

@@ -23,13 +23,20 @@ from forensia.api.dto import (
     ClaimDTO,
     EntityCardDTO,
     EventVolumePointDTO,
+    EvidenceCoverageDTO,
     EvidenceRecordDTO,
+    EvidenceSourceDTO,
     FindingDTO,
     HypothesesResponseDTO,
+    HypothesisEvidenceLinkDTO,
     HypothesisReasoningEntryDTO,
+    HypothesisRelationDTO,
+    InvestigationStateDTO,
     InvestigationStepDTO,
+    InvestigationTaskDTO,
     MftTimelineDTO,
     ProgressEventDTO,
+    ReportGapDTO,
     ReportSectionDTO,
     RuntimeConfigDTO,
     SessionDTO,
@@ -54,6 +61,15 @@ from forensia.api.service import (
     list_mft_timeline_dto,
     list_sessions_dto,
     list_steps_dto,
+)
+from forensia.api.service_investigation import (
+    get_investigation_state_dto,
+    list_evidence_coverage_dto,
+    list_evidence_sources_dto,
+    list_hypothesis_evidence_dto,
+    list_hypothesis_relations_dto,
+    list_investigation_tasks_dto,
+    list_report_gaps_dto,
 )
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
@@ -564,6 +580,69 @@ def _register_stream_routes(app: FastAPI, case: Case):
         return StreamingResponse(event_source(), media_type="text/event-stream")
 
 
+def _register_investigation_state_routes(app: FastAPI, case: Case, cached):
+    def rows(snapshot_name: str, loader):
+        snapshot = cached(snapshot_name)
+        if snapshot is not None:
+            return snapshot
+        with CaseDB(case) as db:
+            return [item.model_dump(mode="json") for item in loader(db)]
+
+    @app.get("/api/evidence-sources", response_model=list[EvidenceSourceDTO])
+    def evidence_sources() -> list[EvidenceSourceDTO]:
+        return [
+            EvidenceSourceDTO.model_validate(item)
+            for item in rows("evidence_sources.json", list_evidence_sources_dto)
+        ]
+
+    @app.get("/api/evidence-coverage", response_model=list[EvidenceCoverageDTO])
+    def evidence_coverage() -> list[EvidenceCoverageDTO]:
+        return [
+            EvidenceCoverageDTO.model_validate(item)
+            for item in rows("evidence_coverage.json", list_evidence_coverage_dto)
+        ]
+
+    @app.get("/api/investigation-state", response_model=InvestigationStateDTO | None)
+    def investigation_state() -> InvestigationStateDTO | None:
+        snapshot = cached("investigation_state.json")
+        if snapshot is not None:
+            return InvestigationStateDTO.model_validate(snapshot)
+        with CaseDB(case) as db:
+            return get_investigation_state_dto(db)
+
+    @app.get("/api/report-gaps", response_model=list[ReportGapDTO])
+    def report_gaps() -> list[ReportGapDTO]:
+        return [
+            ReportGapDTO.model_validate(item)
+            for item in rows("report_gaps.json", list_report_gaps_dto)
+        ]
+
+    @app.get("/api/investigation-tasks", response_model=list[InvestigationTaskDTO])
+    def investigation_tasks() -> list[InvestigationTaskDTO]:
+        return [
+            InvestigationTaskDTO.model_validate(item)
+            for item in rows("investigation_tasks.json", list_investigation_tasks_dto)
+        ]
+
+    @app.get("/api/hypothesis-relations", response_model=list[HypothesisRelationDTO])
+    def hypothesis_relations() -> list[HypothesisRelationDTO]:
+        return [
+            HypothesisRelationDTO.model_validate(item)
+            for item in rows(
+                "hypothesis_relations.json", list_hypothesis_relations_dto
+            )
+        ]
+
+    @app.get("/api/hypothesis-evidence", response_model=list[HypothesisEvidenceLinkDTO])
+    def hypothesis_evidence() -> list[HypothesisEvidenceLinkDTO]:
+        return [
+            HypothesisEvidenceLinkDTO.model_validate(item)
+            for item in rows(
+                "hypothesis_evidence.json", list_hypothesis_evidence_dto
+            )
+        ]
+
+
 def _register_spa_routes(app: FastAPI, spa_dir: Path | None):
     if spa_dir is None:
         message = (
@@ -627,6 +706,7 @@ def create_app(case: Case) -> FastAPI:
     _register_report_routes(app, case, cached)
     _register_evidence_routes(app, case, cached, aggregate_event_volume)
     _register_evidence_record_routes(app, case)
+    _register_investigation_state_routes(app, case, cached)
     _register_stream_routes(app, case)
     _register_spa_routes(app, spa_dir)
 

@@ -138,7 +138,9 @@ What works today:
 
 * Ingestion and normalization of EVTX, MFT, and Prefetch artifacts into DuckDB. These three are supported first because they fit the same unified pipeline (parse → staged JSONL → normalized DuckDB tables); more artifact types are planned on the same approach. The current adapter interface can be used to add your own, although it is not yet stable (see [docs/extending.md](docs/extending.md)).
 * A rule engine that produces findings, key points, and hypothesis seeds from declarative rulepacks.
-* An LLM-driven investigation loop: hypothesis seeding, SQL query planning and composition, execution with fallback search, verdict review, and finding extraction.
+* A case-aware investigation loop: hypothesis seeding, deterministic next-best-focus selection, SQL query planning and composition, execution with fallback search, evidence sufficiency reconciliation, verdict propagation, and finding extraction.
+* Lightweight hypothesis relationships (`parent_of`, `prerequisite_for`, `derived_from`, `contradicts`, `alternative_to`, and `supersedes`) stored in DuckDB and validated in Python, without a graph database.
+* Evidence coverage and observability tracking that distinguishes a negative query result from unavailable, incomplete, failed, or unsupported evidence sources.
 * Incremental report generation from templates, refreshed as findings are confirmed, exported as Markdown and HTML.
 * A local web UI (`forensia serve`) showing investigation progress, findings, hypotheses, report sections, timeline data, and evidence references.
 * Knowledge injection from a local folder of Markdown files (`--knowledge`), used to bring organization- or case-specific context into prompts.
@@ -169,11 +171,13 @@ The system divides work into small roles: identifying gaps, drafting hypotheses,
 
 * LLM-generated SQL is restricted to validated read-only queries before execution: a single `SELECT` statement, keyword filtering, a table-name allowlist, and a dry run. This is a robustness measure against model mistakes, not a hardened security boundary.
 * Routing, template matching, duplicate-query detection, fallback search, and output formatting run deterministically on the code side.
-* Hypothesis verdict values are validated against a declared taxonomy; bypassing the validator is treated as a bug.
-* Only validated query results are written back to the case database; findings link back to the queries and evidence rows that produced them.
+* Investigation focus is ranked from persisted case state, report gaps, task state, dependencies, evidence coverage, retry history, and declarative priority weights. Ineligible or repeatedly inconclusive work is not selected indefinitely.
+* Hypothesis verdict values and relationships are validated against declared taxonomies; references and cycles are checked before relation state becomes authoritative.
+* Evidence links are role-validated and deduplicated. Declarative sufficiency rules reconcile an LLM-proposed verdict with source independence, contradiction, and observability before a terminal verdict is settled.
+* Only validated query results are written back to the case database; findings and claims link back to the queries and evidence rows that produced them.
 * `--max-llm-calls` provides a hard cap on LLM usage per session.
 
-**Known limitations**: whether a query result actually confirms a hypothesis is still an LLM judgment. A plausible-looking false positive can pass the structural checks and reach the report — which is why human verification of findings remains mandatory.
+**Known limitations**: evidence sufficiency is a conservative deterministic guardrail, not a complete forensic inference engine. Semantic interpretation of results still uses an LLM, coverage can only describe the sources and metadata available to forensia, and a structurally sufficient but misinterpreted result can still be wrong. Claims that need review are marked accordingly, and human verification against source evidence remains mandatory.
 
 ### 3. Spend time, not trust
 
@@ -197,11 +201,13 @@ flowchart LR
     C --> D["Rule Engine<br/>Findings / Key Points"]
 
     subgraph L["Investigation Loop"]
-        D --> E["Hypothesis Seeding<br/>rules + gap analysis"]
-        E --> P["Planner<br/>query intent → SQL composition"]
+        D --> E["Case State Update<br/>coverage / gaps / tasks / relations"]
+        E --> S["Focus Selection<br/>eligibility + priority scoring"]
+        S --> P["Planner<br/>query intent → SQL composition"]
         P --> X["Executor<br/>query execution + fallback search"]
-        X --> CK["Checker<br/>verdict review → finding extraction"]
-        CK --> TR["Progress Tracker<br/>confirm / refute / pivot"]
+        X --> CK["Checker<br/>evidence links + verdict proposal"]
+        CK --> SF["Sufficiency Guard<br/>coverage / independence / contradiction"]
+        SF --> TR["Progress Tracker<br/>propagate / confirm / refute / pivot"]
         TR -->|active| P
         TR -->|resolved| R["Resolver<br/>stale report sections + follow-up gaps"]
         R --> RW["Report Writer<br/>section outline → narrative paragraphs"]
@@ -212,7 +218,9 @@ flowchart LR
     M[("Structured Memories<br/>working context")]
 
     E --> T
+    S --> T
     CK --> T
+    SF --> T
     R --> T
 
     C -. derive .-> M
@@ -224,12 +232,13 @@ flowchart LR
 At a high level:
 
 1. Collected artifacts (EVTX, MFT, Prefetch) are ingested and normalized.
-2. Rules produce findings, key points, and possible hypotheses.
-3. The system drafts and tests hypotheses in small steps.
-4. SQL queries are generated, validated, executed, and checked.
-5. Confirmed evidence becomes structured findings and durable memory.
-6. Report sections are refreshed as new findings are confirmed.
-7. Gaps in the report can feed the next investigation cycle.
+2. Rules produce findings, key points, possible hypotheses, and optional evidence requirements.
+3. The system refreshes source coverage, case state, report gaps, investigation tasks, and hypothesis relationships.
+4. Eligible hypotheses are ranked with deterministic, traceable priority scoring; legacy ordering remains the fallback for old cases.
+5. SQL queries are generated, validated, executed, and checked, with results linked to every affected hypothesis.
+6. Declarative sufficiency rules reconcile the proposed verdict with evidence independence, contradiction, and observability. Missing evidence is not treated as refutation when the required source could not be observed.
+7. Related hypotheses, findings, claims, tasks, and durable memory are updated, while relationship effects are propagated conservatively.
+8. Report sections are refreshed and unresolved gaps feed the next investigation cycle until the case is complete, paused, bounded, or blocked with a persisted stop reason.
 
 The model is used where language and judgment are useful. Code is used where determinism and auditability matter. This separation is central to the project.
 

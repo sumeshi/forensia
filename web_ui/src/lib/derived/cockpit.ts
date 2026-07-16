@@ -68,7 +68,12 @@ export const activeHypothesesView = derived([hypotheses], ([$hypotheses]) =>
     latestReasoning: item.latest_reasoning ?? [],
     reasoningCount: item.reasoning_count ?? 0,
     latestIteration: item.latest_iteration ?? null,
-    latestReasoningAt: item.latest_reasoning_at ?? null
+    latestReasoningAt: item.latest_reasoning_at ?? null,
+    blockedReason: item.blocked_reason ?? null,
+    sufficiencyStatus: item.sufficiency_status ?? null,
+    sufficiencyScore: item.sufficiency_score ?? null,
+    sufficiencyReason: item.sufficiency_reason ?? null,
+    humanReviewRequired: item.human_review_required ?? false
   })).sort(byRecency)
 );
 
@@ -82,7 +87,12 @@ export const resolvedHypothesesView = derived([hypotheses], ([$hypotheses]) =>
     latestReasoning: item.latest_reasoning ?? [],
     reasoningCount: item.reasoning_count ?? 0,
     latestIteration: item.latest_iteration ?? null,
-    latestReasoningAt: item.latest_reasoning_at ?? null
+    latestReasoningAt: item.latest_reasoning_at ?? null,
+    blockedReason: item.blocked_reason ?? null,
+    sufficiencyStatus: item.sufficiency_status ?? null,
+    sufficiencyScore: item.sufficiency_score ?? null,
+    sufficiencyReason: item.sufficiency_reason ?? null,
+    humanReviewRequired: item.human_review_required ?? false
   })).sort(byRecency)
 );
 

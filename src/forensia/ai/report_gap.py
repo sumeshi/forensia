@@ -277,7 +277,43 @@ def inject_gap_hypotheses(
     active, resolved, and refuted hypotheses — preventing refuted claims like
     poqexec.exe from being re-admitted through the gap injection path.
     """
+    import hashlib
+
     added = 0
+    current_gap_ids = {
+        "GAP-" + hashlib.sha256(str(gap).encode()).hexdigest()[:16]
+        for gap in gaps
+        if _normalize_text(str(gap))
+    }
+    gap_sections: dict[str, str] = {}
+    for section_key, raw_gaps in db.execute(
+        "SELECT section_key, gaps FROM report_sections WHERE gaps IS NOT NULL"
+    ).fetchall():
+        section_gaps = raw_gaps
+        if isinstance(section_gaps, str):
+            try:
+                section_gaps = json.loads(section_gaps)
+            except (TypeError, ValueError):
+                section_gaps = []
+        for section_gap in section_gaps if isinstance(section_gaps, list) else []:
+            gap_sections[_normalize_text(str(section_gap))] = str(section_key or "")
+    if current_gap_ids:
+        placeholders = ", ".join("?" for _ in current_gap_ids)
+        db.execute(
+            f"UPDATE report_gaps SET status = 'resolved', updated_at = now() "
+            f"WHERE status = 'open' AND gap_id NOT IN ({placeholders})",
+            sorted(current_gap_ids),
+        )
+    else:
+        db.execute(
+            "UPDATE report_gaps SET status = 'resolved', updated_at = now() "
+            "WHERE status = 'open'"
+        )
+    db.execute(
+        "UPDATE investigation_tasks SET status = 'resolved', updated_at = now() "
+        "WHERE status = 'open' AND gap_id IN "
+        "(SELECT gap_id FROM report_gaps WHERE status = 'resolved')"
+    )
     for gap in gaps:
         normalized_gap = _normalize_text(gap)
         if not normalized_gap:
@@ -287,6 +323,8 @@ def inject_gap_hypotheses(
         required_entities, confirm_when = _parse_gap_hypothesis_output(
             llm_output or {}, gap
         )
+        gap_hash = hashlib.sha256(gap.encode()).hexdigest()[:16]
+        gap_id = f"GAP-{gap_hash}"
 
         # Build a candidate hypothesis for the unified admission gate
         candidate = Hypothesis(
@@ -297,20 +335,80 @@ def inject_gap_hypotheses(
             summary="",
             required_entities=required_entities,
             confirm_when=confirm_when,
+            source_gap_id=gap_id,
         )
+
+        gap_kind = classify_gap_kind(gap)
+        # Normalize gap to report_gaps table
+        section_key = gap_sections.get(normalized_gap, "")
+        db.execute(
+            """INSERT INTO report_gaps (gap_id, section_key, description, kind, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'open', now(), now())
+               ON CONFLICT (gap_id) DO UPDATE SET
+                   description = EXCLUDED.description,
+                   kind = EXCLUDED.kind,
+                   section_key = CASE WHEN EXCLUDED.section_key = '' THEN report_gaps.section_key ELSE EXCLUDED.section_key END,
+                   status = 'open',
+                   updated_at = now()""",
+            [gap_id, section_key, gap, gap_kind],
+        )
+
+        if gap_kind != "internal_db_check":
+            # Create investigation_task for external/human tasks
+            task_id = f"TASK-{gap_hash}"
+            db.execute(
+                """INSERT INTO investigation_tasks (task_id, kind, description, status, gap_id, created_at, updated_at)
+                   VALUES (?, ?, ?, 'open', ?, now(), now())
+                   ON CONFLICT (task_id) DO UPDATE SET status = 'open', updated_at = now()""",
+                [task_id, gap_kind, gap, gap_id],
+            )
+            db.execute(
+                "UPDATE report_gaps SET task_id = ? WHERE gap_id = ?",
+                [task_id, gap_id],
+            )
+            continue
 
         # --- Unified admission gate (G-5) ---
         ok, reason = admit_new_hypothesis(candidate, state)
         if not ok:
             continue
 
-        gap_kind = classify_gap_kind(gap)
-        if gap_kind != "internal_db_check":
-            if memory is not None:
-                memory.append_task(gap, gap_kind)
-            continue
-
         state.active_hypotheses.append(candidate)
         _upsert_hypothesis(db, candidate, origin="report_gap", session_id=session_id)
+        # Link gap to hypothesis
+        db.execute(
+            "UPDATE report_gaps SET hypothesis_id = ?, updated_at = now() WHERE gap_id = ?",
+            [candidate.id, gap_id],
+        )
         added += 1
+    if memory is not None:
+        project_investigation_tasks(db, memory)
     return added
+
+
+def project_investigation_tasks(db: CaseDB, memory: MemoryManager) -> None:
+    """Project authoritative open tasks into a replaceable Markdown section."""
+    rows = db.execute(
+        "SELECT task_id, kind, description, reason FROM investigation_tasks "
+        "WHERE status = 'open' ORDER BY created_at, task_id"
+    ).fetchall()
+    begin = "<!-- forensia:investigation-tasks:start -->"
+    end = "<!-- forensia:investigation-tasks:end -->"
+    lines = [begin, "## Investigation Tasks"]
+    if rows:
+        for task_id, kind, description, reason in rows:
+            suffix = f" — {reason}" if reason else ""
+            lines.append(f"- [{kind}] {description}{suffix} ({task_id})")
+    else:
+        lines.append("- none")
+    lines.append(end)
+    managed = "\n".join(lines)
+    path = memory.tasks_memory_path
+    existing = path.read_text(encoding="utf-8") if path.exists() else "# Tasks\n"
+    if begin in existing and end in existing:
+        prefix, remainder = existing.split(begin, 1)
+        _, suffix = remainder.split(end, 1)
+        content = prefix.rstrip() + "\n\n" + managed + suffix
+    else:
+        content = existing.rstrip() + "\n\n" + managed + "\n"
+    path.write_text(content, encoding="utf-8")

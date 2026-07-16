@@ -166,6 +166,11 @@ def _seed_rule_hypotheses(
                 source_decl_id=decl.id,
                 required_entities=required_entities,
                 confirm_when=dict(decl.confirm_when) if decl.confirm_when else None,
+                evidence_requirements=(
+                    dict(decl.evidence_requirements)
+                    if decl.evidence_requirements
+                    else None
+                ),
             )
             seeded.append(hyp)
             seeds_from_rule += 1

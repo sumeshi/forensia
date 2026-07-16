@@ -1,0 +1,17 @@
+# Deterministic next-best investigation weights. Components and their ranges
+# remain code-owned; deployments may tune relative influence here.
+weights:
+  severity: 1.0
+  report_relevance: 1.0
+  goal_relevance: 1.0
+  evidence_availability: 1.0
+  observability: 1.0
+  dependency_impact: 1.0
+  related_hypotheses: 1.0
+  information_gain_proxy: 1.0
+  report_changeability: 1.0
+  aging: 1.0
+  execution_cost: 1.0
+  retry_penalty: 1.0
+  duplicate_penalty: 1.0
+  repeated_inconclusive_penalty: 1.0

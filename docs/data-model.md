@@ -22,6 +22,8 @@ Schema initialization is performed in `CaseDB.__init__` in [src/forensia/db/data
 | `prefetch_executions` | Prefetch aggregate (latest one per binary) | `evidence_id`, `executable_name`, `exec_count`, `last_exec_time`, `prefetch_hash`, `filenames`, `volumes`, `raw_json` |
 | `prefetch_timeline` | Prefetch execution history (up to 8 rows per binary) | `timeline_id`, `evidence_id`, `executable_name`, `prefetch_hash`, `exec_time`, `exec_index` |
 | `ingested_files` | Hash table for ingest deduplication | `path`, `hash`, `source_kind`, `ingested_at` |
+| `evidence_sources` | Authoritative per-source ingest/normalize state and scope | `source_id`, `artifact_family`, `ingest_status`, `channel`, `hosts`, `min_time`, `max_time`, `row_count`, error fields |
+| `evidence_coverage` | Deterministic capability observability projection | `capability`, `host`, `channel`, `source_family`, `state`, `reason_code`, `source_ids`, time range, `confidence` |
 | `case_timeline` | Deterministic timeline | `entry_id`, `timestamp`, `source` (`finding`/`verdict`/`structured`/`keypoint`), `ref_id`, `host`, `summary`, `evidence_id` |
 
 `case_timeline` is fed by three deterministic feeders: (a) the first-evidence timestamp of findings with severity ≥ medium (`feed_findings_to_timeline` in [rules/engine.py](../src/forensia/knowledge/rules/engine.py)), (b) the decisive query row of resolved hypotheses, and (c) the matching rows of structured answers declared with `timeline: true` in `question_routing.yaml`.
@@ -40,8 +42,10 @@ Host identification:
 | Table | Role | Main columns |
 |---|---|---|
 | `findings` | Rule detection results | `finding_id`, `rule_id`, `title`, `summary`, `severity`, `confidence`, `status` (`new`/`accepted`/`suppressed`), `tags`, `attack`, `evidence`, `ai_summary`, `missing_checks`, `created_at` |
-| `hypotheses` | Hypotheses under investigation | `hypothesis_id`, `description`, `status` (`active`/`resolved`), `verdict` (`confirmed`/`refuted`/`inconclusive`/`untestable`), `summary`, `origin`, `created_session`, `resolved_session`, `confidence`, `source_rule_ids`, `source_decl_id`, `required_entities`, `confirm_when` |
-| `hypothesis_reasoning` | Reasoning history of hypothesis verification | `entry_id`, `hypothesis_id`, `session_id`, `iteration`, `phase` (`plan`/`do`/`check`/`act`/`memo`), `verdict`, `query_id`, `body`, `created_at` |
+| `hypotheses` | Hypotheses under investigation | Existing hypothesis fields plus `evidence_requirements`, selection/retry state, blocking state, sufficiency status/score/reason and human-review flag |
+| `hypothesis_relations` | Validated hypothesis graph | endpoint IDs, `relation_type`, `origin`, `confidence`, `rationale`, creation session/time |
+| `hypothesis_evidence` | Typed, deduplicated evidence-to-hypothesis provenance | hypothesis/evidence/query IDs, `role`, `source_family`, `derivation_group`, `strength` |
+| `hypothesis_reasoning` | Reasoning history of hypothesis verification | `entry_id`, `hypothesis_id`, `session_id`, `iteration`, `phase` (including `sufficiency`), `verdict`, `query_id`, `body`, `created_at` |
 
 `findings.attack` is a JSON string in `[{tactic, technique_id, technique_name}]` form. It is aggregated into a tactic × technique matrix by `list_attack_coverage_dto` ([src/forensia/api/service.py](../src/forensia/api/service.py)).
 
@@ -56,6 +60,8 @@ Host identification:
 | `retrieval_events` (trace DB) | Observability for memory and external-knowledge retrieval; not used as ranking feedback | `event_id`, `session_id`, `scope_kind`, `scope_id`, `phase`, `source_kind`, `query_terms`, `candidate_count`, `selected_refs`, `rejected_refs`, `selected_chars`, `budget`, `created_at` |
 | `progress_events` | Progress event stream for the UI | `event_index`, `stage`, `status`, `iteration`, `current_query`, `summary`, `payload` |
 | `query_cache` | Result cache for SQL emitted by the LLM | `sql_hash`, `sql_text`, `result_json`, `executed_at` |
+| `investigation_state` | Singleton case objective/lifecycle | `objective`, `status`, `termination_policy`, `stop_reason_code`, `stop_reason` |
+| `investigation_tasks` | Non-SQL evidence acquisition, external lookup and human work | `kind`, `description`, `status`, linked Gap/Hypothesis/capability |
 
 ### 1.4 Report generation
 
@@ -67,6 +73,7 @@ Host identification:
 | `section_facts` | Reusable facts within a section | `fact_id`, `fact_type`, `fact_key`, `fact_value`, `evidence_ids`, `source_query`, `source_section`, `confidence` |
 | `section_run_coverage` | Per-block keypoint coverage | `section_key`, `block_heading`, `keypoint`, `queried`, `rows`, `used_in_answer` |
 | `claims` | Claims extracted from report paragraphs | `claim_id`, `section_key`, `claim_text`, `support_status`, `finding_ids`, `hypothesis_ids`, `evidence_ids` |
+| `report_gaps` | Normalized open/resolved report gaps | section/block, description, kind, linked Claim/Hypothesis/Task, Coverage reason |
 
 INSERTs into `section_evidence` happen in a single place: [`_store_section_evidence` in ai/sections/section_run_store.py](../src/forensia/ai/sections/section_run_store.py).
 
@@ -104,7 +111,7 @@ memory/
 ├─ overview.md              · Short summary of the entire case (compacted by the LLM)
 ├─ facts.md                 · Append-only log of confirmed facts
 ├─ timeline.md              · Observation points with timestamps
-├─ tasks.md                 · Follow-up / verification tasks
+├─ tasks.md                 · Follow-up notes plus a DB-regenerated investigation-task section
 ├─ evidence/
 │  └─ suspicious.md         · Notes on suspicious evidence
 ├─ entities/
@@ -169,7 +176,8 @@ Defined as Pydantic models in `src/forensia/api/dto.py`. The `extra="ignore"` se
 | DTO | Content | Origin tables |
 |---|---|---|
 | `FindingDTO` | One finding | `findings` |
-| `HypothesisDTO` | One hypothesis + 3 most recent reasoning entries embedded | `hypotheses` + `hypothesis_reasoning` |
+| `HypothesisDTO` | One hypothesis + recent reasoning, selection/block and sufficiency state | `hypotheses` + `hypothesis_reasoning` |
+| `HypothesisRelationDTO` / `HypothesisEvidenceLinkDTO` | Graph edges and evidence provenance | `hypothesis_relations` / `hypothesis_evidence` |
 | `HypothesesResponseDTO` | `{active: [...], resolved: [...]}` | Partition of the above |
 | `HypothesisReasoningEntryDTO` | One row of reasoning history | `hypothesis_reasoning` |
 

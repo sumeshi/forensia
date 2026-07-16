@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -22,8 +23,19 @@ from forensia.api.service import (
     list_sessions_dto,
     list_steps_dto,
 )
+from forensia.api.service_investigation import (
+    get_investigation_state_dto,
+    list_evidence_coverage_dto,
+    list_evidence_sources_dto,
+    list_hypothesis_evidence_dto,
+    list_hypothesis_relations_dto,
+    list_investigation_tasks_dto,
+    list_report_gaps_dto,
+)
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
+
+logger = logging.getLogger(__name__)
 
 VOLATILE_SNAPSHOT_INTERVAL_S = 5.0
 
@@ -195,6 +207,45 @@ def write_full_api_snapshots(case: Case, db: CaseDB) -> None:
         snap_dir / "ai_reviews.json",
         [item.model_dump(mode="json") for item in list_ai_reviews_dto(db)],
     )
+    try:
+        sources = list_evidence_sources_dto(db)
+        write_json(snap_dir / "evidence_sources.json", [s.model_dump() for s in sources])
+    except Exception:
+        logger.debug("Failed to write evidence_sources snapshot", exc_info=True)
+    try:
+        coverage = list_evidence_coverage_dto(db)
+        write_json(snap_dir / "evidence_coverage.json", [c.model_dump() for c in coverage])
+    except Exception:
+        logger.debug("Failed to write evidence_coverage snapshot", exc_info=True)
+    try:
+        inv_state = get_investigation_state_dto(db)
+        if inv_state:
+            write_json(snap_dir / "investigation_state.json", inv_state.model_dump())
+    except Exception:
+        logger.debug("Failed to write investigation_state snapshot", exc_info=True)
+    try:
+        gaps = list_report_gaps_dto(db)
+        write_json(snap_dir / "report_gaps.json", [g.model_dump() for g in gaps])
+    except Exception:
+        logger.debug("Failed to write report_gaps snapshot", exc_info=True)
+    try:
+        tasks = list_investigation_tasks_dto(db)
+        write_json(snap_dir / "investigation_tasks.json", [t.model_dump() for t in tasks])
+    except Exception:
+        logger.debug("Failed to write investigation_tasks snapshot", exc_info=True)
+    try:
+        relations = list_hypothesis_relations_dto(db)
+        write_json(
+            snap_dir / "hypothesis_relations.json",
+            [item.model_dump() for item in relations],
+        )
+        links = list_hypothesis_evidence_dto(db)
+        write_json(
+            snap_dir / "hypothesis_evidence.json",
+            [item.model_dump() for item in links],
+        )
+    except Exception:
+        logger.debug("Failed to write hypothesis graph snapshots", exc_info=True)
 
 
 def write_platform_snapshots(case: Case, db: CaseDB) -> None:

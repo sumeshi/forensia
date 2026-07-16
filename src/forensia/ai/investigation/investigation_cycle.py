@@ -40,6 +40,9 @@ from forensia.ai.investigation.investigation_session import (
     ctx_refresh_caches,
 )
 from forensia.ai.investigation.planner import _compute_uncovered_keypoints
+from forensia.ai.investigation.selection import (
+    select_focus_hypotheses as select_focus_hypotheses_v2,
+)
 from forensia.ai.llm import llm_gateway
 from forensia.ai.llm.llm_client import (
     LLMServerUnavailableError,
@@ -601,7 +604,27 @@ async def _run_cycle_body(
         focus_max = max(
             2, (len(state.active_hypotheses) + remaining_cycles - 1) // remaining_cycles
         )
-        focus_hypotheses = select_focus_hypotheses(state, max_items=focus_max)
+        # Use M4 selector if investigation_state table exists (M1 migration ran)
+        try:
+            selection_results = select_focus_hypotheses_v2(
+                db,
+                limit=focus_max,
+                findings_snapshot=state.findings_snapshot,
+                session_id=session_id,
+                iteration=plan_cycle,
+            )
+            focus_hypotheses = []
+            for sr in selection_results:
+                if sr.eligible:
+                    hyp = next(
+                        (h for h in state.active_hypotheses if h.id == sr.hypothesis_id),
+                        None,
+                    )
+                    if hyp:
+                        focus_hypotheses.append(hyp)
+        except Exception:
+            # Fallback to legacy selector if M4 tables not available
+            focus_hypotheses = select_focus_hypotheses(state, max_items=focus_max)
         for hypothesis in focus_hypotheses:
             if ctx.interrupted:
                 break

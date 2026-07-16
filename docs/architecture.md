@@ -17,10 +17,12 @@ flowchart LR
     B --> C[Rule Engine]
     C -->|findings| B
     C -->|seed hypotheses| H[Investigation Loop]
+    B -->|coverage + case state| H
     H -->|plan| Q[SQL Executor]
     Q --> B
     Q -->|results| K[Checker]
-    K -->|verdict + memory_updates| H
+    K -->|proposed verdict + memory_updates| H
+    H -->|sufficiency reconciliation| B
     K -->|persist| B
     K -->|durable facts| M[("memory/*.md")]
     H -->|stable section| R[Section Agent]
@@ -114,7 +116,7 @@ The engine runs the SQL, fills the `finding` template with the rows, and INSERTs
 
 ### 2.4 Investigation Loop
 
-The main loop in [ai/investigator.py](../src/forensia/ai/investigation/investigator.py) (cycle body in [ai/investigation_cycle.py](../src/forensia/ai/investigation/investigation_cycle.py)) runs 7 steps per `plan_cycle`.
+The main loop in [ai/investigator.py](../src/forensia/ai/investigation/investigator.py) (cycle body in [ai/investigation_cycle.py](../src/forensia/ai/investigation/investigation_cycle.py)) combines deterministic case-state selection with the existing plan/execute/check/report stages.
 
 ```mermaid
 sequenceDiagram
@@ -138,19 +140,21 @@ sequenceDiagram
     Chk->>LLM: finding_extractor (when verdict=confirmed)
     Chk->>LLM: memory_updater
     Chk-->>Inv: CheckResult
+    Inv->>DB: link evidence + evaluate Coverage/sufficiency
+    Inv->>Inv: reconcile proposed and machine verdicts
     Inv->>Mem: apply_memory_updates
     Inv->>DB: persist hypothesis_reasoning
 ```
 
-7 steps:
+Main stages:
 
 1. **broad_plan**: `gap_identifier` extracts uncovered observation points, and `hypothesis_drafter` drafts a hypothesis per gap
-2. **plan**: Two-phase: Phase 1 (intent) runs `query_intent_planner` → `sql_self_check` gate (retries intent when blocked), Phase 2 (composer) runs `sql_composer` (retries composer only up to 3 times on SQL validation failure). `plan_hypothesis_query` ([ai/planner.py](../src/forensia/ai/investigation/planner.py))
-3. **execute**: Isssues a SELECT to DuckDB. When 0 rows are returned, the rule-side `fallback_search` declaration fires deterministically
-4. **check**: `verdict_reviewer` returns a verdict, and the code-side consistency gate cross-checks that the claim matches the result rows. Only when `confirmed` does `finding_extractor` extract a structured finding and persist it to `findings`
-5. **track**: `HypothesisProgressTracker` decides auto-confirm / refute / untestable / pivot from `confirm_when` / consecutive 0-row / query duplication / absent telemetry
-6. **resolve**: Report sections tied to a resolved hypothesis are marked stale, and follow-up questions are injected as new hypotheses
-7. **report**: `section_outliner` fixes the layout, and `paragraph_narrator` generates paragraph bodies
+2. **select**: `selection.py` filters blocked/unobservable/exhausted candidates and ranks eligible hypotheses from deterministic priority components. The full score breakdown is stored in Trace.
+3. **plan**: Two-phase: Phase 1 (intent) runs `query_intent_planner` → `sql_self_check` gate (retries intent when blocked), Phase 2 (composer) runs `sql_composer` (retries composer only up to 3 times on SQL validation failure). `plan_hypothesis_query` ([ai/planner.py](../src/forensia/ai/investigation/planner.py))
+4. **execute/check**: Issues a safe SELECT, applies fallback behavior and obtains the Checker's proposed verdict.
+5. **sufficiency**: Links evidence, removes derivation duplicates, evaluates Rule/general policy against relevant Coverage, then reconciles the LLM proposal. Insufficient confirmation remains inconclusive; unavailable refutation becomes untestable.
+6. **relate/resolve**: Checker-derived hypotheses receive validated parent edges. Verdict effects unblock, block or flag adjacent hypotheses without changing them to an incompatible status.
+7. **report/gaps**: Refreshes Claims and sections, synchronizes normalized Gap/Task lifecycle, and projects authoritative tasks into Markdown Memory.
 
 For the input/output schema of each LLM role, see [llm-roles.md](llm-roles.md).
 
@@ -268,6 +272,7 @@ To keep the Web UI up to date during an investigation, `reports/api/*.json` is w
 | Write function | Timing | Files included |
 |---|---|---|
 | `write_volatile_api_snapshots` | every 5 seconds during an investigation | `hypotheses.json`, `stats.json`, `findings.json`, `attack_coverage.json`, `report_sections.json`, `hypothesis_reasoning.json`, `hypotheses_reasoning_latest.json`, `entities.json` |
+| `write_full_api_snapshots` | full platform refresh | Above plus evidence source/Coverage, investigation state, normalized Gaps/Tasks, hypothesis relations and evidence links |
 | `write_progress_snapshot` | on every progress emit | `progress_events.json` |
 | `write_full_api_snapshots` | at CLI exit + when section_refresher completes | above + `case.json`, `sessions.json`, `claims.json`, `mft_timeline.json`, `session_steps.json`, `ai_reviews.json`, `report_brief.json`, `event_volume_*.json` |
 
