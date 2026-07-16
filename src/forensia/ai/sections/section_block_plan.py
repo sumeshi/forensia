@@ -362,7 +362,10 @@ def _select_columns_by_template(
     tpl_cf = template_body.casefold()
     mentioned = [h for h in headers if h.casefold() in tpl_cf]
     if mentioned:
-        return [{c: row[c] for c in mentioned} for row in raw_rows]
+        # Query results may legitimately be heterogeneous (for example a
+        # summary row followed by detail rows).  Missing optional cells are
+        # represented as null instead of aborting the whole report block.
+        return [{column: row.get(column) for column in mentioned} for row in raw_rows]
     return raw_rows
 
 

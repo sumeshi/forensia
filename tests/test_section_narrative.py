@@ -651,5 +651,23 @@ Substantive narrative claim with evidence evtx-security-000000000122.
         self.assertNotIn("### Queries Run", joined)
 
 
+def test_template_column_selection_tolerates_heterogeneous_rows() -> None:
+    from forensia.ai.sections.section_block_plan import _select_columns_by_template
+
+    rows = [
+        {"finding": "A", "severity": "high"},
+        {"finding": "B"},
+    ]
+    selected = _select_columns_by_template(
+        rows,
+        "1_overview",
+        "| finding | severity |",
+    )
+    assert selected == [
+        {"finding": "A", "severity": "high"},
+        {"finding": "B", "severity": None},
+    ]
+
+
 if __name__ == "__main__":
     unittest.main()

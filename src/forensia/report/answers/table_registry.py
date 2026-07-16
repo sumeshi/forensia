@@ -167,7 +167,9 @@ TABLE_BLOCKS: dict[str, TableSpec] = {
             ("severity", "Severity"),
             ("confidence", "Confidence"),
             ("why_it_matters", "Why it matters"),
+            ("reference", "Ref"),
         ),
+        optional_keys=("reference",),
     ),
     "timeline_phase_summary": TableSpec(
         builder=_build_timeline_phase_table,
