@@ -35,6 +35,32 @@ class TestReportQualityContract(unittest.TestCase):
         findings = check_failure_markers(body_clean)
         self.assertEqual(len(findings), 0, "Clean body should have no markers")
 
+    def test_persisted_failure_is_fatal_but_omitted_from_rendered_prose(self) -> None:
+        from forensia.report.render.writer import build_report_markdown_from_db
+
+        marker = "_Section could not be generated due to an internal error._"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO report_sections "
+                    "(section_key, title, body, confidence, status, update_count, stale) "
+                    "VALUES ('1_bad', 'Bad', ?, 0, 'draft', 1, FALSE), "
+                    "('2_good', 'Good', '# Good\n\nValid body.', 1, 'stable', 1, FALSE)",
+                    [marker],
+                )
+                rendered = build_report_markdown_from_db(db, case)
+                findings = validate_report({}, report_body=rendered, db=db)
+                self.assertNotIn(marker, rendered)
+                self.assertIn("Valid body", rendered)
+                self.assertTrue(
+                    any(
+                        item.check_name == "section_generation_failure"
+                        and item.severity == "error"
+                        for item in findings
+                    )
+                )
+
     def test_source_status_uses_stable_ids_not_colliding_basenames(self) -> None:
         """Two sources with the same filename retain independent row counts."""
         from forensia.db.evidence_sources import register_evidence_source

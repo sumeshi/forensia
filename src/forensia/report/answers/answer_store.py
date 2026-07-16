@@ -26,6 +26,7 @@ from forensia.knowledge.catalog import (
     catalog_marker,
     catalog_values,
 )
+from forensia.knowledge.questions import question_spec_for_answer_spec
 from forensia.knowledge.resources import schema_dir
 from forensia.report.evidence_refs import _report_keypoint_rows, _sql_like_any
 from forensia.report.render.formats import load_report_formats
@@ -377,9 +378,11 @@ def _render_structured_answer_markdown(
     format_spec = load_report_formats(template_dir)["structured_answer"]
     headings = format_spec["headings"]
     labels = format_spec["labels"]
+    spec = question_spec_for_answer_spec(str(answer.get("answer_spec") or ""))
     answer_block = _render_answer_block(
         list(answer.get("answer") or []),
         answer.get("columns"),
+        max_rows=spec.render_max_rows if spec is not None else None,
         format_spec=format_spec,
     )
     interpretation = _structured_answer_interpretation(

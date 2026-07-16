@@ -196,6 +196,50 @@ class QuestionAnswerTests(unittest.TestCase):
                 "Microsoft Outlook", answer["answer"][0].get("application_name")
             )
 
+    def test_email_application_usage_ranks_stationery_after_mail_data(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                for index in range(35):
+                    db.execute(
+                        """
+                        INSERT INTO mft_entries (
+                            evidence_id, file_path, file_name, extension, si_modified
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            f"mft-stationery-{index:04d}",
+                            rf"C:\Users\Alice\AppData\Local\Microsoft\Windows Mail\Stationery\image-{index}.jpg",
+                            f"image-{index}.jpg",
+                            "jpg",
+                            datetime(2015, 3, 25, 15, index % 60, 0),
+                        ),
+                    )
+                db.execute(
+                    """
+                    INSERT INTO mft_entries (
+                        evidence_id, file_path, file_name, extension, si_modified
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "mft-mailbox-priority",
+                        r"C:\Users\Alice\AppData\Local\Microsoft\Outlook\mailbox.ost",
+                        "mailbox.ost",
+                        "ost",
+                        datetime(2015, 3, 20, 12, 0, 0),
+                    ),
+                )
+                answer = build_structured_answer(
+                    case,
+                    db,
+                    answer_spec="email_application_usage",
+                    answer_id="Q-email-app-ranked",
+                    section_key="6_appendix",
+                    block_heading="Email application",
+                )
+
+            self.assertEqual("mailbox.ost", answer["answer"][0]["artifact_path"].rsplit("\\", 1)[-1])
+
     def test_structured_benchmark_last_logon_persists_json_and_csv(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -443,9 +487,10 @@ class QuestionAnswerTests(unittest.TestCase):
 
             self.assertIsNotNone(answer)
             event_ids = {row.get("event_id") for row in answer["answer"]}
-            self.assertEqual({1100, 1102}, event_ids)
+            self.assertEqual({1102}, event_ids)
             evidence_ids = {row.get("evidence_id") for row in answer["answer"]}
             self.assertNotIn("evtx-system-000000000001", evidence_ids)
+            self.assertNotIn("evtx-security-000000000003", evidence_ids)
 
     def test_structured_benchmark_antiforensics_filters_installed_noise_files(
         self,

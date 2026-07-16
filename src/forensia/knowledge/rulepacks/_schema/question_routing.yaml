@@ -58,6 +58,7 @@ question_types:
     interpretation_template: "Mail-related traces are centered on {sample(application_name, 3)}. OST/PST files indicate potential mail data access, but do not directly show content viewing or external sending."
     required_fields: [application_name]
     render_columns: [application_name, version, evidence_type, artifact_path, artifact_time, evidence_id]
+    render_max_rows: 30
     status_rules:
       min_rows_for_answer: 1
       empty_status: not_found
@@ -68,7 +69,7 @@ question_types:
       note: "Identify the mail client application from mail data files and application artifacts."
     evidence_chain:
       - source: mft_entries
-        query: "SELECT {{catalog_label_sql:email_artifacts:client:exe_patterns,paths,data_files:file_name,file_path:application_name}}, '' AS version, 'mft' AS evidence_type, file_path AS artifact_path, si_modified AS artifact_time, evidence_id FROM mft_entries WHERE {{catalog_data_file_sql:email_artifacts:file_name}} OR {{catalog_path_sql:email_artifacts:file_path}}"
+        query: "SELECT {{catalog_label_sql:email_artifacts:client:exe_patterns,paths,data_files:file_name,file_path:application_name}}, '' AS version, 'mft' AS evidence_type, file_path AS artifact_path, si_modified AS artifact_time, evidence_id FROM mft_entries WHERE {{catalog_data_file_sql:email_artifacts:file_name}} OR {{catalog_path_sql:email_artifacts:file_path}} ORDER BY CASE WHEN LOWER(COALESCE(extension, '')) IN ('ost','pst','mbox','eml') THEN 0 WHEN LOWER(COALESCE(file_name, '')) LIKE '%.oeaccount' OR LOWER(COALESCE(file_name, '')) LIKE '%messagestore%' OR LOWER(COALESCE(file_name, '')) LIKE 'edb%.log' THEN 1 WHEN LOWER(COALESCE(file_path, '')) LIKE '%/stationery/%' OR LOWER(COALESCE(file_path, '')) LIKE '%\\stationery\\%' THEN 9 ELSE 5 END, si_modified DESC NULLS LAST, file_path"
 
   - name: email_ost
     answer_spec: email_data_files

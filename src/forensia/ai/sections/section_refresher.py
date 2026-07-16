@@ -81,16 +81,22 @@ def collect_section_requests(
             "SELECT section_key FROM report_sections WHERE stale = TRUE"
         ).fetchall()
     }
+    from forensia.report.report_validation import has_failure_marker
+
     requests: list[dict[str, Any]] = []
     for template_path in template_paths:
         request = prepare_section_request(
             case, db, template_path, prior_filled, report_brief=report_brief
         )
         request["template_path"] = str(template_path)
-        request["is_stale"] = request.get("section_key") in stale_section_keys
+        prior_body = str(prior_filled.get(request["section_key"]) or "")
+        persisted_failure = has_failure_marker(prior_body)
+        request["is_stale"] = (
+            request.get("section_key") in stale_section_keys or persisted_failure
+        )
         request["needs_refresh"] = (
             request["is_stale"]
-            or not str(prior_filled.get(request["section_key"]) or "").strip()
+            or not prior_body.strip()
         )
         if request["needs_refresh"]:
             requests.append(request)
@@ -191,7 +197,12 @@ def _existing_structured_body(request: dict[str, Any], db: CaseDB) -> str | None
         "SELECT body FROM report_sections WHERE section_key = ? AND stale = FALSE AND length(body) > 100",
         [request["section_key"]],
     ).fetchone()
-    return existing[0] if existing else None
+    if not existing:
+        return None
+    from forensia.report.report_validation import has_failure_marker
+
+    body = str(existing[0] or "")
+    return None if has_failure_marker(body) else body
 
 
 @dataclass

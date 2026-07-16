@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from forensia.report.answers.event_semantics import LOG_CLEAR_EVENT_SQL
 from forensia.report.answers.keypoint_sql import (
     _CLOUD_FILE_SQL,
     _CLOUD_PATH_SQL,
@@ -56,14 +57,10 @@ ACTIVITY_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "Observed log clearing or integrity-impacting events.",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT timestamp, computer, event_id, channel, target_user, src_ip, evidence_id
             FROM evtx_events
-            WHERE (event_id IN (1100, 1102) AND (channel IS NULL OR LOWER(channel) LIKE '%security%'))
-               OR (
-                  event_id = 104
-                  AND LOWER(COALESCE(json_extract_string(raw_json, '$.winlog.provider.name'), '')) = 'microsoft-windows-eventlog'
-               )
+            WHERE {LOG_CLEAR_EVENT_SQL}
             ORDER BY timestamp
             """,
         ),

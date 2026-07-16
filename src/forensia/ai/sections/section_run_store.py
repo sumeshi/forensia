@@ -560,7 +560,7 @@ def _load_reusable_section_evidence(
 def _heading_topic_keywords(heading_lower: str) -> list[str]:
     """Extract topic keywords from a block heading for evidence filtering."""
     topic_map = {
-        "log integrity": ["log", "integrity", "clear", "1100", "1102", "104", "6006"],
+        "log integrity": ["log", "integrity", "clear", "1102", "104", "4719"],
         "timeline": ["time", "event", "chronolog", "sequence"],
         "network": ["network", "ip", "firewall", "connection", "src_ip", "dst_ip"],
         "lateral": ["lateral", "logon", "rdp", "service", "4624", "4625"],

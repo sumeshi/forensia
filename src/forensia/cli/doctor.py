@@ -241,7 +241,15 @@ def _doctor_static_lint_check() -> tuple[str, bool]:
         # tests never execute) crash long investigation runs hours in. Ruff's
         # pyflakes rules catch them statically before any run starts.
         result = subprocess.run(
-            [sys.executable, "-m", "ruff", "check", "src/forensia", "tests"],
+            [
+                sys.executable,
+                "-m",
+                "ruff",
+                "check",
+                "--no-cache",
+                "src/forensia",
+                "tests",
+            ],
             capture_output=True,
             text=True,
             timeout=120,
@@ -272,6 +280,8 @@ def _doctor_test_suite_check() -> tuple[str, bool]:
                 "tests/",
                 "-q",
                 "--no-header",
+                "-p",
+                "no:cacheprovider",
                 "--ignore=tests/test_memory.py",
                 "--ignore=tests/test_ingest.py",
                 "--ignore=tests/test_persistence.py",

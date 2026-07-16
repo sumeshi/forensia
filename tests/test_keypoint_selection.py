@@ -1,13 +1,13 @@
 """Tests for log-integrity keypoint selection,
 
 Why this matters: the report's "Log Integrity" section is seeded from
-`timeline_log_clearing` / `gaps_log_integrity_events`. If these keypoints do
-not surface Security 1100 (event logging service shutdown) and 1102 (audit
-log cleared), the section has nothing meaningful to narrate and falls back to
+`timeline_log_clearing` / `gaps_log_integrity_events`. These keypoints must
+surface Security 1102 (audit log cleared), but not 1100 (event logging service
+shutdown), and must not fall back to
 unrelated benign maintenance events (e.g. a single 104 from
 Microsoft-Windows-Diagnosis-Scripted/Operational, which is a routine
 diagnostics log rotation, not a log-integrity signal). This test pins the
-general rule: Security-channel 1100/1102 are log-integrity signals; a 104
+general rule: Security-channel 1102 is a log-clear signal; a 104
 from a non-Eventlog provider (such as Diagnosis-Scripted) is not.
 """
 
@@ -20,6 +20,7 @@ from datetime import datetime
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.report.answers.keypoint_catalog import REPORT_KEYPOINTS
+from forensia.report.answers.summary_rows import _timeline_phase_rows
 
 
 def _insert_event(
@@ -44,12 +45,12 @@ def _insert_event(
 
 
 class TestLogIntegrityKeypointSelection(unittest.TestCase):
-    def test_security_1100_is_selected_over_diagnosis_scripted_104(self) -> None:
+    def test_security_1100_and_unrelated_104_are_not_log_clear_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                # Real log-integrity signal: Security channel, event logging
-                # service shutdown (1100).
+                # A service shutdown is lifecycle evidence, not proof that a
+                # log was cleared.
                 _insert_event(
                     db,
                     evidence_id="evtx-security-1",
@@ -75,11 +76,11 @@ class TestLogIntegrityKeypointSelection(unittest.TestCase):
                 gaps_rows = gaps_resolver(db)
 
         timeline_evidence_ids = {row["evidence_id"] for row in timeline_rows}
-        self.assertIn("evtx-security-1", timeline_evidence_ids)
+        self.assertNotIn("evtx-security-1", timeline_evidence_ids)
         self.assertNotIn("evtx-diagnosis-scripted-1", timeline_evidence_ids)
 
         gaps_event_ids = {row["event_id"] for row in gaps_rows}
-        self.assertIn(1100, gaps_event_ids)
+        self.assertNotIn(1100, gaps_event_ids)
         self.assertNotIn(104, gaps_event_ids)
 
     def test_104_from_eventlog_provider_is_still_treated_as_log_clear(self) -> None:
@@ -102,6 +103,52 @@ class TestLogIntegrityKeypointSelection(unittest.TestCase):
 
         timeline_evidence_ids = {row["evidence_id"] for row in timeline_rows}
         self.assertIn("evtx-eventlog-104", timeline_evidence_ids)
+
+    def test_shutdown_plus_cleaner_does_not_become_antiforensic_priority(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                _insert_event(
+                    db,
+                    evidence_id="evtx-security-1100",
+                    channel="Security",
+                    event_id=1100,
+                    timestamp=datetime(2015, 3, 25, 10, 0, 0),
+                )
+                db.execute(
+                    """
+                    INSERT INTO prefetch_executions (
+                        evidence_id, executable_name, last_exec_time, source_file
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        "prefetch-ccleaner",
+                        "CCLEANER64.EXE",
+                        datetime(2015, 3, 25, 11, 0, 0),
+                        "Windows/Prefetch/CCLEANER64.EXE-test.pf",
+                    ),
+                )
+                phases = _timeline_phase_rows(db)
+
+        self.assertEqual(1, len(phases))
+        self.assertNotIn("log integrity", phases[0]["phase"].lower())
+        self.assertNotIn("prioritize anti-forensic", phases[0]["interpretation"].lower())
+
+    def test_security_1102_counts_as_log_integrity_in_phase_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                _insert_event(
+                    db,
+                    evidence_id="evtx-security-1102",
+                    channel="Security",
+                    event_id=1102,
+                    timestamp=datetime(2015, 3, 25, 10, 0, 0),
+                )
+                phases = _timeline_phase_rows(db)
+
+        self.assertEqual(1, len(phases))
+        self.assertIn("1 log integrity events", phases[0]["phase"])
 
 
 if __name__ == "__main__":

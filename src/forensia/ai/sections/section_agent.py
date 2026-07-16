@@ -42,6 +42,10 @@ from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.db.database import CaseDB
 
+
+class SectionBlockGenerationError(RuntimeError):
+    """Raised after block diagnostics are persisted; never render as prose."""
+
 # ====================================================================
 # BLOCK WALKTHROUGH PHASES — private helpers for run_section_block_agent
 # ====================================================================
@@ -446,12 +450,9 @@ def run_section_block_agent(
                 "block_heading": block_heading,
             },
         )
-        return SectionBlockResult(
-            body="**Status:** error\n\n_Section could not be generated due to an internal error._",
-            evidence_results=[],
-            iterations=0,
-            status="error",
-        )
+        raise SectionBlockGenerationError(
+            f"{section_key}/{block_heading}: {type(exc).__name__}: {exc}"
+        ) from exc
 
 
 async def async_run_section_block_agent(

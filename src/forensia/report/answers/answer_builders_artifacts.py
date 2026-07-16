@@ -25,6 +25,7 @@ from forensia.report.answers.answer_store import (
     _structured_rows,
     _text,
 )
+from forensia.report.answers.event_semantics import LOG_CLEAR_EVENT_SQL
 
 
 @lru_cache(maxsize=1)
@@ -507,7 +508,7 @@ def _build_antiforensic_activity(
     )
     event_rows = _structured_rows(
         db,
-        """
+        f"""
         SELECT
             'log_integrity_event' AS evidence_type,
             timestamp,
@@ -518,8 +519,7 @@ def _build_antiforensic_activity(
             evidence_id,
             message
         FROM evtx_events
-        WHERE (event_id IN (1100, 1102) AND LOWER(COALESCE(channel, '')) LIKE '%security%')
-           OR (event_id = 104 AND LOWER(COALESCE(channel, '')) LIKE '%eventlog%')
+        WHERE {LOG_CLEAR_EVENT_SQL}
         ORDER BY timestamp DESC NULLS LAST
         LIMIT 100
         """,

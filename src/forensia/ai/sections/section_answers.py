@@ -422,7 +422,6 @@ def _extract_full_scan(
                 "log cleared",
                 "event_id=104",
                 "event_id=1102",
-                "event_id=1100",
             )
         ):
             continue
@@ -433,7 +432,7 @@ def _extract_full_scan(
                     item["tool_name"] = tool
                     break
             if not item.get("tool_name") and any(
-                marker in text for marker in ("104", "1102", "1100")
+                marker in text for marker in ("104", "1102")
             ):
                 item["tool_name"] = "Windows Event Log"
         if "evidence_type" in fields:

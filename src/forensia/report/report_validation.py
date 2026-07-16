@@ -228,6 +228,40 @@ def check_failure_markers(content: str) -> list[ValidationFinding]:
     return findings
 
 
+def has_failure_marker(content: str) -> bool:
+    """Return whether persisted prose contains a generation-failure marker."""
+    return bool(check_failure_markers(content))
+
+
+def check_persisted_section_failures(db: Any) -> list[ValidationFinding]:
+    """Report invalid persisted sections even when writer omits their prose."""
+    findings: list[ValidationFinding] = []
+    try:
+        rows = db.execute(
+            "SELECT section_key, body FROM report_sections ORDER BY section_key"
+        ).fetchall()
+        for section_key, body in rows:
+            if has_failure_marker(str(body or "")):
+                findings.append(
+                    ValidationFinding(
+                        "section_generation_failure",
+                        "error",
+                        f"Report section {section_key} contains a generation failure and was omitted",
+                        f"section_key={section_key}",
+                    )
+                )
+    except Exception as exc:
+        findings.append(
+            ValidationFinding(
+                "section_generation_failure",
+                "error",
+                "Could not inspect persisted report sections",
+                f"{type(exc).__name__}: {exc}",
+            )
+        )
+    return findings
+
+
 def _normalize_expected_language(expected_lang: str) -> str:
     value = str(expected_lang or "").strip().lower()
     if value in {"ja", "jp", "japanese"}:
@@ -373,6 +407,7 @@ def validate_report(
     all_findings.extend(check_verdict_contradiction(report_brief))
     if db is not None:
         all_findings.extend(check_sufficiency_consistency(db))
+        all_findings.extend(check_persisted_section_failures(db))
     if report_body:
         all_findings.extend(check_local_path_leak(report_body))
         all_findings.extend(check_fallback_stub(report_body))

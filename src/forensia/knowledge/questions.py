@@ -70,6 +70,7 @@ class QuestionSpec:
     required_fields: tuple[str, ...] = ()
     required_sources: tuple[str, ...] = ()
     render_columns: tuple[str, ...] = ()
+    render_max_rows: int | None = None
     negative_evidence_policy: str = ""
     status_rules: dict[str, Any] = field(default_factory=dict)
     timeline: bool = False
@@ -117,6 +118,11 @@ class QuestionSpec:
             required_fields=_coerce_str_tuple(raw.get("required_fields")),
             required_sources=tuple(dict.fromkeys(required_sources)),
             render_columns=tuple(dict.fromkeys(render_columns)),
+            render_max_rows=(
+                max(1, int(raw["render_max_rows"]))
+                if raw.get("render_max_rows") is not None
+                else None
+            ),
             negative_evidence_policy=str(
                 raw.get("negative_evidence_policy") or ""
             ).strip(),
@@ -133,6 +139,7 @@ class QuestionSpec:
             "required_fields": list(self.required_fields),
             "required_sources": list(self.required_sources),
             "render_columns": list(self.render_columns),
+            "render_max_rows": self.render_max_rows,
             "status_rules": self.status_rules,
             "builder_policy": self.builder_policy,
         }

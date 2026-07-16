@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from forensia.report.answers.event_semantics import LOG_CLEAR_EVENT_SQL
 from forensia.report.evidence_refs import (
     EVIDENCE_ID_PATTERN,
     EvidenceResolver,
@@ -36,14 +37,11 @@ REPORT_META_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "Observed log clearing or audit-policy-impacting events.",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT event_id, COUNT(*) AS count
             FROM evtx_events
-            WHERE (event_id IN (1100,1102,4719) AND (channel IS NULL OR LOWER(channel) LIKE '%security%'))
-               OR (
-                  event_id = 104
-                  AND LOWER(COALESCE(json_extract_string(raw_json, '$.winlog.provider.name'), '')) = 'microsoft-windows-eventlog'
-               )
+            WHERE {LOG_CLEAR_EVENT_SQL}
+               OR (event_id = 4719 AND (channel IS NULL OR LOWER(channel) LIKE '%security%'))
             GROUP BY event_id
             """,
         ),

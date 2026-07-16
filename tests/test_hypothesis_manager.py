@@ -626,6 +626,39 @@ class CollectSectionRequestsTests(unittest.TestCase):
         gap_request = next(r for r in requests if r["section_key"] == "4_gaps")
         self.assertTrue(gap_request["is_stale"])
 
+    def test_failure_marker_produces_retry_request_even_when_fresh(self) -> None:
+        from pathlib import Path
+
+        from forensia.ai.sections.section_refresher import collect_section_requests
+
+        marker = "_Section could not be generated due to an internal error._"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            template_path = Path(tmpdir) / "1_overview.md"
+            template_path.write_text(
+                "# Investigation Overview\n\n## Executive Summary\n<!-- mode: narrative; summary -->\n",
+                encoding="utf-8",
+            )
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO report_sections (
+                        section_key, title, body, confidence, status, update_count, stale
+                    ) VALUES ('1_overview', 'Overview', ?, 0, 'draft', 1, FALSE)
+                    """,
+                    [marker],
+                )
+                requests = collect_section_requests(
+                    case,
+                    db,
+                    [template_path],
+                    {"1_overview": marker},
+                    report_brief={},
+                )
+
+        self.assertEqual(["1_overview"], [item["section_key"] for item in requests])
+        self.assertTrue(requests[0]["is_stale"])
+
     def test_force_all_returns_every_template(self) -> None:
         from pathlib import Path
 

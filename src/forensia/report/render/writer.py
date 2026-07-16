@@ -19,12 +19,14 @@ __all__ = [
 
 
 def build_report_markdown_from_db(db: CaseDB, case: Case | None = None) -> str:
+    from forensia.report.report_validation import has_failure_marker
+
     sections = fetch_report_sections(db)
     ordered: list[str] = []
     for row in sections:
         section_key = str(row.get("section_key") or "")
         body = str(row.get("body") or "").strip()
-        if not body:
+        if not body or has_failure_marker(body):
             continue
         ordered.append(_final_report_section_body(section_key, body, db=db, case=case))
     if not ordered:
@@ -74,6 +76,7 @@ def render_written_report(
             "local_path_leak",
             "fallback_stub",
             "failure_marker",
+            "section_generation_failure",
             "language_consistency",
         ],
         "fatal_errors": [issue.as_dict() for issue in fatal],

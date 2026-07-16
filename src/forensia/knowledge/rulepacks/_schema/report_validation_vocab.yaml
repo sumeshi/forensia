@@ -12,7 +12,6 @@ intrusion_keywords:
 
 path_leak_patterns:
   - "sample/"
-  - "Prefetch/.+\\.pf"
   - "/mnt/[a-z]/"
 
 # Fixed phrases emitted by the deterministic narrative fallback. If any of

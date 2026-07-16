@@ -18,6 +18,7 @@ from forensia.knowledge.catalog import (
 from forensia.report.answers.answer_store import (
     _dedupe_dict_rows,
 )
+from forensia.report.answers.event_semantics import LOG_CLEAR_EVENT_SQL
 from forensia.report.evidence_refs import (
     _sql_like_any,
 )
@@ -366,11 +367,10 @@ def _antiforensic_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
         )
     for row in fetch_records(
         db,
-        """
+        f"""
         SELECT timestamp, CAST(event_id AS VARCHAR) AS artifact, computer, evidence_id
         FROM evtx_events
-        WHERE (event_id = 1100 AND (channel IS NULL OR channel ILIKE '%security%' OR channel ILIKE '%system%'))
-           OR (event_id = 104 AND LOWER(COALESCE(channel, '')) LIKE '%eventlog%')
+        WHERE {LOG_CLEAR_EVENT_SQL}
         ORDER BY timestamp DESC
         LIMIT 6
         """,
@@ -446,14 +446,11 @@ def _as_int(value: Any) -> int:
 def _timeline_phase_rows(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
     evtx_rows = fetch_records(
         db,
-        """
+        f"""
         SELECT
           CAST(CAST(timestamp AS DATE) AS VARCHAR) AS date,
           COUNT(*) FILTER (WHERE event_id = 4648) AS explicit_credentials,
-          COUNT(*) FILTER (WHERE event_id IN (1100, 104)
-            AND NOT (event_id = 104 AND channel NOT ILIKE '%System%' AND channel NOT ILIKE '%Security%')
-            AND NOT (event_id = 1100 AND channel NOT ILIKE '%Security%' AND channel NOT ILIKE '%System%')
-          ) AS log_integrity_events,
+          COUNT(*) FILTER (WHERE {LOG_CLEAR_EVENT_SQL}) AS log_integrity_events,
           COUNT(*) FILTER (WHERE event_id IN (1074, 6006, 6008)
             AND NOT (event_id = 6006 AND channel NOT ILIKE '%System%')
             AND NOT (event_id = 6008 AND channel NOT ILIKE '%System%')
@@ -462,9 +459,7 @@ def _timeline_phase_rows(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
           MAX(timestamp) AS last_seen
         FROM evtx_events
         WHERE timestamp IS NOT NULL
-          AND event_id IN (4648, 1100, 104, 1074, 6006, 6008)
-          AND NOT (event_id = 104 AND channel NOT ILIKE '%System%' AND channel NOT ILIKE '%Security%')
-          AND NOT (event_id = 1100 AND channel NOT ILIKE '%Security%' AND channel NOT ILIKE '%System%')
+          AND event_id IN (4648, 104, 1102, 1074, 6006, 6008)
           AND NOT (event_id = 6006 AND channel NOT ILIKE '%System%')
           AND NOT (event_id = 6008 AND channel NOT ILIKE '%System%')
         GROUP BY CAST(timestamp AS DATE)

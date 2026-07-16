@@ -139,6 +139,12 @@ class TestLocalPathLeak:
         findings = check_local_path_leak("All evidence references are normalized.")
         assert findings == []
 
+    def test_windows_prefetch_artifact_path_is_not_local_host_leak(self) -> None:
+        findings = check_local_path_leak(
+            "Artifact: Windows/Prefetch/CCLEANER64.EXE-779BD542.pf"
+        )
+        assert findings == []
+
     def test_pass_when_empty_body(self) -> None:
         """Empty string → no finding."""
         assert check_local_path_leak("") == []

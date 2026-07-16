@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from forensia.report.answers.event_semantics import LOG_CLEAR_EVENT_SQL
 from forensia.report.answers.keypoint_sql import (
     _BROWSER_EXE_SQL,
     _CLOUD_FILE_SQL,
@@ -248,12 +249,10 @@ OVERVIEW_IOC_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "Anti-forensic activity on the last day: log clearing, tool execution, prefetch deletion.",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT timestamp, event_id, computer, target_user, message
             FROM evtx_events
-            WHERE (event_id = 1102 AND (channel IS NULL OR LOWER(channel) LIKE '%security%'))
-               OR (event_id = 1100 AND (channel IS NULL OR LOWER(channel) LIKE '%security%'))
-               OR (event_id = 104 AND LOWER(COALESCE(json_extract_string(raw_json, '$.winlog.provider.name'), '')) = 'microsoft-windows-eventlog')
+            WHERE {LOG_CLEAR_EVENT_SQL}
             ORDER BY timestamp DESC LIMIT 50
         """,
         ),
