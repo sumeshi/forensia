@@ -46,6 +46,7 @@ from forensia.db.database import CaseDB
 class SectionBlockGenerationError(RuntimeError):
     """Raised after block diagnostics are persisted; never render as prose."""
 
+
 # ====================================================================
 # BLOCK WALKTHROUGH PHASES — private helpers for run_section_block_agent
 # ====================================================================

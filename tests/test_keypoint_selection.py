@@ -132,7 +132,9 @@ class TestLogIntegrityKeypointSelection(unittest.TestCase):
 
         self.assertEqual(1, len(phases))
         self.assertNotIn("log integrity", phases[0]["phase"].lower())
-        self.assertNotIn("prioritize anti-forensic", phases[0]["interpretation"].lower())
+        self.assertNotIn(
+            "prioritize anti-forensic", phases[0]["interpretation"].lower()
+        )
 
     def test_security_1102_counts_as_log_integrity_in_phase_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

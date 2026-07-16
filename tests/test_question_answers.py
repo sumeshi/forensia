@@ -238,7 +238,9 @@ class QuestionAnswerTests(unittest.TestCase):
                     block_heading="Email application",
                 )
 
-            self.assertEqual("mailbox.ost", answer["answer"][0]["artifact_path"].rsplit("\\", 1)[-1])
+            self.assertEqual(
+                "mailbox.ost", answer["answer"][0]["artifact_path"].rsplit("\\", 1)[-1]
+            )
 
     def test_structured_benchmark_last_logon_persists_json_and_csv(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

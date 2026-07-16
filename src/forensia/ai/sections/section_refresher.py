@@ -94,10 +94,7 @@ def collect_section_requests(
         request["is_stale"] = (
             request.get("section_key") in stale_section_keys or persisted_failure
         )
-        request["needs_refresh"] = (
-            request["is_stale"]
-            or not prior_body.strip()
-        )
+        request["needs_refresh"] = request["is_stale"] or not prior_body.strip()
         if request["needs_refresh"]:
             requests.append(request)
     return requests
