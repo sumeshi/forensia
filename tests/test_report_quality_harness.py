@@ -79,6 +79,72 @@ class TestReportQualityContract(unittest.TestCase):
                 self.assertEqual(1, counts[source_a])
                 self.assertEqual(2, counts[source_b])
 
+    def test_empty_raw_evtx_is_not_a_normalization_failure(self) -> None:
+        from forensia.db.evidence_sources import register_evidence_source
+        from forensia.evidence.normalize import _update_source_status
+
+        source_id = "c" * 64
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            (case.raw_dir / f"evtx-{source_id[:12]}-empty.jsonl").write_text("")
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO ingested_files "
+                    "(sha256, path, source_kind, size, ingested_at) "
+                    "VALUES (?, '/evidence/empty.evtx', 'evtx', 1, now())",
+                    [source_id],
+                )
+                register_evidence_source(
+                    db,
+                    source_id=source_id,
+                    artifact_family="evtx",
+                    display_path="empty.evtx",
+                    ingest_status="parsed",
+                )
+                _update_source_status(db, None, {}, raw_dir=case.raw_dir)
+                status, error_code = db.execute(
+                    "SELECT ingest_status, error_code FROM evidence_sources "
+                    "WHERE source_id = ?",
+                    [source_id],
+                ).fetchone()
+                self.assertEqual("empty", status)
+                self.assertEqual("", error_code)
+
+    def test_nonempty_raw_without_normalized_rows_is_failure(self) -> None:
+        from forensia.db.evidence_sources import register_evidence_source
+        from forensia.evidence.normalize import _update_source_status
+
+        source_id = "d" * 64
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            (case.raw_dir / f"evtx-{source_id[:12]}-lost.jsonl").write_text("{}\n")
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO ingested_files "
+                    "(sha256, path, source_kind, size, ingested_at) "
+                    "VALUES (?, '/evidence/lost.evtx', 'evtx', 1, now())",
+                    [source_id],
+                )
+                register_evidence_source(
+                    db,
+                    source_id=source_id,
+                    artifact_family="evtx",
+                    display_path="lost.evtx",
+                    ingest_status="parsed",
+                )
+                with self.assertLogs(
+                    "forensia.evidence.normalize", level="ERROR"
+                ) as logs:
+                    _update_source_status(db, None, {}, raw_dir=case.raw_dir)
+                status, error_code = db.execute(
+                    "SELECT ingest_status, error_code FROM evidence_sources "
+                    "WHERE source_id = ?",
+                    [source_id],
+                ).fetchone()
+                self.assertEqual("failed", status)
+                self.assertEqual("normalized_rows_missing", error_code)
+                self.assertIn("Normalization output missing", " ".join(logs.output))
+
     def test_candidate_only_not_asserted(self) -> None:
         """candidate_only status must not be displayed as 'answered'."""
         from forensia.report.answers.answer_store import (

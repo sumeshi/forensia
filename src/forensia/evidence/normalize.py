@@ -67,12 +67,12 @@ def normalize_all(
             counts["prefetch_executions"] = result.rows
             counts["prefetch_timeline"] = result.aux_rows
 
-    _update_source_status(db, source_keys, counts)
+    _update_source_status(db, source_keys, counts, raw_dir=case.raw_dir)
 
     return counts
 
 
-def _resolve_source_path(db: CaseDB, sha256: str, source_kind: str) -> str:
+def _resolve_source_path(db: CaseDB, sha256: str, source_kind: str) -> str | None:
     """Resolve the source_file path used in normalized tables for a given ingested file.
 
     Tries multiple path formats: absolute path from ingested_files,
@@ -129,20 +129,33 @@ def _resolve_source_path(db: CaseDB, sha256: str, source_kind: str) -> str:
     if count_row and int(count_row[0] or 0) > 0:
         return basename
 
-    # Fallback: return absolute path (will result in 0 count, logged below)
-    logger.warning(
-        "Source path resolution failed for %s (sha256=%s): no match in %s",
-        abs_path,
-        sha256,
-        table,
-    )
-    return abs_path
+    # An empty parser result legitimately has no normalized row.  The caller
+    # distinguishes that case from lost non-empty output.
+    return None
+
+
+def _raw_source_state(raw_dir: Path, source_kind: str, key: str) -> str:
+    """Return ``empty``, ``nonempty``, or ``missing`` for one raw source."""
+    patterns = {
+        "evtx": f"evtx-{key}-*.jsonl",
+        "mft": f"mft-entries-{key}.jsonl",
+        "prefetch": f"prefetch-entries-{key}.jsonl",
+    }
+    pattern = patterns.get(source_kind)
+    if not pattern:
+        return "missing"
+    paths = list(raw_dir.glob(pattern))
+    if not paths:
+        return "missing"
+    return "nonempty" if any(path.stat().st_size > 0 for path in paths) else "empty"
 
 
 def _update_source_status(
     db: CaseDB,
     source_keys: Collection[str] | None,
     counts: dict[str, int],
+    *,
+    raw_dir: Path | None = None,
 ) -> None:
     """Best-effort update of evidence_sources rows after normalization.
 
@@ -165,9 +178,8 @@ def _update_source_status(
             for row in rows:
                 sha256: str = row[0]
                 source_kind: str = row[1]
-                lookup_path = _resolve_source_path(db, sha256, source_kind)
-                if not lookup_path:
-                    continue
+                matched_source = _resolve_source_path(db, sha256, source_kind)
+                lookup_path = matched_source or sha256
                 table = {
                     "evtx": "evtx_events",
                     "mft": "mft_entries",
@@ -205,6 +217,25 @@ def _update_source_status(
                     ).fetchone()
                     min_time, max_time = time_row if time_row else (None, None)
                 status = "normalized" if row_count > 0 else "empty"
+                error_code = ""
+                error_summary = ""
+                if row_count == 0 and raw_dir is not None:
+                    raw_state = _raw_source_state(raw_dir, source_kind, sha256[:12])
+                    if raw_state != "empty":
+                        status = "failed"
+                        error_code = "normalized_rows_missing"
+                        error_summary = (
+                            "Raw parser output was non-empty but no normalized rows "
+                            "were found"
+                            if raw_state == "nonempty"
+                            else "Raw parser output file is missing"
+                        )
+                        logger.error(
+                            "Normalization output missing for %s (sha256=%s): %s",
+                            source_kind,
+                            sha256,
+                            error_summary,
+                        )
                 register_evidence_source(
                     db,
                     source_id=sha256,
@@ -217,6 +248,8 @@ def _update_source_status(
                     hosts=hosts,
                     min_time=min_time,
                     max_time=max_time,
+                    error_code=error_code,
+                    error_summary=error_summary,
                 )
         except Exception as exc:
             logger.warning("Failed to update source status for key %s: %s", key, exc)
