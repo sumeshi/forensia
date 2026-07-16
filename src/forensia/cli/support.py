@@ -16,6 +16,7 @@ from forensia.api.cache import (
 from forensia.api.progress import record_progress_event
 from forensia.config import resolve_llm_config
 from forensia.core.case import Case
+from forensia.core.log import format_progress_log, structure_progress_log
 from forensia.db.database import CaseDB
 from forensia.report.api_snapshot import write_all_snapshots, write_volatile_snapshots
 from forensia.report.template_export import (
@@ -203,9 +204,14 @@ def progress_pusher(db: CaseDB, initial_state: dict) -> Callable[..., None]:
 
     def push(message: str | None = None, **updates) -> None:
         if message:
+            entry = structure_progress_log(message)
+            message = format_progress_log(entry)
             recent = list(state.get("recent_logs", []))
             recent.append(message)
             state["recent_logs"] = recent[-20:]
+            entries = list(state.get("recent_log_entries", []))
+            entries.append(entry)
+            state["recent_log_entries"] = entries[-20:]
         state.update(updates)
         payload = {**state, "counts": _count_records(db)}
         record_progress_event(db, payload)

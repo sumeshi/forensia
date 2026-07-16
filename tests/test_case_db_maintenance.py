@@ -15,6 +15,7 @@ from forensia.config import (
     resolve_llm_config,
 )
 from forensia.core.case import Case
+from forensia.core.log import format_progress_log, structure_progress_log
 from forensia.db.database import CaseDB
 
 
@@ -23,6 +24,14 @@ class CaseDbMaintenanceTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         reload_settings()
+
+    def test_progress_labels_are_normalized_to_uppercase(self) -> None:
+        review = structure_progress_log("[review] checking")
+        failure = structure_progress_log("[final-refresh] failed")
+        self.assertEqual("[REVIEW] checking", format_progress_log(review))
+        self.assertEqual("info", review["level"])
+        self.assertEqual("FINAL_REFRESH", failure["tag"])
+        self.assertEqual("error", failure["level"])
 
     @staticmethod
     def _llm_base_url() -> str:
@@ -86,6 +95,7 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                 CaseDB(case) as db,
                 patch("forensia.cli.support.write_progress_snapshot") as mock_progress,
                 patch("forensia.cli.support.write_volatile_snapshots"),
+                patch("forensia.cli.support.record_progress_event") as record_progress,
             ):
                 push = progress_pusher(
                     db,
@@ -97,9 +107,14 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                         "recent_logs": [],
                     },
                 )
-                push("tick", stage="investigate")
+                push("[review] unresolved rewrite", stage="investigate")
 
             mock_progress.assert_called_once()
+            payload = record_progress.call_args.args[1]
+            self.assertEqual(
+                {"tag": "REVIEW", "level": "warning", "message": "unresolved rewrite"},
+                payload["recent_log_entries"][0],
+            )
 
     def test_reset_case_tables_clears_derived_report_and_ingest_tables(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -8,8 +8,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from rich import print
-
 from forensia.ai.audit import LLMCallLogger
 from forensia.ai.case_profile import (
     get_profile_event_ids,
@@ -281,8 +279,7 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
             db=db,
             overview_md=ctx.memory_overview,
             default_context_md=ctx.memory_plan,
-            status_callback=llm_status_fn
-            or (lambda msg: print(f"[yellow]{msg}[/yellow]")),
+            status_callback=llm_status_fn or (lambda msg: _log("LLM", msg)),
             audit_callback=lambda msgs, out, parsed, hid=hypothesis.id, qi=query_index: (
                 llm_logger.write(
                     iteration=plan_cycle,
@@ -299,8 +296,8 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
             case_profile=case_profile_str,
         )
     except Exception as exc:
-        err_msg = f"[plan-hypothesis] LLM failed for {hypothesis.id}: {exc}"
-        print(f"[red]{err_msg}[/red]")
+        err_msg = f"LLM failed for {hypothesis.id}: {exc}"
+        _log("PLAN_HYPOTHESIS", err_msg, level="error")
         append_hypothesis_reasoning(
             db=db,
             hypothesis_id=hypothesis.id,
@@ -375,7 +372,11 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
     except Exception as exc:
         err_msg = str(exc)
         tracker.record(query_fp, verdict="exec_error", row_count=0)
-        print(f"[red]SQL execution error — {planned_query.query_id}: {err_msg}[/red]")
+        _log(
+            "EXEC",
+            f"SQL execution error — {planned_query.query_id}: {err_msg}",
+            level="error",
+        )
         if emit_fn:
             emit_fn(
                 "investigate/do",
@@ -443,8 +444,7 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
             model=model,
             overview_md=ctx.memory_overview,
             memory_context_md=ctx.memory_check,
-            status_callback=llm_status_fn
-            or (lambda msg: print(f"[yellow]{msg}[/yellow]")),
+            status_callback=llm_status_fn or (lambda msg: _log("LLM", msg)),
             fallback_info=fallback_info,
             audit_callback=lambda phase, msgs, out, parsed: llm_logger.write(
                 iteration=plan_cycle,
@@ -456,10 +456,8 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
             ),
         )
     except Exception as exc:
-        err_msg = (
-            f"[check] LLM failed for {hypothesis.id}/{planned_query.query_id}: {exc}"
-        )
-        print(f"[red]{err_msg}[/red]")
+        err_msg = f"LLM failed for {hypothesis.id}/{planned_query.query_id}: {exc}"
+        _log("CHECK", err_msg, level="error")
         append_hypothesis_reasoning(
             db=db,
             hypothesis_id=hypothesis.id,
@@ -752,7 +750,7 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
         memory.compact_overview_if_needed(base_url=base_url, model=model)
         memory.compact_oversized_with_llm(base_url=base_url, model=model)
     except Exception as exc:
-        print(f"[yellow][memory] compaction failed: {exc}[/yellow]")
+        _log("MEMORY", f"compaction failed: {exc}", level="warning")
     if check_result.verdict == "confirmed":
         memory.promote_hypothesis_scratch(hypothesis.id)
     elif check_result.verdict == "refuted":

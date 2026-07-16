@@ -406,12 +406,16 @@ def _review_and_rewrite_narrative(
                 body = rewritten
                 remaining = rewritten_problems
             if remaining:
-                print(
-                    f"[review] {ctx.section_key}/{ctx.block_heading} — unresolved after rewrite: {remaining}"
+                _log(
+                    "REVIEW",
+                    f"{ctx.section_key}/{ctx.block_heading} — unresolved after rewrite: {remaining}",
+                    level="warning",
                 )
     except Exception as exc:
-        print(
-            f"[review] LLM review failed for {ctx.section_key}/{ctx.block_heading}: {exc}"
+        _log(
+            "REVIEW",
+            f"LLM review failed for {ctx.section_key}/{ctx.block_heading}: {exc}",
+            level="error",
         )
     _store_section_run(
         ctx.db,

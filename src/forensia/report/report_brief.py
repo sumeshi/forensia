@@ -373,7 +373,11 @@ def write_report_brief(case: Case, db: CaseDB) -> dict[str, Any]:
     from forensia.report.report_validation import validate_report
 
     for issue in validate_report(brief):
-        _log("VALIDATION", f"[{issue.severity}] {issue.check_name}: {issue.message}")
+        _log(
+            "VALIDATION",
+            f"{issue.check_name}: {issue.message}",
+            level="error" if issue.severity == "error" else "warning",
+        )
     return brief
 
 

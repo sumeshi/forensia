@@ -128,7 +128,7 @@ async def _run_report_phase(
         # and let the investigation continue — stale flags stay in the DB, so
         # the next successful refresh catches up on everything missed.
         error_label = f"{type(exc).__name__}: {exc}"
-        print(f"[red][report] section refresh failed: {error_label}[/red]")
+        _log("REPORT", f"section refresh failed: {error_label}", level="error")
         print(traceback.format_exc())
         if progress_callback:
             progress_callback(
@@ -136,13 +136,17 @@ async def _run_report_phase(
                     "investigate/report-cycle-done",
                     "running",
                     iteration=plan_cycle,
-                    summary=f"[report] refresh failed: {error_label}",
+                    summary=f"[REPORT] refresh failed: {error_label}",
                 )
             )
         try:
             render_written_report(case, db)
         except Exception as render_exc:
-            print(f"[yellow][report] fallback render failed: {render_exc}[/yellow]")
+            _log(
+                "REPORT",
+                f"fallback render failed: {render_exc}",
+                level="warning",
+            )
         return report_before, cycle_progress, f"failed: {error_label}"
     if report_result is None:
         return report_before, cycle_progress, "ok"
@@ -449,7 +453,11 @@ async def _final_report_refresh(env: _InvestigateEnv) -> int:
         env.memory.regenerate_timeline_from_db(env.db)
         return 0
     except Exception as exc:
-        print(f"[yellow][final-refresh] failed: {type(exc).__name__}: {exc}[/yellow]")
+        _log(
+            "FINAL_REFRESH",
+            f"failed: {type(exc).__name__}: {exc}",
+            level="error",
+        )
         print(traceback.format_exc())
         return 1
 
@@ -459,10 +467,12 @@ def _build_investigate_result(
 ) -> dict[str, Any]:
     """Assemble the investigate() result payload, warning about refresh failures."""
     if report_refresh_failures:
-        print(
-            f"[red][report] {report_refresh_failures} report refresh phase(s) failed during this "
+        _log(
+            "REPORT",
+            f"{report_refresh_failures} report refresh phase(s) failed during this "
             f"session — see tracebacks above. Stale sections persist and are retried on later "
-            f"cycles and the final refresh.[/red]"
+            f"cycles and the final refresh.",
+            level="error",
         )
     return {
         "session_id": env.session_id,

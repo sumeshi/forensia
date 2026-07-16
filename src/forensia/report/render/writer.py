@@ -88,8 +88,13 @@ def render_written_report(
         "VALIDATION",
         f"publishable={validation['publishable']} errors={len(fatal)} "
         f"warnings={len(validation['warnings'])}",
+        level="success" if validation["publishable"] else "error",
     )
     for issue in findings:
-        _log("VALIDATION", f"[{issue.severity}] {issue.check_name}: {issue.message}")
+        _log(
+            "VALIDATION",
+            f"{issue.check_name}: {issue.message}",
+            level="error" if issue.severity == "error" else "warning",
+        )
     report_html = render_html_report(case, db)
     return report_path, report_html

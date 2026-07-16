@@ -385,7 +385,11 @@ def render_table_block(
     )
     if validation_errors:
         for error in validation_errors:
-            _log("VALIDATION", f"[error] table_schema: {error.message}")
+            _log(
+                "VALIDATION",
+                f"table_schema: {error.message}",
+                level="error",
+            )
     caption = render_rows_template(
         str(caption_spec.get("caption") or "").strip(), rows
     ).strip()

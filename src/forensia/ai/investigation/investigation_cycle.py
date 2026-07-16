@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
-from rich import print
 
 from forensia.ai.audit import LLMCallLogger
 from forensia.ai.case_profile import (
@@ -495,20 +494,20 @@ async def _run_broad_plan_step(
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code >= 500:
             raise
-        err_msg = f"[plan-broad] LLM failed: {exc}"
-        print(f"[red]{err_msg}[/red]")
+        err_msg = f"LLM failed: {exc}"
+        _log("PLAN_BROAD", err_msg, level="error")
         if emit_fn:
             emit_fn("investigate/plan", err_msg, iteration=plan_cycle)
         return False
     except (httpx.ConnectError, httpx.TimeoutException) as exc:
-        err_msg = f"[plan-broad] LLM server error: {exc}"
-        print(f"[red]{err_msg}[/red]")
+        err_msg = f"LLM server error: {exc}"
+        _log("PLAN_BROAD", err_msg, level="error")
         raise
     except LLMServerUnavailableError:
         raise
     except Exception as exc:
-        err_msg = f"[plan-broad] LLM failed: {exc}"
-        print(f"[red]{err_msg}[/red]")
+        err_msg = f"LLM failed: {exc}"
+        _log("PLAN_BROAD", err_msg, level="error")
         if emit_fn:
             emit_fn("investigate/plan", err_msg, iteration=plan_cycle)
         return False
@@ -561,7 +560,7 @@ async def _run_cycle_body(
         )
 
     def llm_status(message: str) -> None:
-        print(f"[yellow]{message}[/yellow]")
+        _log("LLM", message)
         _emit("investigate/llm", message, iteration=state.iteration)
 
     broad_plan_stop = False
