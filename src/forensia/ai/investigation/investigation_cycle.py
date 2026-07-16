@@ -226,7 +226,7 @@ def _parse_hypothesis_from_drafter(parsed: dict[str, Any]) -> Hypothesis | None:
                 for eid in co_ids:
                     try:
                         numeric_ids.append(int(str(eid).strip()))
-                    except TypeError, ValueError:
+                    except (TypeError, ValueError):
                         continue
                 filtered = [eid for eid in numeric_ids if eid in available_ids]
                 if len(filtered) < len(numeric_ids) or len(numeric_ids) < len(co_ids):

@@ -162,12 +162,81 @@ async def _run_report_phase(
     return report_after, cycle_progress, "ok"
 
 
+def _classify_active_hypotheses_on_stop(
+    db: CaseDB,
+    active_hypotheses: list,
+    stop_reason: str,
+) -> None:
+    """Classify active hypotheses when investigation stops.
+
+    R7-09: Instead of leaving active hypotheses unclassified, categorize each as
+    deferred (has some evidence but not confirmed), blocked (missing telemetry),
+    or needs_review (insufficient investigation). Creates investigation tasks
+    for each.
+    """
+    import hashlib
+
+    from forensia.db.query import fetch_records
+
+    for hyp in active_hypotheses:
+        hyp_id = getattr(hyp, "id", None) or getattr(hyp, "hypothesis_id", "")
+        if not hyp_id:
+            continue
+
+        # Check if hypothesis has any reasoning
+        reasoning_rows = fetch_records(
+            db,
+            "SELECT COUNT(*) AS cnt FROM hypothesis_reasoning WHERE hypothesis_id = ?",
+            (hyp_id,),
+        )
+        reasoning_count = int(reasoning_rows[0].get("cnt", 0)) if reasoning_rows else 0
+
+        # Check evidence state.  Only an authoritative unobservable assessment
+        # means telemetry is blocked; zero links alone may simply mean the
+        # investigation did not progress far enough.
+        evidence_rows = fetch_records(
+            db,
+            "SELECT COUNT(*) AS cnt FROM hypothesis_evidence WHERE hypothesis_id = ?",
+            (hyp_id,),
+        )
+        evidence_count = int(evidence_rows[0].get("cnt", 0)) if evidence_rows else 0
+        sufficiency_row = db.execute(
+            "SELECT sufficiency_status FROM hypotheses WHERE hypothesis_id = ?",
+            [hyp_id],
+        ).fetchone()
+        sufficiency_status = str(sufficiency_row[0] or "") if sufficiency_row else ""
+
+        # Classify based on investigation state
+        if reasoning_count == 0:
+            task_kind = "deferred"
+            reason = f"Not investigated before {stop_reason}"
+        elif sufficiency_status == "unobservable":
+            task_kind = "blocked"
+            reason = f"Required telemetry was unobservable before {stop_reason}"
+        elif evidence_count == 0:
+            task_kind = "needs_review"
+            reason = f"No evidence was linked before {stop_reason}"
+        else:
+            task_kind = "needs_review"
+            reason = f"Partially investigated before {stop_reason}"
+
+        # Create investigation task
+        desc = getattr(hyp, "description", "") or hyp_id
+        task_hash = hashlib.sha256(f"stop-{hyp_id}".encode()).hexdigest()[:16]
+        task_id = f"STOP-{task_hash}"
+        db.execute(
+            """INSERT INTO investigation_tasks (task_id, kind, description, status, hypothesis_id, reason, created_at, updated_at)
+               VALUES (?, ?, ?, 'open', ?, ?, now(), now())
+               ON CONFLICT (task_id) DO NOTHING""",
+            [task_id, task_kind, desc[:200], hyp_id, reason],
+        )
+
+
 def _check_termination(
     *,
     report_only: bool,
     broad_plan_stop: bool,
     active_hypotheses: list,
-    db: CaseDB,
     report_after: dict[str, Any],
     no_progress_count: int,
     no_progress_limit: int,
@@ -178,7 +247,6 @@ def _check_termination(
         return "completed", no_progress_count, "report_only_mode"
     unresolved_gap_count = int(report_after.get("total_gaps", 0))
     if broad_plan_stop and not active_hypotheses and unresolved_gap_count == 0:
-        mark_report_sections_ai_exhausted(db)
         return "completed", no_progress_count, "no_gaps_no_hypotheses"
     no_progress_count = 0 if cycle_progress else no_progress_count + 1
     if no_progress_count >= no_progress_limit:
@@ -288,8 +356,8 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
         ) = await _run_cycle_body(
             state=env.state,
             ctx=env.ctx,
-            db=env.db,
             case=env.case,
+            db=env.db,
             session_id=env.session_id,
             base_url=env.base_url,
             model=env.model,
@@ -335,14 +403,22 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
             report_only=env.report_only,
             broad_plan_stop=broad_plan_stop,
             active_hypotheses=env.state.active_hypotheses,
-            db=env.db,
             report_after=report_after,
             no_progress_count=no_progress_count,
             no_progress_limit=env.no_progress_limit,
             cycle_progress=cycle_progress,
         )
         if terminal_status is not None:
+            if stop_reason_code == "no_gaps_no_hypotheses":
+                mark_report_sections_ai_exhausted(env.db)
+            elif terminal_status == "stopped":
+                _classify_active_hypotheses_on_stop(
+                    env.db, env.state.active_hypotheses, stop_reason_code
+                )
             return terminal_status, report_refresh_failures, stop_reason_code
+    _classify_active_hypotheses_on_stop(
+        env.db, env.state.active_hypotheses, "max_iterations"
+    )
     return "stopped", report_refresh_failures, "max_iterations"
 
 

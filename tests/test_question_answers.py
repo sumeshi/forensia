@@ -600,7 +600,7 @@ class QuestionAnswerTests(unittest.TestCase):
                     block_heading="Desktop file renames",
                 )
 
-            self.assertEqual("partial", answer["status"])
+            self.assertEqual("candidate_only", answer["status"])
             self.assertEqual("pricing decision", answer["answer"][0]["original_name"])
             self.assertEqual(
                 "(secret_project)_pricing_decision.xlsx",

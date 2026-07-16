@@ -51,6 +51,8 @@ def ingest_prefetch_file(
             enriched = {
                 **record,
                 "source_type": "prefetch",
+                # Stable source identity; avoids basename collisions.
+                "source_file": source_sha or os.path.basename(str(prefetch_path)),
                 "ingested_at": ingested_at,
                 "evidence_id": make_prefetch_evidence_id(
                     executable_name, prefetch_hash
@@ -79,7 +81,7 @@ def ingest_prefetch_file(
             enriched = {
                 **record,
                 "source_type": "prefetch",
-                "source_file": os.path.basename(str(prefetch_path)),
+                "source_file": source_sha or os.path.basename(str(prefetch_path)),
                 "ingested_at": ingested_at,
                 # Forensia-flat fields consumed by normalize/prefetch.py
                 "timeline_id": f"{evidence_id}-{idx:02d}",

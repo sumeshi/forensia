@@ -81,6 +81,14 @@ class ValidationFinding:
     def __repr__(self) -> str:
         return f"[{self.severity.upper()}] {self.check_name}: {self.message}"
 
+    def as_dict(self) -> dict[str, str | None]:
+        return {
+            "check_name": self.check_name,
+            "severity": self.severity,
+            "message": self.message,
+            "details": self.details,
+        }
+
 
 # ---------------------------------------------------------------------------
 # Individual checks
@@ -193,6 +201,33 @@ def check_fallback_stub(content: str) -> list[ValidationFinding]:
     return findings
 
 
+def check_failure_markers(content: str) -> list[ValidationFinding]:
+    """Detect section block failure markers shipped in the final report body.
+
+    Failure markers like 'Section block failed' or 'Section could not be
+    generated' indicate that a block error was rendered as report prose
+    instead of being handled gracefully.
+    """
+    findings: list[ValidationFinding] = []
+    markers = [
+        "Section block failed",
+        "Section could not be generated",
+        "Block skipped",
+    ]
+    for marker in markers:
+        if marker.lower() in content.lower():
+            findings.append(
+                ValidationFinding(
+                    "failure_marker",
+                    "error",
+                    f"Failure marker '{marker}' found in report body; "
+                    "a block error was shipped as report prose",
+                    None,
+                )
+            )
+    return findings
+
+
 def _normalize_expected_language(expected_lang: str) -> str:
     value = str(expected_lang or "").strip().lower()
     if value in {"ja", "jp", "japanese"}:
@@ -248,6 +283,64 @@ def check_verdict_contradiction(
     return findings
 
 
+def check_sufficiency_consistency(
+    db: Any,
+) -> list[ValidationFinding]:
+    """Detect confirmed hypotheses with non-sufficient sufficiency_status.
+
+    R7-04: confirmed AND sufficiency_status != sufficient is an invariant
+    violation. Legacy rows are flagged as needs_review.
+    """
+    findings: list[ValidationFinding] = []
+    try:
+        rows = db.execute(
+            """
+            SELECT hypothesis_id, description, sufficiency_status
+            FROM hypotheses
+            WHERE status = 'confirmed' AND sufficiency_status NOT IN ('sufficient', 'needs_review')
+            """
+        ).fetchall()
+        for row in rows:
+            findings.append(
+                ValidationFinding(
+                    "sufficiency_consistency",
+                    "error",
+                    f"Confirmed hypothesis {row[0]} has sufficiency_status={row[2]}",
+                    f"Description: {str(row[1] or '')[:120]}",
+                )
+            )
+        # A confirmed claim without a traceable EvidenceLink is not publishable.
+        rows_no_evidence = db.execute(
+            """
+            SELECT h.hypothesis_id, h.description
+            FROM hypotheses h
+            LEFT JOIN hypothesis_evidence he ON he.hypothesis_id = h.hypothesis_id
+            WHERE h.status = 'confirmed'
+            GROUP BY h.hypothesis_id, h.description
+            HAVING COUNT(he.link_id) = 0
+            """
+        ).fetchall()
+        for row in rows_no_evidence:
+            findings.append(
+                ValidationFinding(
+                    "sufficiency_consistency",
+                    "error",
+                    f"Confirmed hypothesis {row[0]} has no evidence links",
+                    f"Description: {str(row[1] or '')[:120]}",
+                )
+            )
+    except Exception as exc:
+        findings.append(
+            ValidationFinding(
+                "sufficiency_consistency",
+                "error",
+                "Could not validate hypothesis sufficiency consistency",
+                f"{type(exc).__name__}: {exc}",
+            )
+        )
+    return findings
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
@@ -263,6 +356,7 @@ def validate_report(
     *,
     report_body: str | None = None,
     expected_language: str | None = None,
+    db: Any | None = None,
 ) -> list[ValidationFinding]:
     """Run all validation checks on a generated report.
 
@@ -277,9 +371,12 @@ def validate_report(
     all_findings.extend(check_thesis_alignment(report_brief))
     all_findings.extend(check_refuted_leakage(report_brief))
     all_findings.extend(check_verdict_contradiction(report_brief))
+    if db is not None:
+        all_findings.extend(check_sufficiency_consistency(db))
     if report_body:
         all_findings.extend(check_local_path_leak(report_body))
         all_findings.extend(check_fallback_stub(report_body))
+        all_findings.extend(check_failure_markers(report_body))
         if expected_language:
             all_findings.extend(
                 check_language_consistency(report_body, expected_language)

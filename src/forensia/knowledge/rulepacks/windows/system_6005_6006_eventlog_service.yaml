@@ -1,19 +1,14 @@
 id: windows-system-6005-6006-eventlog-service
 title: Event Log service start/stop
-severity: medium
-confidence: 0.7
+severity: low
+confidence: 0.5
 required_fields:
 - computer
 - message
 tags:
 - windows
-- log-tampering
-- defense-evasion
-attack:
-- tactic: defense-evasion
-  technique_id: T1070.001
-  technique_name: 'Indicator Removal: Clear Windows Event Logs'
+- log-lifecycle
 query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    event_id,\n    user_name,\n    message\nFROM evtx_events\nWHERE event_id IN (6005, 6006)\n  AND LOWER(COALESCE(channel, '')) LIKE '%system%'\n"
 finding:
   title: Event Log service activity on {computer}
-  summary: Event Log service (6005/6006) activity on {computer} at {timestamp}. Combined with 1100/1102, this may indicate log clearing activity. Verify log completeness.
+  summary: Event Log service start (6005) or stop (6006) on {computer} at {timestamp}. These are normal OS lifecycle events during boot/shutdown. Only investigate if correlated with log clearing (1102/104) or unexpected log gaps.

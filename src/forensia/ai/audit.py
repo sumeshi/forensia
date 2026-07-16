@@ -20,10 +20,28 @@ class LLMCallLogger:
         self._lock = threading.Lock()
         self._total: int = 0
         self._entries: list[dict] = []
+        # R7-11: Token and cache tracking
+        self._total_input_tokens: int = 0
+        self._total_output_tokens: int = 0
+        self._cache_hits: int = 0
+        self._cache_misses: int = 0
 
     @property
     def total_calls(self) -> int:
         return self._total
+
+    @property
+    def total_input_tokens(self) -> int:
+        return self._total_input_tokens
+
+    @property
+    def total_output_tokens(self) -> int:
+        return self._total_output_tokens
+
+    @property
+    def cache_hit_rate(self) -> float:
+        total = self._cache_hits + self._cache_misses
+        return self._cache_hits / total if total > 0 else 0.0
 
     def count_by_phase(self) -> dict[str, int]:
         result: dict[str, int] = {}
@@ -40,6 +58,9 @@ class LLMCallLogger:
                 {
                     "session_id": self.session_id,
                     "total_calls": self._total,
+                    "total_input_tokens": self._total_input_tokens,
+                    "total_output_tokens": self._total_output_tokens,
+                    "cache_hit_rate": round(self.cache_hit_rate, 3),
                     "per_phase": self.count_by_phase(),
                     "per_counter": dict(sorted(self._counts.items())),
                 },
@@ -48,6 +69,16 @@ class LLMCallLogger:
             ),
             encoding="utf-8",
         )
+
+    def record_cache_hit(self) -> None:
+        """Record a cache hit (response served from cache)."""
+        with self._lock:
+            self._cache_hits += 1
+
+    def record_cache_miss(self) -> None:
+        """Record a cache miss (response from LLM)."""
+        with self._lock:
+            self._cache_misses += 1
 
     def write(
         self,
@@ -59,6 +90,8 @@ class LLMCallLogger:
         model: str,
         base_url: str,
         suffix: str | None = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
     ) -> None:
         """Serialize an LLM call transcript to a JSON file on disk."""
         safe_phase = slugify(phase)
@@ -67,8 +100,9 @@ class LLMCallLogger:
         with self._lock:
             next_index = self._counts.get(counter_key, 0) + 1
             self._counts[counter_key] = next_index
-        with self._lock:
             self._total += 1
+            self._total_input_tokens += input_tokens
+            self._total_output_tokens += output_tokens
         file_stem = f"{iteration:02d}-{safe_phase}"
         if safe_suffix:
             file_stem += f"-{safe_suffix}"
@@ -87,6 +121,8 @@ class LLMCallLogger:
                         "phase": phase,
                         "suffix": suffix,
                         "call_index": next_index,
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
                     },
                 },
                 ensure_ascii=False,

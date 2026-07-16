@@ -96,7 +96,7 @@ def _signal_finding_rows(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
             target["confidence"] = max(
                 float(target.get("confidence") or 0), float(item.get("confidence") or 0)
             )
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             pass
         for evidence_id in item.get("evidence_ids") or []:
             text = str(evidence_id or "").strip()
@@ -121,7 +121,7 @@ def _signal_finding_rows(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
         confidence = item.get("confidence")
         try:
             confidence = f"{float(confidence):.2f}"
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             confidence = str(confidence or "-")
         theme = str(item.get("theme") or "")
         rows.append(
@@ -301,16 +301,35 @@ def _build_recommendations_table(db: CaseDB) -> list[dict[str, Any]]:
         key=lambda theme: (_finding_theme_rank(theme), -theme_counts[theme]),
     )
     for theme in ranked_themes[:3]:
+        priority = "High" if _finding_theme_rank(theme) <= 2 else "Medium"
+        action = _finding_theme_recommended_action(theme, theme_counts[theme])
+        rationale = _finding_theme_summary(theme)
+        # R7-10: Add validation criterion based on theme
+        validation = _recommendation_validation_criterion(theme)
         rows.append(
             {
-                "priority": "High" if _finding_theme_rank(theme) <= 2 else "Medium",
-                "action": _finding_theme_recommended_action(theme, theme_counts[theme]),
-                "rationale": _finding_theme_summary(theme),
+                "priority": priority,
+                "action": action,
+                "rationale": rationale,
                 "evidence_or_gap": theme,
+                "validation": validation,
             }
         )
 
     return rows
+
+
+def _recommendation_validation_criterion(theme: str) -> str:
+    """Return a validation criterion for a recommendation theme."""
+    criteria = {
+        "explicit_credentials": "Verify credential source and target; check for unauthorized access patterns",
+        "account_lifecycle": "Confirm account creation/modification is authorized; review group memberships",
+        "time_change": "Verify clock change is legitimate; check for log gap exploitation",
+        "log_integrity": "Confirm log clearing is authorized; verify log completeness",
+        "antiforensic_tools": "Verify tool execution context; check for evidence destruction",
+        "data_access": "Confirm data access is authorized; check for exfiltration indicators",
+    }
+    return criteria.get(theme, "Review evidence and confirm findings")
 
 
 build_recommendations_table = _build_recommendations_table

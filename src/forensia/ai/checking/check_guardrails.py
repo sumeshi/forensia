@@ -122,7 +122,7 @@ def _co_observation_satisfied(
     for eid in co_ids:
         try:
             required_ids.add(int(eid))
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             continue
     if not required_ids:
         return (True, "no co_observed_event_ids to verify")
@@ -138,7 +138,7 @@ def _co_observation_satisfied(
             if eid is not None:
                 try:
                     observed_ids.add(int(eid))
-                except TypeError, ValueError:
+                except (TypeError, ValueError):
                     pass
         if required_ids.issubset(observed_ids):
             return (
@@ -169,7 +169,7 @@ def _co_observation_satisfied(
             if eid is not None:
                 try:
                     host_event_ids.add(int(eid))
-                except TypeError, ValueError:
+                except (TypeError, ValueError):
                     pass
 
         if not required_ids.issubset(host_event_ids):
@@ -190,7 +190,7 @@ def _co_observation_satisfied(
                             ts = _parse_timestamp(row.get("timestamp"))
                             if ts is not None:
                                 events.append((ts, eid_int))
-                    except TypeError, ValueError:
+                    except (TypeError, ValueError):
                         pass
 
             if not events:
@@ -252,7 +252,7 @@ def verify_verdict_consistency(
         for eid in co_ids:
             try:
                 claimed_event_ids.add(int(eid))
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 pass
     # Bare numbers in the rationale are usually counts, years, or row totals,
     # not event-id claims. Treat a number as a claimed event id only when it is
@@ -276,7 +276,7 @@ def verify_verdict_consistency(
     for eid in result_summary.get("event_id_set") or []:
         try:
             observed_event_ids.add(int(eid))
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             pass
 
     missing_ids = claimed_event_ids - observed_event_ids

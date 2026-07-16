@@ -526,28 +526,34 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
         )
     )
     rs.check_result = check_result
-    # Record evidence links for this query
-    if (
-        check_result
-        and hasattr(check_result, "suspicious_evidence")
-        and check_result.suspicious_evidence
-    ):
-        evidence_ids = [
-            e.get("evidence_id", "")
-            for e in check_result.suspicious_evidence
-            if e.get("evidence_id")
-        ]
+    # Link every evidence ID returned by the validated query before the
+    # sufficiency assessment.  The checker's suspicious_evidence selection is
+    # useful for strength annotations, but it is optional and must not be the
+    # sole source of traceability.
+    if check_result:
+        selected = {
+            str(item["evidence_id"]): item
+            for item in (check_result.suspicious_evidence or [])
+            if item.get("evidence_id")
+        }
+        evidence_ids = list(
+            dict.fromkeys(
+                str(evidence_id)
+                for evidence_id in result_summary.get("evidence_ids", [])
+                if evidence_id
+            )
+        )
         if evidence_ids:
             role = (
                 "contradictory" if check_result.verdict == "refuted" else "supporting"
             )
             strengths = {
-                str(item["evidence_id"]): str(item.get("strength") or "moderate")
-                if str(item.get("strength") or "moderate")
+                evidence_id: str(selected[evidence_id].get("strength") or "moderate")
+                if str(selected[evidence_id].get("strength") or "moderate")
                 in {"weak", "moderate", "strong"}
                 else "moderate"
-                for item in check_result.suspicious_evidence
-                if item.get("evidence_id")
+                for evidence_id in evidence_ids
+                if evidence_id in selected
             }
             create_evidence_links_for_query(
                 db,

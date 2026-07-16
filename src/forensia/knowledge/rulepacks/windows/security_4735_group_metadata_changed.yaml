@@ -1,0 +1,16 @@
+id: windows-security-4735-group-metadata-changed
+title: Security group metadata changes
+severity: low
+confidence: 0.5
+required_fields:
+- computer
+- event_id
+- message
+tags:
+- windows
+- group-management
+- account-management
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    event_id,\n    target_user,\n    subject_user,\n    message\nFROM evtx_events\nWHERE event_id IN (4735, 4737)\n"
+finding:
+  title: Security group metadata change on {computer}
+  summary: Event {event_id} — security group metadata changed on {computer} at {timestamp}. This is not a membership addition; investigate only when the changed attributes or surrounding activity are unauthorized.

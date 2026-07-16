@@ -61,7 +61,8 @@ def ingest_evtx_file(
             enriched = {
                 **record,
                 "source_type": "evtx",
-                "source_file": str(evtx_path),
+                # Stable source identity; display paths live in evidence_sources.
+                "source_file": source_sha or str(evtx_path),
                 "channel": channel,
                 "parser": "evtx2es",
                 "ingested_at": ingested_at,

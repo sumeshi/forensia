@@ -1,0 +1,17 @@
+id: windows-security-group-deleted
+title: Security group deletion
+severity: low
+confidence: 0.6
+required_fields:
+- computer
+- event_id
+- message
+tags:
+- windows
+- group-management
+- account-management
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    event_id,\n    target_user,\n    subject_user,\n    message\nFROM evtx_events\nWHERE event_id IN (4730, 4734)\n"
+finding:
+  title: Security group deleted on {computer}
+  summary: Event {event_id} — a security group was deleted on {computer} at {timestamp}. Verify authorization and surrounding account activity; this is not a membership addition.
+

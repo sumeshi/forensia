@@ -273,7 +273,7 @@ def build_co_occur_index(
             for eid in condition.get("co_occurs_event_ids") or []:
                 try:
                     event_ids.add(int(eid))
-                except TypeError, ValueError:
+                except (TypeError, ValueError):
                     continue
     if not event_ids:
         return {}
@@ -315,7 +315,7 @@ def _co_occurs_satisfied(
     for eid in condition.get("co_occurs_event_ids") or []:
         try:
             entries = co_occur_index.get(int(eid)) or []
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             continue
         for ts, host in entries:
             if row_host and host and row_host != host:
@@ -513,7 +513,7 @@ def _extract_event_ids_from_sql(sql: str) -> list[int]:
         for candidate in candidates:
             try:
                 event_id = int(candidate)
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 continue
             if event_id in seen:
                 continue
@@ -635,7 +635,7 @@ def execute_fallback_search(
         for eid in event_ids:
             try:
                 valid_event_ids.append(int(eid))
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 import logging
 
                 logging.warning(f"Invalid event_id in fallback: {eid}")

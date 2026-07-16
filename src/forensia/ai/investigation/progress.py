@@ -170,7 +170,7 @@ class HypothesisProgressTracker:
             if event_id is not None:
                 try:
                     observed.add(int(event_id))
-                except TypeError, ValueError:
+                except (TypeError, ValueError):
                     pass
         return observed
 
@@ -195,7 +195,7 @@ class HypothesisProgressTracker:
         for eid in required_event_ids:
             try:
                 out.add(int(str(eid).strip()))
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 continue
         return out
 

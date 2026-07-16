@@ -1,16 +1,11 @@
 id: windows-security-1100-evtlog-shutdown
 title: Event Log service shutdown (Event 1100)
-severity: high
-confidence: 0.8
+severity: low
+confidence: 0.5
 tags:
 - windows
-- anti-forensics
-- log-tampering
-attack:
-- tactic: defense-evasion
-  technique_id: T1562.001
-  technique_name: Disable or Modify Tools
+- log-lifecycle
 query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    subject_user,\n    message\nFROM evtx_events\nWHERE event_id = 1100\n"
 finding:
   title: 'Event Log service stopped: {computer}'
-  summary: 'Event Log service stop (1100) was observed on {computer} at {timestamp}. Actor: {subject_user}. Investigate subsequent log gaps or clearing artifacts.'
+  summary: 'Event Log service stop (1100) was observed on {computer} at {timestamp}. This is a normal OS lifecycle event during shutdown. Only investigate if correlated with log clearing (1102/104) or unexpected log gaps.'

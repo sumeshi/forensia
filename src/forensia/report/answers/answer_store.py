@@ -351,6 +351,13 @@ def _structured_answer_interpretation(
         return base + tz_basis
 
     row_count = len(rows)
+    # R7-07: candidate_only status indicates candidates, not confirmed answers
+    if status == "candidate_only":
+        return (
+            f"{row_count} candidate association(s) identified based on temporal proximity "
+            f"or heuristic matching. These are NOT confirmed facts — direct evidence "
+            f"(e.g., USN journal, MFT name history) is required to establish the relationship.{tz_basis}"
+        )
     answer_spec = answer.get("answer_spec") or answer.get("id", "")
     templates = _load_interpretation_templates()
     template = templates.get(answer_spec)

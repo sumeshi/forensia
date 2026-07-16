@@ -481,7 +481,7 @@ def collect_event_ids(evidence_results: list[dict[str, Any]]) -> list[int]:
             value = row.get("event_id")
             try:
                 event_id = int(value)
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 continue
             if event_id in seen:
                 continue

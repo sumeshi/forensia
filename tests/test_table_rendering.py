@@ -205,13 +205,13 @@ class TableRenderingTests(unittest.TestCase):
                     "('prefetch-winword-1', 'c.pf', 'WINWORD.EXE', 3, TIMESTAMP '2015-03-25 15:24:48')"
                 )
                 rows = execution_rows(db)
-        names = [str(r.get("executable_name")) for r in rows]
+        names = [str(r.get("executable")) for r in rows]
         self.assertEqual(
             len(names), len(set(names)), f"duplicate executables in {names}"
         )
-        iexplore = next(r for r in rows if r["executable_name"] == "IEXPLORE.EXE")
-        self.assertEqual(16, int(iexplore["exec_count"]))
-        self.assertIn("15:22:07", str(iexplore["last_exec_time"]))
+        iexplore = next(r for r in rows if r["executable"] == "IEXPLORE.EXE")
+        self.assertEqual(16, int(iexplore["execution_count"]))
+        self.assertIn("15:22:07", str(iexplore["last_execution"]))
 
     def test_prepare_block_context_merges_section_table_digest(self) -> None:
         """R6-05: same-section table digest reaches the narrator context."""

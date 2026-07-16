@@ -137,12 +137,12 @@ def _build_gaps_unresolved_table(db: CaseDB) -> list[dict[str, Any]]:
         result.append(
             {
                 "hypothesis": description,
-                "state": str(
+                "status": str(
                     row.get("latest_verdict") or row.get("verdict") or "inconclusive"
                 ),
-                "reasoning": row.get("reasoning_count"),
-                "latest": latest,
-                "needed": needed if needed else "",
+                "evidence_rows": row.get("reasoning_count"),
+                "missing_rationale": latest,
+                "next_step": needed if needed else "",
             }
         )
 
@@ -150,10 +150,10 @@ def _build_gaps_unresolved_table(db: CaseDB) -> list[dict[str, Any]]:
         result.append(
             {
                 "hypothesis": f"{len(untouched)} drafted hypotheses not yet investigated",
-                "state": "not started",
-                "reasoning": 0,
-                "latest": "",
-                "needed": "",
+                "status": "not started",
+                "evidence_rows": 0,
+                "missing_rationale": "",
+                "next_step": "",
             }
         )
 
@@ -161,7 +161,24 @@ def _build_gaps_unresolved_table(db: CaseDB) -> list[dict[str, Any]]:
 
 
 def _build_gaps_untestable_table(db: CaseDB) -> list[dict[str, Any]]:
-    return _hypothesis_rows(db, "untestable", 8)
+    """Untestable hypotheses: transform raw rows into schema-matched columns."""
+    rows = _hypothesis_rows(db, "untestable", 8)
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        needed = _extract_needed_evidence(row.get("latest_reasoning"))
+        result.append(
+            {
+                "hypothesis": str(
+                    row.get("description") or row.get("hypothesis_id") or ""
+                )[:120],
+                "missing_telemetry": needed if needed else "",
+                "rationale": str(row.get("latest_reasoning") or "")[:200],
+                "next_step": "acquire missing telemetry"
+                if needed
+                else "re-evaluate with available data",
+            }
+        )
+    return result
 
 
 def _build_gaps_confirmed_table(db: CaseDB) -> list[dict[str, Any]]:
@@ -179,17 +196,17 @@ def _build_gaps_confirmed_table(db: CaseDB) -> list[dict[str, Any]]:
     ):
         rule_ids = _hypothesis_source_rule_ids(item)
         if rule_ids:
-            basis = "rule-seeded: " + ", ".join(rule_ids[:2])
+            evidence_basis = "rule-seeded: " + ", ".join(rule_ids[:2])
         else:
-            basis = "gap-derived"
+            evidence_basis = "gap-derived"
         rows.append(
             {
                 "hypothesis": str(
                     item.get("description") or item.get("hypothesis_id") or ""
                 )[:120],
                 "verdict": str(item.get("verdict") or item.get("status") or ""),
-                "basis": basis,
-                "benign_context": "yes" if item.get("benign_context") else "no",
+                "evidence_basis": evidence_basis,
+                "related_context": "yes" if item.get("benign_context") else "no",
                 "summary": str(item.get("summary") or "")[:160],
             }
         )

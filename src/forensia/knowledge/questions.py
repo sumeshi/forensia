@@ -19,6 +19,7 @@ import yaml
 _VALID_STRUCTURED_STATUSES = {
     "answered",
     "partial",
+    "candidate_only",
     "not_found",
     "not_searched",
     "insufficient_evidence",

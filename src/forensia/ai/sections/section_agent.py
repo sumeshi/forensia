@@ -7,6 +7,7 @@ names from forensia.ai.sections.section_agent.
 from __future__ import annotations
 
 import asyncio
+import traceback
 from typing import Any
 
 from forensia.ai.sections.section_block_context import (
@@ -421,8 +422,32 @@ def run_section_block_agent(
             ctx, context_sections, current_section_outline, audit_callback
         )
     except Exception as exc:
+        import logging
+
+        log = logging.getLogger(__name__)
+        log.warning(
+            "Section block failed: %s/%s — %s",
+            section_key,
+            block_heading,
+            exc,
+            exc_info=True,
+        )
+        _store_section_run(
+            db,
+            section_key=section_key,
+            block_heading=block_heading,
+            iteration=0,
+            phase="block_error",
+            payload={
+                "error_type": type(exc).__name__,
+                "error_message": str(exc)[:500],
+                "traceback": traceback.format_exc()[:2000],
+                "section_key": section_key,
+                "block_heading": block_heading,
+            },
+        )
         return SectionBlockResult(
-            body=f"**Status:** error\n\n*Section block failed: {str(exc)[:200]}*",
+            body="**Status:** error\n\n_Section could not be generated due to an internal error._",
             evidence_results=[],
             iterations=0,
             status="error",

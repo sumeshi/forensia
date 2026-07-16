@@ -1,0 +1,19 @@
+id: windows-security-group-member-removed
+title: Security group membership removals
+severity: medium
+confidence: 0.7
+required_fields:
+- target_user
+- computer
+- subject_user
+- event_id
+- message
+tags:
+- windows
+- group-management
+- account-management
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    event_id,\n    target_user,\n    subject_user,\n    message\nFROM evtx_events\nWHERE event_id IN (4729, 4733)\n"
+finding:
+  title: Group membership removal on {computer}
+  summary: Event {event_id} — account {target_user} was removed from a security group by {subject_user} on {computer}. Verify whether this was authorized administration; this event does not mean the account was added or privileges were escalated.
+

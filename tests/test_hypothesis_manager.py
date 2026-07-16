@@ -29,6 +29,45 @@ from forensia.db.database import CaseDB
 from forensia.report.sections.section_taxonomy import sections_for_keypoint
 
 
+class TestSufficiencyIndependence(unittest.TestCase):
+    def test_resolution_does_not_rewrite_machine_sufficiency(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                state = SessionState(
+                    session_id="S-1",
+                    active_hypotheses=[
+                        Hypothesis(id="H-SUFF", description="Unlinked claim")
+                    ],
+                )
+                db.execute(
+                    """
+                    INSERT INTO hypotheses (
+                        hypothesis_id, status, description, summary,
+                        sufficiency_status, sufficiency_reason,
+                        created_at, updated_at
+                    ) VALUES (
+                        'H-SUFF', 'active', 'Unlinked claim', '',
+                        'insufficient', 'no evidence links', now(), now()
+                    )
+                    """
+                )
+                resolve_hypothesis(
+                    db,
+                    state,
+                    "H-SUFF",
+                    "confirmed",
+                    "LLM confirmation",
+                    "S-1",
+                )
+                status, reason = db.execute(
+                    "SELECT sufficiency_status, sufficiency_reason "
+                    "FROM hypotheses WHERE hypothesis_id = 'H-SUFF'"
+                ).fetchone()
+                self.assertEqual("insufficient", status)
+                self.assertEqual("no evidence links", reason)
+
+
 class TestExtractSemanticTriple:
     def test_target_fallback_pattern_does_not_crash(self) -> None:
         """Descriptions with a target keyword but no 'to/on/into/onto <word>' phrase

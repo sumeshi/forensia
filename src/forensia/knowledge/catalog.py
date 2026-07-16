@@ -63,7 +63,7 @@ def load_event_id_hints() -> dict[int, dict[str, Any]]:
     for key, value in raw_events.items():
         try:
             event_id = int(key)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             continue
         if isinstance(value, dict):
             events[event_id] = value

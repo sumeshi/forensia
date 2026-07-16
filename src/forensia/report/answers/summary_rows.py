@@ -151,7 +151,7 @@ def _account_summary_rows(db: CaseDB, limit: int = 10) -> list[dict[str, Any]]:
 def _event_interpretation(event_id: Any) -> str:
     try:
         event = int(event_id)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return "Event"
     return {
         4624: "Successful logon",
@@ -286,7 +286,16 @@ def _execution_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
     # Rank ascending; within a rank keep most-recent first (stable sorts).
     rows.sort(key=lambda row: str(row.get("last_exec_time") or ""), reverse=True)
     rows.sort(key=_rank)
-    return rows[:limit]
+    # Map DB column names to schema column keys for table rendering.
+    return [
+        {
+            "executable": r.get("executable_name"),
+            "execution_count": r.get("exec_count"),
+            "last_execution": r.get("last_exec_time"),
+            "evidence_id": r.get("evidence_id"),
+        }
+        for r in rows[:limit]
+    ]
 
 
 def _file_artifact_rows(db: CaseDB, limit: int = 12) -> list[dict[str, Any]]:
@@ -417,9 +426,9 @@ def _network_summary_rows(db: CaseDB) -> list[dict[str, Any]]:
     return [
         {
             "area": "Network indicators in normalized EVTX",
-            "observed_rows": int(row[2] or 0),
-            "external_src_rows": int(row[0] or 0),
-            "external_dst_rows": int(row[1] or 0),
+            "ip_address": "aggregate",
+            "outbound_rows": int(row[0] or 0),
+            "inbound_rows": int(row[1] or 0),
             "interpretation": "No strong external network row was normalized"
             if not (row[0] or row[1])
             else "Review rows with non-loopback IP values",
@@ -430,7 +439,7 @@ def _network_summary_rows(db: CaseDB) -> list[dict[str, Any]]:
 def _as_int(value: Any) -> int:
     try:
         return int(value or 0)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return 0
 
 

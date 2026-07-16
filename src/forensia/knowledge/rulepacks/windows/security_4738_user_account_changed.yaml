@@ -1,0 +1,17 @@
+id: windows-security-4738-user-account-changed
+title: User account attributes changed
+severity: low
+confidence: 0.6
+required_fields:
+- computer
+- event_id
+- target_user
+- message
+tags:
+- windows
+- account-management
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    event_id,\n    target_user,\n    subject_user,\n    message\nFROM evtx_events\nWHERE event_id = 4738\n"
+finding:
+  title: User account attributes changed on {computer}
+  summary: Event 4738 — attributes of account {target_user} changed on {computer} at {timestamp}. Review the changed attributes and authorization; this is not a group membership event.
+

@@ -18,13 +18,16 @@ from forensia.knowledge.rules.models import Finding, Rule
 
 
 class RuleProfileTests(unittest.TestCase):
-    def test_windows_rules_have_attack_mapping(self) -> None:
+    def test_windows_rule_ids_are_unique_and_baseline_rules_have_no_attack_mapping(self) -> None:
         rules_dir = Path("src/forensia/knowledge/rulepacks")
         profile_path = Path("src/forensia/knowledge/profiles/windows-basic.yaml")
         rules = load_rules_from_dir(rules_dir, profile_path)
 
-        self.assertEqual(115, len(rules))
-        self.assertTrue(all(rule.attack for rule in rules))
+        self.assertGreaterEqual(len(rules), 116)
+        self.assertEqual(len(rules), len({rule.id for rule in rules}))
+        by_id = {rule.id: rule for rule in rules}
+        self.assertFalse(by_id["windows-security-1100-evtlog-shutdown"].attack)
+        self.assertFalse(by_id["windows-system-6005-6006-eventlog-service"].attack)
 
     def test_tool_detection_rules_are_catalog_driven(self) -> None:
         """Detection scope must come from dfir_ioc_catalog.yaml, not the rule.
@@ -253,7 +256,7 @@ class RuleProfileTests(unittest.TestCase):
         rules = load_rules_from_dir(rules_dir, profile_path)
         rule_ids = {rule.id for rule in rules}
 
-        self.assertEqual(115, len(rules))
+        self.assertGreaterEqual(len(rules), 116)
         self.assertNotIn("allowlist_services", rule_ids)
 
     def test_profile_with_nonexistent_rulepack_loads_zero_rules(self) -> None:

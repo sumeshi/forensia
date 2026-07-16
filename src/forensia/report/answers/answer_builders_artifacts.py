@@ -136,7 +136,7 @@ def _build_browser_usage(
             item["total_exec_count"] = int(item.get("total_exec_count") or 0) + int(
                 row.get("exec_count") or 0
             )
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             pass
         item["last_exec_time"] = max_text_time(
             item.get("last_exec_time"), row.get("last_exec_time")
@@ -339,11 +339,18 @@ def _build_desktop_rename_candidates(
             "evidence_ids",
         ],
         queries_run=queries_run,
-        status="partial" if rows else "not_found",
+        # R7-07: Recent LNK temporal proximity is not actual rename evidence.
+        # Mark as candidate_only to distinguish from confirmed renames.
+        status="candidate_only"
+        if rows
+        and "structured:desktop_rename_candidates:recent_lnk_temporal_alias_pairs"
+        in queries_run
+        else ("partial" if rows else "not_found"),
         missing_reason=[]
         if not rows
         else [
-            "MFT filename-pair evidence was not available; returned Recent LNK temporal alias candidates."
+            "MFT filename-pair evidence was not available; returned Recent LNK temporal alias candidates. "
+            "These are candidate associations based on temporal proximity, not confirmed renames."
         ],
     )
 

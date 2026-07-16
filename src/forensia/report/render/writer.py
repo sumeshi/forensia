@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from forensia.core.case import Case
@@ -52,18 +53,43 @@ def render_written_report(
     report_path = case.reports_dir / "report.md"
     report_path.write_text(report_body, encoding="utf-8")
     from forensia.config import get_llm_settings
-    from forensia.report.report_validation import (
-        check_fallback_stub,
-        check_language_consistency,
-        check_local_path_leak,
-    )
+    from forensia.report.report_brief import build_report_brief
+    from forensia.report.report_validation import validate_report
 
     expected_language = str(get_llm_settings().get("output_language", ""))
-    for issue in [
-        *check_local_path_leak(report_body),
-        *check_fallback_stub(report_body),
-        *check_language_consistency(report_body, expected_language),
-    ]:
+    findings = validate_report(
+        build_report_brief(db, case),
+        report_body=report_body,
+        expected_language=expected_language,
+        db=db,
+    )
+    fatal = [issue for issue in findings if issue.severity == "error"]
+    validation = {
+        "publishable": not fatal,
+        "checks_run": [
+            "thesis_alignment",
+            "refuted_leakage",
+            "verdict_contradiction",
+            "sufficiency_consistency",
+            "local_path_leak",
+            "fallback_stub",
+            "failure_marker",
+            "language_consistency",
+        ],
+        "fatal_errors": [issue.as_dict() for issue in fatal],
+        "warnings": [
+            issue.as_dict() for issue in findings if issue.severity == "warning"
+        ],
+    }
+    (case.reports_dir / "report_validation.json").write_text(
+        json.dumps(validation, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    _log(
+        "VALIDATION",
+        f"publishable={validation['publishable']} errors={len(fatal)} "
+        f"warnings={len(validation['warnings'])}",
+    )
+    for issue in findings:
         _log("VALIDATION", f"[{issue.severity}] {issue.check_name}: {issue.message}")
     report_html = render_html_report(case, db)
     return report_path, report_html

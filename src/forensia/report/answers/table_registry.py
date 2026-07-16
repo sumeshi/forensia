@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
+from forensia.core.log import log as _log
 from forensia.db.database import CaseDB
 from forensia.knowledge.resources import schema_dir
 from forensia.report.answers.gap_tables import (
@@ -79,6 +80,65 @@ class TableSpec:
 
     builder: Callable[[CaseDB], list[dict[str, Any]]]
     columns: tuple[tuple[str, str], ...] | None  # None = use default
+    optional_keys: tuple[str, ...] = ("evidence_id",)
+
+
+@dataclass
+class TableValidationError:
+    """Structured validation error for a table builder output."""
+
+    builder_name: str
+    error_type: str  # "missing_required", "all_empty", "unknown_keys", "schema_mismatch"
+    message: str
+    details: str | None = None
+
+
+def _validate_table_output(
+    builder_name: str,
+    rows: list[dict[str, Any]],
+    columns: list[tuple[str, str]],
+    optional_keys: tuple[str, ...] = (),
+) -> list[TableValidationError]:
+    """Validate builder output against declared column schema.
+
+    Returns a list of validation errors (empty if valid).
+    """
+    errors: list[TableValidationError] = []
+    if not rows:
+        return errors
+
+    col_keys = {k for k, _ in columns}
+    row_keys = {k for row in rows for k in row}
+    unknown_keys = row_keys - col_keys
+
+    if unknown_keys:
+        errors.append(
+            TableValidationError(
+                builder_name=builder_name,
+                error_type="unknown_keys",
+                message=f"Builder produced keys not in schema: {sorted(unknown_keys)}",
+                details=f"Schema keys: {sorted(col_keys)}",
+            )
+        )
+
+    # Requiredness is a schema property, never inferred from a display label.
+    required_cols = [(k, label) for k, label in columns if k not in optional_keys]
+    for col_key, col_label in required_cols:
+        all_empty = all(
+            row.get(col_key) in (None, "", "-", "None", "null", "N/A")
+            for row in rows
+        )
+        if all_empty:
+            errors.append(
+                TableValidationError(
+                    builder_name=builder_name,
+                    error_type="all_empty",
+                    message=f"Required column '{col_label}' ({col_key}) is empty in all {len(rows)} rows",
+                    details="Builder may not be producing the correct key names",
+                )
+            )
+
+    return errors
 
 
 TABLE_BLOCKS: dict[str, TableSpec] = {
@@ -145,7 +205,7 @@ TABLE_BLOCKS: dict[str, TableSpec] = {
         columns=(
             ("executable", "Executable"),
             ("execution_count", "Execution count"),
-            ("first_execution", "First execution"),
+            ("last_execution", "Last execution"),
             ("evidence_id", "Ref"),
         ),
     ),
@@ -223,6 +283,7 @@ TABLE_BLOCKS: dict[str, TableSpec] = {
             ("action", "Action"),
             ("rationale", "Rationale"),
             ("evidence_or_gap", "Evidence/Gap"),
+            ("validation", "Validation criterion"),
         ),
     ),
 }
@@ -299,23 +360,33 @@ def render_table_block(
     LLM agent). Empty result sets render the declared ``empty`` text instead of
     a bare empty table.
     """
-    spec = TABLE_BLOCKS.get(builder_name)
-    builder_fn = spec.builder if spec else None
+    table_spec = TABLE_BLOCKS.get(builder_name)
+    builder_fn = table_spec.builder if table_spec else None
     if builder_fn is None:
         return None
     rows = builder_fn(db)
-    spec = _load_table_captions().get(builder_name) or {}
+    caption_spec = _load_table_captions().get(builder_name) or {}
     if not rows:
-        return str(spec.get("empty") or "").strip() or "_No rows available._"
+        return str(caption_spec.get("empty") or "").strip() or "_No rows available._"
     if max_rows is None:
         try:
-            max_rows = int(spec.get("max_rows") or 0)
-        except TypeError, ValueError:
+            max_rows = int(caption_spec.get("max_rows") or 0)
+        except (TypeError, ValueError):
             max_rows = 0
-    caption = render_rows_template(str(spec.get("caption") or "").strip(), rows).strip()
-    table = _markdown_table(
-        rows, _table_block_columns(builder_name, rows), max_rows=max_rows
+    columns = _table_block_columns(builder_name, rows)
+    validation_errors = _validate_table_output(
+        builder_name,
+        rows,
+        columns,
+        optional_keys=table_spec.optional_keys,
     )
+    if validation_errors:
+        for error in validation_errors:
+            _log("VALIDATION", f"[error] table_schema: {error.message}")
+    caption = render_rows_template(
+        str(caption_spec.get("caption") or "").strip(), rows
+    ).strip()
+    table = _markdown_table(rows, columns, max_rows=max_rows)
     return f"{caption}\n\n{table}" if caption else table
 
 

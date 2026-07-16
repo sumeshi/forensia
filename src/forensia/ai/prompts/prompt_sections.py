@@ -441,7 +441,7 @@ Output: {"verdict": "block_contradicted", "status": "not_found", "rationale": "N
                 if ev is not None:
                     try:
                         _sac_ids.add(int(ev))
-                    except TypeError, ValueError:
+                    except (TypeError, ValueError):
                         pass
     system = (
         f"{_dfir_playbook('section_agent_check', event_ids=_sac_ids)}\n"

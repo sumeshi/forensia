@@ -1,5 +1,5 @@
 id: windows-security-4728-group-change
-title: Security group membership changes (Add, Remove, Modify, Delete)
+title: Security group membership additions
 severity: high
 confidence: 0.75
 required_fields:
@@ -20,23 +20,18 @@ attack:
 - tactic: privilege-escalation
   technique_id: T1078
   technique_name: Valid Accounts
-query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    event_id,\n    target_user,\n    subject_user,\n    message\nFROM evtx_events\nWHERE event_id IN (4728, 4729, 4730, 4732, 4733, 4734, 4735, 4737, 4738)\n"
+query: "SELECT\n    evidence_id,\n    timestamp,\n    computer,\n    event_id,\n    target_user,\n    subject_user,\n    message\nFROM evtx_events\nWHERE event_id IN (4728, 4732)\n"
 finding:
-  title: Group membership change on {computer}
-  summary: Event {event_id} — account {target_user} modified by {subject_user} on {computer}
+  title: Group membership addition on {computer}
+  summary: Event {event_id} — account {target_user} was added to a security group by {subject_user} on {computer}. Verify the target group and administrative authorization before treating this as privilege escalation.
 hypotheses:
 - id: windows-security-4728-privilege-escalation
   segment: privilege-escalation
-  description: Account {target_user} was added to a privileged group (4728/4732/4756) by {subject_user} on {computer}, indicating privilege escalation
+  description: Account {target_user} was added to a privileged group by {subject_user} on {computer}, indicating potential privilege escalation
   required_entities:
   - computer
   - target_user
   - subject_user
-  confirm_when:
-    co_observed_event_ids:
-    - 4728
-    - 4732
-    - 4756
   refute_when:
     zero_rows: true
   follow_up_questions:

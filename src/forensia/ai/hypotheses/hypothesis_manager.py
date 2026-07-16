@@ -325,6 +325,8 @@ def resolve_hypothesis(
                 session_id=session_id,
                 resolved_session=session_id,
             )
+            # Sufficiency is independently assessed and persisted before
+            # settlement.  Never rewrite it merely to agree with a verdict.
             # Propagate verdict through relations
             propagate_verdict(db, hypothesis_id=hypothesis_id, verdict=verdict)
             _feed_verdict_to_timeline(

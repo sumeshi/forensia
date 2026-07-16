@@ -36,7 +36,7 @@ def _coerce_confidence(value: Any, default: float = 0.5) -> float:
     if isinstance(value, (int, float)):
         try:
             return max(0.0, min(1.0, float(value)))
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             return default
     text = str(value).strip().lower()
     if not text:
@@ -486,7 +486,7 @@ def _facts_as_result(reusable_facts: list[dict[str, Any]]) -> dict[str, Any]:
         if c is not None:
             try:
                 max_confidence = max(max_confidence, float(c))
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 pass
     return {
         "keypoint": "section_facts",
@@ -504,9 +504,15 @@ def _facts_as_result(reusable_facts: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _load_reusable_section_evidence(
-    db: CaseDB, section_key: str, limit: int = 30
+    db: CaseDB, section_key: str, block_heading: str = "", limit: int = 30
 ) -> list[dict[str, Any]]:
-    """Load prior section evidence records reusable by sibling blocks."""
+    """Load prior section evidence records reusable by sibling blocks.
+
+    R7-06: When block_heading is provided, filter evidence by topic relevance
+    to prevent unrelated evidence from leaking into the current block.
+    Evidence with no demonstrable topic match is excluded rather than leaking
+    unrelated sibling-block context into the current block.
+    """
     rows = db.execute(
         """
         SELECT section_key, block_heading, evidence_id, role, source_query, created_at
@@ -515,9 +521,9 @@ def _load_reusable_section_evidence(
         ORDER BY created_at DESC
         LIMIT ?
         """,
-        (section_key, limit),
+        (section_key, limit * 3),  # fetch more, filter later
     ).fetchall()
-    return [
+    all_evidence = [
         {
             "section_key": str(found_section_key or ""),
             "block_heading": str(found_block_heading or ""),
@@ -529,6 +535,51 @@ def _load_reusable_section_evidence(
         for found_section_key, found_block_heading, evidence_id, role, source_query, created_at in rows
         if str(evidence_id or "").strip()
     ]
+    if not block_heading or not all_evidence:
+        return all_evidence[:limit]
+    # R7-06: Topic-based filtering
+    heading_lower = block_heading.lower()
+    topic_keywords = _heading_topic_keywords(heading_lower)
+    if not topic_keywords:
+        return [
+            item
+            for item in all_evidence
+            if str(item.get("block_heading") or "").strip().casefold()
+            == block_heading.strip().casefold()
+        ][:limit]
+    filtered = []
+    for item in all_evidence:
+        role_lower = str(item.get("role") or "").lower()
+        block_lower = str(item.get("block_heading") or "").lower()
+        # Match if role or source block heading contains any topic keyword
+        if any(kw in role_lower or kw in block_lower for kw in topic_keywords):
+            filtered.append(item)
+    return filtered[:limit]
+
+
+def _heading_topic_keywords(heading_lower: str) -> list[str]:
+    """Extract topic keywords from a block heading for evidence filtering."""
+    topic_map = {
+        "log integrity": ["log", "integrity", "clear", "1100", "1102", "104", "6006"],
+        "timeline": ["time", "event", "chronolog", "sequence"],
+        "network": ["network", "ip", "firewall", "connection", "src_ip", "dst_ip"],
+        "lateral": ["lateral", "logon", "rdp", "service", "4624", "4625"],
+        "execution": ["execut", "prefetch", "process", "4688", "application"],
+        "persistence": ["persist", "service", "scheduled", "autorun", "4697", "7045"],
+        "authentication": ["auth", "logon", "credential", "account", "4624", "4648"],
+        "antiforensic": ["anti", "clean", "wipe", "eraser", "delete", "clear"],
+        "gap": ["gap", "unresolved", "untestable", "coverage", "missing"],
+        "recommendation": ["recommend", "action", "remediat", "mitigat"],
+        "file": ["file", "mft", "document", "artifact", "path"],
+        "cloud": ["cloud", "drive", "sync", "onedrive", "google"],
+        "mail": ["mail", "outlook", "exchange", "inbox", "ost"],
+        "browser": ["browser", "chrome", "ie", "history", "bookmark"],
+    }
+    keywords: list[str] = []
+    for topic, kws in topic_map.items():
+        if topic in heading_lower:
+            keywords.extend(kws)
+    return keywords
 
 
 def _evidence_as_result(reusable_evidence: list[dict[str, Any]]) -> dict[str, Any]:

@@ -7,7 +7,7 @@
 # interpretation_template: {row_count}, {first.col}, {last.col}, {sample(col, n)}.
 tables:
   overview_evidence_scope:
-    caption: "List of ingested evidence source counts and coverage ({row_count} metrics). Sources with zero rows indicate not ingested or not detected."
+    caption: "Ingested evidence source counts and coverage ({row_count} metrics). Coverage state and reason are shown for each capability."
     empty: "No ingested evidence sources. Check the ingestion results."
     max_rows: 50
   overview_systems_observed:

@@ -45,6 +45,52 @@ def load_evidence_sufficiency_policy() -> dict[str, Any]:
     return _load_yaml(path)
 
 
+def _check_row_count_invariant(
+    db: CaseDB,
+    sources_by_family: dict[str, list[dict[str, Any]]],
+) -> None:
+    """Check that normalized sources with row_count=0 actually have 0 rows in the table.
+
+    Logs a warning for invariant violations (source marked normalized but table
+    has rows while row_count says 0). This indicates a path resolution failure
+    in _update_source_status.
+    """
+    table_map = {"evtx": "evtx_events", "mft": "mft_entries", "prefetch": "prefetch_executions"}
+    for family, sources in sources_by_family.items():
+        table = table_map.get(family)
+        if not table:
+            continue
+        for source in sources:
+            if source["ingest_status"] not in {"normalized", "empty", "parsed"}:
+                continue
+            # New normalized rows carry the stable SHA source identity.  The
+            # path subquery is retained for legacy case databases.
+            try:
+                actual = db.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE source_file = ? OR source_file IN "
+                    "(SELECT path FROM ingested_files WHERE sha256 = ?)",
+                    [source["source_id"], source["source_id"]],
+                ).fetchone()
+                actual_count = int(actual[0] or 0) if actual else 0
+                expected_count = int(source["row_count"] or 0)
+                if actual_count != expected_count:
+                    logger.warning(
+                        "Coverage invariant violation: source %s (%s) records "
+                        "row_count=%d but %s contains %d rows",
+                        source["source_id"][:12],
+                        family,
+                        expected_count,
+                        table,
+                        actual_count,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Coverage invariant check failed for source %s: %s",
+                    source["source_id"][:12],
+                    exc,
+                )
+
+
 def compute_evidence_coverage(db: CaseDB) -> list[dict[str, Any]]:
     """Compute evidence coverage from evidence_sources and artifact capabilities.
 
@@ -78,6 +124,9 @@ def compute_evidence_coverage(db: CaseDB) -> list[dict[str, Any]]:
         }
         family = source["artifact_family"]
         sources_by_family.setdefault(family, []).append(source)
+
+    # Invariant check: normalized sources with row_count=0 but table has rows
+    _check_row_count_invariant(db, sources_by_family)
 
     coverage_entries: list[dict[str, Any]] = []
     now = datetime.now(UTC)

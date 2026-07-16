@@ -64,7 +64,7 @@ def _group_findings_for_display(
             item["confidence"] = max(
                 float(item.get("confidence") or 0), float(row.get("confidence") or 0)
             )
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             pass
     return [
         {

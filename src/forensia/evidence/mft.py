@@ -46,7 +46,8 @@ def ingest_mft_file(
                 enriched = {
                     **record,
                     "source_type": "mft",
-                    "source_file": str(mft_path),
+                    # Stable source identity; display paths live in evidence_sources.
+                    "source_file": source_sha or str(mft_path),
                     "parser": "mft2es",
                     "ingested_at": ingested_at,
                     "evidence_id": make_mft_evidence_id(record_number, sequence_number),

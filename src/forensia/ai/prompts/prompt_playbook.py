@@ -350,7 +350,7 @@ def _auth_event_ids() -> frozenset[int]:
             for eid in class_def.get("event_ids") or []:
                 try:
                     ids.add(int(eid))
-                except TypeError, ValueError:
+                except (TypeError, ValueError):
                     continue
     return frozenset(ids)
 
@@ -375,7 +375,7 @@ def _sections_for_hypothesis(
         for eid in confirm_when.get("co_observed_event_ids") or []:
             try:
                 event_ids.add(int(eid))
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 continue
     entities = {
         str(e).strip().lower()
@@ -591,7 +591,7 @@ def _priority_event_ids(priority_events: list[Any]) -> list[int]:
         for eid in entry.get("event_ids", []) if isinstance(entry, dict) else []:
             try:
                 eid_int = int(eid)
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 continue
             if eid_int not in priority_ids:
                 priority_ids.append(eid_int)

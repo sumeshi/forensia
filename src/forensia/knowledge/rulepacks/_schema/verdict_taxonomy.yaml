@@ -22,20 +22,26 @@ structured_status:
   values:
     - answered
     - partial
+    - candidate_only
     - not_found
     - not_searched
     - insufficient_evidence
     - wrong_query
+    - unobservable
+    - error
   description: "Status for individual semantic/structured question answers"
 
 question_status:
   values:
     - answered
     - partial
+    - candidate_only
     - not_found
     - not_searched
     - insufficient_evidence
     - wrong_query
+    - unobservable
+    - error
   description: "Backward-compatible alias for structured_status"
 
 claim_status:
