@@ -9,14 +9,16 @@ from forensia.db.database import CaseDB
 
 logger = logging.getLogger(__name__)
 
-VALID_RELATION_TYPES = frozenset([
-    "parent_of",
-    "prerequisite_for",
-    "derived_from",
-    "contradicts",
-    "alternative_to",
-    "supersedes",
-])
+VALID_RELATION_TYPES = frozenset(
+    [
+        "parent_of",
+        "prerequisite_for",
+        "derived_from",
+        "contradicts",
+        "alternative_to",
+        "supersedes",
+    ]
+)
 
 SYMMETRIC_RELATION_TYPES = frozenset(["contradicts", "alternative_to"])
 
@@ -25,6 +27,7 @@ CONFLICTING_PAIRS = [
     ("prerequisite_for", "alternative_to"),
     ("supersedes", "supersedes"),
 ]
+
 
 def validate_relation(
     *,
@@ -130,7 +133,9 @@ def insert_relation(
         return False
 
     if check_cycle(db, from_id=from_id, to_id=to_id, relation_type=relation_type):
-        logger.warning("Relation rejected: would create cycle from %s to %s", from_id, to_id)
+        logger.warning(
+            "Relation rejected: would create cycle from %s to %s", from_id, to_id
+        )
         return False
 
     if relation_type in SYMMETRIC_RELATION_TYPES and from_id > to_id:
@@ -222,11 +227,13 @@ def propagate_verdict(
                     "human_review_required = TRUE WHERE hypothesis_id = ?",
                     [adjacent_id],
                 )
-                actions.append({
-                    "action": "re_evaluate",
-                    "target": adjacent_id,
-                    "reason": f"Parent {hypothesis_id} refuted",
-                })
+                actions.append(
+                    {
+                        "action": "re_evaluate",
+                        "target": adjacent_id,
+                        "reason": f"Parent {hypothesis_id} refuted",
+                    }
+                )
 
         elif rel_type == "prerequisite_for" and from_id == hypothesis_id:
             if verdict in ("confirmed", "sufficient"):
@@ -235,22 +242,26 @@ def propagate_verdict(
                     "WHERE hypothesis_id = ?",
                     [adjacent_id],
                 )
-                actions.append({
-                    "action": "unblock",
-                    "target": adjacent_id,
-                    "reason": f"Prerequisite {hypothesis_id} confirmed",
-                })
+                actions.append(
+                    {
+                        "action": "unblock",
+                        "target": adjacent_id,
+                        "reason": f"Prerequisite {hypothesis_id} confirmed",
+                    }
+                )
             elif verdict == "refuted":
                 db.execute(
                     "UPDATE hypotheses SET blocked_reason = ? WHERE hypothesis_id = ? "
                     "AND status = 'active'",
                     [f"prerequisite_refuted:{hypothesis_id}", adjacent_id],
                 )
-                actions.append({
-                    "action": "re_evaluate",
-                    "target": adjacent_id,
-                    "reason": f"Prerequisite {hypothesis_id} refuted",
-                })
+                actions.append(
+                    {
+                        "action": "re_evaluate",
+                        "target": adjacent_id,
+                        "reason": f"Prerequisite {hypothesis_id} refuted",
+                    }
+                )
             elif verdict == "inconclusive":
                 db.execute(
                     "UPDATE hypotheses SET blocked_reason = ? WHERE hypothesis_id = ? "
@@ -265,11 +276,13 @@ def propagate_verdict(
                     "human_review_required = TRUE WHERE hypothesis_id = ?",
                     [adjacent_id],
                 )
-                actions.append({
-                    "action": "flag_contradiction",
-                    "target": adjacent_id,
-                    "reason": f"Contradicting hypothesis {hypothesis_id} confirmed",
-                })
+                actions.append(
+                    {
+                        "action": "flag_contradiction",
+                        "target": adjacent_id,
+                        "reason": f"Contradicting hypothesis {hypothesis_id} confirmed",
+                    }
+                )
 
         elif rel_type == "supersedes" and from_id == hypothesis_id:
             if verdict in ("confirmed", "sufficient"):
@@ -282,10 +295,12 @@ def propagate_verdict(
                         adjacent_id,
                     ],
                 )
-                actions.append({
-                    "action": "supersede",
-                    "target": adjacent_id,
-                    "reason": f"Superseded by {hypothesis_id}",
-                })
+                actions.append(
+                    {
+                        "action": "supersede",
+                        "target": adjacent_id,
+                        "reason": f"Superseded by {hypothesis_id}",
+                    }
+                )
 
     return actions

@@ -628,18 +628,14 @@ def _register_investigation_state_routes(app: FastAPI, case: Case, cached):
     def hypothesis_relations() -> list[HypothesisRelationDTO]:
         return [
             HypothesisRelationDTO.model_validate(item)
-            for item in rows(
-                "hypothesis_relations.json", list_hypothesis_relations_dto
-            )
+            for item in rows("hypothesis_relations.json", list_hypothesis_relations_dto)
         ]
 
     @app.get("/api/hypothesis-evidence", response_model=list[HypothesisEvidenceLinkDTO])
     def hypothesis_evidence() -> list[HypothesisEvidenceLinkDTO]:
         return [
             HypothesisEvidenceLinkDTO.model_validate(item)
-            for item in rows(
-                "hypothesis_evidence.json", list_hypothesis_evidence_dto
-            )
+            for item in rows("hypothesis_evidence.json", list_hypothesis_evidence_dto)
         ]
 
 

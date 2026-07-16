@@ -460,7 +460,11 @@ async def investigate(
         signal.SIGINT, lambda signum, frame: setattr(ctx, "interrupted", True)
     )
     try:
-        status, report_refresh_failures, stop_reason_code = await _run_investigation_loop(env)
+        (
+            status,
+            report_refresh_failures,
+            stop_reason_code,
+        ) = await _run_investigation_loop(env)
         if status == "completed" and not ctx.interrupted:
             report_refresh_failures += await _final_report_refresh(env)
     except Exception:
@@ -468,7 +472,12 @@ async def investigate(
         stop_reason_code = "exception"
         raise
     finally:
-        save_stop_reason(db, status=status, stop_reason_code=stop_reason_code, stop_reason=f"Investigation {status}")
+        save_stop_reason(
+            db,
+            status=status,
+            stop_reason_code=stop_reason_code,
+            stop_reason=f"Investigation {status}",
+        )
         memory.regenerate_timeline_from_db(db)
         signal.signal(signal.SIGINT, previous_sigint)
         llm_logger.write_summary()

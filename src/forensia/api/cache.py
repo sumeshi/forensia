@@ -209,12 +209,16 @@ def write_full_api_snapshots(case: Case, db: CaseDB) -> None:
     )
     try:
         sources = list_evidence_sources_dto(db)
-        write_json(snap_dir / "evidence_sources.json", [s.model_dump() for s in sources])
+        write_json(
+            snap_dir / "evidence_sources.json", [s.model_dump() for s in sources]
+        )
     except Exception:
         logger.debug("Failed to write evidence_sources snapshot", exc_info=True)
     try:
         coverage = list_evidence_coverage_dto(db)
-        write_json(snap_dir / "evidence_coverage.json", [c.model_dump() for c in coverage])
+        write_json(
+            snap_dir / "evidence_coverage.json", [c.model_dump() for c in coverage]
+        )
     except Exception:
         logger.debug("Failed to write evidence_coverage snapshot", exc_info=True)
     try:
@@ -230,7 +234,9 @@ def write_full_api_snapshots(case: Case, db: CaseDB) -> None:
         logger.debug("Failed to write report_gaps snapshot", exc_info=True)
     try:
         tasks = list_investigation_tasks_dto(db)
-        write_json(snap_dir / "investigation_tasks.json", [t.model_dump() for t in tasks])
+        write_json(
+            snap_dir / "investigation_tasks.json", [t.model_dump() for t in tasks]
+        )
     except Exception:
         logger.debug("Failed to write investigation_tasks snapshot", exc_info=True)
     try:

@@ -422,7 +422,7 @@ class CaseDB:
             if isinstance(gaps, str):
                 try:
                     gaps = json.loads(gaps)
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     gaps = []
             for description in gaps if isinstance(gaps, list) else []:
                 text = str(description).strip()

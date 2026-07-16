@@ -617,7 +617,11 @@ async def _run_cycle_body(
             for sr in selection_results:
                 if sr.eligible:
                     hyp = next(
-                        (h for h in state.active_hypotheses if h.id == sr.hypothesis_id),
+                        (
+                            h
+                            for h in state.active_hypotheses
+                            if h.id == sr.hypothesis_id
+                        ),
                         None,
                     )
                     if hyp:

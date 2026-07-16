@@ -182,9 +182,7 @@ class ReportGapsTests(unittest.TestCase):
                     memory=memory,
                 )
                 self.assertEqual(
-                    db.execute(
-                        "SELECT status FROM investigation_tasks"
-                    ).fetchone()[0],
+                    db.execute("SELECT status FROM investigation_tasks").fetchone()[0],
                     "open",
                 )
                 self.assertIn(
@@ -199,9 +197,7 @@ class ReportGapsTests(unittest.TestCase):
                     memory=memory,
                 )
                 self.assertEqual(
-                    db.execute(
-                        "SELECT status FROM investigation_tasks"
-                    ).fetchone()[0],
+                    db.execute("SELECT status FROM investigation_tasks").fetchone()[0],
                     "resolved",
                 )
                 self.assertIn(

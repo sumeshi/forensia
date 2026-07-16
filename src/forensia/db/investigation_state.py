@@ -33,7 +33,11 @@ def ensure_investigation_state(
     db.execute(
         "INSERT INTO investigation_state (state_id, objective, status, termination_policy, created_at, updated_at) "
         "VALUES ('case', ?, ?, ?, now(), now())",
-        [objective, status, json.dumps(termination_policy) if termination_policy else None],
+        [
+            objective,
+            status,
+            json.dumps(termination_policy) if termination_policy else None,
+        ],
     )
 
 
@@ -76,7 +80,9 @@ def load_investigation_state(db: CaseDB) -> dict[str, Any] | None:
         "termination_policy": (
             row[3]
             if isinstance(row[3], dict)
-            else json.loads(row[3]) if isinstance(row[3], str) else None
+            else json.loads(row[3])
+            if isinstance(row[3], str)
+            else None
         ),
         "stop_reason_code": row[4] or "",
         "stop_reason": row[5] or "",

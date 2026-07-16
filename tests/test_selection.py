@@ -31,7 +31,11 @@ class EligibilityTests(unittest.TestCase):
         self.assertIn("resolved", reason)
 
     def test_blocked_hypothesis_not_eligible(self) -> None:
-        hyp = {"status": "active", "blocked_reason": "waiting for prerequisite", "next_eligible_at": None}
+        hyp = {
+            "status": "active",
+            "blocked_reason": "waiting for prerequisite",
+            "next_eligible_at": None,
+        }
         eligible, reason = check_eligibility(hyp)
         self.assertFalse(eligible)
         self.assertIn("blocked", reason)
@@ -42,13 +46,21 @@ class PriorityScoreTests(unittest.TestCase):
 
     def test_score_has_all_components(self) -> None:
         hyp = {
-            "hypothesis_id": "H-001", "description": "test", "status": "active",
-            "source_rule_ids": ["rule-1"], "selection_count": 0,
-            "last_selected_at": None, "origin": "rule",
+            "hypothesis_id": "H-001",
+            "description": "test",
+            "status": "active",
+            "source_rule_ids": ["rule-1"],
+            "selection_count": 0,
+            "last_selected_at": None,
+            "origin": "rule",
         }
         ctx = SelectionContext(
-            active_hypotheses=[hyp], relations={}, coverage={},
-            report_sections={}, open_gaps=[], objective="",
+            active_hypotheses=[hyp],
+            relations={},
+            coverage={},
+            report_sections={},
+            open_gaps=[],
+            objective="",
         )
         total, components = compute_priority_score(hyp, ctx)
         component_names = {c.name for c in components}
@@ -59,13 +71,21 @@ class PriorityScoreTests(unittest.TestCase):
 
     def test_never_selected_has_high_aging(self) -> None:
         hyp = {
-            "hypothesis_id": "H-001", "description": "test", "status": "active",
-            "source_rule_ids": [], "selection_count": 0,
-            "last_selected_at": None, "origin": "rule",
+            "hypothesis_id": "H-001",
+            "description": "test",
+            "status": "active",
+            "source_rule_ids": [],
+            "selection_count": 0,
+            "last_selected_at": None,
+            "origin": "rule",
         }
         ctx = SelectionContext(
-            active_hypotheses=[hyp], relations={}, coverage={},
-            report_sections={}, open_gaps=[], objective="",
+            active_hypotheses=[hyp],
+            relations={},
+            coverage={},
+            report_sections={},
+            open_gaps=[],
+            objective="",
         )
         _, components = compute_priority_score(hyp, ctx)
         aging = next(c for c in components if c.name == "aging")
@@ -73,18 +93,30 @@ class PriorityScoreTests(unittest.TestCase):
 
     def test_higher_selection_count_increases_penalty(self) -> None:
         hyp_new = {
-            "hypothesis_id": "H-001", "description": "test", "status": "active",
-            "source_rule_ids": [], "selection_count": 0,
-            "last_selected_at": None, "origin": "rule",
+            "hypothesis_id": "H-001",
+            "description": "test",
+            "status": "active",
+            "source_rule_ids": [],
+            "selection_count": 0,
+            "last_selected_at": None,
+            "origin": "rule",
         }
         hyp_old = {
-            "hypothesis_id": "H-002", "description": "test", "status": "active",
-            "source_rule_ids": [], "selection_count": 5,
-            "last_selected_at": None, "origin": "rule",
+            "hypothesis_id": "H-002",
+            "description": "test",
+            "status": "active",
+            "source_rule_ids": [],
+            "selection_count": 5,
+            "last_selected_at": None,
+            "origin": "rule",
         }
         ctx = SelectionContext(
-            active_hypotheses=[hyp_new, hyp_old], relations={}, coverage={},
-            report_sections={}, open_gaps=[], objective="",
+            active_hypotheses=[hyp_new, hyp_old],
+            relations={},
+            coverage={},
+            report_sections={},
+            open_gaps=[],
+            objective="",
         )
         _, comp_new = compute_priority_score(hyp_new, ctx)
         _, comp_old = compute_priority_score(hyp_old, ctx)

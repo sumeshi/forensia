@@ -165,19 +165,13 @@ def _claim_support_status(
             f"FROM hypotheses WHERE hypothesis_id IN ({placeholders})",
             tuple(hypothesis_ids),
         ).fetchall()
-        found_hypothesis_ids = {
-            str(row[0])
-            for row in hypothesis_rows
-        }
+        found_hypothesis_ids = {str(row[0]) for row in hypothesis_rows}
         if any(
             hypothesis_id not in found_hypothesis_ids
             for hypothesis_id in hypothesis_ids
         ):
             return "orphaned_reference"
-        sufficiency_states = {
-            str(row[1] or "")
-            for row in hypothesis_rows
-        }
+        sufficiency_states = {str(row[1] or "") for row in hypothesis_rows}
         if "unobservable" in sufficiency_states:
             return "unobservable"
         if any(bool(row[2]) for row in hypothesis_rows):

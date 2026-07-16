@@ -47,12 +47,18 @@ class EvidenceSourceTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 register_evidence_source(
-                    db, source_id="abc123", artifact_family="evtx",
-                    display_path="Security.evtx", ingest_status="parsed",
+                    db,
+                    source_id="abc123",
+                    artifact_family="evtx",
+                    display_path="Security.evtx",
+                    ingest_status="parsed",
                 )
                 register_evidence_source(
-                    db, source_id="abc123", artifact_family="evtx",
-                    display_path="Security.evtx", ingest_status="normalized",
+                    db,
+                    source_id="abc123",
+                    artifact_family="evtx",
+                    display_path="Security.evtx",
+                    ingest_status="normalized",
                     row_count=200,
                 )
                 row = db.execute(
@@ -66,9 +72,13 @@ class EvidenceSourceTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 register_evidence_source(
-                    db, source_id="fail1", artifact_family="mft",
-                    display_path="$MFT", ingest_status="failed",
-                    error_code="PARSE_ERROR", error_summary="corrupt file",
+                    db,
+                    source_id="fail1",
+                    artifact_family="mft",
+                    display_path="$MFT",
+                    ingest_status="failed",
+                    error_code="PARSE_ERROR",
+                    error_summary="corrupt file",
                 )
                 row = db.execute(
                     "SELECT ingest_status, error_code, error_summary FROM evidence_sources WHERE source_id = 'fail1'"
@@ -98,9 +108,13 @@ class CoverageComputationTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 register_evidence_source(
-                    db, source_id="evtx1", artifact_family="evtx",
-                    display_path="Security.evtx", ingest_status="normalized",
-                    row_count=1000, channel="Security",
+                    db,
+                    source_id="evtx1",
+                    artifact_family="evtx",
+                    display_path="Security.evtx",
+                    ingest_status="normalized",
+                    row_count=1000,
+                    channel="Security",
                 )
                 count = refresh_evidence_coverage(db)
                 self.assertGreater(count, 0)
@@ -117,9 +131,13 @@ class CoverageComputationTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 register_evidence_source(
-                    db, source_id="evtx1", artifact_family="evtx",
-                    display_path="Security.evtx", ingest_status="normalized",
-                    row_count=1, channel="Security",
+                    db,
+                    source_id="evtx1",
+                    artifact_family="evtx",
+                    display_path="Security.evtx",
+                    ingest_status="normalized",
+                    row_count=1,
+                    channel="Security",
                 )
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, source_file, channel, "
@@ -140,8 +158,11 @@ class CoverageComputationTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 register_evidence_source(
-                    db, source_id="evtx_fail", artifact_family="evtx",
-                    display_path="Security.evtx", ingest_status="failed",
+                    db,
+                    source_id="evtx_fail",
+                    artifact_family="evtx",
+                    display_path="Security.evtx",
+                    ingest_status="failed",
                     error_summary="parse error",
                 )
                 count = refresh_evidence_coverage(db)
@@ -169,8 +190,11 @@ class CoverageComputationTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 register_evidence_source(
-                    db, source_id="evtx1", artifact_family="evtx",
-                    display_path="Security.evtx", ingest_status="normalized",
+                    db,
+                    source_id="evtx1",
+                    artifact_family="evtx",
+                    display_path="Security.evtx",
+                    ingest_status="normalized",
                     row_count=500,
                 )
                 refresh_evidence_coverage(db)

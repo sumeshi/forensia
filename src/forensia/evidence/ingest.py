@@ -112,9 +112,7 @@ def ingest_all(
                 except Exception:
                     pass
                 if progress_callback:
-                    progress_callback(
-                        f"ERROR ingesting {adapter.name}: {path}: {exc}"
-                    )
+                    progress_callback(f"ERROR ingesting {adapter.name}: {path}: {exc}")
                 continue
 
             if result.raw_path is None:

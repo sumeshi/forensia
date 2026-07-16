@@ -44,16 +44,20 @@ class RelationValidationTests(unittest.TestCase):
 
     def test_self_edge_rejected(self) -> None:
         error = validate_relation(
-            from_id="H-001", to_id="H-001",
-            relation_type="parent_of", existing_relations=[],
+            from_id="H-001",
+            to_id="H-001",
+            relation_type="parent_of",
+            existing_relations=[],
         )
         self.assertIsNotNone(error)
         self.assertIn("Self-edge", error)
 
     def test_invalid_type_rejected(self) -> None:
         error = validate_relation(
-            from_id="H-001", to_id="H-002",
-            relation_type="supports", existing_relations=[],
+            from_id="H-001",
+            to_id="H-002",
+            relation_type="supports",
+            existing_relations=[],
         )
         self.assertIsNotNone(error)
         self.assertIn("Invalid", error)
@@ -61,8 +65,10 @@ class RelationValidationTests(unittest.TestCase):
     def test_duplicate_rejected(self) -> None:
         existing = [("H-001", "H-002", "parent_of")]
         error = validate_relation(
-            from_id="H-001", to_id="H-002",
-            relation_type="parent_of", existing_relations=existing,
+            from_id="H-001",
+            to_id="H-002",
+            relation_type="parent_of",
+            existing_relations=existing,
         )
         self.assertIsNotNone(error)
         self.assertIn("Duplicate", error)
@@ -70,16 +76,20 @@ class RelationValidationTests(unittest.TestCase):
     def test_symmetric_duplicate_rejected(self) -> None:
         existing = [("H-002", "H-001", "contradicts")]
         error = validate_relation(
-            from_id="H-001", to_id="H-002",
-            relation_type="contradicts", existing_relations=existing,
+            from_id="H-001",
+            to_id="H-002",
+            relation_type="contradicts",
+            existing_relations=existing,
         )
         self.assertIsNotNone(error)
         self.assertIn("Duplicate", error)
 
     def test_empty_id_rejected(self) -> None:
         error = validate_relation(
-            from_id="", to_id="H-002",
-            relation_type="parent_of", existing_relations=[],
+            from_id="",
+            to_id="H-002",
+            relation_type="parent_of",
+            existing_relations=[],
         )
         self.assertIsNotNone(error)
 
@@ -92,7 +102,9 @@ class CycleDetectionTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 has_cycle = check_cycle(
-                    db, from_id="H-001", to_id="H-002",
+                    db,
+                    from_id="H-001",
+                    to_id="H-002",
                     relation_type="parent_of",
                 )
                 self.assertFalse(has_cycle)
@@ -106,7 +118,9 @@ class CycleDetectionTests(unittest.TestCase):
                     "relation_type, origin, confidence) VALUES ('H-001', 'H-002', 'parent_of', 'code', 1.0)"
                 )
                 has_cycle = check_cycle(
-                    db, from_id="H-002", to_id="H-001",
+                    db,
+                    from_id="H-002",
+                    to_id="H-001",
                     relation_type="parent_of",
                 )
                 self.assertTrue(has_cycle)
@@ -120,7 +134,9 @@ class CycleDetectionTests(unittest.TestCase):
                     "relation_type, origin, confidence) VALUES ('H-001', 'H-002', 'contradicts', 'code', 1.0)"
                 )
                 has_cycle = check_cycle(
-                    db, from_id="H-002", to_id="H-001",
+                    db,
+                    from_id="H-002",
+                    to_id="H-001",
                     relation_type="contradicts",
                 )
                 self.assertFalse(has_cycle)
@@ -154,7 +170,9 @@ class InsertRelationTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 result = insert_relation(
-                    db, from_id="H-001", to_id="H-002",
+                    db,
+                    from_id="H-001",
+                    to_id="H-002",
                     relation_type="parent_of",
                 )
                 self.assertTrue(result)
@@ -183,7 +201,9 @@ class InsertRelationTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 insert_relation(
-                    db, from_id="H-002", to_id="H-001",
+                    db,
+                    from_id="H-002",
+                    to_id="H-001",
                     relation_type="contradicts",
                 )
                 row = db.execute(
@@ -197,11 +217,15 @@ class InsertRelationTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 insert_relation(
-                    db, from_id="H-001", to_id="H-002",
+                    db,
+                    from_id="H-001",
+                    to_id="H-002",
                     relation_type="parent_of",
                 )
                 result = insert_relation(
-                    db, from_id="H-002", to_id="H-001",
+                    db,
+                    from_id="H-002",
+                    to_id="H-001",
                     relation_type="parent_of",
                 )
                 self.assertFalse(result)
@@ -215,11 +239,15 @@ class RelationQueryTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 insert_relation(
-                    db, from_id="H-001", to_id="H-002",
+                    db,
+                    from_id="H-001",
+                    to_id="H-002",
                     relation_type="parent_of",
                 )
                 insert_relation(
-                    db, from_id="H-001", to_id="H-003",
+                    db,
+                    from_id="H-001",
+                    to_id="H-003",
                     relation_type="derived_from",
                 )
                 rels = get_relations_for_hypothesis(db, "H-001")
@@ -230,11 +258,15 @@ class RelationQueryTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 insert_relation(
-                    db, from_id="H-001", to_id="H-002",
+                    db,
+                    from_id="H-001",
+                    to_id="H-002",
                     relation_type="parent_of",
                 )
                 insert_relation(
-                    db, from_id="H-003", to_id="H-001",
+                    db,
+                    from_id="H-003",
+                    to_id="H-001",
                     relation_type="prerequisite_for",
                 )
                 adj = get_adjacent_hypotheses(db, "H-001")
@@ -246,11 +278,15 @@ class RelationQueryTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 insert_relation(
-                    db, from_id="H-001", to_id="H-002",
+                    db,
+                    from_id="H-001",
+                    to_id="H-002",
                     relation_type="parent_of",
                 )
                 insert_relation(
-                    db, from_id="H-001", to_id="H-003",
+                    db,
+                    from_id="H-001",
+                    to_id="H-003",
                     relation_type="derived_from",
                 )
                 adj = get_adjacent_hypotheses(db, "H-001", "parent_of")
@@ -269,12 +305,16 @@ class VerdictPropagationTests(unittest.TestCase):
                     "VALUES ('H-002', 'dependent', 'active', 'waiting for H-001')"
                 )
                 insert_relation(
-                    db, from_id="H-001", to_id="H-002",
+                    db,
+                    from_id="H-001",
+                    to_id="H-002",
                     relation_type="prerequisite_for",
                 )
                 actions = propagate_verdict(
-                    db, hypothesis_id="H-001",
-                    verdict="confirmed", created_session="S1",
+                    db,
+                    hypothesis_id="H-001",
+                    verdict="confirmed",
+                    created_session="S1",
                 )
                 self.assertTrue(any(a["action"] == "unblock" for a in actions))
                 row = db.execute(
@@ -287,12 +327,16 @@ class VerdictPropagationTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 insert_relation(
-                    db, from_id="H-001", to_id="H-002",
+                    db,
+                    from_id="H-001",
+                    to_id="H-002",
                     relation_type="parent_of",
                 )
                 actions = propagate_verdict(
-                    db, hypothesis_id="H-001",
-                    verdict="refuted", created_session="S1",
+                    db,
+                    hypothesis_id="H-001",
+                    verdict="refuted",
+                    created_session="S1",
                 )
                 self.assertTrue(any(a["action"] == "re_evaluate" for a in actions))
 
@@ -301,11 +345,17 @@ class VerdictPropagationTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 insert_relation(
-                    db, from_id="H-001", to_id="H-002",
+                    db,
+                    from_id="H-001",
+                    to_id="H-002",
                     relation_type="contradicts",
                 )
                 actions = propagate_verdict(
-                    db, hypothesis_id="H-001",
-                    verdict="confirmed", created_session="S1",
+                    db,
+                    hypothesis_id="H-001",
+                    verdict="confirmed",
+                    created_session="S1",
                 )
-                self.assertTrue(any(a["action"] == "flag_contradiction" for a in actions))
+                self.assertTrue(
+                    any(a["action"] == "flag_contradiction" for a in actions)
+                )

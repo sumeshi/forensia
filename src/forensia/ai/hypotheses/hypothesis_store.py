@@ -125,9 +125,7 @@ def _row_to_hypothesis(row: dict[str, Any]) -> Hypothesis:
         required_entities=[str(item) for item in required_entities if item],
         confirm_when=confirm_when if isinstance(confirm_when, dict) else None,
         evidence_requirements=(
-            evidence_requirements
-            if isinstance(evidence_requirements, dict)
-            else None
+            evidence_requirements if isinstance(evidence_requirements, dict) else None
         ),
         target_keypoint_id=row.get("target_keypoint_id"),
     )

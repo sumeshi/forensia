@@ -293,7 +293,7 @@ def inject_gap_hypotheses(
         if isinstance(section_gaps, str):
             try:
                 section_gaps = json.loads(section_gaps)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 section_gaps = []
         for section_gap in section_gaps if isinstance(section_gaps, list) else []:
             gap_sections[_normalize_text(str(section_gap))] = str(section_key or "")

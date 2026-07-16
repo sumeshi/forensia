@@ -92,9 +92,7 @@ def _update_source_status(
                 ).fetchone()
                 source_path = str(source_row[0] or "") if source_row else ""
                 lookup_path = (
-                    Path(source_path).name
-                    if source_kind == "prefetch"
-                    else source_path
+                    Path(source_path).name if source_kind == "prefetch" else source_path
                 )
                 table = {
                     "evtx": "evtx_events",
@@ -121,9 +119,7 @@ def _update_source_status(
                 max_time = metadata[2]
                 if source_kind in {"mft", "prefetch"}:
                     timeline_table = (
-                        "mft_timeline"
-                        if source_kind == "mft"
-                        else "prefetch_timeline"
+                        "mft_timeline" if source_kind == "mft" else "prefetch_timeline"
                     )
                     timestamp_column = (
                         "timestamp" if source_kind == "mft" else "exec_time"
