@@ -112,7 +112,15 @@ def _is_loopback_ip(value: str | None) -> bool:
     if value is None:
         return True
     normalized = str(value).strip().lower()
-    return normalized in {"", "-", "127.0.0.1", "::1", "localhost", "0.0.0.0", "unknown"}
+    return normalized in {
+        "",
+        "-",
+        "127.0.0.1",
+        "::1",
+        "localhost",
+        "0.0.0.0",
+        "unknown",
+    }
 
 
 def _check_required_entities_concrete(
@@ -189,7 +197,10 @@ def _check_correlation_constraints(
                 if host and str(host).strip():
                     hosts.add(str(host).strip())
             if len(hosts) > 1:
-                return False, f"same_host required but events span multiple hosts: {hosts}"
+                return (
+                    False,
+                    f"same_host required but events span multiple hosts: {hosts}",
+                )
         # If no sample rows, trust the co_observation check
 
     # within_minutes constraint
@@ -247,8 +258,7 @@ def _check_correlation_constraints(
                 for row in event_rows
             ):
                 return False, (
-                    f"event {raw_event_id} requires {field_name} in "
-                    f"{sorted(expected)}"
+                    f"event {raw_event_id} requires {field_name} in {sorted(expected)}"
                 )
 
     return True, "correlation constraints satisfied"
@@ -328,7 +338,10 @@ def decide_settlement(
         )
 
     # ── Path 2: Auto-refute (3+ consecutive zero-row inconclusive) ──
-    if si.checker_verdict == "inconclusive" and si.consecutive_zero_row_inconclusive >= 3:
+    if (
+        si.checker_verdict == "inconclusive"
+        and si.consecutive_zero_row_inconclusive >= 3
+    ):
         if si.has_rule_refute_when_zero_rows:
             return SettlementDecision(
                 verdict="refuted",
@@ -545,7 +558,7 @@ def build_settlement_input_from_confirm_when(
         for eid in raw_ids:
             try:
                 co_observed_ids.append(int(eid))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
         if co_observed_ids:
             co_satisfied, co_reason = _co_observation_satisfied(confirm_when, rows)

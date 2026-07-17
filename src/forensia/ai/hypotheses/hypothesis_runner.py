@@ -673,12 +673,15 @@ def _build_settlement_input(rs: _HypothesisRunState) -> SettlementInput:
     )
     if rows and all(is_benign_local_auth(r) for r in rows):
         si = SettlementInput(
-            hypothesis=si.hypothesis, checker_verdict=si.checker_verdict,
-            check_summary=si.check_summary, sample_rows=si.sample_rows,
+            hypothesis=si.hypothesis,
+            checker_verdict=si.checker_verdict,
+            check_summary=si.check_summary,
+            sample_rows=si.sample_rows,
             co_observed_event_ids=si.co_observed_event_ids,
             co_observation_satisfied=si.co_observation_satisfied,
             co_observation_reason=si.co_observation_reason,
-            same_host=si.same_host, within_minutes=si.within_minutes,
+            same_host=si.same_host,
+            within_minutes=si.within_minutes,
             is_benign_auth=True,
             has_rule_refute_when_zero_rows=si.has_rule_refute_when_zero_rows,
             consecutive_zero_row_inconclusive=si.consecutive_zero_row_inconclusive,
@@ -711,10 +714,14 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
     if final_verdict in {"confirmed", "refuted", "untestable"}:
         si = _build_settlement_input(rs)
         decision = settle_hypothesis(
-            db=db, si=si,
+            db=db,
+            si=si,
             evidence_requirements=hypothesis.evidence_requirements,
         )
-        _log("SETTLEMENT", f"{hypothesis.id} verdict={decision.verdict} passed={decision.gates_passed} failed={decision.gates_failed}")
+        _log(
+            "SETTLEMENT",
+            f"{hypothesis.id} verdict={decision.verdict} passed={decision.gates_passed} failed={decision.gates_failed}",
+        )
         final_verdict = decision.verdict
         check_result.verdict = final_verdict
         if not decision.allowed:

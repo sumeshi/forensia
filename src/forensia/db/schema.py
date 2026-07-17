@@ -343,6 +343,7 @@ CREATE TABLE IF NOT EXISTS evidence_coverage (
     state VARCHAR,
     reason_code VARCHAR,
     source_ids JSON,
+    excluded_timestamps JSON,
     confidence DOUBLE,
     derived_at TIMESTAMP,
     UNIQUE(capability, host, channel, source_family)

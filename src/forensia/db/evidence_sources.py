@@ -53,15 +53,23 @@ def register_evidence_source(
                 THEN evidence_sources.row_count
                 ELSE EXCLUDED.row_count
             END,
-            channel = CASE WHEN EXCLUDED.channel = '' THEN evidence_sources.channel ELSE EXCLUDED.channel END,
+            channel = CASE
+                WHEN EXCLUDED.ingest_status = 'failed' THEN evidence_sources.channel
+                ELSE EXCLUDED.channel
+            END,
             hosts = CASE
-                WHEN CAST(EXCLUDED.hosts AS VARCHAR) IN ('[]', 'null')
-                THEN evidence_sources.hosts
+                WHEN EXCLUDED.ingest_status = 'failed' THEN evidence_sources.hosts
                 ELSE EXCLUDED.hosts
             END,
             volume_id = CASE WHEN EXCLUDED.volume_id = '' THEN evidence_sources.volume_id ELSE EXCLUDED.volume_id END,
-            min_time = COALESCE(EXCLUDED.min_time, evidence_sources.min_time),
-            max_time = COALESCE(EXCLUDED.max_time, evidence_sources.max_time),
+            min_time = CASE
+                WHEN EXCLUDED.ingest_status = 'failed' THEN evidence_sources.min_time
+                ELSE EXCLUDED.min_time
+            END,
+            max_time = CASE
+                WHEN EXCLUDED.ingest_status = 'failed' THEN evidence_sources.max_time
+                ELSE EXCLUDED.max_time
+            END,
             error_code = EXCLUDED.error_code,
             error_summary = EXCLUDED.error_summary,
             updated_at = EXCLUDED.updated_at

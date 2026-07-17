@@ -188,7 +188,9 @@ def _update_source_status(
                 if table is None:
                     continue
                 metadata = db.execute(
-                    "SELECT COUNT(*), MIN(timestamp), MAX(timestamp), "
+                    "SELECT COUNT(*), "
+                    "MIN(timestamp) FILTER (WHERE EXTRACT(year FROM timestamp) BETWEEN 1980 AND 2200), "
+                    "MAX(timestamp) FILTER (WHERE EXTRACT(year FROM timestamp) BETWEEN 1980 AND 2200), "
                     "list(DISTINCT computer), list(DISTINCT channel) "
                     "FROM evtx_events WHERE source_file = ?"
                     if source_kind == "evtx"
@@ -211,7 +213,9 @@ def _update_source_status(
                         "timestamp" if source_kind == "mft" else "exec_time"
                     )
                     time_row = db.execute(
-                        f"SELECT MIN({timestamp_column}), MAX({timestamp_column}) "
+                        f"SELECT "
+                        f"MIN({timestamp_column}) FILTER (WHERE EXTRACT(year FROM {timestamp_column}) BETWEEN 1980 AND 2200), "
+                        f"MAX({timestamp_column}) FILTER (WHERE EXTRACT(year FROM {timestamp_column}) BETWEEN 1980 AND 2200) "
                         f"FROM {timeline_table} WHERE source_file = ?",
                         [lookup_path],
                     ).fetchone()

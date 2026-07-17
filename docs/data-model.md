@@ -22,11 +22,17 @@ Schema initialization is performed in `CaseDB.__init__` in [src/forensia/db/data
 | `prefetch_executions` | Prefetch aggregate (latest one per binary) | `evidence_id`, `executable_name`, `exec_count`, `last_exec_time`, `prefetch_hash`, `filenames`, `volumes`, `raw_json` |
 | `prefetch_timeline` | Prefetch execution history (up to 8 rows per binary) | `timeline_id`, `evidence_id`, `executable_name`, `prefetch_hash`, `exec_time`, `exec_index` |
 | `ingested_files` | Hash table for ingest deduplication | `path`, `hash`, `source_kind`, `ingested_at` |
-| `evidence_sources` | Authoritative per-source ingest/normalize state and scope | `source_id`, `artifact_family`, `ingest_status`, `channel`, `hosts`, `min_time`, `max_time`, `row_count`, error fields |
-| `evidence_coverage` | Deterministic capability observability projection | `capability`, `host`, `channel`, `source_family`, `state`, `reason_code`, `source_ids`, time range, `confidence` |
+| `evidence_sources` | Authoritative per-source ingest/normalize state and scope | `source_id`, `artifact_family`, `ingest_status`, `channel`, `hosts`, analysis-eligible `min_time`/`max_time`, `row_count`, error fields |
+| `evidence_coverage` | Deterministic capability observability projection | `capability`, `host`, `channel`, `source_family`, `state`, `reason_code`, `source_ids`, analysis time range, `excluded_timestamps`, `confidence` |
 | `case_timeline` | Deterministic timeline | `entry_id`, `timestamp`, `source` (`finding`/`verdict`/`structured`/`keypoint`), `ref_id`, `host`, `summary`, `evidence_id` |
 
 `case_timeline` is fed by three deterministic feeders: (a) the first-evidence timestamp of findings with severity ≥ medium (`feed_findings_to_timeline` in [rules/engine.py](../src/forensia/knowledge/rules/engine.py)), (b) the decisive query row of resolved hypotheses, and (c) the matching rows of structured answers declared with `timeline: true` in `question_routing.yaml`.
+
+Raw timestamps are retained in artifact rows and `raw_json`. Source and
+capability time ranges are a separate analysis projection governed by
+`timestamp_policy` in `artifact_capabilities.yaml`. Coverage records every
+excluded observation by reason instead of silently dropping sentinel,
+overflow, parser-invalid, or case-window outlier values.
 
 `evidence_id` is the cross-table evidence identifier. Naming conventions:
 - EVTX: `evtx-<channel>-<sequence>` (e.g. `evtx-security-000000001166`)

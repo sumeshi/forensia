@@ -64,6 +64,9 @@ class CaseDB:
         self._apply_migration_once(
             "r8_01_settlement_invariant_v2", self._apply_r8_01_settlement_invariant
         )
+        self._apply_migration_once(
+            "r8_03_coverage_lineage_v2", self._apply_r8_03_coverage_lineage
+        )
 
     def _apply_migration_once(
         self, migration_key: str, callback: Callable[[], None]
@@ -228,6 +231,7 @@ class CaseDB:
                 state VARCHAR,
                 reason_code VARCHAR,
                 source_ids JSON,
+                excluded_timestamps JSON,
                 confidence DOUBLE,
                 derived_at TIMESTAMP,
                 UNIQUE(capability, host, channel, source_family)
@@ -479,6 +483,89 @@ class CaseDB:
               )
             """
         )
+
+    def _apply_r8_03_coverage_lineage(self) -> None:
+        """Add coverage exclusion metadata and invalidate unsafe legacy lineage."""
+        self.conn.execute(
+            "ALTER TABLE evidence_coverage ADD COLUMN IF NOT EXISTS excluded_timestamps JSON"
+        )
+        # A family-wide source list is not valid capability lineage. Old rows
+        # with missing lineage must be recomputed by refresh_evidence_coverage.
+        self.conn.execute(
+            """
+            UPDATE evidence_coverage SET state = 'partial',
+                reason_code = 'lineage_recompute_required'
+            WHERE source_ids IS NULL OR CAST(source_ids AS VARCHAR) = '[]'
+            """
+        )
+        source_rows = self.conn.execute(
+            """
+            SELECT es.source_id, es.artifact_family, f.path
+            FROM evidence_sources es
+            LEFT JOIN ingested_files f ON f.sha256 = es.source_id
+            """
+        ).fetchall()
+        for source_id, family, legacy_path in source_rows:
+            if family == "evtx":
+                metadata = self.conn.execute(
+                    """
+                    SELECT COUNT(*),
+                           MIN(timestamp) FILTER (
+                               WHERE EXTRACT(year FROM timestamp) BETWEEN 1980 AND 2200
+                           ),
+                           MAX(timestamp) FILTER (
+                               WHERE EXTRACT(year FROM timestamp) BETWEEN 1980 AND 2200
+                           ),
+                           list(DISTINCT computer) FILTER (WHERE computer IS NOT NULL),
+                           list(DISTINCT channel) FILTER (WHERE channel IS NOT NULL)
+                    FROM evtx_events WHERE source_file IN (?, ?)
+                    """,
+                    [source_id, legacy_path or ""],
+                ).fetchone()
+            elif family in {"mft", "prefetch"}:
+                entry_table = (
+                    "mft_entries" if family == "mft" else "prefetch_executions"
+                )
+                timeline_table = (
+                    "mft_timeline" if family == "mft" else "prefetch_timeline"
+                )
+                timestamp_column = "timestamp" if family == "mft" else "exec_time"
+                row_count = self.conn.execute(
+                    f"SELECT COUNT(*) FROM {entry_table} WHERE source_file IN (?, ?)",
+                    [source_id, legacy_path or ""],
+                ).fetchone()[0]
+                bounds = self.conn.execute(
+                    f"""
+                    SELECT MIN({timestamp_column}) FILTER (
+                               WHERE EXTRACT(year FROM {timestamp_column}) BETWEEN 1980 AND 2200
+                           ),
+                           MAX({timestamp_column}) FILTER (
+                               WHERE EXTRACT(year FROM {timestamp_column}) BETWEEN 1980 AND 2200
+                           )
+                    FROM {timeline_table} WHERE source_file IN (?, ?)
+                    """,
+                    [source_id, legacy_path or ""],
+                ).fetchone()
+                metadata = (row_count, bounds[0], bounds[1], [], [])
+            else:
+                continue
+            channels = [str(item) for item in (metadata[4] or []) if item]
+            self.conn.execute(
+                """
+                UPDATE evidence_sources
+                SET row_count = ?, min_time = ?, max_time = ?, hosts = ?,
+                    channel = ?, updated_at = now()
+                WHERE source_id = ?
+                """,
+                [
+                    int(metadata[0] or 0),
+                    metadata[1],
+                    metadata[2],
+                    [str(item) for item in (metadata[3] or []) if item],
+                    channels[0] if len(channels) == 1 else "",
+                    source_id,
+                ],
+            )
 
     def _route_trace_write(self, query: str) -> str:
         """Rewrite unqualified INSERT/UPDATE/DELETE to use the trace schema prefix."""

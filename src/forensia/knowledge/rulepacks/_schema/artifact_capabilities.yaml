@@ -2,6 +2,16 @@
 # Each family declares what investigation capabilities it can support,
 # what channels/audit caveats exist, and negative evidence policies.
 
+# Raw timestamps remain in artifact tables. Coverage accepts only this
+# analysis projection. EVTX and Prefetch anchor the case window; filesystem
+# timestamps receive a generous margin because they may predate acquisition.
+timestamp_policy:
+  minimum_year: 1980
+  maximum_year: 2200
+  sentinel_max_year: 1970
+  reference_families: [evtx, prefetch]
+  case_window_margin_days: 3650
+
 families:
   evtx:
     display_name: "Windows Event Log"

@@ -141,7 +141,7 @@ class CoverageComputationTests(unittest.TestCase):
                 )
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, source_file, channel, "
-                    "event_id) VALUES ('evtx-1', 'Security.evtx', 'Security', 4624)"
+                    "event_id) VALUES ('evtx-1', 'evtx1', 'Security', 4624)"
                 )
                 refresh_evidence_coverage(db)
                 states = dict(

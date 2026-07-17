@@ -253,7 +253,10 @@ class SettlementGateTests(unittest.TestCase):
                 self.assertFalse(decision.allowed)
                 self.assertEqual(decision.verdict, "inconclusive")
                 self.assertTrue(
-                    any("differs across correlated events" in failure for failure in decision.gates_failed)
+                    any(
+                        "differs across correlated events" in failure
+                        for failure in decision.gates_failed
+                    )
                 )
 
     def test_unrelated_4732_4624_does_not_confirm_backdoor(self) -> None:
@@ -307,7 +310,10 @@ class SettlementGateTests(unittest.TestCase):
                 self.assertFalse(decision.allowed)
                 self.assertEqual(decision.verdict, "inconclusive")
                 self.assertTrue(
-                    any("differs across correlated events" in failure for failure in decision.gates_failed)
+                    any(
+                        "differs across correlated events" in failure
+                        for failure in decision.gates_failed
+                    )
                 )
 
 
@@ -421,12 +427,8 @@ class PositiveSettlementTests(unittest.TestCase):
                         "event_constraints": {4624: {"logon_type": ["10"]}},
                     },
                 )
-                _make_evidence_link(
-                    db, hypothesis_id="H-rdp", evidence_id="evtx-21"
-                )
-                _make_evidence_link(
-                    db, hypothesis_id="H-rdp", evidence_id="evtx-4624"
-                )
+                _make_evidence_link(db, hypothesis_id="H-rdp", evidence_id="evtx-21")
+                _make_evidence_link(db, hypothesis_id="H-rdp", evidence_id="evtx-4624")
                 decision = settle_hypothesis(
                     db,
                     SettlementInput(

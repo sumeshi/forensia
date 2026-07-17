@@ -9,16 +9,137 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from forensia.db.database import CaseDB
+from forensia.evidence.timestamp_policy import TimestampPolicy
 from forensia.knowledge.resources import schema_dir
 
 logger = logging.getLogger(__name__)
+
+
+_TIMESTAMP_TABLES = {
+    "evtx": ("evtx_events", "timestamp"),
+    "mft": ("mft_timeline", "timestamp"),
+    "prefetch": ("prefetch_timeline", "exec_time"),
+}
+
+
+def _source_file_values(db: CaseDB, source_ids: list[str]) -> list[str]:
+    """Return current stable IDs plus paths used by legacy normalized rows."""
+    if not source_ids:
+        return []
+    placeholders = ", ".join("?" for _ in source_ids)
+    legacy_paths = db.execute(
+        f"SELECT path FROM ingested_files WHERE sha256 IN ({placeholders})",
+        source_ids,
+    ).fetchall()
+    return list(
+        dict.fromkeys([*source_ids, *(str(row[0]) for row in legacy_paths if row[0])])
+    )
+
+
+def _case_evidence_window(
+    sources_by_family: dict[str, list[dict[str, Any]]],
+    reference_families: list[str],
+) -> tuple[datetime, datetime] | None:
+    """Derive the case window from higher-confidence timestamp families."""
+    starts: list[datetime] = []
+    ends: list[datetime] = []
+    for family in reference_families:
+        for source in sources_by_family.get(family, []):
+            if source["ingest_status"] not in {"normalized", "parsed"}:
+                continue
+            if source.get("min_time"):
+                starts.append(source["min_time"])
+            if source.get("max_time"):
+                ends.append(source["max_time"])
+    if not starts or not ends:
+        return None
+    return min(starts), max(ends)
+
+
+def _timestamp_stats(
+    db: CaseDB,
+    family: str,
+    source_ids: list[str],
+    policy: TimestampPolicy,
+    evidence_window: tuple[datetime, datetime] | None,
+) -> tuple[datetime | None, datetime | None, dict[str, int]]:
+    """Aggregate eligible bounds and exclusions from normalized rows.
+
+    The raw timestamp remains in its normalized artifact row; this projection is
+    used only for analysis coverage.  Querying rows here avoids promoting a
+    source-level raw MIN/MAX and reports the number of excluded observations.
+    """
+    table_spec = _TIMESTAMP_TABLES.get(family)
+    if table_spec is None or not source_ids:
+        return None, None, {}
+    table, column = table_spec
+    source_values = _source_file_values(db, source_ids)
+    placeholders = ", ".join("?" for _ in source_values)
+
+    absolute = (
+        f"EXTRACT(year FROM {column}) BETWEEN "
+        f"{policy.minimum_year} AND {policy.maximum_year}"
+    )
+    eligible = absolute
+    select_params: list[Any] = []
+    outside_expression = "0"
+    if evidence_window is not None:
+        margin = timedelta(days=policy.case_window_margin_days)
+        lower = evidence_window[0] - margin
+        upper = evidence_window[1] + margin
+        eligible = f"({absolute}) AND {column} BETWEEN ? AND ?"
+        outside_expression = (
+            f"COUNT(*) FILTER (WHERE ({absolute}) AND NOT ({column} BETWEEN ? AND ?))"
+        )
+        # ``eligible`` appears in both MIN and MAX, then the outside-window
+        # expression contributes the third pair of placeholders.
+        select_params.extend([lower, upper, lower, upper, lower, upper])
+
+    row = db.execute(
+        f"""
+        SELECT
+            MIN({column}) FILTER (WHERE {eligible}),
+            MAX({column}) FILTER (WHERE {eligible}),
+            COUNT(*) FILTER (WHERE {column} IS NULL),
+            COUNT(*) FILTER (
+                WHERE {column} IS NOT NULL
+                  AND EXTRACT(year FROM {column}) <= {policy.sentinel_max_year}
+            ),
+            COUNT(*) FILTER (
+                WHERE EXTRACT(year FROM {column}) > {policy.sentinel_max_year}
+                  AND EXTRACT(year FROM {column}) < {policy.minimum_year}
+            ),
+            COUNT(*) FILTER (
+                WHERE EXTRACT(year FROM {column}) > {policy.maximum_year}
+            ),
+            {outside_expression}
+        FROM {table}
+        WHERE source_file IN ({placeholders})
+        """,
+        [*select_params, *source_values],
+    ).fetchone()
+    if row is None:
+        return None, None, {}
+    reason_names = (
+        "parser-invalid",
+        "sentinel",
+        "pre-analysis-epoch",
+        "overflow",
+        "outside-analysis-window",
+    )
+    excluded = {
+        reason: int(count)
+        for reason, count in zip(reason_names, row[2:], strict=True)
+        if int(count or 0) > 0
+    }
+    return row[0], row[1], excluded
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -102,6 +223,8 @@ def compute_evidence_coverage(db: CaseDB) -> list[dict[str, Any]]:
     """
     capabilities = load_artifact_capabilities()
     families = capabilities.get("families", {})
+    timestamp_config = capabilities.get("timestamp_policy", {})
+    timestamp_policy = TimestampPolicy.from_mapping(timestamp_config)
 
     rows = db.execute(
         "SELECT source_id, artifact_family, ingest_status, channel, hosts, "
@@ -131,6 +254,10 @@ def compute_evidence_coverage(db: CaseDB) -> list[dict[str, Any]]:
 
     # Invariant check: normalized sources with row_count=0 but table has rows
     _check_row_count_invariant(db, sources_by_family)
+    evidence_window = _case_evidence_window(
+        sources_by_family,
+        [str(item) for item in timestamp_config.get("reference_families", [])],
+    )
 
     coverage_entries: list[dict[str, Any]] = []
     now = datetime.now(UTC)
@@ -216,12 +343,17 @@ def compute_evidence_coverage(db: CaseDB) -> list[dict[str, Any]]:
 
             event_ids = [int(item) for item in cap_config.get("event_ids", [])]
             if family == "evtx" and normalized and event_ids and not channel_reason:
-                placeholders = ", ".join("?" for _ in event_ids)
+                event_placeholders = ", ".join("?" for _ in event_ids)
+                source_values = _source_file_values(
+                    db, [str(source["source_id"]) for source in normalized]
+                )
+                source_placeholders = ", ".join("?" for _ in source_values)
                 event_count = int(
                     db.execute(
                         f"SELECT COUNT(*) FROM evtx_events WHERE lower(channel) = lower(?) "
-                        f"AND event_id IN ({placeholders})",
-                        [required_channel, *event_ids],
+                        f"AND event_id IN ({event_placeholders}) "
+                        f"AND source_file IN ({source_placeholders})",
+                        [required_channel, *event_ids, *source_values],
                     ).fetchone()[0]
                 )
                 if event_count == 0:
@@ -230,20 +362,20 @@ def compute_evidence_coverage(db: CaseDB) -> list[dict[str, Any]]:
 
             all_hosts: set[str] = set()
             all_source_ids: list[str] = []
-            min_t: datetime | None = None
-            max_t: datetime | None = None
 
             for s in normalized + empty:
                 all_source_ids.append(s["source_id"])
                 for h in s.get("hosts", []):
                     if h:
                         all_hosts.add(h)
-                t_min = s.get("min_time")
-                t_max = s.get("max_time")
-                if t_min and (min_t is None or t_min < min_t):
-                    min_t = t_min
-                if t_max and (max_t is None or t_max > max_t):
-                    max_t = t_max
+
+            min_t, max_t, excluded_timestamps = _timestamp_stats(
+                db,
+                family,
+                [s["source_id"] for s in normalized],
+                timestamp_policy,
+                evidence_window,
+            )
 
             for s in failed:
                 all_source_ids.append(s["source_id"])
@@ -261,6 +393,7 @@ def compute_evidence_coverage(db: CaseDB) -> list[dict[str, Any]]:
                     "source_ids": all_source_ids,
                     "start_time": min_t,
                     "end_time": max_t,
+                    "excluded_timestamps": excluded_timestamps,
                     "confidence": 0.9
                     if state == "available"
                     else 0.5
@@ -283,8 +416,8 @@ def refresh_evidence_coverage(db: CaseDB) -> int:
         """
         INSERT INTO evidence_coverage (
             capability, host, channel, source_family, state, reason_code,
-            source_ids, start_time, end_time, confidence, derived_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            source_ids, start_time, end_time, excluded_timestamps, confidence, derived_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             [
@@ -297,6 +430,7 @@ def refresh_evidence_coverage(db: CaseDB) -> int:
                 e["source_ids"],
                 e["start_time"],
                 e["end_time"],
+                e.get("excluded_timestamps", {}),
                 e["confidence"],
                 e["derived_at"],
             ]
@@ -309,12 +443,26 @@ def refresh_evidence_coverage(db: CaseDB) -> int:
 def get_coverage_summary(db: CaseDB) -> dict[str, Any]:
     """Get a summary of current evidence coverage for prompts/UI."""
     rows = db.execute(
-        "SELECT capability, state, reason_code, source_family FROM evidence_coverage"
+        "SELECT capability, state, reason_code, source_family, source_ids FROM evidence_coverage"
     ).fetchall()
-    summary: dict[str, dict[str, str]] = {}
-    for cap, state, reason, family in rows:
+    summary: dict[str, dict[str, Any]] = {}
+    for cap, state, reason, family, source_ids in rows:
         key = f"{family}:{cap}"
-        summary[key] = {"state": state, "reason": reason or "", "family": family}
+        # Parse source_ids if it's a JSON string
+        parsed_ids = source_ids
+        if isinstance(source_ids, str):
+            try:
+                import json
+
+                parsed_ids = json.loads(source_ids)
+            except Exception:
+                parsed_ids = []
+        summary[key] = {
+            "state": state,
+            "reason": reason or "",
+            "family": family,
+            "source_ids": parsed_ids or [],
+        }
     return summary
 
 

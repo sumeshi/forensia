@@ -50,7 +50,8 @@ def list_evidence_coverage_dto(db: CaseDB) -> list[EvidenceCoverageDTO]:
     """Return all evidence coverage entries."""
     rows = db.execute(
         "SELECT capability, host, channel, source_family, state, reason_code, "
-        "source_ids, start_time, end_time, confidence FROM evidence_coverage "
+        "source_ids, start_time, end_time, excluded_timestamps, confidence "
+        "FROM evidence_coverage "
         "ORDER BY source_family, capability"
     ).fetchall()
     return [
@@ -64,7 +65,14 @@ def list_evidence_coverage_dto(db: CaseDB) -> list[EvidenceCoverageDTO]:
             source_ids=r[6] if isinstance(r[6], list) else [],
             start_time=r[7].isoformat() if r[7] else None,
             end_time=r[8].isoformat() if r[8] else None,
-            confidence=r[9] or 0.0,
+            excluded_timestamps=(
+                r[9]
+                if isinstance(r[9], dict)
+                else json.loads(r[9])
+                if isinstance(r[9], str) and r[9]
+                else {}
+            ),
+            confidence=r[10] or 0.0,
         )
         for r in rows
     ]

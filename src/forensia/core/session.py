@@ -53,7 +53,9 @@ ENTITY_ROLES = {
 class Hypothesis(BaseModel):
     id: str
     description: str
-    status: Literal["active", "confirmed", "refuted", "untestable", "needs_review"] = "active"
+    status: Literal["active", "confirmed", "refuted", "untestable", "needs_review"] = (
+        "active"
+    )
     verdict: Literal["confirmed", "refuted", "untestable"] | None = None
     summary: str = ""
     source_rule_ids: list[str] = Field(default_factory=list)

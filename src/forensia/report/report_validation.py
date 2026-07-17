@@ -375,6 +375,141 @@ def check_sufficiency_consistency(
     return findings
 
 
+def check_coverage_lineage(
+    db: Any,
+) -> list[ValidationFinding]:
+    """R8-03: Check coverage lineage completeness.
+
+    - Available coverage entries must have at least 1 source_id
+    - Coverage start_time/end_time must not contain sentinel timestamps
+    - source_ids must trace back to actual evidence_sources
+    """
+    findings: list[ValidationFinding] = []
+    try:
+        # Check available coverage with empty source_ids
+        rows = db.execute(
+            """
+            SELECT capability, source_family, source_ids
+            FROM evidence_coverage
+            WHERE state = 'available'
+              AND (source_ids IS NULL OR CAST(source_ids AS VARCHAR) = '[]')
+            """
+        ).fetchall()
+        for row in rows:
+            findings.append(
+                ValidationFinding(
+                    "coverage_lineage",
+                    "error",
+                    f"Available coverage {row[0]} ({row[1]}) has empty source_ids",
+                    "Coverage with state=available must trace back to at least 1 evidence source",
+                )
+            )
+
+        # Check for sentinel timestamps in coverage
+        rows = db.execute(
+            """
+            SELECT capability, source_family, start_time, end_time
+            FROM evidence_coverage
+            WHERE state IN ('available', 'partial')
+              AND (
+                EXTRACT(year FROM start_time) < 1980
+                OR EXTRACT(year FROM start_time) > 2200
+                OR EXTRACT(year FROM end_time) < 1980
+                OR EXTRACT(year FROM end_time) > 2200
+              )
+            """
+        ).fetchall()
+        for row in rows:
+            findings.append(
+                ValidationFinding(
+                    "coverage_lineage",
+                    "warning",
+                    f"Coverage {row[0]} ({row[1]}) has implausible timestamps",
+                    f"start_time={row[2]}, end_time={row[3]}",
+                )
+            )
+
+        source_rows = db.execute(
+            "SELECT source_id, artifact_family, row_count, channel, hosts "
+            "FROM evidence_sources"
+        ).fetchall()
+        sources = {
+            str(row[0]): {
+                "family": str(row[1] or ""),
+                "row_count": int(row[2] or 0),
+                "channel": str(row[3] or ""),
+                "hosts": json.loads(row[4])
+                if isinstance(row[4], str)
+                else row[4] or [],
+            }
+            for row in source_rows
+        }
+
+        for source_id, source in sources.items():
+            if source["family"] != "evtx" or source["row_count"] == 0:
+                continue
+            missing = [name for name in ("channel", "hosts") if not source[name]]
+            if missing:
+                findings.append(
+                    ValidationFinding(
+                        "coverage_lineage",
+                        "warning",
+                        f"EVTX source {source_id[:12]} has incomplete metadata",
+                        f"missing={','.join(missing)}",
+                    )
+                )
+
+        # Check source_ids validity and family consistency.
+        rows = db.execute(
+            """
+            SELECT c.capability, c.source_family, c.source_ids
+            FROM evidence_coverage c
+            WHERE c.state IN ('available', 'partial')
+              AND c.source_ids IS NOT NULL
+              AND CAST(c.source_ids AS VARCHAR) != '[]'
+            """
+        ).fetchall()
+        for row in rows:
+            source_ids = row[2]
+            if isinstance(source_ids, str):
+                try:
+                    source_ids = json.loads(source_ids)
+                except json.JSONDecodeError:
+                    source_ids = []
+            if not isinstance(source_ids, list):
+                continue
+            for sid in source_ids:
+                source = sources.get(str(sid))
+                if source is None:
+                    findings.append(
+                        ValidationFinding(
+                            "coverage_lineage",
+                            "warning",
+                            f"Coverage {row[0]} references non-existent source {str(sid)[:12]}",
+                            "source_ids must reference existing evidence_sources rows",
+                        )
+                    )
+                elif source["family"] != row[1]:
+                    findings.append(
+                        ValidationFinding(
+                            "coverage_lineage",
+                            "error",
+                            f"Coverage {row[0]} references a source from another family",
+                            f"coverage={row[1]}, source={source['family']}, source_id={str(sid)[:12]}",
+                        )
+                    )
+    except Exception as exc:
+        findings.append(
+            ValidationFinding(
+                "coverage_lineage",
+                "error",
+                "Could not validate coverage lineage",
+                f"{type(exc).__name__}: {exc}",
+            )
+        )
+    return findings
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
@@ -408,6 +543,7 @@ def validate_report(
     if db is not None:
         all_findings.extend(check_sufficiency_consistency(db))
         all_findings.extend(check_persisted_section_failures(db))
+        all_findings.extend(check_coverage_lineage(db))
     if report_body:
         all_findings.extend(check_local_path_leak(report_body))
         all_findings.extend(check_fallback_stub(report_body))

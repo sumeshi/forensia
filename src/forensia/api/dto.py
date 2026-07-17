@@ -272,6 +272,7 @@ class EvidenceCoverageDTO(DTOModel):
     source_ids: list[str]
     start_time: str | None
     end_time: str | None
+    excluded_timestamps: dict[str, int]
     confidence: float
 
 
