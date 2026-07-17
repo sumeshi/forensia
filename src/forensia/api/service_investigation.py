@@ -82,7 +82,7 @@ def get_investigation_state_dto(db: CaseDB) -> InvestigationStateDTO | None:
     """Return the investigation state singleton."""
     row = db.execute(
         "SELECT state_id, objective, status, termination_policy, "
-        "stop_reason_code, stop_reason, updated_at FROM investigation_state "
+        "stop_reason_code, stop_reason, stop_summary, updated_at FROM investigation_state "
         "WHERE state_id = 'case'"
     ).fetchone()
     if not row:
@@ -100,7 +100,14 @@ def get_investigation_state_dto(db: CaseDB) -> InvestigationStateDTO | None:
         ),
         stop_reason_code=row[4] or "",
         stop_reason=row[5] or "",
-        updated_at=row[6].isoformat() if row[6] else None,
+        stop_summary=(
+            row[6]
+            if isinstance(row[6], dict)
+            else json.loads(row[6])
+            if isinstance(row[6], str) and row[6]
+            else {}
+        ),
+        updated_at=row[7].isoformat() if row[7] else None,
     )
 
 
@@ -109,7 +116,7 @@ def list_report_gaps_dto(db: CaseDB, status: str | None = None) -> list[ReportGa
     query = (
         "SELECT gap_id, section_key, block_heading, description, kind, status, "
         "source_claim_id, hypothesis_id, task_id, coverage_reason, "
-        "created_at, updated_at FROM report_gaps"
+        "origin, created_at, updated_at FROM report_gaps"
     )
     params: list[Any] = []
     if status:
@@ -129,8 +136,9 @@ def list_report_gaps_dto(db: CaseDB, status: str | None = None) -> list[ReportGa
             hypothesis_id=r[7] or "",
             task_id=r[8] or "",
             coverage_reason=r[9] or "",
-            created_at=r[10].isoformat() if r[10] else None,
-            updated_at=r[11].isoformat() if r[11] else None,
+            origin=r[10] or "section",
+            created_at=r[11].isoformat() if r[11] else None,
+            updated_at=r[12].isoformat() if r[12] else None,
         )
         for r in rows
     ]
@@ -142,7 +150,8 @@ def list_investigation_tasks_dto(
     """Return investigation tasks, optionally filtered by status."""
     query = (
         "SELECT task_id, kind, description, status, gap_id, hypothesis_id, "
-        "required_capability, reason, created_at, updated_at FROM investigation_tasks"
+        "required_capability, required_source, owner_phase, retry_condition, "
+        "blocked_reason, reason, created_at, updated_at FROM investigation_tasks"
     )
     params: list[Any] = []
     if status:
@@ -159,9 +168,13 @@ def list_investigation_tasks_dto(
             gap_id=r[4] or "",
             hypothesis_id=r[5] or "",
             required_capability=r[6] or "",
-            reason=r[7] or "",
-            created_at=r[8].isoformat() if r[8] else None,
-            updated_at=r[9].isoformat() if r[9] else None,
+            required_source=r[7] or "",
+            owner_phase=r[8] or "",
+            retry_condition=r[9] or "",
+            blocked_reason=r[10] or "",
+            reason=r[11] or "",
+            created_at=r[12].isoformat() if r[12] else None,
+            updated_at=r[13].isoformat() if r[13] else None,
         )
         for r in rows
     ]

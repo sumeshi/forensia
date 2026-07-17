@@ -47,12 +47,14 @@ def save_stop_reason(
     status: str,
     stop_reason_code: str = "",
     stop_reason: str = "",
+    stop_summary: dict[str, int] | None = None,
 ) -> None:
     """Save the investigation stop reason to investigation_state."""
     db.execute(
-        "UPDATE investigation_state SET status = ?, stop_reason_code = ?, stop_reason = ?, updated_at = now() "
+        "UPDATE investigation_state SET status = ?, stop_reason_code = ?, "
+        "stop_reason = ?, stop_summary = ?, updated_at = now() "
         "WHERE state_id = 'case'",
-        [status, stop_reason_code, stop_reason],
+        [status, stop_reason_code, stop_reason, json.dumps(stop_summary or {})],
     )
 
 
@@ -60,7 +62,8 @@ def mark_investigation_started(db: CaseDB) -> None:
     """Mark a resumed or new investigation as active without changing its objective."""
     db.execute(
         "UPDATE investigation_state SET status = 'active', stop_reason_code = NULL, "
-        "stop_reason = NULL, updated_at = now() WHERE state_id = 'case'"
+        "stop_reason = NULL, stop_summary = NULL, updated_at = now() "
+        "WHERE state_id = 'case'"
     )
 
 
@@ -68,7 +71,7 @@ def load_investigation_state(db: CaseDB) -> dict[str, Any] | None:
     """Load the investigation state singleton."""
     row = db.execute(
         "SELECT state_id, objective, status, termination_policy, "
-        "stop_reason_code, stop_reason, updated_at FROM investigation_state "
+        "stop_reason_code, stop_reason, stop_summary, updated_at FROM investigation_state "
         "WHERE state_id = 'case'"
     ).fetchone()
     if not row:
@@ -86,5 +89,12 @@ def load_investigation_state(db: CaseDB) -> dict[str, Any] | None:
         ),
         "stop_reason_code": row[4] or "",
         "stop_reason": row[5] or "",
-        "updated_at": row[6],
+        "stop_summary": (
+            row[6]
+            if isinstance(row[6], dict)
+            else json.loads(row[6])
+            if isinstance(row[6], str) and row[6]
+            else {}
+        ),
+        "updated_at": row[7],
     }

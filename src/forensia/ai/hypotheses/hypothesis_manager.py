@@ -29,6 +29,7 @@ from forensia.ai.hypotheses.hypothesis_store import (
     _upsert_hypothesis,
 )
 from forensia.ai.hypotheses.relations import propagate_verdict
+from forensia.ai.investigation.work_state import resolve_linked_work
 from forensia.core.log import log as _log
 from forensia.core.session import Hypothesis, SessionState
 from forensia.core.textutil import normalize_text as _normalize_text
@@ -387,6 +388,8 @@ def resolve_hypothesis(
                 session_id=session_id,
                 resolved_session=session_id,
             )
+            if verdict in {"confirmed", "refuted"}:
+                resolve_linked_work(db, hypothesis_id)
             # Sufficiency is independently assessed and persisted before
             # settlement.  Never rewrite it merely to agree with a verdict.
             # Propagate verdict through relations

@@ -245,20 +245,26 @@ TABLE_BLOCKS: dict[str, TableSpec] = {
     "gaps_unresolved": TableSpec(
         builder=_build_gaps_unresolved_table,
         columns=(
+            ("hypothesis_id", "Hypothesis ID"),
             ("hypothesis", "Hypothesis"),
             ("status", "State"),
             ("evidence_rows", "Evidence rows"),
             ("missing_rationale", "Missing rationale"),
             ("next_step", "Next step"),
+            ("task_id", "Task ID"),
+            ("gap_id", "Gap ID"),
         ),
     ),
     "gaps_untestable": TableSpec(
         builder=_build_gaps_untestable_table,
         columns=(
+            ("hypothesis_id", "Hypothesis ID"),
             ("hypothesis", "Hypothesis"),
             ("missing_telemetry", "Missing telemetry"),
             ("rationale", "Rationale"),
             ("next_step", "Next step"),
+            ("task_id", "Task ID"),
+            ("gap_id", "Gap ID"),
         ),
     ),
     "gaps_confirmed": TableSpec(

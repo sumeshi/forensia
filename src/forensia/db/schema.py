@@ -357,6 +357,7 @@ CREATE TABLE IF NOT EXISTS investigation_state (
     termination_policy JSON,
     stop_reason_code VARCHAR,
     stop_reason VARCHAR,
+    stop_summary JSON,
     created_at TIMESTAMP,
     updated_at TIMESTAMP
 );
@@ -372,6 +373,7 @@ CREATE TABLE IF NOT EXISTS report_gaps (
     hypothesis_id VARCHAR,
     task_id VARCHAR,
     coverage_reason VARCHAR,
+    origin VARCHAR DEFAULT 'section',
     created_at TIMESTAMP,
     updated_at TIMESTAMP
 );
@@ -386,6 +388,10 @@ CREATE TABLE IF NOT EXISTS investigation_tasks (
     gap_id VARCHAR,
     hypothesis_id VARCHAR,
     required_capability VARCHAR,
+    required_source VARCHAR,
+    owner_phase VARCHAR,
+    retry_condition VARCHAR,
+    blocked_reason VARCHAR,
     reason VARCHAR,
     created_at TIMESTAMP,
     updated_at TIMESTAMP

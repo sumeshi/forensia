@@ -33,6 +33,11 @@ from forensia.ai.investigation.investigation_session import (
     _init_session,
     sync_keypoint_cards,
 )
+from forensia.ai.investigation.work_state import (
+    classify_active_hypotheses_on_stop,
+    format_stop_reason,
+    stop_summary,
+)
 from forensia.ai.llm.llm_client import (
     LLMServerUnavailableError,
 )
@@ -170,70 +175,9 @@ def _classify_active_hypotheses_on_stop(
     db: CaseDB,
     active_hypotheses: list,
     stop_reason: str,
-) -> None:
-    """Classify active hypotheses when investigation stops.
-
-    R7-09: Instead of leaving active hypotheses unclassified, categorize each as
-    deferred (has some evidence but not confirmed), blocked (missing telemetry),
-    or needs_review (insufficient investigation). Creates investigation tasks
-    for each.
-    """
-    import hashlib
-
-    from forensia.db.query import fetch_records
-
-    for hyp in active_hypotheses:
-        hyp_id = getattr(hyp, "id", None) or getattr(hyp, "hypothesis_id", "")
-        if not hyp_id:
-            continue
-
-        # Check if hypothesis has any reasoning
-        reasoning_rows = fetch_records(
-            db,
-            "SELECT COUNT(*) AS cnt FROM hypothesis_reasoning WHERE hypothesis_id = ?",
-            (hyp_id,),
-        )
-        reasoning_count = int(reasoning_rows[0].get("cnt", 0)) if reasoning_rows else 0
-
-        # Check evidence state.  Only an authoritative unobservable assessment
-        # means telemetry is blocked; zero links alone may simply mean the
-        # investigation did not progress far enough.
-        evidence_rows = fetch_records(
-            db,
-            "SELECT COUNT(*) AS cnt FROM hypothesis_evidence WHERE hypothesis_id = ?",
-            (hyp_id,),
-        )
-        evidence_count = int(evidence_rows[0].get("cnt", 0)) if evidence_rows else 0
-        sufficiency_row = db.execute(
-            "SELECT sufficiency_status FROM hypotheses WHERE hypothesis_id = ?",
-            [hyp_id],
-        ).fetchone()
-        sufficiency_status = str(sufficiency_row[0] or "") if sufficiency_row else ""
-
-        # Classify based on investigation state
-        if reasoning_count == 0:
-            task_kind = "deferred"
-            reason = f"Not investigated before {stop_reason}"
-        elif sufficiency_status == "unobservable":
-            task_kind = "blocked"
-            reason = f"Required telemetry was unobservable before {stop_reason}"
-        elif evidence_count == 0:
-            task_kind = "needs_review"
-            reason = f"No evidence was linked before {stop_reason}"
-        else:
-            task_kind = "needs_review"
-            reason = f"Partially investigated before {stop_reason}"
-
-        # Create investigation task
-        desc = getattr(hyp, "description", "") or hyp_id
-        task_hash = hashlib.sha256(f"stop-{hyp_id}".encode()).hexdigest()[:16]
-        task_id = f"STOP-{task_hash}"
-        db.execute(
-            """INSERT INTO investigation_tasks (task_id, kind, description, status, hypothesis_id, reason, created_at, updated_at)
-               VALUES (?, ?, ?, 'open', ?, ?, now(), now())
-               ON CONFLICT (task_id) DO NOTHING""",
-            [task_id, task_kind, desc[:200], hyp_id, reason],
-        )
+) -> dict[str, int]:
+    """Backward-compatible entry point for the authoritative transition."""
+    return classify_active_hypotheses_on_stop(db, active_hypotheses, stop_reason)
 
 
 def _check_termination(
@@ -558,11 +502,13 @@ async def investigate(
         stop_reason_code = "exception"
         raise
     finally:
+        summary = stop_summary(db, len(state.active_hypotheses))
         save_stop_reason(
             db,
             status=status,
             stop_reason_code=stop_reason_code,
-            stop_reason=f"Investigation {status}",
+            stop_reason=format_stop_reason(status, stop_reason_code, summary),
+            stop_summary=summary,
         )
         memory.regenerate_timeline_from_db(db)
         signal.signal(signal.SIGINT, previous_sigint)

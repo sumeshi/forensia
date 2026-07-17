@@ -301,18 +301,20 @@ def inject_gap_hypotheses(
         placeholders = ", ".join("?" for _ in current_gap_ids)
         db.execute(
             f"UPDATE report_gaps SET status = 'resolved', updated_at = now() "
-            f"WHERE status = 'open' AND gap_id NOT IN ({placeholders})",
+            f"WHERE status = 'open' AND origin = 'section' "
+            f"AND gap_id NOT IN ({placeholders})",
             sorted(current_gap_ids),
         )
     else:
         db.execute(
             "UPDATE report_gaps SET status = 'resolved', updated_at = now() "
-            "WHERE status = 'open'"
+            "WHERE status = 'open' AND origin = 'section'"
         )
     db.execute(
         "UPDATE investigation_tasks SET status = 'resolved', updated_at = now() "
         "WHERE status = 'open' AND gap_id IN "
-        "(SELECT gap_id FROM report_gaps WHERE status = 'resolved')"
+        "(SELECT gap_id FROM report_gaps WHERE status = 'resolved' "
+        "AND origin = 'section')"
     )
     for gap in gaps:
         normalized_gap = _normalize_text(gap)
@@ -342,13 +344,14 @@ def inject_gap_hypotheses(
         # Normalize gap to report_gaps table
         section_key = gap_sections.get(normalized_gap, "")
         db.execute(
-            """INSERT INTO report_gaps (gap_id, section_key, description, kind, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, 'open', now(), now())
+            """INSERT INTO report_gaps (gap_id, section_key, description, kind, status, origin, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'open', 'section', now(), now())
                ON CONFLICT (gap_id) DO UPDATE SET
                    description = EXCLUDED.description,
                    kind = EXCLUDED.kind,
                    section_key = CASE WHEN EXCLUDED.section_key = '' THEN report_gaps.section_key ELSE EXCLUDED.section_key END,
                    status = 'open',
+                   origin = 'section',
                    updated_at = now()""",
             [gap_id, section_key, gap, gap_kind],
         )

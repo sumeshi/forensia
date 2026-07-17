@@ -67,6 +67,7 @@ class CaseDB:
         self._apply_migration_once(
             "r8_03_coverage_lineage_v2", self._apply_r8_03_coverage_lineage
         )
+        self._apply_migration_once("r8_04_work_state", self._apply_r8_04_work_state)
 
     def _apply_migration_once(
         self, migration_key: str, callback: Callable[[], None]
@@ -250,6 +251,7 @@ class CaseDB:
                 termination_policy JSON,
                 stop_reason_code VARCHAR,
                 stop_reason VARCHAR,
+                stop_summary JSON,
                 created_at TIMESTAMP,
                 updated_at TIMESTAMP
             )
@@ -268,6 +270,7 @@ class CaseDB:
                 hypothesis_id VARCHAR,
                 task_id VARCHAR,
                 coverage_reason VARCHAR,
+                origin VARCHAR DEFAULT 'section',
                 created_at TIMESTAMP,
                 updated_at TIMESTAMP
             )
@@ -289,6 +292,10 @@ class CaseDB:
                 gap_id VARCHAR,
                 hypothesis_id VARCHAR,
                 required_capability VARCHAR,
+                required_source VARCHAR,
+                owner_phase VARCHAR,
+                retry_condition VARCHAR,
+                blocked_reason VARCHAR,
                 reason VARCHAR,
                 created_at TIMESTAMP,
                 updated_at TIMESTAMP
@@ -565,6 +572,45 @@ class CaseDB:
                     channels[0] if len(channels) == 1 else "",
                     source_id,
                 ],
+            )
+
+    def _apply_r8_04_work_state(self) -> None:
+        """Add explicit Gap/Task lifecycle and machine-readable stop summary."""
+        self.conn.execute(
+            "ALTER TABLE investigation_state ADD COLUMN IF NOT EXISTS stop_summary JSON"
+        )
+        self.conn.execute(
+            "ALTER TABLE report_gaps ADD COLUMN IF NOT EXISTS origin VARCHAR DEFAULT 'section'"
+        )
+        for column_name in (
+            "required_source",
+            "owner_phase",
+            "retry_condition",
+            "blocked_reason",
+        ):
+            self.conn.execute(
+                f"ALTER TABLE investigation_tasks ADD COLUMN IF NOT EXISTS {column_name} VARCHAR"
+            )
+        self.conn.execute(
+            "UPDATE report_gaps SET origin = 'section' "
+            "WHERE COALESCE(origin, '') = '' AND COALESCE(section_key, '') != ''"
+        )
+        empty_objective = self.conn.execute(
+            "SELECT 1 FROM investigation_state WHERE state_id = 'case' "
+            "AND COALESCE(TRIM(objective), '') = ''"
+        ).fetchone()
+        if empty_objective:
+            description = "Investigation objective not configured"
+            gap_id = "GAP-" + hashlib.sha256(description.encode()).hexdigest()[:16]
+            self.conn.execute(
+                """
+                INSERT INTO report_gaps (
+                    gap_id, description, kind, status, origin, created_at, updated_at
+                ) VALUES (?, ?, 'configuration', 'open', 'configuration', now(), now())
+                ON CONFLICT (gap_id) DO UPDATE SET
+                    status = 'open', origin = 'configuration', updated_at = now()
+                """,
+                [gap_id, description],
             )
 
     def _route_trace_write(self, query: str) -> str:

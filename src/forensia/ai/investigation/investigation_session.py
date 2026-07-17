@@ -21,6 +21,10 @@ from forensia.ai.hypotheses.seeding import (
     _seed_rule_hypotheses,
     seed_findings,
 )
+from forensia.ai.investigation.work_state import (
+    ensure_objective_gap,
+    reopen_retryable_work,
+)
 from forensia.ai.llm.llm_client import (
     LLMServerUnavailableError,
     chat_completion,
@@ -38,6 +42,7 @@ from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
 from forensia.db.investigation_state import (
     ensure_investigation_state,
+    load_investigation_state,
     mark_investigation_started,
 )
 from forensia.knowledge.coverage import refresh_evidence_coverage
@@ -425,6 +430,9 @@ def _init_session(
     if profile_config:
         objective = profile_config.get("objective", "")
     ensure_investigation_state(db, objective=objective)
+    persisted_investigation = load_investigation_state(db) or {}
+    ensure_objective_gap(db, str(persisted_investigation.get("objective") or ""))
+    reopen_retryable_work(db)
     mark_investigation_started(db)
     llm_logger = LLMCallLogger(case, session_id)
     active_hypotheses, resolved_hypotheses = load_persisted_hypotheses(db)

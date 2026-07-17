@@ -156,6 +156,14 @@ Main stages:
 6. **relate/resolve**: Checker-derived hypotheses receive validated parent edges. Verdict effects unblock, block or flag adjacent hypotheses without changing them to an incompatible status.
 7. **report/gaps**: Refreshes Claims and sections, synchronizes normalized Gap/Task lifecycle, and projects authoritative tasks into Markdown Memory.
 
+On termination, active hypotheses are atomically classified as `deferred`,
+`blocked`, `needs_review`, or `untestable`; none remain silently active. Each
+classification creates a bidirectionally linked Gap and Task with a persisted
+retry condition. A later ingest reactivates only work whose required capability
+or source condition became satisfiable. The stop reason code remains stable for
+automation, while classification counts are stored separately in
+`investigation_state.stop_summary`.
+
 For the input/output schema of each LLM role, see [llm-roles.md](llm-roles.md).
 
 **Additional behavior:**

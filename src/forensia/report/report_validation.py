@@ -510,6 +510,94 @@ def check_coverage_lineage(
     return findings
 
 
+def check_work_state_consistency(db: Any) -> list[ValidationFinding]:
+    """Validate the Gap/Task/Hypothesis state-machine invariants."""
+    findings: list[ValidationFinding] = []
+    try:
+        state = db.execute(
+            "SELECT objective, status FROM investigation_state WHERE state_id = 'case'"
+        ).fetchone()
+        if state and str(state[1] or "") == "stopped":
+            active = db.execute(
+                "SELECT hypothesis_id FROM hypotheses WHERE status = 'active'"
+            ).fetchall()
+            for (hypothesis_id,) in active:
+                findings.append(
+                    ValidationFinding(
+                        "work_state",
+                        "error",
+                        f"Stopped case retains active hypothesis {hypothesis_id}",
+                        "Terminal classification must create linked deferred/blocked/review work",
+                    )
+                )
+        if state and not str(state[0] or "").strip():
+            gap = db.execute(
+                "SELECT 1 FROM report_gaps WHERE origin = 'configuration' "
+                "AND kind = 'configuration' AND status = 'open' LIMIT 1"
+            ).fetchone()
+            if not gap:
+                findings.append(
+                    ValidationFinding(
+                        "work_state",
+                        "error",
+                        "Investigation objective is empty without a configuration gap",
+                    )
+                )
+
+        missing_work = db.execute(
+            """
+            SELECT h.hypothesis_id, h.status
+            FROM hypotheses h
+            LEFT JOIN investigation_tasks t
+              ON t.hypothesis_id = h.hypothesis_id
+             AND t.status IN ('open', 'in_progress')
+            WHERE h.status IN ('deferred', 'blocked', 'needs_review', 'untestable')
+              AND t.task_id IS NULL
+              AND EXISTS (
+                  SELECT 1 FROM investigation_state s
+                  WHERE s.state_id = 'case' AND s.status = 'stopped'
+              )
+            """
+        ).fetchall()
+        for hypothesis_id, status in missing_work:
+            findings.append(
+                ValidationFinding(
+                    "work_state",
+                    "error",
+                    f"Classified hypothesis {hypothesis_id} ({status}) has no open Task",
+                )
+            )
+
+        broken_links = db.execute(
+            """
+            SELECT g.gap_id, g.task_id, t.gap_id
+            FROM report_gaps g
+            LEFT JOIN investigation_tasks t ON t.task_id = g.task_id
+            WHERE g.task_id IS NOT NULL
+              AND (t.task_id IS NULL OR COALESCE(t.gap_id, '') != g.gap_id)
+            """
+        ).fetchall()
+        for gap_id, task_id, task_gap_id in broken_links:
+            findings.append(
+                ValidationFinding(
+                    "work_state",
+                    "error",
+                    f"Gap/Task link mismatch for {gap_id}",
+                    f"gap.task_id={task_id}, task.gap_id={task_gap_id}",
+                )
+            )
+    except Exception as exc:
+        findings.append(
+            ValidationFinding(
+                "work_state",
+                "error",
+                "Could not validate investigation work state",
+                f"{type(exc).__name__}: {exc}",
+            )
+        )
+    return findings
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
@@ -544,6 +632,7 @@ def validate_report(
         all_findings.extend(check_sufficiency_consistency(db))
         all_findings.extend(check_persisted_section_failures(db))
         all_findings.extend(check_coverage_lineage(db))
+        all_findings.extend(check_work_state_consistency(db))
     if report_body:
         all_findings.extend(check_local_path_leak(report_body))
         all_findings.extend(check_fallback_stub(report_body))

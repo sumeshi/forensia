@@ -235,6 +235,14 @@ Only when verdict==confirmed is `build_finding_extractor_messages` invoked to ex
 
 `refuted` (disproven by evidence) and `untestable` (cannot be verified because required telemetry is absent) are distinguished, and untestable ones are listed in the report's Gap section with the missing telemetry.
 
+When the investigation reaches a stop condition, `work_state.py` transitions
+every still-active hypothesis into `deferred`, `blocked`, `needs_review`, or
+`untestable` and creates the linked normalized Gap/Task records. Section refresh
+only resolves gaps with `origin=section`; it cannot accidentally close
+configuration or termination gaps. On a later session, persisted retry
+conditions are evaluated after Coverage refresh, and only affected hypotheses
+return to `active`. Conclusive resolution closes their linked work records.
+
 `query_fingerprint` canonicalizes the sqlglot AST and hashes it together with event_id / computer markers. It absorbs whitespace and alias differences. When sqlglot is unavailable, it falls back to string normalization.
 
 `_merge_active_hypotheses` enforces `MAX_ACTIVE_HYPOTHESES = 8`. Updates to existing hypotheses do not count toward the limit; only new entries beyond the cap are dropped (`[CAP]` log).

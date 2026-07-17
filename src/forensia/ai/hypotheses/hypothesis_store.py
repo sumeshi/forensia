@@ -145,9 +145,20 @@ def load_persisted_hypotheses(db: CaseDB) -> tuple[list[Hypothesis], list[Hypoth
     )
     active: list[Hypothesis] = []
     resolved: list[Hypothesis] = []
+    terminal_work_ids = {
+        str(row[0])
+        for row in db.execute(
+            "SELECT hypothesis_id FROM investigation_tasks "
+            "WHERE owner_phase = 'termination' AND status = 'open' "
+            "AND hypothesis_id IS NOT NULL"
+        ).fetchall()
+    }
     for row in rows:
         hypothesis = _row_to_hypothesis(row)
-        if hypothesis.status == "active" or hypothesis.status == "needs_review":
+        if hypothesis.status == "active" or (
+            hypothesis.status == "needs_review"
+            and hypothesis.id not in terminal_work_ids
+        ):
             active.append(hypothesis)
         else:
             resolved.append(hypothesis)

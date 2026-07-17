@@ -87,10 +87,12 @@ def _has_antiforensic_executions(db: CaseDB) -> bool:
 
 
 def _hypothesis_rows(
-    db: CaseDB, status: str | None = None, limit: int = 12
+    db: CaseDB, status: str | tuple[str, ...] | None = None, limit: int = 12
 ) -> list[dict[str, Any]]:
-    where = "WHERE h.status = ?" if status else ""
-    params: tuple[Any, ...] = (status, limit) if status else (limit,)
+    statuses = (status,) if isinstance(status, str) else status or ()
+    placeholders = ", ".join("?" for _ in statuses)
+    where = f"WHERE h.status IN ({placeholders})" if statuses else ""
+    params: tuple[Any, ...] = (*statuses, limit)
     return fetch_records(
         db,
         f"""
@@ -121,39 +123,46 @@ def _hypothesis_rows(
 
 
 def _build_gaps_unresolved_table(db: CaseDB) -> list[dict[str, Any]]:
-    all_rows = _hypothesis_rows(db, "active", 20)
-    investigated = [r for r in all_rows if int(r.get("reasoning_count") or 0) > 0]
-    untouched = [r for r in all_rows if int(r.get("reasoning_count") or 0) == 0]
+    all_rows = _hypothesis_rows(
+        db, ("active", "deferred", "blocked", "needs_review"), 20
+    )
+
+    work_by_hypothesis = {
+        str(row[0]): {
+            "kind": str(row[1] or ""),
+            "task_id": str(row[2] or ""),
+            "gap_id": str(row[3] or ""),
+            "reason": str(row[4] or ""),
+        }
+        for row in db.execute(
+            "SELECT hypothesis_id, kind, task_id, gap_id, reason "
+            "FROM investigation_tasks WHERE status IN ('open', 'in_progress') "
+            "AND hypothesis_id IS NOT NULL"
+        ).fetchall()
+    }
 
     result: list[dict[str, Any]] = []
-    for row in investigated:
-        description = str(row.get("description") or row.get("hypothesis_id") or "")[
-            :120
-        ]
+    for row in all_rows:
+        hyp_id = str(row.get("hypothesis_id") or "")
+        description = str(row.get("description") or hyp_id or "")[:120]
         latest = str(row.get("latest_reasoning") or "").strip()
         needed = _extract_needed_evidence(row.get("latest_reasoning"))
         if latest and latest[:80] == description[:80]:
             latest = ""
+        work = work_by_hypothesis.get(hyp_id, {})
+        status = str(work.get("kind") or row.get("status") or "") or str(
+            row.get("latest_verdict") or row.get("verdict") or "inconclusive"
+        )
         result.append(
             {
+                "hypothesis_id": hyp_id,
                 "hypothesis": description,
-                "status": str(
-                    row.get("latest_verdict") or row.get("verdict") or "inconclusive"
-                ),
+                "status": status,
                 "evidence_rows": row.get("reasoning_count"),
                 "missing_rationale": latest,
-                "next_step": needed if needed else "",
-            }
-        )
-
-    if untouched:
-        result.append(
-            {
-                "hypothesis": f"{len(untouched)} drafted hypotheses not yet investigated",
-                "status": "not started",
-                "evidence_rows": 0,
-                "missing_rationale": "",
-                "next_step": "",
+                "next_step": needed if needed else str(work.get("reason") or ""),
+                "task_id": str(work.get("task_id") or ""),
+                "gap_id": str(work.get("gap_id") or ""),
             }
         )
 
@@ -163,19 +172,30 @@ def _build_gaps_unresolved_table(db: CaseDB) -> list[dict[str, Any]]:
 def _build_gaps_untestable_table(db: CaseDB) -> list[dict[str, Any]]:
     """Untestable hypotheses: transform raw rows into schema-matched columns."""
     rows = _hypothesis_rows(db, "untestable", 8)
+    work_by_hypothesis = {
+        str(item[0]): (str(item[1] or ""), str(item[2] or ""))
+        for item in db.execute(
+            "SELECT hypothesis_id, task_id, gap_id FROM investigation_tasks "
+            "WHERE status IN ('open', 'in_progress') "
+            "AND hypothesis_id IS NOT NULL"
+        ).fetchall()
+    }
     result: list[dict[str, Any]] = []
     for row in rows:
+        hypothesis_id = str(row.get("hypothesis_id") or "")
+        task_id, gap_id = work_by_hypothesis.get(hypothesis_id, ("", ""))
         needed = _extract_needed_evidence(row.get("latest_reasoning"))
         result.append(
             {
-                "hypothesis": str(
-                    row.get("description") or row.get("hypothesis_id") or ""
-                )[:120],
+                "hypothesis_id": hypothesis_id,
+                "hypothesis": str(row.get("description") or hypothesis_id)[:120],
                 "missing_telemetry": needed if needed else "",
                 "rationale": str(row.get("latest_reasoning") or "")[:200],
                 "next_step": "acquire missing telemetry"
                 if needed
                 else "re-evaluate with available data",
+                "task_id": task_id,
+                "gap_id": gap_id,
             }
         )
     return result

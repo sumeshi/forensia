@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DTOModel(BaseModel):
@@ -283,6 +283,7 @@ class InvestigationStateDTO(DTOModel):
     termination_policy: dict | None
     stop_reason_code: str
     stop_reason: str
+    stop_summary: dict[str, int] = Field(default_factory=dict)
     updated_at: str | None
 
 
@@ -297,6 +298,7 @@ class ReportGapDTO(DTOModel):
     hypothesis_id: str
     task_id: str
     coverage_reason: str
+    origin: str = "section"
     created_at: str | None
     updated_at: str | None
 
@@ -309,6 +311,10 @@ class InvestigationTaskDTO(DTOModel):
     gap_id: str
     hypothesis_id: str
     required_capability: str
+    required_source: str = ""
+    owner_phase: str = ""
+    retry_condition: str = ""
+    blocked_reason: str = ""
     reason: str
     created_at: str | None
     updated_at: str | None
