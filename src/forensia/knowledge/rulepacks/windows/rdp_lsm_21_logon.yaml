@@ -28,6 +28,10 @@ hypotheses:
     - 4624
     same_host: true
     within_minutes: 5
+    event_constraints:
+      4624:
+        logon_type:
+        - '10'
   refute_when:
     zero_rows: true
   follow_up_questions:

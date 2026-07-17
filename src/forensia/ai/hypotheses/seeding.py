@@ -6,6 +6,7 @@ import json
 import re
 from typing import Any
 
+from forensia.ai.checking.settlement import SettlementInput, settle_hypothesis
 from forensia.ai.hypotheses.hypothesis_manager import merge_active_hypotheses
 from forensia.core.case import Case
 from forensia.core.log import log as _log
@@ -244,19 +245,26 @@ def prescreen_telemetry_availability(
                 f"{hyp.id} — untestable (pre-screen): required event IDs [{id_list}] "
                 f"are not present in the available telemetry",
             )
-            resolve_hypothesis(
-                db=db,
-                state=state,
-                hypothesis_id=hyp.id,
-                verdict="untestable",
-                summary=(
-                    f"Untestable: verification requires event IDs [{id_list}] "
-                    "which are not present in the available telemetry — "
-                    "absence of telemetry is not a disproof."
+            decision = settle_hypothesis(
+                db,
+                SettlementInput(
+                    hypothesis=hyp,
+                    checker_verdict="inconclusive",
+                    check_summary="pre-screened against available telemetry",
+                    unavailable_missing_event_ids=sorted(required_ids),
                 ),
-                session_id=session_id,
             )
-            screened += 1
+            if decision.allowed and decision.verdict == "untestable":
+                with db.transaction():
+                    resolve_hypothesis(
+                        db=db,
+                        state=state,
+                        hypothesis_id=hyp.id,
+                        verdict=decision.verdict,
+                        summary=decision.reason,
+                        session_id=session_id,
+                    )
+                screened += 1
     if screened:
         _log(
             "HYPOTHESIS",

@@ -288,7 +288,69 @@ def resolve_hypothesis(
     session_id: str,
     sample_rows: list[dict[str, Any]] | None = None,
 ) -> None:
-    """Mark a hypothesis as confirmed or refuted, generate follow-ups, and mark stale sections."""
+    """Mark a hypothesis as confirmed or refuted, generate follow-ups, and mark stale sections.
+
+    R8-01: Enforces DB invariants:
+    - confirmed requires sufficiency_status == 'sufficient'
+    - confirmed requires at least 1 supporting EvidenceLink
+    If invariants are violated, the hypothesis is set to needs_review instead.
+    """
+
+    # R8-01: DB invariant enforcement for confirmed verdicts
+    needs_review_blocked = False
+    if verdict == "confirmed":
+        from forensia.ai.checking.sufficiency import load_evidence_links
+
+        # Check sufficiency invariant
+        suff_row = db.execute(
+            "SELECT sufficiency_status FROM hypotheses WHERE hypothesis_id = ?",
+            (hypothesis_id,),
+        ).fetchone()
+        suff_status = str(suff_row[0]) if suff_row else "unknown"
+        if suff_status != "sufficient":
+            _log(
+                "INVARIANT",
+                f"{hypothesis_id} confirmed blocked: sufficiency_status={suff_status}",
+            )
+            needs_review_blocked = True
+            summary = (
+                f"[invariant] Confirmed blocked: sufficiency_status={suff_status}. "
+                f"Original: {summary}"
+            )
+
+        # Check EvidenceLink invariant
+        links = load_evidence_links(db, hypothesis_id)
+        supporting = [l for l in links if l.role == "supporting"]
+        if not supporting:
+            _log(
+                "INVARIANT",
+                f"{hypothesis_id} confirmed blocked: no supporting evidence links",
+            )
+            needs_review_blocked = True
+            summary = (
+                f"[invariant] Confirmed blocked: no supporting EvidenceLink. "
+                f"Original: {summary}"
+            )
+
+    # If invariant blocked, set to needs_review and keep in active set
+    if needs_review_blocked:
+        for item in state.active_hypotheses:
+            if item.id == hypothesis_id:
+                item.status = "needs_review"
+                item.verdict = None
+                item.summary = summary
+                _upsert_hypothesis(
+                    db=db,
+                    hypothesis=item,
+                    origin="invariant_blocked",
+                    session_id=session_id,
+                )
+                _log(
+                    "RESOLVE",
+                    f"{hypothesis_id} — needs_review (invariant blocked confirmed)",
+                )
+                break
+        return
 
     remaining: list[Hypothesis] = []
     stale_sections: list[str] = []

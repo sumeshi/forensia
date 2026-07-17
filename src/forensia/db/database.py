@@ -61,6 +61,9 @@ class CaseDB:
         self._apply_migration_once(
             "harness_state_v2_backfill", self._apply_harness_state_v2_backfill
         )
+        self._apply_migration_once(
+            "r8_01_settlement_invariant_v2", self._apply_r8_01_settlement_invariant
+        )
 
     def _apply_migration_once(
         self, migration_key: str, callback: Callable[[], None]
@@ -436,6 +439,46 @@ class CaseDB:
                     "ON CONFLICT (gap_id) DO NOTHING",
                     [gap_id, section_key, text],
                 )
+
+    def _apply_r8_01_settlement_invariant(self) -> None:
+        """R8-01: Re-queue confirmed + insufficient hypotheses as needs_review.
+
+        Legacy cases may have hypotheses that were auto-confirmed without
+        passing through the sufficiency gate.  These must be re-evaluated
+        through the new unified settlement gate.
+        """
+        # Re-queue confirmed hypotheses that have non-sufficient sufficiency_status
+        self.conn.execute(
+            """
+            UPDATE hypotheses
+            SET status = 'needs_review',
+                verdict = NULL,
+                resolved_session = NULL,
+                human_review_required = TRUE,
+                summary = '[R8-01 migration] ' || COALESCE(summary, ''),
+                updated_at = now()
+            WHERE status = 'confirmed'
+              AND COALESCE(sufficiency_status, '') != 'sufficient'
+            """
+        )
+        # Re-queue confirmed hypotheses that have no supporting evidence links
+        self.conn.execute(
+            """
+            UPDATE hypotheses
+            SET status = 'needs_review',
+                verdict = NULL,
+                resolved_session = NULL,
+                human_review_required = TRUE,
+                summary = '[R8-01 migration] no supporting EvidenceLink. ' || COALESCE(summary, ''),
+                updated_at = now()
+            WHERE status = 'confirmed'
+              AND hypothesis_id NOT IN (
+                  SELECT DISTINCT hypothesis_id
+                  FROM hypothesis_evidence
+                  WHERE role = 'supporting'
+              )
+            """
+        )
 
     def _route_trace_write(self, query: str) -> str:
         """Rewrite unqualified INSERT/UPDATE/DELETE to use the trace schema prefix."""

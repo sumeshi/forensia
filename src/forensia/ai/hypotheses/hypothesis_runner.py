@@ -14,6 +14,11 @@ from forensia.ai.case_profile import (
 )
 from forensia.ai.checking.check_normalize import summarize_query_result
 from forensia.ai.checking.checker import check_query_result
+from forensia.ai.checking.settlement import (
+    SettlementInput,
+    build_settlement_input_from_confirm_when,
+    settle_hypothesis,
+)
 from forensia.ai.checking.sufficiency import (
     assess_and_persist_sufficiency,
     create_evidence_links_for_query,
@@ -42,7 +47,6 @@ from forensia.ai.investigation.progress import (
     HypothesisProgressTracker,
     query_fingerprint,
 )
-from forensia.ai.prompts.prompt_playbook import resolve_rule_context
 from forensia.core.case import Case
 from forensia.core.log import log as _log
 from forensia.core.memory import MemoryManager
@@ -649,8 +653,48 @@ def _apply_sufficiency_guard(rs: _HypothesisRunState) -> None:
         rs.state.history[-1].verdict = final_verdict
 
 
+def _build_settlement_input(rs: _HypothesisRunState) -> SettlementInput:
+    """Construct the SettlementInput from current run state."""
+    from forensia.report.benign_auth import is_benign_local_auth
+
+    rows = rs.rows or []
+    unavailable_ids = _unavailable_missing_event_ids(
+        rs.missing_checks_raw or [], get_profile_event_ids()
+    )
+    si = build_settlement_input_from_confirm_when(
+        hypothesis=rs.hypothesis,
+        checker_verdict=rs.check_result.verdict,
+        check_summary=rs.check_result.report_text or "",
+        sample_rows=rows or None,
+        has_rule_refute_when_zero_rows=_has_zero_rows_refute_condition(rs.hypothesis),
+        consecutive_zero_row_inconclusive=rs.tracker.zero_row_inconclusive_count,
+        consecutive_same_missing=rs.tracker.consecutive_same_missing,
+        unavailable_missing_event_ids=unavailable_ids or None,
+    )
+    if rows and all(is_benign_local_auth(r) for r in rows):
+        si = SettlementInput(
+            hypothesis=si.hypothesis, checker_verdict=si.checker_verdict,
+            check_summary=si.check_summary, sample_rows=si.sample_rows,
+            co_observed_event_ids=si.co_observed_event_ids,
+            co_observation_satisfied=si.co_observation_satisfied,
+            co_observation_reason=si.co_observation_reason,
+            same_host=si.same_host, within_minutes=si.within_minutes,
+            is_benign_auth=True,
+            has_rule_refute_when_zero_rows=si.has_rule_refute_when_zero_rows,
+            consecutive_zero_row_inconclusive=si.consecutive_zero_row_inconclusive,
+            consecutive_same_missing=si.consecutive_same_missing,
+            unavailable_missing_event_ids=si.unavailable_missing_event_ids,
+        )
+    return si
+
+
 def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
-    """Hypothesis settlement and memory reflection for the check verdict."""
+    """Hypothesis settlement and memory reflection for the check verdict.
+
+    R8-01: For confirmed verdicts, ALL settlement must go through the unified
+    ``settle_hypothesis`` gate.  The sufficiency guard is run for
+    non-settlement paths (inconclusive/newlead) to persist sufficiency metadata.
+    """
     check_result, state, db = rs.check_result, rs.state, rs.db
     session_id, hypothesis, memory = rs.session_id, rs.hypothesis, rs.memory
     planned_query, rows = rs.planned_query, rs.rows
@@ -658,9 +702,25 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
     plan_cycle, query_index = rs.plan_cycle, rs.query_index
     emit_fn, focus_sections = rs.emit_fn, rs.focus_sections
     state.history = state.history[-50:]
+
+    # Persist and reconcile machine sufficiency exactly once before any
+    # settlement decision.  In particular, a checker ``refuted`` verdict may
+    # become inconclusive when no contradictory evidence supports it.
     _apply_sufficiency_guard(rs)
+    final_verdict = check_result.verdict
+    if final_verdict in {"confirmed", "refuted", "untestable"}:
+        si = _build_settlement_input(rs)
+        decision = settle_hypothesis(
+            db=db, si=si,
+            evidence_requirements=hypothesis.evidence_requirements,
+        )
+        _log("SETTLEMENT", f"{hypothesis.id} verdict={decision.verdict} passed={decision.gates_passed} failed={decision.gates_failed}")
+        final_verdict = decision.verdict
+        check_result.verdict = final_verdict
+        if not decision.allowed:
+            _log("SETTLEMENT", f"{hypothesis.id} confirmed BLOCKED: {decision.reason}")
+
     if check_result.new_hypotheses:
-        # --- Unified admission gate (G-5) ---
         admitted = []
         for hyp in check_result.new_hypotheses:
             ok, reason = admit_new_hypothesis(hyp, state)
@@ -694,22 +754,23 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
                     rationale="Checker-derived follow-up hypothesis",
                     created_session=session_id,
                 )
-    if check_result.verdict in {"confirmed", "refuted", "untestable"}:
-        resolve_hypothesis(
-            db=db,
-            state=state,
-            hypothesis_id=hypothesis.id,
-            verdict=check_result.verdict,
-            summary=check_result.report_text,
-            session_id=session_id,
-            sample_rows=rows,
-        )
+    if final_verdict in {"confirmed", "refuted", "untestable"}:
+        with db.transaction():
+            resolve_hypothesis(
+                db=db,
+                state=state,
+                hypothesis_id=hypothesis.id,
+                verdict=final_verdict,
+                summary=check_result.report_text,
+                session_id=session_id,
+                sample_rows=rows,
+            )
         _log(
             "RESOLVE",
-            f"{hypothesis.id} — {check_result.verdict} (resolved={len(state.resolved_hypotheses)})",
+            f"{hypothesis.id} — {final_verdict} (resolved={len(state.resolved_hypotheses)})",
         )
         rs.cycle_progress = True
-    elif check_result.verdict == "newlead" or check_result.progress:
+    elif final_verdict == "newlead" or check_result.progress:
         rs.cycle_progress = True
         _upsert_hypothesis(
             db=db,
@@ -751,11 +812,11 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
         memory.compact_oversized_with_llm(base_url=base_url, model=model)
     except Exception as exc:
         _log("MEMORY", f"compaction failed: {exc}", level="warning")
-    if check_result.verdict == "confirmed":
+    if final_verdict == "confirmed":
         memory.promote_hypothesis_scratch(hypothesis.id)
-    elif check_result.verdict == "refuted":
+    elif final_verdict == "refuted":
         memory.archive_hypothesis_scratch(hypothesis.id)
-    elif check_result.verdict == "untestable":
+    elif final_verdict == "untestable":
         memory.archive_untestable_hypothesis_scratch(hypothesis.id)
     ctx_refresh_caches(
         ctx,
@@ -777,7 +838,7 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
             "query_id": planned_query.query_id,
         },
         output_json={
-            "verdict": check_result.verdict,
+            "verdict": final_verdict,
             "active_hypotheses": [h.model_dump() for h in state.active_hypotheses],
             "resolved_hypotheses": [h.model_dump() for h in state.resolved_hypotheses],
         },
@@ -786,7 +847,7 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
     if emit_fn:
         emit_fn(
             "investigate/act",
-            f"[act] {hypothesis.id}: verdict={check_result.verdict} resolved={len(state.resolved_hypotheses)}",
+            f"[act] {hypothesis.id}: verdict={final_verdict} resolved={len(state.resolved_hypotheses)}",
             iteration=plan_cycle,
             report_kw={"focus_sections": focus_sections},
         )
@@ -814,116 +875,51 @@ def _phase_track_progress(rs: _HypothesisRunState) -> None:
 
 
 def _phase_auto_resolve(rs: _HypothesisRunState) -> str:
-    """Deterministic auto-resolution: untestable/pivot/auto-refute/confirm."""
-    check_result, tracker, hypothesis = rs.check_result, rs.tracker, rs.hypothesis
+    """Deterministic auto-resolution: untestable/pivot/auto-refute/confirm.
+
+    R8-01: ALL settlement paths route through the unified ``settle_hypothesis``
+    gate.  Direct calls to ``resolve_hypothesis`` are prohibited.
+    """
+    tracker, hypothesis = rs.tracker, rs.hypothesis
     state, db, session_id = rs.state, rs.db, rs.session_id
-    rows, missing_checks_raw = rs.rows, rs.missing_checks_raw
-    # T-05b: when the only missing evidence is event IDs the case telemetry
-    # cannot contain, resolve untestable now instead of looping 3 cycles.
-    if check_result.verdict == "inconclusive":
-        unavailable_ids = _unavailable_missing_event_ids(
-            missing_checks_raw, get_profile_event_ids()
-        )
-        if unavailable_ids:
-            id_list = ", ".join(str(eid) for eid in unavailable_ids)
-            _log(
-                "RESOLVE",
-                f"{hypothesis.id} — untestable: missing event IDs [{id_list}] are not in case telemetry",
-            )
-            resolve_hypothesis(
-                db=db,
-                state=state,
-                hypothesis_id=hypothesis.id,
-                verdict="untestable",
-                summary=f"Untestable: verification requires event IDs [{id_list}] which are not present in the available telemetry — absence of telemetry is not a disproof.",
-                session_id=session_id,
-            )
-            rs.cycle_progress = True
-            return "break"
+
     if tracker.should_pivot():
         _log(
             "PIVOT",
             f"{hypothesis.id} — duplicate query fingerprint detected, auto-exhausted",
         )
         return "break"
-    rule_context = resolve_rule_context(hypothesis)
-    partial_confirm_signal = tracker.has_partial_confirm_signal(
-        rule_context, rows, hypothesis
+
+    # Build the unified settlement input
+    si = _build_settlement_input(rs)
+    decision = settle_hypothesis(
+        db=db,
+        si=si,
+        evidence_requirements=hypothesis.evidence_requirements,
     )
-    if (
-        tracker.should_auto_refute(consecutive_threshold=3)
-        and not partial_confirm_signal
-    ):
-        has_rule_refute = _has_zero_rows_refute_condition(hypothesis)
-        if has_rule_refute:
-            verdict = "refuted"
-            summary = "Auto-refuted: repeated 0-row inconclusive results, consistent with rule-declared refute_when.zero_rows condition."
-        else:
-            verdict = "untestable"
-            missing_eids = sorted(
-                set(
-                    re.findall(
-                        r"event(?:\s+)?[iI][dD]\s*(\d{3,5})", hypothesis.description
-                    )
-                )
-            )
-            telemetry_hint = (
-                f" (event IDs: {', '.join(missing_eids)})" if missing_eids else ""
-            )
-            summary = f"Untestable: repeated 0-row inconclusive results — available telemetry does not contain the event types required to verify this hypothesis{telemetry_hint}."
-        _log(
-            "RESOLVE",
-            f"{hypothesis.id} — auto-{verdict} after 3+ consecutive 0-row inconclusive",
-        )
+
+    if not decision.allowed:
+        # No settlement conditions met — continue investigation
+        return "ok"
+
+    # Settlement approved — persist the decision
+    _log(
+        "SETTLEMENT",
+        f"{hypothesis.id} auto-resolved: verdict={decision.verdict} "
+        f"reason={decision.reason}",
+    )
+
+    with db.transaction():
         resolve_hypothesis(
             db=db,
             state=state,
             hypothesis_id=hypothesis.id,
-            verdict=verdict,
-            summary=summary,
+            verdict=decision.verdict,
+            summary=decision.reason,
             session_id=session_id,
         )
-        rs.cycle_progress = True
-        return "break"
-    if tracker.should_auto_refute_due_to_unobserved_events():
-        has_rule_refute = _has_zero_rows_refute_condition(hypothesis)
-        if has_rule_refute:
-            verdict = "refuted"
-            summary = "hypothesis requires evidence not present in current dataset (3+ consecutive same-missing check)"
-        else:
-            verdict = "untestable"
-            summary = "Untestable: hypothesis requires evidence not present in current dataset (3+ consecutive same-missing check) — absence of telemetry is not a disproof."
-        _log(
-            "RESOLVE",
-            f"{hypothesis.id} — auto-{verdict} after {tracker.consecutive_same_missing}+ consecutive same-missing checks",
-        )
-        resolve_hypothesis(
-            db=db,
-            state=state,
-            hypothesis_id=hypothesis.id,
-            verdict=verdict,
-            summary=summary,
-            session_id=session_id,
-        )
-        rs.cycle_progress = True
-        return "break"
-    if check_result.verdict == "inconclusive":
-        if tracker.should_auto_confirm(rule_context, rows, hypothesis):
-            _log(
-                "RESOLVE",
-                f"{hypothesis.id} — auto-confirmed via co_observed_event_ids",
-            )
-            resolve_hypothesis(
-                db=db,
-                state=state,
-                hypothesis_id=hypothesis.id,
-                verdict="confirmed",
-                summary="Auto-confirmed: all co_observed_event_ids from rule context were found in query results.",
-                session_id=session_id,
-            )
-            rs.cycle_progress = True
-            return "break"
-    return "ok"
+    rs.cycle_progress = True
+    return "break"
 
 
 async def _investigate_one_hypothesis(

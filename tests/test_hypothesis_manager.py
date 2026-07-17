@@ -29,6 +29,30 @@ from forensia.db.database import CaseDB
 from forensia.report.sections.section_taxonomy import sections_for_keypoint
 
 
+def _setup_confirmed_invariant(db: CaseDB, hypothesis_id: str) -> None:
+    """Set up sufficiency and evidence links so confirmed verdict passes invariants."""
+    # First ensure the hypothesis exists in the DB
+    db.execute(
+        "INSERT INTO hypotheses (hypothesis_id, description, status, sufficiency_status) "
+        "VALUES (?, 'test', 'active', 'unknown') ON CONFLICT (hypothesis_id) DO NOTHING",
+        (hypothesis_id,),
+    )
+    db.execute(
+        "UPDATE hypotheses SET sufficiency_status = 'sufficient', "
+        "sufficiency_score = 0.8 WHERE hypothesis_id = ?",
+        (hypothesis_id,),
+    )
+    from forensia.ai.checking.sufficiency import create_hypothesis_evidence_link
+
+    create_hypothesis_evidence_link(
+        db,
+        hypothesis_id=hypothesis_id,
+        evidence_id=f"evtx-{hypothesis_id}",
+        role="supporting",
+        query_id="Q-test",
+    )
+
+
 class TestSufficiencyIndependence(unittest.TestCase):
     def test_resolution_does_not_rewrite_machine_sufficiency(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -340,6 +364,7 @@ class StalePropagationViaTargetKeypointTests(unittest.TestCase):
                         )
                     ],
                 )
+                _setup_confirmed_invariant(db, "H-1")
                 resolve_hypothesis(
                     db=db,
                     state=state,
@@ -499,6 +524,7 @@ class StalePropagationUpdateCountCapTests(unittest.TestCase):
                         )
                     ],
                 )
+                _setup_confirmed_invariant(db, "H-6")
                 resolve_hypothesis(
                     db=db,
                     state=state,
@@ -536,6 +562,7 @@ class StalePropagationRulepackDeclTests(unittest.TestCase):
                         )
                     ],
                 )
+                _setup_confirmed_invariant(db, "H-7")
                 resolve_hypothesis(
                     db=db,
                     state=state,

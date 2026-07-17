@@ -147,7 +147,7 @@ def load_persisted_hypotheses(db: CaseDB) -> tuple[list[Hypothesis], list[Hypoth
     resolved: list[Hypothesis] = []
     for row in rows:
         hypothesis = _row_to_hypothesis(row)
-        if hypothesis.status == "active":
+        if hypothesis.status == "active" or hypothesis.status == "needs_review":
             active.append(hypothesis)
         else:
             resolved.append(hypothesis)
