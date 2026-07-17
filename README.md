@@ -84,7 +84,7 @@ forensia investigate case001 ./input --profile windows-basic
 To run more investigation cycles:
 
 ```bash
-forensia investigate case001 ./input --profile windows-basic --max-iter 50
+forensia investigate case001 --max-iter 50
 ```
 
 To use custom report templates:
@@ -103,7 +103,8 @@ Other common operations:
 
 ```bash
 forensia investigate case001 --max-iter 50    # continue an existing case
-forensia add case001 ./new-input              # add more evidence
+forensia add case001 ./new-input              # ingest additional evidence
+forensia investigate case001                  # normalize it and re-evaluate affected work
 forensia report case001 --write               # regenerate report sections with the LLM (reports are also visible in the web UI)
 forensia templates-export ./my-templates      # export the packaged templates
 forensia serve case001 --port 8000            # open the local web UI (cockpit)
@@ -120,6 +121,7 @@ dist/<case>/
 ├─ db/trace.duckdb      · Investigation steps and retrieval telemetry
 ├─ memory/              · LLM persistent memory (Markdown, human-readable)
 ├─ ai_logs/             · Raw LLM input/output logs (per-phase JSON)
+├─ report_template/     · Case-local copy of editable report templates and formats
 ├─ reports/             · report.md / report.html / structured CSV / UI snapshots
 ├─ findings/            · Per-rule finding details
 ├─ allowlist.yaml       · Per-case suppression rules for known-benign findings
@@ -140,7 +142,7 @@ What works today:
 * A rule engine that produces findings, key points, and hypothesis seeds from declarative rulepacks.
 * A case-aware investigation loop: hypothesis seeding, deterministic next-best-focus selection, SQL query planning and composition, execution with fallback search, evidence sufficiency reconciliation, verdict propagation, and finding extraction.
 * Lightweight hypothesis relationships (`parent_of`, `prerequisite_for`, `derived_from`, `contradicts`, `alternative_to`, and `supersedes`) stored in DuckDB and validated in Python, without a graph database.
-* Evidence coverage and observability tracking that distinguishes a negative query result from unavailable, incomplete, failed, or unsupported evidence sources.
+* Evidence coverage and observability tracking that distinguishes a negative query result from unavailable, incomplete, failed, or unsupported evidence sources. Raw artifact timestamps remain available while sentinel, overflow, parser-invalid, and case-window outliers are excluded from analysis ranges with reason counts.
 * Incremental report generation from templates, refreshed as findings are confirmed, exported as Markdown and HTML.
 * A local web UI (`forensia serve`) showing investigation progress, findings, hypotheses, report sections, timeline data, and evidence references.
 * Knowledge injection from a local folder of Markdown files (`--knowledge`), used to bring organization- or case-specific context into prompts.
@@ -174,6 +176,7 @@ The system divides work into small roles: identifying gaps, drafting hypotheses,
 * Investigation focus is ranked from persisted case state, report gaps, task state, dependencies, evidence coverage, retry history, and declarative priority weights. Ineligible or repeatedly inconclusive work is not selected indefinitely.
 * Hypothesis verdict values and relationships are validated against declared taxonomies; references and cycles are checked before relation state becomes authoritative.
 * Evidence links are role-validated and deduplicated. Declarative sufficiency rules reconcile an LLM-proposed verdict with source independence, contradiction, and observability before a terminal verdict is settled.
+* When a run stops at a resource or progress boundary, no hypothesis is silently left active: each is classified as deferred, blocked, needs-review, or untestable and linked to a persisted Gap and Task. A later evidence ingest reactivates only work whose recorded retry condition is satisfied.
 * Only validated query results are written back to the case database; findings and claims link back to the queries and evidence rows that produced them.
 * `--max-llm-calls` provides a hard cap on LLM usage per session.
 
@@ -210,6 +213,8 @@ flowchart LR
         SF --> TR["Progress Tracker<br/>propagate / confirm / refute / pivot"]
         TR -->|active| P
         TR -->|resolved| R["Resolver<br/>stale report sections + follow-up gaps"]
+        TR -->|bounded / blocked| WS["Work State<br/>classify + persist retry condition"]
+        WS --> E
         R --> RW["Report Writer<br/>section outline → narrative paragraphs"]
         RW -->|new gaps| E
     end
@@ -238,7 +243,7 @@ At a high level:
 5. SQL queries are generated, validated, executed, and checked, with results linked to every affected hypothesis.
 6. Declarative sufficiency rules reconcile the proposed verdict with evidence independence, contradiction, and observability. Missing evidence is not treated as refutation when the required source could not be observed.
 7. Related hypotheses, findings, claims, tasks, and durable memory are updated, while relationship effects are propagated conservatively.
-8. Report sections are refreshed and unresolved gaps feed the next investigation cycle until the case is complete, paused, bounded, or blocked with a persisted stop reason.
+8. Report sections are refreshed and unresolved gaps feed the next investigation cycle. At a stop boundary, every remaining active hypothesis is classified and linked to an explicit Gap/Task; stable stop codes and machine-readable classification counts are persisted separately.
 
 The model is used where language and judgment are useful. Code is used where determinism and auditability matter. This separation is central to the project.
 
