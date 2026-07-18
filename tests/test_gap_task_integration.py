@@ -100,6 +100,38 @@ class StopClassificationTests(unittest.TestCase):
                 self.assertEqual(counts["untestable"], 1)
                 self.assertEqual(hypothesis.status, "untestable")
 
+    def test_preclassified_untestable_gets_linked_work_on_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                _insert_hypothesis(db, "H-001")
+                db.execute(
+                    "UPDATE hypotheses SET status = 'untestable', "
+                    "blocked_reason = 'Required telemetry is unavailable' "
+                    "WHERE hypothesis_id = 'H-001'"
+                )
+
+                classify_active_hypotheses_on_stop(db, [], "no_progress_limit")
+
+                task = db.execute(
+                    "SELECT kind, status, gap_id FROM investigation_tasks "
+                    "WHERE hypothesis_id = 'H-001'"
+                ).fetchone()
+                self.assertEqual(task[0:2], ("untestable", "open"))
+                self.assertEqual(
+                    db.execute(
+                        "SELECT status, task_id FROM report_gaps WHERE gap_id = ?",
+                        [task[2]],
+                    ).fetchone(),
+                    (
+                        "open",
+                        db.execute(
+                            "SELECT task_id FROM investigation_tasks "
+                            "WHERE hypothesis_id = 'H-001'"
+                        ).fetchone()[0],
+                    ),
+                )
+                self.assertFalse(check_work_state_consistency(db))
+
     def test_second_stop_updates_existing_task_without_duplication(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with CaseDB(Case.init(tmpdir)) as db:

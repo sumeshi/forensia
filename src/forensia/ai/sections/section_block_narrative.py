@@ -635,7 +635,11 @@ def _write_narrative_block(
         messages = []
     else:
         flat_evidence = _flatten_sample_rows(collected_results, rows_only=True)
-        if flat_evidence:
+        executive_from_brief = (
+            ctx.block_heading.strip().lower() == "executive summary"
+            and bool(ctx.structured_digest)
+        )
+        if flat_evidence and not executive_from_brief:
             prior_section_keypoints = list(
                 {
                     str(r.get("keypoint") or r.get("source_kind") or "")

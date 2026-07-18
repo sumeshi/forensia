@@ -58,6 +58,78 @@ class InvestigateWiringTests(unittest.TestCase):
                 self.assertIsNotNone(row)
                 self.assertEqual(row[0], "completed")
 
+    def test_stopped_cycle_persists_state_before_final_refresh(self) -> None:
+        from forensia.ai.investigation import investigator as investigator_module
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                states_seen_by_refresh: list[str] = []
+
+                async def _refresh(**kwargs):
+                    row = (
+                        kwargs["db"]
+                        .execute(
+                            "SELECT status FROM investigation_state WHERE state_id = 'case'"
+                        )
+                        .fetchone()
+                    )
+                    states_seen_by_refresh.append(str(row[0]))
+                    return {}
+
+                with (
+                    mock.patch.object(
+                        investigator_module,
+                        "_run_investigation_loop",
+                        new=mock.AsyncMock(
+                            return_value=("stopped", 0, "no_progress_limit")
+                        ),
+                    ),
+                    mock.patch.object(
+                        investigator_module,
+                        "async_refresh_report_sections",
+                        side_effect=_refresh,
+                    ) as refresh_sections,
+                ):
+                    result = asyncio.run(
+                        investigator_module.investigate(
+                            case=case,
+                            db=db,
+                            base_url="http://127.0.0.1:9",
+                            model="dummy-model",
+                            max_iter=1,
+                            report_only=True,
+                        )
+                    )
+
+                refresh_sections.assert_awaited_once()
+                self.assertEqual(result["status"], "stopped")
+                self.assertEqual(states_seen_by_refresh, ["stopped"])
+
+    def test_stop_classification_projects_terminal_tasks_to_memory(self) -> None:
+        from forensia.ai.investigation import investigator as investigator_module
+        from forensia.core.memory import MemoryManager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO hypotheses "
+                    "(hypothesis_id, description, status, created_at, updated_at) "
+                    "VALUES ('H-001', 'Acquire missing telemetry', 'untestable', "
+                    "now(), now())"
+                )
+                investigator_module._classify_active_hypotheses_on_stop(
+                    db,
+                    [],
+                    "no_progress_limit",
+                    MemoryManager(case),
+                )
+
+            projected = (case.memory_dir / "tasks.md").read_text(encoding="utf-8")
+            self.assertIn("[untestable] Acquire missing telemetry", projected)
+            self.assertIn("TASK-STOP-", projected)
+
 
 class ReportRefreshFailureTests(unittest.TestCase):
     """R6-02: a dead report pipeline must be loud (Rule 12).

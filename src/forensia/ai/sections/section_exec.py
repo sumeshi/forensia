@@ -138,15 +138,33 @@ def structured_digest_from_answers(case: Case) -> str:
     """Build a compact <STRUCTURED_OBSERVATIONS> block from persisted structured answers.
 
     Returns a block (≤1.5 KB) listing each non-zero structured answer spec with
-    status, row_count, top values from the first render column, and first/last
-    timestamps. Only includes specs with status != 'not_searched' and non-empty
-    answer rows.
+    status, row_count, top values, first/last timestamps, and representative
+    evidence IDs. Executive-relevant artifact families are ordered first. Only
+    includes specs with status != 'not_searched' and non-empty answer rows.
     """
     answers = _load_structured_answers(case)
     if not answers:
         return ""
 
-    lines: list[str] = []
+    # Executive-facing materiality. Stable ordering prevents a low-impact
+    # artifact family (for example an address-book inventory) from dominating
+    # the summary merely because its answer happened to be written first.
+    priority = {
+        "antiforensic_activity": 100,
+        "desktop_rename_candidates": 95,
+        "cloud_service_traces": 85,
+        "last_human_logon": 70,
+        "last_shutdown_event": 65,
+        "browser_usage": 60,
+        "email_data_files": 50,
+        "email_application_usage": 45,
+        "application_execution_history": 40,
+        "daily_session_activity": 30,
+        "daily_session_timeline": 25,
+        "host_identity": 20,
+    }
+    ranked_lines: list[tuple[int, str]] = []
+    seen_specs: set[str] = set()
     for answer in answers:
         status = str(answer.get("status") or "").strip().lower()
         if status == "not_searched":
@@ -158,6 +176,9 @@ def structured_digest_from_answers(case: Case) -> str:
         answer_spec = str(answer.get("answer_spec") or "").strip() or str(
             answer.get("id") or "?"
         )
+        if answer_spec in seen_specs:
+            continue
+        seen_specs.add(answer_spec)
         row_count = len(answer_rows)
         first_row = answer_rows[0] if isinstance(answer_rows[0], dict) else None
         columns = answer.get("columns") or []
@@ -168,6 +189,7 @@ def structured_digest_from_answers(case: Case) -> str:
 
         top_values: list[str] = []
         timestamps: list[str] = []
+        evidence_ids: list[str] = []
         for row in answer_rows:
             if not isinstance(row, dict):
                 continue
@@ -188,6 +210,14 @@ def structured_digest_from_answers(case: Case) -> str:
                 if ts:
                     timestamps.append(ts)
                     break
+            raw_ids = row.get("evidence_ids") or row.get("evidence_id") or []
+            if isinstance(raw_ids, str):
+                raw_ids = [raw_ids]
+            if isinstance(raw_ids, list):
+                for evidence_id in raw_ids:
+                    value = str(evidence_id or "").strip()
+                    if value and value not in evidence_ids:
+                        evidence_ids.append(value)
 
         first_ts = min(timestamps) if timestamps else ""
         last_ts = max(timestamps) if timestamps else ""
@@ -198,10 +228,15 @@ def structured_digest_from_answers(case: Case) -> str:
             line += f", [{first_col}]={top_str}"
         if first_ts and last_ts:
             line += f", ts_range={first_ts[:19]}..{last_ts[:19]}"
-        lines.append(line)
+        if evidence_ids:
+            line += f", refs={' | '.join(evidence_ids[:2])}"
+        ranked_lines.append((priority.get(answer_spec, 0), line))
 
-    if not lines:
+    if not ranked_lines:
         return ""
+
+    ranked_lines.sort(key=lambda item: item[0], reverse=True)
+    lines = [line for _, line in ranked_lines]
 
     digest = (
         "<STRUCTURED_OBSERVATIONS>\n"

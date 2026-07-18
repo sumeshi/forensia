@@ -559,15 +559,24 @@ def build_paragraph_narrate_messages(
     Goal: write ONE markdown paragraph for the given heading using the evidence.
     NO access to other sections, NO full report_brief, NO findings list.
     """
+    is_executive_summary = heading.strip().lower() == "executive summary"
     digest_block = f"\n{structured_digest}\n" if structured_digest else ""
     exec_summary_rules = ""
-    if structured_digest:
+    if structured_digest and is_executive_summary:
         exec_summary_rules = (
             "Write what the evidence shows, not instructions to the reader.\n"
             "Lead with the 2-3 strongest observations (with dates and counts) from "
-            "STRUCTURED_OBSERVATIONS and confirmed findings. One sentence on open questions.\n"
+            "STRUCTURED_OBSERVATIONS and confirmed findings. The observations are ordered "
+            "by materiality; do not let a lower-impact Key point or Evidence row displace a "
+            "stronger observation near the top. If two or more artifact families are present, "
+            "cover at least two distinct families. One sentence on open questions.\n"
             'Do not use phrases like "should be verified", "needs confirmation", "requires verification" more than once.\n'
         )
+    # The Executive Summary is synthesized from the deterministic incident
+    # brief. A block-local query can still support the rest of the overview,
+    # but must not narrow the summary to whichever artifact family it returned.
+    prompt_key_points = [] if is_executive_summary else key_points
+    prompt_evidence_rows = [] if is_executive_summary else evidence_rows
     system = (
         "<TASK>You are a section_narrator. Write one markdown paragraph for the given heading using the supplied evidence. "
         "Cite evidence_ids inline. Keep the paragraph factual and concise.</TASK>\n"
@@ -601,9 +610,9 @@ def build_paragraph_narrate_messages(
     )
     user = (
         f"Heading: {heading}\n"
-        f"Key points: {json.dumps(key_points, ensure_ascii=False, default=str)}\n"
+        f"Key points: {json.dumps(prompt_key_points, ensure_ascii=False, default=str)}\n"
         f"Template body context: {template_body[:500]}\n"
-        f"Evidence rows: {json.dumps(evidence_rows[:10], default=str, ensure_ascii=False)}\n"
+        f"Evidence rows: {json.dumps(prompt_evidence_rows[:10], default=str, ensure_ascii=False)}\n"
     )
     return [
         {"role": "system", "content": system},

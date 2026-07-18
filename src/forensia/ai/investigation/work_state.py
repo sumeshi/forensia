@@ -132,6 +132,87 @@ def _classification_for(
     return "needs_review"
 
 
+def _upsert_terminal_work(
+    db: CaseDB,
+    *,
+    hypothesis_id: str,
+    description: str,
+    classification: str,
+    reason: str,
+) -> None:
+    """Create or refresh the authoritative Task/Gap pair for a terminal hypothesis."""
+    required_capabilities = _required_capabilities(db, hypothesis_id, description)
+    unavailable_capabilities, required_sources = _coverage_state(
+        db, required_capabilities
+    )
+    if unavailable_capabilities and not any(
+        capability in reason for capability in unavailable_capabilities
+    ):
+        reason += ": " + ", ".join(unavailable_capabilities)
+
+    task_id = _stable_id("TASK-STOP", hypothesis_id)
+    gap_id = _stable_id("GAP-STOP", hypothesis_id)
+    retry_condition = (
+        "required_capability_available"
+        if classification in {"blocked", "untestable"}
+        else "new_evidence_or_human_review"
+        if classification == "needs_review"
+        else "new_evidence_or_manual_resume"
+    )
+    db.execute(
+        """
+        INSERT INTO investigation_tasks (
+            task_id, kind, description, status, gap_id, hypothesis_id,
+            required_capability, required_source, owner_phase,
+            retry_condition, blocked_reason, reason, created_at, updated_at
+        ) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, 'termination', ?, ?, ?, now(), now())
+        ON CONFLICT (task_id) DO UPDATE SET
+            kind = EXCLUDED.kind, description = EXCLUDED.description,
+            status = 'open', gap_id = EXCLUDED.gap_id,
+            required_capability = EXCLUDED.required_capability,
+            required_source = EXCLUDED.required_source,
+            owner_phase = EXCLUDED.owner_phase,
+            retry_condition = EXCLUDED.retry_condition,
+            blocked_reason = EXCLUDED.blocked_reason,
+            reason = EXCLUDED.reason, updated_at = now()
+        """,
+        [
+            task_id,
+            classification,
+            description[:200],
+            gap_id,
+            hypothesis_id,
+            ",".join(required_capabilities),
+            ",".join(required_sources),
+            retry_condition,
+            reason,
+            reason,
+        ],
+    )
+    db.execute(
+        """
+        INSERT INTO report_gaps (
+            gap_id, description, kind, status, hypothesis_id, task_id,
+            coverage_reason, origin, created_at, updated_at
+        ) VALUES (?, ?, ?, 'open', ?, ?, ?, 'termination', now(), now())
+        ON CONFLICT (gap_id) DO UPDATE SET
+            description = EXCLUDED.description, kind = EXCLUDED.kind,
+            status = 'open', hypothesis_id = EXCLUDED.hypothesis_id,
+            task_id = EXCLUDED.task_id,
+            coverage_reason = EXCLUDED.coverage_reason,
+            origin = 'termination', updated_at = now()
+        """,
+        [
+            gap_id,
+            description[:200],
+            classification,
+            hypothesis_id,
+            task_id,
+            reason,
+        ],
+    )
+
+
 def classify_active_hypotheses_on_stop(
     db: CaseDB,
     active_hypotheses: list[Hypothesis],
@@ -187,68 +268,52 @@ def classify_active_hypotheses_on_stop(
                 [classification, reason, hypothesis_id],
             )
 
-            task_id = _stable_id("TASK-STOP", hypothesis_id)
-            gap_id = _stable_id("GAP-STOP", hypothesis_id)
-            required_capability = ",".join(required_capabilities)
-            required_source = ",".join(required_sources)
-            retry_condition = (
-                "required_capability_available"
-                if classification in {"blocked", "untestable"}
-                else "new_evidence_or_human_review"
-                if classification == "needs_review"
-                else "new_evidence_or_manual_resume"
+            _upsert_terminal_work(
+                db,
+                hypothesis_id=hypothesis_id,
+                description=hypothesis.description,
+                classification=classification,
+                reason=reason,
             )
-            db.execute(
-                """
-                INSERT INTO investigation_tasks (
-                    task_id, kind, description, status, gap_id, hypothesis_id,
-                    required_capability, required_source, owner_phase,
-                    retry_condition, blocked_reason, reason, created_at, updated_at
-                ) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, 'termination', ?, ?, ?, now(), now())
-                ON CONFLICT (task_id) DO UPDATE SET
-                    kind = EXCLUDED.kind, description = EXCLUDED.description,
-                    status = 'open', gap_id = EXCLUDED.gap_id,
-                    required_capability = EXCLUDED.required_capability,
-                    required_source = EXCLUDED.required_source,
-                    owner_phase = EXCLUDED.owner_phase,
-                    retry_condition = EXCLUDED.retry_condition,
-                    blocked_reason = EXCLUDED.blocked_reason,
-                    reason = EXCLUDED.reason, created_at = now(), updated_at = now()
-                """,
-                [
-                    task_id,
-                    classification,
-                    hypothesis.description[:200],
-                    gap_id,
-                    hypothesis_id,
-                    required_capability,
-                    required_source,
-                    retry_condition,
-                    reason,
-                    reason,
-                ],
+
+        # A hypothesis may become terminal before the stop transition (for
+        # example, repeated missing telemetry can mark it untestable). Such a
+        # hypothesis is absent from ``active_hypotheses`` but still needs the
+        # same authoritative Task/Gap pair.
+        missing_terminal_work = db.execute(
+            """
+            SELECT h.hypothesis_id, h.description, h.status, h.blocked_reason
+            FROM hypotheses h
+            LEFT JOIN investigation_tasks t
+              ON t.hypothesis_id = h.hypothesis_id
+             AND t.status IN ('open', 'in_progress')
+            WHERE h.status IN ('deferred', 'blocked', 'needs_review', 'untestable')
+              AND t.task_id IS NULL
+            """
+        ).fetchall()
+        for (
+            hypothesis_id,
+            description,
+            classification,
+            blocked_reason,
+        ) in missing_terminal_work:
+            reason = (
+                str(blocked_reason or "").strip()
+                or {
+                    "deferred": f"Not investigated before {stop_reason_code}",
+                    "blocked": f"Blocked before {stop_reason_code}",
+                    "needs_review": (
+                        f"Human review or more evidence required after {stop_reason_code}"
+                    ),
+                    "untestable": f"Required telemetry unavailable at {stop_reason_code}",
+                }[str(classification)]
             )
-            db.execute(
-                """
-                INSERT INTO report_gaps (
-                    gap_id, description, kind, status, hypothesis_id, task_id,
-                    coverage_reason, origin, created_at, updated_at
-                ) VALUES (?, ?, ?, 'open', ?, ?, ?, 'termination', now(), now())
-                ON CONFLICT (gap_id) DO UPDATE SET
-                    description = EXCLUDED.description, kind = EXCLUDED.kind,
-                    status = 'open', hypothesis_id = EXCLUDED.hypothesis_id,
-                    task_id = EXCLUDED.task_id,
-                    coverage_reason = EXCLUDED.coverage_reason,
-                    origin = 'termination', updated_at = now()
-                """,
-                [
-                    gap_id,
-                    hypothesis.description[:200],
-                    classification,
-                    hypothesis_id,
-                    task_id,
-                    reason,
-                ],
+            _upsert_terminal_work(
+                db,
+                hypothesis_id=str(hypothesis_id),
+                description=str(description or hypothesis_id),
+                classification=str(classification),
+                reason=reason,
             )
     return counts
 

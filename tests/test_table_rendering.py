@@ -605,6 +605,10 @@ class TableRenderingTests(unittest.TestCase):
             self.assertIn("HOST-A | HOST-B", digest)
             self.assertIn("Eraser", digest)
             self.assertIn("rows=2", digest)
+            self.assertIn("refs=E1 | E2", digest)
+            self.assertLess(
+                digest.index("antiforensic_activity"), digest.index("host_identity")
+            )
             self.assertLess(len(digest), 1500)
 
     def test_structured_digest_in_prompt_for_overview(self) -> None:
@@ -621,9 +625,12 @@ class TableRenderingTests(unittest.TestCase):
         combined = "\n".join(m.get("content", "") for m in messages)
         self.assertIn("STRUCTURED_OBSERVATIONS", combined)
         self.assertIn("test_spec", combined)
+        self.assertNotIn("Key observation", combined)
+        self.assertNotIn('"summary": "test"', combined)
         self.assertIn(
             "Write what the evidence shows, not instructions to the reader", combined
         )
+        self.assertIn("ordered by materiality", combined)
 
     def test_structured_digest_not_in_prompt_for_appendix(self) -> None:
         """Verify appendix blocks get no STRUCTURED_OBSERVATIONS."""

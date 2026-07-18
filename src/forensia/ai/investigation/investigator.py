@@ -43,6 +43,7 @@ from forensia.ai.llm.llm_client import (
 )
 from forensia.ai.report_gap import (
     inject_gap_hypotheses,
+    project_investigation_tasks,
     report_cycle_progress,
 )
 from forensia.ai.sections.section_refresher import async_refresh_report_sections
@@ -175,9 +176,13 @@ def _classify_active_hypotheses_on_stop(
     db: CaseDB,
     active_hypotheses: list,
     stop_reason: str,
+    memory: MemoryManager | None = None,
 ) -> dict[str, int]:
     """Backward-compatible entry point for the authoritative transition."""
-    return classify_active_hypotheses_on_stop(db, active_hypotheses, stop_reason)
+    counts = classify_active_hypotheses_on_stop(db, active_hypotheses, stop_reason)
+    if memory is not None:
+        project_investigation_tasks(db, memory)
+    return counts
 
 
 def _check_termination(
@@ -361,11 +366,14 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
                 mark_report_sections_ai_exhausted(env.db)
             elif terminal_status == "stopped":
                 _classify_active_hypotheses_on_stop(
-                    env.db, env.state.active_hypotheses, stop_reason_code
+                    env.db,
+                    env.state.active_hypotheses,
+                    stop_reason_code,
+                    env.memory,
                 )
             return terminal_status, report_refresh_failures, stop_reason_code
     _classify_active_hypotheses_on_stop(
-        env.db, env.state.active_hypotheses, "max_iterations"
+        env.db, env.state.active_hypotheses, "max_iterations", env.memory
     )
     return "stopped", report_refresh_failures, "max_iterations"
 
@@ -495,7 +503,17 @@ async def investigate(
             report_refresh_failures,
             stop_reason_code,
         ) = await _run_investigation_loop(env)
-        if status == "completed" and not ctx.interrupted:
+        # Persist the terminal state before the closing report pass so report
+        # validation and narratives observe the same final state as the API.
+        summary = stop_summary(db, len(state.active_hypotheses))
+        save_stop_reason(
+            db,
+            status=status,
+            stop_reason_code=stop_reason_code,
+            stop_reason=format_stop_reason(status, stop_reason_code, summary),
+            stop_summary=summary,
+        )
+        if status in {"completed", "stopped"} and not ctx.interrupted:
             report_refresh_failures += await _final_report_refresh(env)
     except Exception:
         status = "failed"
