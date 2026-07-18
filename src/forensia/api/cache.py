@@ -90,27 +90,29 @@ def write_volatile_api_snapshots(case: Case, db: CaseDB) -> None:
     try:
         data["hypotheses"] = list_hypotheses_dto(db).model_dump()
     except Exception:
-        pass
+        logger.debug("Failed to build volatile hypotheses snapshot", exc_info=True)
     try:
         stats = get_case_stats_dto(db)
         data["stats"] = stats.model_dump()
     except Exception:
-        pass
+        logger.debug("Failed to build volatile stats snapshot", exc_info=True)
     try:
         findings = list_findings_dto(db, severity="low", limit=500)
         data["findings"] = [f.model_dump() for f in findings]
     except Exception:
-        pass
+        logger.debug("Failed to build volatile findings snapshot", exc_info=True)
     try:
         data["attack_coverage"] = [a.model_dump() for a in list_attack_coverage_dto(db)]
     except Exception:
-        pass
+        logger.debug("Failed to build volatile attack_coverage snapshot", exc_info=True)
     try:
         data["section_questions"] = [
             q.model_dump() for q in list_section_questions_dto(db)
         ]
     except Exception:
-        pass
+        logger.debug(
+            "Failed to build volatile section_questions snapshot", exc_info=True
+        )
     try:
         data["hypothesis_reasoning"] = {
             hypothesis_id: [entry.model_dump() for entry in entries]
@@ -119,18 +121,23 @@ def write_volatile_api_snapshots(case: Case, db: CaseDB) -> None:
             ).items()
         }
     except Exception:
-        pass
+        logger.debug(
+            "Failed to build volatile hypothesis_reasoning snapshot", exc_info=True
+        )
     try:
         data["hypotheses_reasoning_latest"] = [
             entry.model_dump()
             for entry in list_latest_hypothesis_reasoning_dto(db, limit=200)
         ]
     except Exception:
-        pass
+        logger.debug(
+            "Failed to build volatile hypotheses_reasoning_latest snapshot",
+            exc_info=True,
+        )
     try:
         data["entities"] = [item.model_dump() for item in list_entity_cards_dto(case)]
     except Exception:
-        pass
+        logger.debug("Failed to build volatile entities snapshot", exc_info=True)
 
     for name, payload in data.items():
         write_json(snap_dir / f"{name}.json", payload)

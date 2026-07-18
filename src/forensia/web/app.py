@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from html import escape as html_escape
 from pathlib import Path
@@ -80,6 +81,8 @@ from forensia.report.render.writer import (
 )
 from forensia.report.section_views import list_report_sections_dto
 from forensia.report.sections.section_store import set_report_section_status
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -503,7 +506,10 @@ def _register_evidence_routes(
                     db, bucket=bucket, source=source, start=start, end=end
                 )
         except Exception:
-            pass
+            logger.warning(
+                "Failed to compute live event volume; falling back to cached snapshot",
+                exc_info=True,
+            )
         for finer in ("hour", "day"):
             if finer == bucket:
                 continue

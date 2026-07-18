@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
@@ -11,6 +12,8 @@ from forensia.knowledge.resources import schema_dir
 
 if TYPE_CHECKING:
     from forensia.db.database import CaseDB
+
+logger = logging.getLogger(__name__)
 
 _LEGACY_ALLOWED_TABLES = {
     "evtx_events",
@@ -52,7 +55,10 @@ def get_allowed_tables(db: CaseDB | None = None) -> set[str]:
         if allowed:
             return allowed
     except Exception:
-        pass
+        logger.warning(
+            "Failed to introspect DB schema for allowed tables; falling back to legacy table list",
+            exc_info=True,
+        )
     return _LEGACY_ALLOWED_TABLES
 
 

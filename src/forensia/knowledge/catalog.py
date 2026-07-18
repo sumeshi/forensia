@@ -130,7 +130,10 @@ def load_question_routing_raw() -> dict[str, Any]:
         if isinstance(raw, dict):
             return raw
     except Exception:
-        pass
+        logger.warning(
+            "Failed to load question_routing.yaml; falling back to empty routing schema",
+            exc_info=True,
+        )
     return {}
 
 

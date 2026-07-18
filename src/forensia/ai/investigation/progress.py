@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
@@ -16,6 +17,8 @@ except ImportError:  # pragma: no cover - optional until dependency is installed
     normalize_identifiers = None
 
 from forensia.ai.checking.check_guardrails import _co_observation_satisfied
+
+logger = logging.getLogger(__name__)
 
 
 def query_fingerprint(sql: str | None) -> str:
@@ -44,7 +47,9 @@ def query_fingerprint(sql: str | None) -> str:
             try:
                 expression = normalize_identifiers(expression, dialect="duckdb")
             except Exception:
-                pass
+                logger.debug(
+                    "Failed to normalize SQL identifiers for fingerprint", exc_info=True
+                )
 
         def _column_name(node: Any) -> str | None:
             if isinstance(node, exp.Column):

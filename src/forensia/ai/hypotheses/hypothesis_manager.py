@@ -6,6 +6,7 @@ names from forensia.ai.hypotheses.hypothesis_manager.
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
@@ -41,6 +42,8 @@ from forensia.report.sections.section_taxonomy import (
 from forensia.report.sections.section_taxonomy import (
     sections_for_keypoint as _sections_for_keypoint,
 )
+
+logger = logging.getLogger(__name__)
 
 MAX_ACTIVE_HYPOTHESES = 8
 
@@ -258,7 +261,7 @@ def _feed_verdict_to_timeline(
             ),
         )
     except Exception:
-        pass
+        logger.debug("Failed to insert verdict entry into case_timeline", exc_info=True)
 
 
 # _guess_related_sections: canonical implementation moved to report/section_taxonomy.py

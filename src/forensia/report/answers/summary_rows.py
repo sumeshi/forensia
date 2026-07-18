@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from forensia.core.case import detect_epochs
@@ -29,6 +30,8 @@ from forensia.report.report_brief import (
     _query_evtx_time_range,
     _short_path_context,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _count_table(db: CaseDB) -> list[dict[str, Any]]:
@@ -115,7 +118,7 @@ def _host_summary_rows(db: CaseDB, limit: int = 8) -> list[dict[str, Any]]:
             for row in rows:
                 row.pop("note", None)
     except Exception:
-        pass
+        logger.debug("Failed to attach epoch notes to host summary rows", exc_info=True)
     return rows
 
 

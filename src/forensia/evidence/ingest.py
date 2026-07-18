@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import sys
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -13,6 +14,8 @@ from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.db.evidence_sources import register_evidence_source
 from forensia.evidence.artifacts import get_artifact_adapters
+
+logger = logging.getLogger(__name__)
 
 
 def _sha256_file(path: Path) -> str:
@@ -110,7 +113,10 @@ def ingest_all(
                         error_summary=str(exc),
                     )
                 except Exception:
-                    pass
+                    logger.debug(
+                        "Failed to register failed-ingest evidence source record",
+                        exc_info=True,
+                    )
                 if progress_callback:
                     progress_callback(f"ERROR ingesting {adapter.name}: {path}: {exc}")
                 continue
@@ -164,7 +170,12 @@ def ingest_all(
                     row_count=0,
                 )
             except Exception:
-                pass
+                logger.warning(
+                    "Failed to register parsed evidence source record; "
+                    "evidence_sources status may be stale for %s",
+                    path,
+                    exc_info=True,
+                )
     finally:
         if owns_db:
             db.close()

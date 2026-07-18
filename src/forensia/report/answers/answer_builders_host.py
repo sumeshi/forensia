@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from forensia.core.case import Case, detect_epochs
@@ -27,6 +28,8 @@ from forensia.report.answers.answer_store import (
 from forensia.report.render.markdown import (
     _build_host_note,
 )
+
+logger = logging.getLogger(__name__)
 
 # ── Builder functions for deterministic structured answers ──────────────────
 
@@ -66,7 +69,7 @@ def _build_host_identity(
             if host_epochs:
                 row["note"] = _build_host_note(host_epochs)
     except Exception:
-        pass
+        logger.debug("Failed to attach epoch notes to host rows", exc_info=True)
     columns = (
         ["host_id", "note", "evidence_count", "first_seen", "last_seen"]
         if any("note" in r for r in rows)

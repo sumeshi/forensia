@@ -1,6 +1,7 @@
 """Typer command declarations for the forensia CLI."""
 
 import asyncio
+import logging
 from collections.abc import Callable
 from pathlib import Path
 
@@ -52,6 +53,8 @@ from forensia.report.template_export import (
     seed_case_report_templates,
 )
 from forensia.web.app import create_app
+
+logger = logging.getLogger(__name__)
 
 app = typer.Typer(help="forensia incident response tool")
 
@@ -285,7 +288,7 @@ def _print_pre_investigation_hints(case: Case, profile: str, db: CaseDB) -> None
                     + f" ({basis}). Re-run with --timezone <IANA name> to render local times."
                 )
         except Exception:
-            pass
+            logger.debug("Failed to infer timezone hint from evidence", exc_info=True)
 
 
 @app.command()

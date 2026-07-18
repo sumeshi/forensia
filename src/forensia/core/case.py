@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import shutil
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -10,6 +11,8 @@ from typing import Any
 import yaml
 
 from forensia.core.timeutil import parse_timestamp
+
+logger = logging.getLogger(__name__)
 
 ALLOWLIST_STUB = """# Rule-scoped suppression rules.
 # Each entry matches one rule_id and one or more row fields from finding.evidence[0].
@@ -206,7 +209,7 @@ class Case:
                     str(row[1] or "") if row[1] is not None else ""
                 )
         except Exception:
-            pass
+            logger.debug("Failed to extract time range from evtx_events", exc_info=True)
 
         # Compute dominant epoch from non-pre-deployment clusters
         try:

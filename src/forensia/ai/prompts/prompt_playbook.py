@@ -128,7 +128,7 @@ def _load_schema_notes() -> str:
                     for field, expr in list(extractors.items())[:5]:
                         notes.append(f"- If {field.lower()} column is NULL, use {expr}")
         except Exception:
-            pass
+            logging.debug("Failed to load evtx_events schema notes", exc_info=True)
 
     prefetch_path = schema_root / "prefetch_executions.yaml"
     if prefetch_path.exists():
@@ -141,7 +141,9 @@ def _load_schema_notes() -> str:
                         if isinstance(note, str):
                             notes.append(f"- prefetch_executions.{key}: {note}")
         except Exception:
-            pass
+            logging.debug(
+                "Failed to load prefetch_executions schema notes", exc_info=True
+            )
 
     return "\n".join(notes)
 
@@ -681,7 +683,11 @@ def _load_phase_playbook(phase: str) -> str:
         try:
             phase_narrative = phase_file.read_text(encoding="utf-8")
         except Exception:
-            pass
+            logging.debug(
+                "Failed to load phase playbook narrative for phase=%s",
+                phase,
+                exc_info=True,
+            )
     return re.sub(
         r"\n?<!-- AUTO-FROM: (?:event_ids|app_catalog)\.yaml -->.*?<!-- END-AUTO -->\n?",
         "\n",

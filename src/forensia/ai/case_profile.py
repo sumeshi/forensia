@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from forensia.knowledge.resources import profile_path, profiles_dir, rulepacks_dir
+
+logger = logging.getLogger(__name__)
 
 _PROFILE_CACHE: dict[str, dict[str, Any]] = {}
 
@@ -58,7 +61,9 @@ def _build_profile_queries(conn) -> dict[str, Any]:
             {"event_id": r[0], "count": r[1]} for r in rows if r[0] is not None
         ]
     except Exception:
-        pass
+        logger.debug(
+            "Failed to query event_id breakdown for case profile", exc_info=True
+        )
 
     channels: list[dict[str, Any]] = []
     try:
@@ -67,7 +72,9 @@ def _build_profile_queries(conn) -> dict[str, Any]:
         ).fetchall()
         channels = [{"channel": r[0], "count": r[1]} for r in rows if r[0] is not None]
     except Exception:
-        pass
+        logger.debug(
+            "Failed to query channel breakdown for case profile", exc_info=True
+        )
 
     table_row_counts: dict[str, int] = {}
     for tbl in (
@@ -92,7 +99,7 @@ def _build_profile_queries(conn) -> dict[str, Any]:
         ).fetchall()
         top_users = [str(r[0]) for r in rows]
     except Exception:
-        pass
+        logger.debug("Failed to query top users for case profile", exc_info=True)
 
     top_hosts: list[str] = []
     try:
@@ -107,7 +114,7 @@ def _build_profile_queries(conn) -> dict[str, Any]:
         ).fetchall()
         top_hosts = [str(r[0]) for r in rows]
     except Exception:
-        pass
+        logger.debug("Failed to query top hosts for case profile", exc_info=True)
 
     top_executables: list[str] = []
     try:
@@ -118,7 +125,7 @@ def _build_profile_queries(conn) -> dict[str, Any]:
         ).fetchall()
         top_executables = [str(r[0]) for r in rows]
     except Exception:
-        pass
+        logger.debug("Failed to query top executables for case profile", exc_info=True)
 
     time_range: dict[str, str] = {}
     try:
@@ -129,7 +136,7 @@ def _build_profile_queries(conn) -> dict[str, Any]:
             time_range["earliest"] = str(row[0] or "") if row[0] is not None else ""
             time_range["latest"] = str(row[1] or "") if row[1] is not None else ""
     except Exception:
-        pass
+        logger.debug("Failed to query time range for case profile", exc_info=True)
 
     return {
         "event_ids": evtx_event_ids,
@@ -203,7 +210,9 @@ def profile_advisor(profile_name: str, db) -> str:
                 f"Cloud sync executables detected in prefetch: {', '.join(detected[:3])}"
             )
     except Exception:
-        pass
+        logger.debug(
+            "Failed to detect cloud-sync executables in prefetch", exc_info=True
+        )
 
     # Detect email cache files in MFT
     try:
@@ -216,7 +225,7 @@ def profile_advisor(profile_name: str, db) -> str:
                 f"Email cache files (.ost/.pst) found in MFT ({count} entries)"
             )
     except Exception:
-        pass
+        logger.debug("Failed to detect email cache files in MFT", exc_info=True)
 
     # Map uncovered packs to available profiles
     profile_pack_map: dict[str, set[str]] = {}

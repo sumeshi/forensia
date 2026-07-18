@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -13,6 +14,8 @@ import httpx
 
 from forensia.config import get_llm_settings, settings
 from forensia.core.progress_event import progress_event
+
+logger = logging.getLogger(__name__)
 
 
 class LLMServerUnavailableError(RuntimeError):
@@ -103,7 +106,9 @@ def _close_http_clients() -> None:
         try:
             asyncio.run(client.aclose())
         except Exception:
-            pass
+            logger.debug(
+                "Failed to close async HTTP client at interpreter exit", exc_info=True
+            )
 
 
 atexit.register(_close_http_clients)

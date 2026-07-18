@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -18,6 +19,8 @@ from forensia.core.session import (
 )
 from forensia.db.database import CaseDB
 from forensia.db.query import normalize_value
+
+logger = logging.getLogger(__name__)
 
 
 def _upsert_ai_review(
@@ -200,7 +203,9 @@ def _is_duplicate_extracted_finding(
         if existing_evidence_ids and set(evidence_ids) == existing_evidence_ids:
             return True
     except Exception:
-        pass
+        logger.debug(
+            "Failed to compare evidence ids for duplicate finding check", exc_info=True
+        )
     return False
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING, Any
 
 from forensia.ai.llm.schemas import (
@@ -42,6 +43,8 @@ from forensia.ai.prompts.prompt_playbook import (
     _format_artifact_inference,
     _load_schema_notes,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _section_verification_block(verification_notes: list[str] | None) -> str:
@@ -328,7 +331,9 @@ Output: {"action": "keypoint", "keypoint": "overview_hosts", "purpose": "List ho
             ).fetchall()
             _sa_tables = {str(r[0]) for r in _rows if r[0]}
         except Exception:
-            pass
+            logger.debug(
+                "Failed to introspect DB tables for section plan prompt", exc_info=True
+            )
     system = (
         f"{_dfir_playbook('section_agent_plan', event_ids=_sa_ev, tables=_sa_tables)}\n"
         f"{_time_range_guidance(time_range)}"

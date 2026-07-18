@@ -1,5 +1,6 @@
 """Self-contained health checks used by the hidden ``doctor`` command."""
 
+import logging
 import subprocess
 import sys
 from pathlib import Path
@@ -7,6 +8,8 @@ from pathlib import Path
 from rich import print
 
 from forensia.cli.support import _status
+
+logger = logging.getLogger(__name__)
 
 
 def _project_root() -> Path:
@@ -122,7 +125,11 @@ def _doctor_verdict_taxonomy_check() -> tuple[str, bool]:
                                     )
                                     break
                     except Exception:
-                        pass
+                        logger.debug(
+                            "Failed to parse %s for verdict enforcement scan",
+                            path,
+                            exc_info=True,
+                        )
         enforcement_count = len(enforcement_files)
         ok = enforcement_count >= 4
         print(
