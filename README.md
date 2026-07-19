@@ -16,14 +16,17 @@ Generated forensic report with evidence-backed findings and investigation contex
 
 `forensia` blends **forensics** and **AI**.
 
-It is an experimental tool for assisting Windows forensic investigations with local LLMs. It does not collect evidence from live systems: you give it artifacts that have already been acquired (EVTX, MFT, Prefetch), and it ingests and normalizes them, generates and tests hypotheses against the normalized data, extracts findings, and continuously updates a report. The model is only asked to handle one narrow step at a time.
+It is an experimental AI digital-forensics harness. You give it artifacts that have already been acquired from a target machine (EVTX, MFT, Prefetch), and it uses a local LLM to generate and verify investigation hypotheses and to continuously update a report. It does not collect evidence from live systems, and the model is only asked to handle one narrow step at a time.
 
-Two ideas drive the design:
+Incident data is often too sensitive to send anywhere — sometimes it cannot even leave the machine. So forensia is designed to run fully offline, on hardware a small CSIRT can actually afford, with small local models in the 4B–8B range. Models that small misread instructions, lose long context, and repeat mistakes; the harness exists to compensate for exactly that. It is not an AI wrapper for speeding up existing tools, but an architectural experiment in treating a weak LLM as one component of an investigation loop.
 
-1. **Small local models, made useful by architecture.** Forensic data is sensitive — it often cannot be sent to a hosted AI service, and sometimes cannot leave the local machine at all. A model large enough to work through a whole case on its own can be impractical or expensive to run locally. So forensia surrounds resource-constrained local models with normalized evidence, rule-based signals, structured prompts, deterministic checks, and persistent memory, so the model is never asked to solve the whole case at once.
-2. **Rules should express investigative intent, not only detection logic.** A good rule does not just record what was detected — it tells the system why the detection matters and what to investigate next.
+The full design story is written up (in Japanese) in [README-jp.md](README-jp.md).
 
-Incident requests tend to arrive on Friday, with a report expected by Monday. It would be nice if someone could work through the weekend for you. There is no such person. There may be an AI friend.
+Three principles drive the design:
+
+1. **Fight alone** — keep working fully offline, in isolated environments.
+2. **Do not over-expect from the LLM** — the model only gets tasks that are hard to build statically (hypothesis generation, interpretation, report prose). Everything deterministic — evidence search, priority scoring, state transitions, persistence — runs in code.
+3. **Spend time like water** — no perfect conclusion in one pass. Hold multiple hypotheses, iterate with bounded stopping conditions, and update the report continuously as the investigation progresses.
 
 ## Quick start
 
@@ -81,32 +84,15 @@ Place artifacts in an input directory and run:
 forensia investigate case001 ./input --profile windows-basic
 ```
 
-To run more investigation cycles:
-
-```bash
-forensia investigate case001 --max-iter 50
-```
-
-To use custom report templates:
-
-```bash
-forensia investigate case001 ./input --template-dir ./my-templates
-```
-
-To inject organization-specific knowledge into prompts:
-
-```bash
-forensia investigate case001 ./input --knowledge ./knowledge.sample
-```
-
 Other common operations:
 
 ```bash
-forensia investigate case001 --max-iter 50    # continue an existing case
+forensia investigate case001 --max-iter 50    # continue an existing case with more cycles
 forensia add case001 ./new-input              # ingest additional evidence
-forensia investigate case001                  # normalize it and re-evaluate affected work
 forensia report case001 --write               # regenerate report sections with the LLM (reports are also visible in the web UI)
 forensia templates-export ./my-templates      # export the packaged templates
+forensia investigate case001 ./input --template-dir ./my-templates   # use custom report templates
+forensia investigate case001 ./input --knowledge ./knowledge.sample  # inject organization-specific knowledge
 forensia serve case001 --port 8000            # open the local web UI (cockpit)
 ```
 
@@ -134,67 +120,18 @@ dist/<case>/
 > * Work on read-only copies of artifacts, never on originals.
 > * Case directories contain evidence-derived data (databases, memory files, AI logs). Do not publish them. See [SECURITY.md](SECURITY.md).
 
-## Current capabilities
+## Architecture
 
-What works today:
+At the center of forensia is the repetition of hypothesis and verification. Simplified:
 
-* Ingestion and normalization of EVTX, MFT, and Prefetch artifacts into DuckDB. These three are supported first because they fit the same unified pipeline (parse → staged JSONL → normalized DuckDB tables); more artifact types are planned on the same approach. The current adapter interface can be used to add your own, although it is not yet stable (see [docs/extending.md](docs/extending.md)).
-* A rule engine that produces findings, key points, and hypothesis seeds from declarative rulepacks.
-* A case-aware investigation loop: hypothesis seeding, deterministic next-best-focus selection, SQL query planning and composition, execution with fallback search, evidence sufficiency reconciliation, verdict propagation, and finding extraction.
-* Lightweight hypothesis relationships (`parent_of`, `prerequisite_for`, `derived_from`, `contradicts`, `alternative_to`, and `supersedes`) stored in DuckDB and validated in Python, without a graph database.
-* Evidence coverage and observability tracking that distinguishes a negative query result from unavailable, incomplete, failed, or unsupported evidence sources. Raw artifact timestamps remain available while sentinel, overflow, parser-invalid, and case-window outliers are excluded from analysis ranges with reason counts.
-* Incremental report generation from templates, refreshed as findings are confirmed, exported as Markdown and HTML.
-* A local web UI (`forensia serve`) showing investigation progress, findings, hypotheses, report sections, timeline data, and evidence references.
-* Knowledge injection from a local folder of Markdown files (`--knowledge`), used to bring organization- or case-specific context into prompts.
+1. Ingest traces and normalize them into an investigable form
+2. Generate hypotheses, seeded by rule-based detections
+3. Select the next hypothesis to verify
+4. Search the actual evidence and verify the hypothesis
+5. Judge and record the result, and reflect it in the report
+6. Return unresolved questions to the next cycle
 
-Not yet implemented (see [Roadmap](#roadmap)): full-text indexing and search over large local document collections, browser and email artifact adapters, and stable rule/template formats.
-
-### Tested model configurations
-
-In the configurations tested during development — small local models such as `google/gemma-4-e4b` and `qwen/qwen3.5-9b` served through an OpenAI-compatible local server — the models are not reliable enough to drive a long, unstructured investigation on their own: they may misread strict instructions, lose track of long context, and repeat bad inferences. forensia's architecture exists to compensate for exactly that. Larger or newer models may behave differently; the harness does not assume any specific model.
-
-## Design principles
-
-### 1. Offline first
-
-forensia is designed to keep working in offline or isolated environments.
-
-Investigation environments are often isolated for good reasons: regulatory requirements, contractual obligations, evidence preservation, and data classification. And if a compromised system is left connected to the network over the weekend, the thing waiting on Monday morning may not be a progress report — it may be a ransom note.
-
-The minimal operating assumption is a local machine, with a GPU if available.
-
-### 2. Do not trust the AI
-
-The model is a component, not the authority.
-
-The system divides work into small roles: identifying gaps, drafting hypotheses, planning queries, composing SQL, reviewing verdicts, extracting findings, outlining sections, and writing paragraphs. Each role is narrow enough that its purpose can be stated in one sentence. Anything that can be decided deterministically is handled by code, not by the model.
-
-**Current safeguards** (enforced in code today):
-
-* LLM-generated SQL is restricted to validated read-only queries before execution: a single `SELECT` statement, keyword filtering, a table-name allowlist, and a dry run. This is a robustness measure against model mistakes, not a hardened security boundary.
-* Routing, template matching, duplicate-query detection, fallback search, and output formatting run deterministically on the code side.
-* Investigation focus is ranked from persisted case state, report gaps, task state, dependencies, evidence coverage, retry history, and declarative priority weights. Ineligible or repeatedly inconclusive work is not selected indefinitely.
-* Hypothesis verdict values and relationships are validated against declared taxonomies; references and cycles are checked before relation state becomes authoritative.
-* Evidence links are role-validated and deduplicated. Declarative sufficiency rules reconcile an LLM-proposed verdict with source independence, contradiction, and observability before a terminal verdict is settled.
-* When a run stops at a resource or progress boundary, no hypothesis is silently left active: each is classified as deferred, blocked, needs-review, or untestable and linked to a persisted Gap and Task. A later evidence ingest reactivates only work whose recorded retry condition is satisfied.
-* Only validated query results are written back to the case database; findings and claims link back to the queries and evidence rows that produced them.
-* `--max-llm-calls` provides a hard cap on LLM usage per session.
-
-**Known limitations**: evidence sufficiency is a conservative deterministic guardrail, not a complete forensic inference engine. Semantic interpretation of results still uses an LLM, coverage can only describe the sources and metadata available to forensia, and a structurally sufficient but misinterpreted result can still be wrong. Claims that need review are marked accordingly, and human verification against source evidence remains mandatory.
-
-### 3. Spend time, not trust
-
-forensia does not try to produce a perfect conclusion in one pass. It repeatedly generates, tests, refines, and records hypotheses, and the process itself is observable: a human should be able to ask *"why did the system believe this?"* and trace the answer back through evidence, intermediate reasoning, and report output.
-
-The report is not written only at the end. It is continuously refreshed as the investigation progresses; unresolved gaps feed the next investigation cycle.
-
-### 4. Rules express investigative intent
-
-forensia is not a wrapper around existing detection rules, and not an AI summarizer of detections. Rule ecosystems such as Sigma encode a large amount of human knowledge about *what to detect*; forensia's rules additionally encode *what to investigate next* — why a detection matters and where the investigation should go. As models improve, this intent-rich structure should become more valuable, not less.
-
-## Architecture at a glance
-
-forensia works as an investigation loop.
+Only work where a language model is genuinely useful — generation and interpretation — goes to the LLM; everything deterministic runs in code.
 
 ```mermaid
 flowchart LR
@@ -220,7 +157,7 @@ flowchart LR
     end
 
     T[("Trace State<br/>steps / verdicts / evidence links")]
-    M[("Structured Memories<br/>working context")]
+    M[("Working State<br/>context projection")]
 
     E --> T
     S --> T
@@ -234,28 +171,27 @@ flowchart LR
     M -. context .-> CK
 ```
 
-At a high level:
+A weak LLM would get lost running this loop alone, so it is held together by three pillars:
 
-1. Collected artifacts (EVTX, MFT, Prefetch) are ingested and normalized.
-2. Rules produce findings, key points, possible hypotheses, and optional evidence requirements.
-3. The system refreshes source coverage, case state, report gaps, investigation tasks, and hypothesis relationships.
-4. Eligible hypotheses are ranked with deterministic, traceable priority scoring; legacy ordering remains the fallback for old cases.
-5. SQL queries are generated, validated, executed, and checked, with results linked to every affected hypothesis.
-6. Declarative sufficiency rules reconcile the proposed verdict with evidence independence, contradiction, and observability. Missing evidence is not treated as refutation when the required source could not be observed.
-7. Related hypotheses, findings, claims, tasks, and durable memory are updated, while relationship effects are propagated conservatively.
-8. Report sections are refreshed and unresolved gaps feed the next investigation cycle. At a stop boundary, every remaining active hypothesis is classified and linked to an explicit Gap/Task; stable stop codes and machine-readable classification counts are persisted separately.
+**1. Hypothesis verification bound to evidence.** LLM output is never stored as fact directly; the actual evidence is searched and checked first. Verdicts are managed as five states (`confirmed`, `refuted`, `inconclusive`, `untestable`, `newlead`), and code re-checks the referenced evidence, independence, contradictions, and observability before anything settles. A zero-row result is not refutation: only when the evidence source exists, the window is covered, and the result is still empty does refutation come into view. Hypothesis generation is seeded by rules that declare investigative intent — what was detected, why it matters, what to check next — rather than left to the model's imagination:
 
-The model is used where language and judgment are useful. Code is used where determinism and auditability matter. This separation is central to the project.
+```yaml
+id: windows-security-4624-rdp-logon
+query: SELECT ... FROM evtx_events WHERE event_id = 4624 AND logon_type = '10'
+finding:
+  title: RDP logon for {target_user}
+hypotheses:
+- id: lateral_movement_via_rdp
+  description: RDP logon from {src_ip} to {computer} may indicate lateral movement
+  confirm_when: { co_observed_event_ids: [4624], same_host: true, within_minutes: 5 }
+  refute_when: { zero_rows: true }
+  follow_up_questions:
+  - Was this RDP session followed by process execution (4688) on {computer}?
+correlate_with:
+- { event_ids: [4625, 4768, 4776], rationale: preceding failures or kerberos/NTLM auth }
+```
 
-### Memory and context
-
-forensia does not treat the model's context window as memory. Instead:
-
-* `case.duckdb` is the single source of truth: normalized evidence and all persistent investigation objects.
-* `memory/` is a human-readable Markdown projection of confirmed facts, entities, and timelines, used to assemble prompts. It can be regenerated from the database.
-* Each hypothesis gets private scratch notes. A scope gate prevents one hypothesis from reading another's scratch work: memory paths requested by the model are checked against a per-scope allowlist in code (rejecting out-of-scope and traversal paths), not merely left out of the prompt. This keeps a bad inference in one thread from leaking into another.
-* Prompts are rebuilt for every LLM call from a compact index; the model can request specific memory files on demand instead of receiving everything.
-* `trace.duckdb` records what was retrieved, shown, and rejected for each call, so context assembly is auditable after the fact.
+**2. Structured memory.** Three layers: **Case State** (`case.duckdb`, the single source of truth — evidence, findings, hypotheses, tasks, report progress), **Trace State** (`trace.duckdb` — why each state was reached: per-step I/O, judgments, focus-selection scores), and **Working State** (a regenerable projection that rebuilds, per LLM call, only the context the current role needs). Unconfirmed information is isolated per hypothesis and never leaks into another. External knowledge in the [OKF format](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing) is selected deterministically and injected as reference material, never as instructions.
 
 ```mermaid
 flowchart TB
@@ -284,36 +220,40 @@ flowchart TB
     LLM -. request / response log .-> TRACE
 ```
 
-The full data model, including the memory index format and retrieval telemetry, is documented in [docs/data-model.md](docs/data-model.md) and [docs/architecture.md](docs/architecture.md).
+**3. Auditability of the investigation process.** Information is managed by role — **Evidence** (normalized rows), **Finding** (observed phenomena), **Hypothesis** (interpretations to verify), **Claim** (assertions in the report, linked to their grounds), **Gap** (missing information) — so unverified hypotheses cannot become remembered facts. The report itself is investigation state: tables come from code, prose comes from the LLM paragraph by paragraph, and every section records the evidence it used. Excluded or suppressed data is never deleted; the value and the reason for exclusion are kept as state. What matters is not that the AI believes it is right, but that a human can verify correctness afterwards.
+
+Full details are in [docs/architecture.md](docs/architecture.md) and [docs/data-model.md](docs/data-model.md).
+
+### Design choices
+
+* **Not a tool driver.** Existing efforts such as [Mecha Hayabusa](https://github.com/Yamato-Security/mecha-hayabusa) mostly drive existing analysis tools with AI to speed up investigations. forensia instead attempts the loop itself: turning results into the next question, selecting evidence, and carrying open points forward.
+* **Own rules instead of Sigma reuse.** Rule ecosystems like [Sigma](https://github.com/sigmahq/sigma) encode what to detect; forensia's rules additionally encode what to investigate next, so they carry intent and hypothesis hints alongside detection SQL.
+* **No internal Tool Calling.** Small local models handle it unreliably, and depending on a specific model's implementation would narrow the choice of backends. The backend is only asked for OpenAI-compatible `chat/completions` with role-specific structured output; execution, validation, routing, and state transitions stay in code.
+
+## Current capabilities
+
+What works today:
+
+* Ingestion and normalization of EVTX, MFT, and Prefetch artifacts into DuckDB. These three are supported first because they fit the same unified pipeline (parse → staged JSONL → normalized DuckDB tables); more artifact types are planned on the same approach. The current adapter interface can be used to add your own, although it is not yet stable (see [docs/extending.md](docs/extending.md)).
+* A rule engine that produces findings, key points, and hypothesis seeds from declarative rulepacks.
+* A case-aware investigation loop: hypothesis seeding, deterministic next-best-focus selection, SQL query planning and composition, execution with fallback search, evidence sufficiency reconciliation, verdict propagation, and finding extraction.
+* Lightweight hypothesis relationships (`parent_of`, `prerequisite_for`, `derived_from`, `contradicts`, `alternative_to`, and `supersedes`) stored in DuckDB and validated in Python, without a graph database.
+* Evidence coverage and observability tracking that distinguishes a negative query result from unavailable, incomplete, failed, or unsupported evidence sources. Raw artifact timestamps remain available while sentinel, overflow, parser-invalid, and case-window outliers are excluded from analysis ranges with reason counts.
+* Incremental report generation from templates, refreshed as findings are confirmed, exported as Markdown and HTML.
+* A local web UI (`forensia serve`) showing investigation progress, findings, hypotheses, report sections, timeline data, and evidence references.
+* Knowledge injection from a local folder of Markdown files (`--knowledge`), used to bring organization- or case-specific context into prompts.
+
+In the configurations tested during development — small local models such as `google/gemma-4-e4b` and `qwen/qwen3.5-9b` served through an OpenAI-compatible local server — the models are not reliable enough to drive a long, unstructured investigation on their own. forensia's architecture exists to compensate for exactly that. Larger or newer models may behave differently; the harness does not assume any specific model.
 
 ## Roadmap
 
-The main lesson from this project so far: small local models need more than good prompts — they need to retrieve the smallest set of relevant context for the current task, at the right time. When a model starts from insufficient context, it makes a wrong inference; when that inference is fed back into later prompts, it rediscovers the same mistake repeatedly.
+forensia is still in early development. The current goal is not a tool accurate enough to replace practice; it is to find out how much of what static rules and fixed processing cannot handle can be covered architecturally with a weak local LLM.
 
-The long-term direction is therefore strongly tied to retrieval:
+* **Broadening the evidence.** Today's traces ([EVTX](https://github.com/sumeshi/evtx2es), [MFT](https://github.com/sumeshi/mft2es), [Prefetch](https://github.com/sumeshi/prefetch2es)) came first because they fit a uniform pipeline. Browser records, registry data, and other messier traces will be added where the effort is lower and the payoff higher — full coverage is not the goal.
+* **Multi-host support.** Real incidents rarely involve one machine. Each host must be treated independently while accounts, IPs, processes, and timelines are examined across them — a large design change.
+* **Measuring investigation quality.** In local trials with the [CFReDS](https://cfreds-archive.nist.gov/data_leakage_case/data-leakage-case.html) data-leakage case, runs have come close to the answer on 8–9 of 12 questions (a handful of runs, one model and configuration — not an official result). Beyond answer accuracy, evaluation will also track hypothesis diversity, memory duplication, and LLM call patterns, since chasing benchmark answers alone can degrade the investigation itself.
 
-* Scaling the knowledge layer into a local "second brain": adding full-text indexing and search on top of today's `--knowledge` injection, so that large collections of documents, notes, reports, and playbooks can be searched and only the relevant fragments pulled into prompts on demand.
-* More artifact adapters (browser data, email traces).
-* More declarative investigation profiles, and a clearer separation between generic engine logic and case-specific knowledge.
-* Better template documentation and more stable rule/template formats.
-
-The long-term goal is not merely to automate reports. It is to build an offline investigation assistant that can use evidence, rules, memory, retrieval, and human intent to help answer *"what actually happened?"* — and to let a human trace exactly how that answer was reached, and decide whether to trust it.
-
-## Benchmarks
-
-Benchmark-related notes are documented in [BENCHMARK.md](BENCHMARK.md).
-Ground-truth answers for the scored questions are documented in [BENCHMARK-ANSWERS.md](BENCHMARK-ANSWERS.md). These are derived from the public NIST CFReDS dataset.
-
-The repository does not include large forensic datasets or derived case directories for size, license, and sensitivity reasons. Obtain benchmark data from the original public sources, extract artifacts into a local working directory, and run forensia against that local copy:
-
-```bash
-forensia templates-export ./benchmark-templates
-forensia investigate cfreds ./path/to/extracted-artifacts --profile windows-basic --template-dir ./benchmark-templates
-```
-
-Reports are written during the investigation and can be browsed in the web UI (`forensia serve cfreds`).
-
-Benchmark-specific behavior should come from templates, profiles, or rules — never from hidden assumptions in the core engine.
+Benchmark notes are in [BENCHMARK.md](BENCHMARK.md), with ground-truth answers in [BENCHMARK-ANSWERS.md](BENCHMARK-ANSWERS.md). The repository does not include forensic datasets; obtain them from the original public sources. Benchmark-specific behavior should come from templates, profiles, or rules — never from hidden assumptions in the core engine.
 
 ## Development status and contributing
 
