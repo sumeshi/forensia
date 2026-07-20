@@ -1,7 +1,7 @@
 name: Release
 
 # Publishes forensia to PyPI when a GitHub Release is published.
-# The web UI (Svelte/Vite) is built and staged into src/forensia/static so it
+# The web UI (Svelte/Vite) is built and staged into src/forensia/web/static so it
 # ships inside the wheel/sdist (see MANIFEST.in). Uses PyPI Trusted Publishing
 # (OIDC) — no API token secret is required; configure the trusted publisher on
 # PyPI once (project "forensia", workflow "release.yml", environment "pypi").
@@ -44,11 +44,11 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
-      - name: Stage web UI into src/forensia/static
+      - name: Stage web UI into src/forensia/web/static
         run: |
-          rm -rf src/forensia/static
-          mkdir -p src/forensia/static
-          cp -r web_ui/dist/. src/forensia/static/
+          rm -rf src/forensia/web/static
+          mkdir -p src/forensia/web/static
+          cp -r web_ui/dist/. src/forensia/web/static/
 
       # --- Quality gate, then build sdist + wheel ---
       - name: Install uv
@@ -71,8 +71,8 @@ jobs:
           whl = glob.glob("dist/*.whl")[0]
           names = zipfile.ZipFile(whl).namelist()
           assert any(
-              n == "forensia/static/index.html" for n in names
-          ), f"forensia/static/index.html missing from {whl}"
+              n == "forensia/web/static/index.html" for n in names
+          ), f"forensia/web/static/index.html missing from {whl}"
           print("OK: web UI bundled in", whl)
           PY
 
