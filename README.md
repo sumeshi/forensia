@@ -6,27 +6,25 @@
 
 ---
 
-<img width="2471" height="1328" alt="cockpit" src="https://github.com/user-attachments/assets/36225144-70ea-4ecd-96f9-b9f84ce9e30d" />
-Investigation cockpit showing case progress, hypotheses, findings, and report sections.
-
-<img width="2466" height="1330" alt="report" src="https://github.com/user-attachments/assets/c6d61b5e-16e2-4e73-82e2-bde4b29fac99" />
-Generated forensic report with evidence-backed findings and investigation context.
-
 ## Overview
 
-`forensia` blends **forensics** and **AI**.
-
-It is an experimental AI digital-forensics harness. You give it artifacts that have already been acquired from a target machine (EVTX, MFT, Prefetch), and it uses a local LLM to generate and verify investigation hypotheses and to continuously update a report. It does not collect evidence from live systems, and the model is only asked to handle one narrow step at a time.
+**forensia is an experimental local-LLM harness for Windows digital forensic investigations.** You give it artifacts that have already been acquired from a target machine (EVTX, MFT, Prefetch), and it uses a local LLM to generate and verify investigation hypotheses and to continuously update a report. It does not collect evidence from live systems, and the model is only asked to handle one narrow step at a time.
 
 Incident data is often too sensitive to send anywhere — sometimes it cannot even leave the machine. So forensia is designed to run fully offline, on hardware a small CSIRT can actually afford, with small local models in the 4B–8B range. Models that small misread instructions, lose long context, and repeat mistakes; the harness exists to compensate for exactly that. It is not an AI wrapper for speeding up existing tools, but an architectural experiment in treating a weak LLM as one component of an investigation loop.
-
-The full design story is written up (in Japanese) in [README-jp.md](README-jp.md).
 
 Three principles drive the design:
 
 1. **Fight alone** — keep working fully offline, in isolated environments.
 2. **Do not over-expect from the LLM** — the model only gets tasks that are hard to build statically (hypothesis generation, interpretation, report prose). Everything deterministic — evidence search, priority scoring, state transitions, persistence — runs in code.
 3. **Spend time like water** — no perfect conclusion in one pass. Hold multiple hypotheses, iterate with bounded stopping conditions, and update the report continuously as the investigation progresses.
+
+## Screenshots
+
+![cockpit](https://github.com/user-attachments/assets/36225144-70ea-4ecd-96f9-b9f84ce9e30d)
+Investigation cockpit showing case progress, hypotheses, findings, and report sections.
+
+![report](https://github.com/user-attachments/assets/c6d61b5e-16e2-4e73-82e2-bde4b29fac99)
+Generated forensic report with evidence-backed findings and investigation context.
 
 ## Quick start
 
@@ -98,14 +96,14 @@ forensia serve case001 --port 8000            # open the local web UI (cockpit)
 
 ### What gets generated
 
-Each case produces a self-contained directory:
+The `case_dir` argument (`case001` above) becomes the case directory itself — forensia does not nest output under a separate build folder:
 
 ```
-dist/<case>/
+case001/
 ├─ raw/                 · Parsed artifact records (JSONL) staged during ingest
 ├─ db/case.duckdb       · Normalized evidence + hypotheses + findings + report sections
 ├─ db/trace.duckdb      · Investigation steps and retrieval telemetry
-├─ memory/              · LLM persistent memory (Markdown, human-readable)
+├─ memory/              · Regenerable Markdown projection used to build LLM context
 ├─ ai_logs/             · Raw LLM input/output logs (per-phase JSON)
 ├─ report_template/     · Case-local copy of editable report templates and formats
 ├─ reports/             · report.md / report.html / structured CSV / UI snapshots
@@ -119,6 +117,21 @@ dist/<case>/
 > * Auto-generated findings require human verification against the source evidence before use. They must not feed legal or disciplinary decisions directly, and they do not replace the original evidence.
 > * Work on read-only copies of artifacts, never on originals.
 > * Case directories contain evidence-derived data (databases, memory files, AI logs). Do not publish them. See [SECURITY.md](SECURITY.md).
+
+## Current capabilities
+
+What works today:
+
+* Ingestion and normalization of EVTX, MFT, and Prefetch artifacts into DuckDB. These three are supported first because they fit the same unified pipeline (parse → staged JSONL → normalized DuckDB tables); more artifact types are planned on the same approach. The current adapter interface can be used to add your own, although it is not yet stable (see [docs/extending.md](docs/extending.md)).
+* A rule engine that produces findings, key points, and hypothesis seeds from declarative rulepacks.
+* A case-aware investigation loop: hypothesis seeding, deterministic next-best-focus selection, SQL query planning and composition, execution with fallback search, evidence sufficiency reconciliation, verdict propagation, and finding extraction.
+* Lightweight hypothesis relationships (`parent_of`, `prerequisite_for`, `derived_from`, `contradicts`, `alternative_to`, and `supersedes`) stored in DuckDB and validated in Python, without a graph database.
+* Evidence coverage and observability tracking that distinguishes a negative query result from unavailable, incomplete, failed, or unsupported evidence sources. Raw artifact timestamps remain available while sentinel, overflow, parser-invalid, and case-window outliers are excluded from analysis ranges with reason counts.
+* Incremental report generation from templates, refreshed as findings are confirmed, exported as Markdown and HTML.
+* A local web UI (`forensia serve`) showing investigation progress, findings, hypotheses, report sections, timeline data, and evidence references.
+* Knowledge injection from a local folder of Markdown files (`--knowledge`), used to bring organization- or case-specific context into prompts.
+
+In the configurations tested during development — small local models such as `google/gemma-4-e4b` and `qwen/qwen3.5-9b` served through an OpenAI-compatible local server — the models are not reliable enough to drive a long, unstructured investigation on their own. forensia's architecture exists to compensate for exactly that. Larger or newer models may behave differently; the harness does not assume any specific model.
 
 ## Architecture
 
@@ -150,7 +163,7 @@ flowchart LR
         SF --> TR["Progress Tracker<br/>propagate / confirm / refute / pivot"]
         TR -->|active| P
         TR -->|resolved| R["Resolver<br/>stale report sections + follow-up gaps"]
-        TR -->|bounded / blocked| WS["Work State<br/>classify + persist retry condition"]
+        TR -->|bounded / blocked| WS["Termination Handler<br/>classify unresolved work + persist retry conditions"]
         WS --> E
         R --> RW["Report Writer<br/>section outline → narrative paragraphs"]
         RW -->|new gaps| E
@@ -226,28 +239,13 @@ Full details are in [docs/architecture.md](docs/architecture.md) and [docs/data-
 
 ### Design choices
 
-* **Not a tool driver.** Existing efforts such as [Mecha Hayabusa](https://github.com/Yamato-Security/mecha-hayabusa) mostly drive existing analysis tools with AI to speed up investigations. forensia instead attempts the loop itself: turning results into the next question, selecting evidence, and carrying open points forward.
+* **The investigation loop lives outside the model.** Rather than giving an LLM direct control of analysis tools, forensia turns results into the next question, selects evidence, and carries unresolved work forward through deterministic orchestration.
 * **Own rules instead of Sigma reuse.** Rule ecosystems like [Sigma](https://github.com/sigmahq/sigma) encode what to detect; forensia's rules additionally encode what to investigate next, so they carry intent and hypothesis hints alongside detection SQL.
 * **No internal Tool Calling.** Small local models handle it unreliably, and depending on a specific model's implementation would narrow the choice of backends. The backend is only asked for OpenAI-compatible `chat/completions` with role-specific structured output; execution, validation, routing, and state transitions stay in code.
 
-## Current capabilities
-
-What works today:
-
-* Ingestion and normalization of EVTX, MFT, and Prefetch artifacts into DuckDB. These three are supported first because they fit the same unified pipeline (parse → staged JSONL → normalized DuckDB tables); more artifact types are planned on the same approach. The current adapter interface can be used to add your own, although it is not yet stable (see [docs/extending.md](docs/extending.md)).
-* A rule engine that produces findings, key points, and hypothesis seeds from declarative rulepacks.
-* A case-aware investigation loop: hypothesis seeding, deterministic next-best-focus selection, SQL query planning and composition, execution with fallback search, evidence sufficiency reconciliation, verdict propagation, and finding extraction.
-* Lightweight hypothesis relationships (`parent_of`, `prerequisite_for`, `derived_from`, `contradicts`, `alternative_to`, and `supersedes`) stored in DuckDB and validated in Python, without a graph database.
-* Evidence coverage and observability tracking that distinguishes a negative query result from unavailable, incomplete, failed, or unsupported evidence sources. Raw artifact timestamps remain available while sentinel, overflow, parser-invalid, and case-window outliers are excluded from analysis ranges with reason counts.
-* Incremental report generation from templates, refreshed as findings are confirmed, exported as Markdown and HTML.
-* A local web UI (`forensia serve`) showing investigation progress, findings, hypotheses, report sections, timeline data, and evidence references.
-* Knowledge injection from a local folder of Markdown files (`--knowledge`), used to bring organization- or case-specific context into prompts.
-
-In the configurations tested during development — small local models such as `google/gemma-4-e4b` and `qwen/qwen3.5-9b` served through an OpenAI-compatible local server — the models are not reliable enough to drive a long, unstructured investigation on their own. forensia's architecture exists to compensate for exactly that. Larger or newer models may behave differently; the harness does not assume any specific model.
-
 ## Roadmap
 
-forensia is still in early development. The current goal is not a tool accurate enough to replace practice; it is to find out how much of what static rules and fixed processing cannot handle can be covered architecturally with a weak local LLM.
+The current goal is not a tool accurate enough to replace practice; it is to find out how much of what static rules and fixed processing cannot handle can be covered architecturally with a weak local LLM.
 
 * **Broadening the evidence.** Today's traces ([EVTX](https://github.com/sumeshi/evtx2es), [MFT](https://github.com/sumeshi/mft2es), [Prefetch](https://github.com/sumeshi/prefetch2es)) came first because they fit a uniform pipeline. Browser records, registry data, and other messier traces will be added where the effort is lower and the payoff higher — full coverage is not the goal.
 * **Multi-host support.** Real incidents rarely involve one machine. Each host must be treated independently while accounts, IPs, processes, and timelines are examined across them — a large design change.
@@ -269,11 +267,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the package map, call-flow diagrams, 
 
 ## Safety notes
 
-* forensia is an investigation aid, not a replacement for human review. Always verify findings against source evidence.
-* Do not use auto-generated findings directly for legal or disciplinary decisions.
-* If `LLM_BASE_URL` points to a cloud or external endpoint, prompts may include case-derived evidence or summaries. Use a local or offline LLM for sensitive investigations.
-* Do not publish real case directories, raw evidence, reports, AI logs, memory files, DuckDB databases, email stores, disk images, or other investigation artifacts.
-* See [SECURITY.md](SECURITY.md) for details.
+The warning under [What gets generated](#what-gets-generated) covers the essentials — human verification, read-only artifact handling, and not publishing case directories. See [SECURITY.md](SECURITY.md) for the full data-handling and disclosure policy, including guidance on cloud vs. local LLM endpoints.
 
 ## License
 
