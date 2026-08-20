@@ -9,6 +9,7 @@ from forensia.ai.checking.assessment import assess_evidence_group
 from forensia.ai.checking.sufficiency import (
     EvidenceLink,
     SufficiencyResult,
+    create_evidence_links_for_query,
     create_hypothesis_evidence_link,
     evaluate_sufficiency,
     load_evidence_links,
@@ -32,6 +33,12 @@ class SufficiencyEvaluationTests(unittest.TestCase):
         self.assertEqual(result.status, "insufficient")
         self.assertEqual(result.score, 0.0)
         self.assertEqual(result.independent_groups, 0)
+        explicit_no_capabilities = evaluate_sufficiency(
+            {"hypothesis_id": "H-001", "required_capabilities": []},
+            [],
+            {"evtx:logon": {"state": "unavailable"}},
+        )
+        self.assertEqual(explicit_no_capabilities.status, "insufficient")
 
     def test_single_supporting_returns_sufficient(self) -> None:
         links = [
@@ -41,7 +48,7 @@ class SufficiencyEvaluationTests(unittest.TestCase):
                 evidence_id="evtx-1",
                 finding_id="",
                 query_id="Q1",
-                assessment_id="",
+                assessment_id="EA-test-1",
                 role="supporting",
                 source_family="evtx",
                 source_file="Security.evtx",
@@ -56,6 +63,25 @@ class SufficiencyEvaluationTests(unittest.TestCase):
         )
         self.assertIn(result.status, ("sufficient", "partial"))
 
+    def test_legacy_unassessed_link_is_not_evidence(self) -> None:
+        link = EvidenceLink(
+            link_id="legacy",
+            hypothesis_id="H-001",
+            evidence_id="evtx-legacy",
+            finding_id="",
+            query_id="Q1",
+            assessment_id="",
+            role="supporting",
+            source_family="evtx",
+            source_file="Security.evtx",
+            derivation_group="evtx-legacy",
+            strength="strong",
+        )
+        result = evaluate_sufficiency({"hypothesis_id": "H-001"}, [link], {})
+        self.assertEqual(result.independent_groups, 0)
+        self.assertEqual(result.families, [])
+        self.assertEqual(result.status, "insufficient")
+
     def test_weak_single_source_is_not_sufficient(self) -> None:
         links = [
             EvidenceLink(
@@ -64,7 +90,7 @@ class SufficiencyEvaluationTests(unittest.TestCase):
                 evidence_id="mft-1",
                 finding_id="",
                 query_id="Q1",
-                assessment_id="",
+                assessment_id="EA-test-2",
                 role="supporting",
                 source_family="mft",
                 source_file="$MFT",
@@ -87,7 +113,7 @@ class SufficiencyEvaluationTests(unittest.TestCase):
                 evidence_id="evtx-1",
                 finding_id="",
                 query_id="Q1",
-                assessment_id="",
+                assessment_id="EA-test-3",
                 role="supporting",
                 source_family="evtx",
                 source_file="Security.evtx",
@@ -100,7 +126,7 @@ class SufficiencyEvaluationTests(unittest.TestCase):
                 evidence_id="prefetch-1",
                 finding_id="",
                 query_id="Q2",
-                assessment_id="",
+                assessment_id="EA-test-4",
                 role="supporting",
                 source_family="prefetch",
                 source_file="test.pf",
@@ -125,7 +151,7 @@ class SufficiencyEvaluationTests(unittest.TestCase):
                 evidence_id="evtx-1",
                 finding_id="",
                 query_id="Q1",
-                assessment_id="",
+                assessment_id="EA-test-5",
                 role="supporting",
                 source_family="evtx",
                 source_file="Security.evtx",
@@ -138,7 +164,7 @@ class SufficiencyEvaluationTests(unittest.TestCase):
                 evidence_id="evtx-2",
                 finding_id="",
                 query_id="Q2",
-                assessment_id="",
+                assessment_id="EA-test-6",
                 role="contradictory",
                 source_family="evtx",
                 source_file="Security.evtx",
@@ -162,7 +188,7 @@ class SufficiencyEvaluationTests(unittest.TestCase):
                 evidence_id="evtx-1",
                 finding_id="F1",
                 query_id="",
-                assessment_id="",
+                assessment_id="EA-test-7",
                 role="supporting",
                 source_family="evtx",
                 source_file="Security.evtx",
@@ -175,7 +201,7 @@ class SufficiencyEvaluationTests(unittest.TestCase):
                 evidence_id="evtx-2",
                 finding_id="",
                 query_id="Q1",
-                assessment_id="",
+                assessment_id="EA-test-8",
                 role="supporting",
                 source_family="evtx",
                 source_file="Security.evtx",
@@ -428,6 +454,23 @@ class EvidenceLinkPersistenceTests(unittest.TestCase):
                     ).fetchone()[0],
                     "EA-v1-deterministic-test",
                 )
+
+    def test_query_links_share_assessment_derivation_group(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                create_evidence_links_for_query(
+                    db,
+                    hypothesis_id="H-001",
+                    evidence_ids=["evtx-1", "evtx-2"],
+                    query_id="Q-1",
+                    assessment_id="EA-query-1",
+                    derivation_group="Q-1",
+                )
+                groups = db.execute(
+                    "SELECT DISTINCT derivation_group FROM hypothesis_evidence"
+                ).fetchall()
+                self.assertEqual(groups, [("Q-1",)])
 
     def test_unobservable_sufficiency_updates_linked_claim(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

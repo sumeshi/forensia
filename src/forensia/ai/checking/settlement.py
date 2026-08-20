@@ -271,7 +271,11 @@ def _check_no_unresolved_contradictions(
 
     Returns (passed, reason).
     """
-    contradictory = [l for l in links if l.role == "contradictory"]
+    contradictory = [
+        l
+        for l in links
+        if l.role == "contradictory" and str(l.assessment_id or "").strip()
+    ]
     if not contradictory:
         return True, "no contradictory evidence"
     # Group by derivation
@@ -395,7 +399,11 @@ def decide_settlement(
         gates_failed: list[str] = []
 
         # Gate 4a: Supporting EvidenceLink ≥ 1
-        supporting_links = [l for l in links if l.role == "supporting"]
+        supporting_links = [
+            l
+            for l in links
+            if l.role == "supporting" and str(l.assessment_id or "").strip()
+        ]
         if supporting_links:
             gates_passed.append("evidence_link_exists")
         else:
@@ -473,13 +481,36 @@ def decide_settlement(
             sufficiency_score=suff_result.score,
         )
 
-    # ── Path 5: Checker verdict passed through ──
-    # For refuted/untestable from the checker, allow direct settlement
-    if si.checker_verdict in ("refuted", "untestable"):
+    # ── Path 5: Assessed contradiction ──
+    # A checker refutation is admissible only when the deterministic
+    # assessment produced at least one contradictory observation group.
+    if si.checker_verdict == "refuted":
+        contradictory_groups = {
+            l.derivation_group or l.evidence_id
+            for l in links
+            if l.role == "contradictory" and str(l.assessment_id or "").strip()
+        }
+        if contradictory_groups:
+            return SettlementDecision(
+                verdict="refuted",
+                reason="Refuted with assessed contradictory evidence group",
+                gates_passed=["assessed_contradictory_group"],
+            )
         return SettlementDecision(
-            verdict=si.checker_verdict,
-            reason=f"Checker verdict: {si.checker_verdict}",
-            gates_passed=["checker_verdict_passthrough"],
+            verdict="inconclusive",
+            reason="Refuted checker verdict lacks an assessed contradictory evidence group",
+            allowed=False,
+            gates_failed=["no_assessed_contradictory_group"],
+        )
+
+    # An untestable checker verdict is admissible only through the explicit
+    # unavailable/missing/zero-row auto paths above; never pass it through.
+    if si.checker_verdict == "untestable":
+        return SettlementDecision(
+            verdict="inconclusive",
+            reason="Untestable checker verdict lacks an approved auto-untestable condition",
+            allowed=False,
+            gates_failed=["no_auto_untestable_condition"],
         )
 
     # ── Path 6: Inconclusive / newlead — no settlement ──

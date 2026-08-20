@@ -63,6 +63,7 @@ def _make_evidence_link(
         source_family=source_family,
         strength=strength,
         query_id="Q-test",
+        assessment_id="EA-test",
     )
 
 
@@ -497,7 +498,8 @@ class AutoConfirmOverrideTests(unittest.TestCase):
                 )
                 decision = settle_hypothesis(db, si)
                 # Should NOT be confirmed — checker refuted takes precedence
-                self.assertEqual(decision.verdict, "refuted")
+                self.assertEqual(decision.verdict, "inconclusive")
+                self.assertFalse(decision.allowed)
 
     def test_untestable_not_overridden_by_auto_confirm(self) -> None:
         """Checker untestable cannot be overridden by auto-confirm."""
@@ -520,7 +522,8 @@ class AutoConfirmOverrideTests(unittest.TestCase):
                     co_observation_satisfied=True,
                 )
                 decision = settle_hypothesis(db, si)
-                self.assertEqual(decision.verdict, "untestable")
+                self.assertEqual(decision.verdict, "inconclusive")
+                self.assertFalse(decision.allowed)
 
 
 class AutoRefuteTests(unittest.TestCase):

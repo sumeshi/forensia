@@ -553,6 +553,9 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
                 role=role,
                 created_session=session_id,
                 assessment_id=assessment.assessment_id,
+                # Every row from this query is one conservative observation
+                # group; do not let evidence IDs manufacture independence.
+                derivation_group=assessment.derivation_group,
             )
     return "ok"
 
@@ -574,6 +577,7 @@ def _apply_sufficiency_guard(rs: _HypothesisRunState) -> None:
             investigation_text=investigation_text,
             evidence_requirements=rs.hypothesis.evidence_requirements,
             llm_verdict=original_verdict,
+            verification_spec=rs.hypothesis.verification_spec,
         )
     )
     check_result.verdict = final_verdict

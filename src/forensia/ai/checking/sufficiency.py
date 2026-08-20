@@ -118,6 +118,16 @@ def _group_by_derivation(links: list[EvidenceLink]) -> dict[str, list[EvidenceLi
     return groups
 
 
+def _assessed_links(links: list[EvidenceLink]) -> list[EvidenceLink]:
+    """Return links with an Evidence Assessment provenance identifier.
+
+    Links written by pre-assessment versions are retained for history, but they
+    are not admissible evidence for sufficiency or settlement.  Keeping this
+    filter here also makes all callers use the same legacy-data boundary.
+    """
+    return [link for link in links if str(link.assessment_id or "").strip()]
+
+
 def evaluate_sufficiency(
     hypothesis: dict[str, Any],
     links: list[EvidenceLink],
@@ -158,14 +168,23 @@ def evaluate_sufficiency(
     reasons: list[str] = []
     missing: list[str] = []
 
+    raw_capabilities = hypothesis.get("required_capabilities")
     relevant_capabilities = {
-        str(item) for item in hypothesis.get("required_capabilities", []) if str(item)
+        str(item) for item in (raw_capabilities or []) if str(item)
     }
-    relevant_coverage = {
-        key: value
-        for key, value in coverage.items()
-        if not relevant_capabilities or key.split(":", 1)[-1] in relevant_capabilities
-    }
+    relevant_coverage = (
+        {
+            key: value
+            for key, value in coverage.items()
+            if key.split(":", 1)[-1] in relevant_capabilities
+        }
+        if raw_capabilities is not None
+        else dict(coverage)
+    )
+
+    # Legacy links without an assessment_id remain loadable, but cannot
+    # contribute support, contradiction, family diversity, or independence.
+    links = _assessed_links(links)
 
     if not links:
         unavailable = [
@@ -386,9 +405,25 @@ def assess_and_persist_sufficiency(
     investigation_text: str,
     evidence_requirements: dict[str, Any] | None,
     llm_verdict: str,
+    verification_spec: Any | None = None,
 ) -> tuple[SufficiencyResult, str, str, list[str]]:
     """Run the authoritative machine assessment and persist its projections."""
-    required_capabilities = infer_capabilities(investigation_text)
+    if verification_spec is not None:
+        # An admitted hypothesis' canonical VerificationSpec is authoritative,
+        # including an intentional empty capability list.  Text inference is
+        # retained only for legacy callers that have no spec to provide.
+        required_capabilities = [
+            str(item)
+            for item in (
+                getattr(verification_spec, "required_capabilities", None)
+                or verification_spec.get("required_capabilities", [])
+                if isinstance(verification_spec, dict)
+                else getattr(verification_spec, "required_capabilities", [])
+            )
+            if str(item)
+        ]
+    else:
+        required_capabilities = infer_capabilities(investigation_text)
     result = evaluate_sufficiency(
         {
             "hypothesis_id": hypothesis_id,
@@ -456,8 +491,14 @@ def create_hypothesis_evidence_link(
     if existing:
         if assessment_id and assessment_id != str(existing[1] or ""):
             db.execute(
-                "UPDATE hypothesis_evidence SET assessment_id = ? WHERE link_id = ?",
-                [assessment_id, existing[0]],
+                "UPDATE hypothesis_evidence SET assessment_id = ?, derivation_group = "
+                "COALESCE(NULLIF(?, ''), derivation_group) WHERE link_id = ?",
+                [assessment_id, derivation_group, existing[0]],
+            )
+        elif derivation_group:
+            db.execute(
+                "UPDATE hypothesis_evidence SET derivation_group = ? WHERE link_id = ?",
+                [derivation_group, existing[0]],
             )
         return str(existing[0])
     link_id = f"EL-{uuid.uuid4().hex[:12]}"
@@ -502,6 +543,7 @@ def create_evidence_links_for_query(
     created_session: str = "",
     strengths: dict[str, str] | None = None,
     assessment_id: str = "",
+    derivation_group: str = "",
 ) -> list[str]:
     """Create evidence links for all evidence IDs from a query result."""
     link_ids = []
@@ -515,6 +557,7 @@ def create_evidence_links_for_query(
             created_session=created_session,
             strength=(strengths or {}).get(eid, "moderate"),
             assessment_id=assessment_id,
+            derivation_group=derivation_group,
         )
         link_ids.append(lid)
     return link_ids

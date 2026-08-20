@@ -131,9 +131,9 @@ unsupported condition types remain contextual. The existing link stores the
 resulting `assessment_id`, role, query/evidence IDs, and source/derivation
 provenance columns; it does not persist the full assessment object. Legacy
 links with an empty assessment ID are retained for compatibility and are not
-represented as independently assessed history. Sufficiency consumes these
-links without assigning their roles. The existing settlement guard remains
-the state-transition boundary.
+represented as independently assessed history or counted by Sufficiency and
+Settlement. Sufficiency consumes assessed links without assigning their roles.
+The existing settlement guard remains the state-transition boundary.
 
 ### 1.4 Report generation
 
