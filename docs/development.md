@@ -161,6 +161,11 @@ Changing `CREATE TABLE IF NOT EXISTS` in `db/schema.py` is not applied to existi
 
 `list_event_volume_dto` drops year < 1980 (Windows epoch 1601 garbage) and year > today + 5 (NTFS FILETIME overflow, 3220 / 30828, etc.). The same filter is applied in `aggregate_event_volume`.
 
+All snapshot refresh paths also write `reports/api/snapshot_metadata.json`. Use
+`GET /api/snapshot-metadata` when diagnosing UI/report drift: it reports the generated
+revision, current revision, generation time, and `current`/`in-progress`/`stale` state.
+Do not diagnose drift from file timestamps alone.
+
 ### 5.3 Server-side date sanity
 
 Wherever the API or report writer receives a timestamp from raw evidence, apply the sanity range 1980 ≤ year ≤ today + 5. The report writer's quality gate also detects out-of-range dates in narratives ([report-pipeline.md](report-pipeline.md)). Do not assume MFT / EVTX timestamps are valid.

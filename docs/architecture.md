@@ -35,8 +35,8 @@ flowchart LR
 Registry hives enter through the same artifact adapter dispatch as EVTX, MFT,
 and Prefetch. `evidence/registry.py` detects `REGF` content, treats directory
 layout as a grouping candidate only, and keeps unattributed primaries separate.
-`.LOG1`/`.LOG2` files are admitted only as companions to a matching primary;
-they are not standalone datasets. The adapter streams the pinned `reg2es`
+`.LOG`/`.LOG1`/`.LOG2` files are admitted only as non-empty companions to a matching
+primary; they are not standalone datasets. The adapter streams the pinned `reg2es`
 generator output to raw JSONL. The Registry normalization boundary projects
 lossless records, contributor provenance, conservative completeness, and
 Coverage through the existing normalize/coverage dispatchers.
@@ -50,6 +50,11 @@ The existing SQL schema-card/allow-list exposes `registry_artifacts` and
 and report evidence map. Valid Registry timestamps are fed into the existing
 `case_timeline` table. Coverage remains partial when plugin completeness is
 unproven, so an empty Registry result is not treated as a refutation.
+
+LLM working Memory is a bounded projection, not another evidence authority. Finding
+cards are selected round-robin across the existing report finding themes and retain
+individual finding/evidence IDs plus theme drill-down IDs. Scope cards rank all observed
+host/time candidates and never delete or hide authoritative evidence.
 
 Entry points:
 - User perspective: `forensia investigate <case> <input_dir>` ([src/forensia/cli/app.py](../src/forensia/cli/app.py))

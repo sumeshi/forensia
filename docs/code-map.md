@@ -124,10 +124,10 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 |---|---|
 | [src/forensia/api/dto.py](../src/forensia/api/dto.py) | Pydantic DTO definitions |
 | [src/forensia/api/service.py](../src/forensia/api/service.py) | DB → DTO conversion. Aggregation queries for UI / report_brief |
-| [src/forensia/api/cache.py](../src/forensia/api/cache.py) | API snapshot writes (`write_volatile_api_snapshots` / `write_full_api_snapshots` / `write_progress_snapshot`) |
+| [src/forensia/api/cache.py](../src/forensia/api/cache.py) | API snapshot writes (`write_volatile_api_snapshots` / `write_full_api_snapshots` / `write_progress_snapshot`) and durable revision metadata |
 | [src/forensia/api/progress.py](../src/forensia/api/progress.py) | Persist and list progress events |
 | [src/forensia/report/section_views.py](../src/forensia/report/section_views.py) | Report-section DTO projection and server-side Markdown/HTML body rendering |
-| [src/forensia/web/app.py](../src/forensia/web/app.py) | FastAPI router. Returns `/api/*` from snapshot or DB fallback |
+| [src/forensia/web/app.py](../src/forensia/web/app.py) | FastAPI router. Returns `/api/*` from snapshot or DB fallback and exposes live snapshot staleness metadata |
 | [web_ui/](../web_ui/) | Svelte + Vite + Tailwind frontend. UI updates via snapshot polling |
 
 Report admission is implemented in `ai/report_gap.py` using the existing Gap/Task

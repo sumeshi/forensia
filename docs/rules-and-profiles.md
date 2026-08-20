@@ -6,7 +6,19 @@ Detection rules, profile selection, suppression via allowlist, and the declarati
 
 ## 1. Rulepack
 
-A rulepack is a YAML definition under `src/forensia/knowledge/rulepacks/windows/` (or similar). The Pydantic models in `src/forensia/knowledge/rules/models.py` enforce the schema with `extra="forbid"`, so unknown fields are rejected at load time.
+A rulepack is a directory of YAML rule files under `src/forensia/knowledge/rulepacks/<pack>/` with a `pack.yaml` (`id`, `title`, `applies_when`). The Pydantic models in `src/forensia/knowledge/rules/models.py` enforce the schema with `extra="forbid"`, so unknown fields are rejected at load time.
+
+Bundled packs:
+
+| Pack | Tables queried | Focus |
+|---|---|---|
+| `windows` | `evtx_events`, `prefetch_executions` | Windows security/system/PowerShell/RDP/SMB event detection |
+| `registry` | `registry_artifacts` | Persistence (Run keys, services, scheduled tasks), port proxy, remote-access / macro / Sysinternals artifacts |
+| `prefetch` | `prefetch_executions` | Offensive/dual-use tooling (catalog-driven), suspicious names, DLL side-loading |
+| `filesystem` | `mft_entries` | Executables/scripts in user-writable paths, timestomp, ransomware notes, web shells, startup shortcuts, deleted sensitive data |
+| `leakage` | `mft_entries`, `prefetch_executions`, `evtx_events` | Data-leakage / insider-threat artifact detection |
+
+A pack whose `applies_when.artifact_families` intersects the families detected by `detect_artifact_families()` (`cloud_sync`, `mailbox`, `mft_user_files`, `mft_filesystem`, `registry`, `prefetch`) is auto-enabled by `resolve_active_packs()` in addition to the profile's declared packs. Registry / Prefetch / MFT rules assume the tables exist (they are always created, empty when no data was ingested) and simply return zero rows when the artifact is absent.
 
 ### 1.1 Detection part (required)
 

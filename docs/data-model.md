@@ -33,6 +33,13 @@ Registry Coverage is deliberately `partial` with
 return or zero rows does not establish per-plugin completeness or negative
 evidence.
 
+After normalization, member `evidence_sources` reflect the dataset result. Because
+reg2es output cannot be honestly allocated to one hive or transaction log, the dataset
+row count is stored once on the stable representative member; other contributing members
+remain traceable as `normalized/0`. A valid zero-row run projects members as `empty`.
+`failed`/`partial` outcomes and structured error codes are projected atomically to every
+member while preserving prior successful row metadata where applicable.
+
 Registry tables are exposed to the existing SQL schema-card and read-only
 fallback validation. Registry evidence IDs resolve through the generic
 evidence lookup and report evidence map. Timestamped Registry projections are
@@ -48,6 +55,15 @@ the investigation kernel. The legacy `confirm_when`, `refute_when`, and
 `evidence_requirements` columns remain lossless compatibility projections while
 existing planner/checker callers migrate. Case opening backfills the canonical
 object for older databases and is idempotent.
+
+## Working and API projections
+
+Memory keypoint cards include a generation revision/time/state and keep finding/evidence
+drill-down IDs. `reports/api/snapshot_metadata.json` records the durable-state fingerprint,
+generation time, authoritative update time, and current/in-progress state. The
+`/api/snapshot-metadata` endpoint compares that fingerprint with live Case State and marks
+the projection stale when they differ. Case statistics count terminal hypotheses from the
+durable `confirmed`, `refuted`, and `untestable` status taxonomy.
 
 `refute_when` is persisted explicitly; it is never inferred from a checker or
 final verdict. A hypothesis loaded from Case State always receives a validated
