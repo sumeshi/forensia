@@ -280,6 +280,7 @@ class TestEvidenceIdPattern:
     def test_matches_current_evidence_id_formats(self) -> None:
         assert EVIDENCE_ID_PATTERN.search("evtx-security-000000000120")
         assert EVIDENCE_ID_PATTERN.search("mft-000000072008-00")
+        assert EVIDENCE_ID_PATTERN.search("registry-" + "a" * 64)
 
     def test_rejects_old_evidence_id_formats(self) -> None:
         assert EVIDENCE_ID_PATTERN.search("ev-0001") is None

@@ -133,7 +133,7 @@ This is a post-generation presentation / triage control, not a pre-filter.
 
 | File | Consumer | Role |
 |---|---|---|
-| `evtx_events.yaml` / `mft_entries.yaml` / `mft_timeline.yaml` / `prefetch_executions.yaml` / `prefetch_timeline.yaml` / `findings.yaml` | `_load_schema_hints()` via `prompts._build_schema_guidance()` | Schema cards for DB tables. `core_columns` (short subset for the planner) + `column_descriptions` (one-line descriptions) + `columns` (for the SQL validator) + `json_field_extractors` (raw_json fallback) |
+| `evtx_events.yaml` / `mft_entries.yaml` / `mft_timeline.yaml` / `prefetch_executions.yaml` / `prefetch_timeline.yaml` / `registry_artifacts.yaml` / `registry_timeline.yaml` / `findings.yaml` | `_load_schema_hints()` via `prompts._build_schema_guidance()` | Schema cards for DB tables. `core_columns` (short subset for the planner) + `column_descriptions` (one-line descriptions) + `columns` (for the SQL validator) + `json_field_extractors` (raw_json fallback) |
 | `event_ids.yaml` / `logon_types.yaml` | `prompts._dfir_playbook()` | DFIR explanations of Event IDs / Logon Types |
 | `app_catalog.yaml` / `artifact_inference.yaml` | `prompts._dfir_playbook()` | Prefetch / MFT / Registry / File → application inference. Intentionally omitted in planning phases and injected only in interpretation phases |
 | `false_positive_rules.yaml` | rule engine + `prompts._dfir_playbook()` | Known FPs. Referenced only in interpretation-phase prompts |

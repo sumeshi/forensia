@@ -60,6 +60,17 @@ def _summarize_prefetch_row(row: dict[str, Any]) -> str:
     return " ".join(parts) or "prefetch execution"
 
 
+def _summarize_registry_row(row: dict[str, Any]) -> str:
+    parts = [
+        value
+        for value in (row.get("plugin"), row.get("hive"), row.get("key_path"))
+        if value
+    ]
+    if row.get("value_name"):
+        parts.append(f"value={row['value_name']}")
+    return " ".join(str(part) for part in parts) or "registry artifact"
+
+
 def _pick_timestamp(row: dict[str, Any]) -> str:
     for key in ("timestamp", "last_exec_time", "exec_time", "si_modified"):
         val = row.get(key)
@@ -75,6 +86,8 @@ def _summarize_row(row: dict[str, Any], source: str) -> str:
         return _summarize_mft_row(row)
     if source in ("prefetch_executions", "prefetch_timeline"):
         return _summarize_prefetch_row(row)
+    if source == "registry_artifacts":
+        return _summarize_registry_row(row)
     return ""
 
 

@@ -283,6 +283,11 @@ def normalize_registry(
         try:
             with db.transaction():
                 db.execute(
+                    "DELETE FROM case_timeline WHERE source = 'registry' "
+                    "AND entry_id IN (SELECT timeline_id FROM registry_timeline WHERE dataset_id = ?)",
+                    [dataset_id],
+                )
+                db.execute(
                     "DELETE FROM registry_timeline WHERE dataset_id = ?", [dataset_id]
                 )
                 db.execute(
@@ -381,6 +386,14 @@ def normalize_registry(
                             )
                         dataset_total += 1
                 db.execute(
+                    """INSERT INTO case_timeline (
+                        entry_id, timestamp, source, ref_id, host, summary, evidence_id
+                    )
+                    SELECT timeline_id, timestamp, 'registry', artifact_id, '', summary, artifact_id
+                    FROM registry_timeline WHERE dataset_id = ?""",
+                    [dataset_id],
+                )
+                db.execute(
                     "UPDATE registry_datasets SET ingest_status = 'normalized', "
                     "error_code = '', error_summary = '', row_count = ?, updated_at = ? "
                     "WHERE dataset_id = ?",
@@ -398,6 +411,11 @@ def normalize_registry(
                         [identity, dataset_id],
                     ).fetchall()
                     for (old_id,) in old_rows:
+                        db.execute(
+                            "DELETE FROM case_timeline WHERE source = 'registry' "
+                            "AND entry_id IN (SELECT timeline_id FROM registry_timeline WHERE dataset_id = ?)",
+                            [old_id],
+                        )
                         db.execute(
                             "DELETE FROM registry_timeline WHERE dataset_id = ?",
                             [old_id],

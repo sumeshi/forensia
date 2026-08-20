@@ -1,0 +1,12 @@
+table: registry_timeline
+core_columns: [timeline_id, artifact_id, timestamp, timestamp_kind, summary]
+column_descriptions:
+  timeline_id: "Stable timeline projection ID."
+  artifact_id: "Stable registry_artifacts ID."
+  timestamp: "Parser-provided @timestamp normalized to a database timestamp."
+  timestamp_kind: "Currently parser:@timestamp; no timestamp is synthesized."
+  summary: "Parser action or plugin summary."
+columns: [timeline_id, artifact_id, dataset_id, source_ids, timestamp, timestamp_kind, raw_timestamp, summary]
+notes:
+  query_pattern: "Use registry_timeline for chronological queries and join registry_artifacts on artifact_id for raw fields."
+  limitations: "Missing or invalid parser timestamps are excluded from this projection and are not evidence of absence."

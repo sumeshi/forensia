@@ -16,6 +16,15 @@ from forensia.knowledge.resources import schema_dir
 
 ALLOWED_IDENTIFIER_REFERENCES = _LEGACY_ALLOWED_TABLES | {
     "evidence_id",
+    "artifact_id",
+    "dataset_id",
+    "source_ids",
+    "plugin",
+    "hive",
+    "key_path",
+    "value_name",
+    "timestamp_kind",
+    "raw_timestamp",
     "source_file",
     "channel",
     "event_id",

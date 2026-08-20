@@ -33,6 +33,8 @@ _ALLOWED_FALLBACK_TABLES = {
     "mft_entries",
     "mft_timeline",
     "prefetch_executions",
+    "registry_artifacts",
+    "registry_timeline",
 }
 
 

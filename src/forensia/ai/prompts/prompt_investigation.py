@@ -223,7 +223,7 @@ def build_query_intent_messages(
         "{\n"
         '  "read_more": ["list of memory paths for additional context, or empty list"],\n'
         '  "intent": "string — one sentence describing what data to retrieve",\n'
-        '  "target_table": "evtx_events | mft_entries | mft_timeline | prefetch_executions",\n'
+        '  "target_table": "evtx_events | mft_entries | mft_timeline | prefetch_executions | registry_artifacts | registry_timeline",\n'
         '  "filters_required": ["list of column-level filters needed"],\n'
         '  "time_window": "string describing time bounds",\n'
         '  "expected_row_shape": "string describing expected columns"\n'
@@ -284,7 +284,7 @@ def build_sql_composer_messages(
         "For relative time windows on historical evidence, anchor to a literal TIMESTAMP within the case time range, not the current system clock: "
         "`WHERE ts BETWEEN TIMESTAMP '2024-01-15 10:00:00' AND TIMESTAMP '2024-01-15 10:15:00'`. "
         "For interval arithmetic use `ts + INTERVAL 15 MINUTE` or `ts - INTERVAL '15' MINUTE` (DuckDB form), never `DATE_SUB(...)`.\n"
-        "Only `evtx_events` carries `computer` / `user_name` columns. `mft_entries`, `mft_timeline`, `prefetch_executions`, and `prefetch_timeline` are single-host filesystem/prefetch artifacts with NO host column. "
+        "Only `evtx_events` carries `computer` / `user_name` columns. `mft_entries`, `mft_timeline`, `prefetch_executions`, `prefetch_timeline`, `registry_artifacts`, and `registry_timeline` do not carry a proven host column. Registry zero rows remain Coverage-partial and cannot refute a hypothesis. "
         "Do NOT write `JOIN mft_entries m ON e.computer = m.computer` or any host/user equality JOIN across evtx and mft/prefetch — it fails at bind time. "
         "When the intent calls for 'correlate evtx with mft/prefetch', either (a) issue two separate SELECTs and let the verdict step merge them, or (b) JOIN by `file_path` string match against `process_name` / `command_line` / `message`, optionally narrowed by a timestamp BETWEEN window. Only columns listed under each table's SCHEMA_CARD block exist; never invent columns from the table alias.\n"
         "When raw SQL is used: ensure all COALESCE arguments have the same data type. Use json_extract_string (returns VARCHAR) when COALESCE-ing with a VARCHAR column, never json_extract (returns JSON).\n"

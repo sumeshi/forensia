@@ -1,0 +1,15 @@
+table: registry_artifacts
+core_columns: [artifact_id, plugin, hive, key_path, value_name, timestamp, raw_json]
+column_descriptions:
+  artifact_id: "Stable registry evidence ID; use it in report citations."
+  plugin: "reg2es producer plugin name."
+  hive: "Parser-reported hive name."
+  key_path: "Parser-reported registry key path."
+  value_name: "Parser-reported value name, when present."
+  timestamp: "Only parser-provided @timestamp; NULL means no safe timestamp was emitted."
+  raw_json: "Lossless ECS-oriented reg2es document."
+columns: [artifact_id, dataset_id, source_ids, plugin, hive, key_path, value_name, timestamp, timestamp_kind, raw_json, created_at]
+notes:
+  provenance: "source_ids is the conservative full dataset contributor set; it is provenance, not support."
+  completeness: "Registry Coverage remains partial unless plugin completeness is independently proven; zero rows are not negative evidence."
+  no_host_column: "Do not infer a host from log.file.path or collection directory."

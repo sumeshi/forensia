@@ -53,7 +53,7 @@ def _extension_in_sql(column: str, extensions: tuple[str, ...]) -> str:
 # ── Pattern ──
 
 EVIDENCE_ID_PATTERN = re.compile(
-    r"\b(?:evtx-[a-zA-Z][a-zA-Z0-9.-]*-\d{12}|mft-\d{12,15}-\d{2,4}|prefetch-[a-zA-Z][a-zA-Z0-9._-]+-[a-f0-9]{5,32})\b"
+    r"\b(?:evtx-[a-zA-Z][a-zA-Z0-9.-]*-\d{12}|mft-\d{12,15}-\d{2,4}|prefetch-[a-zA-Z][a-zA-Z0-9._-]+-[a-f0-9]{5,32}|registry-[a-f0-9]{64})\b"
 )
 
 EvidenceResolver = Callable[[CaseDB], list[dict[str, Any]]]

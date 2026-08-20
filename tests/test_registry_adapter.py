@@ -3,8 +3,10 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+from forensia.ai.prompts.sql_schema import get_allowed_tables
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
+from forensia.db.evidence_lookup import fetch_evidence_records
 from forensia.db.evidence_sources import register_evidence_source
 from forensia.evidence.registry import (
     _dataset_id,
@@ -136,8 +138,12 @@ def test_registry_raw_records_and_parser_timestamps_are_traceable(
         assert normalize_registry(case, db) == 2
         refresh_evidence_coverage(db)
         artifact = db.execute(
-            "SELECT dataset_id, source_ids, raw_json FROM registry_artifacts"
+            "SELECT artifact_id, source_ids, raw_json FROM registry_artifacts"
         ).fetchone()
+        assert {"registry_artifacts", "registry_timeline"} <= get_allowed_tables(db)
+        resolved = fetch_evidence_records(db, [artifact[0]])[artifact[0]]
+        assert resolved["evidence_id"] == artifact[0]
+        assert resolved["raw"]["event"]["action"] == "services"
         assert db.execute("SELECT COUNT(*) FROM registry_artifacts").fetchone()[0] == 2
         first_ids = {
             row[0]
@@ -158,6 +164,12 @@ def test_registry_raw_records_and_parser_timestamps_are_traceable(
         timeline = db.execute(
             "SELECT artifact_id, timestamp, timestamp_kind FROM registry_timeline"
         ).fetchone()
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM case_timeline WHERE source = 'registry'"
+            ).fetchone()[0]
+            == 2
+        )
         coverage = db.execute(
             "SELECT state, reason_code FROM evidence_coverage "
             "WHERE source_family = 'registry'"

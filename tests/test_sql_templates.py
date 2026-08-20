@@ -37,6 +37,7 @@ class QueryTemplateCatalogTests(unittest.TestCase):
                 "q_logon_by_user_window",
                 "q_powershell_after_logon",
                 "q_service_or_task_after_host_logon",
+                "q_registry_timeline_recent",
             },
             {entry["template_id"] for entry in catalog},
         )

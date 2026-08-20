@@ -21,6 +21,8 @@ _LEGACY_ALLOWED_TABLES = {
     "mft_timeline",
     "prefetch_executions",
     "prefetch_timeline",
+    "registry_artifacts",
+    "registry_timeline",
     "findings",
     "hypotheses",
     "report_sections",
@@ -44,6 +46,7 @@ def get_allowed_tables(db: CaseDB | None = None) -> set[str]:
                     "evtx_",
                     "mft_",
                     "prefetch_",
+                    "registry_",
                     "findings",
                     "hypotheses",
                     "report_",
@@ -241,6 +244,29 @@ TABLE_COLUMN_REFERENCE: dict[
         "exec_index",
         "source_file",
         "tags",
+    ),
+    "registry_artifacts": (
+        "artifact_id",
+        "dataset_id",
+        "source_ids",
+        "plugin",
+        "hive",
+        "key_path",
+        "value_name",
+        "timestamp",
+        "timestamp_kind",
+        "raw_json",
+        "created_at",
+    ),
+    "registry_timeline": (
+        "timeline_id",
+        "artifact_id",
+        "dataset_id",
+        "source_ids",
+        "timestamp",
+        "timestamp_kind",
+        "raw_timestamp",
+        "summary",
     ),
     "ingested_files": ("sha256", "path", "source_kind", "size", "ingested_at"),
     "section_facts": (
@@ -478,6 +504,10 @@ def build_investigation_framework(db: CaseDB | None = None) -> str:
         + "\n".join(app_lines)
         + "\n\n"
         + _fmt_table_notes("prefetch_executions")
+        + "\n"
+        + _fmt_table_notes("registry_artifacts")
+        + "\n"
+        + _fmt_table_notes("registry_timeline")
         + "\n"
         "Section-agent state tables:\n"
         "  section_facts stores reusable evidence-backed facts extracted during prior report-generation runs.\n"

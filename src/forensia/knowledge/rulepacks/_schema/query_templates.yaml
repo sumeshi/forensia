@@ -1,5 +1,16 @@
 version: 1
 templates:
+  q_registry_timeline_recent:
+    description: Registry artifacts with parser-provided timestamps, newest first.
+    parameters: {}
+    sql: |-
+      SELECT t.timestamp, t.summary, t.artifact_id, a.plugin, a.hive,
+             a.key_path, a.value_name
+      FROM registry_timeline AS t
+      JOIN registry_artifacts AS a ON a.artifact_id = t.artifact_id
+      WHERE t.timestamp IS NOT NULL
+      ORDER BY t.timestamp DESC
+      LIMIT 100
   q_failed_logon_by_ip_window:
     description: Failed logons grouped by src_ip within a recent time window.
     parameters:

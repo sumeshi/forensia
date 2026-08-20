@@ -41,6 +41,12 @@ generator output to raw JSONL. The Registry normalization boundary projects
 lossless records, contributor provenance, conservative completeness, and
 Coverage through the existing normalize/coverage dispatchers.
 
+The existing SQL schema-card/allow-list exposes `registry_artifacts` and
+`registry_timeline`; `registry-<sha256>` IDs use the generic evidence lookup
+and report evidence map. Valid Registry timestamps are fed into the existing
+`case_timeline` table. Coverage remains partial when plugin completeness is
+unproven, so an empty Registry result is not treated as a refutation.
+
 Entry points:
 - User perspective: `forensia investigate <case> <input_dir>` ([src/forensia/cli/app.py](../src/forensia/cli/app.py))
 - Internal implementation: `await investigate(...)` ([src/forensia/ai/investigation/investigator.py](../src/forensia/ai/investigation/investigator.py))

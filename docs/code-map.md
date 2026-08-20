@@ -52,6 +52,7 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 | [src/forensia/evidence/normalize.py](../src/forensia/evidence/normalize.py) | `normalize_all`: raw JSONL → normalized DuckDB tables; optional source-key differential selection |
 | [src/forensia/evidence/evtx.py](../src/forensia/evidence/evtx.py) / [mft.py](../src/forensia/evidence/mft.py) / [prefetch.py](../src/forensia/evidence/prefetch.py) | Per-artifact module: raw extraction (ingest half) + normalization SQL (normalize half) |
 | [src/forensia/evidence/registry.py](../src/forensia/evidence/registry.py) | Content-based REGF/log detection, conservative dataset admission, lazy pinned `reg2es` streaming seam, and minimal lossless artifact/timeline projection |
+| [src/forensia/db/evidence_lookup.py](../src/forensia/db/evidence_lookup.py) | Generic evidence ID lookup, including `registry-` IDs from `registry_artifacts` |
 | [src/forensia/evidence/timeline_sql.py](../src/forensia/evidence/timeline_sql.py) | Timeline-staging SQL for Prefetch and legacy MFT timeline-only JSONL |
 | [src/forensia/evidence/timezone.py](../src/forensia/evidence/timezone.py) | `infer_timezone`: source timezone inference from evidence |
 

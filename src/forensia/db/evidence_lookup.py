@@ -1,6 +1,6 @@
 """Bulk and single evidence-record lookup, shared by the report and API layers.
 
-Table routing by id prefix (evtx-/mft-/prefetch-). Returns full record rows
+Table routing by id prefix (evtx-/mft-/prefetch-/registry-). Returns full record rows
 (all columns) plus parsed raw_json merged under a ``raw`` key.
 """
 
@@ -17,6 +17,7 @@ _PREFIX_TABLES: dict[str, tuple[str, ...]] = {
     "evtx-": ("evtx_events",),
     "mft-": ("mft_entries",),
     "prefetch-": ("prefetch_executions", "prefetch_timeline"),
+    "registry-": ("registry_artifacts",),
 }
 
 
@@ -36,17 +37,24 @@ def _group_by_prefix(ids: list[str]) -> dict[str, list[str]]:
 
 
 def _lookup_table(
-    db: CaseDB, table: str, ids: list[str], result: dict[str, dict[str, Any]]
+    db: CaseDB,
+    table: str,
+    ids: list[str],
+    result: dict[str, dict[str, Any]],
+    *,
+    id_column: str = "evidence_id",
 ) -> None:
     placeholders = ", ".join("?" for _ in ids)
     rows = fetch_records(
-        db, f"SELECT * FROM {table} WHERE evidence_id IN ({placeholders})", tuple(ids)
+        db, f"SELECT * FROM {table} WHERE {id_column} IN ({placeholders})", tuple(ids)
     )
     for row in rows:
-        eid = str(row.get("evidence_id") or "")
+        eid = str(row.get(id_column) or "")
         if not eid or eid in result:
             continue
         row["_source"] = table
+        if id_column != "evidence_id":
+            row["evidence_id"] = eid
         raw_val = row.pop("raw_json", None)
         if raw_val is not None:
             if isinstance(raw_val, str):
@@ -74,7 +82,13 @@ def fetch_evidence_records(db: CaseDB, ids: list[str]) -> dict[str, dict[str, An
         if not group:
             continue
         for table in tables:
-            _lookup_table(db, table, group, result)
+            _lookup_table(
+                db,
+                table,
+                group,
+                result,
+                id_column="artifact_id" if prefix == "registry-" else "evidence_id",
+            )
     return result
 
 

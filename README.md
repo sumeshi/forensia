@@ -8,7 +8,7 @@
 
 ## Overview
 
-**forensia is an experimental local-LLM harness for Windows digital forensic investigations.** You give it artifacts that have already been acquired from a target machine (EVTX, MFT, Prefetch), and it uses a local LLM to generate and verify investigation hypotheses and to continuously update a report. It does not collect evidence from live systems, and the model is only asked to handle one narrow step at a time.
+**forensia is an experimental local-LLM harness for Windows digital forensic investigations.** You give it artifacts that have already been acquired from a target machine (EVTX, MFT, Prefetch, Registry hives), and it uses a local LLM to generate and verify investigation hypotheses and to continuously update a report. It does not collect evidence from live systems, and the model is only asked to handle one narrow step at a time.
 
 Incident data is often too sensitive to send anywhere — sometimes it cannot even leave the machine. So forensia is designed to run fully offline, on hardware a small CSIRT can actually afford, with small local models in the 4B–8B range. Models that small misread instructions, lose long context, and repeat mistakes; the harness exists to compensate for exactly that. It is not an AI wrapper for speeding up existing tools, but an architectural experiment in treating a weak LLM as one component of an investigation loop.
 
@@ -31,7 +31,7 @@ Generated forensic report with evidence-backed findings and investigation contex
 ### Requirements
 
 * Python 3.14 or later
-* Windows forensic artifacts that have already been collected: EVTX, MFT, and/or Prefetch files
+* Windows forensic artifacts that have already been collected: EVTX, MFT, Prefetch, and/or Registry hive files
 * An OpenAI-compatible LLM server, typically local (e.g. LM Studio or a llama.cpp server), for hypothesis testing and report writing
 
 forensia itself does not require a GPU; model speed and quality depend on the backend serving the LLM.
@@ -122,7 +122,7 @@ case001/
 
 What works today:
 
-* Ingestion and normalization of EVTX, MFT, and Prefetch artifacts into DuckDB. These three are supported first because they fit the same unified pipeline (parse → staged JSONL → normalized DuckDB tables); more artifact types are planned on the same approach. The current adapter interface can be used to add your own, although it is not yet stable (see [docs/extending.md](docs/extending.md)).
+* Ingestion and normalization of EVTX, MFT, Prefetch, and Windows Registry artifacts into DuckDB through the same staged adapter pipeline. Registry records retain their dataset and contributor provenance; because the parser cannot prove per-plugin completeness, Registry coverage remains partial and an empty result is not treated as evidence of absence. The current adapter interface can be used to add other artifact types, although it is not yet stable (see [docs/extending.md](docs/extending.md)).
 * A rule engine that produces findings, key points, and hypothesis seeds from declarative rulepacks.
 * A case-aware investigation loop: hypothesis seeding, deterministic next-best-focus selection, SQL query planning and composition, execution with fallback search, evidence sufficiency reconciliation, verdict propagation, and finding extraction.
 * Lightweight hypothesis relationships (`parent_of`, `prerequisite_for`, `derived_from`, `contradicts`, `alternative_to`, and `supersedes`) stored in DuckDB and validated in Python, without a graph database.
@@ -148,7 +148,7 @@ Only work where a language model is genuinely useful — generation and interpre
 
 ```mermaid
 flowchart LR
-    A["Artifacts<br/>EVTX / MFT / Prefetch / ..."]
+    A["Artifacts<br/>EVTX / MFT / Prefetch / Registry / ..."]
     A -->|Ingest / Normalize| C
     C[("Case State<br/>normalized evidence")]
     C --> D["Rule Engine<br/>Findings / Key Points"]

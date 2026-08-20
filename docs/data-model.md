@@ -28,6 +28,12 @@ Registry Coverage is deliberately `partial` with
 return or zero rows does not establish per-plugin completeness or negative
 evidence.
 
+Registry tables are exposed to the existing SQL schema-card and read-only
+fallback validation. Registry evidence IDs resolve through the generic
+evidence lookup and report evidence map. Timestamped Registry projections are
+also fed into `case_timeline`; no Registry-specific planner, agent, DTO, or UI
+is introduced.
+
 ## Hypothesis verification policy
 
 Each row in `hypotheses` has one canonical `verification_spec` JSON object
@@ -64,9 +70,12 @@ Schema initialization is performed in `CaseDB.__init__` in [src/forensia/db/data
 | `ingested_files` | Hash table for ingest deduplication | `path`, `hash`, `source_kind`, `ingested_at` |
 | `evidence_sources` | Authoritative per-source ingest/normalize state and scope | `source_id`, `artifact_family`, `ingest_status`, `channel`, `hosts`, analysis-eligible `min_time`/`max_time`, `row_count`, error fields |
 | `evidence_coverage` | Deterministic capability observability projection | `capability`, `host`, `channel`, `source_family`, `state`, `reason_code`, `source_ids`, analysis time range, `excluded_timestamps`, `confidence` |
-| `case_timeline` | Deterministic timeline | `entry_id`, `timestamp`, `source` (`finding`/`verdict`/`structured`/`keypoint`), `ref_id`, `host`, `summary`, `evidence_id` |
+| `case_timeline` | Deterministic timeline | `entry_id`, `timestamp`, `source` (`finding`/`verdict`/`structured`/`keypoint`/`registry`), `ref_id`, `host`, `summary`, `evidence_id` |
 
-`case_timeline` is fed by three deterministic feeders: (a) the first-evidence timestamp of findings with severity ≥ medium (`feed_findings_to_timeline` in [rules/engine.py](../src/forensia/knowledge/rules/engine.py)), (b) the decisive query row of resolved hypotheses, and (c) the matching rows of structured answers declared with `timeline: true` in `question_routing.yaml`.
+`case_timeline` is fed by deterministic projections: the first-evidence
+timestamp of findings with severity ≥ medium, the decisive query row of
+resolved hypotheses, matching structured-answer rows declared with
+`timeline: true`, and valid parser-provided Registry timeline rows.
 
 Raw timestamps are retained in artifact rows and `raw_json`. Source and
 capability time ranges are a separate analysis projection governed by
