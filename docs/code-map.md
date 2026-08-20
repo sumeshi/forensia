@@ -130,6 +130,9 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 | [src/forensia/web/app.py](../src/forensia/web/app.py) | FastAPI router. Returns `/api/*` from snapshot or DB fallback |
 | [web_ui/](../web_ui/) | Svelte + Vite + Tailwind frontend. UI updates via snapshot polling |
 
+Report admission is implemented in `ai/report_gap.py` using the existing Gap/Task
+rows; `report_cycle_progress` compares semantic Case State snapshots.
+
 ## Related: root documents / templates
 
 | Path | Contents |

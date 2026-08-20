@@ -147,6 +147,13 @@ The existing settlement guard remains the state-transition boundary.
 | `claims` | Claims extracted from report paragraphs | `claim_id`, `section_key`, `claim_text`, `support_status`, `finding_ids`, `hypothesis_ids`, `evidence_ids` |
 | `report_gaps` | Authoritative normalized work gaps | section/block, description, kind, lifecycle `status`, `origin`, linked Claim/Hypothesis/Task, Coverage reason |
 
+There is no separate Investigation Requirement table. A report request is a
+`report_gaps` row; an associated `investigation_tasks` row stores ownership and
+retry state for external or human work. Admission first links equivalent work.
+For a new internal candidate, it normalizes and validates the
+`VerificationSpec` before persisting a Hypothesis. Rejected or review outcomes
+remain on the Gap lifecycle/reason fields without creating a Hypothesis.
+
 INSERTs into `section_evidence` happen in a single place: [`_store_section_evidence` in ai/sections/section_run_store.py](../src/forensia/ai/sections/section_run_store.py).
 
 `section_facts.source_section` takes:

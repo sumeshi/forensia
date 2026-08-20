@@ -274,4 +274,9 @@ A cycle ends when any of the following holds:
 - 3 consecutive cycles with no progress (`--no-progress-limit`)
 - `--max-iter` cycles completed
 
-"No progress" means a cycle with no hypothesis resolution, no new gap hypotheses added, and no change in the report status counters.
+"No progress" is based on semantic Case State deltas: Gap/Task/Hypothesis
+lifecycle, distinct assessed evidence groups, contradiction, or Coverage
+improvement. Formatting-only edits, paragraph growth, repeated queries, reused
+evidence, and successful LLM calls are excluded. A section gap is admitted
+through the existing Gap/Task request first; equivalent work is linked before a
+candidate Hypothesis is normalized and admitted.

@@ -349,3 +349,13 @@ dist/<case>/
 | `LLM_OUTAGE_PROBE_INTERVAL_S` | Interval (seconds) between recovery probes | 60 |
 
 Configuration is accessed via `get_llm_settings()` in `src/forensia/config.py`. `.env` is loaded by `python-dotenv`.
+
+### Report admission and semantic progress
+
+Report gaps are admission requests represented by the existing `report_gaps`
+row. `investigation_tasks` carries ownership and retry state for non-hypothesis
+work. Admission links equivalent existing work first, then validates a
+normalized `VerificationSpec` before persisting a new Hypothesis. Report
+content cannot set priority or verdict. Termination observes durable
+Gap/Task/Hypothesis lifecycle, assessed evidence, contradiction, and Coverage
+changes; body length and formatting are not progress.

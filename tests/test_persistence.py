@@ -417,7 +417,13 @@ class PersistenceTests(unittest.TestCase):
         self.assertFalse(
             report_cycle_progress(
                 {"total_gaps": 2, "total_body_chars": 120},
-                {"total_gaps": 2, "total_body_chars": 120},
+                {"total_gaps": 2, "total_body_chars": 240},
+            )
+        )
+        self.assertTrue(
+            report_cycle_progress(
+                {"semantic_state": {"gap_lifecycle": 0}},
+                {"semantic_state": {"gap_lifecycle": 1}},
             )
         )
 

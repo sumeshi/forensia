@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from typing import Any
@@ -13,11 +14,13 @@ from forensia.ai.hypotheses.hypothesis_model import (
     _extract_entities_from_text,
     _propose_confirm_when,
     gap_hypothesis_id,
+    hypothesis_similarity,
 )
 from forensia.ai.hypotheses.hypothesis_store import _upsert_hypothesis
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, SessionState
 from forensia.core.textutil import normalize_text as _normalize_text
+from forensia.core.verification import normalize_verification_spec
 from forensia.db.database import CaseDB
 from forensia.report.sections.section_store import fetch_report_sections
 
@@ -68,6 +71,61 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _semantic_progress_snapshot(db: CaseDB) -> dict[str, Any]:
+    """Capture monotonic semantic state; report prose is deliberately absent."""
+
+    def status_score(table: str, ranks: dict[str, int]) -> int:
+        return sum(
+            ranks.get(str(row[0] or ""), 0)
+            for row in db.execute(f"SELECT status FROM {table}").fetchall()
+        )
+
+    assessed_groups = db.execute(
+        "SELECT COUNT(DISTINCT assessment_id) FROM hypothesis_evidence "
+        "WHERE COALESCE(assessment_id, '') != ''"
+    ).fetchone()[0]
+    contradictions = db.execute(
+        "SELECT COUNT(DISTINCT assessment_id) FROM hypothesis_evidence "
+        "WHERE role = 'contradictory' AND COALESCE(assessment_id, '') != ''"
+    ).fetchone()[0]
+    coverage_score = sum(
+        _COVERAGE_RANK.get(str(row[0] or ""), 0)
+        for row in db.execute("SELECT state FROM evidence_coverage").fetchall()
+    )
+    return {
+        "gap_lifecycle": status_score(
+            "report_gaps", {"in_progress": 1, "needs_review": 1, "resolved": 2}
+        ),
+        "task_lifecycle": status_score(
+            "investigation_tasks",
+            {"in_progress": 1, "blocked": 1, "resolved": 2, "completed": 2},
+        ),
+        "hypothesis_lifecycle": status_score(
+            "hypotheses",
+            {
+                "blocked": 1,
+                "deferred": 1,
+                "needs_review": 1,
+                "confirmed": 2,
+                "refuted": 2,
+                "untestable": 2,
+            },
+        ),
+        "assessed_groups": int(assessed_groups or 0),
+        "contradictions": int(contradictions or 0),
+        "coverage": coverage_score,
+    }
+
+
+_COVERAGE_RANK = {
+    "unavailable": 0,
+    "degraded": 1,
+    "unknown": 1,
+    "partial": 2,
+    "available": 3,
+}
+
+
 def _build_report_status(
     db: CaseDB,
     current_section: str | None = None,
@@ -95,6 +153,8 @@ def _build_report_status(
                 "gap_hypothesis_ids": [gap_hypothesis_id(str(gap)) for gap in gaps]
                 if isinstance(gaps, list)
                 else [],
+                # Body remains available to the report UI, but is not used as
+                # an investigation progress signal.
                 "body": str(row.get("body") or ""),
                 "is_writing": str(row.get("section_key") or "")
                 == str(current_section or ""),
@@ -109,7 +169,9 @@ def _build_report_status(
         "focus_sections": focus_sections or [],
         "items": items,
         "total_gaps": total_gaps,
+        # Retained for UI/status compatibility; report_cycle_progress ignores it.
         "total_body_chars": total_body_chars,
+        "semantic_state": _semantic_progress_snapshot(db),
     }
 
 
@@ -136,11 +198,17 @@ def _overlay_report_status(
     }
 
 
-def report_cycle_progress(previous: dict[str, int], current: dict[str, int]) -> bool:
-    """Check whether the report made progress (fewer gaps or more content) since the last cycle."""
-    return current.get("total_gaps", 0) < previous.get("total_gaps", 0) or current.get(
-        "total_body_chars", 0
-    ) > previous.get("total_body_chars", 0)
+def report_cycle_progress(previous: dict[str, Any], current: dict[str, Any]) -> bool:
+    """Check for durable semantic progress; report prose never qualifies."""
+    previous_state = previous.get("semantic_state")
+    current_state = current.get("semantic_state")
+    if isinstance(previous_state, dict) and isinstance(current_state, dict):
+        return any(
+            int(current_state.get(key, 0)) > int(previous_state.get(key, 0))
+            for key in current_state
+        )
+    # Compatibility for callers that only have section status snapshots.
+    return current.get("total_gaps", 0) < previous.get("total_gaps", 0)
 
 
 def _has_internal_db_signals(text: str) -> bool:
@@ -229,6 +297,12 @@ def classify_gap_kind(description: str) -> str:
     return "internal_db_check"
 
 
+def _retry_condition_for_gap_kind(kind: str) -> str:
+    if kind in {"external_lookup", "human_decision"}:
+        return "human_or_external_result"
+    return "new_evidence_or_coverage"
+
+
 def _parse_gap_hypothesis_output(
     output: dict[str, Any], gap_text: str
 ) -> tuple[list[str], dict[str, Any] | None]:
@@ -258,6 +332,32 @@ def _parse_gap_hypothesis_output(
     return required_entities, confirm_when
 
 
+def _existing_hypothesis(state: SessionState, description: str) -> Hypothesis | None:
+    """Return equivalent active/resolved work before admitting a candidate."""
+    matches = [
+        (hypothesis_similarity(description, item.description), item)
+        for item in [*state.active_hypotheses, *state.resolved_hypotheses]
+    ]
+    if not matches:
+        return None
+    score, item = max(matches, key=lambda pair: pair[0])
+    return item if score >= 0.85 else None
+
+
+def _persist_admission_outcome(
+    db: CaseDB, gap_id: str, outcome: str, reason: str
+) -> None:
+    """Persist a rejected or review outcome without a Hypothesis."""
+    # Keep a rejected report request visible as an open Gap for existing API
+    # consumers; the durable outcome is carried by coverage_reason.
+    status = "open" if outcome == "rejected" else outcome
+    db.execute(
+        "UPDATE report_gaps SET status = ?, coverage_reason = ?, updated_at = now() "
+        "WHERE gap_id = ?",
+        [status, reason, gap_id],
+    )
+
+
 # _extract_refuted_tokens and _gap_references_refuted moved to
 # hypothesis_manager.py (shared with the unified admission gate).
 # Imported above.
@@ -277,8 +377,6 @@ def inject_gap_hypotheses(
     active, resolved, and refuted hypotheses — preventing refuted claims like
     poqexec.exe from being re-admitted through the gap injection path.
     """
-    import hashlib
-
     added = 0
     current_gap_ids = {
         "GAP-" + hashlib.sha256(str(gap).encode()).hexdigest()[:16]
@@ -321,25 +419,8 @@ def inject_gap_hypotheses(
         if not normalized_gap:
             continue
 
-        # Try to get required_entities/confirm_when from LLM output first
-        required_entities, confirm_when = _parse_gap_hypothesis_output(
-            llm_output or {}, gap
-        )
         gap_hash = hashlib.sha256(gap.encode()).hexdigest()[:16]
         gap_id = f"GAP-{gap_hash}"
-
-        # Build a candidate hypothesis for the unified admission gate
-        candidate = Hypothesis(
-            id=gap_hypothesis_id(gap),
-            description=gap,
-            status="active",
-            verdict=None,
-            summary="",
-            required_entities=required_entities,
-            confirm_when=confirm_when,
-            source_gap_id=gap_id,
-        )
-
         gap_kind = classify_gap_kind(gap)
         # Normalize gap to report_gaps table
         section_key = gap_sections.get(normalized_gap, "")
@@ -356,14 +437,50 @@ def inject_gap_hypotheses(
             [gap_id, section_key, gap, gap_kind],
         )
 
+        existing = _existing_hypothesis(state, gap)
+        if existing is not None:
+            status = (
+                "resolved"
+                if existing.status in {"confirmed", "refuted", "untestable"}
+                else "open"
+            )
+            db.execute(
+                "UPDATE report_gaps SET hypothesis_id = ?, status = ?, updated_at = now() "
+                "WHERE gap_id = ?",
+                [existing.id, status, gap_id],
+            )
+            continue
+
+        existing_task = db.execute(
+            "SELECT task_id FROM investigation_tasks WHERE lower(trim(description)) = "
+            "lower(trim(?)) AND status IN ('open', 'in_progress') LIMIT 1",
+            [gap],
+        ).fetchone()
+        if existing_task:
+            db.execute(
+                "UPDATE report_gaps SET task_id = ?, updated_at = now() WHERE gap_id = ?",
+                [str(existing_task[0]), gap_id],
+            )
+            continue
+
         if gap_kind != "internal_db_check":
             # Create investigation_task for external/human tasks
             task_id = f"TASK-{gap_hash}"
             db.execute(
-                """INSERT INTO investigation_tasks (task_id, kind, description, status, gap_id, created_at, updated_at)
-                   VALUES (?, ?, ?, 'open', ?, now(), now())
-                   ON CONFLICT (task_id) DO UPDATE SET status = 'open', updated_at = now()""",
-                [task_id, gap_kind, gap, gap_id],
+                """INSERT INTO investigation_tasks (
+                       task_id, kind, description, status, gap_id, owner_phase,
+                       retry_condition, created_at, updated_at
+                   ) VALUES (?, ?, ?, 'open', ?, 'report_admission', ?, now(), now())
+                   ON CONFLICT (task_id) DO UPDATE SET status = 'open',
+                       owner_phase = 'report_admission', retry_condition = EXCLUDED.retry_condition,
+                       updated_at = now()""",
+                [
+                    task_id,
+                    gap_kind,
+                    gap,
+                    gap_id,
+                    _retry_condition_for_gap_kind(gap_kind),
+                ],
             )
             db.execute(
                 "UPDATE report_gaps SET task_id = ? WHERE gap_id = ?",
@@ -371,9 +488,41 @@ def inject_gap_hypotheses(
             )
             continue
 
+        required_entities, confirm_when = _parse_gap_hypothesis_output(
+            llm_output or {}, gap
+        )
+        try:
+            spec = normalize_verification_spec(
+                confirm_when=confirm_when,
+                required_entities=required_entities,
+            )
+            candidate = Hypothesis(
+                id=gap_hypothesis_id(gap),
+                description=gap,
+                status="active",
+                required_entities=required_entities,
+                confirm_when=confirm_when,
+                source_gap_id=gap_id,
+                verification_spec=spec,
+            )
+        except Exception as exc:
+            _persist_admission_outcome(
+                db,
+                gap_id,
+                "needs_review",
+                f"verification_spec_invalid:{type(exc).__name__}",
+            )
+            continue
+
         # --- Unified admission gate (G-5) ---
         ok, reason = admit_new_hypothesis(candidate, state)
         if not ok:
+            outcome = (
+                "rejected"
+                if reason.startswith(("duplicate", "refuted", "invalid"))
+                else "needs_review"
+            )
+            _persist_admission_outcome(db, gap_id, outcome, f"admission_{reason}")
             continue
 
         state.active_hypotheses.append(candidate)

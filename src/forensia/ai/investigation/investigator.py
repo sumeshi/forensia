@@ -42,6 +42,7 @@ from forensia.ai.llm.llm_client import (
     LLMServerUnavailableError,
 )
 from forensia.ai.report_gap import (
+    _build_report_status,
     inject_gap_hypotheses,
     project_investigation_tasks,
     report_cycle_progress,
@@ -166,6 +167,12 @@ async def _run_report_phase(
     )
     if gap_new_hypotheses:
         cycle_progress = True
+    # Gap/Task/Hypothesis admission mutates Case State after section refresh;
+    # take the semantic snapshot after that mutation, while retaining the
+    # section body for the report UI.
+    refreshed_status = _build_report_status(db, focus_sections=focus_sections)
+    refreshed_status["current_section"] = report_after.get("current_section")
+    report_after = refreshed_status
     if report_cycle_progress(report_before, report_after):
         cycle_progress = True
     render_written_report(case, db)
