@@ -8,6 +8,10 @@ from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.db.evidence_sources import register_evidence_source
 from forensia.evidence.artifacts import get_artifact_adapters
+from forensia.evidence.invalidation import (
+    fetch_referenced_evidence_ids,
+    invalidate_removed_evidence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +41,7 @@ def normalize_all(
         "registry_artifacts": 0,
     }
     for adapter in get_artifact_adapters():
+        evidence_before = fetch_referenced_evidence_ids(db, adapter.name)
         try:
             result = adapter.normalize(case, db, source_keys=source_keys)
         except Exception as exc:
@@ -59,6 +64,8 @@ def normalize_all(
                             error_summary=str(exc),
                         )
             raise
+        evidence_after = fetch_referenced_evidence_ids(db, adapter.name)
+        invalidate_removed_evidence(db, evidence_before - evidence_after)
         if result.source_kind == "evtx":
             counts["evtx_rows"] = result.rows
         elif result.source_kind == "mft":

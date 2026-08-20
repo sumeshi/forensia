@@ -147,6 +147,12 @@ The existing settlement guard remains the state-transition boundary.
 | `claims` | Claims extracted from report paragraphs | `claim_id`, `section_key`, `claim_text`, `support_status`, `finding_ids`, `hypothesis_ids`, `evidence_ids` |
 | `report_gaps` | Authoritative normalized work gaps | section/block, description, kind, lifecycle `status`, `origin`, linked Claim/Hypothesis/Task, Coverage reason |
 
+When source replacement removes a referenced evidence ID, assessed
+`hypothesis_evidence` links are retained for history, but linked Hypotheses and
+Claims move to review and affected `report_sections` become stale. Claim
+existence checks use the normalized EVTX, MFT, Prefetch, and Registry evidence
+tables; provenance alone does not keep a removed artifact supported.
+
 There is no separate Investigation Requirement table. A report request is a
 `report_gaps` row; an associated `investigation_tasks` row stores ownership and
 retry state for external or human work. Admission first links equivalent work.

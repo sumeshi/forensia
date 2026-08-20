@@ -76,6 +76,13 @@ Artifact replacement uses set-based `INSERT ... SELECT` inside a transaction.
 MFT timeline rows are expanded from the eight normalized entry timestamps in
 DuckDB, avoiding a second parser pass and duplicate timeline JSONL.
 
+Around each successful adapter replacement, `normalize_all` compares only
+evidence IDs already referenced by Hypotheses, Claims, or report sections. If a
+referenced ID disappears, its assessed EvidenceLink remains as history while
+the Hypothesis and Claim move to review and the affected section becomes stale.
+Unchanged IDs do not trigger invalidation; large evidence tables are not copied
+into an in-memory snapshot.
+
 At ingest completion, `case.extract_time_range(db.conn)` stores the MIN/MAX timestamp from `evtx_events` into `case._time_range_*`, which is later passed to SQL generation prompts.
 
 ### 2.2 Dependency layers

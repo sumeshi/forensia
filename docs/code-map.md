@@ -49,7 +49,7 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 |---|---|
 | [src/forensia/evidence/ingest.py](../src/forensia/evidence/ingest.py) | `ingest_all` entry point. Scans input and dispatches to the appropriate parser |
 | [src/forensia/evidence/artifacts.py](../src/forensia/evidence/artifacts.py) | Artifact adapter protocol, built-ins, and public registration point |
-| [src/forensia/evidence/normalize.py](../src/forensia/evidence/normalize.py) | `normalize_all`: raw JSONL → normalized DuckDB tables; optional source-key differential selection |
+| [src/forensia/evidence/normalize.py](../src/forensia/evidence/normalize.py) / [invalidation.py](../src/forensia/evidence/invalidation.py) | raw JSONL → normalized DuckDB tables; optional source-key differential selection; removed referenced-evidence invalidation |
 | [src/forensia/evidence/evtx.py](../src/forensia/evidence/evtx.py) / [mft.py](../src/forensia/evidence/mft.py) / [prefetch.py](../src/forensia/evidence/prefetch.py) | Per-artifact module: raw extraction (ingest half) + normalization SQL (normalize half) |
 | [src/forensia/evidence/registry.py](../src/forensia/evidence/registry.py) | Content-based REGF/log detection, conservative dataset admission, lazy pinned `reg2es` streaming seam, and minimal lossless artifact/timeline projection |
 | [src/forensia/db/evidence_lookup.py](../src/forensia/db/evidence_lookup.py) | Generic evidence ID lookup, including `registry-` IDs from `registry_artifacts` |

@@ -193,8 +193,11 @@ def _claim_support_status(
                 SELECT evidence_id FROM prefetch_executions WHERE evidence_id IN ({placeholders})
                 UNION
                 SELECT evidence_id FROM prefetch_timeline WHERE evidence_id IN ({placeholders})
+                UNION
+                SELECT artifact_id AS evidence_id FROM registry_artifacts
+                WHERE artifact_id IN ({placeholders})
                 """,
-                tuple(evidence_ids * 4),
+                tuple(evidence_ids * 5),
             ).fetchall()
         }
         if any(evidence_id not in found_evidence_ids for evidence_id in evidence_ids):
