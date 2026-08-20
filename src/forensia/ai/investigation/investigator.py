@@ -527,20 +527,36 @@ async def investigate(
         stop_reason_code = "exception"
         raise
     finally:
-        summary = stop_summary(db, len(state.active_hypotheses))
-        save_stop_reason(
-            db,
-            status=status,
-            stop_reason_code=stop_reason_code,
-            stop_reason=format_stop_reason(status, stop_reason_code, summary),
-            stop_summary=summary,
-        )
-        memory.regenerate_timeline_from_db(db)
-        signal.signal(signal.SIGINT, previous_sigint)
-        llm_logger.write_summary()
         finished_at = datetime.now(UTC).replace(tzinfo=None)
-        db.execute(
-            "UPDATE investigation_sessions SET finished_at = ?, iterations = ?, status = ? WHERE session_id = ?",
-            (finished_at, state.iteration, status, session_id),
-        )
+        # Persist the terminal session receipt before fallible projections.  A
+        # Memory or audit-summary write must not leave a completed DB session
+        # looking permanently active.
+        try:
+            db.execute(
+                "UPDATE investigation_sessions SET finished_at = ?, iterations = ?, "
+                "status = ? WHERE session_id = ?",
+                (finished_at, state.iteration, status, session_id),
+            )
+        except Exception as exc:
+            _log("FINALIZE", f"session receipt failed: {exc}", level="error")
+        try:
+            summary = stop_summary(db, len(state.active_hypotheses))
+            save_stop_reason(
+                db,
+                status=status,
+                stop_reason_code=stop_reason_code,
+                stop_reason=format_stop_reason(status, stop_reason_code, summary),
+                stop_summary=summary,
+            )
+        except Exception as exc:
+            _log("FINALIZE", f"investigation state projection failed: {exc}", level="error")
+        try:
+            memory.regenerate_timeline_from_db(db)
+        except Exception as exc:
+            _log("FINALIZE", f"Memory timeline projection failed: {exc}", level="error")
+        try:
+            llm_logger.write_summary()
+        except Exception as exc:
+            _log("FINALIZE", f"LLM audit summary failed: {exc}", level="error")
+        signal.signal(signal.SIGINT, previous_sigint)
     return _build_investigate_result(env, status, report_refresh_failures)

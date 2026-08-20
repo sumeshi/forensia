@@ -14,6 +14,7 @@ from forensia.api.cache import (
     snapshot_dir,
     write_json,
     write_platform_snapshots,
+    write_snapshot_metadata,
     write_volatile_api_snapshots,
 )
 from forensia.report.report_brief import write_report_brief
@@ -40,6 +41,7 @@ def write_report_api_snapshots(
     )
     if not volatile:
         write_json(snap_dir / "report_brief.json", write_report_brief(case, db))
+    write_snapshot_metadata(case, db)
 
 
 def write_all_snapshots(case: Case, db: CaseDB) -> None:

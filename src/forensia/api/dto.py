@@ -47,6 +47,9 @@ class CaseStatsDTO(DTOModel):
     findings_suppressed: int
     active_hypotheses: int
     resolved_hypotheses: int
+    confirmed_hypotheses: int = 0
+    refuted_hypotheses: int = 0
+    untestable_hypotheses: int = 0
     open_gaps: int
     sessions: int
     total_iterations: int

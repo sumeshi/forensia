@@ -57,7 +57,10 @@ from forensia.core.progress_event import progress_event
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
 from forensia.knowledge.rules.loader import _get_rule_cache
-from forensia.report.answers.keypoint_catalog import REPORT_KEYPOINTS
+from forensia.report.answers.keypoint_catalog import (
+    REPORT_KEYPOINTS,
+    investigation_keypoint_names,
+)
 
 
 @dataclass(slots=True)
@@ -574,7 +577,10 @@ async def _run_cycle_body(
         iteration=plan_cycle,
         phase="plan-keypoint-scan",
         hypothesis_id=None,
-        input_json={"keypoints": sorted(REPORT_KEYPOINTS.keys())},
+        input_json={
+            "keypoints": sorted(REPORT_KEYPOINTS.keys()),
+            "investigation_eligible_keypoints": list(investigation_keypoint_names()),
+        },
         output_json={"observed_keypoints": observed_keypoints},
     )
 

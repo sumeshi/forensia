@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +53,53 @@ def write_json(path: Path, payload: Any) -> None:
     path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
     )
+
+
+def snapshot_metadata(db: CaseDB) -> dict[str, Any]:
+    """Describe the durable state revision represented by a generated snapshot."""
+    row = db.execute(
+        "SELECT "
+        "(SELECT COUNT(*) FROM findings), "
+        "(SELECT COUNT(*) FROM hypotheses), "
+        "(SELECT COUNT(*) FROM report_sections), "
+        "(SELECT COUNT(*) FROM evidence_sources), "
+        "(SELECT MAX(updated_at) FROM hypotheses), "
+        "(SELECT MAX(last_filled_at) FROM report_sections), "
+        "(SELECT MAX(updated_at) FROM investigation_state)"
+    ).fetchone()
+    state_row = db.execute(
+        "SELECT status FROM investigation_state WHERE state_id = 'case'"
+    ).fetchone()
+    running_row = db.execute(
+        "SELECT COUNT(*) FROM investigation_sessions WHERE status = 'running'"
+    ).fetchone()
+    values = list(row) if isinstance(row, (tuple, list)) else []
+    revision = hashlib.sha256(
+        json.dumps(values, default=str, separators=(",", ":")).encode()
+    ).hexdigest()[:16]
+    durable_status = (
+        str(state_row[0] or "") if isinstance(state_row, (tuple, list)) else ""
+    )
+    in_progress = (
+        bool(int(running_row[0] or 0))
+        if isinstance(running_row, (tuple, list))
+        else False
+    )
+    if durable_status == "active":
+        in_progress = True
+    updated_values = [str(value) for value in values[4:] if value is not None]
+    return {
+        "generation_revision": revision,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "authoritative_updated_at": max(updated_values) if updated_values else None,
+        "state": "in-progress" if in_progress else "current",
+        "stale": False,
+        "durable_investigation_status": durable_status or "unknown",
+    }
+
+
+def write_snapshot_metadata(case: Case, db: CaseDB) -> None:
+    write_json(snapshot_dir(case) / "snapshot_metadata.json", snapshot_metadata(db))
 
 
 def clear_api_snapshots(case: Case) -> None:
@@ -141,6 +190,7 @@ def write_volatile_api_snapshots(case: Case, db: CaseDB) -> None:
 
     for name, payload in data.items():
         write_json(snap_dir / f"{name}.json", payload)
+    write_snapshot_metadata(case, db)
 
 
 def write_full_api_snapshots(case: Case, db: CaseDB) -> None:
@@ -259,6 +309,7 @@ def write_full_api_snapshots(case: Case, db: CaseDB) -> None:
         )
     except Exception:
         logger.debug("Failed to write hypothesis graph snapshots", exc_info=True)
+    write_snapshot_metadata(case, db)
 
 
 def write_platform_snapshots(case: Case, db: CaseDB) -> None:

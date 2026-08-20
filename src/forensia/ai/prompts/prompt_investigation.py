@@ -146,15 +146,14 @@ def build_query_intent_messages(
     """
     from forensia.ai.case_profile import get_profile_event_ids
 
-    _pb_ids: set[int] | None = get_profile_event_ids()
-    if (
-        _pb_ids is not None
-        and hasattr(hypothesis, "confirm_when")
-        and isinstance(hypothesis.confirm_when, dict)
+    profile_event_ids: set[int] | None = get_profile_event_ids()
+    hypothesis_event_ids: set[int] = set()
+    if hasattr(hypothesis, "confirm_when") and isinstance(
+        hypothesis.confirm_when, dict
     ):
         extra = hypothesis.confirm_when.get("co_observed_event_ids", [])
-        if extra:
-            _pb_ids.update(int(e) for e in extra if e is not None)
+        hypothesis_event_ids.update(int(e) for e in extra if e is not None)
+    _pb_ids: set[int] | None = hypothesis_event_ids or profile_event_ids
 
     # --- CONFIRMED_FINDINGS block (top 5 by severity) ---
     confirmed_findings_block = ""
@@ -617,13 +616,14 @@ def build_hypothesis_drafter_messages(
         '    "description": "str (one investigative claim that can be confirmed or refuted by SQL evidence)",\n'
         '    "required_entities": ["snake_case column names such as src_ip, target_user, computer, logon_type, process_name, file_path"],\n'
         '    "source_rule_ids": ["rule_id from available_rules if any aligns, else empty list"],\n'
-        '    "confirm_when": {"co_observed_event_ids": [int, ...], "same_host": bool, "within_minutes": int},\n'
+        '    "confirm_when": {"co_observed_event_ids": [int, ...], "same_host": bool, "within_minutes": int, "same_entities": ["src_ip", "target_user"], "min_count": int},\n'
         '    "refute_when": {"zero_rows": true}\n'
         "  }\n"
         "}\n"
         "</OUTPUT_SCHEMA>\n"
         "<RULES>\n"
         "confirm_when MUST be a JSON object (not a string). Use co_observed_event_ids as a list of integer Windows event IDs (e.g. [4624, 4625, 4768]).\n"
+        "If the description says repeated/multiple, set min_count >= 2. If it says same/single entity, list that exact column in same_entities.\n"
         "required_entities MUST be column-like identifiers (snake_case), not natural language phrases. Example: src_ip, target_user, computer.\n"
         "confirm_when.co_observed_event_ids MUST be event IDs commonly logged by DEFAULT Windows audit policy. Avoid event IDs that require non-default auditing such as:\n"
         "  - 4663 (Object Access) — requires explicit SACL / Object Access auditing\n"

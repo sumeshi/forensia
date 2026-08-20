@@ -49,25 +49,25 @@ def register_evidence_source(
             parser_name = CASE WHEN EXCLUDED.parser_name = '' THEN evidence_sources.parser_name ELSE EXCLUDED.parser_name END,
             parser_version = CASE WHEN EXCLUDED.parser_version = '' THEN evidence_sources.parser_version ELSE EXCLUDED.parser_version END,
             row_count = CASE
-                WHEN EXCLUDED.ingest_status = 'failed' AND evidence_sources.row_count > 0
+                WHEN EXCLUDED.ingest_status IN ('failed', 'partial') AND evidence_sources.row_count > 0
                 THEN evidence_sources.row_count
                 ELSE EXCLUDED.row_count
             END,
             channel = CASE
-                WHEN EXCLUDED.ingest_status = 'failed' THEN evidence_sources.channel
+                WHEN EXCLUDED.ingest_status IN ('failed', 'partial') THEN evidence_sources.channel
                 ELSE EXCLUDED.channel
             END,
             hosts = CASE
-                WHEN EXCLUDED.ingest_status = 'failed' THEN evidence_sources.hosts
+                WHEN EXCLUDED.ingest_status IN ('failed', 'partial') THEN evidence_sources.hosts
                 ELSE EXCLUDED.hosts
             END,
             volume_id = CASE WHEN EXCLUDED.volume_id = '' THEN evidence_sources.volume_id ELSE EXCLUDED.volume_id END,
             min_time = CASE
-                WHEN EXCLUDED.ingest_status = 'failed' THEN evidence_sources.min_time
+                WHEN EXCLUDED.ingest_status IN ('failed', 'partial') THEN evidence_sources.min_time
                 ELSE EXCLUDED.min_time
             END,
             max_time = CASE
-                WHEN EXCLUDED.ingest_status = 'failed' THEN evidence_sources.max_time
+                WHEN EXCLUDED.ingest_status IN ('failed', 'partial') THEN evidence_sources.max_time
                 ELSE EXCLUDED.max_time
             END,
             error_code = EXCLUDED.error_code,

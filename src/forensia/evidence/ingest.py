@@ -143,6 +143,7 @@ def ingest_all(
                             ingest_status="failed",
                             parser_name=registry.parser_name,
                             parser_version=registry.parser_version,
+                            error_code="parser_error",
                             error_summary=str(exc),
                         )
                     continue
@@ -205,6 +206,7 @@ def ingest_all(
                         display_path=path.name,
                         ingest_status="failed",
                         parser_name=adapter.name,
+                        error_code="parser_error",
                         error_summary=str(exc),
                     )
                 except Exception:

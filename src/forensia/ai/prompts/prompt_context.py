@@ -443,18 +443,9 @@ def _build_schema_guidance(
     primary = schema_hints.get(table_name, {})
     if not primary:
         return ""
-    db_tables = {
-        name: h
-        for name, h in schema_hints.items()
-        if h.get("columns") or h.get("core_columns")
-    }
     extractors = primary.get("json_field_extractors", {})
     blocks = ["<SCHEMA_CARDS>"]
-    ordering = [table_name] + sorted(name for name in db_tables if name != table_name)
-    for name in ordering:
-        hints = db_tables.get(name)
-        if hints:
-            blocks.append(_format_schema_card(hints))
+    blocks.append(_format_schema_card(primary))
     if extractors:
         blocks.append(
             "For fields missing from the column list, use these JSON extractors instead of guessing: "

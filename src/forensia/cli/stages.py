@@ -159,7 +159,12 @@ def _run_analyze_stage(
     )
     total_findings = 0
     for rule in rules:
-        push_progress(f"[analyze] rule: {rule.id}", stage="analyze", status="running")
+        push_progress(
+            f"[analyze] rule: {rule.id}",
+            stage="analyze",
+            status="running",
+            log_level="info",
+        )
         clear_rule_findings(case, db, rule.id)
         findings = generate_findings(rule, run_rule(db, rule))
         save_findings(case, db, findings)

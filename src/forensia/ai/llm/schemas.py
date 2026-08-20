@@ -282,6 +282,11 @@ def hypothesis_drafter_schema() -> dict[str, Any]:
                             },
                             "same_host": {"type": "boolean"},
                             "within_minutes": {"type": "integer"},
+                            "same_entities": {
+                                "type": "array",
+                                "items": {"enum": SNAKE_CASE_COLUMNS},
+                            },
+                            "min_count": {"type": "integer", "minimum": 2},
                         },
                     },
                     "refute_when": {"type": "object"},

@@ -39,7 +39,13 @@ def _condition_matches(
 ) -> tuple[bool, list[str]]:
     """Evaluate only the condition vocabulary already enforced by guardrails."""
 
-    supported = {"co_observed_event_ids", "same_host", "within_minutes"}
+    supported = {
+        "co_observed_event_ids",
+        "same_host",
+        "within_minutes",
+        "same_entities",
+        "min_count",
+    }
     if not isinstance(condition, dict) or set(condition) - supported:
         return False, []
     raw_ids = condition.get("co_observed_event_ids")

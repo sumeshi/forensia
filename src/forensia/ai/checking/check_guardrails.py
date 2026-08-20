@@ -114,7 +114,8 @@ def _co_observation_satisfied(
 ) -> tuple[bool, str]:
     """Check if co-observed event IDs satisfy correlation constraints.
 
-    Supports `same_host`, `within_minutes`, and `co_observed_event_ids`.
+    Supports `same_host`, `same_entities`, `within_minutes`, `min_count`, and
+    `co_observed_event_ids`.
     Returns (satisfied, reason_string).
     """
     co_ids = confirm_when.get("co_observed_event_ids") or []
@@ -129,9 +130,17 @@ def _co_observation_satisfied(
 
     same_host = bool(confirm_when.get("same_host", False))
     within_minutes: int | None = confirm_when.get("within_minutes")
+    same_entities = [
+        str(value).strip()
+        for value in (confirm_when.get("same_entities") or [])
+        if str(value).strip()
+    ]
+    min_count = confirm_when.get("min_count", 1)
+    if not isinstance(min_count, int) or isinstance(min_count, bool) or min_count < 1:
+        return (False, "min_count must be a positive integer")
 
     # Simple presence check when no correlation constraints
-    if not same_host and within_minutes is None:
+    if not same_host and not same_entities and within_minutes is None and min_count == 1:
         observed_ids: set[int] = set()
         for row in rows:
             eid = row.get("event_id")
@@ -150,15 +159,22 @@ def _co_observation_satisfied(
             f"not all co_observed_event_ids found: missing {sorted(required_ids - observed_ids)}",
         )
 
-    # Group rows by computer when same_host
-    if same_host:
+    grouping_fields = (["computer"] if same_host else []) + same_entities
+    grouping_fields = list(dict.fromkeys(grouping_fields))
+    if grouping_fields:
         host_groups: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
-            host = row.get("computer")
-            if host is not None and str(host).strip():
-                host_groups.setdefault(str(host), []).append(row)
+            values = [row.get(field) for field in grouping_fields]
+            if all(value is not None and str(value).strip() for value in values):
+                key = "|".join(
+                    f"{field}={value}" for field, value in zip(grouping_fields, values)
+                )
+                host_groups.setdefault(key, []).append(row)
         if not host_groups:
-            return (False, "same_host=True but no rows have a 'computer' column")
+            return (
+                False,
+                f"correlation fields missing from rows: {grouping_fields}",
+            )
     else:
         host_groups = {"_all": rows}
 
@@ -173,6 +189,16 @@ def _co_observation_satisfied(
                     pass
 
         if not required_ids.issubset(host_event_ids):
+            continue
+
+        relevant_row_count = 0
+        for row in host_rows:
+            try:
+                if int(row.get("event_id")) in required_ids:
+                    relevant_row_count += 1
+            except (TypeError, ValueError):
+                continue
+        if within_minutes is None and relevant_row_count < min_count:
             continue
 
         if within_minutes is not None:
@@ -208,27 +234,33 @@ def _co_observation_satisfied(
                     if window_counts[events[left][1]] == 0:
                         del window_counts[events[left][1]]
                     left += 1
-                if required_ids.issubset(window_counts.keys()):
+                if required_ids.issubset(window_counts.keys()) and sum(
+                    window_counts.values()
+                ) >= min_count:
                     found = True
                     break
             if found:
-                host_label = f" on host={host}" if same_host else ""
+                host_label = f" in group={host}" if grouping_fields else ""
                 return (
                     True,
-                    f"co-observed event_ids {sorted(required_ids)} within {within_minutes}min{host_label}",
+                    f"co-observed event_ids {sorted(required_ids)} within {within_minutes}min with min_count={min_count}{host_label}",
                 )
         else:
-            host_label = f" on host={host}" if same_host else ""
+            host_label = f" in group={host}" if grouping_fields else ""
             return (
                 True,
-                f"co-observed event_ids {sorted(required_ids)} present{host_label}",
+                f"co-observed event_ids {sorted(required_ids)} present with min_count={min_count}{host_label}",
             )
 
     parts = [f"co-observation not satisfied: required={sorted(required_ids)}"]
     if same_host:
         parts.append("same_host=True")
+    if same_entities:
+        parts.append(f"same_entities={same_entities}")
     if within_minutes is not None:
         parts.append(f"within_{within_minutes}min")
+    if min_count > 1:
+        parts.append(f"min_count={min_count}")
     return (False, "; ".join(parts))
 
 

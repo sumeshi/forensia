@@ -113,7 +113,10 @@ def get_case_stats_dto(db: CaseDB) -> CaseStatsDTO:
         """
         SELECT
             COUNT(*) FILTER (WHERE status = 'active') AS active_hypotheses,
-            COUNT(*) FILTER (WHERE status IN ('confirmed', 'refuted')) AS resolved_hypotheses
+            COUNT(*) FILTER (WHERE status IN ('confirmed', 'refuted', 'untestable')) AS resolved_hypotheses,
+            COUNT(*) FILTER (WHERE status = 'confirmed') AS confirmed_hypotheses,
+            COUNT(*) FILTER (WHERE status = 'refuted') AS refuted_hypotheses,
+            COUNT(*) FILTER (WHERE status = 'untestable') AS untestable_hypotheses
         FROM hypotheses
         """
     ).fetchone()
@@ -173,6 +176,9 @@ def get_case_stats_dto(db: CaseDB) -> CaseStatsDTO:
         findings_suppressed=int(finding_rows[1] or 0),
         active_hypotheses=int(hypothesis_rows[0] or 0),
         resolved_hypotheses=int(hypothesis_rows[1] or 0),
+        confirmed_hypotheses=int(hypothesis_rows[2] or 0),
+        refuted_hypotheses=int(hypothesis_rows[3] or 0),
+        untestable_hypotheses=int(hypothesis_rows[4] or 0),
         open_gaps=int(report_rows[0] or 0),
         sessions=int(session_rows[0] or 0),
         total_iterations=int(session_rows[1] or 0),

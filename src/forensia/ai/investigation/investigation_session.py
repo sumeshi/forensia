@@ -16,6 +16,7 @@ from uuid import uuid4
 import yaml
 
 from forensia.ai.audit import LLMCallLogger
+from forensia.ai.case_profile import propose_scope_candidates
 from forensia.ai.hypotheses.hypothesis_store import load_persisted_hypotheses
 from forensia.ai.hypotheses.seeding import (
     _seed_rule_hypotheses,
@@ -47,6 +48,7 @@ from forensia.db.investigation_state import (
 )
 from forensia.knowledge.coverage import refresh_evidence_coverage
 from forensia.knowledge.resources import profile_path
+from forensia.report.finding_themes import classify_finding_theme
 from forensia.report.template_export import seed_case_report_templates
 
 
@@ -333,8 +335,53 @@ def _ensure_profile_objective(
 
 
 def _finding_snapshot(db: CaseDB, limit: int = 20) -> list[dict[str, Any]]:
-    """Fetch the top findings (with evidence) ordered by confidence and recency."""
-    return _findings_snapshot(db, limit, include_evidence=True)
+    """Fetch a bounded, theme-diverse finding projection for LLM working Memory."""
+    candidates = _findings_snapshot(
+        db, max(limit * 8, limit), include_evidence=True
+    )
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for finding in candidates:
+        grouped.setdefault(classify_finding_theme(finding), []).append(finding)
+    projected: list[dict[str, Any]] = []
+    depth = 0
+    while len(projected) < limit:
+        added = False
+        for theme, items in grouped.items():
+            if depth >= len(items):
+                continue
+            item = dict(items[depth])
+            item["projection_theme"] = theme
+            item["theme_count"] = len(items)
+            item["theme_finding_ids"] = [
+                str(candidate.get("finding_id") or "") for candidate in items
+            ]
+            projected.append(item)
+            added = True
+            if len(projected) >= limit:
+                break
+        if not added:
+            break
+        depth += 1
+    revision = hashlib.sha256(
+        json.dumps(
+            [
+                {
+                    key: item.get(key)
+                    for key in ("finding_id", "title", "status", "confidence", "summary")
+                }
+                for item in projected
+            ],
+            sort_keys=True,
+            default=str,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()[:16]
+    generated_at = datetime.now(UTC).isoformat()
+    for item in projected:
+        item["projection_revision"] = revision
+        item["projection_generated_at"] = generated_at
+        item["projection_state"] = "in-progress"
+    return projected
 
 
 def _keypoint_card_id(index: int) -> str:
@@ -367,12 +414,25 @@ def sync_keypoint_cards(
             f"- title: {finding.get('title')}",
             f"- severity: {finding.get('severity')}",
             f"- confidence: {finding.get('confidence')}",
+            f"- theme: {finding.get('projection_theme') or 'other'}",
+            f"- theme_finding_count: {finding.get('theme_count') or 1}",
+            f"- projection_revision: {finding.get('projection_revision') or 'unknown'}",
+            f"- projection_generated_at: {finding.get('projection_generated_at') or 'unknown'}",
+            f"- projection_state: {finding.get('projection_state') or 'unknown'}",
             "",
             "## Summary",
             str(finding.get("summary") or "").strip() or "-",
-            "",
-            "## Evidence IDs",
         ]
+        theme_finding_ids = [
+            str(item)
+            for item in (finding.get("theme_finding_ids") or [])
+            if str(item).strip()
+        ]
+        if theme_finding_ids:
+            lines.extend(
+                ["", "## Theme Finding IDs", *[f"- {item}" for item in theme_finding_ids]]
+            )
+        lines.extend(["", "## Evidence IDs"])
         lines.extend([f"- {evidence_id}" for evidence_id in evidence_ids] or ["- none"])
         memory.upsert_keypoint(
             _keypoint_card_id(index), "\n".join(lines).rstrip() + "\n"
@@ -383,6 +443,34 @@ def sync_keypoint_cards(
     for path in memory.keypoints_dir.glob("KP-*.md"):
         if path.stem not in active_ids:
             path.unlink(missing_ok=True)
+
+
+def sync_scope_candidates(memory: MemoryManager, db: CaseDB, objective: str) -> None:
+    """Project ranked host/time candidates into Memory without excluding evidence."""
+    scope = propose_scope_candidates(db, objective)
+    lines = [
+        "# Scope Candidates",
+        "",
+        f"- policy: {scope['policy']}",
+        f"- objective: {scope['objective'] or '-'}",
+        "",
+        "## Hosts",
+    ]
+    for item in scope["hosts"]:
+        lines.append(
+            f"- {item['host']} | {item['relationship']} | events={item['event_count']} "
+            f"| {item['first_seen'] or '?'}..{item['last_seen'] or '?'}"
+        )
+    if not scope["hosts"]:
+        lines.append("- none observed")
+    lines.extend(["", "## Time Candidates"])
+    for item in scope["time_ranges"]:
+        lines.append(
+            f"- {item['start'] or '?'}..{item['end'] or '?'} | {item['relationship']}"
+        )
+    if not scope["time_ranges"]:
+        lines.append("- none observed")
+    memory.upsert_keypoint("SCOPE-CANDIDATES", "\n".join(lines).rstrip() + "\n")
 
 
 def _sync_hypothesis_cards(
@@ -434,6 +522,9 @@ def _init_session(
     ensure_objective_gap(db, str(persisted_investigation.get("objective") or ""))
     reopen_retryable_work(db)
     mark_investigation_started(db)
+    sync_scope_candidates(
+        memory, db, str(persisted_investigation.get("objective") or objective)
+    )
     llm_logger = LLMCallLogger(case, session_id)
     active_hypotheses, resolved_hypotheses = load_persisted_hypotheses(db)
     state = SessionState(
@@ -448,6 +539,13 @@ def _init_session(
     _sync_hypothesis_cards(memory, state.active_hypotheses, state.resolved_hypotheses)
     ctx = Ctx(report_status=_build_report_status(db))
     ctx_refresh_caches(ctx, memory, base_url, model, db=db, session_id=session_id)
+    # Opening this writer means no older investigation process can still own
+    # the same case DB. Reconcile receipts left running by SIGKILL, host loss,
+    # or process termination before recording the new session.
+    db.execute(
+        "UPDATE investigation_sessions SET status = 'abandoned', "
+        "finished_at = COALESCE(finished_at, started_at) WHERE status = 'running'",
+    )
     db.execute(
         "INSERT INTO investigation_sessions (session_id, started_at, finished_at, iterations, status) VALUES (?, ?, ?, ?, ?)",
         (session_id, started_at, None, 0, "running"),

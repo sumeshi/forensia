@@ -203,8 +203,11 @@ def progress_pusher(db: CaseDB, initial_state: dict) -> Callable[..., None]:
     state = dict(initial_state)
 
     def push(message: str | None = None, **updates) -> None:
+        explicit_log_level = updates.pop("log_level", None)
         if message:
             entry = structure_progress_log(message)
+            if explicit_log_level in {"debug", "info", "success", "warning", "error"}:
+                entry["level"] = explicit_log_level
             message = format_progress_log(entry)
             recent = list(state.get("recent_logs", []))
             recent.append(message)

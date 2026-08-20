@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from typing import Any
 
+from forensia.ai.llm.llm_client import get_last_completion_metadata
 from forensia.core.case import Case
 from forensia.core.textutil import slugify
 
@@ -25,6 +27,8 @@ class LLMCallLogger:
         self._total_output_tokens: int = 0
         self._cache_hits: int = 0
         self._cache_misses: int = 0
+        self._request_fingerprints: dict[str, int] = {}
+        self._action_fingerprints: dict[str, int] = {}
 
     @property
     def total_calls(self) -> int:
@@ -90,10 +94,32 @@ class LLMCallLogger:
         model: str,
         base_url: str,
         suffix: str | None = None,
-        input_tokens: int = 0,
-        output_tokens: int = 0,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
     ) -> None:
         """Serialize an LLM call transcript to a JSON file on disk."""
+        completion = get_last_completion_metadata()
+        input_chars = sum(len(item.get("content", "")) for item in input_messages)
+        output_text = json.dumps(output, ensure_ascii=False, default=str, sort_keys=True)
+        if input_tokens is None:
+            input_tokens = (
+                completion.input_tokens
+                if completion is not None
+                else max(1, input_chars // 4)
+            )
+        if output_tokens is None:
+            output_tokens = (
+                completion.output_tokens
+                if completion is not None
+                else max(1, len(output_text) // 4)
+            )
+        usage_source = completion.usage_source if completion is not None else "estimated"
+        request_payload = json.dumps(
+            input_messages, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        request_fingerprint = hashlib.sha256(request_payload.encode()).hexdigest()[:20]
+        action_fingerprint = hashlib.sha256(output_text.encode()).hexdigest()[:20]
+
         safe_phase = slugify(phase)
         safe_suffix = slugify(suffix or "")
         counter_key = f"{iteration:02d}-{safe_phase}-{safe_suffix}"
@@ -103,6 +129,10 @@ class LLMCallLogger:
             self._total += 1
             self._total_input_tokens += input_tokens
             self._total_output_tokens += output_tokens
+            request_repeat = self._request_fingerprints.get(request_fingerprint, 0)
+            action_repeat = self._action_fingerprints.get(action_fingerprint, 0)
+            self._request_fingerprints[request_fingerprint] = request_repeat + 1
+            self._action_fingerprints[action_fingerprint] = action_repeat + 1
         file_stem = f"{iteration:02d}-{safe_phase}"
         if safe_suffix:
             file_stem += f"-{safe_suffix}"
@@ -123,6 +153,24 @@ class LLMCallLogger:
                         "call_index": next_index,
                         "input_tokens": input_tokens,
                         "output_tokens": output_tokens,
+                        "usage_source": usage_source,
+                        "finish_reason": (
+                            completion.finish_reason if completion is not None else "unknown"
+                        ),
+                        "latency_ms": completion.latency_ms if completion is not None else None,
+                        "input_chars": input_chars,
+                        "message_chars_by_role": {
+                            role: sum(
+                                len(item.get("content", ""))
+                                for item in input_messages
+                                if item.get("role") == role
+                            )
+                            for role in {item.get("role", "unknown") for item in input_messages}
+                        },
+                        "request_fingerprint": request_fingerprint,
+                        "action_fingerprint": action_fingerprint,
+                        "repeated_request": request_repeat > 0,
+                        "repeated_action": action_repeat > 0,
                     },
                 },
                 ensure_ascii=False,

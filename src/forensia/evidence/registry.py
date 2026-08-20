@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from forensia.core.case import Case
+from forensia.db.evidence_sources import register_evidence_source
 
 if TYPE_CHECKING:
     from forensia.db.database import CaseDB
@@ -108,7 +109,7 @@ class RegistryDataset:
 
 
 def _looks_like_log(path: Path) -> bool:
-    return path.suffix.upper() in {".LOG1", ".LOG2"}
+    return path.suffix.upper() in {".LOG", ".LOG1", ".LOG2"}
 
 
 def detect_registry_candidate(path: Path) -> RegistryCandidate | None:
@@ -120,6 +121,14 @@ def detect_registry_candidate(path: Path) -> RegistryCandidate | None:
     if not path.is_file():
         return None
     if _looks_like_log(path):
+        # Empty transaction logs all share the same content identity and add no
+        # parser input.  Keeping them out of the admitted dataset avoids
+        # ambiguous source lineage without hiding a usable companion log.
+        try:
+            if path.stat().st_size == 0:
+                return None
+        except OSError:
+            return None
         return RegistryCandidate(path, "transaction_log", "REGF companion log suffix")
     try:
         with path.open("rb") as handle:
@@ -135,10 +144,46 @@ def _log_belongs_to(primary: Path, log: Path) -> bool:
     # LOG files conventionally use the hive basename as their prefix.  Do not
     # attach an unrelated log merely because it happens to share a directory.
     expected = {
+        f"{primary.name}.LOG".casefold(),
         f"{primary.name}.LOG1".casefold(),
         f"{primary.name}.LOG2".casefold(),
     }
     return log.name.casefold() in expected
+
+
+def _project_registry_source_state(
+    db: CaseDB,
+    source_ids: Sequence[str],
+    *,
+    ingest_status: str,
+    row_count: int = 0,
+    error_code: str = "",
+    error_summary: str = "",
+) -> None:
+    """Project one dataset outcome onto its traceable member sources.
+
+    Registry records name the full dataset contributor set, so a record count
+    cannot be honestly attributed to an individual hive or transaction log.
+    Store the dataset count on one stable representative only; copying it to
+    every member would make source-level aggregation multiply the result.
+    """
+    ordered_ids = list(dict.fromkeys(str(item) for item in source_ids if item))
+    member_status = ingest_status if row_count > 0 else (
+        "empty" if ingest_status == "normalized" else ingest_status
+    )
+    for index, source_id in enumerate(ordered_ids):
+        register_evidence_source(
+            db,
+            source_id=source_id,
+            artifact_family="registry",
+            display_path="",
+            ingest_status=member_status,
+            parser_name="reg2es",
+            parser_version=REG2ES_VERSION,
+            row_count=row_count if index == 0 else 0,
+            error_code=error_code,
+            error_summary=error_summary,
+        )
 
 
 def admit_registry_datasets(
@@ -300,11 +345,25 @@ def normalize_registry(
             continue
         path = Path(str(raw_path))
         if not path.exists():
-            db.execute(
-                "UPDATE registry_datasets SET ingest_status = 'failed', "
-                "error_code = 'raw_missing' WHERE dataset_id = ?",
-                [dataset_id],
-            )
+            error_summary = f"Registry raw parser output is missing: {path}"
+            with db.transaction():
+                db.execute(
+                    "UPDATE registry_datasets SET ingest_status = 'failed', "
+                    "error_code = 'raw_missing', error_summary = ?, updated_at = ? "
+                    "WHERE dataset_id = ?",
+                    [
+                        error_summary,
+                        datetime.now(UTC).replace(tzinfo=None),
+                        dataset_id,
+                    ],
+                )
+                _project_registry_source_state(
+                    db,
+                    source_ids,
+                    ingest_status="failed",
+                    error_code="raw_missing",
+                    error_summary=error_summary,
+                )
             continue
         dataset_total = 0
         try:
@@ -426,6 +485,12 @@ def normalize_registry(
                     "WHERE dataset_id = ?",
                     [dataset_total, datetime.now(UTC).replace(tzinfo=None), dataset_id],
                 )
+                _project_registry_source_state(
+                    db,
+                    source_ids,
+                    ingest_status="normalized",
+                    row_count=dataset_total,
+                )
                 identity = db.execute(
                     "SELECT identity FROM registry_datasets WHERE dataset_id = ?",
                     [dataset_id],
@@ -479,20 +544,36 @@ def normalize_registry(
                         [old_id],
                     )
         except _MalformedRegistryRaw as exc:
-            db.execute(
-                "UPDATE registry_datasets SET ingest_status = 'partial', "
-                "error_code = 'raw_malformed', error_summary = ?, updated_at = ? "
-                "WHERE dataset_id = ?",
-                [str(exc), datetime.now(UTC).replace(tzinfo=None), dataset_id],
-            )
+            with db.transaction():
+                db.execute(
+                    "UPDATE registry_datasets SET ingest_status = 'partial', "
+                    "error_code = 'raw_malformed', error_summary = ?, updated_at = ? "
+                    "WHERE dataset_id = ?",
+                    [str(exc), datetime.now(UTC).replace(tzinfo=None), dataset_id],
+                )
+                _project_registry_source_state(
+                    db,
+                    source_ids,
+                    ingest_status="partial",
+                    error_code="raw_malformed",
+                    error_summary=str(exc),
+                )
             continue
         except Exception as exc:
-            db.execute(
-                "UPDATE registry_datasets SET ingest_status = 'failed', "
-                "error_code = 'normalize_error', error_summary = ?, updated_at = ? "
-                "WHERE dataset_id = ?",
-                [str(exc), datetime.now(UTC).replace(tzinfo=None), dataset_id],
-            )
+            with db.transaction():
+                db.execute(
+                    "UPDATE registry_datasets SET ingest_status = 'failed', "
+                    "error_code = 'normalize_error', error_summary = ?, updated_at = ? "
+                    "WHERE dataset_id = ?",
+                    [str(exc), datetime.now(UTC).replace(tzinfo=None), dataset_id],
+                )
+                _project_registry_source_state(
+                    db,
+                    source_ids,
+                    ingest_status="failed",
+                    error_code="normalize_error",
+                    error_summary=str(exc),
+                )
             raise
         total += dataset_total
     return total

@@ -7,7 +7,10 @@ import re
 from typing import Any
 
 from forensia.ai.checking.settlement import SettlementInput, settle_hypothesis
-from forensia.ai.hypotheses.hypothesis_manager import merge_active_hypotheses
+from forensia.ai.hypotheses.hypothesis_manager import (
+    admit_new_hypothesis,
+    merge_active_hypotheses,
+)
 from forensia.core.case import Case
 from forensia.core.log import log as _log
 from forensia.core.session import Hypothesis, SessionState
@@ -26,8 +29,8 @@ from forensia.knowledge.rules.loader import (
     load_rules_from_dir,
 )
 from forensia.report.answers.keypoint_catalog import (
-    REPORT_KEYPOINTS,
     _resolve_evidence_results,
+    investigation_keypoint_names,
 )
 
 
@@ -174,8 +177,17 @@ def _seed_rule_hypotheses(
                     else None
                 ),
             )
-            seeded.append(hyp)
-            seeds_from_rule += 1
+            admission_state = state.model_copy(deep=True)
+            admission_state.active_hypotheses.extend(seeded)
+            ok, reason = admit_new_hypothesis(hyp, admission_state)
+            if ok:
+                seeded.append(hyp)
+                seeds_from_rule += 1
+            else:
+                _log(
+                    "HYPOTHESIS",
+                    f"[seed] rejected {rule.id}/{decl.id}: {reason}",
+                )
 
     if seeded:
         state.active_hypotheses = merge_active_hypotheses(
@@ -282,7 +294,7 @@ def _family_interleaved_keypoint_names() -> list[str]:
     scan order reproducible across runs (investigation paths must be auditable).
     """
     groups: dict[str, list[str]] = {}
-    for name in sorted(REPORT_KEYPOINTS.keys()):
+    for name in investigation_keypoint_names():
         family = name.split("_", 1)[0]
         groups.setdefault(family, []).append(name)
     families = sorted(groups)

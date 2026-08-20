@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 
 import yaml
 
@@ -34,12 +35,89 @@ REPORT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
 }
 
 
+@dataclass(frozen=True)
+class ReportKeypointMetadata:
+    """Semantic use of a report projection outside report rendering."""
+
+    purpose: Literal["evidence", "summary", "coverage", "presentation"]
+    hypothesis_eligible: bool = False
+
+
+REPORT_KEYPOINT_METADATA: dict[str, ReportKeypointMetadata] = {
+    name: ReportKeypointMetadata(purpose="evidence") for name in REPORT_KEYPOINTS
+}
+
+# A non-empty report query is not itself an investigation gap.  Only these
+# bounded, falsifiable activity projections may feed the broad planner.
+for _investigation_keypoint in (
+    "account_bruteforce_clusters",
+    "account_explicit_credentials",
+    "account_management_changes",
+    "host_execution_activity",
+    "host_persistence_activity",
+    "host_suspicious_logons",
+    "persistence_defender_activity",
+    "persistence_lolbas_execution",
+    "persistence_scheduled_tasks",
+    "persistence_service_installs",
+    "structured_antiforensics",
+):
+    if _investigation_keypoint in REPORT_KEYPOINT_METADATA:
+        REPORT_KEYPOINT_METADATA[_investigation_keypoint] = ReportKeypointMetadata(
+            purpose="evidence", hypothesis_eligible=True
+        )
+
+for _summary_keypoint in (
+    "account_all_logon_summary",
+    "appendix_findings_catalog",
+    "overview_top_findings",
+    "timeline_top_findings",
+    "recommendations_findings",
+    "resolved_hypotheses_with_evidence",
+    "unresolved_hypotheses_summary",
+    "untestable_hypotheses_summary",
+):
+    if _summary_keypoint in REPORT_KEYPOINT_METADATA:
+        REPORT_KEYPOINT_METADATA[_summary_keypoint] = ReportKeypointMetadata(
+            purpose="summary"
+        )
+
+for _coverage_keypoint in ("gaps_channel_coverage", "gaps_event_coverage"):
+    if _coverage_keypoint in REPORT_KEYPOINT_METADATA:
+        REPORT_KEYPOINT_METADATA[_coverage_keypoint] = ReportKeypointMetadata(
+            purpose="coverage"
+        )
+
+for _presentation_keypoint in (
+    "appendix_claims_needing_review",
+    "recommendations_recent_reviews",
+    "report_sections_with_gaps",
+):
+    if _presentation_keypoint in REPORT_KEYPOINT_METADATA:
+        REPORT_KEYPOINT_METADATA[_presentation_keypoint] = ReportKeypointMetadata(
+            purpose="presentation"
+        )
+
+
+def investigation_keypoint_names() -> tuple[str, ...]:
+    """Return the explicit report-keypoint subset eligible for broad planning."""
+
+    return tuple(
+        sorted(
+            name
+            for name, metadata in REPORT_KEYPOINT_METADATA.items()
+            if metadata.hypothesis_eligible
+        )
+    )
+
+
 def register_report_keypoint(
     name: str,
     description: str,
     resolver: EvidenceResolver,
     *,
     aliases: tuple[str, ...] = (),
+    metadata: ReportKeypointMetadata | None = None,
     replace: bool = False,
 ) -> None:
     """Register a report evidence resolver and optional aliases."""
@@ -49,6 +127,12 @@ def register_report_keypoint(
     if normalized in REPORT_KEYPOINTS and not replace:
         raise ValueError(f"report keypoint already registered: {normalized}")
     REPORT_KEYPOINTS[normalized] = (str(description).strip(), resolver)
+    prior_metadata = REPORT_KEYPOINT_METADATA.get(normalized)
+    REPORT_KEYPOINT_METADATA[normalized] = (
+        metadata
+        or prior_metadata
+        or ReportKeypointMetadata(purpose="evidence")
+    )
     for alias in aliases:
         alias_name = str(alias).strip()
         if alias_name:

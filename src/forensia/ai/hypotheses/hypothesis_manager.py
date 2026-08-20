@@ -470,13 +470,65 @@ def resolve_hypothesis(
         seen_sections.add(section_key)
         mark_section_stale(db, section_key)
 
-    # DESIGN-4: Add follow-up hypotheses to active list
+    # DESIGN-4: Add follow-up hypotheses through the same admission gate.
     for follow_up in follow_up_hypotheses:
-        state.active_hypotheses.append(follow_up)
-        _upsert_hypothesis(db, follow_up, origin="follow_up", session_id=session_id)
+        ok, reason = admit_new_hypothesis(follow_up, state)
+        if not ok:
+            _log(
+                "HYPOTHESIS",
+                f"follow_up rejected: '{follow_up.description[:80]}' reason={reason}",
+            )
+            continue
+        state.active_hypotheses = merge_active_hypotheses(
+            db=db,
+            current=state.active_hypotheses,
+            updates=[follow_up],
+            resolved=state.resolved_hypotheses,
+            session_id=session_id,
+            origin="follow_up",
+        )
 
 
 ADMISSION_THRESHOLD = 0.85
+
+
+def _claim_spec_conformance_error(candidate: Hypothesis) -> str | None:
+    """Validate the small claim vocabulary the deterministic checker supports."""
+
+    description = candidate.description or ""
+    spec = candidate.verification_spec
+    support = spec.support_conditions if spec is not None else {}
+    if not support:
+        return "empty-verification-spec"
+    event_ids = support.get("co_observed_event_ids")
+    if not isinstance(event_ids, list) or not event_ids:
+        return "non-testable-verification-spec"
+
+    minute_match = re.search(r"\bwithin\s+(\d+)\s+minutes?\b", description, re.I)
+    if minute_match and support.get("within_minutes") != int(minute_match.group(1)):
+        return "claim-spec-time-window-mismatch"
+
+    same_entities = {
+        str(value).strip().lower()
+        for value in (support.get("same_entities") or [])
+        if str(value).strip()
+    }
+    for entity in candidate.required_entities:
+        normalized = str(entity).strip().lower()
+        if re.search(
+            rf"\b(?:same|single)\s+{re.escape(normalized)}\b", description, re.I
+        ) and normalized not in same_entities:
+            return "claim-spec-entity-correlation-missing"
+
+    if re.search(
+        r"\b(?:repeated|multiple)\s+(?:\w+\s+){0,2}(?:events?|logons?|attempts?|connections?|executions?)\b",
+        description,
+        re.I,
+    ):
+        min_count = support.get("min_count")
+        if not isinstance(min_count, int) or isinstance(min_count, bool) or min_count < 2:
+            return "claim-spec-min-count-missing"
+    return None
 
 
 def admit_new_hypothesis(
@@ -500,6 +552,21 @@ def admit_new_hypothesis(
     description = candidate.description or ""
     if not description.strip():
         return False, "empty-description"
+    if re.search(r"\{[A-Za-z_][A-Za-z0-9_]*\}", description):
+        return False, "unresolved-placeholder"
+    if re.search(
+        r"\b(?:account|user|host|computer|process|file|service)\s+(?:none|null)\b|\b(?:none|null)\s+(?:was|on|from|to|for|by)\b",
+        description,
+        re.I,
+    ):
+        return False, "unmaterialized-entity"
+    for entity in candidate.required_entities:
+        if re.search(rf"\bunknown\s+{re.escape(str(entity))}\b", description, re.I):
+            return False, "unmaterialized-entity"
+
+    conformance_error = _claim_spec_conformance_error(candidate)
+    if conformance_error:
+        return False, conformance_error
 
     # --- 1. Check against RESOLVED hypotheses ----------------------------
     resolved_match, resolved_score = _best_hypothesis_match(
@@ -544,7 +611,10 @@ def admit_new_hypothesis(
     # --- 4. Entity validity check ----------------------------------------
     if candidate.required_entities:
         valid_entities = _filter_valid_entities(candidate.required_entities)
-        if not valid_entities:
+        requested_entities = {
+            str(value).strip() for value in candidate.required_entities if str(value).strip()
+        }
+        if requested_entities - set(valid_entities):
             _log(
                 "HYPOTHESIS",
                 f"admission REJECTED (invalid-entities): "

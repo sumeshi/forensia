@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Callable
@@ -210,6 +211,8 @@ def request_llm_json(
 ) -> dict[str, Any]:
     """Send a chat request and return parsed JSON, with retry across both completion and parsing failures."""
     last_error: Exception | None = None
+    seen_truncated_outputs: set[str] = set()
+    seen_invalid_outputs: set[str] = set()
     for completion_attempt in range(1, MAX_JSON_COMPLETION_ATTEMPTS + 1):
         if completion_attempt > 1 and status_callback:
             status_callback(
@@ -229,7 +232,14 @@ def request_llm_json(
                         json_schema=json_schema,
                     )
                     break
-                except LLMOutputTruncatedError:
+                except LLMOutputTruncatedError as exc:
+                    if exc.content:
+                        fingerprint = hashlib.sha256(exc.content.encode()).hexdigest()
+                        if fingerprint in seen_truncated_outputs:
+                            raise LLMServerUnavailableError(
+                                "LLM repeated identical truncated output; no-information retry stopped"
+                            ) from exc
+                        seen_truncated_outputs.add(fingerprint)
                     first_max_tokens = (
                         first_max_tokens or get_llm_settings()["max_tokens"]
                     ) * 2
@@ -263,6 +273,12 @@ def request_llm_json(
             return parsed
         except Exception as error:
             last_error = error
+            fingerprint = hashlib.sha256(output.encode()).hexdigest()
+            if fingerprint in seen_invalid_outputs:
+                raise RuntimeError(
+                    "LLM repeated identical invalid JSON; no-information retry stopped"
+                ) from error
+            seen_invalid_outputs.add(fingerprint)
             continue
     if last_error is None:
         raise RuntimeError("LLM returned no JSON response")
@@ -283,6 +299,8 @@ async def async_request_llm_json(
 ) -> dict[str, Any]:
     """Async variant of request_llm_json for parallel LLM requests."""
     last_error: Exception | None = None
+    seen_truncated_outputs: set[str] = set()
+    seen_invalid_outputs: set[str] = set()
     for completion_attempt in range(1, MAX_JSON_COMPLETION_ATTEMPTS + 1):
         if completion_attempt > 1 and status_callback:
             status_callback(
@@ -302,7 +320,14 @@ async def async_request_llm_json(
                         json_schema=json_schema,
                     )
                     break
-                except LLMOutputTruncatedError:
+                except LLMOutputTruncatedError as exc:
+                    if exc.content:
+                        fingerprint = hashlib.sha256(exc.content.encode()).hexdigest()
+                        if fingerprint in seen_truncated_outputs:
+                            raise LLMServerUnavailableError(
+                                "LLM repeated identical truncated output; no-information retry stopped"
+                            ) from exc
+                        seen_truncated_outputs.add(fingerprint)
                     first_max_tokens = (
                         first_max_tokens or get_llm_settings()["max_tokens"]
                     ) * 2
@@ -336,6 +361,12 @@ async def async_request_llm_json(
             return parsed
         except Exception as error:
             last_error = error
+            fingerprint = hashlib.sha256(output.encode()).hexdigest()
+            if fingerprint in seen_invalid_outputs:
+                raise RuntimeError(
+                    "LLM repeated identical invalid JSON; no-information retry stopped"
+                ) from error
+            seen_invalid_outputs.add(fingerprint)
             continue
     if last_error is None:
         raise RuntimeError("LLM returned no JSON response")

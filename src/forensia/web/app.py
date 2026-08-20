@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from forensia.api.cache import load_snapshot
+from forensia.api.cache import load_snapshot, snapshot_metadata
 from forensia.api.dto import (
     AIReviewDTO,
     AttackCoverageRowDTO,
@@ -167,6 +167,28 @@ def _register_case_routes(app: FastAPI, case: Case, cached):
             return CaseStatsDTO.model_validate(snapshot)
         with CaseDB(case) as db:
             return get_case_stats_dto(db)
+
+    @app.get("/api/snapshot-metadata")
+    def api_snapshot_metadata() -> dict:
+        generated = cached("snapshot_metadata.json") or {}
+        try:
+            with CaseDB(case) as db:
+                current = snapshot_metadata(db)
+        except duckdb.IOException:
+            result = dict(generated)
+            result["in_progress"] = result.get("state") == "in-progress"
+            return result
+        if not generated:
+            return current
+        result = dict(generated)
+        result["current_revision"] = current["generation_revision"]
+        result["stale"] = (
+            result.get("generation_revision") != current["generation_revision"]
+        )
+        result["in_progress"] = current["state"] == "in-progress"
+        if result["stale"]:
+            result["state"] = "stale"
+        return result
 
 
 def _register_finding_routes(app: FastAPI, case: Case, cached):

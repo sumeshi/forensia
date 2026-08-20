@@ -165,6 +165,51 @@ def build_case_profile(db) -> dict[str, Any]:
     return profile
 
 
+def propose_scope_candidates(db, objective: str = "") -> dict[str, Any]:
+    """Return conservative host/time attention candidates without filtering evidence."""
+    objective_text = str(objective or "").casefold()
+    rows = db.execute(
+        "SELECT mode(computer), MIN(timestamp), MAX(timestamp), COUNT(*) "
+        "FROM evtx_events WHERE COALESCE(TRIM(computer), '') != '' "
+        "GROUP BY UPPER(TRIM(computer)) ORDER BY COUNT(*) DESC, mode(computer)"
+    ).fetchall()
+    hosts = []
+    for host, first_seen, last_seen, event_count in rows:
+        name = str(host or "")
+        objective_match = bool(name and name.casefold() in objective_text)
+        hosts.append(
+            {
+                "host": name,
+                "first_seen": str(first_seen) if first_seen is not None else None,
+                "last_seen": str(last_seen) if last_seen is not None else None,
+                "event_count": int(event_count or 0),
+                "relationship": (
+                    "objective_match" if objective_match else "candidate_unconfirmed"
+                ),
+                "rank": 0 if objective_match else 1,
+            }
+        )
+    hosts.sort(key=lambda item: (item["rank"], -item["event_count"], item["host"]))
+    time_row = db.execute(
+        "SELECT MIN(timestamp), MAX(timestamp) FROM evtx_events"
+    ).fetchone()
+    time_candidates = []
+    if time_row and (time_row[0] is not None or time_row[1] is not None):
+        time_candidates.append(
+            {
+                "start": str(time_row[0]) if time_row[0] is not None else None,
+                "end": str(time_row[1]) if time_row[1] is not None else None,
+                "relationship": "observed_case_window_unconfirmed",
+            }
+        )
+    return {
+        "policy": "ranking_only_no_evidence_exclusion",
+        "objective": str(objective or ""),
+        "hosts": hosts,
+        "time_ranges": time_candidates,
+    }
+
+
 def profile_advisor(profile_name: str, db) -> str:
     """Check which rulepacks are not covered by the active profile and return recommendations.
 

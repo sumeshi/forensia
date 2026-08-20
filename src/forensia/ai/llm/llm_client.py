@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import json
 import logging
 import threading
 import time
 from collections.abc import Callable
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -24,6 +27,82 @@ class LLMServerUnavailableError(RuntimeError):
 
 class LLMOutputTruncatedError(RuntimeError):
     """Raised when LLM response is truncated (finish_reason=length or empty content with non-empty reasoning)."""
+
+    def __init__(self, message: str, *, content: str = "") -> None:
+        super().__init__(message)
+        self.content = content
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionMetadata:
+    input_tokens: int
+    output_tokens: int
+    usage_source: str
+    finish_reason: str
+    latency_ms: int
+
+
+_LAST_COMPLETION_METADATA: ContextVar[CompletionMetadata | None] = ContextVar(
+    "last_llm_completion_metadata", default=None
+)
+
+
+def get_last_completion_metadata() -> CompletionMetadata | None:
+    """Return task-local metadata for the most recent completion."""
+
+    return _LAST_COMPLETION_METADATA.get()
+
+
+def _record_completion_metadata(
+    *,
+    data: dict[str, Any],
+    messages: list[dict[str, str]],
+    content: str,
+    finish_reason: Any,
+    started_at: float,
+) -> None:
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    raw_input = usage.get("prompt_tokens", usage.get("input_tokens"))
+    raw_output = usage.get("completion_tokens", usage.get("output_tokens"))
+    measured = isinstance(raw_input, int) and isinstance(raw_output, int)
+    input_tokens = (
+        int(raw_input)
+        if isinstance(raw_input, int)
+        else max(1, sum(len(item.get("content", "")) for item in messages) // 4)
+    )
+    output_tokens = (
+        int(raw_output)
+        if isinstance(raw_output, int)
+        else max(1, len(content) // 4)
+    )
+    _LAST_COMPLETION_METADATA.set(
+        CompletionMetadata(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            usage_source="provider" if measured else "estimated",
+            finish_reason=str(finish_reason or "unknown"),
+            latency_ms=max(0, int((time.monotonic() - started_at) * 1000)),
+        )
+    )
+
+
+def _is_complete_json_object(content: str) -> bool:
+    text = content.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    first = text.find("{")
+    last = text.rfind("}")
+    if first < 0 or last <= first:
+        return False
+    try:
+        return isinstance(json.loads(text[first : last + 1]), dict)
+    except (json.JSONDecodeError, TypeError):
+        return False
 
 
 _LLM_HTTP_RETRY_MAX = 3
@@ -166,6 +245,7 @@ async def async_chat_completion(
             body["response_format"] = _schema_response_format(json_schema, strict=False)
 
     for attempt in range(1, _LLM_HTTP_RETRY_MAX + 1):
+        request_started = time.monotonic()
         try:
             client = await _get_async_client()
             response = await client.post(url, json=body)
@@ -234,9 +314,19 @@ async def async_chat_completion(
         finish_reason = choice.get("finish_reason")
         content = choice["message"].get("content") or ""
         reasoning_len = len(choice["message"].get("reasoning_content") or "")
+        _record_completion_metadata(
+            data=data,
+            messages=messages,
+            content=content,
+            finish_reason=finish_reason,
+            started_at=request_started,
+        )
+        if finish_reason == "length" and _is_complete_json_object(content):
+            return content
         if finish_reason == "length" or (not content.strip() and reasoning_len > 0):
             raise LLMOutputTruncatedError(
-                f"LLM output truncated (finish_reason={finish_reason}, reasoning_len={reasoning_len}, content_len={len(content)})"
+                f"LLM output truncated (finish_reason={finish_reason}, reasoning_len={reasoning_len}, content_len={len(content)})",
+                content=content,
             )
         return content
     raise LLMServerUnavailableError("LLM HTTP retry loop exited without response")
@@ -272,6 +362,7 @@ def chat_completion(
             body["response_format"] = _schema_response_format(json_schema, strict=False)
 
     for attempt in range(1, _LLM_HTTP_RETRY_MAX + 1):
+        request_started = time.monotonic()
         try:
             response = _get_http_client().post(url, json=body)
             if response.status_code >= 500:
@@ -339,9 +430,19 @@ def chat_completion(
         finish_reason = choice.get("finish_reason")
         content = choice["message"].get("content") or ""
         reasoning_len = len(choice["message"].get("reasoning_content") or "")
+        _record_completion_metadata(
+            data=data,
+            messages=messages,
+            content=content,
+            finish_reason=finish_reason,
+            started_at=request_started,
+        )
+        if finish_reason == "length" and _is_complete_json_object(content):
+            return content
         if finish_reason == "length" or (not content.strip() and reasoning_len > 0):
             raise LLMOutputTruncatedError(
-                f"LLM output truncated (finish_reason={finish_reason}, reasoning_len={reasoning_len}, content_len={len(content)})"
+                f"LLM output truncated (finish_reason={finish_reason}, reasoning_len={reasoning_len}, content_len={len(content)})",
+                content=content,
             )
         return content
     raise LLMServerUnavailableError("LLM HTTP retry loop exited without response")
