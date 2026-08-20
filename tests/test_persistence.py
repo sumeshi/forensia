@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from datetime import UTC, datetime
 from unittest.mock import patch
 
-from forensia.ai.checking.check_apply import insert_investigation_finding
+from forensia.ai.checking.check_apply import (
+    apply_check_result,
+    insert_investigation_finding,
+)
+from forensia.ai.checking.check_normalize import CheckResult
 from forensia.ai.hypotheses.hypothesis_manager import merge_active_hypotheses
 from forensia.ai.hypotheses.hypothesis_store import load_persisted_hypotheses
 from forensia.ai.investigation.investigation_session import append_hypothesis_reasoning
@@ -522,7 +527,7 @@ class PersistenceTests(unittest.TestCase):
                         db=db,
                         session_id="S-1",
                         planned_query=planned_query,
-                        result_summary={"sample_rows": []},
+                        result_summary={"sample_rows": [{"evidence_id": "ev-1"}]},
                         report_text="body",
                     )
                     title = db.execute(
@@ -530,6 +535,90 @@ class PersistenceTests(unittest.TestCase):
                     ).fetchone()[0]
             self.assertEqual("Investigation: host triage", title)
             reload_settings()
+
+    def test_investigation_finding_is_skipped_without_result_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            planned_query = PlannedQuery(
+                query_id="Q-1",
+                hypothesis_id="H-1",
+                purpose="host triage",
+                sql="SELECT 1",
+            )
+            with CaseDB(case) as db:
+                finding_id = insert_investigation_finding(
+                    db=db,
+                    session_id="S-1",
+                    planned_query=planned_query,
+                    result_summary={
+                        "sample_rows": [{"event_id": 4624}],
+                        "evidence_ids": [],
+                    },
+                    report_text="body",
+                )
+                count = db.execute("SELECT COUNT(*) FROM findings").fetchone()[0]
+
+        self.assertIsNone(finding_id)
+        self.assertEqual(0, count)
+
+    def test_extracted_finding_keeps_observed_id_when_rows_are_not_sampled(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            planned_query = PlannedQuery(
+                query_id="Q-1",
+                hypothesis_id="H-1",
+                purpose="host triage",
+                sql="SELECT 1",
+            )
+            result = CheckResult(
+                query_id="Q-1",
+                verdict="confirmed",
+                finding_updates=[],
+                suspicious_evidence=[],
+                new_hypotheses=[],
+                memory_updates={},
+                report_text="confirmed",
+                new_leads=0,
+                progress=False,
+                raw_response={
+                    "extracted_findings": [
+                        {
+                            "title": "Observed finding",
+                            "severity": "high",
+                            "evidence_ids": ["ev-1"],
+                        },
+                        {
+                            "title": "Hallucinated finding",
+                            "severity": "high",
+                            "evidence_ids": ["ev-9"],
+                        },
+                    ]
+                },
+            )
+            with CaseDB(case) as db:
+                apply_check_result(
+                    case=case,
+                    db=db,
+                    session_id="S-1",
+                    planned_query=planned_query,
+                    hypothesis=Hypothesis(id="H-1", description="host triage"),
+                    result_summary={
+                        "row_count": 1,
+                        "sample_rows": [],
+                        "evidence_ids": ["ev-1"],
+                    },
+                    check_result=result,
+                )
+                rows = db.execute(
+                    "SELECT title, evidence, status FROM findings ORDER BY finding_id"
+                ).fetchall()
+
+        self.assertEqual(1, len(rows))
+        self.assertEqual("Observed finding", rows[0][0])
+        self.assertEqual([{"evidence_id": "ev-1"}], json.loads(rows[0][1]))
+        self.assertEqual("accepted", rows[0][2])
 
 
 if __name__ == "__main__":

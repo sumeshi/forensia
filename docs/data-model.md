@@ -111,6 +111,10 @@ Host identification:
 `findings.attack` is a JSON string in `[{tactic, technique_id, technique_name}]` form. It is aggregated into a tactic × technique matrix by `list_attack_coverage_dto` ([src/forensia/api/service.py](../src/forensia/api/service.py)).
 
 `findings.evidence` is a list of dicts containing the original evidence_id. Recursive extraction is performed by [`_evidence_ids_from_payload`](../src/forensia/api/service.py).
+Investigation/checker Findings are persisted as `accepted` only when the current
+query result contains an observed evidence ID. If sampled rows are omitted, a
+minimal `{evidence_id}` reference is retained; an evidence-less new lead remains
+in the investigation/check trace and does not create a Finding row.
 
 ### 1.3 Sessions and steps
 

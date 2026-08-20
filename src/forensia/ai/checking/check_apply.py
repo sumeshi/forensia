@@ -91,16 +91,19 @@ def insert_investigation_finding(
     planned_query: PlannedQuery,
     result_summary: dict[str, Any],
     report_text: str,
-) -> str:
+) -> str | None:
     """Insert a new investigation finding for a newlead verdict.
 
-    Returns the generated finding_id.
+    Returns the generated finding_id, or ``None`` when the result contains no
+    evidence row/reference from which an accepted finding can be built.
     """
     finding_id = f"{session_id}-{planned_query.query_id}-finding"
     prefix = "Investigation"
     title = f"{prefix}: {planned_query.purpose}"
     summary = report_text
-    evidence = [normalize_value(row) for row in result_summary.get("sample_rows", [])]
+    evidence = _build_finding_evidence(result_summary)
+    if not evidence:
+        return None
     missing_checks = []
     now = datetime.now(UTC).replace(tzinfo=None)
     db.execute(
@@ -127,6 +130,32 @@ def insert_investigation_finding(
         ),
     )
     return finding_id
+
+
+def _build_finding_evidence(
+    result_summary: dict[str, Any],
+    evidence_ids: list[str] | None = None,
+) -> list[Any]:
+    """Build a non-empty, result-scoped evidence payload for a finding.
+
+    Query summaries normally contain sampled rows.  A bounded query can retain
+    the observed IDs while omitting all sample rows, so preserve those IDs as
+    minimal references instead of writing an empty evidence array.
+    """
+    observed_ids = _collect_observed_evidence_ids(result_summary)
+    if not observed_ids:
+        return []
+    sample_rows = result_summary.get("sample_rows") or []
+    evidence = [normalize_value(row) for row in sample_rows]
+    if evidence:
+        return evidence
+
+    selected_ids = evidence_ids if evidence_ids is not None else sorted(observed_ids)
+    return [
+        {"evidence_id": evidence_id}
+        for evidence_id in selected_ids
+        if evidence_id in observed_ids
+    ]
 
 
 def _apply_finding_updates(
@@ -219,24 +248,30 @@ def _persist_extracted_findings(
 ) -> None:
     """Persist finding_extractor output (T-04) for a confirmed verdict, skipping duplicates."""
     extracted = check_result.raw_response.get("extracted_findings") or []
-    normalized_evidence_rows = [
-        normalize_value(row) for row in result_summary.get("sample_rows", [])
-    ]
     observed_evidence_ids = _collect_observed_evidence_ids(result_summary)
     for i, entry in enumerate(extracted):
         if not isinstance(entry, dict):
             continue
         title = str(entry.get("title") or "").strip()
         severity = str(entry.get("severity") or "medium").strip().lower()
-        evidence_ids = entry.get("evidence_ids") or []
-        if not isinstance(evidence_ids, list):
+        raw_evidence_ids = entry.get("evidence_ids")
+        if raw_evidence_ids is None:
             evidence_ids = []
+        elif not isinstance(raw_evidence_ids, list):
+            continue
+        else:
+            evidence_ids = raw_evidence_ids
         evidence_ids = [str(e).strip() for e in evidence_ids if str(e).strip()]
         if not title:
             continue
-        if evidence_ids and observed_evidence_ids:
-            if not all(eid in observed_evidence_ids for eid in evidence_ids):
-                continue
+        if evidence_ids and not all(
+            eid in observed_evidence_ids for eid in evidence_ids
+        ):
+            continue
+        effective_evidence_ids = evidence_ids or sorted(observed_evidence_ids)
+        evidence = _build_finding_evidence(result_summary, effective_evidence_ids)
+        if not evidence:
+            continue
         finding_id = f"{session_id}-{planned_query.query_id}-ext-{i:02d}"
         existing = db.execute(
             "SELECT finding_id FROM findings WHERE finding_id = ?",
@@ -244,7 +279,7 @@ def _persist_extracted_findings(
         ).fetchone()
         if existing:
             continue
-        if _is_duplicate_extracted_finding(db, title, evidence_ids):
+        if _is_duplicate_extracted_finding(db, title, effective_evidence_ids):
             continue
         db.execute(
             """
@@ -263,7 +298,7 @@ def _persist_extracted_findings(
                 "accepted",
                 json.dumps(["investigation", hypothesis.id], ensure_ascii=False),
                 json.dumps([], ensure_ascii=False),
-                json.dumps(normalized_evidence_rows, ensure_ascii=False, default=str),
+                json.dumps(evidence, ensure_ascii=False, default=str),
                 check_result.report_text,
                 json.dumps([], ensure_ascii=False),
                 datetime.now(UTC).replace(tzinfo=None),
@@ -279,7 +314,7 @@ def _apply_newlead_finding(
     check_result: CheckResult,
     missing_checks: list,
     notes: str,
-) -> None:
+) -> bool:
     """Insert an investigation finding and its AI review for a newlead verdict."""
     finding_id = insert_investigation_finding(
         db=db,
@@ -288,6 +323,8 @@ def _apply_newlead_finding(
         result_summary=result_summary,
         report_text=check_result.report_text,
     )
+    if finding_id is None:
+        return False
     _upsert_ai_review(
         db=db,
         finding_id=finding_id,
@@ -298,6 +335,7 @@ def _apply_newlead_finding(
         notes=notes,
         raw_response=check_result.raw_response,
     )
+    return True
 
 
 def apply_check_result(
@@ -333,7 +371,7 @@ def apply_check_result(
             db, session_id, planned_query, hypothesis, result_summary, check_result
         )
     if check_result.verdict == "newlead":
-        _apply_newlead_finding(
+        if _apply_newlead_finding(
             db,
             session_id,
             planned_query,
@@ -341,8 +379,8 @@ def apply_check_result(
             check_result,
             missing_checks,
             notes,
-        )
-        new_leads += 1
+        ):
+            new_leads += 1
 
     progress = (
         new_leads > 0 or significant_delta or len(check_result.new_hypotheses) > 0

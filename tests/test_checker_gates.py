@@ -243,7 +243,7 @@ class TestExtractedFindingValidation(unittest.TestCase):
             (
                 [{"title": "String ID", "severity": "low", "evidence_ids": "ev-1"}],
                 {"ev-1"},
-                1,
+                0,
             ),
             (
                 [
@@ -254,7 +254,7 @@ class TestExtractedFindingValidation(unittest.TestCase):
                     }
                 ],
                 set(),
-                1,
+                0,
             ),
         )
         for items, observed, expected in cases:

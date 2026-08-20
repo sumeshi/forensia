@@ -340,22 +340,25 @@ def validate_extracted_findings(
             continue
         title = str(item.get("title") or "").strip()
         severity = str(item.get("severity") or "").strip().lower()
-        evidence_ids = item.get("evidence_ids") or []
-        if not isinstance(evidence_ids, list):
+        raw_evidence_ids = item.get("evidence_ids")
+        if raw_evidence_ids is None:
             evidence_ids = []
+        elif not isinstance(raw_evidence_ids, list):
+            continue
+        else:
+            evidence_ids = raw_evidence_ids
         evidence_ids = [str(e).strip() for e in evidence_ids if str(e).strip()]
 
         if not title:
             continue
         if severity not in VALID_SEVERITIES:
             continue
-        if not observed_evidence_ids or not evidence_ids:
-            validated.append(
-                {"title": title, "severity": severity, "evidence_ids": evidence_ids}
-            )
+        if evidence_ids and (
+            not observed_evidence_ids
+            or not all(eid in observed_evidence_ids for eid in evidence_ids)
+        ):
             continue
-        if all(eid in observed_evidence_ids for eid in evidence_ids):
-            validated.append(
-                {"title": title, "severity": severity, "evidence_ids": evidence_ids}
-            )
+        validated.append(
+            {"title": title, "severity": severity, "evidence_ids": evidence_ids}
+        )
     return validated
