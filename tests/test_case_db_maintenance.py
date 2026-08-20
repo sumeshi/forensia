@@ -108,13 +108,20 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                     },
                 )
                 push("[review] unresolved rewrite", stage="investigate")
+                push(
+                    "[analyze] rule: windows-security-4625-failed-logon",
+                    stage="analyze",
+                    log_level="info",
+                )
 
-            mock_progress.assert_called_once()
-            payload = record_progress.call_args.args[1]
+            self.assertEqual(2, mock_progress.call_count)
+            payload = record_progress.call_args_list[0].args[1]
             self.assertEqual(
                 {"tag": "REVIEW", "level": "warning", "message": "unresolved rewrite"},
                 payload["recent_log_entries"][0],
             )
+            entry = record_progress.call_args_list[1].args[1]["recent_log_entries"][-1]
+            self.assertEqual("info", entry["level"])
 
     def test_reset_case_tables_clears_derived_report_and_ingest_tables(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

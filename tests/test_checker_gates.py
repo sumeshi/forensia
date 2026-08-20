@@ -97,24 +97,35 @@ class TestVerifyVerdictConsistency(unittest.TestCase):
             confirm_when={
                 "co_observed_event_ids": [25, 4624],
                 "same_host": True,
+                "same_entities": ["target_user"],
                 "within_minutes": 5,
+                "min_count": 3,
             }
         )
         cases = (
-            ("within window", 2, "PC-01", "confirmed"),
-            ("outside window", 180, "PC-01", "inconclusive"),
-            ("different host", 2, "PC-02", "inconclusive"),
+            ("within window", 2, "PC-01", "alice", "confirmed"),
+            ("outside window", 180, "PC-01", "alice", "inconclusive"),
+            ("different host", 2, "PC-02", "alice", "inconclusive"),
+            ("different entity", 2, "PC-01", "bob", "inconclusive"),
         )
-        for name, minutes, second_host, expected in cases:
+        for name, minutes, second_host, second_user, expected in cases:
             rows = [
                 {
                     "event_id": 25,
                     "computer": "PC-01",
+                    "target_user": "alice",
                     "timestamp": base.isoformat(),
+                },
+                {
+                    "event_id": 25,
+                    "computer": "PC-01",
+                    "target_user": "alice",
+                    "timestamp": (base + datetime.timedelta(minutes=1)).isoformat(),
                 },
                 {
                     "event_id": 4624,
                     "computer": second_host,
+                    "target_user": second_user,
                     "timestamp": (
                         base + datetime.timedelta(minutes=minutes)
                     ).isoformat(),

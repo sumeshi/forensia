@@ -182,7 +182,7 @@ class ObjectiveAndGapStoreTests(unittest.TestCase):
                     "Acquire perimeter network telemetry",
                 ]
                 inject_gap_hypotheses(db, state, gaps, "S-1")
-                api_gaps = list_report_gaps_dto(db, status="open")
+                api_gaps = list_report_gaps_dto(db, status="needs_review")
                 self.assertEqual(len(api_gaps), 3)
                 self.assertEqual({gap.origin for gap in api_gaps}, {"section"})
 

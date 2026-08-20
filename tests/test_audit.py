@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from unittest.mock import MagicMock
 
@@ -118,3 +119,10 @@ class LLMCallLoggerTests(unittest.TestCase):
         self.assertEqual(
             logger.base_dir.__truediv__.return_value.write_text.call_count, 3
         )
+        first, second = (
+            json.loads(call.args[0])
+            for call in logger.base_dir.__truediv__.return_value.write_text.call_args_list[:2]
+        )
+        self.assertEqual("estimated", first["meta"]["usage_source"])
+        self.assertTrue(second["meta"]["repeated_request"])
+        self.assertTrue(second["meta"]["repeated_action"])

@@ -26,14 +26,23 @@ def test_registry_detection_requires_regf_and_keeps_logs_as_companions(
     primary.write_bytes(b"regf" + b"\0" * 8)
     log = tmp_path / "SYSTEM.LOG1"
     log.write_bytes(b"transaction")
+    legacy_log = tmp_path / "SYSTEM.LOG"
+    legacy_log.write_bytes(b"legacy-transaction")
+    empty_log = tmp_path / "SYSTEM.LOG2"
+    empty_log.write_bytes(b"")
     not_hive = tmp_path / "SOFTWARE"
     not_hive.write_bytes(b"text")
 
     assert detect_registry_candidate(primary).kind == "primary"
     assert detect_registry_candidate(not_hive) is None
-    datasets = admit_registry_datasets([primary, log])
+    datasets = admit_registry_datasets([primary, log, legacy_log, empty_log])
     assert len(datasets) == 1
-    assert [item.kind for item in datasets[0].members] == ["primary", "transaction_log"]
+    assert [item.kind for item in datasets[0].members] == [
+        "primary",
+        "transaction_log",
+        "transaction_log",
+    ]
+    assert empty_log not in {item.path for item in datasets[0].members}
     orphan = tmp_path / "ORPHAN.LOG1"
     orphan.write_bytes(b"transaction")
     assert admit_registry_datasets([orphan]) == ()
@@ -107,6 +116,8 @@ def test_registry_raw_records_and_parser_timestamps_are_traceable(
     case = Case.init(tmp_path / "case")
     primary = tmp_path / "SYSTEM"
     primary.write_bytes(b"regf")
+    log = tmp_path / "SYSTEM.LOG"
+    log.write_bytes(b"transaction")
     raw = case.raw_dir / "registry-test.jsonl"
     record = (
         '{"@timestamp":"2020-01-02T03:04:05+00:00",'
@@ -117,25 +128,34 @@ def test_registry_raw_records_and_parser_timestamps_are_traceable(
         '{"hive":"SYSTEM","key_path":"x"}}}\n'
     )
     raw.write_text(record + record, encoding="utf-8")
-    dataset = admit_registry_datasets([primary])[0]
+    dataset = admit_registry_datasets([primary, log])[0]
     source_id = "a" * 64
+    log_source_id = "b" * 64
     with CaseDB(case) as db:
-        register_evidence_source(
-            db,
-            source_id=source_id,
-            artifact_family="registry",
-            display_path=primary.name,
-            ingest_status="parsed",
-            parser_name="reg2es",
-            parser_version="2.0.0",
-        )
+        for member, member_source_id in ((primary, source_id), (log, log_source_id)):
+            register_evidence_source(
+                db,
+                source_id=member_source_id,
+                artifact_family="registry",
+                display_path=member.name,
+                ingest_status="parsed",
+                parser_name="reg2es",
+                parser_version="2.0.0",
+            )
         register_registry_dataset(
             db,
             dataset,
-            source_ids={primary: source_id},
+            source_ids={primary: source_id, log: log_source_id},
             raw_path=raw,
         )
         assert normalize_registry(case, db) == 2
+        assert db.execute(
+            "SELECT source_id, ingest_status, row_count FROM evidence_sources "
+            "ORDER BY source_id"
+        ).fetchall() == [
+            (source_id, "normalized", 2),
+            (log_source_id, "normalized", 0),
+        ]
         refresh_evidence_coverage(db)
         artifact = db.execute(
             "SELECT artifact_id, source_ids, raw_json FROM registry_artifacts"
@@ -180,7 +200,12 @@ def test_registry_raw_records_and_parser_timestamps_are_traceable(
         assert db.execute(
             "SELECT ingest_status, error_code FROM registry_datasets"
         ).fetchone() == ("partial", "raw_malformed")
-    assert json.loads(artifact[1]) == [source_id]
+        assert db.execute(
+            "SELECT ingest_status, error_code FROM evidence_sources "
+            "WHERE source_id = ?",
+            [source_id],
+        ).fetchone() == ("partial", "raw_malformed")
+    assert set(json.loads(artifact[1])) == {source_id, log_source_id}
     assert '"event"' in artifact[2]
     assert timeline[0].startswith("registry-")
     assert str(timeline[2]) == "parser:@timestamp"
@@ -189,7 +214,8 @@ def test_registry_raw_records_and_parser_timestamps_are_traceable(
     other_primary.parent.mkdir()
     other_primary.write_bytes(b"regf")
     other_dataset = admit_registry_datasets([other_primary])[0]
-    assert _dataset_id(dataset, {primary: source_id}) == _dataset_id(
+    primary_dataset = admit_registry_datasets([primary])[0]
+    assert _dataset_id(primary_dataset, {primary: source_id}) == _dataset_id(
         other_dataset, {other_primary: source_id}
     )
 

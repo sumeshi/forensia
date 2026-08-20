@@ -19,7 +19,10 @@ from datetime import datetime
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
-from forensia.report.answers.keypoint_catalog import REPORT_KEYPOINTS
+from forensia.report.answers.keypoint_catalog import (
+    REPORT_KEYPOINTS,
+    investigation_keypoint_names,
+)
 from forensia.report.answers.summary_rows import _timeline_phase_rows
 
 
@@ -45,6 +48,12 @@ def _insert_event(
 
 
 class TestLogIntegrityKeypointSelection(unittest.TestCase):
+    def test_report_summaries_are_not_investigation_candidates(self) -> None:
+        eligible = set(investigation_keypoint_names())
+        self.assertNotIn("account_all_logon_summary", eligible)
+        self.assertNotIn("appendix_findings_catalog", eligible)
+        self.assertIn("account_bruteforce_clusters", eligible)
+
     def test_security_1100_and_unrelated_104_are_not_log_clear_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)

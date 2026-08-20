@@ -85,6 +85,11 @@ class TestWriteReportApiSnapshots(unittest.TestCase):
 
             assert (snap_dir / "report_sections.json").exists()
             assert not (snap_dir / "report_brief.json").exists()
+            metadata = json.loads((snap_dir / "snapshot_metadata.json").read_text())
+            assert metadata["generation_revision"]
+            assert metadata["generated_at"]
+            assert metadata["state"] in {"current", "in-progress"}
+            assert metadata["stale"] is False
 
     def test_empty_sections_list(self) -> None:
         with tempfile.TemporaryDirectory() as td:

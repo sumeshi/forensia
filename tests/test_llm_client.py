@@ -27,17 +27,23 @@ class _FakeClient:
 
 
 def _response(
-    status_code: int, *, text: str = "", content: str = "{}"
+    status_code: int,
+    *,
+    text: str = "",
+    content: str = "{}",
+    finish_reason: str = "stop",
+    usage: dict | None = None,
 ) -> httpx.Response:
     request = httpx.Request("POST", "http://llama.test/v1/chat/completions")
     if status_code == 200:
-        return httpx.Response(
-            status_code,
-            json={
-                "choices": [{"message": {"content": content}, "finish_reason": "stop"}]
-            },
-            request=request,
-        )
+        payload = {
+            "choices": [
+                {"message": {"content": content}, "finish_reason": finish_reason}
+            ]
+        }
+        if usage is not None:
+            payload["usage"] = usage
+        return httpx.Response(status_code, json=payload, request=request)
     return httpx.Response(status_code, text=text, request=request)
 
 
@@ -47,7 +53,7 @@ def test_chat_completion_retries_llama_strict_schema_failure_with_compatible_sch
     client = _FakeClient(
         [
             _response(500, text="Failed to parse input: grammar rejected"),
-            _response(200, content='{"ok": true}'),
+            _response(200, content='{"ok": true}', finish_reason="length"),
         ]
     )
     messages: list[str] = []
@@ -71,6 +77,9 @@ def test_chat_completion_retries_llama_strict_schema_failure_with_compatible_sch
     assert "strict" not in client.requests[1]["response_format"]["json_schema"]
     assert any("compatible json_schema" in message for message in messages)
     assert all("grammar violation" not in message.lower() for message in messages)
+    metadata = llm_client.get_last_completion_metadata()
+    assert metadata is not None
+    assert (metadata.finish_reason, metadata.usage_source) == ("length", "estimated")
 
 
 def test_chat_completion_skips_strict_after_server_rejected_it_once() -> None:

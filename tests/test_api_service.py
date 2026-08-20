@@ -143,7 +143,16 @@ class TestGetCaseStatsDto(unittest.TestCase):
         db.execute.side_effect = [
             _make_mock_result(_STATS_COLS, [(100, 50, 5, 3, 7)]),
             _make_mock_result(_FINDINGS_STATS_COLS, [(30, 2)]),
-            _make_mock_result(["active_hypotheses", "resolved_hypotheses"], [(10, 5)]),
+            _make_mock_result(
+                [
+                    "active_hypotheses",
+                    "resolved_hypotheses",
+                    "confirmed_hypotheses",
+                    "refuted_hypotheses",
+                    "untestable_hypotheses",
+                ],
+                [(10, 5, 2, 2, 1)],
+            ),
             _make_mock_result(
                 ["open_gaps", "report_human_reviewed", "report_ai_exhausted"],
                 [(3, 1, 0)],
@@ -177,6 +186,9 @@ class TestGetCaseStatsDto(unittest.TestCase):
         self.assertEqual(result.findings_suppressed, 2)
         self.assertEqual(result.active_hypotheses, 10)
         self.assertEqual(result.resolved_hypotheses, 5)
+        self.assertEqual(result.confirmed_hypotheses, 2)
+        self.assertEqual(result.refuted_hypotheses, 2)
+        self.assertEqual(result.untestable_hypotheses, 1)
         self.assertEqual(result.open_gaps, 3)
         self.assertEqual(result.sessions, 2)
         self.assertEqual(result.total_iterations, 15)
@@ -194,7 +206,14 @@ class TestGetCaseStatsDto(unittest.TestCase):
             _make_mock_result(_STATS_COLS, [(None, None, None, None, None)]),
             _make_mock_result(_FINDINGS_STATS_COLS, [(None, None)]),
             _make_mock_result(
-                ["active_hypotheses", "resolved_hypotheses"], [(None, None)]
+                [
+                    "active_hypotheses",
+                    "resolved_hypotheses",
+                    "confirmed_hypotheses",
+                    "refuted_hypotheses",
+                    "untestable_hypotheses",
+                ],
+                [(None, None, None, None, None)],
             ),
             _make_mock_result(
                 ["open_gaps", "report_human_reviewed", "report_ai_exhausted"],

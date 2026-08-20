@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from forensia.ai.checking.check_normalize import summarize_query_result
+from forensia.ai.investigation import investigation_session
 from forensia.ai.investigation.investigation_session import sync_keypoint_cards
 from forensia.ai.investigation.memory_sync import apply_memory_updates
 from forensia.config import (
@@ -554,6 +555,40 @@ class MemoryTests(unittest.TestCase):
             self.assertTrue((memory.keypoints_dir / "KP-0001.md").exists())
             self.assertFalse((memory.keypoints_dir / "KP-0002.md").exists())
             self.assertFalse((memory.keypoints_dir / "KP-0003.md").exists())
+
+    def test_finding_snapshot_round_robins_semantic_themes(self) -> None:
+        candidates = [
+            {
+                "finding_id": finding_id,
+                "rule_id": theme,
+                "title": finding_id,
+                "summary": finding_id,
+                "confidence": confidence,
+                "evidence": [{"evidence_id": f"ev-{finding_id}"}],
+            }
+            for finding_id, theme, confidence in (
+                ("A-1", "theme-a", 0.99),
+                ("A-2", "theme-a", 0.98),
+                ("A-3", "theme-a", 0.97),
+                ("B-1", "theme-b", 0.70),
+                ("C-1", "theme-c", 0.60),
+            )
+        ]
+        with (
+            patch.object(
+                investigation_session, "_findings_snapshot", return_value=candidates
+            ),
+            patch.object(
+                investigation_session,
+                "classify_finding_theme",
+                side_effect=lambda item: item["rule_id"],
+            ),
+        ):
+            snapshot = investigation_session._finding_snapshot(Mock(), limit=3)
+
+        self.assertEqual(["A-1", "B-1", "C-1"], [x["finding_id"] for x in snapshot])
+        self.assertEqual(3, snapshot[0]["theme_count"])
+        self.assertEqual(["A-1", "A-2", "A-3"], snapshot[0]["theme_finding_ids"])
 
     def test_hypothesis_memory_is_llm_compacted_when_oversized(self) -> None:
         with (

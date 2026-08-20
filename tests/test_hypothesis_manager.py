@@ -14,6 +14,7 @@ import unittest
 
 from forensia.ai.hypotheses.hypothesis_manager import (
     MAX_SECTION_UPDATES,
+    admit_new_hypothesis,
     mark_section_stale,
     merge_active_hypotheses,
     resolve_hypothesis,
@@ -27,6 +28,44 @@ from forensia.core.case import Case
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
 from forensia.report.sections.section_taxonomy import sections_for_keypoint
+
+
+class TestHypothesisAdmissionConformance(unittest.TestCase):
+    def test_rejects_unmaterialized_or_unverifiable_claims(self) -> None:
+        state = SessionState(session_id="S-admission")
+        def admission(description: str, condition: dict) -> tuple[bool, str]:
+            candidate = Hypothesis(
+                id="draft-test",
+                description=description,
+                required_entities=["src_ip", "target_user"],
+                confirm_when=condition,
+            )
+            return admit_new_hypothesis(candidate, state)
+
+        self.assertEqual(
+            (False, "unresolved-placeholder"),
+            admission("Execution from {src_ip} against target_user", {"event_id": 4624}),
+        )
+        self.assertEqual(
+            (False, "empty-verification-spec"),
+            admission("Account change requires investigation", {}),
+        )
+        description = (
+            "Repeated logon events from a single src_ip to the same target_user "
+            "within 30 minutes indicate automated access"
+        )
+        base = {"co_observed_event_ids": [4624, 4625], "within_minutes": 30}
+        self.assertEqual(
+            (False, "claim-spec-entity-correlation-missing"),
+            admission(description, base),
+        )
+        self.assertEqual(
+            (True, "accepted"),
+            admission(
+                description,
+                {**base, "same_entities": ["src_ip", "target_user"], "min_count": 2},
+            ),
+        )
 
 
 def _setup_confirmed_invariant(db: CaseDB, hypothesis_id: str) -> None:

@@ -32,11 +32,22 @@ class InvestigateWiringTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                with mock.patch.object(
-                    investigator_module,
-                    "async_refresh_report_sections",
-                    new=mock.AsyncMock(return_value={}),
-                ) as refresh_sections:
+                db.execute(
+                    "INSERT INTO investigation_sessions "
+                    "(session_id, started_at, finished_at, iterations, status) "
+                    "VALUES ('old-running', '2020-01-02 03:04:05', NULL, 0, 'running')"
+                )
+                with (
+                    mock.patch.object(
+                        investigator_module,
+                        "async_refresh_report_sections",
+                        new=mock.AsyncMock(return_value={}),
+                    ) as refresh_sections,
+                    mock.patch(
+                        "forensia.ai.audit.LLMCallLogger.write_summary",
+                        side_effect=OSError("audit disk full"),
+                    ),
+                ):
                     result = asyncio.run(
                         investigator_module.investigate(
                             case=case,
@@ -52,11 +63,24 @@ class InvestigateWiringTests(unittest.TestCase):
                 self.assertEqual(result["status"], "completed")
                 self.assertEqual(result["iteration"], 1)
                 row = db.execute(
-                    "SELECT status FROM investigation_sessions WHERE session_id = ?",
+                    "SELECT status, finished_at FROM investigation_sessions WHERE session_id = ?",
                     (result["session_id"],),
                 ).fetchone()
                 self.assertIsNotNone(row)
                 self.assertEqual(row[0], "completed")
+                self.assertIsNotNone(row[1])
+                self.assertEqual(
+                    ("abandoned", "2020-01-02 03:04:05"),
+                    tuple(
+                        map(
+                            str,
+                            db.execute(
+                                "SELECT status, finished_at FROM investigation_sessions "
+                                "WHERE session_id = 'old-running'"
+                            ).fetchone(),
+                        )
+                    ),
+                )
 
     def test_stopped_cycle_persists_state_before_final_refresh(self) -> None:
         from forensia.ai.investigation import investigator as investigator_module
@@ -99,6 +123,7 @@ class InvestigateWiringTests(unittest.TestCase):
                             model="dummy-model",
                             max_iter=1,
                             report_only=True,
+                            report_every_n_cycles=2,
                         )
                     )
 

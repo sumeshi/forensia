@@ -17,7 +17,6 @@ from forensia.ai.investigation.investigation_session import append_hypothesis_re
 from forensia.ai.investigation.investigator import final_summary
 from forensia.ai.report_gap import (
     classify_gap_kind,
-    gap_hypothesis_id,
     inject_gap_hypotheses,
     report_cycle_progress,
 )
@@ -432,7 +431,7 @@ class PersistenceTests(unittest.TestCase):
             )
         )
 
-    def test_gap_hypotheses_are_injected_once_for_new_gaps(self) -> None:
+    def test_non_testable_report_gap_stays_a_review_gap(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -446,16 +445,17 @@ class PersistenceTests(unittest.TestCase):
                 rows = db.execute(
                     "SELECT hypothesis_id, origin, status, description FROM hypotheses ORDER BY hypothesis_id"
                 ).fetchall()
+                gap_rows = db.execute(
+                    "SELECT status, coverage_reason FROM report_gaps ORDER BY gap_id"
+                ).fetchall()
 
-            self.assertEqual(1, added)
+            self.assertEqual(0, added)
             self.assertEqual(0, duplicate)
-            self.assertEqual(1, len(state.active_hypotheses))
+            self.assertEqual([], state.active_hypotheses)
+            self.assertEqual([], rows)
             self.assertEqual(
-                gap_hypothesis_id("foo bar"), state.active_hypotheses[0].id
-            )
-            self.assertEqual(
-                [(gap_hypothesis_id("foo bar"), "report_gap", "active", "foo bar")],
-                rows,
+                [("needs_review", "admission_non-testable-verification-spec")],
+                gap_rows,
             )
 
     def test_external_or_human_gaps_do_not_become_hypotheses(self) -> None:
