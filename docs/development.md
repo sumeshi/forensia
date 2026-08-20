@@ -45,7 +45,7 @@ To specify the base URL on the CLI, use `--llm-base-url`.
 
 ```bash
 cd web_ui
-npx pnpm install
+pnpm install
 ```
 
 ### 1.3 Common commands
@@ -56,9 +56,8 @@ UV_CACHE_DIR=/tmp/uv-cache PYTHONPATH=src uv run python -m pytest tests/ -q
 
 # Frontend
 cd web_ui
-npx svelte-check
-npx pnpm test
-npx pnpm build
+pnpm test
+pnpm build
 
 # Local run
 uv run forensia investigate ./cases/demo ./path/to/evidence --profile windows-basic --max-iter 20
