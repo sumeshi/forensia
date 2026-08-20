@@ -1,0 +1,21 @@
+id: registry-scheduled-task-suspicious
+title: Scheduled task with suspicious command
+severity: medium
+confidence: 0.55
+required_fields:
+- key_path
+- task_command
+- hive
+tags:
+- registry
+- persistence
+- scheduled-task
+- t1053
+attack:
+- tactic: persistence
+  technique_id: T1053.005
+  technique_name: Scheduled Task
+query: "SELECT\n    artifact_id AS evidence_id,\n    key_path,\n    hive,\n    timestamp,\n    json_extract_string(raw_json, '$.reg2es.custom.Path') AS task_path,\n    json_extract_string(raw_json, '$.reg2es.custom.Actions.cmd') AS task_command\nFROM registry_artifacts\nWHERE plugin = 'tasks'\n    AND (\n        LOWER(COALESCE(json_extract_string(raw_json, '$.reg2es.custom.Actions.cmd'), '')) LIKE '%\\temp\\%'\n        OR LOWER(COALESCE(json_extract_string(raw_json, '$.reg2es.custom.Actions.cmd'), '')) LIKE '%\\appdata\\%'\n        OR LOWER(COALESCE(json_extract_string(raw_json, '$.reg2es.custom.Actions.cmd'), '')) LIKE '%\\programdata\\%'\n        OR LOWER(COALESCE(json_extract_string(raw_json, '$.reg2es.custom.Actions.cmd'), '')) LIKE '%.ps1%'\n        OR LOWER(COALESCE(json_extract_string(raw_json, '$.reg2es.custom.Actions.cmd'), '')) LIKE '%.vbs%'\n        OR LOWER(COALESCE(json_extract_string(raw_json, '$.reg2es.custom.Actions.cmd'), '')) LIKE '%.bat%'\n        OR LOWER(COALESCE(json_extract_string(raw_json, '$.reg2es.custom.Actions.cmd'), '')) LIKE '%powershell%'\n        OR LOWER(COALESCE(json_extract_string(raw_json, '$.reg2es.custom.Actions.cmd'), '')) LIKE '%certutil%'\n    )\n"
+finding:
+  title: 'Scheduled task with suspicious action: {task_path}'
+  summary: 'A scheduled task cached in the registry ({key_path}) runs a suspicious command: {task_command}. Scheduled tasks referencing scripts or binaries in user-writable locations are a common persistence technique (ATT&CK T1053.005).'

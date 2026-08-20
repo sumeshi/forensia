@@ -1,0 +1,24 @@
+id: filesystem-mft-executable-suspicious-dir
+title: Executable in a user-writable directory (MFT)
+severity: high
+confidence: 0.6
+required_fields:
+- file_name
+- file_path
+tags:
+- filesystem
+- mft
+- execution
+- dropped-binary
+- defense-evasion
+attack:
+- tactic: execution
+  technique_id: T1204
+  technique_name: User Execution
+- tactic: defense-evasion
+  technique_id: T1036
+  technique_name: Masquerading
+query: "SELECT\n    evidence_id,\n    file_name,\n    file_path,\n    extension,\n    size,\n    si_created,\n    si_modified,\n    fn_created,\n    fn_modified,\n    is_deleted\nFROM mft_entries\nWHERE LOWER(extension) IN ('exe', 'dll', 'scr', 'sys', 'com')\n    AND (\n        LOWER(file_path) LIKE '%/temp/%'\n        OR LOWER(file_path) LIKE '%/appdata/%'\n        OR LOWER(file_path) LIKE '%/programdata/%'\n        OR LOWER(file_path) LIKE '%/$recycle.bin/%'\n        OR LOWER(file_path) LIKE '%/users/public/%'\n    )\n"
+finding:
+  title: 'Executable in user-writable path: {file_name}'
+  summary: 'An executable ({file_name}) resides in a user-writable location: {file_path}. Executables dropped to Temp, AppData, ProgramData, the Recycle Bin, or Public folders are a common indicator of malware staging or masquerading (ATT&CK T1036 / T1204).'

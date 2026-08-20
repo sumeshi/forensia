@@ -228,3 +228,43 @@ persistence_indicators:
       description: "A scheduled task was enabled"
     - event_id: 4701
       description: "A scheduled task was disabled"
+
+# Offensive / dual-use tooling — rarely installed legitimately, high signal in Prefetch
+offensive_tools:
+  - name: Mimikatz
+    exe_patterns: ["mimikatz*.exe", "mimikatz.exe", "mimidrv*.sys", "sekurlsa*.exe"]
+    prefetch_names: ["MIMIKATZ*.pf"]
+  - name: PsExec
+    exe_patterns: ["psexec*.exe", "psexesvc*.exe"]
+    prefetch_names: ["PSEXEC*.pf"]
+  - name: ProcDump
+    exe_patterns: ["procdump*.exe", "procdump64*.exe"]
+    prefetch_names: ["PROCDUMP*.pf"]
+  - name: Windows Credentials Editor
+    exe_patterns: ["wce*.exe", "wce64*.exe"]
+  - name: LaZagne
+    exe_patterns: ["lazagne*.exe"]
+  - name: Rubeus
+    exe_patterns: ["rubeus*.exe"]
+  - name: BloodHound
+    exe_patterns: ["bloodhound*.exe", "sharphound*.exe"]
+  - name: ADFind
+    exe_patterns: ["adfind*.exe"]
+  - name: Seatbelt
+    exe_patterns: ["seatbelt*.exe"]
+  - name: Netcat
+    exe_patterns: ["nc.exe", "nc64.exe", "netcat*.exe", "ncat*.exe"]
+  - name: Plink
+    exe_patterns: ["plink*.exe"]
+  - name: Chisel
+    exe_patterns: ["chisel*.exe"]
+  - name: Ligolo
+    exe_patterns: ["ligolo*.exe"]
+  - name: Socat
+    exe_patterns: ["socat*.exe"]
+  - name: Password dumpers
+    exe_patterns: ["pwdump*.exe", "fgdump*.exe", "cachedump*.exe", "samdump*.exe"]
+  - name: Impacket remote exec
+    exe_patterns: ["atexec*.exe", "wmiexec*.exe", "smbexec*.exe", "dcomexec*.exe"]
+  - name: Kerberos attack tools
+    exe_patterns: ["kerberoast*.exe", "getuserspns*.exe"]

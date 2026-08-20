@@ -1,0 +1,46 @@
+id: registry-service-imagepath-suspicious
+title: Service with image path in a user-writable location
+severity: high
+confidence: 0.65
+required_fields:
+- key_path
+- image_path
+- hive
+tags:
+- registry
+- persistence
+- service
+- t1543
+attack:
+- tactic: persistence
+  technique_id: T1543.003
+  technique_name: 'Create or Modify System Process: Windows Service'
+query: "SELECT\n    artifact_id AS evidence_id,\n    key_path,\n    hive,\n    timestamp,\n    json_extract_string(raw_json, '$.reg2es.custom.image_path') AS image_path\nFROM registry_artifacts\nWHERE plugin = 'services'\n    AND (\n        LOWER(COALESCE(json_extract_string(raw_json, '$.reg2es.custom.image_path'), '')) LIKE '%\\temp\\%'\n        OR LOWER(COALESCE(json_extract_string(raw_json, '$.reg2es.custom.image_path'), '')) LIKE '%\\appdata\\%'\n        OR LOWER(COALESCE(json_extract_string(raw_json, '$.reg2es.custom.image_path'), '')) LIKE '%\\programdata\\%'\n        OR LOWER(COALESCE(json_extract_string(raw_json, '$.reg2es.custom.image_path'), '')) LIKE '%\\users\\public\\%'\n    )\n"
+finding:
+  title: 'Service with suspicious image path: {image_path}'
+  summary: 'A service registered under {key_path} points to an executable in a user-writable location ({image_path}). Services launching from Temp, AppData, ProgramData, or Public directories are a common persistence technique (ATT&CK T1543.003).'
+hypotheses:
+- id: service_persistence
+  segment: persistence
+  description: A service binary at {image_path} under {key_path} was configured from a user-writable directory, indicating service-based persistence
+  required_entities:
+  - key_path
+  - image_path
+  confirm_when:
+    co_observed_event_ids:
+    - 4697
+    - 7045
+    within_minutes: 1440
+  refute_when:
+    zero_rows: true
+  follow_up_questions:
+  - Does the service binary exist on disk, and what is its signature or hash?
+  - Which account is configured to run the service?
+  report_sections:
+  - 3_technical
+  - 5_recommendations
+correlate_with:
+- event_ids:
+  - 4697
+  - 7045
+  rationale: Service installation events confirming the persistence mechanism

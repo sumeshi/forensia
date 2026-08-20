@@ -1,0 +1,20 @@
+id: registry-proxy-enabled
+title: System proxy or proxy auto-config (PAC) configured
+severity: low
+confidence: 0.5
+required_fields:
+- key_path
+- hive
+tags:
+- registry
+- command-and-control
+- proxy
+- t1090
+attack:
+- tactic: command-and-control
+  technique_id: T1090
+  technique_name: Proxy
+query: "SELECT\n    artifact_id AS evidence_id,\n    key_path,\n    hive,\n    timestamp,\n    json_extract_string(raw_json, '$.reg2es.custom.proxy') AS proxy_server,\n    json_extract_string(raw_json, '$.reg2es.custom.proxypac') AS proxy_pac\nFROM registry_artifacts\nWHERE plugin = 'proxy'\n    AND (\n        LOWER(COALESCE(json_extract_string(raw_json, '$.reg2es.custom.enabled'), '')) IN ('true', '1')\n        OR (\n            json_extract_string(raw_json, '$.reg2es.custom.proxypac') IS NOT NULL\n            AND LOWER(COALESCE(json_extract_string(raw_json, '$.reg2es.custom.proxypac'), '')) NOT IN ('n/a', '', 'none')\n        )\n    )\n"
+finding:
+  title: 'Proxy configuration: {proxy_server}{proxy_pac}'
+  summary: 'A system proxy ({proxy_server}) or proxy auto-config URL ({proxy_pac}) is set under {key_path} ({hive}). Proxy and PAC settings can redirect traffic to an attacker-controlled relay (ATT&CK T1090); confirm this is expected corporate configuration.'

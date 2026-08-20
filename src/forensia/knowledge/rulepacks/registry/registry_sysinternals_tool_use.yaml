@@ -1,0 +1,20 @@
+id: registry-sysinternals-tool-use
+title: Sysinternals tool execution
+severity: medium
+confidence: 0.6
+required_fields:
+- key_path
+- hive
+tags:
+- registry
+- execution
+- lateral-movement
+- t1569
+attack:
+- tactic: lateral-movement
+  technique_id: T1569.002
+  technique_name: 'System Services: Service Execution'
+query: "SELECT\n    artifact_id AS evidence_id,\n    key_path,\n    value_name,\n    hive,\n    timestamp\nFROM registry_artifacts\nWHERE plugin = 'sysinternals'\n"
+finding:
+  title: 'Sysinternals tool usage: {key_path}'
+  summary: 'A Sysinternals tool was executed on this host ({key_path}, EULA accepted). Tools such as PsExec, ProcDump, and SDelete are dual-use and frequently leveraged by attackers for lateral movement, credential dumping, and evidence removal.'

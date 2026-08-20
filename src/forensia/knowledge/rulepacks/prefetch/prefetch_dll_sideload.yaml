@@ -1,0 +1,20 @@
+id: prefetch-dll-sideload
+title: DLL loaded from a user-writable location (Prefetch)
+severity: medium
+confidence: 0.5
+required_fields:
+- executable_name
+- last_exec_time
+tags:
+- prefetch
+- execution
+- dll-sideloading
+- defense-evasion
+attack:
+- tactic: defense-evasion
+  technique_id: T1574.002
+  technique_name: 'Hijack Execution Flow: DLL Side-Loading'
+query: "SELECT\n    evidence_id,\n    executable_name,\n    exec_count,\n    last_exec_time,\n    filenames\nFROM prefetch_executions\nWHERE filenames IS NOT NULL\n    AND LOWER(CAST(filenames AS VARCHAR)) LIKE '%.dll%'\n    AND (\n        LOWER(CAST(filenames AS VARCHAR)) LIKE '%\\temp\\%'\n        OR LOWER(CAST(filenames AS VARCHAR)) LIKE '%\\appdata\\%'\n        OR LOWER(CAST(filenames AS VARCHAR)) LIKE '%\\programdata\\%'\n        OR LOWER(CAST(filenames AS VARCHAR)) LIKE '%\\users\\%'\n    )\nORDER BY last_exec_time DESC\n"
+finding:
+  title: 'Suspicious DLL load: {executable_name}'
+  summary: '{executable_name} loaded a DLL from a user-writable location (last run: {last_exec_time}). DLLs loaded from Temp, AppData, ProgramData, or user directories are a strong indicator of DLL side-loading or search-order hijacking (ATT&CK T1574.002).'

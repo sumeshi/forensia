@@ -1,0 +1,21 @@
+id: filesystem-mft-ransomware-note
+title: Ransomware note or encrypted file artifacts (MFT)
+severity: high
+confidence: 0.6
+required_fields:
+- file_name
+- file_path
+tags:
+- filesystem
+- mft
+- ransomware
+- impact
+- t1486
+attack:
+- tactic: impact
+  technique_id: T1486
+  technique_name: Data Encrypted for Impact
+query: "SELECT\n    evidence_id,\n    file_name,\n    file_path,\n    extension,\n    size,\n    si_created,\n    si_modified,\n    is_deleted\nFROM mft_entries\nWHERE (\n        LOWER(file_name) LIKE '%decrypt%'\n        OR LOWER(file_name) LIKE '%how_to_recover%'\n        OR LOWER(file_name) LIKE '%restore_files%'\n        OR LOWER(file_name) LIKE '%ransom%'\n        OR LOWER(extension) IN ('encrypted', 'lockbit', 'crypt', 'locked', 'locky', 'wncry', 'wannacry', 'crypted', 'zepto', 'cerber', 'cryptor')\n    )\n"
+finding:
+  title: 'Ransomware artifact: {file_name}'
+  summary: 'A file associated with ransomware activity ({file_name}) was found at {file_path}. Ransom notes or mass-encrypted file extensions indicate encryption for impact (ATT&CK T1486); correlate with mass file modification and shadow copy deletion.'

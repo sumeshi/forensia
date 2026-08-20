@@ -1,0 +1,21 @@
+id: registry-port-proxy
+title: netsh port proxy configuration
+severity: medium
+confidence: 0.6
+required_fields:
+- key_path
+- value_name
+- hive
+tags:
+- registry
+- lateral-movement
+- proxy
+- t1090
+attack:
+- tactic: command-and-control
+  technique_id: T1090
+  technique_name: Proxy
+query: "SELECT\n    artifact_id AS evidence_id,\n    key_path,\n    value_name,\n    hive,\n    timestamp,\n    json_extract_string(raw_json, '$.reg2es.custom.proto') AS proto\nFROM registry_artifacts\nWHERE plugin = 'portproxy'\n"
+finding:
+  title: 'Port proxy configured: {value_name}'
+  summary: 'A netsh port proxy (portproxy) entry was found under {key_path}: {value_name} ({proto}). Port forwarding via netsh is frequently used by attackers to pivot traffic between networks or forward RDP (ATT&CK T1090).'

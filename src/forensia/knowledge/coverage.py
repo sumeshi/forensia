@@ -312,7 +312,11 @@ def compute_evidence_coverage(db: CaseDB) -> list[dict[str, Any]]:
                 for s in scoped_sources
                 if s["ingest_status"] in ("normalized", "parsed")
             ]
-            failed = [s for s in scoped_sources if s["ingest_status"] == "failed"]
+            failed = [
+                s
+                for s in scoped_sources
+                if s["ingest_status"] in {"failed", "partial"}
+            ]
             empty = [s for s in scoped_sources if s["ingest_status"] == "empty"]
 
             if not normalized and not empty:

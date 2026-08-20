@@ -1,0 +1,49 @@
+id: prefetch-offensive-tool
+title: Offensive or dual-use tool execution (Prefetch)
+severity: high
+confidence: 0.7
+required_fields:
+- executable_name
+- last_exec_time
+tags:
+- prefetch
+- execution
+- offensive-tooling
+- credential-access
+attack:
+- tactic: credential-access
+  technique_id: T1003
+  technique_name: OS Credential Dumping
+- tactic: lateral-movement
+  technique_id: T1021
+  technique_name: Remote Services
+finding:
+  title: 'Offensive tool executed: {executable_name}'
+  summary: 'A known offensive or dual-use tool ({executable_name}) was executed (last run: {last_exec_time}, count: {exec_count}). Tools such as Mimikatz, PsExec, ProcDump, and tunneling utilities are rarely installed legitimately and indicate credential dumping, lateral movement, or C2 tunneling.'
+hypotheses:
+- id: offensive_tool_execution
+  segment: credential-access
+  description: Execution of offensive tool {executable_name} suggests credential access or lateral movement activity on this host
+  required_entities:
+  - executable_name
+  - last_exec_time
+  confirm_when:
+    co_observed_event_ids:
+    - 4688
+    - 4624
+    within_minutes: 1440
+  refute_when:
+    zero_rows: true
+  follow_up_questions:
+  - What processes were created by {executable_name}, and was it run interactively or as a service?
+  - Were credentials subsequently used from a new source IP?
+  report_sections:
+  - 3_technical
+  - 4_gaps
+  - 5_recommendations
+correlate_with:
+- event_ids:
+  - 4688
+  - 4624
+  rationale: Process creation and logon activity tied to the tool execution
+query: "SELECT\n    evidence_id,\n    executable_name,\n    exec_count,\n    last_exec_time,\n    source_file\nFROM prefetch_executions\nWHERE ({{catalog_exe_sql:offensive_tools:executable_name}})\nORDER BY last_exec_time DESC\n"

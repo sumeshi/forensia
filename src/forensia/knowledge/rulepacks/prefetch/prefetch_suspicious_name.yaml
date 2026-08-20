@@ -1,0 +1,20 @@
+id: prefetch-suspicious-name
+title: Suspiciously named executable (Prefetch)
+severity: medium
+confidence: 0.5
+required_fields:
+- executable_name
+- last_exec_time
+tags:
+- prefetch
+- execution
+- masquerading
+- defense-evasion
+attack:
+- tactic: defense-evasion
+  technique_id: T1036
+  technique_name: Masquerading
+query: "SELECT\n    evidence_id,\n    executable_name,\n    exec_count,\n    last_exec_time,\n    source_file\nFROM prefetch_executions\nWHERE executable_name IS NOT NULL\n    AND (\n        REGEXP_MATCHES(executable_name, '\\.[a-z0-9]{2,4}\\.(exe|dll|scr|com|bat|cmd|ps1|vbs|js)$', 'i')\n        OR REGEXP_MATCHES(executable_name, '^[a-z0-9]\\.(exe|dll|scr|com)$', 'i')\n        OR REGEXP_MATCHES(executable_name, '^[0-9]{4,}\\.(exe|dll|scr)$', 'i')\n    )\nORDER BY last_exec_time DESC\n"
+finding:
+  title: 'Suspicious executable name: {executable_name}'
+  summary: 'An executable with a suspicious name ({executable_name}) was executed (last run: {last_exec_time}). Single-character, numeric, and double-extension names are frequently used to masquerade malware or blend dropped tools with legitimate files (ATT&CK T1036).'

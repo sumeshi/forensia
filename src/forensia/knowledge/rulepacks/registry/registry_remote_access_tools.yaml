@@ -1,0 +1,24 @@
+id: registry-remote-access-tools
+title: Remote access tool configuration detected
+severity: medium
+confidence: 0.6
+required_fields:
+- key_path
+- hive
+- plugin
+tags:
+- registry
+- lateral-movement
+- remote-access
+- t1219
+attack:
+- tactic: lateral-movement
+  technique_id: T1219
+  technique_name: Remote Access Software
+- tactic: lateral-movement
+  technique_id: T1021.004
+  technique_name: 'Remote Services: SSH'
+query: "SELECT\n    artifact_id AS evidence_id,\n    key_path,\n    hive,\n    plugin,\n    timestamp,\n    json_extract_string(raw_json, '$.reg2es.custom.host') AS remote_host\nFROM registry_artifacts\nWHERE plugin IN ('teamviewer', 'putty')\n"
+finding:
+  title: 'Remote access tool: {plugin}'
+  summary: 'A remote access tool ({plugin}) has configuration on this host ({key_path}{remote_host}). TeamViewer and PuTTY can be used for legitimate support or for unauthorized remote access and pivoting; confirm the origin of these connections.'

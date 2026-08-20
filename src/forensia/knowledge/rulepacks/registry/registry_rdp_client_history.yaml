@@ -1,0 +1,21 @@
+id: registry-rdp-client-history
+title: RDP client connection history
+severity: low
+confidence: 0.55
+required_fields:
+- key_path
+- hive
+- plugin
+tags:
+- registry
+- lateral-movement
+- rdp
+- t1021
+attack:
+- tactic: lateral-movement
+  technique_id: T1021.001
+  technique_name: 'Remote Services: Remote Desktop Protocol'
+query: "SELECT\n    artifact_id AS evidence_id,\n    key_path,\n    value_name,\n    hive,\n    plugin,\n    timestamp\nFROM registry_artifacts\nWHERE plugin IN ('mstscmru', 'rdphint')\n"
+finding:
+  title: 'RDP connection history: {key_path}'
+  summary: 'RDP client history was recorded on this host ({plugin}: {key_path}). These entries show Remote Desktop connections initiated from this system, useful for tracing lateral movement (ATT&CK T1021.001).'

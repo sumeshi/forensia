@@ -239,6 +239,20 @@ def detect_artifact_families(db) -> set[str]:
         if row and row[0] > 0:
             families.add("mft_user_files")
 
+        row = db.execute("SELECT COUNT(*) FROM mft_entries").fetchone()
+        if row and row[0] > 0:
+            families.add("mft_filesystem")
+
+    if _has_table(db, "registry_artifacts"):
+        row = db.execute("SELECT COUNT(*) FROM registry_artifacts").fetchone()
+        if row and row[0] > 0:
+            families.add("registry")
+
+    if _has_table(db, "prefetch_executions"):
+        row = db.execute("SELECT COUNT(*) FROM prefetch_executions").fetchone()
+        if row and row[0] > 0:
+            families.add("prefetch")
+
     return families
 
 

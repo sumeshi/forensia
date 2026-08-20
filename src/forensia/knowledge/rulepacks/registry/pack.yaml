@@ -1,0 +1,4 @@
+id: registry
+title: Registry persistence and artifact detection
+applies_when:
+  artifact_families: [registry]

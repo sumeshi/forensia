@@ -1,0 +1,21 @@
+id: filesystem-mft-startup-folder-lnk
+title: Shortcut in a Startup folder (MFT)
+severity: medium
+confidence: 0.55
+required_fields:
+- file_name
+- file_path
+tags:
+- filesystem
+- mft
+- persistence
+- startup
+- t1547
+attack:
+- tactic: persistence
+  technique_id: T1547.001
+  technique_name: 'Boot or Logon Autostart Execution: Registry Run Keys / Startup Folder'
+query: "SELECT\n    evidence_id,\n    file_name,\n    file_path,\n    size,\n    si_created,\n    si_modified,\n    fn_created,\n    is_deleted\nFROM mft_entries\nWHERE LOWER(extension) = 'lnk'\n    AND (\n        LOWER(file_path) LIKE '%/start menu/programs/startup/%'\n        OR LOWER(file_path) LIKE '%/start menu/programs/start-up/%'\n    )\n"
+finding:
+  title: 'Startup folder shortcut: {file_name}'
+  summary: 'A shortcut ({file_name}) was found in a Startup folder ({file_path}). Shortcuts in the Startup folder run their target at user logon, a common persistence mechanism (ATT&CK T1547.001); review the shortcut target.'

@@ -1,0 +1,21 @@
+id: filesystem-mft-deleted-sensitive-data
+title: Deleted sensitive data file (MFT)
+severity: medium
+confidence: 0.5
+required_fields:
+- file_name
+- file_path
+tags:
+- filesystem
+- mft
+- deletion
+- data-collection
+- t1070
+attack:
+- tactic: defense-evasion
+  technique_id: T1070.004
+  technique_name: 'Indicator Removal: File Deletion'
+query: "SELECT\n    evidence_id,\n    file_name,\n    file_path,\n    extension,\n    size,\n    si_modified,\n    fn_modified,\n    is_deleted\nFROM mft_entries\nWHERE is_deleted = TRUE\n    AND LOWER(extension) IN ('doc', 'docx', 'xls', 'xlsx', 'pdf', 'zip', '7z', 'rar', 'pst', 'ost', 'bak')\n"
+finding:
+  title: 'Deleted sensitive file: {file_name}'
+  summary: 'A sensitive data file ({file_name}) was deleted from {file_path}. Deletion of documents, spreadsheets, archives, or mail data files may indicate data staging or evidence removal (ATT&CK T1070.004); review the deletion timeline and recover where possible.'

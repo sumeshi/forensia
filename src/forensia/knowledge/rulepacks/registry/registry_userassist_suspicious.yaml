@@ -1,0 +1,16 @@
+id: registry-userassist-suspicious
+title: Program executed from a temporary location (UserAssist)
+severity: medium
+confidence: 0.55
+required_fields:
+- key_path
+- ua_name
+tags:
+- registry
+- execution
+- userassist
+- defense-evasion
+query: "SELECT\n    artifact_id AS evidence_id,\n    key_path,\n    hive,\n    timestamp,\n    json_extract_string(raw_json, '$.reg2es.custom.userassist.name') AS ua_name\nFROM registry_artifacts\nWHERE plugin = 'userassist'\n    AND LOWER(COALESCE(json_extract_string(raw_json, '$.reg2es.custom.userassist.name'), '')) LIKE '%\\temp\\%'\n"
+finding:
+  title: 'Executable run from temp: {ua_name}'
+  summary: 'UserAssist execution history records a program running from a temporary directory: {ua_name}. Executables launched from Temp are often dropped malware or staged tooling; correlate with process creation and network activity.'

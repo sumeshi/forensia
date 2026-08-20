@@ -1,0 +1,21 @@
+id: filesystem-mft-script-suspicious-dir
+title: Script file in a user-writable directory (MFT)
+severity: medium
+confidence: 0.5
+required_fields:
+- file_name
+- file_path
+tags:
+- filesystem
+- mft
+- execution
+- scripting
+- t1059
+attack:
+- tactic: execution
+  technique_id: T1059
+  technique_name: Command and Scripting Interpreter
+query: "SELECT\n    evidence_id,\n    file_name,\n    file_path,\n    extension,\n    size,\n    si_created,\n    si_modified,\n    fn_created,\n    is_deleted\nFROM mft_entries\nWHERE LOWER(extension) IN ('ps1', 'vbs', 'bat', 'cmd', 'js', 'jse', 'hta', 'vbe', 'wsf', 'psm1', 'py', 'jar')\n    AND (\n        LOWER(file_path) LIKE '%/temp/%'\n        OR LOWER(file_path) LIKE '%/appdata/%'\n        OR LOWER(file_path) LIKE '%/programdata/%'\n        OR LOWER(file_path) LIKE '%/$recycle.bin/%'\n        OR LOWER(file_path) LIKE '%/users/public/%'\n    )\n"
+finding:
+  title: 'Script in user-writable path: {file_name}'
+  summary: 'A script file ({file_name}) was found in a user-writable location: {file_path}. Scripts dropped to Temp, AppData, or Public directories are frequently used as downloaders, droppers, or persistence stagers (ATT&CK T1059).'

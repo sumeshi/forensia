@@ -1,0 +1,21 @@
+id: filesystem-mft-timestomp-discrepancy
+title: NTFS timestamp discrepancy (possible timestomp)
+severity: medium
+confidence: 0.55
+required_fields:
+- file_name
+- file_path
+tags:
+- filesystem
+- mft
+- anti-forensics
+- timestomp
+- t1070
+attack:
+- tactic: defense-evasion
+  technique_id: T1070.006
+  technique_name: 'Indicator Removal: Timestomp'
+query: "SELECT\n    evidence_id,\n    file_name,\n    file_path,\n    si_created,\n    si_modified,\n    fn_created,\n    fn_modified,\n    is_deleted\nFROM mft_entries\nWHERE (\n        fn_created IS NOT NULL\n        AND si_modified IS NOT NULL\n        AND si_modified < fn_created\n    )\n    OR (\n        fn_created IS NOT NULL\n        AND si_created IS NOT NULL\n        AND si_created > fn_created + INTERVAL 30 DAY\n    )\n"
+finding:
+  title: 'Timestamp discrepancy: {file_name}'
+  summary: '{file_name} ({file_path}) has inconsistent NTFS timestamps ($SI vs $FN). The $STANDARD_INFORMATION modified time precedes the $FILE_NAME creation time, or $SI creation is set well after $FN creation — a classic indicator of timestomping (ATT&CK T1070.006).'

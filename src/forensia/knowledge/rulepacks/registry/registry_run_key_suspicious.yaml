@@ -1,0 +1,44 @@
+id: registry-autorun-run-key-suspicious
+title: Autostart (Run/RunOnce) entry with suspicious command
+severity: high
+confidence: 0.6
+required_fields:
+- key_path
+- value_name
+- hive
+tags:
+- registry
+- persistence
+- autorun
+- t1547
+attack:
+- tactic: persistence
+  technique_id: T1547.001
+  technique_name: 'Boot or Logon Autostart Execution: Registry Run Keys / Startup Folder'
+query: "SELECT\n    artifact_id AS evidence_id,\n    key_path,\n    value_name,\n    hive,\n    plugin,\n    timestamp\nFROM registry_artifacts\nWHERE (\n        LOWER(key_path) LIKE '%currentversion\\run%'\n        OR LOWER(key_path) LIKE '%currentversion\\runonce%'\n        OR LOWER(key_path) LIKE '%currentversion\\policies\\explorer\\run%'\n        OR LOWER(key_path) LIKE '%windows nt\\currentversion\\windows%'\n    )\n    AND (\n        LOWER(CAST(raw_json AS VARCHAR)) LIKE '%\\temp\\%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%\\appdata\\%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%\\programdata\\%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%.ps1%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%.vbs%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%.bat%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%.js%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%powershell%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%wscript%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%cscript%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%mshta%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%rundll32%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%regsvr32%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%certutil%'\n    )\n"
+finding:
+  title: 'Suspicious autostart entry: {value_name}'
+  summary: 'Registry autostart entry ''{value_name}'' under {key_path} ({hive}) references a command from a suspicious location or script interpreter. Review the referenced binary and its creation timeline for persistence (ATT&CK T1547.001).'
+hypotheses:
+- id: run_key_persistence
+  segment: persistence
+  description: A suspicious Run/RunOnce entry ({value_name}) under {key_path} was executed from a non-standard path, indicating attacker persistence
+  required_entities:
+  - key_path
+  - value_name
+  confirm_when:
+    co_observed_event_ids:
+    - 4688
+    within_minutes: 1440
+  refute_when:
+    zero_rows: true
+  follow_up_questions:
+  - Does the referenced executable exist on disk, and when was it created?
+  - Is the Run key value signed or associated with a legitimate vendor?
+  report_sections:
+  - 3_technical
+  - 5_recommendations
+correlate_with:
+- event_ids:
+  - 4688
+  rationale: Process creation of the autostart target after logon

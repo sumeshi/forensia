@@ -1,0 +1,21 @@
+id: filesystem-mft-web-shell
+title: Web shell in web root (MFT)
+severity: medium
+confidence: 0.55
+required_fields:
+- file_name
+- file_path
+tags:
+- filesystem
+- mft
+- web-shell
+- persistence
+- t1505
+attack:
+- tactic: persistence
+  technique_id: T1505.003
+  technique_name: 'Server Software Component: Web Shell'
+query: "SELECT\n    evidence_id,\n    file_name,\n    file_path,\n    extension,\n    size,\n    si_created,\n    si_modified,\n    fn_created,\n    is_deleted\nFROM mft_entries\nWHERE LOWER(extension) IN ('aspx', 'php', 'jsp', 'asp', 'ashx', 'asmx', 'cfm', 'asax')\n    AND (\n        LOWER(file_path) LIKE '%/inetpub/%'\n        OR LOWER(file_path) LIKE '%/wwwroot/%'\n        OR LOWER(file_path) LIKE '%/htdocs/%'\n    )\n"
+finding:
+  title: 'Web shell candidate: {file_name}'
+  summary: 'A server-side script ({file_name}) was found in a web root directory ({file_path}). Web shells are commonly dropped into IIS/Apache web roots for persistent remote access (ATT&CK T1505.003); review creation time and any associated network access.'
