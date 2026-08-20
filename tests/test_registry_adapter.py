@@ -192,3 +192,69 @@ def test_registry_raw_records_and_parser_timestamps_are_traceable(
     assert _dataset_id(dataset, {primary: source_id}) == _dataset_id(
         other_dataset, {other_primary: source_id}
     )
+
+
+def test_unattributed_source_replacement_supersedes_same_member_path(
+    tmp_path: Path,
+) -> None:
+    case = Case.init(tmp_path / "case")
+    primary = tmp_path / "SYSTEM"
+    primary.write_bytes(b"regf-old")
+    old_source = "old-source"
+    new_source = "new-source"
+    old_raw = case.raw_dir / "registry-old.jsonl"
+    new_raw = case.raw_dir / "registry-new.jsonl"
+    old_raw.write_text('{"event":{"action":"old"}}\n', encoding="utf-8")
+    new_raw.write_text('{"event":{"action":"new"}}\n', encoding="utf-8")
+
+    with CaseDB(case) as db:
+        old_dataset = admit_registry_datasets([primary])[0]
+        register_registry_dataset(
+            db,
+            old_dataset,
+            source_ids={primary: old_source},
+            raw_path=old_raw,
+        )
+        db.execute(
+            "INSERT INTO ingested_files (sha256, path, source_kind, size, ingested_at) "
+            "VALUES (?, ?, 'registry', 1, now())",
+            [old_source, str(primary.resolve())],
+        )
+        assert normalize_registry(case, db) == 1
+        old_artifact = db.execute(
+            "SELECT artifact_id FROM registry_artifacts"
+        ).fetchone()[0]
+
+        primary.write_bytes(b"regf-new")
+        new_dataset = admit_registry_datasets([primary])[0]
+        new_id = register_registry_dataset(
+            db,
+            new_dataset,
+            source_ids={primary: new_source},
+            raw_path=new_raw,
+        )
+        db.execute(
+            "INSERT INTO ingested_files (sha256, path, source_kind, size, ingested_at) "
+            "VALUES (?, ?, 'registry', 1, now())",
+            [new_source, str(primary.resolve())],
+        )
+
+        assert normalize_registry(case, db, source_keys=[new_source[:12]]) == 1
+        assert db.execute("SELECT COUNT(*) FROM registry_datasets").fetchone()[0] == 1
+        assert (
+            db.execute("SELECT dataset_id FROM registry_datasets").fetchone()[0]
+            == new_id
+        )
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM registry_artifacts WHERE artifact_id = ?",
+                [old_artifact],
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM registry_artifacts WHERE dataset_id = ?", [new_id]
+            ).fetchone()[0]
+            == 1
+        )

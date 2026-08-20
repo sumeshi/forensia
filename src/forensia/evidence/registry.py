@@ -60,6 +60,33 @@ def _source_id(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _registry_member_paths(db: CaseDB, source_ids: object) -> frozenset[str] | None:
+    """Resolve source IDs to their operational ingest paths.
+
+    The source path is used only to identify replacement lineage.  It is not
+    used to group Registry candidates into a dataset (directory co-location
+    remains deliberately non-authoritative).
+    """
+    if isinstance(source_ids, str):
+        try:
+            source_ids = json.loads(source_ids)
+        except TypeError, ValueError:
+            return None
+    if not isinstance(source_ids, (list, tuple, set)):
+        return None
+    ids = tuple(dict.fromkeys(str(source_id) for source_id in source_ids if source_id))
+    if not ids:
+        return None
+    placeholders = ", ".join("?" for _ in ids)
+    rows = db.execute(
+        f"SELECT sha256, path FROM ingested_files WHERE sha256 IN ({placeholders})",
+        ids,
+    ).fetchall()
+    if len(rows) != len(ids) or any(not path for _source_id, path in rows):
+        return None
+    return frozenset(str(path) for _source_id, path in rows)
+
+
 @dataclass(frozen=True, slots=True)
 class RegistryCandidate:
     path: Path
@@ -410,24 +437,47 @@ def normalize_registry(
                         "AND ingest_status = 'normalized'",
                         [identity, dataset_id],
                     ).fetchall()
-                    for (old_id,) in old_rows:
-                        db.execute(
-                            "DELETE FROM case_timeline WHERE source = 'registry' "
-                            "AND entry_id IN (SELECT timeline_id FROM registry_timeline WHERE dataset_id = ?)",
-                            [old_id],
-                        )
-                        db.execute(
-                            "DELETE FROM registry_timeline WHERE dataset_id = ?",
-                            [old_id],
-                        )
-                        db.execute(
-                            "DELETE FROM registry_artifacts WHERE dataset_id = ?",
-                            [old_id],
-                        )
-                        db.execute(
-                            "DELETE FROM registry_datasets WHERE dataset_id = ?",
-                            [old_id],
-                        )
+                else:
+                    # An unattributed dataset has no trusted identity with
+                    # which to establish replacement lineage.  The exact
+                    # operational member paths are the remaining evidence
+                    # that this ingest target replaced an older dataset.
+                    # Never use directory co-location here: unrelated hives
+                    # in one directory must remain separate datasets.
+                    current_paths = _registry_member_paths(db, source_ids)
+                    old_rows = []
+                    if current_paths:
+                        candidates = db.execute(
+                            "SELECT dataset_id, identity, member_source_ids "
+                            "FROM registry_datasets "
+                            "WHERE parser_name = 'reg2es' AND dataset_id != ? "
+                            "AND ingest_status = 'normalized'",
+                            [dataset_id],
+                        ).fetchall()
+                        old_rows = [
+                            (old_id,)
+                            for old_id, old_identity, old_sources in candidates
+                            if not str(old_identity or "").strip()
+                            and _registry_member_paths(db, old_sources) == current_paths
+                        ]
+                for (old_id,) in old_rows:
+                    db.execute(
+                        "DELETE FROM case_timeline WHERE source = 'registry' "
+                        "AND entry_id IN (SELECT timeline_id FROM registry_timeline WHERE dataset_id = ?)",
+                        [old_id],
+                    )
+                    db.execute(
+                        "DELETE FROM registry_timeline WHERE dataset_id = ?",
+                        [old_id],
+                    )
+                    db.execute(
+                        "DELETE FROM registry_artifacts WHERE dataset_id = ?",
+                        [old_id],
+                    )
+                    db.execute(
+                        "DELETE FROM registry_datasets WHERE dataset_id = ?",
+                        [old_id],
+                    )
         except _MalformedRegistryRaw as exc:
             db.execute(
                 "UPDATE registry_datasets SET ingest_status = 'partial', "

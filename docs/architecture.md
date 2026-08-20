@@ -40,6 +40,10 @@ they are not standalone datasets. The adapter streams the pinned `reg2es`
 generator output to raw JSONL. The Registry normalization boundary projects
 lossless records, contributor provenance, conservative completeness, and
 Coverage through the existing normalize/coverage dispatchers.
+For content replacement, an unattributed dataset may supersede only an older
+unattributed dataset with the same complete set of operational member paths.
+Those paths establish replacement lineage only; they never establish dataset
+identity or group directory neighbors.
 
 The existing SQL schema-card/allow-list exposes `registry_artifacts` and
 `registry_timeline`; `registry-<sha256>` IDs use the generic evidence lookup

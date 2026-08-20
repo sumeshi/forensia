@@ -23,6 +23,11 @@ stable parsed fields/line ordinal. Collection/display paths never participate;
 an explicit trusted host/acquisition identity is included only at the dataset
 boundary to prevent cross-host collisions.
 
+Operational member paths are excluded from dataset identity. They are used only
+to supersede a prior unattributed dataset when the complete path set is equal;
+directory co-location and partial path overlap never authorize grouping or
+replacement.
+
 Registry Coverage is deliberately `partial` with
 `parser_plugin_completeness_unproven` when records exist. A successful parser
 return or zero rows does not establish per-plugin completeness or negative
