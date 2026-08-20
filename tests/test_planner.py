@@ -556,6 +556,8 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertEqual([], result["read_more"])
         self.assertEqual(1, request.call_count)
         self.assertEqual(["scratch/H-B/tasks.md"], events[0]["rejected_refs"])
+        self.assertEqual("rejected", events[0]["scope_status"])
+        self.assertEqual("invalid", events[0]["retrieval_evaluation"]["outcome"])
 
     def test_query_fingerprint_normalizes_equivalent_ast_forms(self) -> None:
         left = query_fingerprint(

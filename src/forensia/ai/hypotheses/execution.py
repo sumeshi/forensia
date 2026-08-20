@@ -54,6 +54,9 @@ def resolve_zero_row_fallbacks(
                     fallback_info = {
                         "phase": phase,
                         "source_rule_id": source_rule_id,
+                        "original_row_count": len(fallback_rows),
+                        "row_limit": 20,
+                        "truncated": len(fallback_rows) > 20,
                     }
                     break
                 if fallback_info:
@@ -83,6 +86,9 @@ def resolve_zero_row_fallbacks(
                 "source_rule_id": "event_id_schema",
             }
             fallback_info["query_sql"] = planned_query.sql
+            fallback_info["original_row_count"] = len(fallback_rows)
+            fallback_info["row_limit"] = 20
+            fallback_info["truncated"] = len(fallback_rows) > 20
     return rows, fallback_info
 
 
@@ -142,11 +148,18 @@ def build_sql_receipt(
         returned_count = sampled_count = truncated = None
         retry_hints = ["repair or pivot the SQL after reviewing the execution error"]
     elif used_fallback:
+        fallback_row_count = fallback_info.get("original_row_count")
         status = "partial"
         reason = "bounded fallback result after empty primary query"
         returned_count = len(result_summary)
         sampled_count = min(len(result_summary), 10)
-        truncated = None
+        truncated = bool(
+            fallback_info.get("truncated")
+            or (
+                fallback_row_count is not None
+                and int(fallback_row_count) > len(result_summary)
+            )
+        )
         retry_hints = [
             "inspect fallback provenance and verify Coverage before interpreting result"
         ]
@@ -174,6 +187,9 @@ def build_sql_receipt(
             "params": planned_query.params,
             "normalized_sql": planned_query.sql,
             "original_returned_count": original_row_count,
+            "fallback_row_count": fallback_info.get("original_row_count")
+            if fallback_info
+            else None,
             "fallback": fallback_info,
         },
         preconditions={

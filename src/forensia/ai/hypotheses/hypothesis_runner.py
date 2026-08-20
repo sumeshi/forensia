@@ -379,6 +379,13 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
         }
         return "continue"
     result_summary = summarize_query_result(rows)
+    if fallback_info is not None:
+        # The checker receives the bounded rows, but must also know that the
+        # fallback was capped before it interprets the observation.
+        result_summary["original_row_count"] = fallback_info.get(
+            "original_row_count", len(rows)
+        )
+        result_summary["truncated"] = bool(fallback_info.get("truncated"))
     receipt = build_sql_receipt(
         db=db,
         session_id=session_id,

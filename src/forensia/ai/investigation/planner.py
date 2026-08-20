@@ -26,6 +26,7 @@ from forensia.ai.prompts.sql_templates import (
     validate_select_sql,
     validate_select_sql_with_dryrun,
 )
+from forensia.ai.retrieval_telemetry import ToolReceipt, evaluate_retrieval
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.db.database import CaseDB
@@ -187,6 +188,24 @@ def request_with_optional_context(
         read_more, rejected_paths = requested_paths, []
     if not read_more:
         if retrieval_callback is not None and requested_paths:
+            receipt = ToolReceipt(
+                receipt_id=f"memory-{hypothesis_id or 'global'}-empty",
+                call_id=f"memory-{hypothesis_id or 'global'}",
+                hypothesis_id=hypothesis_id,
+                phase="read_more",
+                tool_id="memory.read_more",
+                arguments={"paths": requested_paths},
+                returned_count=0,
+                sampled_count=0,
+                truncated=False,
+                status="partial" if rejected_paths else "empty",
+                reason=("scope rejected" if rejected_paths else "no paths selected"),
+            )
+            evaluation = evaluate_retrieval(
+                receipt,
+                required_fields=["paths"],
+                scope_status="rejected" if rejected_paths else "valid",
+            )
             retrieval_callback(
                 {
                     "requested_refs": requested_paths,
@@ -194,29 +213,61 @@ def request_with_optional_context(
                     "rejected_refs": rejected_paths,
                     "selected_chars": 0,
                     "budget": memory.max_bytes,
+                    "scope_status": "rejected" if rejected_paths else "valid",
+                    "retrieval_evaluation": evaluation.model_dump(mode="json"),
                 }
             )
         parsed["read_more"] = []
         return parsed
     extra_context = memory.load_compact_context(read_more, max_bytes=memory.max_bytes)
+    separator = "\n\n<READ_MORE_CONTEXT>\n"
+    base_bytes = default_context.encode("utf-8")
+    separator_bytes = separator.encode("utf-8")
+    remaining = max(memory.max_bytes - len(base_bytes) - len(separator_bytes), 0)
+    raw_extra_bytes = extra_context.encode("utf-8")
+    extra_bytes = raw_extra_bytes[:remaining]
+    selected_context = extra_bytes.decode("utf-8", errors="ignore")
     if retrieval_callback is not None:
+        receipt = ToolReceipt(
+            receipt_id=f"memory-{hypothesis_id or 'global'}-read-more",
+            call_id=f"memory-{hypothesis_id or 'global'}",
+            hypothesis_id=hypothesis_id,
+            phase="read_more",
+            tool_id="memory.read_more",
+            arguments={"paths": requested_paths},
+            returned_count=len(read_more),
+            sampled_count=len(read_more),
+            truncated=len(raw_extra_bytes) > len(extra_bytes),
+            status=(
+                "partial" if rejected_paths else ("ok" if selected_context else "empty")
+            ),
+            reason=(
+                "some paths rejected by scope"
+                if rejected_paths
+                else (
+                    None if selected_context else "selected paths contained no content"
+                )
+            ),
+        )
+        evaluation = evaluate_retrieval(
+            receipt,
+            required_fields=["paths"],
+            scope_status="rejected" if rejected_paths else "valid",
+        )
         retrieval_callback(
             {
                 "requested_refs": requested_paths,
                 "selected_refs": read_more,
                 "rejected_refs": rejected_paths,
-                "selected_chars": len(extra_context),
+                "selected_chars": len(selected_context),
                 "budget": memory.max_bytes,
+                "scope_status": "rejected" if rejected_paths else "valid",
+                "retrieval_evaluation": evaluation.model_dump(mode="json"),
             }
         )
-    separator = "\n\n<READ_MORE_CONTEXT>\n"
-    base_bytes = default_context.encode("utf-8")
-    separator_bytes = separator.encode("utf-8")
-    remaining = max(memory.max_bytes - len(base_bytes) - len(separator_bytes), 0)
-    extra_bytes = extra_context.encode("utf-8")[:remaining]
     expanded_context = default_context
     if extra_bytes:
-        expanded_context += separator + extra_bytes.decode("utf-8", errors="ignore")
+        expanded_context += separator + selected_context
     reparsed = llm_gateway.request_llm_json(
         messages=messages_builder(expanded_context),
         model=model,

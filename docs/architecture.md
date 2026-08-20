@@ -231,7 +231,9 @@ first; the current hypothesis card/scratch can be requested by exact path. Other
 hypothesis scratch/history is excluded both from the index and by a loader-side
 allow-list. Memory-index, `read_more`, and report knowledge selections emit
 observational rows to the separate `trace.duckdb`; this telemetry never feeds
-ranking automatically.
+ranking automatically. The `read_more` loader also reports its actual scope
+decision and one-attempt retrieval evaluation to its existing callback; it does
+not create a second receipt store.
 
 The final Markdown is assembled by `build_report_markdown_from_db` ([report/render/writer.py](../src/forensia/report/render/writer.py)) from `report_sections`, and `_strip_narrative_status_lines` ([report/sections/section_quality.py](../src/forensia/report/sections/section_quality.py)) strips internal metadata (such as `**Status:**` lines) from non-appendix sections.
 
@@ -239,7 +241,8 @@ Hypothesis SQL receipts reuse the existing `query_fingerprint`, Coverage
 projection, planner validation/dry-run observations, fallback behavior, and
 `_save_step` persistence. Empty results remain observations: retrieval
 evaluation marks Coverage-unknown empties as partial and never turns them into
-negative evidence or a verdict.
+negative evidence or a verdict. Bounded fallback results retain their pre-limit
+row count and truncation flag in both the checker summary and SQL receipt.
 
 ---
 

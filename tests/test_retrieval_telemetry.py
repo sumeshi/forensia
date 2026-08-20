@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from forensia.ai.hypotheses.execution import build_sql_receipt
 from forensia.ai.retrieval_telemetry import (
     RetrievalEvaluation,
     ToolReceipt,
@@ -11,6 +12,7 @@ from forensia.ai.retrieval_telemetry import (
     record_retrieval_event,
 )
 from forensia.core.case import Case
+from forensia.core.session import Hypothesis, PlannedQuery
 from forensia.db.database import CaseDB
 
 
@@ -109,3 +111,55 @@ def test_empty_sql_receipt_is_not_negative_evidence_or_support(tmp_path) -> None
         ToolReceipt.model_validate(
             {**receipt.model_dump(), "result_refs": {"supporting": ["e-1"]}}
         )
+
+
+def test_memory_retrieval_evaluation_distinguishes_empty_from_rejected_scope() -> None:
+    memory_receipt = ToolReceipt(
+        receipt_id="memory-1",
+        call_id="memory-call-1",
+        phase="read_more",
+        tool_id="memory.read_more",
+        arguments={"paths": ["entities/host-A.md"]},
+        returned_count=0,
+        status="empty",
+    )
+    assert (
+        evaluate_retrieval(
+            memory_receipt, required_fields=["paths"], scope_status="valid"
+        ).outcome
+        == "needs-pivot"
+    )
+    assert (
+        evaluate_retrieval(
+            memory_receipt, required_fields=["paths"], scope_status="rejected"
+        ).outcome
+        == "invalid"
+    )
+
+
+def test_fallback_receipt_keeps_pre_limit_count_and_truncation() -> None:
+    receipt = build_sql_receipt(
+        db=object(),
+        session_id="S-1",
+        plan_cycle=1,
+        query_index=1,
+        hypothesis=Hypothesis(id="H-1", description="test"),
+        planned_query=PlannedQuery(
+            query_id="H-1-q1",
+            hypothesis_id="H-1",
+            purpose="test",
+            sql="SELECT 1",
+        ),
+        query_hash="qhash",
+        duration_ms=1,
+        rows=[{"event_id": i} for i in range(20)],
+        original_row_count=0,
+        fallback_info={
+            "phase": "artifact_table",
+            "original_row_count": 24,
+            "truncated": True,
+        },
+    )
+    assert receipt.arguments["fallback_row_count"] == 24
+    assert receipt.returned_count == 20
+    assert receipt.truncated is True

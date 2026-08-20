@@ -146,6 +146,14 @@ def evaluate_retrieval(
         outcome = "unavailable"
     elif receipt.status == "partial":
         outcome = "partial"
+    elif (
+        receipt.tool_id == "memory.read_more"
+        and receipt.status == "empty"
+        and scope_status == "valid"
+    ):
+        # A validly scoped memory read that produced no context needs a
+        # different path; it is not evidence of absence.
+        outcome = "needs-pivot"
     elif receipt.returned_count == 0 and coverage_status != "available":
         outcome = "partial"
     else:
