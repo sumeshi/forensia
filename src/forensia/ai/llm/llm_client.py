@@ -204,6 +204,12 @@ def _get_http_client() -> httpx.Client:
         return client
 
 
+def _auth_headers() -> dict[str, str]:
+    if settings.llm_api_key:
+        return {"Authorization": f"Bearer {settings.llm_api_key}"}
+    return {}
+
+
 async def _get_async_client() -> httpx.AsyncClient:
     """Get or create a per-event-loop async HTTP client."""
     loop_id = id(asyncio.get_running_loop())
@@ -248,7 +254,7 @@ async def async_chat_completion(
         request_started = time.monotonic()
         try:
             client = await _get_async_client()
-            response = await client.post(url, json=body)
+            response = await client.post(url, json=body, headers=_auth_headers())
             if response.status_code >= 500:
                 if json_schema and "Failed to parse input" in response.text:
                     next_schema_mode = _downgrade_schema_mode(
@@ -284,7 +290,7 @@ async def async_chat_completion(
                 )
                 if next_schema_mode is not None:
                     schema_mode = next_schema_mode
-                    response = await client.post(url, json=body)
+                    response = await client.post(url, json=body, headers=_auth_headers())
                     continue
                 break
             response.raise_for_status()
@@ -364,7 +370,9 @@ def chat_completion(
     for attempt in range(1, _LLM_HTTP_RETRY_MAX + 1):
         request_started = time.monotonic()
         try:
-            response = _get_http_client().post(url, json=body)
+            response = _get_http_client().post(
+                url, json=body, headers=_auth_headers()
+            )
             if response.status_code >= 500:
                 if json_schema and "Failed to parse input" in response.text:
                     next_schema_mode = _downgrade_schema_mode(
@@ -400,7 +408,9 @@ def chat_completion(
                 )
                 if next_schema_mode is not None:
                     schema_mode = next_schema_mode
-                    response = _get_http_client().post(url, json=body)
+                    response = _get_http_client().post(
+                        url, json=body, headers=_auth_headers()
+                    )
                     continue
                 break
             response.raise_for_status()
@@ -470,10 +480,15 @@ async def outage_wait_until_recovered(
             )
         try:
             client = await _get_async_client()
-            r = await client.get(f"{base_url.rstrip('/')}/v1/models", timeout=10.0)
+            r = await client.get(
+                f"{base_url.rstrip('/')}/v1/models",
+                timeout=10.0,
+                headers=_auth_headers(),
+            )
             if r.status_code == 200:
                 ping = await client.post(
                     f"{base_url.rstrip('/')}/v1/chat/completions",
+                    headers=_auth_headers(),
                     json={
                         "model": model,
                         "messages": [{"role": "user", "content": "ping"}],

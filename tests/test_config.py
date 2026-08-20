@@ -29,11 +29,16 @@ def test_invalid_integer_environment_values_fall_back_to_defaults() -> None:
             os.environ,
             {
                 "LLM_MAX_TOKENS": "not-an-int",
+                "LLM_OUTPUT_LANGUAGE": "klingon",
+                "LLM_OUTAGE_WALL_CLOCK_BUDGET_S": "10",
+                "LLM_OUTAGE_PROBE_INTERVAL_S": "60",
                 "STRUCTURED_MARKDOWN_MAX_ROWS": "not-an-int",
             },
         ):
             config.reload_settings()
             assert config.settings.llm_max_tokens == 4096
+            assert config.settings.llm_output_language == "ja"
+            assert config.settings.llm_outage_probe_interval_s == 10
             assert config.settings.structured_markdown_max_rows == 200
     finally:
         config.reload_settings()

@@ -357,17 +357,11 @@ dist/<case>/
 
 ## 6. Configuration
 
-| Environment variable | Role | Default |
-|---|---|---|
-| `LLM_BASE_URL` | URL of the OpenAI-compatible LLM server | (required) |
-| `LLM_MODEL` | Model name | (required) |
-| `LLM_REASONING_RESERVE_TOKENS` | max_tokens addition reserved for reasoning | 0 |
-| `LLM_OUTPUT_LANGUAGE` | Output language (`ja` / `en`) | `ja` (`.env.example` sets `en`) |
-| `LLM_MAX_TOKENS` | max_tokens for normal output | 4096 |
-| `LLM_OUTAGE_WALL_CLOCK_BUDGET_S` | Total time budget (seconds) to wait for LLM server recovery | 28800 |
-| `LLM_OUTAGE_PROBE_INTERVAL_S` | Interval (seconds) between recovery probes | 60 |
-
-Configuration is accessed via `get_llm_settings()` in `src/forensia/config.py`. `.env` is loaded by `python-dotenv`.
+Configuration is loaded once through `src/forensia/config.py` and refreshed in place
+when requested. `.env` is loaded by `python-dotenv`; CLI endpoint/model/query-budget
+flags take precedence. The complete environment-variable contract, defaults, automatic
+budget derivation, and runtime owners live in [development.md](development.md#11-python)
+to avoid maintaining a second partial table here.
 
 ### Report admission and semantic progress
 

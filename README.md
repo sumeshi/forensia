@@ -72,7 +72,12 @@ You can start from the example file:
 cp .env.example .env
 ```
 
+Supported variables, defaults, automatic budget derivation, and runtime owners are
+documented in [docs/development.md](docs/development.md#11-python).
+
 Do not commit `.env`. Note that "local tool" does not automatically mean "no data leaves the machine": if `LLM_BASE_URL` points to a cloud or external endpoint, prompts containing case-derived evidence and summaries will be sent there. For sensitive investigations, use a local or offline LLM backend.
+Authenticated OpenAI-compatible endpoints can use `LLM_API_KEY`; the value is sent as a
+Bearer header and is not included in forensia's configuration API or LLM audit files.
 
 ### Run an investigation
 

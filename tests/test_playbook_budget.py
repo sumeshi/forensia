@@ -135,19 +135,30 @@ def test_budget_enforcement_drops_sections_in_order(tmp_path: Any) -> None:
 
 
 def test_total_prompt_budget_is_configurable_and_auto_derived() -> None:
-    from forensia.config import get_prompt_budget_tokens, reload_settings
+    from forensia.config import (
+        get_memory_max_bytes,
+        get_prompt_budget_tokens,
+        get_system_prompt_budget_chars,
+        reload_settings,
+    )
 
     old_system = os.environ.get("FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS")
     old_total = os.environ.get("FORENSIA_PROMPT_BUDGET_TOKENS")
+    old_memory = os.environ.get("LLM_MEMORY_MAX_BYTES")
     try:
-        os.environ["FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS"] = "40000"
-        os.environ.pop("FORENSIA_PROMPT_BUDGET_TOKENS", None)
+        os.environ["FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS"] = "0"
+        os.environ["FORENSIA_PROMPT_BUDGET_TOKENS"] = "0"
+        os.environ["LLM_MEMORY_MAX_BYTES"] = "0"
         reload_settings()
-        assert get_prompt_budget_tokens() == 20000
+        assert get_prompt_budget_tokens() == 12000
+        assert get_system_prompt_budget_chars() == 24000
+        assert get_memory_max_bytes() == 16000
 
         os.environ["FORENSIA_PROMPT_BUDGET_TOKENS"] = "32000"
         reload_settings()
         assert get_prompt_budget_tokens() == 32000
+        assert get_system_prompt_budget_chars() == 64000
+        assert get_memory_max_bytes() == 42666
     finally:
         if old_system is None:
             os.environ.pop("FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS", None)
@@ -157,6 +168,10 @@ def test_total_prompt_budget_is_configurable_and_auto_derived() -> None:
             os.environ.pop("FORENSIA_PROMPT_BUDGET_TOKENS", None)
         else:
             os.environ["FORENSIA_PROMPT_BUDGET_TOKENS"] = old_total
+        if old_memory is None:
+            os.environ.pop("LLM_MEMORY_MAX_BYTES", None)
+        else:
+            os.environ["LLM_MEMORY_MAX_BYTES"] = old_memory
         reload_settings()
 
 

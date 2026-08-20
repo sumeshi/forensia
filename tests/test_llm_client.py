@@ -18,9 +18,11 @@ class _FakeClient:
     def __init__(self, responses: list[httpx.Response]) -> None:
         self._responses = responses
         self.requests: list[dict] = []
+        self.headers: list[dict[str, str]] = []
 
-    def post(self, url: str, json: dict) -> httpx.Response:
+    def post(self, url: str, json: dict, headers: dict[str, str]) -> httpx.Response:
         self.requests.append(deepcopy(json))
+        self.headers.append(headers)
         if not self._responses:
             raise AssertionError("unexpected extra request")
         return self._responses.pop(0)
@@ -63,7 +65,10 @@ def test_chat_completion_retries_llama_strict_schema_failure_with_compatible_sch
         "properties": {"ok": {"type": "boolean"}},
     }
 
-    with patch.object(llm_client, "_get_http_client", return_value=client):
+    with (
+        patch.object(llm_client, "_get_http_client", return_value=client),
+        patch.object(llm_client.settings, "llm_api_key", "test-token"),
+    ):
         result = llm_client.chat_completion(
             [{"role": "user", "content": "return json"}],
             model="local-model",
@@ -73,6 +78,10 @@ def test_chat_completion_retries_llama_strict_schema_failure_with_compatible_sch
         )
 
     assert result == '{"ok": true}'
+    assert client.headers == [
+        {"Authorization": "Bearer test-token"},
+        {"Authorization": "Bearer test-token"},
+    ]
     assert client.requests[0]["response_format"]["json_schema"]["strict"] is True
     assert "strict" not in client.requests[1]["response_format"]["json_schema"]
     assert any("compatible json_schema" in message for message in messages)

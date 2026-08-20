@@ -446,7 +446,10 @@ class MemoryTests(unittest.TestCase):
     def test_overview_is_compacted_via_llm_summary(self) -> None:
         with (
             tempfile.TemporaryDirectory() as tmpdir,
-            patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "64"}),
+            patch.dict(
+                os.environ,
+                {"LLM_MEMORY_MAX_BYTES": "64", "LLM_OUTPUT_LANGUAGE": "ja"},
+            ),
         ):
             reload_settings()
             case = Case.init(tmpdir)
