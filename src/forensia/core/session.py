@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from forensia.core.verdicts import assert_valid_verdict
+from forensia.core.verification import VerificationSpec, normalize_verification_spec
 
 ENTITY_TYPE_ALIASES = {
     "host": "host",
@@ -72,6 +73,9 @@ class Hypothesis(BaseModel):
     confirm_when: dict[str, Any] | None = None
     refute_when: dict[str, Any] | None = None
     evidence_requirements: dict[str, Any] | None = None
+    # Canonical source of verification semantics.  The three legacy fields
+    # above remain compatibility projections for existing callers.
+    verification_spec: VerificationSpec | None = None
     fallback_phase: str | None = None
     fallback_source_rule_id: str | None = None
 
@@ -81,6 +85,25 @@ class Hypothesis(BaseModel):
         if v is not None:
             assert_valid_verdict(v, "hypothesis_verdict")
         return v
+
+    @model_validator(mode="after")
+    def _normalize_verification_spec(self) -> Hypothesis:
+        spec = normalize_verification_spec(
+            confirm_when=self.confirm_when,
+            refute_when=self.refute_when,
+            evidence_requirements=self.evidence_requirements,
+            required_entities=self.required_entities,
+            verification_spec=self.verification_spec,
+        )
+        projections = spec.legacy_fields()
+        self.verification_spec = spec
+        self.confirm_when = projections["confirm_when"]
+        self.refute_when = projections["refute_when"]
+        self.evidence_requirements = projections["evidence_requirements"]
+        # Keep the existing entity field as a compatibility projection too;
+        # canonical specs loaded from a case must not lose it.
+        self.required_entities = projections["required_entities"]
+        return self
 
 
 class PlannedQuery(BaseModel):

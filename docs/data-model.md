@@ -3,6 +3,21 @@
 Definition of the persistent data handled by forensia. It is split into three layers.
 
 - **DuckDB tables**: Structured data inside `db/case.duckdb`
+
+## Hypothesis verification policy
+
+Each row in `hypotheses` has one canonical `verification_spec` JSON object
+(currently version `"1"`). It owns the normalized support/refute conditions,
+required entities, scope/correlation policy, and evidence requirements used by
+the investigation kernel. The legacy `confirm_when`, `refute_when`, and
+`evidence_requirements` columns remain lossless compatibility projections while
+existing planner/checker callers migrate. Case opening backfills the canonical
+object for older databases and is idempotent.
+
+`refute_when` is persisted explicitly; it is never inferred from a checker or
+final verdict. A hypothesis loaded from Case State always receives a validated
+`VerificationSpec`, including hypotheses created by rule seeding, broad
+planning, report gaps, follow-ups, and resume.
 - **Memory files**: LLM persistent memory in `memory/*.md`
 - **API DTO**: Pydantic models the API exposes for the UI / reports
 

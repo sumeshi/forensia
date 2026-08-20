@@ -167,6 +167,7 @@ def _seed_rule_hypotheses(
                 source_decl_id=decl.id,
                 required_entities=required_entities,
                 confirm_when=dict(decl.confirm_when) if decl.confirm_when else None,
+                refute_when=dict(decl.refute_when) if decl.refute_when else None,
                 evidence_requirements=(
                     dict(decl.evidence_requirements)
                     if decl.evidence_requirements

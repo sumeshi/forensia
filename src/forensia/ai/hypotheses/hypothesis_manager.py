@@ -167,6 +167,7 @@ def merge_active_hypotheses(
             source_gap_id=item.source_gap_id,
             required_entities=_merge_string_lists(item.required_entities),
             confirm_when=_clean_confirm_when(item.confirm_when),
+            refute_when=item.refute_when,
             evidence_requirements=item.evidence_requirements,
             target_keypoint_id=item.target_keypoint_id,
         )
@@ -380,6 +381,7 @@ def resolve_hypothesis(
                 source_gap_id=item.source_gap_id,
                 required_entities=item.required_entities,
                 confirm_when=item.confirm_when,
+                refute_when=item.refute_when,
                 evidence_requirements=item.evidence_requirements,
                 target_keypoint_id=item.target_keypoint_id,
             )

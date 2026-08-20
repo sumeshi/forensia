@@ -68,6 +68,10 @@ class CaseDB:
             "r8_03_coverage_lineage_v2", self._apply_r8_03_coverage_lineage
         )
         self._apply_migration_once("r8_04_work_state", self._apply_r8_04_work_state)
+        self._apply_migration_once(
+            "hypotheses_verification_spec_v1",
+            self._apply_hypotheses_verification_spec_v1,
+        )
 
     def _apply_migration_once(
         self, migration_key: str, callback: Callable[[], None]
@@ -84,6 +88,52 @@ class CaseDB:
             "INSERT INTO schema_migrations (migration_key, applied_at) VALUES (?, now())",
             (migration_key,),
         )
+
+    def _apply_hypotheses_verification_spec_v1(self) -> None:
+        """Add canonical verification policy columns and backfill old rows."""
+
+        self.conn.execute(
+            "ALTER TABLE hypotheses ADD COLUMN IF NOT EXISTS refute_when JSON"
+        )
+        self.conn.execute(
+            "ALTER TABLE hypotheses ADD COLUMN IF NOT EXISTS verification_spec JSON"
+        )
+        from forensia.core.verification import normalize_verification_spec
+
+        rows = self.conn.execute(
+            "SELECT hypothesis_id, required_entities, confirm_when, "
+            "refute_when, evidence_requirements, verification_spec FROM hypotheses"
+        ).fetchall()
+        for hypothesis_id, entities, confirm, refute, requirements, spec in rows:
+
+            def parse_json(value: Any) -> Any:
+                if isinstance(value, str):
+                    try:
+                        return json.loads(value)
+                    except (TypeError, ValueError):
+                        return None
+                return value
+
+            normalized = normalize_verification_spec(
+                required_entities=parse_json(entities),
+                confirm_when=parse_json(confirm),
+                refute_when=parse_json(refute),
+                evidence_requirements=parse_json(requirements),
+                verification_spec=parse_json(spec),
+            )
+            fields = normalized.legacy_fields()
+            self.conn.execute(
+                "UPDATE hypotheses SET confirm_when = ?, refute_when = ?, "
+                "evidence_requirements = ?, verification_spec = ? "
+                "WHERE hypothesis_id = ?",
+                (
+                    json.dumps(fields["confirm_when"], ensure_ascii=False),
+                    json.dumps(fields["refute_when"], ensure_ascii=False),
+                    json.dumps(fields["evidence_requirements"], ensure_ascii=False),
+                    json.dumps(normalized.model_dump(mode="json"), ensure_ascii=False),
+                    hypothesis_id,
+                ),
+            )
 
     def _apply_legacy_schema_backfill(self) -> None:
         """Backfill legacy columns for evtx_events and migrate old status/verdict values."""

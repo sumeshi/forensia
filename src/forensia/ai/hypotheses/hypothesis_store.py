@@ -10,6 +10,7 @@ from forensia.ai.hypotheses.hypothesis_model import (
     _clean_confirm_when,
 )
 from forensia.core.session import Hypothesis, SessionState
+from forensia.core.verification import normalize_verification_spec
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
 
@@ -82,7 +83,9 @@ def _row_to_hypothesis(row: dict[str, Any]) -> Hypothesis:
     source_rule_ids = row.get("source_rule_ids")
     required_entities = row.get("required_entities")
     confirm_when = row.get("confirm_when")
+    refute_when = row.get("refute_when")
     evidence_requirements = row.get("evidence_requirements")
+    verification_spec = row.get("verification_spec")
     if isinstance(source_rule_ids, str):
         try:
             import json
@@ -108,11 +111,29 @@ def _row_to_hypothesis(row: dict[str, Any]) -> Hypothesis:
             confirm_when = json.loads(confirm_when)
         except Exception:
             confirm_when = None
+    if isinstance(refute_when, str):
+        try:
+            refute_when = json.loads(refute_when)
+        except Exception:
+            refute_when = None
     if isinstance(evidence_requirements, str):
         try:
             evidence_requirements = json.loads(evidence_requirements)
         except Exception:
             evidence_requirements = None
+    if isinstance(verification_spec, str):
+        try:
+            verification_spec = json.loads(verification_spec)
+        except Exception:
+            verification_spec = None
+    normalized = normalize_verification_spec(
+        confirm_when=confirm_when,
+        refute_when=refute_when,
+        evidence_requirements=evidence_requirements,
+        required_entities=required_entities,
+        verification_spec=verification_spec,
+    )
+    projections = normalized.legacy_fields()
     return Hypothesis(
         id=str(row.get("hypothesis_id") or ""),
         description=str(row.get("description") or ""),
@@ -123,10 +144,10 @@ def _row_to_hypothesis(row: dict[str, Any]) -> Hypothesis:
         source_decl_id=row.get("source_decl_id"),
         source_gap_id=row.get("source_gap_id"),
         required_entities=[str(item) for item in required_entities if item],
-        confirm_when=confirm_when if isinstance(confirm_when, dict) else None,
-        evidence_requirements=(
-            evidence_requirements if isinstance(evidence_requirements, dict) else None
-        ),
+        confirm_when=projections["confirm_when"],
+        refute_when=projections["refute_when"],
+        evidence_requirements=projections["evidence_requirements"],
+        verification_spec=normalized,
         target_keypoint_id=row.get("target_keypoint_id"),
     )
 
@@ -137,8 +158,8 @@ def load_persisted_hypotheses(db: CaseDB) -> tuple[list[Hypothesis], list[Hypoth
         db,
         """
         SELECT hypothesis_id, description, status, verdict, summary, source_rule_ids,
-               source_decl_id, required_entities, confirm_when,
-               evidence_requirements, source_gap_id, target_keypoint_id
+               source_decl_id, required_entities, confirm_when, refute_when,
+               evidence_requirements, verification_spec, source_gap_id, target_keypoint_id
         FROM hypotheses
         ORDER BY created_at, hypothesis_id
         """,
@@ -197,17 +218,36 @@ def _upsert_hypothesis(
         if prior_resolved_session is None:
             prior_resolved_session = existing[3]
 
-    # QA3-8: Clean confirm_when before persisting
     clean_confirm_when = _clean_confirm_when(hypothesis.confirm_when, db)
+    if hypothesis.verification_spec is not None:
+        # Preserve canonical fields introduced by the normalized model while
+        # applying the existing admission sanitization to its compatibility
+        # projection.  This keeps one source of truth without dropping
+        # capability/scope metadata on every legacy write path.
+        normalized = hypothesis.verification_spec.model_copy(deep=True)
+        normalized.support_conditions = clean_confirm_when or {}
+        if hypothesis.refute_when is not None:
+            normalized.refute_conditions = dict(hypothesis.refute_when)
+        if hypothesis.evidence_requirements is not None:
+            normalized.evidence_requirements = dict(hypothesis.evidence_requirements)
+        normalized.required_entities = list(hypothesis.required_entities)
+    else:
+        normalized = normalize_verification_spec(
+            confirm_when=clean_confirm_when,
+            refute_when=hypothesis.refute_when,
+            evidence_requirements=hypothesis.evidence_requirements,
+            required_entities=hypothesis.required_entities,
+        )
+    projections = normalized.legacy_fields()
 
     db.execute(
         """
         INSERT INTO hypotheses (
             hypothesis_id, description, status, verdict, summary, origin,
             created_session, resolved_session, created_at, updated_at, source_rule_ids,
-            source_decl_id, required_entities, confirm_when, evidence_requirements,
-            source_gap_id, target_keypoint_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            source_decl_id, required_entities, confirm_when, refute_when,
+            evidence_requirements, verification_spec, source_gap_id, target_keypoint_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (hypothesis_id) DO UPDATE SET
             description = excluded.description,
             status = excluded.status,
@@ -222,7 +262,9 @@ def _upsert_hypothesis(
             source_decl_id = excluded.source_decl_id,
             required_entities = excluded.required_entities,
             confirm_when = excluded.confirm_when,
+            refute_when = excluded.refute_when,
             evidence_requirements = excluded.evidence_requirements,
+            verification_spec = excluded.verification_spec,
             source_gap_id = COALESCE(excluded.source_gap_id, hypotheses.source_gap_id),
             target_keypoint_id = COALESCE(excluded.target_keypoint_id, hypotheses.target_keypoint_id)
         """,
@@ -240,12 +282,16 @@ def _upsert_hypothesis(
             json.dumps(hypothesis.source_rule_ids, ensure_ascii=False),
             hypothesis.source_decl_id,
             json.dumps(hypothesis.required_entities, ensure_ascii=False),
-            json.dumps(clean_confirm_when, ensure_ascii=False)
-            if clean_confirm_when
+            json.dumps(projections["confirm_when"], ensure_ascii=False)
+            if projections["confirm_when"]
             else None,
-            json.dumps(hypothesis.evidence_requirements, ensure_ascii=False)
-            if hypothesis.evidence_requirements
+            json.dumps(projections["refute_when"], ensure_ascii=False)
+            if projections["refute_when"]
             else None,
+            json.dumps(projections["evidence_requirements"], ensure_ascii=False)
+            if projections["evidence_requirements"]
+            else None,
+            json.dumps(normalized.model_dump(mode="json"), ensure_ascii=False),
             hypothesis.source_gap_id,
             hypothesis.target_keypoint_id,
         ),

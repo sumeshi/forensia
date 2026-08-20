@@ -20,6 +20,14 @@ HTTP layer characteristics:
 - Downgrade results are cached per base_url in `_SCHEMA_MODE_CACHE` ([ai/llm/llm_client.py](../src/forensia/ai/llm/llm_client.py)), so subsequent calls send the already-downgraded mode
 - After 3 retries are exhausted, raises `LLMServerUnavailableError`, and the caller waits for recovery via `outage_wait_until_recovered`
 
+### Hypothesis verification policy
+
+Hypothesis drafting may propose legacy `confirm_when`, `refute_when`, and
+`evidence_requirements` fields. Admission normalizes these into the versioned
+`VerificationSpec` on the `Hypothesis` model before persistence. The kernel,
+rather than the LLM verdict, owns the resulting verification policy; in
+particular `refute_when` is retained through rule seeding, reload, and resume.
+
 Raw logs of LLM input/output are saved to `ai_logs/<phase>-<id>.json`.
 
 ---

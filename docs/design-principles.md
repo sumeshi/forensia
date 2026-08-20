@@ -67,11 +67,15 @@ The main knobs that can change behavior through rules:
 | Knob | Declaration location | Effect |
 |---|---|---|
 | `correlate_with` | rule | Hint in the planner prompt to "also look at these event ids" |
-| `confirm_when.co_observed_event_ids` | `hypotheses[]` | tracker auto-confirm criteria |
-| `refute_when.zero_rows` | `hypotheses[]` | checker default refutation |
+| `VerificationSpec.support_conditions.co_observed_event_ids` | `hypotheses[]` (legacy `confirm_when`) | tracker auto-confirm criteria |
+| `VerificationSpec.refute_conditions.zero_rows` | `hypotheses[]` (legacy `refute_when`) | checker default refutation, subject to observable Coverage |
 | `fallback_search` | rule | 0-row recovery without LLM |
 | `follow_up_questions` | `hypotheses[]` | auto-derive next investigation on confirmed |
 | `report_sections` | `hypotheses[]` | sections to stale-mark on resolution |
+
+`VerificationSpec` is the single normalized source of verification semantics.
+The legacy fields are projections used by current callers and must round-trip
+without loss; they are not independent mutable policy stores.
 
 ---
 

@@ -23,6 +23,7 @@ from forensia.config import (
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
+from forensia.core.verification import VerificationSpec
 from forensia.db.database import CaseDB
 from forensia.report.sections.section_quality import collect_gaps, section_confidence
 from forensia.report.sections.section_store import extract_claim_texts
@@ -167,6 +168,118 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual(1, len(resolved))
             self.assertEqual("H-1", resolved[0].id)
             self.assertEqual("confirmed", resolved[0].status)
+
+    def test_verification_spec_round_trips_legacy_conditions(self) -> None:
+        """The canonical spec and all three legacy projections survive reload."""
+        from forensia.ai.hypotheses.hypothesis_store import _upsert_hypothesis
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            original = Hypothesis(
+                id="H-SPEC",
+                description="registry persistence hypothesis",
+                required_entities=["host", "user"],
+                confirm_when={"co_observed_event_ids": [4624], "same_host": True},
+                refute_when={"zero_rows": True, "scope": {"host": "WS-01"}},
+                evidence_requirements={"minimum_independent_groups": 2},
+                verification_spec=VerificationSpec(
+                    support_conditions={
+                        "co_observed_event_ids": [4624],
+                        "same_host": True,
+                    },
+                    refute_conditions={
+                        "zero_rows": True,
+                        "scope": {"host": "WS-01"},
+                    },
+                    required_entities=["host", "user"],
+                    evidence_requirements={"minimum_independent_groups": 2},
+                    required_capabilities=["windows.security.logon"],
+                    scope={"host": "WS-01"},
+                ),
+            )
+            with CaseDB(case) as db:
+                _upsert_hypothesis(db, original, origin="test", session_id="S-1")
+                active, resolved = load_persisted_hypotheses(db)
+                row = db.execute(
+                    "SELECT verification_spec, refute_when FROM hypotheses WHERE hypothesis_id = 'H-SPEC'"
+                ).fetchone()
+
+            self.assertEqual([], resolved)
+            self.assertEqual(1, len(active))
+            restored = active[0]
+            self.assertEqual(original.confirm_when, restored.confirm_when)
+            self.assertEqual(original.refute_when, restored.refute_when)
+            self.assertEqual(
+                original.evidence_requirements, restored.evidence_requirements
+            )
+            self.assertEqual("1", restored.verification_spec.spec_version)
+            self.assertEqual(
+                ["windows.security.logon"],
+                restored.verification_spec.required_capabilities,
+            )
+            self.assertEqual({"host": "WS-01"}, restored.verification_spec.scope)
+            with self.assertRaises(ValueError):
+                VerificationSpec.model_validate({"spec_version": "2"})
+            with self.assertRaises(ValueError):
+                VerificationSpec.model_validate({"unknown_policy": True})
+            self.assertIsNotNone(row[0])
+            self.assertIn('"zero_rows": true', str(row[1]))
+
+    def test_verification_spec_migration_backfills_legacy_row_idempotently(
+        self,
+    ) -> None:
+        """Opening a pre-spec case preserves rows and rerunning init is harmless."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            now = datetime.now(UTC).replace(tzinfo=None)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO hypotheses (
+                        hypothesis_id, description, status, verdict, summary,
+                        origin, created_session, created_at, updated_at,
+                        required_entities, confirm_when, refute_when, evidence_requirements
+                    ) VALUES (?, ?, 'active', NULL, '', 'legacy', 'S-old', ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "H-LEGACY-SPEC",
+                        "legacy hypothesis",
+                        now,
+                        now,
+                        '["host"]',
+                        '{"same_host": true}',
+                        '{"zero_rows": true}',
+                        '{"minimum_independent_groups": 1}',
+                    ),
+                )
+                # Simulate a legacy row created before the migration: remove
+                # only this migration marker and its canonical payload while
+                # retaining the legacy columns/state.
+                db.execute(
+                    "DELETE FROM schema_migrations WHERE migration_key = ?",
+                    ("hypotheses_verification_spec_v1",),
+                )
+                db.execute(
+                    "UPDATE hypotheses SET verification_spec = NULL WHERE hypothesis_id = ?",
+                    ("H-LEGACY-SPEC",),
+                )
+                before = db.execute(
+                    "SELECT verification_spec FROM hypotheses WHERE hypothesis_id = 'H-LEGACY-SPEC'"
+                ).fetchone()[0]
+                self.assertIsNone(before)
+                db.init_schema()
+                second, _ = load_persisted_hypotheses(db)
+                after = db.execute(
+                    "SELECT verification_spec FROM hypotheses WHERE hypothesis_id = 'H-LEGACY-SPEC'"
+                ).fetchone()[0]
+                db.init_schema()
+                after_repeat = db.execute(
+                    "SELECT verification_spec FROM hypotheses WHERE hypothesis_id = 'H-LEGACY-SPEC'"
+                ).fetchone()[0]
+
+            self.assertIsNotNone(after)
+            self.assertEqual(after, after_repeat)
+            self.assertEqual(second[0].refute_when, {"zero_rows": True})
 
     def test_merge_active_hypotheses_assigns_sequential_ids_and_dedupes_description(
         self,
