@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -22,6 +23,11 @@ from forensia.ai.checking.settlement import (
 from forensia.ai.checking.sufficiency import (
     assess_and_persist_sufficiency,
     create_evidence_links_for_query,
+)
+from forensia.ai.hypotheses.execution import (
+    build_receipt_step_payload,
+    build_sql_receipt,
+    resolve_zero_row_fallbacks,
 )
 from forensia.ai.hypotheses.hypothesis_manager import (
     _guess_related_sections,
@@ -47,16 +53,13 @@ from forensia.ai.investigation.progress import (
     HypothesisProgressTracker,
     query_fingerprint,
 )
+from forensia.ai.retrieval_telemetry import evaluate_retrieval
 from forensia.core.case import Case
 from forensia.core.log import log as _log
 from forensia.core.memory import MemoryManager
 from forensia.core.session import HistoryEntry, Hypothesis, SessionState
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
-from forensia.knowledge.rules.engine import (
-    execute_event_keyword_fallback_search,
-    execute_fallback_search,
-)
 from forensia.knowledge.rules.loader import load_rule_by_id
 
 
@@ -200,70 +203,6 @@ class _HypothesisRunState:
     missing_checks_raw: list[Any] | None = None
 
 
-def _resolve_zero_row_fallbacks(
-    db: CaseDB,
-    hypothesis: Hypothesis,
-    planned_query: Any,
-    rows: list[Any],
-) -> tuple[list[Any], dict[str, Any] | None]:
-    """Zero-row fallback searches: rule-declared, then event-keyword."""
-    fallback_info = None
-    if len(rows) == 0 and hypothesis.source_rule_ids:
-        for source_rule_id in hypothesis.source_rule_ids:
-            rule = load_rule_by_id(source_rule_id)
-            if rule and rule.fallback_search:
-                for fallback in rule.fallback_search:
-                    if isinstance(fallback, dict):
-                        ph = fallback.get("phase")
-                        if ph not in {
-                            "keyword_in_raw_json",
-                            "related_event_ids",
-                            "artifact_table",
-                        }:
-                            continue
-                        fb_rows = execute_fallback_search(db, fallback)
-                        if fb_rows:
-                            _log(
-                                "FALLBACK",
-                                f"{hypothesis.id} — found {len(fb_rows)} rows via {ph}",
-                            )
-                            for r in fb_rows[:20]:
-                                if isinstance(r, dict):
-                                    r["_fallback_phase"] = ph
-                                    r["_fallback_source_rule_id"] = source_rule_id
-                            rows = fb_rows[:20]
-                            fallback_info = {
-                                "phase": ph,
-                                "source_rule_id": source_rule_id,
-                            }
-                            break
-                if fallback_info:
-                    break
-    if len(rows) == 0 and fallback_info is None:
-        fb_rows, fb_info = execute_event_keyword_fallback_search(db, planned_query.sql)
-        if fb_rows:
-            _log(
-                "FALLBACK",
-                f"{hypothesis.id} — found {len(fb_rows)} rows via keyword_in_raw_json"
-                + (
-                    f" event_ids={fb_info.get('event_ids', [])} keywords={fb_info.get('keywords', [])}"
-                    if fb_info
-                    else ""
-                ),
-            )
-            for r in fb_rows[:20]:
-                if isinstance(r, dict):
-                    r["_fallback_phase"] = "keyword_in_raw_json"
-                    r["_fallback_source_rule_id"] = "event_id_schema"
-            rows = fb_rows[:20]
-            fallback_info = fb_info or {
-                "phase": "keyword_in_raw_json",
-                "source_rule_id": "event_id_schema",
-            }
-            fallback_info["query_sql"] = planned_query.sql
-    return rows, fallback_info
-
-
 async def _phase_plan(rs: _HypothesisRunState) -> str:
     """Query planning: LLM plan call, step persistence, hypothesis upsert."""
     hypothesis, state, ctx = rs.hypothesis, rs.state, rs.ctx
@@ -367,15 +306,51 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
             reasoning_entry_id=reasoning_entry_id,
         )
     query_fp = query_fingerprint(planned_query.sql)
+    started = time.monotonic()
+    required_capabilities = list(
+        getattr(hypothesis.verification_spec, "required_capabilities", []) or []
+    )
     try:
         rows = fetch_records(db, planned_query.sql)
+        original_row_count = len(rows)
         _log("EXEC", f"{hypothesis.id} {planned_query.query_id} — {len(rows)} rows")
-        rows, fallback_info = _resolve_zero_row_fallbacks(
+        rows, fallback_info = resolve_zero_row_fallbacks(
             db=db, hypothesis=hypothesis, planned_query=planned_query, rows=rows
         )
     except Exception as exc:
         err_msg = str(exc)
         tracker.record(query_fp, verdict="exec_error", row_count=0)
+        receipt = build_sql_receipt(
+            db=db,
+            session_id=session_id,
+            plan_cycle=plan_cycle,
+            query_index=query_index,
+            hypothesis=hypothesis,
+            planned_query=planned_query,
+            query_hash=query_fp,
+            duration_ms=(time.monotonic() - started) * 1000,
+            rows=None,
+            original_row_count=None,
+            error=err_msg,
+        )
+        evaluation = evaluate_retrieval(
+            receipt,
+            required_fields=["normalized_sql"],
+            required_capabilities=required_capabilities,
+        )
+        _save_step(
+            db=db,
+            session_id=session_id,
+            iteration=plan_cycle,
+            phase="do",
+            hypothesis_id=hypothesis.id,
+            input_json={
+                "planned_query": planned_query.model_dump(),
+                "query_index": query_index,
+            },
+            output_json=build_receipt_step_payload(receipt, evaluation),
+            suffix=f"{planned_query.query_id}-{query_index:02d}",
+        )
         _log(
             "EXEC",
             f"SQL execution error — {planned_query.query_id}: {err_msg}",
@@ -404,6 +379,24 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
         }
         return "continue"
     result_summary = summarize_query_result(rows)
+    receipt = build_sql_receipt(
+        db=db,
+        session_id=session_id,
+        plan_cycle=plan_cycle,
+        query_index=query_index,
+        hypothesis=hypothesis,
+        planned_query=planned_query,
+        query_hash=query_fp,
+        duration_ms=(time.monotonic() - started) * 1000,
+        rows=rows,
+        original_row_count=original_row_count,
+        fallback_info=fallback_info,
+    )
+    evaluation = evaluate_retrieval(
+        receipt,
+        required_fields=["normalized_sql"],
+        required_capabilities=required_capabilities,
+    )
     _save_step(
         db=db,
         session_id=session_id,
@@ -414,7 +407,7 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
             "planned_query": planned_query.model_dump(),
             "query_index": query_index,
         },
-        output_json=result_summary,
+        output_json=build_receipt_step_payload(receipt, evaluation, result_summary),
         suffix=f"{planned_query.query_id}-{query_index:02d}",
     )
     rs.planned_query = planned_query

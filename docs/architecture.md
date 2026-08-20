@@ -167,7 +167,7 @@ Main stages:
 1. **broad_plan**: `gap_identifier` extracts uncovered observation points, and `hypothesis_drafter` drafts a hypothesis per gap
 2. **select**: `selection.py` filters blocked/unobservable/exhausted candidates and ranks eligible hypotheses from deterministic priority components. The full score breakdown is stored in Trace.
 3. **plan**: Two-phase: Phase 1 (intent) runs `query_intent_planner` → `sql_self_check` gate (retries intent when blocked), Phase 2 (composer) runs `sql_composer` (retries composer only up to 3 times on SQL validation failure). `plan_hypothesis_query` ([ai/planner.py](../src/forensia/ai/investigation/planner.py))
-4. **execute/check**: Issues a safe SELECT, applies fallback behavior and obtains the Checker's proposed verdict.
+4. **execute/check**: Issues a safe SELECT, applies fallback behavior and obtains the Checker's proposed verdict. The existing hypothesis SQL execution records a versioned `ToolReceipt` and one-attempt `RetrievalEvaluation` inside the same `trace.investigation_steps.output_json`; the receipt records query/provenance/result observations only and does not assign Evidence roles or consume checker verdicts.
 5. **sufficiency**: Links evidence, removes derivation duplicates, evaluates Rule/general policy against relevant Coverage, then reconciles the LLM proposal. Insufficient confirmation remains inconclusive; unavailable refutation becomes untestable.
 6. **relate/resolve**: Checker-derived hypotheses receive validated parent edges. Verdict effects unblock, block or flag adjacent hypotheses without changing them to an incompatible status.
 7. **report/gaps**: Refreshes Claims and sections, synchronizes normalized Gap/Task lifecycle, and projects authoritative tasks into Markdown Memory.
@@ -234,6 +234,12 @@ observational rows to the separate `trace.duckdb`; this telemetry never feeds
 ranking automatically.
 
 The final Markdown is assembled by `build_report_markdown_from_db` ([report/render/writer.py](../src/forensia/report/render/writer.py)) from `report_sections`, and `_strip_narrative_status_lines` ([report/sections/section_quality.py](../src/forensia/report/sections/section_quality.py)) strips internal metadata (such as `**Status:**` lines) from non-appendix sections.
+
+Hypothesis SQL receipts reuse the existing `query_fingerprint`, Coverage
+projection, planner validation/dry-run observations, fallback behavior, and
+`_save_step` persistence. Empty results remain observations: retrieval
+evaluation marks Coverage-unknown empties as partial and never turns them into
+negative evidence or a verdict.
 
 ---
 

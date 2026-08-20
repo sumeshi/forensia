@@ -119,6 +119,11 @@ Host identification:
 | `investigation_state` | Singleton case objective/lifecycle | `objective`, `status`, `termination_policy`, stable `stop_reason_code`, human-readable `stop_reason`, machine-readable `stop_summary` |
 | `investigation_tasks` | Non-SQL evidence acquisition, external lookup and human work | `kind`, `status`, linked Gap/Hypothesis, `owner_phase`, `retry_condition`, required capability/source, blocked reason |
 
+SQL `do` steps embed a versioned `tool_receipt` and one-attempt
+`retrieval_evaluation` in `investigation_steps.output_json`. These are trace
+observations; contributor/derivation sources are provenance and the payload
+does not assign Evidence roles, cumulative sufficiency, or verdicts.
+
 ### 1.4 Report generation
 
 | Table | Role | Main columns |

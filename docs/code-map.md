@@ -80,7 +80,7 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 | [src/forensia/ai/investigation/progress.py](../src/forensia/ai/investigation/progress.py) | `HypothesisProgressTracker`: query fingerprinting, auto-confirm / refute / pivot decisions |
 | [src/forensia/ai/audit.py](../src/forensia/ai/audit.py) | `LLMCallLogger`: per-phase prompt/response logs under `ai_logs/`, call counting |
 | [src/forensia/ai/compaction.py](../src/forensia/ai/compaction.py) | Fail-open LLM compaction with deterministic fallback and required-token validation |
-| [src/forensia/ai/retrieval_telemetry.py](../src/forensia/ai/retrieval_telemetry.py) | Observational memory/knowledge retrieval events written to `trace.duckdb` |
+| [src/forensia/ai/retrieval_telemetry.py](../src/forensia/ai/retrieval_telemetry.py) | Observational retrieval events plus the versioned tool-receipt and one-attempt Retrieval Evaluation contracts; never assigns Evidence roles or verdicts |
 | [src/forensia/ai/case_profile.py](../src/forensia/ai/case_profile.py) | Case profile (observed event IDs / artifact families) + profile advisor |
 
 ## AI — subpackages
@@ -89,7 +89,7 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 |---|---|
 | [src/forensia/ai/llm/](../src/forensia/ai/llm/) | LLM transport: `llm_client.py` (HTTP + outage recovery), `llm_gateway.py` (`request_llm_json`), `json_response.py` (JSON parse/repair), `schemas.py` (output JSON schemas) |
 | [src/forensia/ai/prompts/](../src/forensia/ai/prompts/) | Prompt builders: `prompt_investigation.py` (planner/checker), `prompt_sections.py` (section agent), `prompt_context.py` (context slimming, budget guard), `prompt_playbook.py` (`_dfir_playbook`), `sql_schema.py` (schema cards, allowed tables), `sql_templates.py` (query template catalog from `_schema/query_templates.yaml` + `validate_select_sql`) |
-| [src/forensia/ai/hypotheses/](../src/forensia/ai/hypotheses/) | Hypothesis lifecycle: `hypothesis_model.py` (parsing), `hypothesis_manager.py` (merge/dedup/resolve), `hypothesis_store.py` (DB persistence), `hypothesis_runner.py` (per-hypothesis investigate loop), `seeding.py` (rule-seeded findings/hypotheses) |
+| [src/forensia/ai/hypotheses/](../src/forensia/ai/hypotheses/) | Hypothesis lifecycle: `hypothesis_model.py` (parsing), `hypothesis_manager.py` (merge/dedup/resolve), `hypothesis_store.py` (DB persistence), `hypothesis_runner.py` (per-hypothesis orchestration), `execution.py` (existing SQL fallback and receipt assembly), `seeding.py` (rule-seeded findings/hypotheses) |
 | [src/forensia/core/verification.py](../src/forensia/core/verification.py) | Versioned `VerificationSpec` model and lossless legacy-field normalization/projection used by all hypothesis creation and persistence paths |
 | [src/forensia/ai/checking/](../src/forensia/ai/checking/) | Query-result checking: `checker.py` (`check_query_result`: verdict → finding extraction → memory updates), `check_guardrails.py` (verdict consistency gates, `_co_observation_satisfied`), `check_normalize.py` (result summarization), `check_apply.py` (DB application) |
 | [src/forensia/ai/sections/](../src/forensia/ai/sections/) | Report-section agents: `section_refresher.py` (refresh entry point), `section_agent.py` (per-block agent), `section_block_plan.py` / `section_block_context.py` / `section_block_narrative.py` (plan / context / narrate phases), `section_exec.py` (query execution), `section_answers.py` (structured answer formatting), `section_run_store.py` (run/evidence/fact persistence) |
