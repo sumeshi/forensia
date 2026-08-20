@@ -15,7 +15,7 @@ Incident data is often too sensitive to send anywhere — sometimes it cannot ev
 Three principles drive the design:
 
 1. **Fight alone** — keep working fully offline, in isolated environments.
-2. **Do not over-expect from the LLM** — the model only gets tasks that are hard to build statically (hypothesis generation, interpretation, report prose). Everything deterministic — evidence search, priority scoring, state transitions, persistence — runs in code.
+2. **Do not over-expect from the LLM** — the model handles the parts that benefit from interpretation, and proposes one small next step at a time. forensia decides what is safe to inspect, checks the result against the evidence, and controls what may be remembered or concluded.
 3. **Spend time like water** — no perfect conclusion in one pass. Hold multiple hypotheses, iterate with bounded stopping conditions, and update the report continuously as the investigation progresses.
 
 ## Screenshots
@@ -122,7 +122,7 @@ case001/
 
 What works today:
 
-* Ingestion and normalization of EVTX, MFT, Prefetch, and Windows Registry artifacts into DuckDB through the same staged adapter pipeline. Registry records retain their dataset and contributor provenance; because the parser cannot prove per-plugin completeness, Registry coverage remains partial and an empty result is not treated as evidence of absence. The current adapter interface can be used to add other artifact types, although it is not yet stable (see [docs/extending.md](docs/extending.md)).
+* Ingestion and normalization of EVTX, MFT, Prefetch, and Windows Registry artifacts into DuckDB. Registry evidence is kept separate when its origin is uncertain, and an incomplete search is never presented as proof that something did not happen. The current adapter interface can be used to add other artifact types, although it is not yet stable (see [docs/extending.md](docs/extending.md)).
 * A rule engine that produces findings, key points, and hypothesis seeds from declarative rulepacks.
 * A case-aware investigation loop: hypothesis seeding, deterministic next-best-focus selection, SQL query planning and composition, execution with fallback search, evidence sufficiency reconciliation, verdict propagation, and finding extraction.
 * Lightweight hypothesis relationships (`parent_of`, `prerequisite_for`, `derived_from`, `contradicts`, `alternative_to`, and `supersedes`) stored in DuckDB and validated in Python, without a graph database.
@@ -247,7 +247,7 @@ Full details are in [docs/architecture.md](docs/architecture.md) and [docs/data-
 
 The current goal is not a tool accurate enough to replace practice; it is to find out how much of what static rules and fixed processing cannot handle can be covered architecturally with a weak local LLM.
 
-* **Broadening the evidence.** Today's traces ([EVTX](https://github.com/sumeshi/evtx2es), [MFT](https://github.com/sumeshi/mft2es), [Prefetch](https://github.com/sumeshi/prefetch2es)) came first because they fit a uniform pipeline. Browser records, registry data, and other messier traces will be added where the effort is lower and the payoff higher — full coverage is not the goal.
+* **Broadening the evidence.** Today's traces ([EVTX](https://github.com/sumeshi/evtx2es), [MFT](https://github.com/sumeshi/mft2es), [Prefetch](https://github.com/sumeshi/prefetch2es), and Windows Registry hives) were chosen because they answer useful investigative questions without trying to support every possible artifact. Browser records and other traces will be added where the effort is lower and the payoff higher — full coverage is not the goal.
 * **Multi-host support.** Real incidents rarely involve one machine. Each host must be treated independently while accounts, IPs, processes, and timelines are examined across them — a large design change.
 * **Measuring investigation quality.** In local trials with the [CFReDS](https://cfreds-archive.nist.gov/data_leakage_case/data-leakage-case.html) data-leakage case, runs have come close to the answer on 8–9 of 12 questions (a handful of runs, one model and configuration — not an official result). Beyond answer accuracy, evaluation will also track hypothesis diversity, memory duplication, and LLM call patterns, since chasing benchmark answers alone can degrade the investigation itself.
 
