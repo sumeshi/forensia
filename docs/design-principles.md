@@ -20,6 +20,10 @@ Hierarchy of authority:
 - Memory is a **projection**, not an authority
 
 If a new feature requires persistent state, represent it in a DuckDB table, not only in Markdown or logs.
+Deterministic retry IDs make selected trace writes idempotent: replay may update
+the same `investigation_steps` row rather than create a duplicate. Trace State
+is therefore an audit trajectory, not a general-purpose transition-history
+engine.
 
 ---
 
@@ -176,3 +180,28 @@ Keep structured memory as a projection from the DB and preceding evidence-backed
 - Except for explicitly summarized files (such as `overview.md`), prefer append history over in-place rewrites
 
 When structured / benchmark / appendix blocks view narrative memory, block answers get pulled toward already-formed conclusions, so the `core.memory.EvidenceOnlyMemory` wrapper exposes only `facts` / `keypoints` / `entities`. The switch happens in a single place: `core.memory.memory_for_section(memory, structured_mode=...)`.
+
+---
+
+## 13. Weak-model kernel responsibility map
+
+The weak-model architecture is implemented through existing owners rather than
+a parallel agent or tool framework.
+
+| Invariant | Owner |
+|---|---|
+| Registry output becomes provenance/completeness/Coverage without inferred plugin success | `evidence/registry.py`, `knowledge/coverage.py` |
+| LLM action eligibility and argument validation precede execution | `ai/llm/schemas.py`, `ai/investigation/planner.py`, existing memory/SQL validators |
+| Executed SQL has a versioned receipt and one-attempt evaluation | `ai/hypotheses/execution.py`, `ai/retrieval_telemetry.py`, `investigation_steps` |
+| Scoped Memory and internal Knowledge retrieval remain observable without a second receipt store | `retrieval_events`; Memory additionally emits a caller-side `RetrievalEvaluation` |
+| Evidence role does not come from checker/final verdict | `core/verification.py`, `ai/checking/assessment.py` |
+| Retrieval Evaluation → Evidence Assessment → Evidence Sufficiency → Settlement remain separate | `ai/retrieval_telemetry.py`, `assessment.py`, `sufficiency.py`, `settlement.py` |
+| Accepted Findings and report Claims retain stable evidence/support refs | `ai/checking/check_apply.py`, `report/sections/section_store.py` |
+| Source replacement cannot silently preserve settled dependents | `evidence/invalidation.py`, `evidence/normalize.py` |
+| Report requests investigation but cannot directly admit or settle it | `ai/report_gap.py` using existing Gap/Task/Hypothesis rows |
+| Progress is durable semantic state change, never prose growth | `ai/report_gap.py:report_cycle_progress` |
+
+`knowledge.retrieve` is deterministic prompt assembly, not an LLM-callable
+action. SQL uses `ToolReceipt`; Memory and Knowledge keep the established
+`retrieval_events` projection. Do not introduce a common receipt table merely
+to make these internal paths look identical.
