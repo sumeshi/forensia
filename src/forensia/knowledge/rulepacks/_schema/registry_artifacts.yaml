@@ -13,3 +13,4 @@ notes:
   provenance: "source_ids is the conservative full dataset contributor set; it is provenance, not support."
   completeness: "Registry Coverage remains partial unless plugin completeness is independently proven; zero rows are not negative evidence."
   no_host_column: "Do not infer a host from log.file.path or collection directory."
+  evidence_query: "Select artifact_id AS evidence_id when rows will be assessed or cited."

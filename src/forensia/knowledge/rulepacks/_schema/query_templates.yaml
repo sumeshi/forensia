@@ -4,7 +4,7 @@ templates:
     description: Registry artifacts with parser-provided timestamps, newest first.
     parameters: {}
     sql: |-
-      SELECT t.timestamp, t.summary, t.artifact_id, a.plugin, a.hive,
+      SELECT t.timestamp, t.summary, t.artifact_id AS evidence_id, a.plugin, a.hive,
              a.key_path, a.value_name
       FROM registry_timeline AS t
       JOIN registry_artifacts AS a ON a.artifact_id = t.artifact_id
