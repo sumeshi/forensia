@@ -74,7 +74,7 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 | [src/forensia/ai/investigation/investigator.py](../src/forensia/ai/investigation/investigator.py) | `investigate(...)` entry point: plan-cycle loop, report phase, termination, LLM budget |
 | [src/forensia/ai/investigation/investigation_cycle.py](../src/forensia/ai/investigation/investigation_cycle.py) | One plan cycle: broad plan (gap identify → hypothesis draft) + hypothesis loop body |
 | [src/forensia/ai/investigation/investigation_session.py](../src/forensia/ai/investigation/investigation_session.py) | Session setup, memory-context caches, step logging, keypoint-card sync |
-| [src/forensia/ai/investigation/planner.py](../src/forensia/ai/investigation/planner.py) | `plan_hypothesis_query`: scoped `read_more` evaluation → query intent → SQL self-check → SQL composition (≤3 validation retries) |
+| [src/forensia/ai/investigation/planner.py](../src/forensia/ai/investigation/planner.py) | `plan_hypothesis_query`: bounded action eligibility/validation (`memory.read_more` → `sql.query`) → scoped memory evaluation → query intent → SQL self-check → SQL composition (≤3 validation retries) |
 | [src/forensia/ai/investigation/memory_sync.py](../src/forensia/ai/investigation/memory_sync.py) | `_apply_memory_updates`: checker output → facts / timeline / tasks / entities / hypothesis cards |
 | [src/forensia/ai/report_gap.py](../src/forensia/ai/report_gap.py) | Report status building + gap → hypothesis injection |
 | [src/forensia/ai/investigation/progress.py](../src/forensia/ai/investigation/progress.py) | `HypothesisProgressTracker`: query fingerprinting, auto-confirm / refute / pivot decisions |

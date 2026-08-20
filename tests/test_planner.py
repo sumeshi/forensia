@@ -7,6 +7,7 @@ from unittest.mock import patch
 from forensia.ai.checking.check_normalize import parse_new_hypotheses
 from forensia.ai.investigation.investigation_cycle import select_focus_hypotheses
 from forensia.ai.investigation.planner import (
+    normalize_query_intent_action,
     plan_hypothesis_query,
     request_with_optional_context,
     validate_select_sql,
@@ -173,6 +174,83 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertIsNotNone(result.query)
         self.assertEqual("q_failed_logon_by_ip_window", result.query.template_id)
         self.assertIn("GROUP BY src_ip", result.query.sql)
+
+    def test_action_gate_accepts_explicit_sql_and_legacy_intent(self) -> None:
+        explicit, explicit_error = normalize_query_intent_action(
+            {
+                "action": {
+                    "type": "sql.query",
+                    "intent": "inspect events",
+                    "target_table": "evtx_events",
+                },
+            }
+        )
+        legacy, legacy_error = normalize_query_intent_action(
+            {
+                "read_more": [],
+                "intent": "inspect events",
+                "target_table": "evtx_events",
+            }
+        )
+        self.assertEqual("sql.query", explicit.type if explicit else None)
+        self.assertIsNone(explicit_error)
+        self.assertEqual("sql.query", legacy.type if legacy else None)
+        self.assertIsNone(legacy_error)
+
+    def test_unknown_action_stops_before_sql_composition(self) -> None:
+        state = SessionState(session_id="session-action", iteration=1)
+        hypothesis = Hypothesis(id="H-action", description="test hypothesis")
+        with patch(
+            "forensia.ai.llm.llm_gateway.request_llm_json",
+            return_value={
+                "action": {"type": "knowledge.retrieve"},
+                "intent": "inspect events",
+                "target_table": "evtx_events",
+            },
+        ) as request:
+            result = plan_hypothesis_query(
+                state=state,
+                hypothesis=hypothesis,
+                memory=_MemoryStub(),
+                base_url=_llm_base_url(),
+                model="test-model",
+            )
+        self.assertIsNone(result.query)
+        self.assertFalse(result.needs_more)
+        self.assertIn("unknown or malformed action", result.stop_reason or "")
+        request.assert_called_once()
+
+    def test_repeated_memory_action_is_ineligible_after_expansion(self) -> None:
+        state = SessionState(session_id="session-action", iteration=1)
+        hypothesis = Hypothesis(id="H-action", description="test hypothesis")
+        responses = [
+            {
+                "action": {
+                    "type": "memory.read_more",
+                    "paths": ["archive/refuted.md"],
+                }
+            },
+            {
+                "action": {
+                    "type": "memory.read_more",
+                    "paths": ["facts.md"],
+                }
+            },
+        ]
+        with patch(
+            "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=responses
+        ) as request:
+            result = plan_hypothesis_query(
+                state=state,
+                hypothesis=hypothesis,
+                memory=_MemoryStub(),
+                base_url=_llm_base_url(),
+                model="test-model",
+            )
+        self.assertIsNone(result.query)
+        self.assertFalse(result.needs_more)
+        self.assertIn("not eligible", result.stop_reason or "")
+        self.assertEqual(2, request.call_count)
 
     def test_query_intent_exposes_only_current_active_hypothesis(self) -> None:
         current = Hypothesis(id="H-A", description="gap alpha private question")

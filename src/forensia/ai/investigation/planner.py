@@ -8,8 +8,16 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic import ValidationError
+
 from forensia.ai.hypotheses.hypothesis_store import _recent_reasoning_rows
 from forensia.ai.llm import llm_gateway
+from forensia.ai.llm.schemas import (
+    QUERY_INTENT_SCHEMA,
+    MemoryReadMoreAction,
+    QueryIntentResponse,
+    SQLQueryAction,
+)
 from forensia.ai.prompts.prompt_context import (
     _build_schema_guidance,
     _trim_dynamic_content,
@@ -34,6 +42,78 @@ from forensia.db.database import CaseDB
 logger = logging.getLogger(__name__)
 
 _PLANNER_SQL_MAX_RETRIES = 3
+
+
+def eligible_query_actions(phase: str) -> tuple[str, ...]:
+    """Return the bounded action menu for one query-intent phase."""
+
+    if phase == "initial":
+        return ("memory.read_more", "sql.query")
+    if phase == "after_read_more":
+        return ("sql.query",)
+    raise ValueError(f"unknown query-intent phase: {phase}")
+
+
+def normalize_query_intent_action(
+    payload: dict[str, Any],
+    *,
+    phase: str = "initial",
+) -> tuple[MemoryReadMoreAction | SQLQueryAction | None, str | None]:
+    """Validate and normalize the small action contract at the planner boundary.
+
+    Older local models omitted ``action``.  Their output is accepted only when
+    it has one unambiguous meaning: a non-empty ``read_more`` list means memory
+    expansion, otherwise a complete intent with a known table means SQL.
+    """
+
+    try:
+        eligible = eligible_query_actions(phase)
+    except ValueError as exc:
+        return None, str(exc)
+    if not isinstance(payload, dict):
+        return None, "action payload is not an object"
+
+    if "action" in payload:
+        if coerce_list(payload.get("read_more")):
+            return None, "explicit action conflicts with legacy read_more"
+        try:
+            action = QueryIntentResponse.model_validate(payload).action
+        except ValidationError:
+            return None, "unknown or malformed action"
+    else:
+        requested_paths = coerce_list(payload.get("read_more"))
+        if requested_paths:
+            if "memory.read_more" not in eligible:
+                return (
+                    None,
+                    "memory.read_more is not eligible after read_more expansion",
+                )
+            paths = [str(path).strip() for path in requested_paths]
+            if not paths or any(not path for path in paths):
+                return None, "legacy read_more paths are invalid"
+            action = MemoryReadMoreAction(type="memory.read_more", paths=paths)
+        else:
+            try:
+                action = SQLQueryAction(
+                    type="sql.query",
+                    intent=str(payload.get("intent") or "").strip(),
+                    target_table=str(payload.get("target_table") or "").strip(),
+                    filters_required=[
+                        str(item)
+                        for item in coerce_list(payload.get("filters_required"))
+                    ],
+                    time_window=str(payload.get("time_window") or ""),
+                    expected_row_shape=str(payload.get("expected_row_shape") or ""),
+                )
+            except ValidationError:
+                return None, "missing action and incomplete query intent"
+
+    if action.type not in eligible:
+        return None, f"{action.type} is not eligible in {phase} phase"
+    if isinstance(action, MemoryReadMoreAction):
+        if any(not path.strip() for path in action.paths):
+            return None, "memory.read_more paths must be non-empty"
+    return action, None
 
 
 def _materialize_planned_query(payload: dict[str, Any]) -> PlannedQuery:
@@ -153,6 +233,7 @@ def request_with_optional_context(
     | None = None,
     hypothesis_id: str | None = None,
     retrieval_callback: Callable[[dict[str, Any]], None] | None = None,
+    json_schema: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Request LLM with optional read_more context expansion.
 
@@ -177,15 +258,30 @@ def request_with_optional_context(
         messages=messages_builder(default_context),
         model=model,
         base_url=base_url,
+        json_schema=json_schema,
         status_callback=status_callback,
         audit_callback=audit_callback,
     )
-    requested_paths = [str(item) for item in coerce_list(parsed.get("read_more"))]
+    action, action_error = normalize_query_intent_action(parsed, phase="initial")
+    if action_error:
+        parsed["_action_error"] = action_error
+        parsed["read_more"] = []
+        return parsed
+    assert action is not None
+    parsed["action"] = action.model_dump(mode="json")
+    if isinstance(action, SQLQueryAction):
+        parsed.update(action.model_dump(mode="json", exclude={"type"}))
+        parsed["read_more"] = []
+        return parsed
+
+    requested_paths = list(action.paths)
     scope_filter = getattr(memory, "filter_paths_for_scope", None)
     if callable(scope_filter):
         read_more, rejected_paths = scope_filter(requested_paths, hypothesis_id)
     else:
         read_more, rejected_paths = requested_paths, []
+    if rejected_paths:
+        read_more = []
     if not read_more:
         if retrieval_callback is not None and requested_paths:
             receipt = ToolReceipt(
@@ -217,6 +313,8 @@ def request_with_optional_context(
                     "retrieval_evaluation": evaluation.model_dump(mode="json"),
                 }
             )
+        if rejected_paths:
+            parsed["_action_error"] = "memory.read_more paths rejected by scope"
         parsed["read_more"] = []
         return parsed
     extra_context = memory.load_compact_context(read_more, max_bytes=memory.max_bytes)
@@ -272,9 +370,19 @@ def request_with_optional_context(
         messages=messages_builder(expanded_context),
         model=model,
         base_url=base_url,
+        json_schema=json_schema,
         status_callback=status_callback,
         audit_callback=audit_callback,
     )
+    reparsed_action, reparsed_error = normalize_query_intent_action(
+        reparsed, phase="after_read_more"
+    )
+    if reparsed_error:
+        reparsed["_action_error"] = reparsed_error
+    elif reparsed_action is not None:
+        reparsed["action"] = reparsed_action.model_dump(mode="json")
+        if isinstance(reparsed_action, SQLQueryAction):
+            reparsed.update(reparsed_action.model_dump(mode="json", exclude={"type"}))
     reparsed["read_more"] = read_more
     return reparsed
 
@@ -496,7 +604,10 @@ def _plan_query_intent(
         audit_callback=audit_callback,
         hypothesis_id=hypothesis.id,
         retrieval_callback=retrieval_callback,
+        json_schema=QUERY_INTENT_SCHEMA,
     )
+    if intent_response.get("_action_error"):
+        return intent_response, ""
     target_table = str(intent_response.get("target_table") or "evtx_events").strip()
     composer_schema_card = _build_schema_guidance(target_table, db=db)
 
@@ -527,7 +638,10 @@ def _plan_query_intent(
             audit_callback=audit_callback,
             hypothesis_id=hypothesis.id,
             retrieval_callback=retrieval_callback,
+            json_schema=QUERY_INTENT_SCHEMA,
         )
+        if intent_response.get("_action_error"):
+            return intent_response, ""
     return intent_response, composer_schema_card
 
 
@@ -662,6 +776,18 @@ def plan_hypothesis_query(
         hypothesis=hypothesis,
         session_id=state.session_id,
     )
+    if intent_response.get("_action_error"):
+        reason = str(intent_response["_action_error"])
+        return HypothesisPlanResult(
+            read_more=[
+                str(item) for item in coerce_list(intent_response.get("read_more"))
+            ],
+            hypothesis=None,
+            query=None,
+            needs_more=False,
+            stop_reason=f"invalid_action: {reason}",
+            raw_response=intent_response,
+        )
     composer_response = _compose_sql(
         intent_response=intent_response,
         composer_schema_card=composer_schema_card,

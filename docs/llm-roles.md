@@ -105,7 +105,22 @@ See [`_apply_memory_updates`](../src/forensia/ai/investigation/memory_sync.py) f
 }
 ```
 
-### 3.3 `PARAGRAPH_NARRATE_SCHEMA`
+### 3.3 `QUERY_INTENT_SCHEMA` and the bounded action gate
+
+The query-intent response must select one typed action object: `{ "type":
+"memory.read_more", "paths": [...] }` or `{ "type": "sql.query", "intent":
+"...", "target_table": "..." }`. The
+planner kernel computes eligibility by phase: both actions are eligible on the
+initial call, and only `sql.query` is eligible after a memory expansion. It
+validates the action and query-intent arguments before invoking the existing
+scope filter, self-check, or SQL composer. A legacy response without `action`
+is normalized only when a non-empty `read_more` list or a complete known-table
+query intent makes the meaning unambiguous; otherwise planning stops without
+SQL composition.
+`knowledge.retrieve` remains an internal deterministic prompt-assembly step and
+is not exposed as an LLM-callable action.
+
+### 3.4 `PARAGRAPH_NARRATE_SCHEMA`
 
 ```json
 {

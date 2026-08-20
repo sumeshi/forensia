@@ -2,7 +2,55 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class MemoryReadMoreAction(BaseModel):
+    """The only memory operation selectable by the hypothesis planner."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["memory.read_more"]
+    paths: list[str] = Field(min_length=1)
+
+
+class SQLQueryAction(BaseModel):
+    """The intent-to-SQL operation selectable by the hypothesis planner."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["sql.query"]
+    intent: str = Field(min_length=1)
+    target_table: Literal[
+        "evtx_events",
+        "mft_entries",
+        "mft_timeline",
+        "prefetch_executions",
+        "registry_artifacts",
+        "registry_timeline",
+    ]
+    filters_required: list[str] = Field(default_factory=list)
+    time_window: str = ""
+    expected_row_shape: str = ""
+
+
+QueryIntentAction = Annotated[
+    MemoryReadMoreAction | SQLQueryAction,
+    Field(discriminator="type"),
+]
+
+
+class QueryIntentResponse(BaseModel):
+    """One bounded planner action; legacy payloads normalize before this contract."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: QueryIntentAction
+
+
+QUERY_INTENT_SCHEMA: dict[str, Any] = QueryIntentResponse.model_json_schema()
 
 SNAKE_CASE_COLUMNS: list[str] = [
     "computer",

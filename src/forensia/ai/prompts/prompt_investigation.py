@@ -220,16 +220,13 @@ def build_query_intent_messages(
         f"schema: {schema_context}\n"
         "</INPUT_SCHEMA>\n"
         "<OUTPUT_SCHEMA>\n"
-        "{\n"
-        '  "read_more": ["list of memory paths for additional context, or empty list"],\n'
-        '  "intent": "string — one sentence describing what data to retrieve",\n'
-        '  "target_table": "evtx_events | mft_entries | mft_timeline | prefetch_executions | registry_artifacts | registry_timeline",\n'
-        '  "filters_required": ["list of column-level filters needed"],\n'
-        '  "time_window": "string describing time bounds",\n'
-        '  "expected_row_shape": "string describing expected columns"\n'
-        "}\n"
+        "Return exactly one of these JSON objects:\n"
+        '{"action": {"type": "memory.read_more", "paths": ["exact scoped memory paths"]}}\n'
+        '{"action": {"type": "sql.query", "intent": "what to retrieve", "target_table": "known table", '
+        '"filters_required": [], "time_window": "bounds", "expected_row_shape": "columns"}}\n'
         "</OUTPUT_SCHEMA>\n"
         "<RULES>\n"
+        "Choose exactly one action. Use memory.read_more only when additional scoped context is required; after that expansion, choose sql.query and never request memory again. The memory action MUST contain at least one exact relative path. The sql.query action MUST be accompanied by a complete intent and known target_table. Do not emit unknown actions, free-form tools, or an empty/ambiguous action.\n"
         "If EXECUTION_ERROR is present, you MUST change the query — at minimum change the table list, the WHERE clause, or eliminate the failing JOIN. Never repeat the same SQL that caused an execution error.\n"
         "If prior_check_feedback names specific missing event_ids or evidence types, the new SQL MUST include those event_ids or evidence types. Never ignore prior check feedback.\n"
         "</RULES>"
