@@ -13,6 +13,7 @@ from forensia.ai.audit import LLMCallLogger
 from forensia.ai.case_profile import (
     get_profile_event_ids,
 )
+from forensia.ai.checking.assessment import assess_evidence_group
 from forensia.ai.checking.check_normalize import summarize_query_result
 from forensia.ai.checking.checker import check_query_result
 from forensia.ai.checking.settlement import (
@@ -36,10 +37,7 @@ from forensia.ai.hypotheses.hypothesis_manager import (
     resolve_hypothesis,
 )
 from forensia.ai.hypotheses.hypothesis_store import _upsert_hypothesis
-from forensia.ai.hypotheses.relations import (
-    get_relations_for_hypothesis,
-    insert_relation,
-)
+from forensia.ai.hypotheses.relations import insert_relation
 from forensia.ai.investigation.investigation_session import (
     Ctx,
     _call_with_outage_recovery,
@@ -201,6 +199,7 @@ class _HypothesisRunState:
     result_summary: dict[str, Any] | None = None
     check_result: Any = None
     missing_checks_raw: list[Any] | None = None
+    retrieval_evaluation: Any = None
 
 
 async def _phase_plan(rs: _HypothesisRunState) -> str:
@@ -338,6 +337,7 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
             required_fields=["normalized_sql"],
             required_capabilities=required_capabilities,
         )
+        rs.retrieval_evaluation = evaluation
         _save_step(
             db=db,
             session_id=session_id,
@@ -397,6 +397,7 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
         required_fields=["normalized_sql"],
         required_capabilities=required_capabilities,
     )
+    rs.retrieval_evaluation = evaluation
     _save_step(
         db=db,
         session_id=session_id,
@@ -426,6 +427,7 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
     query_index, llm_status_fn = rs.query_index, rs.llm_status_fn
     candidates, planned_query = rs.candidates, rs.planned_query
     result_summary, fallback_info = rs.result_summary, rs.fallback_info
+    rows = rs.rows or []
     emit_fn, focus_sections = rs.emit_fn, rs.focus_sections
     try:
         check_result = check_query_result(
@@ -521,16 +523,9 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
         )
     )
     rs.check_result = check_result
-    # Link every evidence ID returned by the validated query before the
-    # sufficiency assessment.  The checker's suspicious_evidence selection is
-    # useful for strength annotations, but it is optional and must not be the
-    # sole source of traceability.
+    # Assess every evidence ID returned by an adequate validated query before
+    # cumulative sufficiency. Checker selections and verdicts are not inputs.
     if check_result:
-        selected = {
-            str(item["evidence_id"]): item
-            for item in (check_result.suspicious_evidence or [])
-            if item.get("evidence_id")
-        }
         evidence_ids = list(
             dict.fromkeys(
                 str(evidence_id)
@@ -538,18 +533,18 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
                 if evidence_id
             )
         )
-        if evidence_ids:
-            role = (
-                "contradictory" if check_result.verdict == "refuted" else "supporting"
+        retrieval_adequate = (
+            rs.retrieval_evaluation is not None
+            and rs.retrieval_evaluation.outcome == "adequate"
+        )
+        if evidence_ids and retrieval_adequate:
+            assessment = assess_evidence_group(
+                hypothesis=hypothesis,
+                rows=rows or [],
+                evidence_ids=evidence_ids,
+                query_id=planned_query.query_id if planned_query else "",
             )
-            strengths = {
-                evidence_id: str(selected[evidence_id].get("strength") or "moderate")
-                if str(selected[evidence_id].get("strength") or "moderate")
-                in {"weak", "moderate", "strong"}
-                else "moderate"
-                for evidence_id in evidence_ids
-                if evidence_id in selected
-            }
+            role = assessment.role
             create_evidence_links_for_query(
                 db,
                 hypothesis_id=hypothesis.id,
@@ -557,33 +552,8 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
                 query_id=planned_query.query_id if planned_query else "",
                 role=role,
                 created_session=session_id,
-                strengths=strengths,
+                assessment_id=assessment.assessment_id,
             )
-            if role == "supporting":
-                for relation in get_relations_for_hypothesis(db, hypothesis.id):
-                    adjacent_id = (
-                        relation["to_hypothesis_id"]
-                        if relation["from_hypothesis_id"] == hypothesis.id
-                        else relation["from_hypothesis_id"]
-                    )
-                    related_role = ""
-                    if (
-                        relation["relation_type"] == "parent_of"
-                        and relation["to_hypothesis_id"] == hypothesis.id
-                    ):
-                        related_role = "corroborating"
-                    elif relation["relation_type"] == "contradicts":
-                        related_role = "contradictory"
-                    if related_role:
-                        create_evidence_links_for_query(
-                            db,
-                            hypothesis_id=adjacent_id,
-                            evidence_ids=evidence_ids,
-                            query_id=planned_query.query_id if planned_query else "",
-                            role=related_role,
-                            created_session=session_id,
-                            strengths=strengths,
-                        )
     return "ok"
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 
+from forensia.ai.checking.assessment import assess_evidence_group
 from forensia.ai.checking.sufficiency import (
     EvidenceLink,
     SufficiencyResult,
@@ -15,6 +16,7 @@ from forensia.ai.checking.sufficiency import (
     update_claim_support_for_hypothesis,
 )
 from forensia.core.case import Case
+from forensia.core.session import Hypothesis
 from forensia.db.database import CaseDB
 
 
@@ -204,6 +206,89 @@ class SufficiencyEvaluationTests(unittest.TestCase):
         )
         self.assertEqual(result.status, "unobservable")
 
+    def test_assessment_uses_spec_and_tracks_condition_version(self) -> None:
+        rows = [{"evidence_id": "evtx-1", "event_id": 4624}]
+        first = assess_evidence_group(
+            hypothesis=Hypothesis(
+                id="H-HASH",
+                description="same",
+                confirm_when={"co_observed_event_ids": [4624]},
+            ),
+            rows=rows,
+            evidence_ids=["evtx-1"],
+        )
+        self.assertEqual(first.role, "supporting")
+        self.assertTrue(first.assessment_id.startswith("EA-v1-"))
+        second = assess_evidence_group(
+            hypothesis=Hypothesis(
+                id="H-HASH",
+                description="same",
+                confirm_when={"co_observed_event_ids": [4625]},
+            ),
+            rows=rows,
+            evidence_ids=["evtx-1"],
+        )
+        self.assertNotEqual(first.assessment_id, second.assessment_id)
+
+    def test_assessment_fails_closed_for_unproven_observations(self) -> None:
+        cases = [
+            (
+                Hypothesis(
+                    id="H-ABSENCE",
+                    description="missing event",
+                    refute_when={"zero_rows": True},
+                ),
+                [],
+                [],
+                "adequate",
+            ),
+            (
+                Hypothesis(
+                    id="H-UNKNOWN",
+                    description="unknown condition",
+                    confirm_when={"keywords": ["sc.exe"]},
+                ),
+                [{"evidence_id": "evtx-1", "event_id": 7045}],
+                ["evtx-1"],
+                "adequate",
+            ),
+            (
+                Hypothesis(
+                    id="H-WINDOW",
+                    description="time window",
+                    confirm_when={
+                        "co_observed_event_ids": [4624, 4697],
+                        "within_minutes": 5,
+                    },
+                ),
+                [
+                    {"evidence_id": "evtx-1", "event_id": 4624, "timestamp": 1000},
+                    {"evidence_id": "evtx-2", "event_id": 4697, "timestamp": 4600},
+                ],
+                ["evtx-1", "evtx-2"],
+                "adequate",
+            ),
+            (
+                Hypothesis(
+                    id="H-PARTIAL",
+                    description="partial retrieval",
+                    confirm_when={"co_observed_event_ids": [4624]},
+                ),
+                [{"evidence_id": "evtx-1", "event_id": 4624}],
+                ["evtx-1"],
+                "partial",
+            ),
+        ]
+        for hypothesis, rows, evidence_ids, outcome in cases:
+            with self.subTest(hypothesis=hypothesis.id):
+                assessment = assess_evidence_group(
+                    hypothesis=hypothesis,
+                    rows=rows,
+                    evidence_ids=evidence_ids,
+                    retrieval_outcome=outcome,
+                )
+                self.assertNotIn(assessment.role, {"supporting", "contradictory"})
+
 
 class VerdictReconciliationTests(unittest.TestCase):
     """Test LLM/machine verdict reconciliation."""
@@ -328,6 +413,7 @@ class EvidenceLinkPersistenceTests(unittest.TestCase):
                     hypothesis_id="H-001",
                     evidence_id="evtx-001",
                     query_id="Q-1",
+                    assessment_id="EA-v1-deterministic-test",
                 )
                 self.assertEqual(first, second)
                 self.assertEqual(
@@ -335,6 +421,12 @@ class EvidenceLinkPersistenceTests(unittest.TestCase):
                         0
                     ],
                     1,
+                )
+                self.assertEqual(
+                    db.execute(
+                        "SELECT assessment_id FROM hypothesis_evidence"
+                    ).fetchone()[0],
+                    "EA-v1-deterministic-test",
                 )
 
     def test_unobservable_sufficiency_updates_linked_claim(self) -> None:

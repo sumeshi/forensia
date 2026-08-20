@@ -22,7 +22,7 @@ flowchart LR
     Q --> B
     Q -->|results| K[Checker]
     K -->|proposed verdict + memory_updates| H
-    H -->|sufficiency reconciliation| B
+    H -->|assessment + sufficiency| B
     K -->|persist| B
     K -->|durable facts| M[("memory/*.md")]
     H -->|stable section| R[Section Agent]
@@ -156,8 +156,8 @@ sequenceDiagram
     Chk->>LLM: finding_extractor (when verdict=confirmed)
     Chk->>LLM: memory_updater
     Chk-->>Inv: CheckResult
-    Inv->>DB: link evidence + evaluate Coverage/sufficiency
-    Inv->>Inv: reconcile proposed and machine verdicts
+    Inv->>DB: assess observations + persist EvidenceLinks
+    Inv->>DB: aggregate sufficiency / settlement guard
     Inv->>Mem: apply_memory_updates
     Inv->>DB: persist hypothesis_reasoning
 ```
@@ -168,7 +168,7 @@ Main stages:
 2. **select**: `selection.py` filters blocked/unobservable/exhausted candidates and ranks eligible hypotheses from deterministic priority components. The full score breakdown is stored in Trace.
 3. **plan**: Two-phase: Phase 1 (intent) runs `query_intent_planner` → `sql_self_check` gate (retries intent when blocked), Phase 2 (composer) runs `sql_composer` (retries composer only up to 3 times on SQL validation failure). `plan_hypothesis_query` ([ai/planner.py](../src/forensia/ai/investigation/planner.py))
 4. **execute/check**: Issues a safe SELECT, applies fallback behavior and obtains the Checker's proposed verdict. The existing hypothesis SQL execution records a versioned `ToolReceipt` and one-attempt `RetrievalEvaluation` inside the same `trace.investigation_steps.output_json`; the receipt records query/provenance/result observations only and does not assign Evidence roles or consume checker verdicts.
-5. **sufficiency**: Links evidence, removes derivation duplicates, evaluates Rule/general policy against relevant Coverage, then reconciles the LLM proposal. Insufficient confirmation remains inconclusive; unavailable refutation becomes untestable.
+5. **assessment/sufficiency/settlement**: `assess_evidence_group` classifies each observed group from `VerificationSpec`, observation fields and provenance; it never reads the checker verdict. Existing sufficiency/settlement gates then consume the links and Coverage. Empty retrievals remain unassessed, so absence is not a contradictory link.
 6. **relate/resolve**: Checker-derived hypotheses receive validated parent edges. Verdict effects unblock, block or flag adjacent hypotheses without changing them to an incompatible status.
 7. **report/gaps**: Refreshes Claims and sections, synchronizes normalized Gap/Task lifecycle, and projects authoritative tasks into Markdown Memory.
 

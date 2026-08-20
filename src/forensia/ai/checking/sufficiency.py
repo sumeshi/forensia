@@ -44,7 +44,16 @@ class SufficiencyResult:
     human_review_required: bool
 
 
-VALID_ROLES = frozenset(["supporting", "corroborating", "contradictory", "duplicate"])
+VALID_ROLES = frozenset(
+    [
+        "supporting",
+        "corroborating",
+        "contradictory",
+        "contextual",
+        "unrelated",
+        "duplicate",
+    ]
+)
 VALID_STRENGTHS = frozenset(["weak", "moderate", "strong"])
 
 
@@ -439,12 +448,17 @@ def create_hypothesis_evidence_link(
     if strength not in VALID_STRENGTHS:
         raise ValueError(f"Invalid evidence strength: {strength}")
     existing = db.execute(
-        "SELECT link_id FROM hypothesis_evidence "
+        "SELECT link_id, COALESCE(assessment_id, '') FROM hypothesis_evidence "
         "WHERE hypothesis_id = ? AND evidence_id = ? AND role = ? "
         "AND COALESCE(query_id, '') = COALESCE(?, '') LIMIT 1",
         [hypothesis_id, evidence_id, role, query_id],
     ).fetchone()
     if existing:
+        if assessment_id and assessment_id != str(existing[1] or ""):
+            db.execute(
+                "UPDATE hypothesis_evidence SET assessment_id = ? WHERE link_id = ?",
+                [assessment_id, existing[0]],
+            )
         return str(existing[0])
     link_id = f"EL-{uuid.uuid4().hex[:12]}"
     if not derivation_group:
@@ -487,6 +501,7 @@ def create_evidence_links_for_query(
     role: str = "supporting",
     created_session: str = "",
     strengths: dict[str, str] | None = None,
+    assessment_id: str = "",
 ) -> list[str]:
     """Create evidence links for all evidence IDs from a query result."""
     link_ids = []
@@ -499,6 +514,7 @@ def create_evidence_links_for_query(
             query_id=query_id,
             created_session=created_session,
             strength=(strengths or {}).get(eid, "moderate"),
+            assessment_id=assessment_id,
         )
         link_ids.append(lid)
     return link_ids

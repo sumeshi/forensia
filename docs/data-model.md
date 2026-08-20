@@ -100,7 +100,7 @@ Host identification:
 | `findings` | Rule detection results | `finding_id`, `rule_id`, `title`, `summary`, `severity`, `confidence`, `status` (`new`/`accepted`/`suppressed`), `tags`, `attack`, `evidence`, `ai_summary`, `missing_checks`, `created_at` |
 | `hypotheses` | Hypotheses under investigation | Existing hypothesis fields plus `evidence_requirements`, selection/retry state, blocking state, sufficiency status/score/reason and human-review flag |
 | `hypothesis_relations` | Validated hypothesis graph | endpoint IDs, `relation_type`, `origin`, `confidence`, `rationale`, creation session/time |
-| `hypothesis_evidence` | Typed, deduplicated evidence-to-hypothesis provenance | hypothesis/evidence/query IDs, `role`, `source_family`, `derivation_group`, `strength` |
+| `hypothesis_evidence` | Typed, deduplicated assessed evidence-to-hypothesis provenance | hypothesis/evidence/query IDs, `assessment_id` (`EA-v1-*` for deterministic assessments), `role`, `source_family`, `derivation_group`, `strength` |
 | `hypothesis_reasoning` | Reasoning history of hypothesis verification | `entry_id`, `hypothesis_id`, `session_id`, `iteration`, `phase` (including `sufficiency`), `verdict`, `query_id`, `body`, `created_at` |
 
 `findings.attack` is a JSON string in `[{tactic, technique_id, technique_name}]` form. It is aggregated into a tactic × technique matrix by `list_attack_coverage_dto` ([src/forensia/api/service.py](../src/forensia/api/service.py)).
@@ -123,6 +123,17 @@ SQL `do` steps embed a versioned `tool_receipt` and one-attempt
 `retrieval_evaluation` in `investigation_steps.output_json`. These are trace
 observations; contributor/derivation sources are provenance and the payload
 does not assign Evidence roles, cumulative sufficiency, or verdicts.
+
+Evidence assessment is the narrow boundary between retrieval and sufficiency.
+For an adequate, non-empty observation group, `assessment.py` matches the
+supported `VerificationSpec` event/host/time conditions against observed rows;
+unsupported condition types remain contextual. The existing link stores the
+resulting `assessment_id`, role, query/evidence IDs, and source/derivation
+provenance columns; it does not persist the full assessment object. Legacy
+links with an empty assessment ID are retained for compatibility and are not
+represented as independently assessed history. Sufficiency consumes these
+links without assigning their roles. The existing settlement guard remains
+the state-transition boundary.
 
 ### 1.4 Report generation
 
