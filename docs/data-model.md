@@ -3,6 +3,30 @@
 Definition of the persistent data handled by forensia. It is split into three layers.
 
 - **DuckDB tables**: Structured data inside `db/case.duckdb`
+- **Memory files**: LLM persistent memory in `memory/*.md`
+- **API DTO**: Pydantic models the API exposes for the UI / reports
+
+## Registry evidence boundary
+
+Registry ingest adds three narrow projections in Case State:
+
+- `registry_datasets` records the admitted member source IDs, grouping reason,
+  parser/version/configuration, raw JSONL path, and run status.
+- `registry_artifacts` stores the lossless reg2es ECS document plus only stable
+  lookup fields (plugin, hive, key/value, and parser-provided `@timestamp`).
+- `registry_timeline` projects only valid parser-provided `@timestamp` values;
+  missing or invalid timestamps are not synthesized. `source_ids` remains the
+  conservative full dataset contributor set.
+
+Dataset and artifact IDs use source-content IDs, parser configuration, and
+stable parsed fields/line ordinal. Collection/display paths never participate;
+an explicit trusted host/acquisition identity is included only at the dataset
+boundary to prevent cross-host collisions.
+
+Registry Coverage is deliberately `partial` with
+`parser_plugin_completeness_unproven` when records exist. A successful parser
+return or zero rows does not establish per-plugin completeness or negative
+evidence.
 
 ## Hypothesis verification policy
 
@@ -18,8 +42,6 @@ object for older databases and is idempotent.
 final verdict. A hypothesis loaded from Case State always receives a validated
 `VerificationSpec`, including hypotheses created by rule seeding, broad
 planning, report gaps, follow-ups, and resume.
-- **Memory files**: LLM persistent memory in `memory/*.md`
-- **API DTO**: Pydantic models the API exposes for the UI / reports
 
 ---
 
@@ -36,6 +58,9 @@ Schema initialization is performed in `CaseDB.__init__` in [src/forensia/db/data
 | `mft_timeline` | MFT entries expanded by timestamp_type | `timeline_id`, `evidence_id`, `record_number`, `file_path`, `timestamp`, `timestamp_type`, `description` |
 | `prefetch_executions` | Prefetch aggregate (latest one per binary) | `evidence_id`, `executable_name`, `exec_count`, `last_exec_time`, `prefetch_hash`, `filenames`, `volumes`, `raw_json` |
 | `prefetch_timeline` | Prefetch execution history (up to 8 rows per binary) | `timeline_id`, `evidence_id`, `executable_name`, `prefetch_hash`, `exec_time`, `exec_index` |
+| `registry_datasets` | Conservative Registry dataset admission and parser run state | `dataset_id`, trusted `identity`, `member_source_ids`, grouping reason, parser version/config, raw path, status/error, `row_count` |
+| `registry_artifacts` | Lossless reg2es ECS records with query projections | `artifact_id`, `dataset_id`, contributor `source_ids`, plugin, hive, key/value, timestamp, `raw_json` |
+| `registry_timeline` | Valid parser-provided Registry timestamps | `timeline_id`, `artifact_id`, `dataset_id`, contributor `source_ids`, timestamp/kind, summary |
 | `ingested_files` | Hash table for ingest deduplication | `path`, `hash`, `source_kind`, `ingested_at` |
 | `evidence_sources` | Authoritative per-source ingest/normalize state and scope | `source_id`, `artifact_family`, `ingest_status`, `channel`, `hosts`, analysis-eligible `min_time`/`max_time`, `row_count`, error fields |
 | `evidence_coverage` | Deterministic capability observability projection | `capability`, `host`, `channel`, `source_family`, `state`, `reason_code`, `source_ids`, analysis time range, `excluded_timestamps`, `confidence` |
@@ -53,6 +78,7 @@ overflow, parser-invalid, or case-window outlier values.
 - EVTX: `evtx-<channel>-<sequence>` (e.g. `evtx-security-000000001166`)
 - MFT: `mft-<record_number>-<seq>` (e.g. `mft-000000023554-00`)
 - Prefetch: `prefetch-<executable>-<hash>` (e.g. `prefetch-iexplore-exe-4b6c9213`)
+- Registry: `registry-<dataset/plugin/location/timestamp/ordinal hash>`; display paths are excluded
 
 Host identification:
 - Only `evtx_events` has `computer` / `user_name` columns

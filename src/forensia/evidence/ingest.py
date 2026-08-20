@@ -14,6 +14,10 @@ from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.db.evidence_sources import register_evidence_source
 from forensia.evidence.artifacts import get_artifact_adapters
+from forensia.evidence.registry import (
+    RegistryArtifactAdapter,
+    register_registry_dataset,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +45,7 @@ def ingest_all(
         "evtx_files": 0,
         "mft_files": 0,
         "prefetch_files": 0,
+        "registry_files": 0,
         "new_files": 0,
         "skipped_files": 0,
         # Raw JSONL filenames include this key. Passing only newly generated
@@ -49,11 +54,15 @@ def ingest_all(
     }
     adapters = get_artifact_adapters()
     candidates: list[tuple[Path, object]] = []
+    registry_paths: list[Path] = []
     for path in sorted(base.rglob("*")):
         if not path.is_file():
             continue
         adapter = next((item for item in adapters if item.can_handle(path)), None)
         if adapter is None:
+            continue
+        if isinstance(adapter, RegistryArtifactAdapter):
+            registry_paths.append(path)
             continue
         candidates.append((path, adapter))
 
@@ -79,6 +88,92 @@ def ingest_all(
             if is_noisy and sys.stderr.isatty():
                 return
             progress_callback(message)
+
+        # Registry is the only grouped artifact family.  Keep this small
+        # dispatch seam here so existing one-file adapters retain their exact
+        # behavior and no second ingest framework is introduced.
+        registry = next(
+            (item for item in adapters if isinstance(item, RegistryArtifactAdapter)),
+            None,
+        )
+        if registry is not None and registry_paths:
+            for dataset in registry.group_candidates(registry_paths):
+                members = list(dataset.members)
+                member_shas = {
+                    member.path: _sha256_file(member.path) for member in members
+                }
+                if not force and all(
+                    db.execute(
+                        "SELECT 1 FROM ingested_files WHERE sha256 = ?", [sha]
+                    ).fetchone()
+                    for sha in member_shas.values()
+                ):
+                    counts["skipped_files"] += len(members)
+                    continue
+                try:
+                    result = registry.ingest_dataset(
+                        case,
+                        dataset,
+                        source_ids=member_shas,
+                        progress_callback=adapter_callback,
+                    )
+                    register_registry_dataset(
+                        db,
+                        dataset,
+                        source_ids=member_shas,
+                        raw_path=result.raw_path,
+                    )
+                except Exception as exc:
+                    counts["skipped_files"] += len(members)
+                    register_registry_dataset(
+                        db,
+                        dataset,
+                        source_ids=member_shas,
+                        raw_path=None,
+                        ingest_status="failed",
+                        error_code="parser_error",
+                        error_summary=str(exc),
+                    )
+                    for member in members:
+                        register_evidence_source(
+                            db,
+                            source_id=member_shas[member.path],
+                            artifact_family=registry.name,
+                            display_path=member.path.name,
+                            ingest_status="failed",
+                            parser_name=registry.parser_name,
+                            parser_version=registry.parser_version,
+                            error_summary=str(exc),
+                        )
+                    continue
+                for member in members:
+                    sha256 = member_shas[member.path]
+                    db.execute(
+                        """INSERT INTO ingested_files (sha256, path, source_kind, size, ingested_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT (sha256) DO UPDATE SET path=excluded.path,
+                        source_kind=excluded.source_kind, size=excluded.size,
+                        ingested_at=excluded.ingested_at""",
+                        (
+                            sha256,
+                            str(member.path.resolve()),
+                            registry.name,
+                            member.path.stat().st_size,
+                            datetime.now(UTC).replace(tzinfo=None),
+                        ),
+                    )
+                    register_evidence_source(
+                        db,
+                        source_id=sha256,
+                        artifact_family=registry.name,
+                        display_path=member.path.name,
+                        ingest_status="parsed",
+                        parser_name=registry.parser_name,
+                        parser_version=registry.parser_version,
+                    )
+                    counts["new_files"] += 1
+                    counts["registry_files"] += 1
+                    counts["new_source_keys"].append(sha256[:12])
 
         for path, adapter in iterator:
             iterator.set_postfix_str(f"{adapter.name}:{path.name}"[:60], refresh=False)

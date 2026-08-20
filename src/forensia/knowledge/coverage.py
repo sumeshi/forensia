@@ -337,6 +337,14 @@ def compute_evidence_coverage(db: CaseDB) -> list[dict[str, Any]]:
                 state = "partial"
                 reason_code = "empty_parser_result"
 
+            # reg2es reports emitted records, but not a proof that every
+            # selected plugin/capability completed.  Keep Registry coverage
+            # conservative even when records exist; zero rows are likewise
+            # not negative evidence.
+            if family == "registry" and normalized:
+                state = "partial"
+                reason_code = "parser_plugin_completeness_unproven"
+
             if channel_reason and normalized:
                 state = "partial"
                 reason_code = channel_reason

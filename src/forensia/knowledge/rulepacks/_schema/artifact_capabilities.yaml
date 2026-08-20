@@ -82,6 +82,15 @@ families:
         negative_policy: "0 rows is weak negative; Prefetch may not be generated for all executions"
         caveat: "No host column; volume attribution may be uncertain"
 
+  registry:
+    display_name: "Windows Registry (reg2es)"
+    tables: [registry_artifacts, registry_timeline]
+    capabilities:
+      registry_observation:
+        description: "Artifacts emitted by selected reg2es plugins"
+        negative_policy: "Zero rows are not negative evidence unless plugin completeness is independently proven"
+        caveat: "Adapter records parser outcome; per-plugin completeness is not inferred"
+
 # Capability cross-references for multi-artifact corroboration
 cross_artifact_corroboration:
   process_execution:

@@ -162,6 +162,14 @@ _ARTIFACT_ADAPTER_FACTORIES: list[ArtifactAdapterFactory] = [
     PrefetchArtifactAdapter,
 ]
 
+# Imported after the protocol and built-in adapters to keep the registry
+# module independent of import order.  reg2es itself remains a lazy import in
+# the adapter, so existing EVTX/MFT/Prefetch use does not require it at import
+# time.
+from forensia.evidence.registry import RegistryArtifactAdapter
+
+_ARTIFACT_ADAPTER_FACTORIES.append(RegistryArtifactAdapter)
+
 
 def register_artifact_adapter(
     factory: ArtifactAdapterFactory, *, prepend: bool = False

@@ -352,6 +352,56 @@ CREATE TABLE IF NOT EXISTS evidence_coverage (
 );
 CREATE INDEX IF NOT EXISTS idx_evidence_coverage_capability ON evidence_coverage(capability);
 
+-- Registry keeps the parser's raw ECS document lossless while reusing
+-- evidence_sources for source-level lineage.  These tables are deliberately
+-- narrow: plugin completeness and verdict semantics remain outside ingest.
+CREATE TABLE IF NOT EXISTS registry_datasets (
+    dataset_id VARCHAR PRIMARY KEY,
+    identity VARCHAR,
+    admission_state VARCHAR,
+    grouping_reason VARCHAR,
+    member_source_ids JSON,
+    parser_name VARCHAR,
+    parser_version VARCHAR,
+    parser_config JSON,
+    raw_path VARCHAR,
+    ingest_status VARCHAR,
+    error_code VARCHAR,
+    error_summary VARCHAR,
+    row_count INTEGER,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_registry_datasets_status ON registry_datasets(ingest_status);
+
+CREATE TABLE IF NOT EXISTS registry_artifacts (
+    artifact_id VARCHAR PRIMARY KEY,
+    dataset_id VARCHAR,
+    source_ids JSON,
+    plugin VARCHAR,
+    hive VARCHAR,
+    key_path VARCHAR,
+    value_name VARCHAR,
+    timestamp TIMESTAMP,
+    timestamp_kind VARCHAR,
+    raw_json JSON,
+    created_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_registry_artifacts_dataset ON registry_artifacts(dataset_id);
+CREATE INDEX IF NOT EXISTS idx_registry_artifacts_timestamp ON registry_artifacts(timestamp);
+
+CREATE TABLE IF NOT EXISTS registry_timeline (
+    timeline_id VARCHAR PRIMARY KEY,
+    artifact_id VARCHAR,
+    dataset_id VARCHAR,
+    source_ids JSON,
+    timestamp TIMESTAMP,
+    timestamp_kind VARCHAR,
+    raw_timestamp VARCHAR,
+    summary VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_registry_timeline_timestamp ON registry_timeline(timestamp);
+
 CREATE TABLE IF NOT EXISTS investigation_state (
     state_id VARCHAR PRIMARY KEY DEFAULT 'case',
     objective VARCHAR,

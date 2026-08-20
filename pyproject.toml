@@ -30,6 +30,7 @@ dependencies = [
     "mft2es==1.8.0",
     "orjson==3.11.9",
     "prefetch2es==2.4.1",
+    "reg2es==2.0.0",
     "pyarrow==24.0.0",
     "pydantic==2.13.4",
     "python-dateutil==2.9.0.post0",

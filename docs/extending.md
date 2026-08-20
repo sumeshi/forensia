@@ -15,6 +15,17 @@ cannot be expressed as data.
 | Table block | Builder function, `_schema/report_tables.yaml`, template hint | `register_table_block(...)` once |
 | Quality gate | One check function and its focused test | `register_quality_check(...)` once |
 
+Registry input is the one grouped artifact boundary. `evidence/registry.py`
+detects primary `REGF` hives by content and admits transaction logs only as
+companions to a proven primary; orphan logs are left unadmitted rather than
+treated as standalone datasets. Collection directories create candidates but
+never establish host or acquisition identity; without explicit identity each
+primary remains a separate dataset. The adapter owns the lazy, pinned `reg2es`
+generator seam and streams raw records to JSONL. `reg2es` itself discovers and
+applies matching logs during primary parsing. Registry normalization and
+Coverage are projected through the existing normalize/coverage dispatcher;
+the adapter records `partial` when plugin completeness is not proven.
+
 An artifact type exceeds three files because parsing, normalization, and the
 database schema are deliberately separate contracts. Combining them would hide
 migrations or make parsers depend on DuckDB. The adapter registry still keeps

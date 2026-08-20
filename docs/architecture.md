@@ -13,7 +13,7 @@ Details are split into separate documents:
 
 ```mermaid
 flowchart LR
-    A["raw artifacts<br/>(EVTX/MFT/Prefetch)"] -->|ingest| B[("DuckDB<br/>case.duckdb")]
+    A["raw artifacts<br/>(EVTX/MFT/Prefetch/Registry)"] -->|ingest| B[("DuckDB<br/>case.duckdb")]
     B --> C[Rule Engine]
     C -->|findings| B
     C -->|seed hypotheses| H[Investigation Loop]
@@ -32,6 +32,15 @@ flowchart LR
     S --> W["Web UI"]
 ```
 
+Registry hives enter through the same artifact adapter dispatch as EVTX, MFT,
+and Prefetch. `evidence/registry.py` detects `REGF` content, treats directory
+layout as a grouping candidate only, and keeps unattributed primaries separate.
+`.LOG1`/`.LOG2` files are admitted only as companions to a matching primary;
+they are not standalone datasets. The adapter streams the pinned `reg2es`
+generator output to raw JSONL. The Registry normalization boundary projects
+lossless records, contributor provenance, conservative completeness, and
+Coverage through the existing normalize/coverage dispatchers.
+
 Entry points:
 - User perspective: `forensia investigate <case> <input_dir>` ([src/forensia/cli/app.py](../src/forensia/cli/app.py))
 - Internal implementation: `await investigate(...)` ([src/forensia/ai/investigation/investigator.py](../src/forensia/ai/investigation/investigator.py))
@@ -42,14 +51,15 @@ Entry points:
 
 ### 2.1 Ingest
 
-Input: EVTX / MFT / Prefetch under `raw/`
-Output: DuckDB normalized tables (`evtx_events`, `mft_entries`, `mft_timeline`, `prefetch_executions`, `prefetch_timeline`)
+Input: EVTX / MFT / Prefetch / Registry hives under `raw/`
+Output: DuckDB normalized evidence and timeline tables
 
 | Input | Parser | Output table |
 |---|---|---|
 | `*.evtx` | `evtx2es` → JSONL | `evtx_events` |
 | `$MFT` | `mft2es` → entries JSONL | `mft_entries` + derived `mft_timeline` |
 | `*.pf` | `prefetch2es` → JSONL | `prefetch_executions` + `prefetch_timeline` |
+| REGF primary hive (+ matching `.LOG1`/`.LOG2`) | `reg2es` → JSONL | `registry_artifacts` + `registry_timeline` |
 
 Each row carries an `evidence_id`, which is the identifier that ties evidence together across the entire pipeline (see [data-model.md](data-model.md#11-normalized-evidence-data) for the naming convention).
 

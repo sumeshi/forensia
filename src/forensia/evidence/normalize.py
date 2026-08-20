@@ -34,6 +34,7 @@ def normalize_all(
         "mft_timeline_rows": 0,
         "prefetch_executions": 0,
         "prefetch_timeline": 0,
+        "registry_artifacts": 0,
     }
     for adapter in get_artifact_adapters():
         try:
@@ -66,6 +67,8 @@ def normalize_all(
         elif result.source_kind == "prefetch":
             counts["prefetch_executions"] = result.rows
             counts["prefetch_timeline"] = result.aux_rows
+        elif result.source_kind == "registry":
+            counts["registry_artifacts"] = result.rows
 
     _update_source_status(db, source_keys, counts, raw_dir=case.raw_dir)
 
