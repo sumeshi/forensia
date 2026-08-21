@@ -50,11 +50,18 @@ class CaseStatsDTO(DTOModel):
     confirmed_hypotheses: int = 0
     refuted_hypotheses: int = 0
     untestable_hypotheses: int = 0
+    needs_review_hypotheses: int = 0
+    deferred_hypotheses: int = 0
+    blocked_hypotheses: int = 0
     open_gaps: int
     sessions: int
     total_iterations: int
     report_human_reviewed: int = 0
     report_ai_exhausted: int = 0
+    report_draft_count: int = 0
+    report_stable_count: int = 0
+    report_human_review_pct: float = 0.0
+    needs_review_finding_total: int = 0
 
 
 class AttackMappingDTO(DTOModel):
@@ -127,6 +134,152 @@ class SessionDTO(DTOModel):
     finished_at: str | None = None
     iterations: int | None = None
     status: str | None = None
+    terminal_reason: str | None = None
+
+
+class FindingAggregatesDTO(DTOModel):
+    """Authoritative server-side finding aggregates (not a 200-row sample)."""
+
+    total: int = 0
+    accepted: int = 0
+    suppressed: int = 0
+    severity_counts: dict[str, int] = {}
+    status_counts: dict[str, int] = {}
+    top_rules: list[dict[str, object]] = []
+    top_families: list[dict[str, object]] = []
+
+
+class FindingPageDTO(DTOModel):
+    """Bounded, paged finding response with authoritative aggregates."""
+
+    items: list[FindingDTO] = []
+    total: int = 0
+    limit: int = 100
+    offset: int = 0
+    is_sample: bool = False
+    aggregates: FindingAggregatesDTO | None = None
+
+
+class LogicalCallDTO(DTOModel):
+    logical_call_id: str
+    session_id: str | None = None
+    parent_logical_call_id: str | None = None
+    phase: str | None = None
+    iteration: int | None = None
+    hypothesis_id: str | None = None
+    section_id: str | None = None
+    action_id: str | None = None
+    request_fingerprint: str | None = None
+    status: str | None = None
+    created_at: str | None = None
+    attempt_count: int = 0
+    provider_attempt_failures: int = 0
+    provider_attempt_retries: int = 0
+    duplicate_attempts: int = 0
+
+
+class ProviderAttemptDTO(DTOModel):
+    attempt_id: str
+    logical_call_id: str | None = None
+    parent_attempt_id: str | None = None
+    session_id: str | None = None
+    phase: str | None = None
+    retry_ordinal: int = 0
+    endpoint: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    schema_mode: str | None = None
+    request_fingerprint: str | None = None
+    configured_output_limit: int | None = None
+    reasoning_reserve_tokens: int | None = None
+    known_context_limit: int | None = None
+    requested_output_limit: int | None = None
+    effective_output_limit: int | None = None
+    input_chars: int | None = None
+    output_chars: int | None = None
+    connect_timeout_ms: int | None = None
+    read_timeout_ms: int | None = None
+    logical_deadline_ms: int | None = None
+    retry_class: str | None = None
+    retry_reason: str | None = None
+    policy_decision: str | None = None
+    request_changed_fields: dict[str, object] | None = None
+    prompt_metadata: dict[str, object] | None = None
+    start_time: str | None = None
+    end_time: str | None = None
+    duration_ms: int | None = None
+    http_status: int | None = None
+    error_type: str | None = None
+    error_code: str | None = None
+    error_body_summary: str | None = None
+    exception_class: str | None = None
+    finish_reason: str | None = None
+    parse_status: str | None = None
+    truncated: bool | None = None
+    accepted: bool | None = None
+    discarded_reason: str | None = None
+    response_fingerprint: str | None = None
+    action_fingerprint: str | None = None
+    duplicate_of: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    input_tokens_source: str | None = None
+    output_tokens_source: str | None = None
+    status: str | None = None
+
+
+class DeterministicOpDTO(DTOModel):
+    op_id: str
+    session_id: str | None = None
+    phase: str | None = None
+    hypothesis_id: str | None = None
+    section_id: str | None = None
+    op_type: str | None = None
+    target: str | None = None
+    duration_ms: int | None = None
+    note: str | None = None
+    created_at: str | None = None
+
+
+class LogicalCallPageDTO(DTOModel):
+    session_id: str | None = None
+    items: list[LogicalCallDTO] = []
+    total: int = 0
+    limit: int = 50
+    offset: int = 0
+    is_sample: bool = False
+    filters: dict[str, object] = {}
+
+
+class AttemptPageDTO(DTOModel):
+    logical_call_id: str | None = None
+    session_id: str | None = None
+    items: list[ProviderAttemptDTO] = []
+    total: int = 0
+    limit: int = 50
+    offset: int = 0
+    is_sample: bool = False
+    filters: dict[str, object] = {}
+
+
+class SessionTrajectoryDTO(DTOModel):
+    session_id: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    status: str | None = None
+    terminal_reason: str | None = None
+    timezone: str = "UTC"
+    wall_time_ms: int | None = None
+    explained_time_ms: int = 0
+    unexplained_wall_time_ms: int | None = None
+    latency_by_phase: dict[str, int] = {}
+    aggregates: dict[str, object] = {}
+    deterministic_operations: list[DeterministicOpDTO] = []
+    retrieval_events: list[dict[str, object]] = []
+    snapshot_revision: str | None = None
+    generated_at: str | None = None
+    authoritative_updated_at: str | None = None
+    state: str | None = None
 
 
 class InvestigationStepDTO(DTOModel):

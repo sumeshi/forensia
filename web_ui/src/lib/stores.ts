@@ -8,6 +8,7 @@ import type {
   CaseDTO,
   CaseStatsDTO,
   EventVolumePointDTO,
+  FindingAggregatesDTO,
   FindingDTO,
   HypothesesResponseDTO,
   HypothesisReasoningEntryDTO,
@@ -16,14 +17,21 @@ import type {
   ProgressEventDTO,
   ReportSectionDTO,
   RuntimeConfigDTO,
-  SessionDTO
+  SessionDTO,
+  SnapshotMetadataDTO
 } from "./types";
 
 export const caseInfo = writable<CaseDTO | null>(null);
 export const runtimeConfig = writable<RuntimeConfigDTO | null>(null);
 export const caseStats = writable<CaseStatsDTO | null>(null);
+export const snapshotMetadata = writable<SnapshotMetadataDTO | null>(null);
 export const findings = writable<FindingDTO[]>([]);
+export const findingAggregates = writable<FindingAggregatesDTO | null>(null);
 export const hypotheses = writable<HypothesesResponseDTO>({ active: [], resolved: [] });
+export const hypothesisTaxonomy = writable<{
+  hypothesis: Record<string, unknown>;
+  report_section: Record<string, unknown>;
+} | null>(null);
 export const sessions = writable<SessionDTO[]>([]);
 export const steps = writable<InvestigationStepDTO[]>([]);
 export const reportSections = writable<ReportSectionDTO[]>([]);
@@ -37,6 +45,10 @@ export const attackCoverage = writable<AttackCoverageRowDTO[]>([]);
 export const entities = writable<EntityCardDTO[]>([]);
 export const progress = writable<ProgressEventDTO | null>(null);
 export const connection = writable<"idle" | "connected" | "error">("idle");
+// Per-endpoint partial-refresh state (T-51.4): the last error seen for each
+// endpoint and the timestamp of the most recent successful full refresh.
+export const refreshErrors = writable<Record<string, string>>({});
+export const lastRefreshAt = writable<string | null>(null);
 // Free-text filter for the findings table (driven by the header search box).
 export const searchQuery = writable<string>("");
 // Hierarchical drill-down path for Event Volume:
@@ -45,7 +57,7 @@ export const searchQuery = writable<string>("");
 //   [2024, 5]           → bucket=day    (within 2024-05)
 //   [2024, 5, 29]       → bucket=hour   (within 2024-05-29)
 export const volumeDrill = writable<number[]>([]);
-export const detailsTab = writable<"findings" | "steps" | "sessions" | "activity" | "mft">("findings");
+export const detailsTab = writable<"findings" | "steps" | "sessions" | "trajectory" | "activity" | "mft">("findings");
 export const selectedFindingId = writable<string | null>(null);
 
 let currentSessionId = "";
@@ -123,52 +135,74 @@ export async function refreshAll(): Promise<void> {
   let drillValue: number[] = [];
   volumeDrill.subscribe((value) => (drillValue = value))();
   const { bucket: volumeBucketParam, start: volumeStart, end: volumeEnd } = drillToParams(drillValue);
-  const [caseResult, configResult, statsResult, findingsResult, hypothesesResult, sessionsResult, reportResult, timelineResult, eventVolumeResult, eventVolumeDetectedResult, eventVolumeYearsResult, reviewsResult, reasoningResult, coverageResult, entitiesResult] =
-    await Promise.allSettled([
-      api.getCase(),
-      api.getConfig(),
-      api.getStats(),
-      api.getFindings(),
-      api.getHypotheses(),
-      api.getSessions(),
-      api.getReportSections(),
-      api.getTimeline(),
-      api.getEventVolume(volumeBucketParam, "all", volumeStart, volumeEnd),
-      api.getEventVolume(volumeBucketParam, "detected", volumeStart, volumeEnd),
-      api.getEventVolume("year", "all"),
-      api.getAiReviews(),
-      api.getLatestReasoning(10),
-      api.getAttackCoverage(),
-      api.getEntities()
-    ]);
+  const tasks: Record<string, Promise<unknown>> = {
+    case: api.getCase(),
+    config: api.getConfig(),
+    stats: api.getStats(),
+    snapshot: api.getSnapshotMetadata(),
+    findings: api.getFindingsPage(200, 0),
+    hypotheses: api.getHypotheses(),
+    taxonomy: api.getHypothesesTaxonomy(),
+    aggregates: api.getFindingAggregates(),
+    sessions: api.getSessions(),
+    report: api.getReportSections(),
+    timeline: api.getTimeline(),
+    eventVolume: api.getEventVolume(volumeBucketParam, "all", volumeStart, volumeEnd),
+    eventVolumeDetected: api.getEventVolume(volumeBucketParam, "detected", volumeStart, volumeEnd),
+    eventVolumeYears: api.getEventVolume("year", "all"),
+    reviews: api.getAiReviews(),
+    reasoning: api.getLatestReasoning(10),
+    coverage: api.getAttackCoverage(),
+    entities: api.getEntities()
+  };
+  const results = await Promise.allSettled(Object.values(tasks));
+  const errors: Record<string, string> = {};
+  Object.keys(tasks).forEach((key, index) => {
+    const result = results[index];
+    if (result.status === "rejected") {
+      errors[key] = result.reason instanceof Error ? result.reason.message : String(result.reason);
+    }
+  });
+  refreshErrors.set(errors);
 
-  if (caseResult.status === "fulfilled") caseInfo.set(caseResult.value);
-  if (configResult.status === "fulfilled") runtimeConfig.set(configResult.value);
-  if (statsResult.status === "fulfilled") caseStats.set(statsResult.value);
-  if (findingsResult.status === "fulfilled") findings.set(findingsResult.value);
-  if (hypothesesResult.status === "fulfilled") hypotheses.set(hypothesesResult.value);
-  if (sessionsResult.status === "fulfilled") sessions.set(sessionsResult.value);
+  if (results[0].status === "fulfilled") caseInfo.set(results[0].value as CaseDTO);
+  if (results[1].status === "fulfilled") runtimeConfig.set(results[1].value as RuntimeConfigDTO);
+  if (results[2].status === "fulfilled") caseStats.set(results[2].value as CaseStatsDTO);
+  if (results[3].status === "fulfilled") snapshotMetadata.set(results[3].value as SnapshotMetadataDTO);
+  if (results[4].status === "fulfilled") {
+    const page = results[4].value as { items: FindingDTO[] };
+    findings.set(page.items);
+  }
+  if (results[5].status === "fulfilled") hypotheses.set(results[5].value as HypothesesResponseDTO);
+  if (results[6].status === "fulfilled") hypothesisTaxonomy.set(results[6].value as never);
+  if (results[7].status === "fulfilled") findingAggregates.set(results[7].value as FindingAggregatesDTO);
+  if (results[8].status === "fulfilled") sessions.set(results[8].value as SessionDTO[]);
   let currentProgress: ProgressEventDTO | null = null;
   progress.subscribe((value) => (currentProgress = value))();
-  if (reportResult.status === "fulfilled") reportSections.set(mergeReportSections(reportResult.value, currentProgress));
-  if (timelineResult.status === "fulfilled") timeline.set(timelineResult.value);
-  if (eventVolumeResult.status === "fulfilled") eventVolume.set(eventVolumeResult.value);
-  if (eventVolumeDetectedResult.status === "fulfilled") eventVolumeDetected.set(eventVolumeDetectedResult.value);
-  if (eventVolumeYearsResult.status === "fulfilled") eventVolumeYears.set(eventVolumeYearsResult.value);
-  if (reviewsResult.status === "fulfilled") aiReviews.set(reviewsResult.value);
-  if (reasoningResult.status === "fulfilled") latestReasoning.set(reasoningResult.value);
-  if (coverageResult.status === "fulfilled") attackCoverage.set(coverageResult.value);
-  if (entitiesResult.status === "fulfilled") entities.set(entitiesResult.value);
+  if (results[9].status === "fulfilled") reportSections.set(mergeReportSections(results[9].value as ReportSectionDTO[], currentProgress));
+  if (results[10].status === "fulfilled") timeline.set(results[10].value as MftTimelineDTO[]);
+  if (results[11].status === "fulfilled") eventVolume.set(results[11].value as EventVolumePointDTO[]);
+  if (results[12].status === "fulfilled") eventVolumeDetected.set(results[12].value as EventVolumePointDTO[]);
+  if (results[13].status === "fulfilled") eventVolumeYears.set(results[13].value as EventVolumePointDTO[]);
+  if (results[14].status === "fulfilled") aiReviews.set(results[14].value as AIReviewDTO[]);
+  if (results[15].status === "fulfilled") latestReasoning.set(results[15].value as HypothesisReasoningEntryDTO[]);
+  if (results[16].status === "fulfilled") attackCoverage.set(results[16].value as AttackCoverageRowDTO[]);
+  if (results[17].status === "fulfilled") entities.set(results[17].value as EntityCardDTO[]);
 
-  if (sessionsResult.status === "fulfilled") {
-    const latestSessionId = sessionsResult.value[0]?.session_id ?? "";
-    if (latestSessionId) {
-      try {
-        steps.set(await api.getSteps(latestSessionId));
-      } catch {
-        // ignore step fetch failures
-      }
+  const sessionsValue = results[8].status === "fulfilled" ? (results[8].value as SessionDTO[]) : [];
+  const latestSessionId = sessionsValue[0]?.session_id ?? "";
+  if (latestSessionId) {
+    try {
+      steps.set(await api.getSteps(latestSessionId));
+    } catch (error) {
+      errors.steps = error instanceof Error ? error.message : String(error);
     }
+  }
+  // This timestamp is explicitly the last complete refresh. A partial refresh
+  // must not make stale data look current.
+  refreshErrors.set(errors);
+  if (Object.keys(errors).length === 0) {
+    lastRefreshAt.set(new Date().toISOString());
   }
 }
 

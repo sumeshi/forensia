@@ -1,6 +1,6 @@
 import { derived } from "svelte/store";
 
-import { findings, hypotheses, reportSections } from "../stores";
+import { findingAggregates, findings, hypotheses, reportSections } from "../stores";
 import { formatVerdict } from "../format";
 
 export const whatWeKnow = derived([findings], ([$findings]) => {
@@ -113,23 +113,38 @@ export const recentResolvedSummary = derived([hypotheses], ([$hypotheses]) => {
 });
 
 export const verdictBreakdown = derived([hypotheses], ([$hypotheses]) => {
-  let confirmed = 0;
-  let refuted = 0;
-  let inconclusive = 0;
-  for (const h of $hypotheses.resolved) {
-    if (h.verdict === "confirmed") confirmed++;
-    else if (h.verdict === "refuted") refuted++;
-    else if (h.verdict === "inconclusive") inconclusive++;
-  }
-  return {
-    confirmed,
-    refuted,
-    inconclusive,
-    active: $hypotheses.active.length
+  // Canonical status taxonomy (T-51.2): count every hypothesis by its durable
+  // `status` rather than inferring from the `verdict` field. The `inconclusive`
+  // key is retained for backward-compatible UI but is now derived from status
+  // too (legacy verdict-based UI may still reference it).
+  const counts: Record<string, number> = {
+    active: 0,
+    confirmed: 0,
+    refuted: 0,
+    untestable: 0,
+    needs_review: 0,
+    deferred: 0,
+    blocked: 0,
+    inconclusive: 0
   };
+  for (const h of [...$hypotheses.active, ...$hypotheses.resolved]) {
+    const status = h.status ?? "unknown";
+    if (status in counts) counts[status] += 1;
+    if (h.verdict === "inconclusive") counts.inconclusive += 1;
+  }
+  return counts;
 });
 
-export const topRules = derived([findings], ([$findings]) => {
+export const topRules = derived([findings, findingAggregates], ([$findings, $aggregates]) => {
+  // Prefer authoritative server-side aggregates over the first-N-row sample
+  // (T-51.3). Fall back to local derivation only when aggregates are missing.
+  if ($aggregates && Array.isArray($aggregates.top_rules) && $aggregates.top_rules.length > 0) {
+    return $aggregates.top_rules.map((rule) => ({
+      ruleId: String(rule.rule_id ?? "unknown"),
+      title: String(rule.title ?? ""),
+      accepted: Number(rule.count ?? 0)
+    }));
+  }
   const counts = new Map<string, { accepted: number; title: string }>();
   for (const f of $findings) {
     if (f.status === "suppressed") continue;
@@ -145,7 +160,20 @@ export const topRules = derived([findings], ([$findings]) => {
     .slice(0, 8);
 });
 
-export const severityBreakdown = derived([findings], ([$findings]) => {
+export const severityBreakdown = derived([findings, findingAggregates], ([$findings, $aggregates]) => {
+  // Prefer authoritative server-side severity counts (T-51.3). The backend
+  // aggregates count every finding (not a sample), so local derivation is only
+  // a fallback.
+  if ($aggregates && $aggregates.severity_counts) {
+    return {
+      highAccepted: $aggregates.severity_counts.high ?? 0,
+      highSuppressed: 0,
+      mediumAccepted: $aggregates.severity_counts.medium ?? 0,
+      mediumSuppressed: 0,
+      lowAccepted: $aggregates.severity_counts.low ?? 0,
+      lowSuppressed: 0
+    };
+  }
   const highAccepted = $findings.filter((f) => f.severity === "high" && f.status !== "suppressed").length;
   const highSuppressed = $findings.filter((f) => f.severity === "high" && f.status === "suppressed").length;
   const mediumAccepted = $findings.filter((f) => f.severity === "medium" && f.status !== "suppressed").length;

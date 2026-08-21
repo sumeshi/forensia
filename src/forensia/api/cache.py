@@ -88,10 +88,17 @@ def snapshot_metadata(db: CaseDB) -> dict[str, Any]:
     if durable_status == "active":
         in_progress = True
     updated_values = [str(value) for value in values[4:] if value is not None]
+    # Timestamps in the case DB are stored naive UTC. Present them as explicit
+    # UTC so the UI never reinterprets them as local time (GOAL.md §7, T-50.7).
+    authoritative_updated_at = None
+    if updated_values:
+        authoritative_updated_at = max(updated_values) + "+00:00"
     return {
         "generation_revision": revision,
+        "state_revision": revision,
+        "timezone": "UTC",
         "generated_at": datetime.now(UTC).isoformat(),
-        "authoritative_updated_at": max(updated_values) if updated_values else None,
+        "authoritative_updated_at": authoritative_updated_at,
         "state": "in-progress" if in_progress else "current",
         "stale": False,
         "durable_investigation_status": durable_status or "unknown",

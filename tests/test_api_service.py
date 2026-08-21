@@ -82,6 +82,24 @@ _STATS_COLS = [
     "prefetch_rows",
 ]
 _FINDINGS_STATS_COLS = ["findings_accepted", "findings_suppressed"]
+_HYP_STATS_COLS = [
+    "active_hypotheses",
+    "resolved_hypotheses",
+    "confirmed_hypotheses",
+    "refuted_hypotheses",
+    "untestable_hypotheses",
+    "needs_review_hypotheses",
+    "deferred_hypotheses",
+    "blocked_hypotheses",
+]
+_REPORT_STATS_COLS = [
+    "open_gaps",
+    "report_human_reviewed",
+    "report_ai_exhausted",
+    "report_draft_count",
+    "report_stable_count",
+    "report_total_count",
+]
 
 
 class TestGetCaseDto(unittest.TestCase):
@@ -144,18 +162,12 @@ class TestGetCaseStatsDto(unittest.TestCase):
             _make_mock_result(_STATS_COLS, [(100, 50, 5, 3, 7)]),
             _make_mock_result(_FINDINGS_STATS_COLS, [(30, 2)]),
             _make_mock_result(
-                [
-                    "active_hypotheses",
-                    "resolved_hypotheses",
-                    "confirmed_hypotheses",
-                    "refuted_hypotheses",
-                    "untestable_hypotheses",
-                ],
-                [(10, 5, 2, 2, 1)],
+                _HYP_STATS_COLS,
+                [(10, 15, 2, 2, 1, 8, 1, 1)],
             ),
             _make_mock_result(
-                ["open_gaps", "report_human_reviewed", "report_ai_exhausted"],
-                [(3, 1, 0)],
+                _REPORT_STATS_COLS,
+                [(3, 1, 0, 5, 0, 9)],
             ),
             _make_mock_result(["sessions", "total_iterations"], [(2, 15)]),
             _make_mock_result(
@@ -185,15 +197,21 @@ class TestGetCaseStatsDto(unittest.TestCase):
         self.assertEqual(result.findings_accepted, 30)
         self.assertEqual(result.findings_suppressed, 2)
         self.assertEqual(result.active_hypotheses, 10)
-        self.assertEqual(result.resolved_hypotheses, 5)
+        self.assertEqual(result.resolved_hypotheses, 15)
         self.assertEqual(result.confirmed_hypotheses, 2)
         self.assertEqual(result.refuted_hypotheses, 2)
         self.assertEqual(result.untestable_hypotheses, 1)
+        self.assertEqual(result.needs_review_hypotheses, 8)
+        self.assertEqual(result.deferred_hypotheses, 1)
+        self.assertEqual(result.blocked_hypotheses, 1)
         self.assertEqual(result.open_gaps, 3)
         self.assertEqual(result.sessions, 2)
         self.assertEqual(result.total_iterations, 15)
         self.assertEqual(result.report_human_reviewed, 1)
         self.assertEqual(result.report_ai_exhausted, 0)
+        self.assertEqual(result.report_draft_count, 5)
+        self.assertEqual(result.report_stable_count, 0)
+        self.assertAlmostEqual(result.report_human_review_pct, 100.0 * 1 / 9, places=2)
         # Hosts are returned in first-seen order (rename timeline).
         self.assertEqual(
             [h.name for h in result.hosts], ["37L4247F27-25", "informant-PC"]
@@ -206,18 +224,12 @@ class TestGetCaseStatsDto(unittest.TestCase):
             _make_mock_result(_STATS_COLS, [(None, None, None, None, None)]),
             _make_mock_result(_FINDINGS_STATS_COLS, [(None, None)]),
             _make_mock_result(
-                [
-                    "active_hypotheses",
-                    "resolved_hypotheses",
-                    "confirmed_hypotheses",
-                    "refuted_hypotheses",
-                    "untestable_hypotheses",
-                ],
-                [(None, None, None, None, None)],
+                _HYP_STATS_COLS,
+                [(None, None, None, None, None, None, None, None)],
             ),
             _make_mock_result(
-                ["open_gaps", "report_human_reviewed", "report_ai_exhausted"],
-                [(None, None, None)],
+                _REPORT_STATS_COLS,
+                [(None, None, None, None, None, None)],
             ),
             _make_mock_result(["sessions", "total_iterations"], [(None, None)]),
             _make_mock_result(["name", "first_seen", "last_seen", "event_count"], []),

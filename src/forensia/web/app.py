@@ -15,10 +15,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from forensia.api.aggregates import (
+    get_finding_aggregates_dto,
+    list_findings_page_dto,
+)
 from forensia.api.cache import load_snapshot, snapshot_metadata
 from forensia.api.dto import (
     AIReviewDTO,
     AttackCoverageRowDTO,
+    AttemptPageDTO,
     CaseDTO,
     CaseStatsDTO,
     ClaimDTO,
@@ -27,7 +32,9 @@ from forensia.api.dto import (
     EvidenceCoverageDTO,
     EvidenceRecordDTO,
     EvidenceSourceDTO,
+    FindingAggregatesDTO,
     FindingDTO,
+    FindingPageDTO,
     HypothesesResponseDTO,
     HypothesisEvidenceLinkDTO,
     HypothesisReasoningEntryDTO,
@@ -35,12 +42,14 @@ from forensia.api.dto import (
     InvestigationStateDTO,
     InvestigationStepDTO,
     InvestigationTaskDTO,
+    LogicalCallPageDTO,
     MftTimelineDTO,
     ProgressEventDTO,
     ReportGapDTO,
     ReportSectionDTO,
     RuntimeConfigDTO,
     SessionDTO,
+    SessionTrajectoryDTO,
 )
 from forensia.api.progress import list_progress_events
 from forensia.api.service import (
@@ -71,6 +80,15 @@ from forensia.api.service_investigation import (
     list_hypothesis_relations_dto,
     list_investigation_tasks_dto,
     list_report_gaps_dto,
+)
+from forensia.api.taxonomy import (
+    get_hypothesis_taxonomy,
+    get_report_status_taxonomy,
+)
+from forensia.api.trajectory import (
+    get_logical_call_attempts_page_dto,
+    get_session_trajectory_dto,
+    list_logical_calls_page_dto,
 )
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
@@ -162,9 +180,6 @@ def _register_case_routes(app: FastAPI, case: Case, cached):
 
     @app.get("/api/stats", response_model=CaseStatsDTO)
     def api_stats() -> CaseStatsDTO:
-        snapshot = cached("stats.json")
-        if snapshot is not None:
-            return CaseStatsDTO.model_validate(snapshot)
         with CaseDB(case) as db:
             return get_case_stats_dto(db)
 
@@ -199,14 +214,6 @@ def _register_finding_routes(app: FastAPI, case: Case, cached):
         limit: Annotated[int, Query(ge=1, le=500)] = 100,
         offset: Annotated[int, Query(ge=0)] = 0,
     ) -> list[FindingDTO]:
-        snapshot = cached("findings.json")
-        if snapshot is not None:
-            rows = [FindingDTO.model_validate(item) for item in snapshot]
-            if status:
-                rows = [row for row in rows if row.status == status]
-            if severity:
-                rows = [row for row in rows if row.severity == severity]
-            return rows[offset : offset + limit]
         with CaseDB(case) as db:
             return list_findings_dto(
                 db, status=status, severity=severity, limit=limit, offset=offset
@@ -234,9 +241,6 @@ def _register_finding_routes(app: FastAPI, case: Case, cached):
 def _register_hypothesis_routes(app: FastAPI, case: Case, cached):
     @app.get("/api/hypotheses", response_model=HypothesesResponseDTO)
     def api_hypotheses() -> HypothesesResponseDTO:
-        snapshot = cached("hypotheses.json")
-        if snapshot is not None:
-            return HypothesesResponseDTO.model_validate(snapshot)
         with CaseDB(case) as db:
             return list_hypotheses_dto(db)
 
@@ -282,9 +286,6 @@ def _register_hypothesis_routes(app: FastAPI, case: Case, cached):
 def _register_session_routes(app: FastAPI, case: Case, cached):
     @app.get("/api/sessions", response_model=list[SessionDTO])
     def api_sessions() -> list[SessionDTO]:
-        snapshot = cached("sessions.json")
-        if snapshot is not None:
-            return [SessionDTO.model_validate(item) for item in snapshot]
         with CaseDB(case) as db:
             return list_sessions_dto(db)
 
@@ -667,6 +668,88 @@ def _register_investigation_state_routes(app: FastAPI, case: Case, cached):
         ]
 
 
+def _register_trajectory_routes(app: FastAPI, case: Case, cached):
+    @app.get("/api/hypotheses/taxonomy")
+    def api_hypotheses_taxonomy() -> dict:
+        return {
+            "hypothesis": get_hypothesis_taxonomy(),
+            "report_section": get_report_status_taxonomy(),
+        }
+
+    @app.get("/api/findings/aggregates", response_model=FindingAggregatesDTO)
+    def api_finding_aggregates() -> FindingAggregatesDTO:
+        with CaseDB(case) as db:
+            return get_finding_aggregates_dto(db)
+
+    @app.get("/api/findings/page", response_model=FindingPageDTO)
+    def api_findings_page(
+        status: str | None = None,
+        severity: str | None = None,
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> FindingPageDTO:
+        with CaseDB(case) as db:
+            return list_findings_page_dto(
+                db, status=status, severity=severity, limit=limit, offset=offset
+            )
+
+    @app.get(
+        "/api/sessions/{session_id}/trajectory",
+        response_model=SessionTrajectoryDTO,
+    )
+    def api_session_trajectory(session_id: str) -> SessionTrajectoryDTO:
+        with CaseDB(case) as db:
+            return get_session_trajectory_dto(db, session_id)
+
+    @app.get(
+        "/api/sessions/{session_id}/logical-calls",
+        response_model=LogicalCallPageDTO,
+    )
+    def api_logical_calls(
+        session_id: str,
+        phase: str | None = None,
+        hypothesis_id: str | None = None,
+        section_id: str | None = None,
+        status: str | None = None,
+        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> LogicalCallPageDTO:
+        with CaseDB(case) as db:
+            return list_logical_calls_page_dto(
+                db,
+                session_id,
+                phase=phase,
+                hypothesis_id=hypothesis_id,
+                section_id=section_id,
+                status=status,
+                limit=limit,
+                offset=offset,
+            )
+
+    @app.get(
+        "/api/logical-calls/{logical_call_id}/attempts",
+        response_model=AttemptPageDTO,
+    )
+    def api_logical_call_attempts(
+        logical_call_id: str,
+        status: str | None = None,
+        retry_class: str | None = None,
+        duplicate_only: bool = False,
+        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> AttemptPageDTO:
+        with CaseDB(case) as db:
+            return get_logical_call_attempts_page_dto(
+                db,
+                logical_call_id,
+                status=status,
+                retry_class=retry_class,
+                duplicate_only=duplicate_only,
+                limit=limit,
+                offset=offset,
+            )
+
+
 def _register_spa_routes(app: FastAPI, spa_dir: Path | None):
     if spa_dir is None:
         message = (
@@ -724,6 +807,7 @@ def create_app(case: Case) -> FastAPI:
         return load_snapshot(case, name)
 
     _register_case_routes(app, case, cached)
+    _register_trajectory_routes(app, case, cached)
     _register_finding_routes(app, case, cached)
     _register_hypothesis_routes(app, case, cached)
     _register_session_routes(app, case, cached)

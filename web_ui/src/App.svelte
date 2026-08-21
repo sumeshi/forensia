@@ -40,14 +40,17 @@
     latestReasoning,
     progress,
     refreshAll,
-    reportSections,
-    runtimeConfig,
-    searchQuery,
-    sessions,
-    steps,
-    timeline,
-    volumeDrill
-  } from "./lib/stores";
+  reportSections,
+  runtimeConfig,
+  searchQuery,
+  sessions,
+  snapshotMetadata,
+  steps,
+  timeline,
+  volumeDrill,
+  refreshErrors,
+  lastRefreshAt
+} from "./lib/stores";
   import { formatCaseStatus, getInvestigateSubphase, getPipelinePhase } from "./lib/format";
 
   // Initial-render decision only: DetailsTabs copies the prop once, so the
@@ -159,7 +162,10 @@
         { label: "Active", value: $verdictBreakdown.active, color: "bg-semantic-accent" },
         { label: "Confirmed", value: $verdictBreakdown.confirmed, color: "bg-semantic-ok" },
         { label: "Refuted", value: $verdictBreakdown.refuted, color: "bg-semantic-danger" },
-        { label: "Inconclusive", value: $verdictBreakdown.inconclusive, color: "bg-semantic-warn" }
+        { label: "Untestable", value: $verdictBreakdown.untestable, color: "bg-semantic-warn" },
+        { label: "Needs Review", value: $verdictBreakdown.needs_review, color: "bg-semantic-warn" },
+        { label: "Deferred", value: $verdictBreakdown.deferred, color: "bg-semantic-info" },
+        { label: "Blocked", value: $verdictBreakdown.blocked, color: "bg-semantic-info" }
       ]
     },
     {
@@ -197,6 +203,31 @@
     />
 
     <KpiBar items={kpis} />
+
+    {#if Object.keys($refreshErrors).length > 0}
+      <section class="panel border-semantic-danger/40 bg-semantic-danger/5 p-3 text-sm">
+        <p class="mb-1 font-semibold text-semantic-danger">Partial refresh: some endpoints failed</p>
+        <ul class="list-inside list-disc space-y-1 text-semantic-danger/90">
+          {#each Object.entries($refreshErrors) as [endpoint, message]}
+            <li><span class="font-mono">{endpoint}</span>: {message}</li>
+          {/each}
+        </ul>
+        {#if $lastRefreshAt}
+          <p class="mt-1 text-xs text-foreground/60">Last successful refresh: {$lastRefreshAt}</p>
+        {/if}
+      </section>
+    {/if}
+
+    {#if $snapshotMetadata}
+      <section class="panel p-3 text-xs text-foreground/65">
+        <span class="font-semibold">Snapshot</span>
+        <span class="ml-2">{$snapshotMetadata.state ?? "unknown"}</span>
+        {#if $snapshotMetadata.stale}<span class="ml-2 text-semantic-danger">stale</span>{/if}
+        <span class="ml-2">revision {$snapshotMetadata.current_revision ?? $snapshotMetadata.generation_revision ?? "—"}</span>
+        <span class="ml-2">generated {$snapshotMetadata.generated_at ?? "—"}</span>
+        <span class="ml-2">authoritative {$snapshotMetadata.authoritative_updated_at ?? "—"}</span>
+      </section>
+    {/if}
 
     <section id="timeline" class="scroll-mt-16">
       <VolumeTimeline

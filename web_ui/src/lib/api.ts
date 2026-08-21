@@ -1,20 +1,28 @@
 import type {
   AIReviewDTO,
+  AttemptPageDTO,
   AttackCoverageRowDTO,
   EntityCardDTO,
   CaseDTO,
   CaseStatsDTO,
   ClaimDTO,
   EventVolumePointDTO,
+  FindingAggregatesDTO,
   FindingDTO,
+  FindingPageDTO,
   HypothesesResponseDTO,
   HypothesisReasoningEntryDTO,
   InvestigationStepDTO,
+  LogicalCallDTO,
+  LogicalCallPageDTO,
   MftTimelineDTO,
   ProgressEventDTO,
+  ProviderAttemptDTO,
   ReportSectionDTO,
   RuntimeConfigDTO,
-  SessionDTO
+  SessionDTO,
+  SessionTrajectoryDTO,
+  SnapshotMetadataDTO
 } from "./types";
 
 async function getJson<T>(path: string): Promise<T> {
@@ -45,8 +53,17 @@ export const api = {
   getCase: () => getJson<CaseDTO>("/api/case"),
   getConfig: () => getJson<RuntimeConfigDTO>("/api/config"),
   getStats: () => getJson<CaseStatsDTO>("/api/stats"),
+  getSnapshotMetadata: () => getJson<SnapshotMetadataDTO>("/api/snapshot-metadata"),
   getFindings: () => getJson<FindingDTO[]>("/api/findings?limit=200"),
+  getFindingsPage: (limit = 100, offset = 0, status?: string, severity?: string) => {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (status) params.set("status", status);
+    if (severity) params.set("severity", severity);
+    return getJson<FindingPageDTO>(`/api/findings/page?${params.toString()}`);
+  },
+  getFindingAggregates: () => getJson<FindingAggregatesDTO>("/api/findings/aggregates"),
   getHypotheses: () => getJson<HypothesesResponseDTO>("/api/hypotheses"),
+  getHypothesesTaxonomy: () => getJson<{ hypothesis: unknown; report_section: unknown }>("/api/hypotheses/taxonomy"),
   getHypothesisReasoning: (hypothesisId: string, limit = 20) =>
     getJson<HypothesisReasoningEntryDTO[]>(`/api/hypotheses/${hypothesisId}/reasoning?limit=${limit}`),
   getSessions: () => getJson<SessionDTO[]>("/api/sessions"),
@@ -76,6 +93,24 @@ export const api = {
   getLatestReasoning: (limit = 10) =>
     getJson<HypothesisReasoningEntryDTO[]>(`/api/hypotheses-reasoning?limit=${limit}`),
   getAiReviews: () => getJson<AIReviewDTO[]>("/api/ai-reviews"),
+  getSessionTrajectory: (sessionId: string) =>
+    getJson<SessionTrajectoryDTO>(`/api/sessions/${encodeURIComponent(sessionId)}/trajectory`),
+  getLogicalCalls: (sessionId: string, params: Record<string, string | number | boolean | undefined> = {}) => {
+    const qs = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== "") qs.set(key, String(value));
+    }
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return getJson<LogicalCallPageDTO>(`/api/sessions/${encodeURIComponent(sessionId)}/logical-calls${suffix}`);
+  },
+  getLogicalCallAttempts: (logicalCallId: string, params: Record<string, string | number | boolean | undefined> = {}) => {
+    const qs = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== "") qs.set(key, String(value));
+    }
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return getJson<AttemptPageDTO>(`/api/logical-calls/${encodeURIComponent(logicalCallId)}/attempts${suffix}`);
+  },
   connectStream(after = 0): EventSource {
     const url = new URL("/api/stream", window.location.origin);
     url.searchParams.set("after", String(after));

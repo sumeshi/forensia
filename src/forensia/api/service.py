@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from datetime import date as _date
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 import yaml
 
@@ -25,6 +28,9 @@ from forensia.api.dto import (
     RuntimeConfigDTO,
     SectionQuestionDTO,
     SessionDTO,
+)
+from forensia.api.taxonomy import (
+    hypothesis_status_group,
 )
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
@@ -113,10 +119,13 @@ def get_case_stats_dto(db: CaseDB) -> CaseStatsDTO:
         """
         SELECT
             COUNT(*) FILTER (WHERE status = 'active') AS active_hypotheses,
-            COUNT(*) FILTER (WHERE status IN ('confirmed', 'refuted', 'untestable')) AS resolved_hypotheses,
+            COUNT(*) FILTER (WHERE COALESCE(status, 'unknown') != 'active') AS resolved_hypotheses,
             COUNT(*) FILTER (WHERE status = 'confirmed') AS confirmed_hypotheses,
             COUNT(*) FILTER (WHERE status = 'refuted') AS refuted_hypotheses,
-            COUNT(*) FILTER (WHERE status = 'untestable') AS untestable_hypotheses
+            COUNT(*) FILTER (WHERE status = 'untestable') AS untestable_hypotheses,
+            COUNT(*) FILTER (WHERE status = 'needs_review') AS needs_review_hypotheses,
+            COUNT(*) FILTER (WHERE status = 'deferred') AS deferred_hypotheses,
+            COUNT(*) FILTER (WHERE status = 'blocked') AS blocked_hypotheses
         FROM hypotheses
         """
     ).fetchone()
@@ -128,7 +137,10 @@ def get_case_stats_dto(db: CaseDB) -> CaseStatsDTO:
                 ELSE json_array_length(CAST(gaps AS JSON))
             END), 0) AS open_gaps,
             COUNT(*) FILTER (WHERE status = 'human_reviewed') AS report_human_reviewed,
-            COUNT(*) FILTER (WHERE status = 'ai_exhausted') AS report_ai_exhausted
+            COUNT(*) FILTER (WHERE status = 'ai_exhausted') AS report_ai_exhausted,
+            COUNT(*) FILTER (WHERE status = 'draft') AS report_draft_count,
+            COUNT(*) FILTER (WHERE status = 'ai_exhausted') AS report_stable_count,
+            COUNT(*) FILTER (WHERE status != 'suppressed') AS report_total_count
         FROM report_sections
         """
     ).fetchone()
@@ -165,6 +177,9 @@ def get_case_stats_dto(db: CaseDB) -> CaseStatsDTO:
         )
         for row in host_rows
     ]
+    report_total = int(report_rows[5] or 0)
+    report_reviewed = int(report_rows[1] or 0)
+    human_review_pct = round(100.0 * report_reviewed / report_total, 2) if report_total else 0.0
     return CaseStatsDTO(
         evtx_rows=int(event_rows[0] or 0),
         mft_entries=int(event_rows[1] or 0),
@@ -179,11 +194,17 @@ def get_case_stats_dto(db: CaseDB) -> CaseStatsDTO:
         confirmed_hypotheses=int(hypothesis_rows[2] or 0),
         refuted_hypotheses=int(hypothesis_rows[3] or 0),
         untestable_hypotheses=int(hypothesis_rows[4] or 0),
+        needs_review_hypotheses=int(hypothesis_rows[5] or 0),
+        deferred_hypotheses=int(hypothesis_rows[6] or 0),
+        blocked_hypotheses=int(hypothesis_rows[7] or 0),
         open_gaps=int(report_rows[0] or 0),
         sessions=int(session_rows[0] or 0),
         total_iterations=int(session_rows[1] or 0),
-        report_human_reviewed=int(report_rows[1] or 0),
+        report_human_reviewed=report_reviewed,
         report_ai_exhausted=int(report_rows[2] or 0),
+        report_draft_count=int(report_rows[3] or 0),
+        report_stable_count=int(report_rows[4] or 0),
+        report_human_review_pct=human_review_pct,
     )
 
 
@@ -429,7 +450,7 @@ def list_hypotheses_dto(db: CaseDB) -> HypothesesResponseDTO:
             hypothesis_id
         )
         dto = HypothesisDTO.model_validate(normalized)
-        if dto.status == "active":
+        if hypothesis_status_group(dto.status) == "active":
             active.append(dto)
         else:
             resolved.append(dto)
@@ -437,16 +458,52 @@ def list_hypotheses_dto(db: CaseDB) -> HypothesesResponseDTO:
 
 
 def list_sessions_dto(db: CaseDB) -> list[SessionDTO]:
-    """Return all investigation sessions ordered by recency."""
+    """Return all investigation sessions ordered by recency.
+
+    Reconciles stale ``running`` sessions on read so the API never reports a
+    permanently-active session left by a crashed process (T-12.2).
+    """
+    try:
+        _reconcile_stale_sessions(db)
+    except Exception:
+        logger.debug("Session reconciliation skipped", exc_info=True)
     rows = fetch_records(
         db,
         """
-        SELECT session_id, started_at, finished_at, iterations, status
+        SELECT session_id, started_at, finished_at, iterations, status, terminal_reason
         FROM investigation_sessions
         ORDER BY started_at DESC, session_id DESC
         """,
     )
     return [SessionDTO.model_validate(_normalize_row(row)) for row in rows]
+
+
+def _reconcile_stale_sessions(db: CaseDB) -> None:
+    """Conservatively close sessions left running by a crashed worker.
+
+    The API read projection owns this small SQL-only repair so it does not
+    depend upward on the workflow package.
+    """
+    running = db.execute(
+        "SELECT session_id, started_at FROM investigation_sessions WHERE status = 'running'"
+    ).fetchall()
+    for session_id, started_at in running:
+        row = db.execute(
+            "SELECT MAX(created_at) FROM investigation_steps WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        finished = row[0] if row and row[0] is not None else started_at
+        db.execute(
+            "UPDATE investigation_sessions SET status = 'abandoned', finished_at = ?, "
+            "terminal_reason = ? WHERE session_id = ?",
+            (finished, "abandoned: session process did not finalize", session_id),
+        )
+    for status in ("completed", "failed", "interrupted", "abandoned"):
+        db.execute(
+            "UPDATE investigation_sessions SET terminal_reason = ? "
+            "WHERE status = ? AND terminal_reason IS NULL",
+            (f"{status}: session reached terminal state", status),
+        )
 
 
 def list_steps_dto(db: CaseDB, session_id: str) -> list[InvestigationStepDTO]:
@@ -915,3 +972,6 @@ def list_attack_coverage_dto(db: CaseDB) -> list[AttackCoverageRowDTO]:
                 )
             )
     return result
+
+
+# ── Session trajectory (T-12.3 / T-12.4 / T-12.5) ────────────────────────

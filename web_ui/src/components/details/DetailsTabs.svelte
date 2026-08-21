@@ -6,6 +6,7 @@
   import MftTimeline from "./MftTimeline.svelte";
   import RawActivity from "./RawActivity.svelte";
   import Sessions from "./Sessions.svelte";
+  import SessionTrajectory from "./SessionTrajectory.svelte";
 
   export let findings: FindingDTO[] = [];
   export let steps: InvestigationStepDTO[] = [];
@@ -18,6 +19,7 @@
     { id: "findings", label: "Key Findings" },
     { id: "steps", label: "Investigation Steps" },
     { id: "sessions", label: "Sessions" },
+    { id: "trajectory", label: "Session Trajectory" },
     { id: "activity", label: "Raw Activity" },
     { id: "mft", label: "MFT Timeline" }
   ] as const;
@@ -45,6 +47,8 @@
       <InvestigationSteps {steps} />
     {:else if $detailsTab === "sessions"}
       <Sessions {sessions} />
+    {:else if $detailsTab === "trajectory"}
+      <SessionTrajectory sessionsProp={sessions} />
     {:else if $detailsTab === "activity"}
       <RawActivity {progress} />
     {:else}
