@@ -204,6 +204,7 @@ class MemoryContextMixin:
         relevance_terms: set[str] | None = None,
         max_entries: int = 80,
         max_bytes: int = 2048,
+        include_episodes: bool = False,
     ) -> str:
         """Return a scope-safe hierarchical index for progressive disclosure.
 
@@ -211,6 +212,11 @@ class MemoryContextMixin:
         scratch space, or archived reasoning.  Entity and keypoint cards remain
         discoverable, with relevant cards ranked first and exact paths suitable
         for ``read_more``.
+
+        When *include_episodes* is True, a ``<EPISODES>`` block indexes the
+        timeline's per-day episode groups (stable ids + continuation hint) so
+        the consumer can request a specific episode without loading the whole
+        timeline. This is the Memory-episode index primitive (T-21).
         """
         scope_key = self._scratch_key(hypothesis_id) if hypothesis_id else None
         hypothesis_cards = (
@@ -244,6 +250,29 @@ class MemoryContextMixin:
             seen.add(path)
             unique.append(path)
         if not unique:
+            if include_episodes:
+                episodes = self._index_memory_episodes()
+                if episodes:
+                    return "\n".join(
+                        [
+                            f"<MEMORY_INDEX scope=\"{scope_key}\" "
+                            if scope_key
+                            else '<MEMORY_INDEX scope="global">',
+                            "Use read_more with an exact relative path when a card is needed.",
+                            "Only paths in this index are available in the current scope.",
+                            "<CATEGORIES>",
+                            f"- episodes: {len(episodes)}",
+                            "</CATEGORIES>",
+                            "<AVAILABLE_PATHS>",
+                            "</AVAILABLE_PATHS>",
+                            "<EPISODES>",
+                            "Per-day timeline episodes (regeneratable from case_timeline). "
+                            "Request a specific episode via its stable id.",
+                            *episodes,
+                            "</EPISODES>",
+                            "</MEMORY_INDEX>",
+                        ]
+                    )
             return ""
         if relevance_terms:
             unique.sort(
@@ -293,8 +322,51 @@ class MemoryContextMixin:
             lines.append(f"- {path}")
         if truncated:
             lines.append("…[truncated]")
+
+        if include_episodes:
+            episodes = self._index_memory_episodes()
+            if episodes:
+                lines.append("")
+                lines.append("<EPISODES>")
+                lines.append(
+                    "Per-day timeline episodes (regeneratable from case_timeline). "
+                    "Request a specific episode via its stable id."
+                )
+                lines.extend(episodes)
+                lines.append("</EPISODES>")
+
         lines.extend(closing_lines)
         return "\n".join(lines)
+
+    def _index_memory_episodes(self) -> list[str]:
+        """Return ``<EPISODES>``-style index lines for timeline day groups.
+
+        Episodes are grouped by date key from ``timeline.md``; each becomes a
+        stable, addressable unit the consumer can lazy-load. Returns [] when no
+        timeline exists.
+        """
+        if not self.timeline_path.exists():
+            return []
+        try:
+            text = self.timeline_path.read_text(encoding="utf-8")
+        except OSError:
+            return []
+        groups: dict[str, int] = {}
+        for line in text.splitlines():
+            line = line.strip()
+            if not line.startswith("- "):
+                continue
+            date_key = line[2:12] if len(line) >= 12 and line[2:12].count("-") == 2 else "unknown"
+            groups[date_key] = groups.get(date_key, 0) + 1
+        if not groups:
+            return []
+        lines: list[str] = []
+        for date_key in sorted(groups):
+            lines.append(
+                f"- id=episode:{date_key} | entries={groups[date_key]} | "
+                f"relevance=timeline | load: regenerate episode {date_key} from case_timeline"
+            )
+        return lines
 
     def filter_paths_for_scope(
         self, paths: list[str], hypothesis_id: str | None

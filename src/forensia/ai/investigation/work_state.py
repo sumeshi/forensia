@@ -422,3 +422,24 @@ def stop_summary(db: CaseDB, active_count: int = 0) -> dict[str, int]:
 def format_stop_reason(status: str, code: str, summary: dict[str, int]) -> str:
     details = ", ".join(f"{key}={value}" for key, value in summary.items())
     return f"Investigation {status}: {code or 'unspecified'} ({details})"
+
+
+# Structured terminal reasons for an investigation session (T-12). These are
+# written to ``investigation_sessions.terminal_reason`` so a session always
+# carries a human-readable cause even when the harness did not emit one.
+_SESSION_TERMINAL_REASONS = {
+    "completed": "completed: investigation loop finished normally",
+    "stopped": "stopped: user/operator halted the investigation",
+    "failed": "failed: investigation terminated on an unhandled exception",
+    "cancelled": "cancelled: investigation cancelled before completion",
+    "abandoned": "abandoned: process terminated without a terminal receipt",
+}
+
+
+def format_terminal_reason(status: str, *, cause: str = "") -> str:
+    """Return a structured, human-readable terminal reason for a session."""
+    base = _SESSION_TERMINAL_REASONS.get(
+        status, f"unknown: terminal status '{status}'"
+    )
+    cause = (cause or "").strip()
+    return f"{base} ({cause})" if cause else base

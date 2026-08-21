@@ -10,6 +10,7 @@ import duckdb
 from forensia.ai.prompts.sql_templates import (
     query_template_catalog,
     render_query_template,
+    validate_select_sql,
     validate_select_sql_with_dryrun,
 )
 from forensia.core.case import Case
@@ -105,3 +106,17 @@ class RenderQueryTemplateTests(unittest.TestCase):
         for template_id, params in cases:
             with self.subTest(template_id=template_id):
                 self.assertIn("''", render_query_template(template_id, params))
+
+
+class HostValidationTests(unittest.TestCase):
+    def test_host_limits_and_bounded_catalog(self) -> None:
+        with self.assertRaises(ValueError):
+            validate_select_sql("SELECT * FROM evtx_events LIMIT 100000")
+        sql = "SELECT event_id FROM evtx_events LIMIT 50"
+        self.assertEqual(sql, validate_select_sql(sql))
+        catalog = query_template_catalog()
+        self.assertGreaterEqual(len(catalog), 3)
+        self.assertLessEqual(len(catalog), 7)
+        for entry in catalog:
+            self.assertIn("template_id", entry)
+            self.assertIn("description", entry)

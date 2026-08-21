@@ -702,6 +702,8 @@ def _log_playbook_telemetry(
     sections: set[str] | None,
     budget_result: _PlaybookBudgetResult,
     result: str,
+    db: object | None = None,
+    session_id: str | None = None,
 ) -> None:
     section_sizes = {k: len(v) for k, v in budget_result.section_entries}
     if sections is not None:
@@ -722,6 +724,65 @@ def _log_playbook_telemetry(
             section_sizes,
             budget_result.dropped,
         )
+    if db is not None:
+        try:
+            from forensia.ai.retrieval_telemetry import record_retrieval_event
+
+            record_retrieval_event(
+                db,
+                session_id=session_id,
+                scope_kind="playbook",
+                scope_id=phase,
+                phase=phase,
+                source_kind="dfir_playbook",
+                query_terms=[phase, *(sorted(sections) if sections else [])],
+                candidate_count=len(budget_result.section_entries),
+                selected_refs=[
+                    k for k, _ in budget_result.section_entries if k != "preamble"
+                ],
+                selected_chars=len(result),
+                budget=len(budget_result.base_playbook),
+                rejected_refs=list(budget_result.dropped),
+            )
+        except Exception:  # pragma: no cover - telemetry must never break prompts
+            logging.debug("playbook instrumentation skipped", exc_info=True)
+
+
+def _build_event_id_playbook_index(event_ids: set[int] | None) -> str:
+    """Index all catalog event IDs; mark which are selected for this playbook.
+
+    When *event_ids* is a subset, the full narrative only renders those; this
+    index advertises the broader catalog (stable ids + continuation) so the
+    model knows other event IDs exist without bloating the prompt.
+    """
+    if event_ids is None:
+        return ""
+    yamls = _load_dfir_yamls()
+    events_data = (
+        yamls["event_ids"].get("events", {})
+        if isinstance(yamls.get("event_ids"), dict)
+        else {}
+    )
+    if not isinstance(events_data, dict):
+        return ""
+    selected = {int(k) for k in events_data if str(k).isdigit()} & (event_ids or set())
+    if not selected:
+        return ""
+    lines = [
+        "<EVENT_ID_INDEX>",
+        "Selected event IDs are fully described in the Event ID Reference below. "
+        "Other catalog event IDs are available on demand (continuation: 'load event rule <id>').",
+        "<INDEX>",
+    ]
+    for eid_key in sorted(events_data, key=_playbook_eid_sort_key):
+        eid_val = int(eid_key) if isinstance(eid_key, str) else int(eid_key)
+        info = events_data[eid_key]
+        title = info.get("title", "") if isinstance(info, dict) else ""
+        mark = " [SELECTED]" if eid_val in selected else ""
+        lines.append(f"- id=E{eid_val} | {title}{mark}")
+    lines.append("</INDEX>")
+    lines.append("</EVENT_ID_INDEX>")
+    return "\n".join(lines)
 
 
 def _dfir_playbook(
@@ -730,6 +791,8 @@ def _dfir_playbook(
     event_ids: set[int] | None = None,
     tables: set[str] | None = None,
     sections: set[str] | None = None,
+    db: object | None = None,
+    session_id: str | None = None,
 ) -> str:
     """Generate DFIR investigator playbook narrative for the given phase.
 
@@ -750,6 +813,9 @@ def _dfir_playbook(
         Valid keys: 'event_ids', 'logon_types', 'fp_guidance', 'schema',
         'app_catalog', 'artifact_inference', 'ioc_catalog'.
         When None, all sections are included (backward compatible).
+    db, session_id : optional
+        When supplied, the build is instrumented via retrieval telemetry
+        (section chars / selected IDs / retrieval source).
 
     Returns a narrative string optimized for weak LLMs.
     """
@@ -766,11 +832,17 @@ def _dfir_playbook(
         budget=get_system_prompt_budget_chars(),
     )
     result = budget_result.base_playbook + _load_phase_playbook(phase)
+    if event_ids is not None:
+        eid_index = _build_event_id_playbook_index(event_ids)
+        if eid_index:
+            result = result + "\n" + eid_index + "\n"
     _log_playbook_telemetry(
         phase=phase,
         sections=sections,
         budget_result=budget_result,
         result=result,
+        db=db,
+        session_id=session_id,
     )
     return result
 

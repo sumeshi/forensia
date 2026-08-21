@@ -1,6 +1,7 @@
 """Size-budget compaction and timeline regeneration for memory files."""
 
 import logging
+import re
 from math import ceil
 from pathlib import Path
 
@@ -226,8 +227,19 @@ class MemoryCompactionMixin:
 
         Reads all rows ordered by timestamp ASC, groups into per-day sections,
         and writes the result to timeline.md. Returns True when content changed.
+
+        The written file is an explicitly *versioned, regeneratable projection*
+        (T-22): a ``projection:vN`` header marks the revision and declares the
+        file is derived from ``case_timeline`` (never Case State authority). On
+        resume, ``validate_timeline_projection`` re-derives it and checks the
+        revision/IDs, so a stale or hand-edited projection is detected.
         """
         from forensia.db.query import fetch_records
+
+        prior_revision = self.timeline_projection_revision()
+        # A projection revision changes only when the derived content changes.
+        # Regenerating the same DB state must be idempotent.
+        new_revision = prior_revision or 1
 
         rows = fetch_records(
             db,
@@ -239,17 +251,35 @@ class MemoryCompactionMixin:
             """,
         )
         if not rows:
-            if self.timeline_path.exists():
-                self.timeline_path.write_text(
-                    "# Timeline\n\n_No timeline entries yet._\n", encoding="utf-8"
+            content = (
+                f"# Timeline (projection:v{new_revision} source=case_timeline "
+                f"regeneratable=true)\n\n_No timeline entries yet._\n"
+            )
+            if (
+                self.timeline_path.exists()
+                and self.timeline_path.read_text(encoding="utf-8").strip()
+                == content.strip()
+            ):
+                return False
+            if prior_revision is not None:
+                new_revision = prior_revision + 1
+                content = content.replace(
+                    f"projection:v{prior_revision}",
+                    f"projection:v{new_revision}",
+                    1,
                 )
-            return False
+            self.timeline_path.write_text(content, encoding="utf-8")
+            return True
         date_groups: dict[str, list[dict]] = {}
         for row in rows:
             ts = str(row.get("timestamp") or "")
             date_key = ts[:10] if len(ts) >= 10 else "unknown"
             date_groups.setdefault(date_key, []).append(row)
-        lines = ["# Timeline", ""]
+        lines = [
+            f"# Timeline (projection:v{new_revision} source=case_timeline "
+            f"regeneratable=true)",
+            "",
+        ]
         for date_key in sorted(date_groups):
             date_rows = date_groups[date_key]
             for row in date_rows:
@@ -271,8 +301,85 @@ class MemoryCompactionMixin:
         )
         if content.strip() == existing.strip():
             return False
+        if prior_revision is not None:
+            new_revision = prior_revision + 1
+            content = content.replace(
+                f"projection:v{prior_revision}",
+                f"projection:v{new_revision}",
+                1,
+            )
         self.timeline_path.write_text(content, encoding="utf-8")
         return True
+
+    _TIMELINE_PROJECTION_RE = re.compile(r"projection:v(\d+)")
+
+    def timeline_projection_revision(self) -> int | None:
+        """Return the embedded revision of the timeline projection, or None."""
+        if not self.timeline_path.exists():
+            return None
+        try:
+            head = self.timeline_path.read_text(encoding="utf-8").splitlines()[:1]
+        except OSError:
+            return None
+        if not head:
+            return None
+        match = self._TIMELINE_PROJECTION_RE.search(head[0])
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
+
+    def validate_timeline_projection(
+        self, db, expected_revision: int | None = None
+    ) -> tuple[bool, list[str]]:
+        """Validate the timeline projection on resume (T-22).
+
+        Re-derives the projection from ``case_timeline`` and confirms:
+        1. the embedded ``projection:vN`` revision matches *expected_revision*
+           (when supplied), and
+        2. every evidence_id referenced by the durable DB is still present in
+           the projection (no referenced ID was dropped).
+
+        Returns ``(ok, problems)``. The projection is treated as regeneratable,
+        so a failure means "regenerate", never "trust the projection".
+        """
+        from forensia.db.query import fetch_records
+
+        problems: list[str] = []
+        current_revision = self.timeline_projection_revision()
+        if expected_revision is not None and current_revision != int(
+            expected_revision
+        ):
+            problems.append(
+                f"timeline revision mismatch: have v{current_revision}, "
+                f"expected v{expected_revision}"
+            )
+        rows = fetch_records(
+            db,
+            "SELECT DISTINCT evidence_id FROM case_timeline "
+            "WHERE evidence_id IS NOT NULL AND evidence_id <> ''",
+        )
+        required_ids = [
+            str(r.get("evidence_id")) for r in rows if r.get("evidence_id")
+        ]
+        if required_ids:
+            projection_text = (
+                self.timeline_path.read_text(encoding="utf-8")
+                if self.timeline_path.exists()
+                else ""
+            )
+            haystack = projection_text.lower()
+            missing = [
+                rid for rid in required_ids if str(rid).lower() not in haystack
+            ]
+            if missing:
+                problems.append(
+                    f"{len(missing)} referenced evidence id(s) missing from "
+                    f"timeline projection (e.g. {missing[:3]})"
+                )
+        return (not problems), problems
 
     def compact_if_oversized(self, path: Path) -> bool:
         """Dispatch compaction for a path if it exceeds the byte budget, returning True if trimmed."""

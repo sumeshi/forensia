@@ -25,7 +25,6 @@ from forensia.ai.prompts.prompt_context import (
 from forensia.ai.prompts.prompt_investigation import (
     build_query_intent_messages,
     build_sql_composer_messages,
-    build_sql_self_check_messages,
 )
 from forensia.ai.prompts.sql_templates import (
     coerce_list,
@@ -77,7 +76,14 @@ def normalize_query_intent_action(
         if coerce_list(payload.get("read_more")):
             return None, "explicit action conflicts with legacy read_more"
         try:
-            action = QueryIntentResponse.model_validate(payload).action
+            # ``request_with_optional_context`` annotates the original response
+            # with the normalized action while preserving legacy fields for
+            # audit/debugging.  Validate only the action envelope here so those
+            # retained fields do not turn a valid decision into an extra-field
+            # error on the second normalization pass.
+            action = QueryIntentResponse.model_validate(
+                {"action": payload["action"]}
+            ).action
         except ValidationError:
             return None, "unknown or malformed action"
     else:
@@ -98,6 +104,13 @@ def normalize_query_intent_action(
                     type="sql.query",
                     intent=str(payload.get("intent") or "").strip(),
                     target_table=str(payload.get("target_table") or "").strip(),
+                    template_id=(
+                        str(payload["template_id"]).strip()
+                        if payload.get("template_id")
+                        else None
+                    ),
+                    params=dict(payload.get("params") or {}),
+                    sql=str(payload.get("sql") or "").strip(),
                     filters_required=[
                         str(item)
                         for item in coerce_list(payload.get("filters_required"))
@@ -569,9 +582,13 @@ def _plan_query_intent(
     hypothesis: Hypothesis,
     session_id: str | None,
 ) -> tuple[dict[str, Any], str]:
-    """Phase 1: plan the query intent, retrying once if the SQL self-check blocks.
+    """Phase 1: plan the query intent (the single SQL decision follows in Phase 2).
 
-    Returns (intent_response, composer_schema_card for the chosen target table).
+    The model response contains the complete bounded SQL action. All readiness
+    validation (table/column/SELECT-only/allow-list/row-limit/dry-run) is
+    performed deterministically by the host before execution.
+
+    Returns the normalized single-action response and its selected schema card.
     """
 
     def retrieval_callback(event: dict[str, Any]) -> None:
@@ -610,38 +627,6 @@ def _plan_query_intent(
         return intent_response, ""
     target_table = str(intent_response.get("target_table") or "evtx_events").strip()
     composer_schema_card = _build_schema_guidance(target_table, db=db)
-
-    self_check_messages, self_check_schema = build_sql_self_check_messages(
-        intent_response, composer_schema_card
-    )
-    self_check = llm_gateway.request_llm_json(
-        messages=self_check_messages,
-        model=model,
-        base_url=base_url,
-        json_schema=self_check_schema,
-        status_callback=status_callback,
-        audit_callback=audit_callback,
-    )
-    if not self_check.get("ready_to_compose", False):
-        if status_callback:
-            status_callback(
-                f"SQL self-check blocked: {self_check.get('blockers', '')}. Retrying intent..."
-            )
-        intent_response = request_with_optional_context(
-            memory=memory,
-            messages_builder=intent_messages_builder,
-            base_url=base_url,
-            model=model,
-            initial_context=default_context_md
-            + f"\n\n<SCHEMA_SELFCHECK_BLOCKERS>\n{self_check.get('blockers', '')}\n</SCHEMA_SELFCHECK_BLOCKERS>\n",
-            status_callback=status_callback,
-            audit_callback=audit_callback,
-            hypothesis_id=hypothesis.id,
-            retrieval_callback=retrieval_callback,
-            json_schema=QUERY_INTENT_SCHEMA,
-        )
-        if intent_response.get("_action_error"):
-            return intent_response, ""
     return intent_response, composer_schema_card
 
 
@@ -735,12 +720,13 @@ def plan_hypothesis_query(
 ) -> HypothesisPlanResult:
     """Plan the next query for a single hypothesis.
 
-    Two-phase split (PRM-010):
-    1. query_intent_planner: decides WHAT data to fetch
-    2. sql_composer: produces the SELECT statement
+    Collapsed to a single SQL decision plus deterministic host validation (T-20):
+    1. query_intent_planner: decides WHAT data to fetch (read_more or sql.query)
+    2. sql_composer: one model decision choosing a recipe (template_id+params)
+       or a bounded fallback SELECT; the host then validates table/column/
+       SELECT-only/allow-list/row-limit/dry-run before execution.
 
-    Phase 1 uses read_more context expansion; phase 2 is idempotent with
-    SQL validation retry."""
+    The former second "schema-readiness" LLM self-check call was removed."""
     default_context_md = _resolve_planner_context(
         memory, hypothesis, default_context_md, initial_context=None
     )
@@ -788,20 +774,28 @@ def plan_hypothesis_query(
             stop_reason=f"invalid_action: {reason}",
             raw_response=intent_response,
         )
-    composer_response = _compose_sql(
-        intent_response=intent_response,
-        composer_schema_card=composer_schema_card,
-        time_range=time_range,
-        prior_check_feedback=prior_check_feedback,
-        execution_error_block=execution_error_block,
-        hypothesis=hypothesis,
-        query_index=query_index,
-        base_url=base_url,
-        model=model,
-        db=db,
-        status_callback=status_callback,
-        audit_callback=audit_callback,
-    )
+    # SQLQueryAction already contains a recipe or bounded SELECT. The host
+    # materializes and validates it; a second LLM composer would recreate the
+    # removed readiness/composition loop and double the prompt cost.
+    action, action_error = normalize_query_intent_action(intent_response, phase="initial")
+    if not isinstance(action, SQLQueryAction):
+        return HypothesisPlanResult(
+            read_more=[str(item) for item in coerce_list(intent_response.get("read_more"))],
+            hypothesis=None,
+            query=None,
+            needs_more=False,
+            stop_reason=action_error or "SQL action was not selected",
+            raw_response=intent_response,
+        )
+    if not action.template_id and not action.sql.strip():
+        return HypothesisPlanResult(
+            read_more=[],
+            hypothesis=None,
+            query=None,
+            needs_more=False,
+            stop_reason="invalid_action: SQL action needs template_id or bounded SELECT",
+            raw_response=intent_response,
+        )
     return _build_hypothesis_plan_result(
-        hypothesis, query_index, intent_response, composer_response
+        hypothesis, query_index, intent_response, intent_response
     )

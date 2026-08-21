@@ -247,3 +247,137 @@ def clear_compaction_cache() -> None:
     """Reset the process-level compaction cache (for testing)."""
     with _cache_lock:
         _cache.clear()
+
+
+# ---------------------------------------------------------------------------
+# Structured compaction (T-22): versioned, regeneratable projection
+# ---------------------------------------------------------------------------
+#
+# Context-overflow compaction must preserve recent turns verbatim and fold
+# older turns into a *versioned structured projection*. The projection is
+# explicitly regeneratable from the durable conversation/Case State and is
+# NEVER treated as authority. On resume we validate the referenced revision
+# and the referenced IDs; recursive summarization of an already-summarized
+# projection is refused to prevent degradation.
+
+_TURN_DELIMITER = "\n\n"
+
+_STRUCTURED_PROJECTION_RE = re.compile(
+    r"<STRUCTURED_PROJECTION\b[^>]*\brevision=\"(\d+)\"[^>]*>", re.DOTALL
+)
+
+
+def is_structured_projection(text: str) -> bool:
+    """Return True if *text* is already a structured projection (a summary)."""
+    return bool(_STRUCTURED_PROJECTION_RE.search(text or ""))
+
+
+def _extract_projection_revision(text: str) -> int | None:
+    """Return the revision integer of a structured projection, or None."""
+    match = _STRUCTURED_PROJECTION_RE.search(text or "")
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _next_revision(source_revision: int | str | None) -> int:
+    """Derive the next projection revision from a source revision."""
+    try:
+        base = int(source_revision or 0)
+    except TypeError, ValueError:
+        base = 0
+    return base + 1
+
+
+def structured_compact(
+    text: str,
+    budget: int,
+    *,
+    base_url: str,
+    model: str,
+    revision: int | None = None,
+    source_revision: int | str | None = None,
+    preserve_recent_turns: int = 3,
+) -> str:
+    """Compact *text* into a versioned structured projection.
+
+    Recent turns (split on blank lines) are preserved verbatim inside
+    ``<RECENT_VERBATIM>``; older turns are summarized (LLM) into
+    ``<SUMMARY>``. The wrapper ``<STRUCTURED_PROJECTION>`` carries a
+    ``revision``, the ``source_revision`` it was derived from, and
+    ``regeneratable="true"`` to mark it as a non-authoritative projection.
+
+    Recursive degradation guard: if *text* is already a structured
+    projection it is returned unchanged — a summary is never summarized
+    again.
+    """
+    if budget <= 0:
+        return ""
+    if is_structured_projection(text):
+        # Refuse to summarize a summary: keep the existing projection intact.
+        return text
+    turns = (
+        text.split(_TURN_DELIMITER)
+        if _TURN_DELIMITER in text
+        else [text]
+    )
+    if len(turns) <= preserve_recent_turns + 1:
+        # Too few turns to benefit from a structured projection.
+        return mechanical_compact(text, budget)
+
+    recent = turns[-preserve_recent_turns:]
+    older = turns[:-preserve_recent_turns]
+    older_text = _TURN_DELIMITER.join(older)
+    rev = revision if revision is not None else _next_revision(source_revision)
+
+    summary = llm_compact(
+        older_text, max(512, budget // 2), base_url=base_url, model=model
+    )
+    recent_block = _TURN_DELIMITER.join(recent)
+    projection = (
+        f'<STRUCTURED_PROJECTION revision="{rev}" '
+        f'source_revision="{source_revision or 0}" regeneratable="true">\n'
+        f"<RECENT_VERBATIM>\n{recent_block}\n</RECENT_VERBATIM>\n"
+        f'<SUMMARY revision="{rev}" regeneratable="true">\n{summary}\n</SUMMARY>\n'
+        f"</STRUCTURED_PROJECTION>"
+    )
+    if len(projection) > budget:
+        projection = mechanical_compact(projection, budget)
+    return projection
+
+
+def validate_projection_revision(
+    projection: str, expected_revision: int | str | None
+) -> bool:
+    """Validate that *projection* carries the expected revision.
+
+    Used on resume to confirm the loaded projection has not drifted from the
+    durable revision it claims to represent. Returns True when the projection
+    is not a structured projection (nothing to validate) or revisions match.
+    """
+    rev = _extract_projection_revision(projection)
+    if rev is None:
+        return True
+    try:
+        return rev == int(expected_revision or 0)
+    except TypeError, ValueError:
+        return False
+
+
+def validate_projection_ids(
+    projection: str, required_ids: list[str]
+) -> tuple[bool, list[str]]:
+    """Validate that every *required_id* is still referenced in *projection*.
+
+    Returns ``(ok, missing)``. A structured projection may reference durable
+    IDs (e.g. event IDs, evidence IDs) that must still exist on resume; this
+    confirms they are present. IDs are matched as whole-token substrings.
+    """
+    if not required_ids:
+        return True, []
+    haystack = (projection or "").lower()
+    missing = [rid for rid in required_ids if str(rid).lower() not in haystack]
+    return (not missing), missing

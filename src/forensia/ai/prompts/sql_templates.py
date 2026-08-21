@@ -135,6 +135,26 @@ TABLE_NAME_PATTERN = re.compile(
 CTE_NAME_PATTERN = re.compile(
     r"(?:with|,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s+as\s*\(", re.IGNORECASE
 )
+LIMIT_PATTERN = re.compile(r"\blimit\s+(\d+)", re.IGNORECASE)
+
+# Host-enforced upper bound on returned rows. Any explicit LIMIT above this is
+# rejected so the host always produces a bounded observation (T-20).
+MAX_SQL_ROWS = 1000
+
+
+def _enforce_row_limit(sql: str) -> None:
+    """Reject SQL whose explicit LIMIT exceeds the host-bound maximum."""
+
+    match = LIMIT_PATTERN.search(sql)
+    if not match:
+        return
+    limit = int(match.group(1))
+    if limit <= 0:
+        raise ValueError("SQL LIMIT must be a positive integer")
+    if limit > MAX_SQL_ROWS:
+        raise ValueError(
+            f"SQL LIMIT {limit} exceeds the host maximum of {MAX_SQL_ROWS} rows"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,8 +257,11 @@ def coerce_list(value: Any) -> list[Any]:
 def validate_select_sql(sql: str) -> str:
     """Validate and normalize a read-only SQL statement.
 
-    Strips Markdown fences, enforces read-only (SELECT/WITH), checks for
-    forbidden keywords, and verifies all referenced table names are known.
+    Host validation contract (T-20): strips Markdown fences, enforces read-only
+    (SELECT/WITH), checks for forbidden keywords, enforces the host row-limit,
+    and verifies all referenced table names are in the allow-list. Column and
+    function validity is confirmed by the dry-run binder check in
+    ``validate_select_sql_with_dryrun``.
     """
     fence_match = _SQL_FENCE_RE.search(sql.strip())
     normalized = (
@@ -254,6 +277,7 @@ def validate_select_sql(sql: str) -> str:
         raise ValueError("Only SELECT queries are allowed")
     if FORBIDDEN_SQL.search(normalized):
         raise ValueError("Forbidden SQL keyword detected")
+    _enforce_row_limit(normalized)
 
     cte_names = {match.group(1) for match in CTE_NAME_PATTERN.finditer(normalized)}
     table_names = {match.group(1) for match in TABLE_NAME_PATTERN.finditer(normalized)}
@@ -313,16 +337,17 @@ def validate_select_sql(sql: str) -> str:
 def validate_select_sql_with_dryrun(sql: str, db: Any) -> str:
     """Validate a SELECT statement by running EXPLAIN against a live DuckDB connection.
 
-    Catches statically valid SQL that references nonexistent functions or tables.
-    `db` is anything with a DuckDB-backed ``.execute`` (raw connection or CaseDB).
-    This is a binder-level check only; run `validate_select_sql` first for the
-    read-only/allowlist/placeholder guarantees. Returns the normalized SQL on
-    success, raises ValueError with the first line of the DuckDB error message
-    on failure.
+    Catches statically valid SQL that references nonexistent functions, columns,
+    or tables (the host's deterministic column validation). `db` is anything with
+    a DuckDB-backed ``.execute`` (raw connection or CaseDB). This is a binder-level
+    check only; run `validate_select_sql` first for the read-only/allowlist/
+    placeholder/row-limit guarantees. Returns the normalized SQL on success,
+    raises ValueError with the first line of the DuckDB error message on failure.
     """
     normalized = sql.strip().rstrip(";").strip()
     if not normalized:
         raise ValueError("SQL is empty")
+    _enforce_row_limit(normalized)
     try:
         db.execute(f"EXPLAIN {normalized}")
     except duckdb.Error as exc:
@@ -332,6 +357,12 @@ def validate_select_sql_with_dryrun(sql: str, db: Any) -> str:
 
 
 def query_template_catalog() -> list[dict[str, Any]]:
+    """Return the bounded recipe menu (3-7 templates) the model may choose from.
+
+    Each entry exposes only the template_id, a human description, and its
+    required params so the single SQL decision can select a recipe plus typed
+    params without writing SQL by hand.
+    """
     return [
         {
             "template_id": spec.template_id,

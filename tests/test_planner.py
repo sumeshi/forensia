@@ -148,12 +148,6 @@ class PlannerRetryTests(unittest.TestCase):
                 "filters_required": ["event_id = 4625"],
                 "time_window": "case time range",
                 "expected_row_shape": "event_id, timestamp, src_ip",
-            },
-            {
-                "ready_to_compose": True,
-                "blockers": "",
-            },
-            {
                 "template_id": "q_failed_logon_by_ip_window",
                 "params": {"hours": 24, "threshold": 5},
                 "purpose": "failed logons by src_ip",
@@ -269,7 +263,6 @@ class PlannerRetryTests(unittest.TestCase):
                 "time_window": "case range",
                 "expected_row_shape": "event_id",
             },
-            {"ready_to_compose": True, "blockers": ""},
             {
                 "template_id": None,
                 "sql": "SELECT event_id FROM evtx_events LIMIT 1",
@@ -307,22 +300,10 @@ class PlannerRetryTests(unittest.TestCase):
                 "filters_required": [],
                 "time_window": "All",
                 "expected_row_shape": "cols",
-            },
-            {
-                "ready_to_compose": True,
-                "blockers": "",
-            },
-            {
                 "template_id": None,
                 "sql": "SELECT * FROM nope",
                 "params": {},
                 "purpose": "test",
-            },
-            {
-                "template_id": None,
-                "sql": "SELECT * FROM findings",
-                "params": {},
-                "purpose": "retry",
             },
         ]
 
@@ -337,9 +318,9 @@ class PlannerRetryTests(unittest.TestCase):
                 model="test-model",
             )
 
-        self.assertEqual(4, mock_request.call_count)
-        self.assertIsNotNone(result.query)
-        self.assertEqual("SELECT * FROM findings", result.query.sql)
+        self.assertEqual(1, mock_request.call_count)
+        self.assertIsNone(result.query)
+        self.assertIn("SQL composition failed", result.stop_reason or "")
 
     def test_plan_hypothesis_query_logs_debug_when_query_parse_fails(self) -> None:
         state = SessionState(session_id="session-1", iteration=1)
@@ -352,24 +333,6 @@ class PlannerRetryTests(unittest.TestCase):
                 "filters_required": [],
                 "time_window": "All",
                 "expected_row_shape": "cols",
-            },
-            {
-                "ready_to_compose": True,
-                "blockers": "",
-            },
-            {
-                "template_id": "missing-template",
-                "sql": "",
-                "params": {},
-                "purpose": "broken",
-            },
-            {
-                "template_id": "missing-template",
-                "sql": "",
-                "params": {},
-                "purpose": "broken",
-            },
-            {
                 "template_id": "missing-template",
                 "sql": "",
                 "params": {},
@@ -401,7 +364,6 @@ class PlannerRetryTests(unittest.TestCase):
         hypothesis = Hypothesis(id="H1", description="test hypothesis")
         responses = [
             {"read_more": [], "intent": "test", "target_table": "evtx_events"},
-            {"ready_to_compose": True, "blockers": ""},
             {"sql": "SELECT 1", "purpose": "test"},
         ]
 
@@ -452,7 +414,6 @@ class PlannerRetryTests(unittest.TestCase):
         hypothesis = Hypothesis(id="H1", description="test hypothesis")
         responses = [
             {"read_more": [], "intent": "test", "target_table": "evtx_events"},
-            {"ready_to_compose": True, "blockers": ""},
             {"sql": "SELECT 1", "purpose": "test"},
         ]
 
@@ -512,10 +473,6 @@ class PlannerRetryTests(unittest.TestCase):
                 "filters_required": [],
                 "time_window": "All",
                 "expected_row_shape": "cols",
-            },
-            {
-                "ready_to_compose": True,
-                "blockers": "",
             },
             {
                 "template_id": None,
@@ -657,6 +614,46 @@ class PlannerRetryTests(unittest.TestCase):
 
         self.assertNotEqual(left, right)
 
+    def test_single_llm_decision_skips_schema_self_check_call(self) -> None:
+        """T-20: the second 'schema-readiness' LLM call must be gone.
+
+        The SQL path is one bounded action decision; the host validates it
+        deterministically without a readiness or composer call.
+        """
+        state = SessionState(session_id="session-single", iteration=1)
+        hypothesis = Hypothesis(id="H-single", description="test hypothesis")
+        responses = [
+            {
+                "read_more": [],
+                "intent": "test intent",
+                "target_table": "evtx_events",
+                "filters_required": [],
+                "time_window": "All",
+                "expected_row_shape": "cols",
+                "template_id": None,
+                "sql": "SELECT event_id FROM findings LIMIT 1",
+                "params": {},
+                "purpose": "test",
+            },
+        ]
+
+        with patch(
+            "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=responses
+        ) as mock_request:
+            result = plan_hypothesis_query(
+                state=state,
+                hypothesis=hypothesis,
+                memory=_MemoryStub(),
+                base_url=_llm_base_url(),
+                model="test-model",
+            )
+
+        # One bounded SQL decision — no readiness/composer/self-check call.
+        self.assertEqual(1, mock_request.call_count)
+        self.assertIsNotNone(result.query)
+        for call in mock_request.call_args_list:
+            for message in call.kwargs["messages"]:
+                self.assertNotIn("ready_to_compose", str(message.get("content")))
 
 if __name__ == "__main__":
     unittest.main()

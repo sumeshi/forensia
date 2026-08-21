@@ -88,7 +88,10 @@ def test_chat_completion_retries_llama_strict_schema_failure_with_compatible_sch
     assert all("grammar violation" not in message.lower() for message in messages)
     metadata = llm_client.get_last_completion_metadata()
     assert metadata is not None
-    assert (metadata.finish_reason, metadata.usage_source) == ("length", "estimated")
+    assert (metadata.finish_reason, metadata.usage_source) == (
+        "length",
+        "local_estimate",
+    )
 
 
 def test_chat_completion_skips_strict_after_server_rejected_it_once() -> None:

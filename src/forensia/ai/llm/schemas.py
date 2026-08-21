@@ -17,7 +17,16 @@ class MemoryReadMoreAction(BaseModel):
 
 
 class SQLQueryAction(BaseModel):
-    """The intent-to-SQL operation selectable by the hypothesis planner."""
+    """The intent-to-SQL operation selectable by the hypothesis planner.
+
+    One model response chooses exactly one bounded execution path:
+
+    * a recipe (``template_id`` + ``params``) rendered from the catalog, or
+    * a bounded ``sql`` fallback written directly by the model.
+
+    The host validates the chosen path deterministically before execution
+    (SELECT-only, table/column allow-list, row-limit, dry-run).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -31,6 +40,11 @@ class SQLQueryAction(BaseModel):
         "registry_artifacts",
         "registry_timeline",
     ]
+    # Recipe path: a bounded template id chosen from the catalog.
+    template_id: str | None = None
+    params: dict[str, Any] = Field(default_factory=dict)
+    # Fallback path: a bounded SELECT written directly by the model.
+    sql: str = ""
     filters_required: list[str] = Field(default_factory=list)
     time_window: str = ""
     expected_row_shape: str = ""
@@ -352,6 +366,10 @@ SECTION_AGENT_CHECK_SCHEMA: dict[str, Any] = {
     },
 }
 
+# DEPRECATED (T-20): the second "schema-readiness" LLM call was removed.
+# Host validation (validate_select_sql / validate_select_sql_with_dryrun)
+# now owns table/column/SELECT-only/allow-list/row-limit/dry-run checks.
+# Retained only for backward-compatible import by prompt_investigation.py.
 SQL_SELF_CHECK_SCHEMA: dict[str, Any] = {
     "title": "SQLSelfCheck",
     "type": "object",

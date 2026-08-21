@@ -332,3 +332,22 @@ def testsections_for_hypothesis_no_signal_returns_none() -> None:
     from forensia.core.session import Hypothesis
 
     assert sections_for_hypothesis(Hypothesis(id="H-003", description="x")) is None
+
+
+def test_dfir_playbook_emits_event_id_index_and_instruments(tmp_path: Any) -> None:
+    """T-21: a subset of event IDs yields an EVENT_ID_INDEX and telemetry."""
+    from forensia.core.case import Case
+    from forensia.db.database import CaseDB
+
+    case = Case.init(tmp_path)
+    with CaseDB(case) as db:
+        playbook = dfir_playbook(
+            "check", event_ids={4624, 4625}, db=db, session_id="S-1"
+        )
+        assert "<EVENT_ID_INDEX>" in playbook
+        # Selected event IDs are fully described; the index advertises others.
+        assert " - Event 4624" in playbook
+        assert " - Event 4625" in playbook
+        row = db.execute("SELECT source_kind FROM retrieval_events").fetchone()
+        assert row is not None
+        assert row[0] == "dfir_playbook"

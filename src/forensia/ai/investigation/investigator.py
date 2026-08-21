@@ -31,6 +31,7 @@ from forensia.ai.investigation.investigation_session import (
     _ctx_get_report_status,
     _finding_snapshot,
     _init_session,
+    persist_session_terminal_receipt,
     sync_keypoint_cards,
 )
 from forensia.ai.investigation.work_state import (
@@ -40,6 +41,11 @@ from forensia.ai.investigation.work_state import (
 )
 from forensia.ai.llm.llm_client import (
     LLMServerUnavailableError,
+)
+from forensia.ai.llm_telemetry import (
+    LLMTelemetry,
+    reset_active_telemetry,
+    set_active_telemetry,
 )
 from forensia.ai.report_gap import (
     _build_report_status,
@@ -497,6 +503,7 @@ async def investigate(
         report_max_queries_per_section=report_max_queries_per_section,
         max_llm_calls=max_llm_calls,
     )
+    telemetry_token = set_active_telemetry(LLMTelemetry(db, session_id))
     status = "running"
     stop_reason_code = ""
     report_refresh_failures = 0
@@ -532,10 +539,20 @@ async def investigate(
         # Memory or audit-summary write must not leave a completed DB session
         # looking permanently active.
         try:
+            persist_session_terminal_receipt(
+                db,
+                session_id,
+                status,
+                terminal_reason=format_stop_reason(
+                    status,
+                    stop_reason_code,
+                    stop_summary(db, len(state.active_hypotheses)),
+                ),
+                finished_at=finished_at,
+            )
             db.execute(
-                "UPDATE investigation_sessions SET finished_at = ?, iterations = ?, "
-                "status = ? WHERE session_id = ?",
-                (finished_at, state.iteration, status, session_id),
+                "UPDATE investigation_sessions SET iterations = ? WHERE session_id = ?",
+                (state.iteration, session_id),
             )
         except Exception as exc:
             _log("FINALIZE", f"session receipt failed: {exc}", level="error")
@@ -559,4 +576,5 @@ async def investigate(
         except Exception as exc:
             _log("FINALIZE", f"LLM audit summary failed: {exc}", level="error")
         signal.signal(signal.SIGINT, previous_sigint)
+        reset_active_telemetry(telemetry_token)
     return _build_investigate_result(env, status, report_refresh_failures)

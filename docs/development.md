@@ -34,6 +34,7 @@ values fall back to the defaults below; values below the documented minimum are 
 | `LLM_OUTPUT_LANGUAGE` | `ja`; accepts `ja` or `en` and controls human-facing prompts and generated report language. Invalid values fall back to `ja`. | Prompt/report builders |
 | `LLM_REPORT_MAX_QUERIES_PER_SECTION` | `3`, minimum 1; CLI `--report-max-queries-per-section` overrides it. | Report section agent |
 | `LLM_REASONING_RESERVE_TOKENS` | `0`; added to the completion ceiling for providers that count hidden reasoning in `max_tokens`. | LLM HTTP client |
+| `LLM_CONTEXT_WINDOW_TOKENS` | `0` (unknown/automatic); optional total provider context limit used to reserve input space before sending output budget. | LLM HTTP client |
 | `FORENSIA_PROMPT_BUDGET_TOKENS` | `12000` when unset or `0`; total plan/check input budget. Set this first when tuning context size. | Prompt assembly/trimming |
 | `FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS` | Automatic when unset or `0`: twice the total prompt-token budget. Advanced override for generated DFIR guidance only. | Playbook/context builders |
 | `LLM_MEMORY_MAX_BYTES` | Automatic when unset or `0`: `prompt tokens × 4/3`, clamped to 4096–65536 bytes. Advanced override for overview compaction. | Working Memory |

@@ -565,6 +565,100 @@ CREATE TABLE IF NOT EXISTS trace.progress_events (
 
 CREATE INDEX IF NOT EXISTS ai_reviews_by_finding
     ON trace.ai_reviews(finding_id);
+
+-- Three distinct LLM telemetry record kinds (T-10):
+--   logical call: one application-level decision unit
+--   provider attempt: one actual HTTP request (incl. retries/timeouts)
+--   deterministic op: render/parse/validate/query, non-LLM
+CREATE TABLE IF NOT EXISTS trace.llm_logical_calls (
+    logical_call_id VARCHAR PRIMARY KEY,
+    session_id VARCHAR,
+    parent_logical_call_id VARCHAR,
+    phase VARCHAR,
+    iteration INTEGER,
+    hypothesis_id VARCHAR,
+    section_id VARCHAR,
+    action_id VARCHAR,
+    request_fingerprint VARCHAR,
+    status VARCHAR,
+    created_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS llm_logical_calls_by_session
+    ON trace.llm_logical_calls(session_id, phase);
+
+CREATE TABLE IF NOT EXISTS trace.llm_provider_attempts (
+    attempt_id VARCHAR PRIMARY KEY,
+    logical_call_id VARCHAR,
+    parent_attempt_id VARCHAR,
+    session_id VARCHAR,
+    phase VARCHAR,
+    retry_ordinal INTEGER,
+    endpoint VARCHAR,
+    provider VARCHAR,
+    model VARCHAR,
+    schema_mode VARCHAR,
+    request_fingerprint VARCHAR,
+    configured_output_limit INTEGER,
+    reasoning_reserve_tokens INTEGER,
+    known_context_limit INTEGER,
+    requested_output_limit INTEGER,
+    effective_output_limit INTEGER,
+    input_chars INTEGER,
+    output_chars INTEGER,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    input_tokens_source VARCHAR,
+    output_tokens_source VARCHAR,
+    start_time TIMESTAMP,
+    end_time TIMESTAMP,
+    duration_ms BIGINT,
+    connect_timeout_ms BIGINT,
+    read_timeout_ms BIGINT,
+    logical_deadline_ms BIGINT,
+    deadline_fired VARCHAR,
+    http_status INTEGER,
+    status VARCHAR,
+    error_type VARCHAR,
+    error_code VARCHAR,
+    error_body_summary VARCHAR,
+    exception_class VARCHAR,
+    finish_reason VARCHAR,
+    parse_status VARCHAR,
+    truncated BOOLEAN,
+    accepted BOOLEAN,
+    discarded_reason VARCHAR,
+    response_fingerprint VARCHAR,
+    action_fingerprint VARCHAR,
+    duplicate_of VARCHAR,
+    retry_class VARCHAR,
+    retry_reason VARCHAR,
+    policy_decision VARCHAR,
+    request_changed_fields JSON,
+    prompt_metadata JSON,
+    created_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS llm_provider_attempts_by_logical
+    ON trace.llm_provider_attempts(logical_call_id);
+CREATE INDEX IF NOT EXISTS llm_provider_attempts_by_session
+    ON trace.llm_provider_attempts(session_id, phase);
+
+CREATE TABLE IF NOT EXISTS trace.llm_deterministic_ops (
+    op_id VARCHAR PRIMARY KEY,
+    session_id VARCHAR,
+    phase VARCHAR,
+    hypothesis_id VARCHAR,
+    section_id VARCHAR,
+    op_type VARCHAR,
+    target VARCHAR,
+    duration_ms BIGINT,
+    note VARCHAR,
+    created_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS llm_deterministic_ops_by_session
+    ON trace.llm_deterministic_ops(session_id, phase);
 """
 
 TRACE_TABLES = {
@@ -574,4 +668,7 @@ TRACE_TABLES = {
     "hypothesis_reasoning",
     "progress_events",
     "retrieval_events",
+    "llm_logical_calls",
+    "llm_provider_attempts",
+    "llm_deterministic_ops",
 }

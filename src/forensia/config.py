@@ -21,6 +21,8 @@ class Settings:
     llm_memory_max_bytes: int = 0
     llm_report_max_queries_per_section: int = 3
     llm_reasoning_reserve_tokens: int = 0
+    # 0 means unknown/auto; providers may still reject oversized requests.
+    llm_context_window_tokens: int = 0
     forensia_system_prompt_budget_chars: int = 0
     # 0 = derive from the configured system-character budget.
     forensia_prompt_budget_tokens: int = 0
@@ -61,6 +63,9 @@ def _build_settings() -> Settings:
         ),
         llm_reasoning_reserve_tokens=_env_int(
             "LLM_REASONING_RESERVE_TOKENS", 0, minimum=0
+        ),
+        llm_context_window_tokens=_env_int(
+            "LLM_CONTEXT_WINDOW_TOKENS", 0, minimum=0
         ),
         forensia_system_prompt_budget_chars=_env_int(
             "FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS", 0, minimum=0
@@ -104,6 +109,7 @@ def get_llm_settings() -> dict:
         "memory_max_bytes": get_memory_max_bytes(),
         "report_max_queries_per_section": settings.llm_report_max_queries_per_section,
         "reasoning_reserve_tokens": settings.llm_reasoning_reserve_tokens,
+        "llm_context_window_tokens": settings.llm_context_window_tokens or None,
     }
 
 

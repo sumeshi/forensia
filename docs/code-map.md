@@ -74,11 +74,12 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 | [src/forensia/ai/investigation/investigator.py](../src/forensia/ai/investigation/investigator.py) | `investigate(...)` entry point: plan-cycle loop, report phase, termination, LLM budget |
 | [src/forensia/ai/investigation/investigation_cycle.py](../src/forensia/ai/investigation/investigation_cycle.py) | One plan cycle: broad plan (gap identify → hypothesis draft) + hypothesis loop body |
 | [src/forensia/ai/investigation/investigation_session.py](../src/forensia/ai/investigation/investigation_session.py) | Session setup, memory-context caches, step logging, keypoint-card sync |
-| [src/forensia/ai/investigation/planner.py](../src/forensia/ai/investigation/planner.py) | `plan_hypothesis_query`: bounded action eligibility/validation (`memory.read_more` → `sql.query`) → scoped memory evaluation → query intent → SQL self-check → SQL composition (≤3 validation retries) |
+| [src/forensia/ai/investigation/planner.py](../src/forensia/ai/investigation/planner.py) | `plan_hypothesis_query`: bounded action eligibility (`memory.read_more` → `sql.query`) → one LLM recipe/fallback-SQL decision → deterministic host validation |
 | [src/forensia/ai/investigation/memory_sync.py](../src/forensia/ai/investigation/memory_sync.py) | `_apply_memory_updates`: checker output → facts / timeline / tasks / entities / hypothesis cards |
 | [src/forensia/ai/report_gap.py](../src/forensia/ai/report_gap.py) | Report status building + gap → hypothesis injection |
 | [src/forensia/ai/investigation/progress.py](../src/forensia/ai/investigation/progress.py) | `HypothesisProgressTracker`: query fingerprinting, auto-confirm / refute / pivot decisions |
 | [src/forensia/ai/audit.py](../src/forensia/ai/audit.py) | `LLMCallLogger`: per-phase prompt/response logs under `ai_logs/`, call counting |
+| [src/forensia/ai/llm_telemetry.py](../src/forensia/ai/llm_telemetry.py) | Session-scoped logical-call/provider-attempt/deterministic-operation receipts in the existing Trace DB |
 | [src/forensia/ai/compaction.py](../src/forensia/ai/compaction.py) | Fail-open LLM compaction with deterministic fallback and required-token validation |
 | [src/forensia/ai/retrieval_telemetry.py](../src/forensia/ai/retrieval_telemetry.py) | Observational retrieval events plus the versioned tool-receipt and one-attempt Retrieval Evaluation contracts; never assigns Evidence roles or verdicts |
 | [src/forensia/ai/case_profile.py](../src/forensia/ai/case_profile.py) | Case profile (observed event IDs / artifact families) + profile advisor |
@@ -87,7 +88,7 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 
 | Path | Responsibilities |
 |---|---|
-| [src/forensia/ai/llm/](../src/forensia/ai/llm/) | LLM transport: `llm_client.py` (HTTP + outage recovery), `llm_gateway.py` (`request_llm_json`), `json_response.py` (JSON parse/repair), `schemas.py` (output JSON schemas) |
+| [src/forensia/ai/llm/](../src/forensia/ai/llm/) | LLM transport: `llm_client.py` (HTTP/retry/context handling), `request_metadata.py` (bounded fingerprints/section metadata), `llm_gateway.py` (`request_llm_json`), `json_response.py` (JSON parse/repair), `schemas.py` (output JSON schemas) |
 | [src/forensia/ai/prompts/](../src/forensia/ai/prompts/) | Prompt builders: `prompt_investigation.py` (planner/checker), `prompt_sections.py` (section agent), `prompt_context.py` (context slimming, budget guard), `prompt_playbook.py` (`_dfir_playbook`), `sql_schema.py` (schema cards, allowed tables), `sql_templates.py` (query template catalog from `_schema/query_templates.yaml` + `validate_select_sql`) |
 | [src/forensia/ai/hypotheses/](../src/forensia/ai/hypotheses/) | Hypothesis lifecycle: `hypothesis_model.py` (parsing), `hypothesis_manager.py` (merge/dedup/resolve), `hypothesis_store.py` (DB persistence), `hypothesis_runner.py` (per-hypothesis orchestration), `execution.py` (existing SQL fallback and receipt assembly), `seeding.py` (rule-seeded findings/hypotheses) |
 | [src/forensia/core/verification.py](../src/forensia/core/verification.py) | Versioned `VerificationSpec` model and lossless legacy-field normalization/projection used by all hypothesis creation and persistence paths |

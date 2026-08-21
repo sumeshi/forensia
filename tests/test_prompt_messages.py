@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ from unittest.mock import patch
 
 from forensia.ai.llm.schemas import PARAGRAPH_NARRATE_SCHEMA
 from forensia.ai.prompts.prompt_context import (
+    _build_schema_guidance,
     _trim_dynamic_content,
     slim_report_brief_for_section,
     truncate_context_sections,
@@ -25,7 +27,9 @@ from forensia.config import (
     reload_settings,
     resolve_llm_config,
 )
+from forensia.core.case import Case
 from forensia.core.session import Hypothesis
+from forensia.db.database import CaseDB
 
 
 class _MemoryStub:
@@ -637,6 +641,32 @@ def test_prior_section_runs_keep_prefiltered_and_matching_history() -> None:
     selected = _filter_prior_runs_by_heading(runs, "Log Integrity")
     assert selected == [runs[0], runs[2]]
 
+
+class IndexedContextTests(unittest.TestCase):
+    """T-21: repeated global prompts become compact indexes with lazy detail."""
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.mkdtemp()
+        self.case = Case.init(self.tmpdir)
+        self.db = CaseDB(self.case)
+
+    def tearDown(self) -> None:
+        try:
+            self.db.close()
+        except Exception:
+            pass
+
+    def test_schema_guidance_returns_index_and_selected_card(self) -> None:
+        text = _build_schema_guidance("evtx_events", db=self.db, session_id="S-1")
+        self.assertIn("<SCHEMA_INDEX>", text)
+        self.assertIn("evtx_events", text)
+        self.assertIn("<SELECTED_SCHEMA_CARDS>", text)
+        row = self.db.execute(
+            "SELECT source_kind, selected_refs FROM retrieval_events"
+        ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual("schema_hints", row[0])
+        self.assertIn("evtx_events", row[1])
 
 if __name__ == "__main__":
     unittest.main()

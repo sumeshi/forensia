@@ -113,7 +113,9 @@ class LLMCallLogger:
                 if completion is not None
                 else max(1, len(output_text) // 4)
             )
-        usage_source = completion.usage_source if completion is not None else "estimated"
+        usage_source = (
+            completion.usage_source if completion is not None else "local_estimate"
+        )
         request_payload = json.dumps(
             input_messages, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         )

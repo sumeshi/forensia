@@ -123,6 +123,6 @@ class LLMCallLoggerTests(unittest.TestCase):
             json.loads(call.args[0])
             for call in logger.base_dir.__truediv__.return_value.write_text.call_args_list[:2]
         )
-        self.assertEqual("estimated", first["meta"]["usage_source"])
+        self.assertEqual("local_estimate", first["meta"]["usage_source"])
         self.assertTrue(second["meta"]["repeated_request"])
         self.assertTrue(second["meta"]["repeated_action"])

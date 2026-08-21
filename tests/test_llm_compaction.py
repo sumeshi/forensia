@@ -9,6 +9,7 @@ from forensia.ai.compaction import (
     _extract_essential_tokens,
     clear_compaction_cache,
     llm_compact,
+    structured_compact,
 )
 from forensia.core.compaction import TRUNCATION_MARKER
 
@@ -293,3 +294,55 @@ class TestTrimDynamicContentMarker:
         trimmed = _trim_dynamic_content(messages, max_total_tokens=1000)
         user_msg = trimmed[1]["content"]
         assert "…[truncated]" in user_msg
+
+
+class TestStructuredCompact:
+    """T-22: versioned structured projection for context-overflow compaction."""
+
+    def setup_method(self) -> None:
+        clear_compaction_cache()
+
+    def _many_turns(self) -> str:
+        # Two older turns (large enough to exceed the LLM threshold) plus three
+        # recent turns: needs >= preserve_recent_turns+2 turns to project.
+        older = "Event 4624 from evtx_events table. " * 30
+        return "\n\n".join(
+            [
+                older,
+                older,
+                "recent alpha turn",
+                "recent beta turn",
+                "recent gamma turn",
+            ]
+        )
+
+    def test_preserves_recent_verbatim_and_summarizes_older(self) -> None:
+        text = self._many_turns()
+        llm_response = "Summary: Event 4624 from evtx_events."
+        with patch(
+            "forensia.ai.compaction._call_llm", return_value=llm_response
+        ) as mock_llm:
+            out = structured_compact(text, 2000, base_url="http://x", model="m")
+        mock_llm.assert_called_once()
+        assert "<STRUCTURED_PROJECTION" in out
+        assert 'revision="1"' in out
+        assert 'regeneratable="true"' in out
+        # Recent turns preserved verbatim.
+        assert "recent alpha turn" in out
+        assert "recent beta turn" in out
+        assert "recent gamma turn" in out
+        # Older turns folded into the summary.
+        assert "Summary: Event 4624 from evtx_events." in out
+
+    def test_refuses_to_summarize_an_existing_projection(self) -> None:
+        projection = (
+            '<STRUCTURED_PROJECTION revision="2" source_revision="1" '
+            'regeneratable="true"><RECENT_VERBATIM>x</RECENT_VERBATIM>'
+            "<SUMMARY>y</SUMMARY></STRUCTURED_PROJECTION>"
+        )
+        with patch("forensia.ai.compaction._call_llm") as mock_llm:
+            out = structured_compact(
+                projection, 2000, base_url="http://x", model="m"
+            )
+        mock_llm.assert_not_called()  # recursive degradation prevented
+        assert out == projection

@@ -72,6 +72,14 @@ class CaseDB:
             "hypotheses_verification_spec_v1",
             self._apply_hypotheses_verification_spec_v1,
         )
+        self._apply_migration_once(
+            "investigation_sessions_terminal_reason",
+            self._apply_investigation_sessions_terminal_reason,
+        )
+        self._apply_migration_once(
+            "llm_provider_attempts_prompt_metadata",
+            self._apply_llm_provider_attempts_prompt_metadata,
+        )
 
     def _apply_migration_once(
         self, migration_key: str, callback: Callable[[], None]
@@ -89,9 +97,28 @@ class CaseDB:
             (migration_key,),
         )
 
+    def _apply_investigation_sessions_terminal_reason(self) -> None:
+        """Add the structured terminal receipt column to investigation_sessions.
+
+        Every terminal session must carry a ``terminal_reason`` so the wall-time
+        reconstruction (T-12) and the reconciled ``running``→``abandoned`` path
+        have an authoritative, human-readable cause even when the harness did
+        not write one (legacy runs finalized before this column existed).
+        """
+        self.conn.execute(
+            "ALTER TABLE trace.investigation_sessions "
+            "ADD COLUMN IF NOT EXISTS terminal_reason VARCHAR"
+        )
+
+    def _apply_llm_provider_attempts_prompt_metadata(self) -> None:
+        """Add prompt accounting to telemetry rows created by older cases."""
+        self.conn.execute(
+            "ALTER TABLE trace.llm_provider_attempts "
+            "ADD COLUMN IF NOT EXISTS prompt_metadata JSON"
+        )
+
     def _apply_hypotheses_verification_spec_v1(self) -> None:
         """Add canonical verification policy columns and backfill old rows."""
-
         self.conn.execute(
             "ALTER TABLE hypotheses ADD COLUMN IF NOT EXISTS refute_when JSON"
         )

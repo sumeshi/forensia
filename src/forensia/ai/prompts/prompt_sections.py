@@ -26,10 +26,13 @@ if TYPE_CHECKING:
 
 from forensia.ai.prompts.prompt_context import (
     _build_event_id_guidance,
+    _build_evidence_group_index,
+    _build_report_requirement_index,
     _build_schema_guidance,
     _collect_source_verdicts,
     _format_evidence_coverage,
     _format_evidence_row,
+    _instrument_retrieval,
     _lang_instruction,
     _rows_to_markdown_table,
     _summarize_context_sections,
@@ -105,10 +108,13 @@ def build_report_section_messages(
     raw_evidence_rows: list[dict[str, Any]] | None = None,
     time_range: dict[str, str] | None = None,
     structured_digest: str | None = None,
+    db: CaseDB | None = None,
+    session_id: str | None = None,
 ) -> list[dict[str, str]]:
     """Build messages for report section writing with evidence and template context."""
 
     placeholder = "[INSUFFICIENT EVIDENCE: reason]"
+    section_key = str(section_meta.get("section") or "")
     cov = _section_coverage_block(report_brief or {})
     if cov and str(section_meta.get("section") or "").strip() == "1_overview":
         cov = f"Use the following evidence coverage summary as the canonical Evidence Scope. Do not invent sources that are not listed.\n{cov}\n"
@@ -163,6 +169,12 @@ def build_report_section_messages(
     raw_block = ""
     if raw_evidence_rows:
         raw_block = f"\nnormalized_evidence_rows (summaries only; do not mirror raw tables):\n{_rows_to_markdown_table(raw_evidence_rows)}\n"
+    requirement_index = _build_report_requirement_index(
+        report_brief, db=db, session_id=session_id
+    )
+    evidence_group_index = _build_evidence_group_index(
+        evidence_results, db=db, session_id=session_id
+    )
     user = (
         f"section_meta: {section_meta}\ncurrent_subsection: {section_heading or '(full section)'}\n"
         f"report_brief: {slim_report_brief_for_section(report_brief or {}, str(section_meta.get('section') or ''))}\n"
@@ -171,6 +183,23 @@ def build_report_section_messages(
         f"evidence_results: {evidence}\n{raw_block}\n"
         "Complete only this current template block by replacing placeholders with evidence-based content.\n"
         f"{template_body}"
+    )
+    if requirement_index:
+        user += "\n" + requirement_index + "\n"
+    if evidence_group_index:
+        user += "\n" + evidence_group_index + "\n"
+    _instrument_retrieval(
+        db,
+        session_id=session_id,
+        scope_kind="report_section",
+        scope_id=section_key,
+        phase="report_section",
+        source_kind="report_section_builder",
+        query_terms=[section_key, str(section_heading or "")],
+        candidate_count=len(system) + len(user),
+        selected_refs=collect_event_ids(evidence_results),
+        selected_chars=len(system) + len(user),
+        budget=0,
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -288,13 +317,16 @@ def build_section_agent_plan_messages(
     prior_section_keypoints: list[str] | None = None,
     question_spec: dict[str, Any] | None = None,
     db: CaseDB | None = None,
+    session_id: str | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
     """Build messages for the section agent's plan phase — decide next evidence action.
 
     Supports action types: sql, template, keypoint, facts, write. Includes
     error-recovery logic to switch to keypoint after repeated SQL failures."""
 
-    schema_guidance = _build_schema_guidance("evtx_events", db=db)
+    schema_guidance = _build_schema_guidance(
+        "evtx_events", db=db, session_id=session_id
+    )
 
     EXAMPLE_SECTION_PLAN = """
 <EXAMPLE verdict="section_plan">
@@ -389,6 +421,19 @@ Output: {"action": "keypoint", "keypoint": "overview_hosts", "purpose": "List ho
         f"prior_section_keypoints_in_this_report: {prior_section_keypoints or []}\n\n"
         f"prior_runs: {_filter_prior_runs_by_heading(prior_runs, block_heading)}\n"
     )
+    _instrument_retrieval(
+        db,
+        session_id=session_id,
+        scope_kind="section_agent_plan",
+        scope_id=section_key,
+        phase="section_agent_plan",
+        source_kind="section_plan_builder",
+        query_terms=[section_key, block_heading],
+        candidate_count=len(system) + len(user),
+        selected_refs=[],
+        selected_chars=len(system) + len(user),
+        budget=0,
+    )
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -409,6 +454,8 @@ def build_section_agent_check_messages(
     memory_context_md: str = "",
     time_range: dict[str, str] | None = None,
     question_spec: dict[str, Any] | None = None,
+    db: CaseDB | None = None,
+    session_id: str | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
     """Build messages for the section agent's check phase — verify evidence sufficiency.
 
@@ -490,6 +537,19 @@ Output: {"verdict": "block_contradicted", "status": "not_found", "rationale": "N
     if contradicted_history:
         user += f"contradicted_attempts_previous_iterations: {contradicted_history}\n\n"
     user += f"prior_runs: {_filter_prior_runs_by_heading(prior_runs, block_heading)}\n"
+    _instrument_retrieval(
+        db,
+        session_id=session_id,
+        scope_kind="section_agent_check",
+        scope_id=section_key,
+        phase="section_agent_check",
+        source_kind="section_check_builder",
+        query_terms=[section_key, block_heading],
+        candidate_count=len(system) + len(user),
+        selected_refs=[],
+        selected_chars=len(system) + len(user),
+        budget=0,
+    )
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -502,6 +562,8 @@ def build_section_outline_messages(
     time_range: dict[str, str] | None = None,
     section_meta: dict | None = None,
     prior_section_keypoints: list[str] | None = None,
+    db: CaseDB | None = None,
+    session_id: str | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
     """role: section_outliner.
     Goal: assign each evidence item to ONE paragraph; produce outline JSON.
@@ -539,6 +601,19 @@ def build_section_outline_messages(
         f"available_evidence:\n{evidence_summary or 'No evidence available.'}\n"
         f"prior_section_keypoints: {prior_section_keypoints or []}\n"
     )
+    _instrument_retrieval(
+        db,
+        session_id=session_id,
+        scope_kind="section_outline",
+        scope_id=str((section_meta or {}).get("section") or "outline"),
+        phase="section_outline",
+        source_kind="section_outline_builder",
+        query_terms=[str((section_meta or {}).get("section") or "outline")],
+        candidate_count=len(system) + len(user),
+        selected_refs=[],
+        selected_chars=len(system) + len(user),
+        budget=0,
+    )
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -552,6 +627,8 @@ def build_paragraph_narrate_messages(
     template_body: str,
     language: str = "en",
     structured_digest: str | None = None,
+    db: CaseDB | None = None,
+    session_id: str | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
     settings = get_llm_settings()
     language = str(settings.get("output_language", language))
@@ -613,6 +690,19 @@ def build_paragraph_narrate_messages(
         f"Key points: {json.dumps(prompt_key_points, ensure_ascii=False, default=str)}\n"
         f"Template body context: {template_body[:500]}\n"
         f"Evidence rows: {json.dumps(prompt_evidence_rows[:10], default=str, ensure_ascii=False)}\n"
+    )
+    _instrument_retrieval(
+        db,
+        session_id=session_id,
+        scope_kind="paragraph_narrate",
+        scope_id=heading,
+        phase="paragraph_narrate",
+        source_kind="paragraph_narrate_builder",
+        query_terms=[heading],
+        candidate_count=len(system) + len(user),
+        selected_refs=[],
+        selected_chars=len(system) + len(user),
+        budget=0,
     )
     return [
         {"role": "system", "content": system},

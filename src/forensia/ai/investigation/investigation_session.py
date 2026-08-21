@@ -24,6 +24,7 @@ from forensia.ai.hypotheses.seeding import (
 )
 from forensia.ai.investigation.work_state import (
     ensure_objective_gap,
+    format_terminal_reason,
     reopen_retryable_work,
 )
 from forensia.ai.llm.llm_client import (
@@ -54,6 +55,94 @@ from forensia.report.template_export import seed_case_report_templates
 
 def _to_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
+
+
+# Terminal status vocabulary written by the investigation harness
+# (investigator.py `finally` block) and reconciled here for stale runs.
+_TERMINAL_STATUS_CODES = ("completed", "stopped", "failed", "cancelled", "abandoned")
+
+
+def persist_session_terminal_receipt(
+    db: CaseDB,
+    session_id: str,
+    status: str,
+    *,
+    terminal_reason: str | None = None,
+    finished_at: datetime | None = None,
+) -> None:
+    """Persist the durable session terminal receipt before fallible projections.
+
+    Always records ``finished_at`` (timezone-aware UTC) and a structured
+    ``terminal_reason`` so a session never remains permanently ``running`` even
+    if a later Memory/report/API projection fails (T-12.1).
+    """
+    finished = finished_at or datetime.now(UTC)
+    reason = terminal_reason or format_terminal_reason(status)
+    db.execute(
+        "UPDATE investigation_sessions SET finished_at = ?, status = ?, "
+        "terminal_reason = ? WHERE session_id = ?",
+        (finished.replace(tzinfo=None), status, reason, session_id),
+    )
+
+
+def _conservative_finish_time(
+    db: CaseDB, session_id: str, started_at: Any
+) -> Any:
+    """Conservative finish-time fallback: last observed step/event time.
+
+    Never collapses wall time to ``started_at`` (T-12.2). Falls back to
+    ``started_at`` only when no later activity exists.
+    """
+    step_row = db.execute(
+        "SELECT MAX(created_at) FROM investigation_steps WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    last_step = step_row[0] if step_row else None
+    # progress_events are not session-scoped; the last step time is the
+    # conservative finish fallback. Falls back to started_at only when no
+    # later activity exists (T-12.2).
+    candidate = started_at
+    if last_step is not None:
+        candidate = last_step
+    return candidate
+
+
+def reconcile_stale_sessions(db: CaseDB) -> int:
+    """Reconcile stale ``running`` sessions into a structured terminal state.
+
+    Runs on startup (in ``_init_session``) and on every read of the sessions
+    list. A ``running`` session left by SIGKILL/host loss is marked
+    ``abandoned`` with a conservative finish-time fallback and a structured
+    abandonment reason. Terminal sessions missing a ``terminal_reason`` (e.g.
+    finalized by the harness before this column existed) are backfilled from
+    their status (T-12.2). Returns the number of sessions reconciled.
+    """
+    reconciled = 0
+    running_rows = db.execute(
+        "SELECT session_id, started_at FROM investigation_sessions "
+        "WHERE status = 'running'"
+    ).fetchall()
+    for session_id, started_at in running_rows:
+        finish = _conservative_finish_time(db, session_id, started_at)
+        db.execute(
+            "UPDATE investigation_sessions SET status = 'abandoned', "
+            "finished_at = ?, terminal_reason = ? WHERE session_id = ?",
+            (
+                finish,
+                format_terminal_reason("abandoned"),
+                session_id,
+            ),
+        )
+        reconciled += 1
+    # Backfill structured terminal reasons for any terminal session missing one.
+    for status in _TERMINAL_STATUS_CODES:
+        db.execute(
+            "UPDATE investigation_sessions SET terminal_reason = ? "
+            "WHERE status = ? AND terminal_reason IS NULL",
+            (format_terminal_reason(status), status),
+        )
+        reconciled += 0  # backfill is non-destructive; not counted as a reopen
+    return reconciled
 
 
 @dataclass
@@ -541,11 +630,11 @@ def _init_session(
     ctx_refresh_caches(ctx, memory, base_url, model, db=db, session_id=session_id)
     # Opening this writer means no older investigation process can still own
     # the same case DB. Reconcile receipts left running by SIGKILL, host loss,
-    # or process termination before recording the new session.
-    db.execute(
-        "UPDATE investigation_sessions SET status = 'abandoned', "
-        "finished_at = COALESCE(finished_at, started_at) WHERE status = 'running'",
-    )
+    # or process termination before recording the new session. The reconcile
+    # uses a conservative finish-time fallback (last observed step/event) and a
+    # structured abandonment reason rather than collapsing wall time to
+    # started_at (T-12.2).
+    reconcile_stale_sessions(db)
     db.execute(
         "INSERT INTO investigation_sessions (session_id, started_at, finished_at, iterations, status) VALUES (?, ?, ?, ?, ?)",
         (session_id, started_at, None, 0, "running"),
