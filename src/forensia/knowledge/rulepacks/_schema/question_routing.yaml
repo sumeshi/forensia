@@ -59,6 +59,11 @@ question_types:
     required_fields: [application_name]
     render_columns: [application_name, version, evidence_type, artifact_path, artifact_time, evidence_id]
     render_max_rows: 30
+    answer_first: true
+    version_aware: true
+    rank:
+      field: application_name
+      priority: ["microsoft outlook", "outlook"]
     status_rules:
       min_rows_for_answer: 1
       empty_status: not_found
@@ -66,7 +71,7 @@ question_types:
       format: name_with_version
       fields: [application_name, version, data_files]
       style: versioned_list
-      note: "Identify the mail client application from mail data files and application artifacts."
+      note: "Identify the mail client application from mail data files and application artifacts. Report version only when observed; do not imply a version."
     evidence_chain:
       - source: mft_entries
         query: "SELECT {{catalog_label_sql:email_artifacts:client:exe_patterns,paths,data_files:file_name,file_path:application_name}}, '' AS version, 'mft' AS evidence_type, file_path AS artifact_path, si_modified AS artifact_time, evidence_id FROM mft_entries WHERE {{catalog_data_file_sql:email_artifacts:file_name}} OR {{catalog_path_sql:email_artifacts:file_path}} ORDER BY CASE WHEN LOWER(COALESCE(extension, '')) IN ('ost','pst','mbox','eml') THEN 0 WHEN LOWER(COALESCE(file_name, '')) LIKE '%.oeaccount' OR LOWER(COALESCE(file_name, '')) LIKE '%messagestore%' OR LOWER(COALESCE(file_name, '')) LIKE 'edb%.log' THEN 1 WHEN LOWER(COALESCE(file_path, '')) LIKE '%/stationery/%' OR LOWER(COALESCE(file_path, '')) LIKE '%\\stationery\\%' THEN 9 ELSE 5 END, si_modified DESC NULLS LAST, file_path"
@@ -94,6 +99,10 @@ question_types:
     interpretation_template: "{row_count} mail data files found, representatives: {sample(file_name, 3)}. OST/PST existence indicates mail client usage, but actual send/receive content should be verified via client logs and network evidence."
     required_fields: [file_path]
     render_columns: [file_name, file_path, extension, si_created, si_modified, si_accessed, fn_created, fn_modified, fn_accessed, evidence_id]
+    answer_first: true
+    rank:
+      field: extension
+      priority: ["ost", "pst", "mbox", "eml"]
     status_rules:
       min_rows_for_answer: 1
       empty_status: not_found
@@ -101,7 +110,7 @@ question_types:
       format: name_with_version
       fields: [application_name, version, data_files]
       style: versioned_list
-      note: "OST files ALWAYS imply Microsoft Outlook. Report as 'Microsoft Outlook 2013' (or version from MFT)."
+      note: "OST files ALWAYS imply Microsoft Outlook. Report as 'Microsoft Outlook' (or version from MFT when observed). Rank the primary mail data file (OST/PST) first, ahead of OAB/address-book noise."
 
     evidence_chain:
       - source: mft
@@ -125,14 +134,16 @@ question_types:
     interpretation_template: "{row_count} rename candidates. Recent LNK-based estimates provide clues about user activity, but should be treated cautiously as direct evidence of actual file renames."
     required_fields: [original_name, new_name]
     render_columns: [original_name, new_name, timestamp, basis, source_paths, evidence_ids]
+    answer_first: true
     status_rules:
       min_rows_for_answer: 1
       empty_status: not_found
+      empty_reason: "No MFT filename pairs or Recent LNK temporal-alias candidates were found."
     expected_answer_shape:
       format: pair_list
       fields: [original_name, new_name, timestamp]
       style: table
-      note: "Report renamed files as original→new pairs with timestamps from MFT $FILE_NAME attributes."
+      note: "Report renamed files as authoritative original→new (from→to) mappings with timestamps from MFT $FILE_NAME attributes. All known rename pairs must be captured before the answer can be marked answered; inferred Recent-LNK temporal aliases remain candidate_only."
 
     evidence_chain:
       - source: mft_entries
@@ -156,6 +167,7 @@ question_types:
     interpretation_template: "{row_count} files matched the target topic, representatives: {sample(file_name, 3)}. This keyword comes from the evaluation/template question vocabulary; file content and intent require other evidence to confirm."
     required_fields: [file_name]
     render_columns: [file_name, file_path, extension, is_deleted, si_created, si_modified, si_accessed, fn_created, fn_modified, fn_accessed, evidence_id]
+    lead_timestamp: si_accessed
     status_rules:
       min_rows_for_answer: 1
       empty_status: not_found
@@ -164,7 +176,7 @@ question_types:
       format: table
       fields: [file_name, file_path, extension, si_created, si_modified, si_accessed, fn_created, fn_modified, fn_accessed]
       style: table
-      note: "Keyword-specific file timestamp questions should be represented in template/question routing, not core Python builders."
+      note: "Keyword-specific file timestamp questions should be represented in template/question routing, not core Python builders. Lead the answer with the relevant opened/modified timestamp while retaining related LNK/XPS evidence and timezone."
     evidence_chain:
       - source: mft_topic_keyword_files
         query: "SELECT file_name, file_path, extension, is_deleted, si_created, si_modified, si_accessed, fn_created, fn_modified, fn_accessed, evidence_id FROM mft_entries WHERE LOWER(COALESCE(file_name, '')) LIKE '%resign%' OR LOWER(COALESCE(file_name, '')) LIKE '%resignation%' OR LOWER(COALESCE(file_name, '')) LIKE '%retire%' OR LOWER(COALESCE(file_path, '')) LIKE '%resign%' OR LOWER(COALESCE(file_path, '')) LIKE '%resignation%' OR LOWER(COALESCE(file_path, '')) LIKE '%retire%' ORDER BY COALESCE(fn_modified, si_modified, fn_created, si_created) DESC NULLS LAST, file_path LIMIT 100"
@@ -186,7 +198,9 @@ question_types:
       - mft_user_app_activity
     interpretation_template: "Browser traces include {sample(browser_name, 4)}. These indicate web usage occurred, but destinations and transmitted content should be supplemented with history, cache, and network evidence."
     required_fields: [browser_name]
-    render_columns: [browser_name, prefetch_records, total_exec_count, last_exec_time, mft_artifacts, first_artifact_time, last_artifact_time, sample_paths, evidence_ids]
+    render_columns: [browser_name, version, prefetch_records, total_exec_count, last_exec_time, mft_artifacts, first_artifact_time, last_artifact_time, sample_paths, evidence_ids]
+    answer_first: true
+    version_aware: true
     status_rules:
       min_rows_for_answer: 1
       empty_status: not_found
@@ -194,7 +208,7 @@ question_types:
       format: name_with_version
       fields: [application_name, version]
       style: versioned_list
-      note: "Include version when available from MFT file_path of the browser executable. Browser product names are supplied by dfir_ioc_catalog.yaml."
+      note: "Include version only when available from MFT file_path of the browser executable. Do not imply a version when none is observed; report 'version not observed'."
 
     evidence_chain:
       - source: mft_entries
@@ -204,8 +218,8 @@ question_types:
 
   - name: logon_history
     answer_spec: daily_session_activity
-    intent: "Summarize startup, shutdown, logon, and logoff activity by calendar date."
-    timeline: true
+    intent: "Summarize startup, shutdown, logon, and logoff activity by calendar date and, when a time window is requested, as an actual event trace."
+    timeline: false
     keywords:
       - logon
       - logoff
@@ -234,7 +248,7 @@ question_types:
       format: daily_table
       fields: [date, startup, logons, logoff, shutdown]
       style: table
-      note: "Group by calendar date. Each row has date, startup count, logon count, logoff count, shutdown count."
+      note: "Aggregate daily counts. When the question requests a time-of-day window (e.g. 09:00-18:00), the timeline trace spec (daily_session_timeline) is preferred and returns actual startup/shutdown/logon/logoff timestamps rather than daily totals."
 
     evidence_chain:
       - source: evtx_events
@@ -266,8 +280,8 @@ question_types:
       - interactive_logon_events
       - logoff_events
     interpretation_template: "Session timeline covers {row_count} days. First startup/logon and last logoff/shutdown timestamps per day show the system operating pattern."
-    required_fields: [date, first_startup]
-    render_columns: [date, first_startup, first_logon, last_logoff, last_shutdown, logon_users, interactive_logon_count]
+    required_fields: [date]
+    render_columns: [date, first_startup, first_logon, last_logoff, last_shutdown, logon_users, interactive_logon_count, event_trace, evidence_ids]
     status_rules:
       min_rows_for_answer: 1
       empty_status: not_found
@@ -336,11 +350,48 @@ question_types:
     status_rules:
       min_rows_for_answer: 1
       empty_status: not_found
+    sub_requirements:
+      - key: tool_use_install
+        label: "Cleaner/wiper tool use or installation"
+        required_fields: [evidence_type, file_name]
+        require_value:
+          evidence_type: ["tool_execution", "tool_or_cleanup_artifact"]
+        min_rows: 1
+      - key: wipe_target
+        label: "Wipe/cleaner target file or directory"
+        required_fields: [evidence_type, file_path]
+        require_value:
+          evidence_type: ["tool_or_cleanup_artifact"]
+        min_rows: 1
+      - key: recycle_bin
+        label: "Recycle Bin emptying or artifact"
+        required_fields: [file_name, file_path]
+        require_value:
+          file_path: ["$recycle", "$rcycle", "recycler", "recycle"]
+        min_rows: 1
+      - key: cloud_signout_db_deletion
+        label: "Cloud sync sign-out / client database deletion"
+        required_fields: [file_path]
+        require_value:
+          file_path: ["onedrive", "google", "dropbox", "icloud", "sync_config", "snapshot"]
+        min_rows: 1
+      - key: email_deletion
+        label: "Mail data file deletion or removal"
+        required_fields: [file_path]
+        require_value:
+          file_path: [".ost", ".pst", "outlook", "mailbox"]
+        min_rows: 1
+      - key: search_download_chain
+        label: "Search / download activity chain"
+        required_fields: [file_path]
+        require_value:
+          file_path: ["download", "search", "temp"]
+        min_rows: 1
     expected_answer_shape:
       format: full_scan
       fields: [tool_name, evidence_type, found, details]
       style: table
-      note: "Scan all antiforensic tools declared in dfir_ioc_catalog.yaml. Report log clearing events (104, 1102). Report Recycle Bin emptying."
+      note: "Scan all antiforensic tools declared in dfir_ioc_catalog.yaml. Report log clearing events (104, 1102). Report Recycle Bin emptying. This is a composite requirement: each sub-requirement contributes independent coverage, and a partial composite answer (some but not all sub-requirements met) must not be reported as answered."
 
     evidence_chain:
       - source: evtx_events
@@ -404,7 +455,7 @@ question_types:
       note: "Report the case evidence time range from event timestamps."
     evidence_chain:
       - source: evtx_events
-        query: "SELECT MIN(timestamp) AS first_event, MAX(timestamp) AS last_event, COUNT(*) AS event_count FROM evtx_events"
+        query: "SELECT MIN(timestamp) AS first_event, MAX(timestamp) AS last_event, COUNT(*) AS event_count, LIST(DISTINCT evidence_id) FILTER (WHERE evidence_id IS NOT NULL) AS evidence_ids FROM evtx_events"
 
   - name: host_logons
     answer_spec: last_human_logon

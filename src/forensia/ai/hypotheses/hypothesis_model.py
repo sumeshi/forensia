@@ -55,17 +55,101 @@ def _filter_valid_entities(raw: list[Any]) -> list[str]:
 
     Drops natural-language phrases formatted as snake_case (e.g.
     'user_identity', 'computer_name', 'credential_usage') that the bare
-    snake_case regex would otherwise accept.
+    snake_case regex would otherwise accept.  Also drops material-unknown
+    sentinel values (none/null/unknown) so a placeholder entity name never
+    reaches a durable hypothesis as if it were a concrete column.
     """
     known = _known_db_columns()
     out: list[str] = []
     seen: set[str] = set()
     for item in raw:
         name = str(item or "").strip().lower()
-        if name and name in known and name not in seen:
+        if not name:
+            continue
+        if name in _MATERIAL_UNKNOWN_TOKENS:
+            continue
+        if name in known and name not in seen:
             seen.add(name)
             out.append(name)
     return out
+
+
+# Sentinel values that signal an unmaterialized / placeholder entity.  These
+# must never be treated as a concrete DB column or a bound claim value.
+_MATERIAL_UNKNOWN_TOKENS = frozenset(
+    {
+        "none",
+        "null",
+        "unknown",
+        "n/a",
+        "na",
+        "tbd",
+        "nil",
+        "placeholder",
+        "unresolved",
+        "missing",
+    }
+)
+
+
+# Unresolved template/placeholder tokens that must never be admitted verbatim.
+_PLACEHOLDER_PATTERN = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}|<[^>]+>")
+
+
+def _description_has_material_unknown(description: str) -> bool:
+    """Fail-closed check: does a description name an unresolved/material-unknown value?
+
+    A durable admitted hypothesis must describe a concrete claim.  Descriptions
+    that reference an unknown actor/entity, a ``None``/``null`` value, or an
+    unresolved ``{placeholder}``/``<placeholder>`` are not admissible as-is and
+    must be converted to a bounded gap (needs_review) instead.
+
+    The matcher is deliberately narrow: it only fires on entity-scoped unknowns
+    and placeholder tokens, never on ordinary prose that happens to contain the
+    word "none" or "unknown".
+    """
+    if not description:
+        return False
+    lowered = description.lower()
+    # Entity-scoped unknowns: an explicit "unknown <entity>" / "<entity> unknown".
+    for phrase in (
+        "unknown src_ip",
+        "unknown target_user",
+        "unknown subject_user",
+        "unknown computer",
+        "unknown host",
+        "unknown account",
+        "unknown user",
+        "unknown process",
+        "unknown file",
+        "unknown ip",
+        "src_ip unknown",
+        "target_user unknown",
+        "subject_user unknown",
+        "computer unknown",
+        "host unknown",
+        "account unknown",
+        "user unknown",
+        "process unknown",
+        "file unknown",
+        "ip unknown",
+    ):
+        if phrase in lowered:
+            return True
+    # A bare unknown/None/null used as the value of a known entity column.
+    if re.search(
+        r"\b(?:src_ip|target_user|subject_user|computer|host|account|user|"
+        r"process|file|ip|service)\b\s+(?:is\s+)?(?:null|none|unknown)\b",
+        lowered,
+    ):
+        return True
+    # Unresolved template or angle-bracket placeholders.
+    if _PLACEHOLDER_PATTERN.search(description):
+        return True
+    # Standalone sentinels that can only mean "not materialized".
+    if re.search(r"\b(?:n/?a|tbd|nil|placeholder|unresolved)\b", lowered):
+        return True
+    return False
 
 
 # Hypothesis-construction helpers (moved from report_gap.py to break the

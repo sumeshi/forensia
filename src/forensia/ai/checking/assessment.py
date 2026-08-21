@@ -122,6 +122,14 @@ def assess_evidence_group(
         else:
             role, reason = "contextual", "observed but conditions were not satisfied"
 
+    # Sole authority: roles are derived only from VerificationSpec conditions,
+    # coverage, support/refute/diversity — never from a checker verdict or any
+    # prose.  A supporting/contradictory role without matched conditions is a
+    # programming error and is downgraded to contextual so no claim is
+    # manufactured from narrative text.
+    if role in ("supporting", "contradictory") and not matched:
+        role, reason = "contextual", "role requires matched conditions"
+
     canonical_conditions = json.dumps(
         {"support": support, "refute": refute},
         ensure_ascii=False,

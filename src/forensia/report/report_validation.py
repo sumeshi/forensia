@@ -17,6 +17,7 @@ from typing import Any
 import yaml
 
 from forensia.knowledge.resources import schema_dir
+from forensia.report.evidence_refs import EVIDENCE_ID_PATTERN
 from forensia.report.sections.quality_gates import _detect_body_language
 
 _SCHEMA_DIR = schema_dir()
@@ -231,6 +232,118 @@ def check_failure_markers(content: str) -> list[ValidationFinding]:
 def has_failure_marker(content: str) -> bool:
     """Return whether persisted prose contains a generation-failure marker."""
     return bool(check_failure_markers(content))
+
+
+# Machine-detectable reference patterns for report traceability.
+_FINDING_ID_PATTERN = re.compile(
+    r"\b[A-Za-z0-9_./-]*?(?:finding|find-|ext-)[A-Za-z0-9_./-]*\b", re.IGNORECASE
+)
+_HYPOTHESIS_ID_PATTERN = re.compile(
+    r"\b[A-Za-z0-9_./-]*?(?:hypothesis|hyp-|hyp_)[A-Za-z0-9_./-]*\b", re.IGNORECASE
+)
+_CREDENTIAL_SPECULATION_TERMS = (
+    "credential compromise",
+    "credentials were compromised",
+    "credentials compromised",
+    "compromised credential",
+    "compromised credentials",
+    "account compromise",
+    "account was compromised",
+    "credential theft",
+    "credentials were stolen",
+    "credentials stolen",
+)
+
+
+def _extract_claim_paragraphs(content: str) -> list[str]:
+    """Split report body into claim paragraphs, skipping headings and gaps."""
+    paragraphs: list[str] = []
+    for paragraph in re.split(r"\n\s*\n", str(content or "")):
+        text = paragraph.strip()
+        if (
+            not text
+            or text.startswith("#")
+            or text.startswith("**Status:**")
+            or text.startswith("**ID:**")
+            or text.startswith("### ")
+        ):
+            continue
+        paragraphs.append(text)
+    return paragraphs
+
+
+def _has_machine_ref(text: str) -> bool:
+    return bool(
+        EVIDENCE_ID_PATTERN.search(text) or _FINDING_ID_PATTERN.search(text)
+    )
+
+
+# Tokens that indicate a paragraph is making a forensic/evidence claim (rather
+# than generic or narrative prose). The zero-reference traceability gate only
+# applies to such paragraphs, so trivial summaries are not penalised.
+_EVIDENCE_ADJACENT_PATTERN = re.compile(
+    r"\b(evtx|mft|prefetch|registry|ost|pst|edb|eml|mbox|logon|logoff|shutdown|"
+    r"startup|event_id|4624|4625|4634|4647|4672|6005|6006|6008|1074|1102|104|"
+    r"outlook|onedrive|google\s?drive|icloud|dropbox|recycle)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_evidence_claim(text: str) -> bool:
+    return bool(_EVIDENCE_ADJACENT_PATTERN.search(text))
+
+
+def check_claim_traceability(content: str) -> list[ValidationFinding]:
+    """Reject claims that cannot be traced to machine-detectable evidence/finding refs.
+
+    A report must not publish bare hypothesis IDs or unsupported credential
+    compromise speculation. Every factual claim paragraph should expose at least
+    one machine-detectable evidence/finding reference; a report body that
+    contains claim prose but zero references fails traceability outright.
+    """
+    findings: list[ValidationFinding] = []
+    paragraphs = _extract_claim_paragraphs(content)
+    if not paragraphs:
+        return findings
+
+    for paragraph in paragraphs:
+        is_evidence_claim = _is_evidence_claim(paragraph)
+        # Bare hypothesis reference without a machine-detectable ref.
+        if (
+            _HYPOTHESIS_ID_PATTERN.search(paragraph)
+            and not _has_machine_ref(paragraph)
+        ):
+            findings.append(
+                ValidationFinding(
+                    "claim_traceability",
+                    "error",
+                    "Claim references a hypothesis without a machine-detectable "
+                    "evidence/finding reference",
+                    paragraph[:160],
+                )
+            )
+        lowered = paragraph.lower()
+        if any(term in lowered for term in _CREDENTIAL_SPECULATION_TERMS):
+            if not _has_machine_ref(paragraph):
+                findings.append(
+                    ValidationFinding(
+                        "claim_traceability",
+                        "error",
+                        "Unsupported credential-compromise speculation without "
+                        "machine-detectable evidence/finding reference",
+                        paragraph[:160],
+                    )
+                )
+        if is_evidence_claim and not _has_machine_ref(paragraph):
+            findings.append(
+                ValidationFinding(
+                    "claim_traceability",
+                    "error",
+                    "Evidence claim lacks a machine-detectable evidence/finding reference",
+                    paragraph[:160],
+                )
+            )
+    return findings
 
 
 def check_persisted_section_failures(db: Any) -> list[ValidationFinding]:
@@ -637,6 +750,7 @@ def validate_report(
         all_findings.extend(check_local_path_leak(report_body))
         all_findings.extend(check_fallback_stub(report_body))
         all_findings.extend(check_failure_markers(report_body))
+        all_findings.extend(check_claim_traceability(report_body))
         if expected_language:
             all_findings.extend(
                 check_language_consistency(report_body, expected_language)

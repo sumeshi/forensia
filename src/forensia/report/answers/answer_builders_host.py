@@ -374,7 +374,8 @@ def _build_daily_session_timeline_rows(
             timestamp,
             event_id,
             logon_type,
-            target_user
+            target_user,
+            evidence_id
         FROM evtx_events
         WHERE event_id IN ({id_list})
           AND timestamp IS NOT NULL
@@ -386,7 +387,14 @@ def _build_daily_session_timeline_rows(
             MIN(CASE WHEN event_id IN ({startup_list}) THEN timestamp END) AS first_startup,
             MIN(CASE WHEN event_id IN ({logon_id_list}) AND logon_type IN ({logon_type_list}) THEN timestamp END) AS first_logon,
             MAX(CASE WHEN event_id IN ({logoff_list}) THEN timestamp END) AS last_logoff,
-            MAX(CASE WHEN event_id IN ({shutdown_list}) THEN timestamp END) AS last_shutdown
+            MAX(CASE WHEN event_id IN ({shutdown_list}) THEN timestamp END) AS last_shutdown,
+            LIST(DISTINCT evidence_id) FILTER (WHERE evidence_id IS NOT NULL) AS evidence_ids,
+            LIST(
+                CAST(timestamp AS VARCHAR) || ' event_id=' || CAST(event_id AS VARCHAR)
+                || ' user=' || COALESCE(target_user, '')
+                || ' evidence_id=' || COALESCE(evidence_id, '')
+                ORDER BY timestamp
+            ) AS event_trace
         FROM sessions
         GROUP BY date
     ),
@@ -433,6 +441,10 @@ def _build_daily_session_timeline_rows(
             "last_shutdown": str(row.get("last_shutdown") or ""),
             "logon_users": "",
             "interactive_logon_count": int(row.get("interactive_logon_count") or 0),
+            "evidence_ids": [
+                str(item) for item in (row.get("evidence_ids") or []) if item
+            ],
+            "event_trace": [str(item) for item in (row.get("event_trace") or [])],
         }
         raw_users = row.get("logon_users")
         if isinstance(raw_users, list):
@@ -444,7 +456,9 @@ def _build_daily_session_timeline_rows(
 def _build_daily_session_timeline(
     case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
 ) -> dict[str, Any]:
-    qualifiers = extract_time_qualifiers(block_heading)
+    # Evidence timestamps are normalized to naive UTC at ingest. The rendered
+    # answer carries the case timezone, but SQL filtering must use UTC values.
+    qualifiers = extract_time_qualifiers(block_heading, "UTC")
     rows = _build_daily_session_timeline_rows(db, qualifiers)
     return _structured_answer(
         case,
@@ -460,6 +474,8 @@ def _build_daily_session_timeline(
             "last_shutdown",
             "logon_users",
             "interactive_logon_count",
+            "event_trace",
+            "evidence_ids",
         ],
         queries_run=["structured:daily_session_timeline:per_day_session_timeline"],
     )

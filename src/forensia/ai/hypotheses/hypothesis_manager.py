@@ -13,6 +13,7 @@ from typing import Any
 from forensia.ai.hypotheses.hypothesis_model import (
     _best_hypothesis_match,
     _clean_confirm_when,
+    _description_has_material_unknown,
     _extract_entities_from_text,
     _extract_refuted_tokens,
     _filter_valid_entities,
@@ -35,6 +36,7 @@ from forensia.core.log import log as _log
 from forensia.core.session import Hypothesis, SessionState
 from forensia.core.textutil import normalize_text as _normalize_text
 from forensia.db.database import CaseDB
+from forensia.knowledge.catalog import load_event_id_hints
 from forensia.knowledge.rules.loader import load_rule_by_id
 from forensia.report.sections.section_taxonomy import (
     guess_related_sections as _guess_related_sections,
@@ -504,6 +506,24 @@ def _claim_spec_conformance_error(candidate: Hypothesis) -> str | None:
     if not isinstance(event_ids, list) or not event_ids:
         return "non-testable-verification-spec"
 
+    # Event meaning is declarative. Do not allow a candidate to reinterpret a
+    # known event (for example 4672 as process creation or 4624 as password
+    # reset) merely by putting that event ID in its VerificationSpec.
+    description_lower = description.casefold()
+    for raw_event_id in event_ids:
+        try:
+            event_id = int(raw_event_id)
+        except (TypeError, ValueError):
+            continue
+        hint = load_event_id_hints().get(event_id) or {}
+        for disallowed in hint.get("disallowed_without_extra") or []:
+            phrase = str(disallowed or "").strip().casefold()
+            # Parenthesized rationale is metadata, not part of the claim
+            # vocabulary (e.g. "process creation (4672 is ...)").
+            claim_phrase = phrase.split(" (", 1)[0].strip()
+            if claim_phrase and claim_phrase in description_lower:
+                return f"event-semantic-mismatch:{event_id}"
+
     minute_match = re.search(r"\bwithin\s+(\d+)\s+minutes?\b", description, re.I)
     if minute_match and support.get("within_minutes") != int(minute_match.group(1)):
         return "claim-spec-time-window-mismatch"
@@ -563,6 +583,11 @@ def admit_new_hypothesis(
     for entity in candidate.required_entities:
         if re.search(rf"\bunknown\s+{re.escape(str(entity))}\b", description, re.I):
             return False, "unmaterialized-entity"
+    # Fail-closed: a durable admitted hypothesis must not name an unknown
+    # src_ip/target_user/None/placeholder.  Such candidates are converted to
+    # bounded gaps (needs_review) by the caller, never stored as claims.
+    if _description_has_material_unknown(description):
+        return False, "material-unknown-entity"
 
     conformance_error = _claim_spec_conformance_error(candidate)
     if conformance_error:

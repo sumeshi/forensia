@@ -11,6 +11,9 @@ from forensia.ai.hypotheses.hypothesis_manager import (
     admit_new_hypothesis,
     merge_active_hypotheses,
 )
+from forensia.ai.hypotheses.hypothesis_model import (
+    _description_has_material_unknown,
+)
 from forensia.core.case import Case
 from forensia.core.log import log as _log
 from forensia.core.session import Hypothesis, SessionState
@@ -156,6 +159,17 @@ def _seed_rule_hypotheses(
                             f"[seed] skipped {rule.id}/{decl.id}: unresolved placeholders {unresolved}",
                         )
                         continue
+                # Fail-closed: a hypothesis rendered with an unknown actor/entity
+                # (e.g. "unknown src_ip") is not a durable claim.  Admission
+                # rejects it; skip seeding here so it becomes a bounded gap
+                # rather than a silently-empty hypothesis.
+                if _description_has_material_unknown(rendered_desc):
+                    _log(
+                        "HYPOTHESIS",
+                        f"[seed] skipped {rule.id}/{decl.id}: material-unknown "
+                        f"description after placeholder resolution",
+                    )
+                    continue
                 else:
                     required_entities = list(decl.required_entities or [])
             else:

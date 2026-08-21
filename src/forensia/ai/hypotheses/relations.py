@@ -5,6 +5,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from forensia.ai.hypotheses.hypothesis_model import (
+    _description_has_material_unknown,
+)
 from forensia.db.database import CaseDB
 
 logger = logging.getLogger(__name__)
@@ -304,3 +307,18 @@ def propagate_verdict(
                 )
 
     return actions
+
+
+def relation_involves_unknown_claim(
+    from_description: str | None, to_description: str | None
+) -> bool:
+    """Return True if either endpoint description names a material-unknown value.
+
+    Used by the runner before ``insert_relation`` so a relation is never drawn
+    from/to a hypothesis that admits an unresolved ``unknown src_ip`` / ``None``
+    / placeholder claim.  Relations are only meaningful between durable, bounded
+    claims.
+    """
+    return _description_has_material_unknown(
+        from_description or ""
+    ) or _description_has_material_unknown(to_description or "")

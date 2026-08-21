@@ -49,15 +49,43 @@ class GapHypothesisOutput(BaseModel):
         if v is None:
             return v
         lowered = v.lower()
+        # Fail-closed vocabulary: a report-requirement hypothesis must describe a
+        # concrete, investigable claim.  Material unknowns, placeholders, and
+        # self-defeating hedges are rejected so they become bounded gaps rather
+        # than durable hypotheses.
         prohibited = {
             "unknown",
             "cannot confirm",
             "cannot verify",
             "insufficient evidence",
+            "n/a",
+            "tbd",
+            "none",
+            "null",
+            "placeholder",
+            "unresolved",
         }
         for phrase in prohibited:
             if phrase in lowered:
                 raise ValueError(f"Description contains prohibited phrase: '{phrase}'")
+        # Unresolved template/angle-bracket placeholders are never admissible.
+        if re.search(r"\{[A-Za-z_][A-Za-z0-9_]*\}|<[^>]+>", v):
+            raise ValueError(
+                "Description contains unresolved placeholder token"
+            )
+        # Entity-scoped unknowns (e.g. "unknown src_ip", "target_user is null").
+        if re.search(
+            r"\b(?:unknown|null|none)\b\s+(?:src_ip|target_user|subject_user|"
+            r"computer|host|account|user|process|file|ip)\b",
+            lowered,
+        ):
+            raise ValueError("Description names an unknown entity")
+        if re.search(
+            r"\b(?:src_ip|target_user|subject_user|computer|host|account|"
+            r"user|process|file|ip)\b\s+(?:is\s+)?(?:unknown|null|none)\b",
+            lowered,
+        ):
+            raise ValueError("Description names an unknown entity")
         return v
 
 

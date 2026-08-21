@@ -33,6 +33,7 @@ from forensia.report.sections.section_taxonomy import sections_for_keypoint
 class TestHypothesisAdmissionConformance(unittest.TestCase):
     def test_rejects_unmaterialized_or_unverifiable_claims(self) -> None:
         state = SessionState(session_id="S-admission")
+
         def admission(description: str, condition: dict) -> tuple[bool, str]:
             candidate = Hypothesis(
                 id="draft-test",
@@ -66,6 +67,24 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
                 {**base, "same_entities": ["src_ip", "target_user"], "min_count": 2},
             ),
         )
+
+    def test_rejects_known_event_reinterpretations(self) -> None:
+        state = SessionState(session_id="S-semantic")
+        for description, event_id in (
+            ("Process creation (4672)", 4672),
+            ("Password reset (4624)", 4624),
+        ):
+            with self.subTest(event_id=event_id):
+                candidate = Hypothesis(
+                    id="draft-semantic",
+                    description=description,
+                    required_entities=["computer"],
+                    confirm_when={"co_observed_event_ids": [event_id]},
+                )
+                self.assertEqual(
+                    (False, f"event-semantic-mismatch:{event_id}"),
+                    admit_new_hypothesis(candidate, state),
+                )
 
 
 def _setup_confirmed_invariant(db: CaseDB, hypothesis_id: str) -> None:

@@ -14,6 +14,7 @@ from forensia.knowledge.catalog import (
     expand_catalog_sql_placeholders,
 )
 from forensia.knowledge.questions import (
+    QuestionSpec,
     evaluate_question_spec_status,
     project_rows_for_question_spec,
     question_spec_for_answer_spec,
@@ -73,6 +74,7 @@ def _build_generic_question_spec_answer(
             rows.append({**row, "_question_source": source})
 
     rows = project_rows_for_question_spec(spec, rows)
+    rows = _rank_rows_first(rows, spec)
     status, reasons = evaluate_question_spec_status(spec, rows, queries_run=queries_run)
     if errors:
         reasons.extend(errors)
@@ -100,6 +102,30 @@ def _build_generic_question_spec_answer(
 
 
 StructuredAnswerBuilder = Callable[[Case, CaseDB, str, str, str], dict[str, Any]]
+
+
+def _rank_rows_first(
+    rows: list[dict[str, Any]], spec: QuestionSpec | None
+) -> list[dict[str, Any]]:
+    """Rank answer-first: rows whose ``rank_field`` matches a ``rank_priority`` token.
+
+    This is a generic, declarative contract — no benchmark answers are encoded
+    as special-case branches for specific question numbers. The decisive primary
+    answer (e.g. the correct OST among OAB noise, or Outlook among Windows Mail
+    rows) is surfaced first so composite answers lead with the answer.
+    """
+    if spec is None or not spec.rank_field or not spec.rank_priority:
+        return rows
+    priority = [p.strip().lower() for p in spec.rank_priority if p.strip()]
+
+    def rank_key(row: dict[str, Any]) -> tuple[int, int]:
+        value = str(row.get(spec.rank_field) or "").strip().lower()
+        for index, token in enumerate(priority):
+            if token in value:
+                return (0, index)
+        return (1, len(priority))
+
+    return sorted(rows, key=rank_key)
 
 _STRUCTURED_ANSWER_BUILDERS: dict[str, StructuredAnswerBuilder] = {
     "host_identity": _build_host_identity,

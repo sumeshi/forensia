@@ -62,15 +62,21 @@ def summarize_query_result(
     """
     evidence_ids: list[str] = []
     seen: set[str] = set()
+    finding_ids: list[str] = []
+    finding_seen: set[str] = set()
+    finding_ids_by_evidence: dict[str, str] = {}
     for row in rows:
         value = row.get("evidence_id")
-        if not value:
-            continue
-        normalized = str(value)
-        if normalized in seen:
-            continue
-        seen.add(normalized)
-        evidence_ids.append(normalized)
+        normalized = str(value).strip() if value else ""
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            evidence_ids.append(normalized)
+        finding = str(row.get("finding_id") or "").strip()
+        if finding and finding not in finding_seen:
+            finding_seen.add(finding)
+            finding_ids.append(finding)
+        if normalized and finding:
+            finding_ids_by_evidence.setdefault(normalized, finding)
 
     head_size = min(max(sample_size // 2, 1), sample_size) if sample_size > 0 else 0
     tail_size = max(sample_size - head_size, 0)
@@ -104,6 +110,8 @@ def summarize_query_result(
         "distinct_counts": distinct_counts,
         "evidence_ids": evidence_ids[:sample_size],
         "event_id_set": sorted(event_id_set),
+        "finding_ids": finding_ids[:sample_size],
+        "finding_ids_by_evidence": finding_ids_by_evidence,
     }
 
 

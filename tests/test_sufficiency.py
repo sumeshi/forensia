@@ -13,7 +13,9 @@ from forensia.ai.checking.sufficiency import (
     create_hypothesis_evidence_link,
     evaluate_sufficiency,
     load_evidence_links,
+    load_unlinkable_observations_for_session,
     reconcile_verdicts,
+    record_unlinkable_observation,
     update_claim_support_for_hypothesis,
 )
 from forensia.core.case import Case
@@ -466,11 +468,43 @@ class EvidenceLinkPersistenceTests(unittest.TestCase):
                     query_id="Q-1",
                     assessment_id="EA-query-1",
                     derivation_group="Q-1",
+                    finding_ids_by_evidence={"evtx-1": "finding-1"},
                 )
                 groups = db.execute(
                     "SELECT DISTINCT derivation_group FROM hypothesis_evidence"
                 ).fetchall()
                 self.assertEqual(groups, [("Q-1",)])
+                self.assertEqual(
+                    db.execute(
+                        "SELECT finding_id FROM hypothesis_evidence WHERE evidence_id = 'evtx-1'"
+                    ).fetchone()[0],
+                    "finding-1",
+                )
+
+    def test_unlinkable_observations_are_session_scoped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                record_unlinkable_observation(
+                    db,
+                    hypothesis_id="H-SCOPE",
+                    reason="old",
+                    observed_rows=1,
+                    created_session="session-old",
+                )
+                record_unlinkable_observation(
+                    db,
+                    hypothesis_id="H-SCOPE",
+                    reason="new",
+                    observed_rows=2,
+                    created_session="session-new",
+                )
+                self.assertEqual(
+                    load_unlinkable_observations_for_session(
+                        db, "H-SCOPE", "session-new"
+                    ),
+                    [("new", 2)],
+                )
 
     def test_unobservable_sufficiency_updates_linked_claim(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

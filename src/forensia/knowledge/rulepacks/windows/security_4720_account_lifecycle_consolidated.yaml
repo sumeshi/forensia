@@ -50,11 +50,15 @@ hypotheses:
   - target_user
   - subject_user
   confirm_when:
+    # Account-management family only.  4624 (account logon) is NOT a
+    # confirmation of a password reset; a reset (4724) is corroborated by an
+    # accompanying account-management event such as 4738 (account changed),
+    # never by a generic logon.
     co_observed_event_ids:
-    - 4624
+    - 4738
   refute_when:
     zero_rows: true
   follow_up_questions:
-  - 4624 logon after password reset
+  - 4738 account changed after password reset
   report_sections:
   - 3_technical

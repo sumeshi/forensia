@@ -75,6 +75,7 @@ events:
       - lateral movement (need src host context)
       - compromise (need credential source)
       - privilege escalation (need admin token)
+      - password reset (use account-management event 4724)
     keywords_for_string_search:
       - logon
       - auth
@@ -154,7 +155,7 @@ events:
       - explicit credential
       - runas
   4672:
-    title: Admin logon / special privileges assigned
+    title: Special privileges assigned to a new logon (privilege assignment)
     required_fields:
       - target_user
       - logon_type
@@ -162,12 +163,16 @@ events:
       - administrator logged on
       - privileged account used
       - new logon has admin rights
+      - special privileges (e.g. SeDebugPrivilege) assigned at logon
     disallowed_without_extra:
       - privilege escalation (admin by default)
       - compromise (admin accounts are expected to log on)
+      - process creation (4672 is privilege assignment at logon, not 4688)
+      - process failure (4672 carries no process exit/termination semantics)
     keywords_for_string_search:
       - special privilege
       - admin logon
+      - privilege assigned
   4673:
     title: Sensitive privilege use
     required_fields:

@@ -24,7 +24,29 @@ _VALID_STRUCTURED_STATUSES = {
     "not_searched",
     "insufficient_evidence",
     "wrong_query",
+    "unobservable",
+    "not_observable",
+    "error",
 }
+
+# Aliases normalised to the canonical structured_status vocabulary.
+_STATUS_ALIASES = {
+    "not_observable": "unobservable",
+    "no_observation": "unobservable",
+    "unobservble": "unobservable",
+}
+
+
+def normalize_structured_status(status: str) -> str:
+    """Normalise a raw status string to a canonical structured status."""
+    value = str(status or "").strip().lower()
+    if value in _STATUS_ALIASES:
+        return _STATUS_ALIASES[value]
+    return value
+
+
+def is_valid_structured_status(status: str) -> bool:
+    return normalize_structured_status(status) in _VALID_STRUCTURED_STATUSES
 
 
 def _schema_dir() -> Path:
@@ -75,6 +97,12 @@ class QuestionSpec:
     status_rules: dict[str, Any] = field(default_factory=dict)
     timeline: bool = False
     builder_policy: str = ""
+    sub_requirements: tuple[dict[str, Any], ...] = ()
+    version_aware: bool = False
+    answer_first: bool = False
+    rank_field: str = ""
+    rank_priority: tuple[str, ...] = ()
+    lead_timestamp: str = ""
 
     @property
     def semantic_id(self) -> str:
@@ -107,6 +135,8 @@ class QuestionSpec:
         render_columns = _coerce_str_tuple(raw.get("render_columns"))
         if not render_columns:
             render_columns = _coerce_str_tuple(expected_shape.get("fields"))
+        rank = raw.get("rank") if isinstance(raw.get("rank"), dict) else {}
+        lead_timestamp = str(raw.get("lead_timestamp") or "").strip()
         return cls(
             name=name,
             answer_spec=answer_spec,
@@ -129,6 +159,12 @@ class QuestionSpec:
             status_rules=dict(status_rules),
             timeline=timeline,
             builder_policy=builder_policy,
+            sub_requirements=_coerce_dict_list(raw.get("sub_requirements")),
+            version_aware=bool(raw.get("version_aware", False)),
+            answer_first=bool(raw.get("answer_first", False)),
+            rank_field=str(rank.get("field") or "").strip(),
+            rank_priority=_coerce_str_tuple(rank.get("priority")),
+            lead_timestamp=lead_timestamp,
         )
 
     def to_prompt_dict(self) -> dict[str, Any]:
@@ -142,6 +178,22 @@ class QuestionSpec:
             "render_max_rows": self.render_max_rows,
             "status_rules": self.status_rules,
             "builder_policy": self.builder_policy,
+            "timeline": self.timeline,
+            "sub_requirements": [
+                {
+                    "key": sub.get("key"),
+                    "label": sub.get("label"),
+                    "required_fields": list(sub.get("required_fields", ())),
+                    "require_value": sub.get("require_value", {}),
+                    "min_rows": sub.get("min_rows", 1),
+                }
+                for sub in self.sub_requirements
+            ],
+            "version_aware": self.version_aware,
+            "answer_first": self.answer_first,
+            "rank_field": self.rank_field,
+            "rank_priority": list(self.rank_priority),
+            "lead_timestamp": self.lead_timestamp,
         }
 
 
@@ -223,6 +275,30 @@ def resolve_question_spec(
         if score > best_score:
             best = spec
             best_score = score
+
+    # Composite questions: when a time-of-day window is requested, prefer a
+    # timeline spec (actual event trace) over a pure aggregate/count spec. This is
+    # generic — it keys on the presence of an hour window, not on a question number.
+    hour_qualifiers = extract_time_qualifiers(text)
+    if (
+        best is not None
+        and not best.timeline
+        and hour_qualifiers.get("hour_from")
+        and hour_qualifiers.get("hour_to")
+    ):
+        timeline_best: QuestionSpec | None = None
+        timeline_best_score = 0
+        for spec in load_question_specs():
+            if not spec.timeline:
+                continue
+            score = _score_spec(spec, text)
+            if score > timeline_best_score:
+                timeline_best = spec
+                timeline_best_score = score
+        if timeline_best is not None and timeline_best_score > 0:
+            best = timeline_best
+            best_score = timeline_best_score
+
     if best is None or best_score <= 0:
         return None, 0.0
     return best, min(0.99, max(0.25, best_score / 300.0))
@@ -234,12 +310,16 @@ def project_rows_for_question_spec(
     if spec is None or not spec.render_columns:
         return rows
     projected: list[dict[str, Any]] = []
+    reference_fields = ("evidence_id", "finding_id", "evidence_ids", "finding_ids")
     for row in rows:
         item = {
             column: row.get(column, "")
             for column in spec.render_columns
             if column in row
         }
+        for field_name in reference_fields:
+            if field_name in row:
+                item[field_name] = row[field_name]
         if item:
             projected.append(item)
     return projected or rows
@@ -365,32 +445,133 @@ def _has_value(row: dict[str, Any], field_name: str) -> bool:
     return bool(str(value).strip())
 
 
+def _has_stable_reference(row: dict[str, Any]) -> bool:
+    """Return whether an answer row can be traced to durable evidence."""
+    for field_name in ("evidence_id", "finding_id"):
+        if _has_value(row, field_name):
+            return True
+    for field_name in ("evidence_ids", "finding_ids"):
+        value = row.get(field_name)
+        if isinstance(value, (list, tuple, set)):
+            if any(item is not None and str(item).strip() for item in value):
+                return True
+        if value is not None and str(value).strip():
+            return True
+    return False
+
+
+def sub_requirement_coverage(
+    spec: QuestionSpec | None,
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return per-sub-requirement fulfilment for a spec.
+
+    Each returned item has ``key``, ``label``, ``required_fields``,
+    ``require_value``, ``min_rows``, ``matched_rows``, and ``satisfied``. A
+    sub-requirement is satisfied when at least ``min_rows`` rows contain every
+    declared ``required_fields`` value and — when ``require_value`` is present —
+    the row's field value is one of the allowed values.
+    """
+    if spec is None:
+        return []
+    coverage: list[dict[str, Any]] = []
+    for sub in spec.sub_requirements:
+        key = str(sub.get("key") or "").strip()
+        label = str(sub.get("label") or key or "sub-requirement").strip()
+        req_fields = _coerce_str_tuple(sub.get("required_fields"))
+        require_value = sub.get("require_value")
+        if not isinstance(require_value, dict):
+            require_value = {}
+        min_rows = max(1, int(sub.get("min_rows") or 1))
+        matched = 0
+        for row in rows:
+            if not all(_has_value(row, field_name) for field_name in req_fields):
+                continue
+            ok = True
+            for value_field, allowed in require_value.items():
+                row_value = str(row.get(value_field) or "").strip().lower()
+                if isinstance(allowed, (list, tuple, set)):
+                    allowed_values = [str(value).strip().lower() for value in allowed]
+                else:
+                    allowed_values = [str(allowed).strip().lower()]
+                is_path = value_field.casefold() in {
+                    "file_path",
+                    "file_name",
+                    "path",
+                }
+                if is_path:
+                    matched = any(
+                        token and token in row_value for token in allowed_values
+                    )
+                else:
+                    matched = row_value in allowed_values
+                if not matched:
+                    ok = False
+                    break
+            if ok:
+                matched += 1
+        coverage.append(
+            {
+                "key": key,
+                "label": label,
+                "required_fields": list(req_fields),
+                "require_value": {
+                    str(k): [str(v) for v in vs]
+                    for k, vs in require_value.items()
+                },
+                "min_rows": min_rows,
+                "matched_rows": matched,
+                "satisfied": matched >= min_rows,
+            }
+        )
+    return coverage
+
+
 def evaluate_question_spec_status(
     spec: QuestionSpec | None,
     rows: list[dict[str, Any]],
     *,
     queries_run: list[str] | None = None,
     fallback_status: str | None = None,
+    coverage_observable: bool | None = None,
 ) -> tuple[str, list[str]]:
-    """Evaluate answer status from a QuestionSpec contract without using an LLM."""
+    """Evaluate answer status from a QuestionSpec contract without using an LLM.
+
+    Status is one of ``answered``, ``partial``, ``unobservable``, ``not_found``,
+    ``not_searched``, or ``wrong_query``. Composite questions declare
+    ``sub_requirements``; a partial composite answer (some, but not all,
+    sub-requirements met) must never be reported as ``answered``.
+    """
     rules = spec.status_rules if spec is not None else {}
-    if fallback_status in _VALID_STRUCTURED_STATUSES and rows:
-        base_status = str(fallback_status)
-    elif rows:
-        base_status = "answered"
-    else:
-        base_status = str(
-            rules.get("empty_status")
+    fallback = normalize_structured_status(fallback_status or "")
+
+    if not rows:
+        if coverage_observable is False:
+            return "unobservable", [
+                str(
+                    rules.get("empty_reason")
+                    or "No matching data is observable under the available evidence coverage."
+                )
+            ]
+        empty_status = normalize_structured_status(
+            str(rules.get("empty_status") or "").strip()
             or ("not_found" if queries_run else "not_searched")
         )
-        if base_status not in _VALID_STRUCTURED_STATUSES:
-            base_status = "not_found" if queries_run else "not_searched"
-        return base_status, [
+        if empty_status not in _VALID_STRUCTURED_STATUSES:
+            empty_status = normalize_structured_status(
+                "not_found" if queries_run else "not_searched"
+            )
+        return empty_status, [
             str(
                 rules.get("empty_reason")
                 or "No matching structured database rows were found."
             )
         ]
+
+    if fallback in _VALID_STRUCTURED_STATUSES:
+        base_status = fallback
+    else:
+        base_status = "answered"
 
     reasons: list[str] = []
     min_rows = int(rules.get("min_rows_for_answer") or 1)
@@ -401,15 +582,21 @@ def evaluate_question_spec_status(
         base_status = "partial"
 
     required_fields = tuple(
-        rules.get("required_fields") or spec.required_fields if spec is not None else ()
+        rules.get("required_fields") or spec.required_fields
+        if spec is not None
+        else ()
     )
-    if required_fields:
+    # Spec-level required_fields only gate the answer when there are no
+    # declarative sub-requirements; sub-requirements own composite coverage.
+    if required_fields and not (spec is not None and spec.sub_requirements):
         any_required_value = any(
             any(_has_value(row, field_name) for field_name in required_fields)
             for row in rows
         )
         if not any_required_value:
-            empty_status = str(rules.get("empty_status") or "not_found")
+            empty_status = normalize_structured_status(
+                str(rules.get("empty_status") or "not_found")
+            )
             if empty_status not in _VALID_STRUCTURED_STATUSES:
                 empty_status = "not_found"
             return empty_status, [
@@ -427,6 +614,30 @@ def evaluate_question_spec_status(
                 + ", ".join(required_fields)
             )
             base_status = "partial"
+
+    if rows and not any(_has_stable_reference(row) for row in rows):
+        reasons.append(
+            "Rows matched, but no stable finding/evidence reference was present."
+        )
+        base_status = "partial"
+
+    if spec is not None and spec.sub_requirements:
+        coverage = sub_requirement_coverage(spec, rows)
+        satisfied = [item for item in coverage if item["satisfied"]]
+        if satisfied and len(satisfied) < len(coverage):
+            base_status = "partial"
+            missing = [
+                item["label"] for item in coverage if not item["satisfied"]
+            ]
+            reasons.append(
+                "Composite answer partially met; unmet sub-requirements: "
+                + ", ".join(missing)
+            )
+        elif not satisfied:
+            base_status = "partial"
+            reasons.append(
+                "No declarative sub-requirement was fully satisfied by the available rows."
+            )
 
     if base_status not in _VALID_STRUCTURED_STATUSES:
         base_status = "answered"

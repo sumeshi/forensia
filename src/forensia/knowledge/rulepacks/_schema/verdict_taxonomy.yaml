@@ -50,3 +50,46 @@ claim_status:
     - suppressed
     - pending
   description: "Support status for evidence-backed claims in memory"
+
+# Canonical hypothesis lifecycle taxonomy (single source of truth for
+# /api/hypotheses, /api/stats, snapshot counts, and the Web UI KPI/breakdown).
+# Every value actually stored in hypotheses.status must appear here. The
+# `groups` block is the authoritative active/resolved partition used by both
+# the backend (service.py) and the frontend (cockpit.ts) so DB, API, snapshot,
+# and UI reconcile to the same revision.
+hypothesis_status:
+  values:
+    - active
+    - confirmed
+    - refuted
+    - untestable
+    - needs_review
+    - deferred
+    - blocked
+  description: "Lifecycle status of a hypothesis."
+  groups:
+    active: [active]
+    resolved: [confirmed, refuted, untestable, needs_review, deferred, blocked]
+  kpi:
+    resolved_total_field: resolved_hypotheses
+    breakdown_fields:
+      - confirmed_hypotheses
+      - refuted_hypotheses
+      - untestable_hypotheses
+      - needs_review_hypotheses
+      - deferred_hypotheses
+      - blocked_hypotheses
+
+# Report section completion taxonomy. `ai_exhausted` is the stable/auto-filled
+# state; `human_reviewed` is the human-approved state. The human-review
+# percentage is computed from `reviewed / (draft + stable + reviewed)`.
+report_section_status:
+  values:
+    - draft
+    - ai_exhausted
+    - human_reviewed
+  description: "Completion state of a report section."
+  groups:
+    draft: [draft]
+    stable: [ai_exhausted]
+    reviewed: [human_reviewed]

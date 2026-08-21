@@ -74,11 +74,19 @@ def _coerce_answer_items(value: Any) -> list[Any]:
 def _answer_columns(items: list[Any], preferred: Any = None) -> list[str]:
     columns = _coerce_string_list(preferred)
     seen = set(columns)
+    hidden_reference_fields = {
+        "evidence_id",
+        "finding_id",
+        "evidence_ids",
+        "finding_ids",
+    }
     for item in items:
         if not isinstance(item, dict):
             continue
         for key in item.keys():
             key_text = str(key)
+            if columns and key_text in hidden_reference_fields:
+                continue
             if key_text not in seen:
                 seen.add(key_text)
                 columns.append(key_text)
@@ -363,10 +371,19 @@ def _structured_answer_interpretation(
     templates = _load_interpretation_templates()
     template = templates.get(answer_spec)
     if template:
-        return _render_interpretation_template(template, answer) + tz_basis
-    return str(format_spec["default_interpretation"]).format(
-        row_count=row_count, timezone_basis=tz_basis
-    )
+        rendered = _render_interpretation_template(template, answer)
+    else:
+        rendered = str(format_spec["default_interpretation"]).format(
+            row_count=row_count, timezone_basis=tz_basis
+        )
+    spec = question_spec_for_answer_spec(str(answer_spec))
+    if spec is not None and spec.version_aware:
+        has_version = any(
+            str(row.get("version") or "").strip() for row in rows
+        )
+        if not has_version:
+            rendered += " Version availability was not observed in the evidence (no version implied)."
+    return rendered + tz_basis
 
 
 def _render_structured_answer_markdown(
@@ -388,6 +405,19 @@ def _render_structured_answer_markdown(
     interpretation = _structured_answer_interpretation(
         answer, block_heading, tz_name=tz_name, format_spec=format_spec
     )
+    spec = question_spec_for_answer_spec(str(answer.get("answer_spec") or ""))
+    lead_lines: list[str] = []
+    if spec is not None and spec.lead_timestamp:
+        lead_value = ""
+        for row in list(answer.get("answer") or []):
+            value = str(row.get(spec.lead_timestamp) or "").strip()
+            if value:
+                lead_value = value
+                break
+        if lead_value:
+            lead_lines.append(
+                f"**{format_spec['labels'].get('lead_timestamp', 'Lead timestamp')}:** {lead_value}"
+            )
     missing_lines = [
         f"- {item}"
         for item in _meaningful_missing_reason_items(answer.get("missing_reason"))
@@ -411,6 +441,8 @@ def _render_structured_answer_markdown(
         f"**{labels['status']}:** {str(answer.get('status') or 'insufficient_evidence')}",
         "",
         f"### {headings['interpretation']}",
+        *lead_lines,
+        *([""] if lead_lines else []),
         interpretation,
         "",
         f"### {headings['answer']}",

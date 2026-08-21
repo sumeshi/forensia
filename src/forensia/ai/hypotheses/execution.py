@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from forensia.ai.llm_telemetry import get_active_telemetry
 from forensia.ai.retrieval_telemetry import ToolReceipt, coverage_snapshot
 from forensia.core.log import log as _log
 from forensia.core.session import Hypothesis
@@ -125,14 +126,24 @@ def build_sql_receipt(
     original_row_count: int | None,
     fallback_info: dict[str, Any] | None = None,
     error: str | None = None,
+    validator_info: dict[str, Any] | None = None,
 ) -> ToolReceipt:
-    """Build a deterministic receipt from values observed by the runner."""
+    """Build a deterministic receipt from values observed by the runner.
+
+    The SQL execution is pure host work: it is recorded as a deterministic op
+    (never LLM work) and the receipt carries stable evidence/finding references,
+    a continuation handle for the same line of investigation, and the host
+    validator reason when validation constrained the query.
+    """
 
     is_error = error is not None
     used_fallback = fallback_info is not None
     result_summary = rows if rows is not None else []
     evidence_ids = [
         str(row.get("evidence_id")) for row in result_summary if row.get("evidence_id")
+    ]
+    finding_ids = [
+        str(row.get("finding_id")) for row in result_summary if row.get("finding_id")
     ]
     source_refs = _row_source_refs(result_summary)
     derivation_refs = {
@@ -141,7 +152,25 @@ def build_sql_receipt(
         for key in ("derivation_group", "derivation_source")
         if row.get(key)
     }
+    continuation_handle = f"sql:{session_id}:{hypothesis.id}:{query_hash}"
     receipt_id = f"receipt-{session_id}-{plan_cycle}-{query_index}-{query_hash}"
+
+    tel = get_active_telemetry()
+    if tel is not None:
+        try:
+            tel.record_deterministic_op(
+                phase="do",
+                op_type="query",
+                target="sql.query",
+                session_id=session_id,
+                hypothesis_id=hypothesis.id,
+                duration_ms=int(round(duration_ms)) if duration_ms is not None else None,
+                note="host-executed SELECT",
+            )
+        except Exception:
+            # Telemetry must never break the deterministic execution path.
+            pass
+
     if is_error:
         status = "error"
         reason = error[:500] if error else None
@@ -191,6 +220,8 @@ def build_sql_receipt(
             if fallback_info
             else None,
             "fallback": fallback_info,
+            "validator": validator_info or {},
+            "continuation_handle": continuation_handle,
         },
         preconditions={
             "sql_validation": "planner_observed",
@@ -205,7 +236,7 @@ def build_sql_receipt(
         truncated=truncated,
         result_refs={
             "evidence_ids": evidence_ids,
-            "finding_ids": [],
+            "finding_ids": finding_ids,
             "hypothesis_ids": [],
         },
         contributor_sources=sorted(source_refs),
@@ -222,10 +253,19 @@ def build_receipt_step_payload(
     evaluation: Any,
     result_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Compose trace JSON without adding assessment or verdict semantics."""
+    """Compose trace JSON without adding assessment or verdict semantics.
 
+    Surfaces the stable continuation handle and the host validator reason so the
+    next planning step can resume the same investigation line without re-asking
+    the model for facts the host already validated.
+    """
+
+    validator_info = receipt.arguments.get("validator") or {}
+    continuation_handle = receipt.arguments.get("continuation_handle")
     return {
         **(result_summary or {}),
         "tool_receipt": receipt.model_dump(mode="json"),
         "retrieval_evaluation": evaluation.model_dump(mode="json"),
+        "continuation_handle": continuation_handle,
+        "validator_reason": validator_info.get("reason"),
     }

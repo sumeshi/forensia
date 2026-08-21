@@ -56,6 +56,75 @@ VALID_ROLES = frozenset(
 )
 VALID_STRENGTHS = frozenset(["weak", "moderate", "strong"])
 
+# Observations that were retrieved (rows observed) but could not be turned into
+# an admissible EvidenceLink — e.g. retrieval was inadequate or no evidence_id
+# could be extracted.  Recorded so sufficiency can distinguish "nothing to link"
+# from "rows existed but were not linkable" (the latter must NOT be reported as
+# a bare "No evidence links found").
+_UNLINKABLE_OBS_SQL = """
+CREATE TABLE IF NOT EXISTS hypothesis_unlinkable_obs (
+    hypothesis_id VARCHAR,
+    query_id VARCHAR,
+    reason VARCHAR,
+    observed_rows INTEGER,
+    created_session VARCHAR,
+    created_at TIMESTAMP
+)
+"""
+
+
+def record_unlinkable_observation(
+    db: CaseDB,
+    *,
+    hypothesis_id: str,
+    query_id: str = "",
+    reason: str = "",
+    observed_rows: int = 0,
+    created_session: str = "",
+) -> None:
+    """Persist a structured reason for an observed-but-unlinkable query result."""
+    db.execute(_UNLINKABLE_OBS_SQL)
+    db.execute(
+        "INSERT INTO hypothesis_unlinkable_obs "
+        "(hypothesis_id, query_id, reason, observed_rows, created_session, created_at) "
+        "VALUES (?, ?, ?, ?, ?, now())",
+        [
+            hypothesis_id,
+            query_id or "",
+            reason or "",
+            int(observed_rows or 0),
+            created_session or "",
+        ],
+    )
+
+
+def load_unlinkable_observations(db: CaseDB, hypothesis_id: str) -> list[tuple[str, int]]:
+    """Return (reason, observed_rows) tuples for the current session/run."""
+    return load_unlinkable_observations_for_session(db, hypothesis_id)
+
+
+def load_unlinkable_observations_for_session(
+    db: CaseDB, hypothesis_id: str, created_session: str | None = None
+) -> list[tuple[str, int]]:
+    """Return unlinkable observations, optionally bounded to one session."""
+    try:
+        db.execute(_UNLINKABLE_OBS_SQL)
+        session_clause = ""
+        params: list[str] = [hypothesis_id]
+        if created_session:
+            session_clause = " AND created_session = ?"
+            params.append(created_session)
+        rows = db.execute(
+            "SELECT reason, observed_rows FROM hypothesis_unlinkable_obs "
+            "WHERE hypothesis_id = ?" + session_clause,
+            params,
+        ).fetchall()
+        return [
+            (str(r[0] or ""), int(r[1]) if r[1] is not None else 0) for r in rows
+        ]
+    except Exception:
+        return []
+
 
 def _load_sufficiency_thresholds() -> dict[str, float]:
     """Load sufficiency thresholds from YAML policy."""
@@ -133,13 +202,21 @@ def evaluate_sufficiency(
     links: list[EvidenceLink],
     coverage: dict[str, dict[str, str]],
     policy: dict[str, Any] | None = None,
+    unlinkable_reasons: list[str] | None = None,
 ) -> SufficiencyResult:
     """Evaluate evidence sufficiency for a hypothesis.
 
     Returns a SufficiencyResult with status, score, and detailed reasons.
+
+    ``unlinkable_reasons`` carries structured reasons for observations that were
+    retrieved but could not be turned into an admissible EvidenceLink.  When
+    supplied and non-empty it replaces the misleading "No evidence links found"
+    verdict (which implies nothing was ever observed) with an explicit note that
+    rows existed but were not linkable.
     """
     if policy is None:
         policy = load_evidence_sufficiency_policy()
+    unlinkable_reasons = unlinkable_reasons or []
 
     common = policy.get("common_rules", {})
     default_suff = policy.get("default_sufficiency", {})
@@ -201,6 +278,20 @@ def evaluate_sufficiency(
                 families=[],
                 contradictory_groups=0,
                 missing_requirements=sorted(relevant_capabilities),
+                human_review_required=False,
+            )
+        if unlinkable_reasons:
+            return SufficiencyResult(
+                status="insufficient",
+                score=0.0,
+                reasons=[
+                    "Observations observed but not linkable: "
+                    + "; ".join(unlinkable_reasons)
+                ],
+                independent_groups=0,
+                families=[],
+                contradictory_groups=0,
+                missing_requirements=["at least 1 linkable supporting evidence group"],
                 human_review_required=False,
             )
         return SufficiencyResult(
@@ -406,6 +497,7 @@ def assess_and_persist_sufficiency(
     evidence_requirements: dict[str, Any] | None,
     llm_verdict: str,
     verification_spec: Any | None = None,
+    session_id: str | None = None,
 ) -> tuple[SufficiencyResult, str, str, list[str]]:
     """Run the authoritative machine assessment and persist its projections."""
     if verification_spec is not None:
@@ -432,6 +524,12 @@ def assess_and_persist_sufficiency(
         },
         load_evidence_links(db, hypothesis_id),
         get_coverage_summary(db),
+        unlinkable_reasons=[
+            reason
+            for reason, _ in load_unlinkable_observations_for_session(
+                db, hypothesis_id, session_id
+            )
+        ],
     )
     final_verdict, reconciliation_reason = reconcile_verdicts(result, llm_verdict)
     if final_verdict == "needs_review":
@@ -544,6 +642,7 @@ def create_evidence_links_for_query(
     strengths: dict[str, str] | None = None,
     assessment_id: str = "",
     derivation_group: str = "",
+    finding_ids_by_evidence: dict[str, str] | None = None,
 ) -> list[str]:
     """Create evidence links for all evidence IDs from a query result."""
     link_ids = []
@@ -555,6 +654,7 @@ def create_evidence_links_for_query(
             role=role,
             query_id=query_id,
             created_session=created_session,
+            finding_id=(finding_ids_by_evidence or {}).get(eid, ""),
             strength=(strengths or {}).get(eid, "moderate"),
             assessment_id=assessment_id,
             derivation_group=derivation_group,

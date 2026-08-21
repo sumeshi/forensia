@@ -240,18 +240,11 @@ def _infer_recent_lnk_rename_candidates(
             delta_s = abs((right_time - left_time).total_seconds())
             if delta_s > 120:
                 continue
-            shared = left_tokens & right_tokens
-            if not shared:
-                continue
-            shorter, longer = (left, right)
-            shorter_tokens, longer_tokens = left_tokens, right_tokens
-            if len(_recent_lnk_base_name(left.get("file_name"))) > len(
-                _recent_lnk_base_name(right.get("file_name"))
-            ):
-                shorter, longer = right, left
-                shorter_tokens, longer_tokens = right_tokens, left_tokens
-            if not shorter_tokens <= longer_tokens:
-                continue
+            # Recent-file aliases do not necessarily retain a common token or
+            # preserve the source filename's length. Temporal proximity alone
+            # is sufficient to retain a candidate; the result remains
+            # candidate_only and is never presented as authoritative.
+            shorter, longer = left, right
             candidates.append(
                 {
                     "original_name": _recent_lnk_base_name(shorter.get("file_name")),
@@ -317,7 +310,7 @@ def _build_desktop_rename_candidates(
                 OR LOWER(COALESCE(file_path, '')) LIKE '%\\windows\\recent\\%'
             )
               AND LOWER(COALESCE(file_name, '')) LIKE '%.lnk'
-            ORDER BY COALESCE(fn_created, si_created, fn_modified, si_modified) NULLS LAST, file_name
+            ORDER BY COALESCE(fn_created, si_created, fn_modified, si_modified) DESC NULLS LAST, file_name
             LIMIT 500
             """,
         )

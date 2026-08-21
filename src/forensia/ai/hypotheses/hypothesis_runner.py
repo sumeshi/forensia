@@ -24,6 +24,7 @@ from forensia.ai.checking.settlement import (
 from forensia.ai.checking.sufficiency import (
     assess_and_persist_sufficiency,
     create_evidence_links_for_query,
+    record_unlinkable_observation,
 )
 from forensia.ai.hypotheses.execution import (
     build_receipt_step_payload,
@@ -115,6 +116,20 @@ def _unavailable_missing_event_ids(
     return sorted(referenced)
 
 
+def _observed_keypoints_from_findings(
+    snapshot: list[dict[str, Any]], limit: int = 20
+) -> list[str]:
+    """Format findings as stable labels for broad-planning context."""
+    keypoints: list[str] = []
+    for item in snapshot[:limit]:
+        title = str(item.get("title") or "").strip()
+        finding_id = str(item.get("finding_id") or "").strip()
+        if not title:
+            continue
+        keypoints.append(f"{finding_id}: {title}" if finding_id else title)
+    return keypoints
+
+
 def _matching_findings(
     snapshot: list[dict[str, Any]], hypothesis: Hypothesis | None
 ) -> list[dict[str, Any]]:
@@ -137,35 +152,10 @@ def _matching_findings(
     return matched[:10] if matched else snapshot[:10]
 
 
-def _observed_keypoints_from_findings(
-    snapshot: list[dict[str, Any]], limit: int = 20
-) -> list[str]:
-    """Format findings as human-readable keypoint labels for LLM context."""
-    keypoints: list[str] = []
-    for item in snapshot[:limit]:
-        title = str(item.get("title") or "").strip()
-        finding_id = str(item.get("finding_id") or "").strip()
-        if not title:
-            continue
-        if finding_id:
-            keypoints.append(f"{finding_id}: {title}")
-        else:
-            keypoints.append(title)
-    return keypoints
-
-
 def _rationale_signature(rationale: str) -> str:
-    eids = sorted(
-        set(re.findall(r"\b(?:event\s*id\s*)?(\d{3,5})\b", rationale.lower()))
-    )
-    keywords = sorted(
-        set(
-            re.findall(
-                r"\b(missing|requires|correlation|not\s+present|absent)\b",
-                rationale.lower(),
-            )
-        )
-    )
+    text = rationale.lower()
+    eids = sorted(set(re.findall(r"\b(?:event\s*id\s*)?(\d{3,5})\b", text)))
+    keywords = sorted(set(re.findall(r"\b(missing|requires|correlation|not\s+present|absent)\b", text)))
     return "eid:" + ",".join(eids) + "|kw:" + ",".join(keywords)
 
 
@@ -544,6 +534,7 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
             rs.retrieval_evaluation is not None
             and rs.retrieval_evaluation.outcome == "adequate"
         )
+        finding_ids_by_evidence = result_summary.get("finding_ids_by_evidence") or {}
         if evidence_ids and retrieval_adequate:
             assessment = assess_evidence_group(
                 hypothesis=hypothesis,
@@ -563,6 +554,26 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
                 # Every row from this query is one conservative observation
                 # group; do not let evidence IDs manufacture independence.
                 derivation_group=assessment.derivation_group,
+                finding_ids_by_evidence=finding_ids_by_evidence,
+            )
+        elif rows:
+            # Rows were observed but could not be turned into an admissible
+            # EvidenceLink (retrieval not adequate, or no evidence_id could be
+            # extracted).  Keep the retrieval_adequate gate, but record a
+            # structured unlinkable reason so sufficiency does not misreport a
+            # bare "No evidence links found" when rows did exist.
+            reason = (
+                "retrieval outcome not adequate"
+                if not retrieval_adequate
+                else "no linkable evidence_id in observation"
+            )
+            record_unlinkable_observation(
+                db,
+                hypothesis_id=hypothesis.id,
+                query_id=planned_query.query_id if planned_query else "",
+                reason=reason,
+                observed_rows=len(rows or []),
+                created_session=session_id,
             )
     return "ok"
 
@@ -585,6 +596,7 @@ def _apply_sufficiency_guard(rs: _HypothesisRunState) -> None:
             evidence_requirements=rs.hypothesis.evidence_requirements,
             llm_verdict=original_verdict,
             verification_spec=rs.hypothesis.verification_spec,
+            session_id=rs.session_id,
         )
     )
     check_result.verdict = final_verdict
@@ -724,6 +736,19 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
             )
             for child in state.active_hypotheses:
                 if child.id in previous_ids or child.id == hypothesis.id:
+                    continue
+                from forensia.ai.hypotheses.relations import (
+                    relation_involves_unknown_claim,
+                )
+
+                if relation_involves_unknown_claim(
+                    hypothesis.description, child.description
+                ):
+                    _log(
+                        "RELATION",
+                        f"skipped parent_of {hypothesis.id} -> {child.id}: "
+                        f"endpoint carries material-unknown claim",
+                    )
                     continue
                 insert_relation(
                     db,
@@ -962,8 +987,6 @@ async def _investigate_one_hypothesis(
         if rs.check_result.verdict in {"confirmed", "refuted", "untestable"}:
             break
         _phase_track_progress(rs)
-        if _phase_auto_resolve(rs) == "break":
-            break
-        if query_index >= limit:
+        if _phase_auto_resolve(rs) == "break" or query_index >= limit:
             break
     return rs.cycle_progress, rs.state, rs.focus_sections
