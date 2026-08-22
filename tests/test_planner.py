@@ -246,9 +246,9 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertIn("not eligible", result.stop_reason or "")
         self.assertEqual(2, request.call_count)
 
-    def test_query_intent_exposes_only_current_active_hypothesis(self) -> None:
-        current = Hypothesis(id="H-A", description="gap alpha private question")
-        other = Hypothesis(id="H-B", description="gap beta must not leak")
+    def test_query_intent_exposes_current_and_peer_active_hypotheses(self) -> None:
+        current = Hypothesis(id="H-A", description="gap alpha current question")
+        other = Hypothesis(id="H-B", description="gap beta peer hypothesis")
         state = SessionState(
             session_id="session-scope",
             iteration=1,
@@ -286,8 +286,8 @@ class PlannerRetryTests(unittest.TestCase):
             )
 
         intent_prompt = "\n".join(message["content"] for message in seen_messages[0])
-        self.assertIn("gap alpha private question", intent_prompt)
-        self.assertNotIn("gap beta must not leak", intent_prompt)
+        self.assertIn("gap alpha current question", intent_prompt)
+        self.assertIn("gap beta peer hypothesis", intent_prompt)
 
     def test_rejects_invalid_sql_without_another_llm_call(self) -> None:
         state = SessionState(session_id="session-1", iteration=1)
@@ -385,6 +385,20 @@ class PlannerRetryTests(unittest.TestCase):
                     ) VALUES ('HR-1', 'H1', 'S-1', 1, 'check', 'inconclusive', 'Q-old', 'already tested', now())
                     """
                 )
+                db.execute(
+                    """
+                    INSERT INTO hypothesis_reasoning (
+                        entry_id, hypothesis_id, session_id, iteration, phase, verdict, query_id, body, created_at
+                    ) VALUES ('HR-2', 'H1', 'S-1', 1, 'sufficiency', 'inconclusive', 'Q-old', 'missing required capability', now())
+                    """
+                )
+                db.execute(
+                    """
+                    INSERT INTO hypothesis_reasoning (
+                        entry_id, hypothesis_id, session_id, iteration, phase, verdict, query_id, body, created_at
+                    ) VALUES ('HR-3', 'H1', 'S-1', 1, 'settlement', 'inconclusive', 'Q-old', 'host settlement gate blocked confirmation', now())
+                    """
+                )
                 with patch(
                     "forensia.ai.llm.llm_gateway.request_llm_json",
                     side_effect=responses,
@@ -403,6 +417,13 @@ class PlannerRetryTests(unittest.TestCase):
             "content"
         ]
         self.assertIn("query_id=Q-old", first_call_system)
+        first_call_user = mock_request.call_args_list[0].kwargs["messages"][1][
+            "content"
+        ]
+        self.assertIn("[sufficiency] missing required capability", first_call_user)
+        self.assertIn(
+            "[settlement] host settlement gate blocked confirmation", first_call_user
+        )
 
     def test_plan_hypothesis_query_dedupes_local_and_db_query_ids(self) -> None:
         state = SessionState(

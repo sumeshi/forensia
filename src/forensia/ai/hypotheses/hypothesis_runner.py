@@ -44,6 +44,7 @@ from forensia.ai.investigation.investigation_session import (
     _call_with_outage_recovery,
     _save_step,
     append_hypothesis_reasoning,
+    append_settlement_feedback,
     ctx_refresh_caches,
 )
 from forensia.ai.investigation.memory_sync import apply_memory_updates
@@ -704,12 +705,18 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
             si=si,
             evidence_requirements=hypothesis.evidence_requirements,
         )
+        pre_settlement_verdict = final_verdict
         _log(
             "SETTLEMENT",
             f"{hypothesis.id} verdict={decision.verdict} passed={decision.gates_passed} failed={decision.gates_failed}",
         )
         final_verdict = decision.verdict
         check_result.verdict = final_verdict
+        append_settlement_feedback(
+            db, hypothesis.id, session_id, plan_cycle,
+            planned_query.query_id if planned_query else None,
+            pre_settlement_verdict, decision,
+        )
         if not decision.allowed:
             _log("SETTLEMENT", f"{hypothesis.id} confirmed BLOCKED: {decision.reason}")
 

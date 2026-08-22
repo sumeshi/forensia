@@ -437,7 +437,7 @@ def _build_hypothesis_history(
 
 
 def _load_prior_check_feedback(db: CaseDB | None, hypothesis: Hypothesis) -> str:
-    """Summarize the last check-phase reasoning entries for this hypothesis.
+    """Summarize recent checker and host-gate feedback for this hypothesis.
 
     Free text is a supplement only — the structured attempt history
     (<PRIOR_ATTEMPTS> in the intent prompt) carries the signal.
@@ -446,15 +446,27 @@ def _load_prior_check_feedback(db: CaseDB | None, hypothesis: Hypothesis) -> str
         return ""
     recent_checks = db.execute(
         """
-        SELECT body FROM hypothesis_reasoning
-        WHERE hypothesis_id = ? AND phase = 'check'
-        ORDER BY created_at DESC LIMIT 2
+        SELECT phase, body FROM (
+            SELECT phase, body, created_at, entry_id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY phase ORDER BY created_at DESC, entry_id DESC
+                   ) AS phase_rank
+            FROM hypothesis_reasoning
+            WHERE hypothesis_id = ?
+              AND phase IN ('check', 'sufficiency', 'settlement')
+        ) recent
+        WHERE phase_rank <= CASE WHEN phase = 'check' THEN 2 ELSE 1 END
+        ORDER BY created_at DESC, entry_id DESC
     """,
         (hypothesis.id,),
     ).fetchall()
     if not recent_checks:
         return ""
-    return "\n".join(f"- {row[0][:120]}" for row in recent_checks)
+    return "\n".join(
+        f"- [{str(row[0] or 'feedback')}] {str(row[1] or '')[:120]}"
+        for row in recent_checks
+        if str(row[1] or "").strip()
+    )
 
 
 def _consume_execution_error_block(state: SessionState) -> str:
@@ -608,7 +620,7 @@ def plan_hypothesis_query(
         return build_query_intent_messages(
             hypothesis=hypothesis,
             recent_history=hypothesis_history,
-            active_hypotheses=[hypothesis],
+            active_hypotheses=state.active_hypotheses,
             time_range=time_range or {},
             schema_context=schema_card,
             extra_context_md=extra_context + execution_error_block,

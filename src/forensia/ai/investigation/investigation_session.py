@@ -358,6 +358,32 @@ def append_hypothesis_reasoning(
     return entry_id
 
 
+def append_settlement_feedback(
+    db: CaseDB,
+    hypothesis_id: str,
+    session_id: str,
+    iteration: int,
+    query_id: str | None,
+    previous_verdict: str,
+    decision: Any,
+) -> str | None:
+    """Persist a host settlement override so the next plan can observe it."""
+    final_verdict = str(decision.verdict)
+    if decision.allowed and final_verdict == previous_verdict:
+        return None
+    body = (
+        f"Host settlement changed verdict {previous_verdict} -> {final_verdict}: "
+        f"{decision.reason}"
+    )
+    failed_gates = "; ".join(decision.gates_failed)
+    if failed_gates:
+        body += f"; failed_gates={failed_gates}"
+    return append_hypothesis_reasoning(
+        db, hypothesis_id, session_id, iteration, "settlement", body[:1000],
+        verdict=final_verdict, query_id=query_id,
+    )
+
+
 def _load_profile_config(profile: str) -> dict[str, Any]:
     """Load the YAML configuration for a given profile name."""
     profile_file = profile_path(profile)
