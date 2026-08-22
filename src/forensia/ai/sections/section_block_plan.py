@@ -211,6 +211,7 @@ def _run_block_plan(
             model=ctx.model,
             base_url=ctx.base_url,
             json_schema=plan_schema,
+            telemetry_phase="section-plan",
             audit_callback=ctx.audit,
         )
     except Exception as exc:
@@ -414,6 +415,7 @@ def _run_block_check(
             model=ctx.model,
             base_url=ctx.base_url,
             json_schema=check_schema,
+            telemetry_phase="section-check",
             audit_callback=ctx.audit,
         )
     except Exception as exc:

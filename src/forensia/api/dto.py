@@ -19,6 +19,7 @@ class RuntimeConfigDTO(DTOModel):
     llm_base_url: str | None = None
     llm_model: str | None = None
     llm_max_tokens: int
+    llm_temperature: float
     llm_output_language: str
     llm_report_max_queries_per_section: int
     llm_outage_wall_clock_budget_s: int

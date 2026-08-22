@@ -31,7 +31,8 @@ values fall back to the defaults below; values below the documented minimum are 
 | `LLM_API_KEY` | Unset; when present, sent only as a Bearer `Authorization` header to the configured LLM endpoint. It is not returned by `/api/config` or written to LLM audit logs. | LLM HTTP client |
 | `LLM_MODEL` | Unset. Required with an LLM endpoint; CLI `--model` overrides it. | CLI LLM configuration |
 | `LLM_CONTEXT_WINDOW_TOKENS` | `0` (unknown/automatic); optional total provider context limit used to reserve input space before sending output budget. | LLM HTTP client |
-| `LLM_MAX_TOKENS` | `4096`; output ceiling per completion, minimum 1. It is not a model context-window setting. | LLM HTTP client |
+| `LLM_MAX_TOKENS` | `4096`; hard output ceiling per completion, minimum 1. Per-role requests and truncation recovery cannot exceed it. It is not a model context-window setting. | LLM HTTP client |
+| `LLM_TEMPERATURE` | `0.0`; OpenAI-compatible sampling temperature, clamped to `0.0`–`2.0`. Keep `0.0` for reproducibility; raise deliberately when deterministic repetition is undesirable. | LLM HTTP client |
 | `LLM_REASONING_RESERVE_TOKENS` | `0`; added to the completion ceiling for providers that count hidden reasoning in `max_tokens`. | LLM HTTP client |
 | `FORENSIA_PROMPT_BUDGET_TOKENS` | `12000` when unset or `0`; total plan/check input budget. Set this first when tuning context size. | Prompt assembly/trimming |
 | `FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS` | Automatic when unset or `0`: twice the total prompt-token budget. Advanced override for generated DFIR guidance only. | Playbook/context builders |

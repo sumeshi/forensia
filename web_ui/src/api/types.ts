@@ -8,6 +8,7 @@ export type RuntimeConfigDTO = {
   llm_base_url?: string | null;
   llm_model?: string | null;
   llm_max_tokens: number;
+  llm_temperature: number;
   llm_output_language: string;
   llm_report_max_queries_per_section: number;
   llm_outage_wall_clock_budget_s: number;

@@ -6,12 +6,12 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from forensia.ai.llm import llm_client
+from forensia.ai.llm import llm_client, schema_compat
 
 
 @pytest.fixture(autouse=True)
 def _reset_schema_mode_cache() -> None:
-    llm_client._SCHEMA_MODE_CACHE.clear()
+    schema_compat._SCHEMA_MODE_CACHE.clear()
 
 
 class _FakeClient:
@@ -78,6 +78,7 @@ def test_chat_completion_retries_llama_strict_schema_failure_with_compatible_sch
         )
 
     assert result == '{"ok": true}'
+    assert client.requests[0]["temperature"] == 0.0
     assert client.headers == [
         {"Authorization": "Bearer test-token"},
         {"Authorization": "Bearer test-token"},

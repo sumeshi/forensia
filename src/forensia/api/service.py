@@ -91,6 +91,7 @@ def get_runtime_config_dto() -> RuntimeConfigDTO:
         llm_base_url=settings.llm_base_url,
         llm_model=settings.llm_model,
         llm_max_tokens=settings.llm_max_tokens,
+        llm_temperature=settings.llm_temperature,
         llm_output_language=settings.llm_output_language,
         llm_report_max_queries_per_section=settings.llm_report_max_queries_per_section,
         llm_outage_wall_clock_budget_s=settings.llm_outage_wall_clock_budget_s,

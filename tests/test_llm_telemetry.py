@@ -24,7 +24,9 @@ def telemetry(tmp_path) -> LLMTelemetry:
 
 def test_deterministic_op_is_not_counted_as_llm_attempt(telemetry) -> None:
     telemetry.record_deterministic_op(
-        phase="report-section-block", op_type="render", target="appendix-24",
+        phase="report-section-block",
+        op_type="render",
+        target="appendix-24",
         duration_ms=5,
     )
     agg = telemetry.session_aggregates()
@@ -113,15 +115,17 @@ def test_client_creates_timeout_attempt_receipt(tmp_path, monkeypatch) -> None:
         def post(self, url, json, headers):
             raise httpx.TimeoutException("read timeout")
 
+    messages: list[str] = []
     with (
         patch.object(llm_client, "_get_http_client", return_value=_FakeClient()),
         patch.object(llm_client.settings, "llm_api_key", "tok"),
     ):
-        with pytest.raises(llm_client.LLMServerUnavailableError):
+        with pytest.raises(llm_client.LLMRequestTimeoutError):
             llm_client.chat_completion(
                 [{"role": "user", "content": "go"}],
                 model="m",
                 base_url="http://llama.test",
+                status_callback=messages.append,
             )
     set_active_telemetry(None)
 
@@ -131,6 +135,8 @@ def test_client_creates_timeout_attempt_receipt(tmp_path, monkeypatch) -> None:
     assert rows[0][0] == "timeout"
     assert rows[0][1] == "timeout"
     assert rows[0][2] == "read"
+    assert len(rows) == 1
+    assert messages == ["LLM request timed out; not replaying it as an outage"]
 
 
 def _truncated_response() -> httpx.Response:
@@ -138,9 +144,7 @@ def _truncated_response() -> httpx.Response:
     return httpx.Response(
         200,
         json={
-            "choices": [
-                {"message": {"content": '{"ok":'}, "finish_reason": "length"}
-            ]
+            "choices": [{"message": {"content": '{"ok":'}, "finish_reason": "length"}]
         },
         request=req,
     )
@@ -154,12 +158,12 @@ def _assert_truncation_receipt(db: CaseDB, session_id: str) -> None:
     row = db.execute(
         """
         SELECT status, error_type, parse_status, finish_reason, truncated,
-               accepted, discarded_reason
+               accepted, discarded_reason, error_body_summary, response_fingerprint
         FROM llm_provider_attempts WHERE session_id = ?
         """,
         (session_id,),
     ).fetchone()
-    assert row == (
+    assert row[:7] == (
         "parse_error",
         "truncated",
         "truncated",
@@ -168,6 +172,8 @@ def _assert_truncation_receipt(db: CaseDB, session_id: str) -> None:
         False,
         "finish_reason=length",
     )
+    assert "content_head='{" in row[7]
+    assert len(row[8]) == 24
 
 
 def test_unusable_truncation_closes_owned_call_failed_and_marks_attempt(
@@ -227,3 +233,30 @@ def test_unusable_truncation_closes_owned_call_failed_and_marks_attempt(
     set_active_telemetry(None)
     _assert_truncation_receipt(db, "S-async")
     assert tel_a.session_aggregates()["provider_attempt_count"] == 1
+
+    # JSON-level recovery must change the request without exceeding the configured
+    # model completion cap. Keep this in the existing truncation contract test.
+    from forensia.ai.llm import json_response
+
+    attempts: list[dict] = []
+
+    def _recover_once(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 1:
+            raise llm_client.LLMOutputTruncatedError("length", content='{"ok":')
+        return '{"ok": true}'
+
+    with (
+        patch.object(json_response, "chat_completion", side_effect=_recover_once),
+        patch.object(
+            json_response, "get_llm_settings", return_value={"max_tokens": 16384}
+        ),
+    ):
+        parsed = json_response.request_llm_json(
+            [{"role": "user", "content": "return json"}],
+            base_url="http://llama.test",
+            model="m",
+        )
+    assert parsed == {"ok": True}
+    assert [attempt["max_tokens"] for attempt in attempts] == [16384, 16384]
+    assert "<RETRY_CONSTRAINT>" in attempts[1]["messages"][-1]["content"]

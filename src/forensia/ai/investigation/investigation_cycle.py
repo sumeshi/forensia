@@ -44,6 +44,7 @@ from forensia.ai.investigation.selection import (
 )
 from forensia.ai.llm import llm_gateway
 from forensia.ai.llm.llm_client import (
+    LLMRequestTimeoutError,
     LLMServerUnavailableError,
 )
 from forensia.ai.prompts.prompt_investigation import (
@@ -61,6 +62,8 @@ from forensia.report.answers.keypoint_catalog import (
     REPORT_KEYPOINTS,
     investigation_keypoint_names,
 )
+
+_BROAD_DRAFT_MAX_TOKENS = 4096
 
 
 @dataclass(slots=True)
@@ -285,6 +288,7 @@ async def _identify_broad_plan_gaps(ctx: _BroadPlanContext) -> list[dict[str, An
         model=ctx.model,
         messages=gap_msgs,
         json_schema=gap_schema,
+        telemetry_phase="plan-broad-gap",
         status_callback=ctx.llm_status_fn,
         audit_callback=lambda msgs, out, parsed: ctx.llm_logger.write(
             iteration=ctx.plan_cycle,
@@ -364,6 +368,8 @@ async def _draft_broad_plan_hypotheses(
             model=ctx.model,
             messages=h_msgs,
             json_schema=h_schema,
+            telemetry_phase="plan-broad-draft",
+            max_tokens=_BROAD_DRAFT_MAX_TOKENS,
             status_callback=ctx.llm_status_fn,
             audit_callback=lambda msgs, out, parsed: ctx.llm_logger.write(
                 iteration=ctx.plan_cycle,
@@ -506,6 +512,12 @@ async def _run_broad_plan_step(
         err_msg = f"LLM server error: {exc}"
         _log("PLAN_BROAD", err_msg, level="error")
         raise
+    except LLMRequestTimeoutError as exc:
+        err_msg = f"LLM request timed out; broad planning skipped: {exc}"
+        _log("PLAN_BROAD", err_msg, level="error")
+        if emit_fn:
+            emit_fn("investigate/plan", err_msg, iteration=plan_cycle)
+        return False
     except LLMServerUnavailableError:
         raise
     except Exception as exc:

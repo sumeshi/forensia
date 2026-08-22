@@ -25,6 +25,34 @@ _LINE_COMMENT_RE = re.compile(r"//[^\n\"]*\n")
 MAX_JSON_REPAIR_ATTEMPTS = 3
 MAX_JSON_COMPLETION_ATTEMPTS = 3
 
+_TRUNCATION_RECOVERY = (
+    "<RETRY_CONSTRAINT>The previous response exceeded the output limit. "
+    "Return exactly one concise JSON object matching OUTPUT_SCHEMA. Omit prose, "
+    "analysis, repetition, markdown, and fields not required by the schema. "
+    "Keep each explanatory string under 240 characters.</RETRY_CONSTRAINT>"
+)
+
+
+def _messages_for_truncation_retry(
+    messages: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    """Change the request after truncation without discarding input evidence."""
+    retried = [dict(item) for item in messages]
+    target = next(
+        (
+            index
+            for index in range(len(retried) - 1, -1, -1)
+            if retried[index].get("role") != "system"
+        ),
+        None,
+    )
+    if target is None:
+        retried.append({"role": "user", "content": _TRUNCATION_RECOVERY})
+    else:
+        content = str(retried[target].get("content") or "")
+        retried[target]["content"] = f"{content}\n\n{_TRUNCATION_RECOVERY}"
+    return retried
+
 
 def _compact_messages_after_context_rejection(
     messages: list[dict[str, str]], *, base_url: str, model: str
@@ -276,12 +304,13 @@ def request_llm_json(
     max_tokens: int | None = None,
     *,
     logical_call_id: str | None = None,
+    telemetry_phase: str = "request_llm_json",
 ) -> dict[str, Any]:
     """Send a chat request and return parsed JSON, with retry across both completion and parsing failures."""
     telemetry = get_active_telemetry()
     owned = False
     if logical_call_id is None and telemetry is not None:
-        logical_call_id = telemetry.begin_logical_call(phase="request_llm_json")
+        logical_call_id = telemetry.begin_logical_call(phase=telemetry_phase)
         owned = True
     ordinal: list[int] = [0]
 
@@ -295,7 +324,8 @@ def request_llm_json(
     seen_invalid_outputs: set[str] = set()
     context_compaction_used = False
     context_retry_fields: dict[str, Any] | None = None
-    base_max = max_tokens if max_tokens is not None else get_llm_settings()["max_tokens"]
+    configured_cap = int(get_llm_settings()["max_tokens"])
+    base_max = min(int(max_tokens), configured_cap) if max_tokens else configured_cap
     for completion_attempt in range(1, MAX_JSON_COMPLETION_ATTEMPTS + 1):
         if completion_attempt > 1 and status_callback:
             status_callback(
@@ -303,16 +333,11 @@ def request_llm_json(
                 f"Retrying original LLM request ({completion_attempt}/{MAX_JSON_COMPLETION_ATTEMPTS})."
             )
         try:
-            first_max_tokens = max_tokens
+            first_max_tokens = base_max
+            truncation_retry_fields: dict[str, Any] | None = None
+            last_truncation: LLMOutputTruncatedError | None = None
             for _ in range(2):
                 try:
-                    retry_class = None
-                    retry_reason = None
-                    changed_fields = None
-                    if first_max_tokens != base_max:
-                        retry_class = "truncation"
-                        retry_reason = "finish_reason=length; retry with larger output budget"
-                        changed_fields = {"max_tokens": [base_max, first_max_tokens]}
                     output = chat_completion(
                         messages=messages,
                         model=model,
@@ -322,36 +347,54 @@ def request_llm_json(
                         json_schema=json_schema,
                         logical_call_id=logical_call_id,
                         attempt_ordinal=next_ordinal(),
-                        phase="request_llm_json",
-                        retry_class=retry_class,
-                        retry_reason=retry_reason,
+                        phase=telemetry_phase,
+                        retry_class=("truncation" if truncation_retry_fields else None),
+                        retry_reason=(
+                            "finish_reason=length; concise JSON retry within configured cap"
+                            if truncation_retry_fields
+                            else None
+                        ),
                         policy_decision=(
-                            "compact_context" if context_retry_fields else None
+                            "compact_context"
+                            if context_retry_fields
+                            else "constrain_output"
+                            if truncation_retry_fields
+                            else None
                         ),
                         request_changed_fields=(
-                            context_retry_fields or changed_fields
+                            context_retry_fields or truncation_retry_fields
                         ),
                     )
                     break
                 except LLMOutputTruncatedError as exc:
+                    last_truncation = exc
                     if exc.content:
                         fingerprint = hashlib.sha256(exc.content.encode()).hexdigest()
                         if fingerprint in seen_truncated_outputs:
-                            raise LLMServerUnavailableError(
-                                "LLM repeated identical truncated output; no-information retry stopped"
+                            raise LLMOutputTruncatedError(
+                                "LLM repeated identical truncated output; no-information retry stopped",
+                                content=exc.content,
                             ) from exc
                         seen_truncated_outputs.add(fingerprint)
-                    first_max_tokens = (
-                        first_max_tokens or get_llm_settings()["max_tokens"]
-                    ) * 2
+                    previous_max = first_max_tokens
+                    first_max_tokens = min(configured_cap, first_max_tokens * 2)
+                    messages = _messages_for_truncation_retry(messages)
+                    truncation_retry_fields = {
+                        "decision": "constrain_output",
+                        "max_tokens": [previous_max, first_max_tokens],
+                        "configured_cap": configured_cap,
+                    }
                     if status_callback:
                         status_callback(
-                            f"LLM output truncated, retrying with max_tokens={first_max_tokens}"
+                            "LLM output truncated; retrying once with concise JSON "
+                            f"and max_tokens={first_max_tokens} (cap={configured_cap})"
                         )
             else:
-                raise LLMServerUnavailableError(
-                    f"LLM output truncated after 3 attempts (max_tokens={first_max_tokens})"
-                )
+                assert last_truncation is not None
+                raise LLMOutputTruncatedError(
+                    "LLM output remained truncated after one bounded recovery retry",
+                    content=last_truncation.content,
+                ) from last_truncation
             if not output or not output.strip():
                 raise LLMServerUnavailableError("LLM returned empty response")
         except LLMContextWindowError as exc:
@@ -439,12 +482,13 @@ async def async_request_llm_json(
     max_tokens: int | None = None,
     *,
     logical_call_id: str | None = None,
+    telemetry_phase: str = "request_llm_json",
 ) -> dict[str, Any]:
     """Async variant of request_llm_json for parallel LLM requests."""
     telemetry = get_active_telemetry()
     owned = False
     if logical_call_id is None and telemetry is not None:
-        logical_call_id = telemetry.begin_logical_call(phase="request_llm_json")
+        logical_call_id = telemetry.begin_logical_call(phase=telemetry_phase)
         owned = True
     ordinal: list[int] = [0]
 
@@ -458,7 +502,8 @@ async def async_request_llm_json(
     seen_invalid_outputs: set[str] = set()
     context_compaction_used = False
     context_retry_fields: dict[str, Any] | None = None
-    base_max = max_tokens if max_tokens is not None else get_llm_settings()["max_tokens"]
+    configured_cap = int(get_llm_settings()["max_tokens"])
+    base_max = min(int(max_tokens), configured_cap) if max_tokens else configured_cap
     for completion_attempt in range(1, MAX_JSON_COMPLETION_ATTEMPTS + 1):
         if completion_attempt > 1 and status_callback:
             status_callback(
@@ -466,16 +511,11 @@ async def async_request_llm_json(
                 f"Retrying original LLM request ({completion_attempt}/{MAX_JSON_COMPLETION_ATTEMPTS})."
             )
         try:
-            first_max_tokens = max_tokens
+            first_max_tokens = base_max
+            truncation_retry_fields: dict[str, Any] | None = None
+            last_truncation: LLMOutputTruncatedError | None = None
             for _ in range(2):
                 try:
-                    retry_class = None
-                    retry_reason = None
-                    changed_fields = None
-                    if first_max_tokens != base_max:
-                        retry_class = "truncation"
-                        retry_reason = "finish_reason=length; retry with larger output budget"
-                        changed_fields = {"max_tokens": [base_max, first_max_tokens]}
                     output = await async_chat_completion(
                         messages=messages,
                         model=model,
@@ -485,36 +525,54 @@ async def async_request_llm_json(
                         json_schema=json_schema,
                         logical_call_id=logical_call_id,
                         attempt_ordinal=next_ordinal(),
-                        phase="request_llm_json",
-                        retry_class=retry_class,
-                        retry_reason=retry_reason,
+                        phase=telemetry_phase,
+                        retry_class=("truncation" if truncation_retry_fields else None),
+                        retry_reason=(
+                            "finish_reason=length; concise JSON retry within configured cap"
+                            if truncation_retry_fields
+                            else None
+                        ),
                         policy_decision=(
-                            "compact_context" if context_retry_fields else None
+                            "compact_context"
+                            if context_retry_fields
+                            else "constrain_output"
+                            if truncation_retry_fields
+                            else None
                         ),
                         request_changed_fields=(
-                            context_retry_fields or changed_fields
+                            context_retry_fields or truncation_retry_fields
                         ),
                     )
                     break
                 except LLMOutputTruncatedError as exc:
+                    last_truncation = exc
                     if exc.content:
                         fingerprint = hashlib.sha256(exc.content.encode()).hexdigest()
                         if fingerprint in seen_truncated_outputs:
-                            raise LLMServerUnavailableError(
-                                "LLM repeated identical truncated output; no-information retry stopped"
+                            raise LLMOutputTruncatedError(
+                                "LLM repeated identical truncated output; no-information retry stopped",
+                                content=exc.content,
                             ) from exc
                         seen_truncated_outputs.add(fingerprint)
-                    first_max_tokens = (
-                        first_max_tokens or get_llm_settings()["max_tokens"]
-                    ) * 2
+                    previous_max = first_max_tokens
+                    first_max_tokens = min(configured_cap, first_max_tokens * 2)
+                    messages = _messages_for_truncation_retry(messages)
+                    truncation_retry_fields = {
+                        "decision": "constrain_output",
+                        "max_tokens": [previous_max, first_max_tokens],
+                        "configured_cap": configured_cap,
+                    }
                     if status_callback:
                         status_callback(
-                            f"LLM output truncated, retrying with max_tokens={first_max_tokens}"
+                            "LLM output truncated; retrying once with concise JSON "
+                            f"and max_tokens={first_max_tokens} (cap={configured_cap})"
                         )
             else:
-                raise LLMServerUnavailableError(
-                    f"LLM output truncated after 3 attempts (max_tokens={first_max_tokens})"
-                )
+                assert last_truncation is not None
+                raise LLMOutputTruncatedError(
+                    "LLM output remained truncated after one bounded recovery retry",
+                    content=last_truncation.content,
+                ) from last_truncation
             if not output or not output.strip():
                 raise LLMServerUnavailableError("LLM returned empty response")
         except LLMContextWindowError as exc:

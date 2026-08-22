@@ -86,6 +86,7 @@ def _request_check_json(
         model=model,
         base_url=base_url,
         json_schema=schema,
+        telemetry_phase=phase,
         status_callback=status_callback,
         audit_callback=_phase_audit_callback(phase, audit_callback),
     )

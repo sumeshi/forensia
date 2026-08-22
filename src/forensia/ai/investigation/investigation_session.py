@@ -28,6 +28,7 @@ from forensia.ai.investigation.work_state import (
     reopen_retryable_work,
 )
 from forensia.ai.llm.llm_client import (
+    LLMRequestTimeoutError,
     LLMServerUnavailableError,
     chat_completion,
     outage_wait_until_recovered,
@@ -85,9 +86,7 @@ def persist_session_terminal_receipt(
     )
 
 
-def _conservative_finish_time(
-    db: CaseDB, session_id: str, started_at: Any
-) -> Any:
+def _conservative_finish_time(db: CaseDB, session_id: str, started_at: Any) -> Any:
     """Conservative finish-time fallback: last observed step/event time.
 
     Never collapses wall time to ``started_at`` (T-12.2). Falls back to
@@ -174,6 +173,8 @@ async def _call_with_outage_recovery(
                 return await asyncio.to_thread(
                     call_fn, base_url=base_url, model=model, **kwargs
                 )
+        except LLMRequestTimeoutError:
+            raise
         except LLMServerUnavailableError:
             if attempt >= _MAX_OUTAGE_RETRIES_PER_CALL:
                 raise
@@ -425,9 +426,7 @@ def _ensure_profile_objective(
 
 def _finding_snapshot(db: CaseDB, limit: int = 20) -> list[dict[str, Any]]:
     """Fetch a bounded, theme-diverse finding projection for LLM working Memory."""
-    candidates = _findings_snapshot(
-        db, max(limit * 8, limit), include_evidence=True
-    )
+    candidates = _findings_snapshot(db, max(limit * 8, limit), include_evidence=True)
     grouped: dict[str, list[dict[str, Any]]] = {}
     for finding in candidates:
         grouped.setdefault(classify_finding_theme(finding), []).append(finding)
@@ -456,7 +455,13 @@ def _finding_snapshot(db: CaseDB, limit: int = 20) -> list[dict[str, Any]]:
             [
                 {
                     key: item.get(key)
-                    for key in ("finding_id", "title", "status", "confidence", "summary")
+                    for key in (
+                        "finding_id",
+                        "title",
+                        "status",
+                        "confidence",
+                        "summary",
+                    )
                 }
                 for item in projected
             ],
@@ -519,7 +524,11 @@ def sync_keypoint_cards(
         ]
         if theme_finding_ids:
             lines.extend(
-                ["", "## Theme Finding IDs", *[f"- {item}" for item in theme_finding_ids]]
+                [
+                    "",
+                    "## Theme Finding IDs",
+                    *[f"- {item}" for item in theme_finding_ids],
+                ]
             )
         lines.extend(["", "## Evidence IDs"])
         lines.extend([f"- {evidence_id}" for evidence_id in evidence_ids] or ["- none"])

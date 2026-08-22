@@ -197,6 +197,7 @@ def request_with_optional_context(
         model=model,
         base_url=base_url,
         json_schema=json_schema,
+        telemetry_phase="hypothesis-plan",
         status_callback=status_callback,
         audit_callback=audit_callback,
     )
@@ -309,6 +310,7 @@ def request_with_optional_context(
         model=model,
         base_url=base_url,
         json_schema=json_schema,
+        telemetry_phase="hypothesis-plan-read-more",
         status_callback=status_callback,
         audit_callback=audit_callback,
     )

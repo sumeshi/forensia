@@ -15,10 +15,11 @@ HTTP POST <base_url>/v1/chat/completions
 ```
 
 HTTP layer characteristics:
-- **Up to 3 retries** on HTTP 5xx / connect / timeout (exponential backoff of 2 / 4 / 8 seconds)
+- **Up to 3 retries** on HTTP 5xx / connection failure (exponential backoff of 2 / 4 / 8 seconds). A connected request that reaches the read deadline is recorded as a call timeout and is not replayed as a server outage.
 - Attempts strict json_schema for `response_format`, then downgrades in order to compatible (`strict: false`) → unspecified if rejected
-- Downgrade results are cached per base_url in `_SCHEMA_MODE_CACHE` ([ai/llm/llm_client.py](../src/forensia/ai/llm/llm_client.py)), so subsequent calls send the already-downgraded mode
+- Downgrade results are cached per base_url in `_SCHEMA_MODE_CACHE` ([ai/llm/schema_compat.py](../src/forensia/ai/llm/schema_compat.py)), so subsequent calls send the already-downgraded mode
 - After 3 retries are exhausted, raises `LLMServerUnavailableError`, and the caller waits for recovery via `outage_wait_until_recovered`
+- `LLM_MAX_TOKENS` is a hard completion cap. A truncated JSON response gets one changed-request retry with a concise-output constraint; its budget may grow only up to that cap. Input compaction is reserved for an actual provider context-window rejection.
 
 ### Hypothesis verification policy
 
@@ -28,7 +29,9 @@ Hypothesis drafting may propose legacy `confirm_when`, `refute_when`, and
 rather than the LLM verdict, owns the resulting verification policy; in
 particular `refute_when` is retained through rule seeding, reload, and resume.
 
-Raw logs of LLM input/output are saved to `ai_logs/<phase>-<id>.json`.
+Accepted input/output logs are saved to `ai_logs/<phase>-<id>.json`. Every provider
+attempt, including timeouts and truncation, is recorded in trace DB telemetry; unusable
+output keeps only a bounded head/tail diagnostic preview.
 
 ---
 

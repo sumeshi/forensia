@@ -13,12 +13,13 @@ def test_reload_settings_updates_existing_imported_reference() -> None:
     try:
         with mock.patch.dict(
             os.environ,
-            {"LLM_OUTAGE_PROBE_INTERVAL_S": "7"},
+            {"LLM_OUTAGE_PROBE_INTERVAL_S": "7", "LLM_TEMPERATURE": "0.25"},
         ):
             config.reload_settings()
             assert config.settings is original_settings
             assert llm_client.settings is original_settings
             assert llm_client.settings.llm_outage_probe_interval_s == 7
+            assert llm_client.settings.llm_temperature == 0.25
     finally:
         config.reload_settings()
 
@@ -29,6 +30,7 @@ def test_invalid_integer_environment_values_fall_back_to_defaults() -> None:
             os.environ,
             {
                 "LLM_MAX_TOKENS": "not-an-int",
+                "LLM_TEMPERATURE": "not-a-float",
                 "FORENSIA_OUTPUT_LANGUAGE": "klingon",
                 "LLM_OUTAGE_WALL_CLOCK_BUDGET_S": "10",
                 "LLM_OUTAGE_PROBE_INTERVAL_S": "60",
@@ -37,6 +39,7 @@ def test_invalid_integer_environment_values_fall_back_to_defaults() -> None:
         ):
             config.reload_settings()
             assert config.settings.llm_max_tokens == 4096
+            assert config.settings.llm_temperature == 0.0
             assert config.settings.llm_output_language == "ja"
             assert config.settings.llm_outage_probe_interval_s == 10
             assert config.settings.structured_markdown_max_rows == 200

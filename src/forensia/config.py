@@ -17,6 +17,7 @@ class Settings:
     llm_model: str | None = None
     llm_api_key: str | None = None
     llm_max_tokens: int = 4096
+    llm_temperature: float = 0.0
     llm_output_language: str = "ja"
     llm_memory_max_bytes: int = 0
     llm_report_max_queries_per_section: int = 3
@@ -43,6 +44,25 @@ def _env_int(name: str, default: int, *, minimum: int | None = None) -> int:
     return value
 
 
+def _env_float(
+    name: str,
+    default: float,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float:
+    raw_value = os.getenv(name)
+    try:
+        value = default if raw_value is None else float(raw_value)
+    except (TypeError, ValueError):
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
 def _env_choice(name: str, default: str, choices: set[str]) -> str:
     value = os.getenv(name, default).strip().lower()
     return value if value in choices else default
@@ -56,6 +76,9 @@ def _build_settings() -> Settings:
         llm_model=os.getenv("LLM_MODEL"),
         llm_api_key=os.getenv("LLM_API_KEY") or None,
         llm_max_tokens=_env_int("LLM_MAX_TOKENS", 4096, minimum=1),
+        llm_temperature=_env_float(
+            "LLM_TEMPERATURE", 0.0, minimum=0.0, maximum=2.0
+        ),
         llm_output_language=_env_choice("FORENSIA_OUTPUT_LANGUAGE", "ja", {"ja", "en"}),
         llm_memory_max_bytes=_env_int("FORENSIA_MEMORY_MAX_BYTES", 0, minimum=0),
         llm_report_max_queries_per_section=_env_int(
@@ -105,6 +128,7 @@ def resolve_llm_config(
 def get_llm_settings() -> dict:
     return {
         "max_tokens": settings.llm_max_tokens,
+        "temperature": settings.llm_temperature,
         "output_language": settings.llm_output_language,
         "memory_max_bytes": get_memory_max_bytes(),
         "report_max_queries_per_section": settings.llm_report_max_queries_per_section,

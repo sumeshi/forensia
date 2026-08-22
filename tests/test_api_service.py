@@ -141,6 +141,7 @@ class TestGetRuntimeConfigDto(unittest.TestCase):
             settings.llm_base_url = "http://172.16.0.10:8080"
             settings.llm_model = "test-model"
             settings.llm_max_tokens = 8192
+            settings.llm_temperature = 0.25
             settings.llm_output_language = "ja"
             settings.llm_report_max_queries_per_section = 4
             settings.llm_outage_wall_clock_budget_s = 600
@@ -152,6 +153,7 @@ class TestGetRuntimeConfigDto(unittest.TestCase):
         self.assertEqual(result.llm_base_url, "http://172.16.0.10:8080")
         self.assertEqual(result.llm_model, "test-model")
         self.assertEqual(result.llm_max_tokens, 8192)
+        self.assertEqual(result.llm_temperature, 0.25)
 
 
 class TestGetCaseStatsDto(unittest.TestCase):

@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import json
 import logging
 import threading
 import time
 from collections.abc import Callable
-from contextvars import ContextVar
-from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -20,6 +17,30 @@ from forensia.ai.llm.request_metadata import (
 )
 from forensia.ai.llm.request_metadata import prompt_metadata as _prompt_metadata
 from forensia.ai.llm.request_metadata import request_fingerprint as _request_fingerprint
+from forensia.ai.llm.response_metadata import (
+    discarded_output_summary as _discarded_output_summary,
+)
+from forensia.ai.llm.response_metadata import (
+    get_last_completion_metadata,
+)
+from forensia.ai.llm.response_metadata import (
+    is_complete_json_object as _is_complete_json_object,
+)
+from forensia.ai.llm.response_metadata import (
+    record_completion_metadata as _record_completion_metadata,
+)
+from forensia.ai.llm.response_metadata import (
+    response_fingerprint as _response_fingerprint,
+)
+from forensia.ai.llm.schema_compat import (
+    downgrade_schema_mode as _downgrade_schema_mode,
+)
+from forensia.ai.llm.schema_compat import (
+    initial_schema_mode as _initial_schema_mode,
+)
+from forensia.ai.llm.schema_compat import (
+    schema_response_format as _schema_response_format,
+)
 from forensia.ai.llm_telemetry import (
     LLMTelemetry,
     compute_effective_output_limit,
@@ -33,6 +54,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "LLMServerUnavailableError",
+    "LLMRequestTimeoutError",
     "LLMOutputTruncatedError",
     "LLMContextWindowError",
     "chat_completion",
@@ -44,6 +66,14 @@ __all__ = [
 
 class LLMServerUnavailableError(RuntimeError):
     """Raised when LLM server is unresponsive after call-level retries. Caller should enter outage_wait."""
+
+
+class LLMRequestTimeoutError(LLMServerUnavailableError):
+    """A connected provider exceeded the per-request deadline.
+
+    This is a call/output failure, not proof of a server outage, so callers must
+    not enter the outage recovery loop and replay the same expensive request.
+    """
 
 
 class LLMOutputTruncatedError(RuntimeError):
@@ -63,78 +93,6 @@ class LLMContextWindowError(RuntimeError):
         self.body = body[:500]
 
 
-@dataclass(frozen=True, slots=True)
-class CompletionMetadata:
-    input_tokens: int
-    output_tokens: int
-    usage_source: str
-    finish_reason: str
-    latency_ms: int
-
-
-_LAST_COMPLETION_METADATA: ContextVar[CompletionMetadata | None] = ContextVar(
-    "last_llm_completion_metadata", default=None
-)
-
-
-def get_last_completion_metadata() -> CompletionMetadata | None:
-    """Return task-local metadata for the most recent completion."""
-
-    return _LAST_COMPLETION_METADATA.get()
-
-
-def _record_completion_metadata(
-    *,
-    data: dict[str, Any],
-    messages: list[dict[str, str]],
-    content: str,
-    finish_reason: Any,
-    started_at: float,
-) -> None:
-    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
-    raw_input = usage.get("prompt_tokens", usage.get("input_tokens"))
-    raw_output = usage.get("completion_tokens", usage.get("output_tokens"))
-    measured = isinstance(raw_input, int) and isinstance(raw_output, int)
-    input_tokens = (
-        int(raw_input)
-        if isinstance(raw_input, int)
-        else max(1, sum(len(item.get("content", "")) for item in messages) // 4)
-    )
-    output_tokens = (
-        int(raw_output)
-        if isinstance(raw_output, int)
-        else max(1, len(content) // 4)
-    )
-    _LAST_COMPLETION_METADATA.set(
-        CompletionMetadata(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            usage_source="provider_actual" if measured else "local_estimate",
-            finish_reason=str(finish_reason or "unknown"),
-            latency_ms=max(0, int((time.monotonic() - started_at) * 1000)),
-        )
-    )
-
-
-def _is_complete_json_object(content: str) -> bool:
-    text = content.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
-    first = text.find("{")
-    last = text.rfind("}")
-    if first < 0 or last <= first:
-        return False
-    try:
-        return isinstance(json.loads(text[first : last + 1]), dict)
-    except (json.JSONDecodeError, TypeError):
-        return False
-
-
 _LLM_HTTP_RETRY_MAX = 3
 _LLM_HTTP_RETRY_BACKOFF = [2.0, 4.0, 8.0]
 
@@ -142,65 +100,6 @@ _HTTP_TIMEOUT = httpx.Timeout(connect=5.0, read=300.0, write=30.0, pool=30.0)
 _ASYNC_CLIENTS: dict[int, httpx.AsyncClient] = {}
 _SYNC_CLIENTS: dict[int, httpx.Client] = {}
 _HTTP_CLIENTS_LOCK = threading.Lock()
-
-_SCHEMA_MODE_CACHE: dict[str, str] = {}
-_SCHEMA_MODE_RANK = {"strict": 2, "compatible": 1, "none": 0}
-
-
-def _initial_schema_mode(base_url: str) -> str:
-    return _SCHEMA_MODE_CACHE.get(base_url, "strict")
-
-
-def _remember_schema_mode(base_url: str, mode: str) -> None:
-    current = _SCHEMA_MODE_CACHE.get(base_url, "strict")
-    if _SCHEMA_MODE_RANK[mode] < _SCHEMA_MODE_RANK[current]:
-        _SCHEMA_MODE_CACHE[base_url] = mode
-
-
-def _schema_response_format(json_schema: dict, *, strict: bool) -> dict[str, Any]:
-    """Build llama-server/OpenAI-compatible JSON schema response_format."""
-    schema_payload: dict[str, Any] = {
-        "name": json_schema.get("title", "Output"),
-        "schema": json_schema,
-    }
-    if strict:
-        schema_payload["strict"] = True
-    return {
-        "type": "json_schema",
-        "json_schema": schema_payload,
-    }
-
-
-def _downgrade_schema_mode(
-    body: dict[str, Any],
-    json_schema: dict | None,
-    schema_mode: str,
-    status_callback: Callable[[str], None] | None,
-    *,
-    status_code: int,
-    base_url: str,
-) -> str | None:
-    """Downgrade response_format only as far as required for server compatibility."""
-    if not json_schema or schema_mode == "none":
-        return None
-    if schema_mode == "strict":
-        body["response_format"] = _schema_response_format(json_schema, strict=False)
-        _remember_schema_mode(base_url, "compatible")
-        if status_callback:
-            status_callback(
-                f"LLM server rejected strict json_schema ({status_code}); "
-                "retrying with compatible json_schema"
-            )
-        return "compatible"
-    body.pop("response_format", None)
-    _remember_schema_mode(base_url, "none")
-    if status_callback:
-        status_callback(
-            f"LLM server rejected json_schema ({status_code}); "
-            "retrying without response_format constraint"
-        )
-    return "none"
-
 
 def _close_http_clients() -> None:
     """Close all cached HTTP clients (sync and async) at interpreter exit."""
@@ -256,7 +155,9 @@ def _close_logical_call_if_owned(
         telemetry.close_logical_call(logical_call_id=logical_call_id, status=status)  # type: ignore[arg-type]
 
 
-def _record_wait(telemetry: LLMTelemetry | None, duration_s: float, target: str) -> None:
+def _record_wait(
+    telemetry: LLMTelemetry | None, duration_s: float, target: str
+) -> None:
     if telemetry is None or duration_s <= 0:
         return
     try:
@@ -342,8 +243,12 @@ def _post_attempt(
                 attempt_id=att_id,
                 status="transport_error",
                 exception_class=type(exc).__name__,
-                error_type="connect" if isinstance(exc, httpx.ConnectError) else "transport",
-                deadline_fired="connect" if isinstance(exc, httpx.ConnectError) else None,
+                error_type="connect"
+                if isinstance(exc, httpx.ConnectError)
+                else "transport",
+                deadline_fired="connect"
+                if isinstance(exc, httpx.ConnectError)
+                else None,
                 duration_ms=int((time.monotonic() - started) * 1000),
             )
         raise
@@ -420,8 +325,12 @@ async def _a_post_attempt(
                 attempt_id=att_id,
                 status="transport_error",
                 exception_class=type(exc).__name__,
-                error_type="connect" if isinstance(exc, httpx.ConnectError) else "transport",
-                deadline_fired="connect" if isinstance(exc, httpx.ConnectError) else None,
+                error_type="connect"
+                if isinstance(exc, httpx.ConnectError)
+                else "transport",
+                deadline_fired="connect"
+                if isinstance(exc, httpx.ConnectError)
+                else None,
                 duration_ms=int((time.monotonic() - started) * 1000),
             )
         raise
@@ -460,7 +369,8 @@ async def async_chat_completion(
     configured, reserve, requested, effective = compute_effective_output_limit(
         requested_override=max_tokens,
         known_context_limit=llm_settings.get("llm_context_window_tokens"),
-        estimated_input_tokens=sum(len(item.get("content", "")) for item in messages) // 4,
+        estimated_input_tokens=sum(len(item.get("content", "")) for item in messages)
+        // 4,
     )
     known_limit = llm_settings.get("llm_context_window_tokens")
 
@@ -468,7 +378,7 @@ async def async_chat_completion(
     body: dict[str, Any] = {
         "model": model,
         "messages": messages,
-        "temperature": 0,
+        "temperature": llm_settings["temperature"],
         "max_tokens": effective,
     }
     schema_mode = "none"
@@ -517,7 +427,16 @@ async def async_chat_completion(
                     request_changed_fields=request_changed_fields,
                     prompt_metadata=prompt_metadata,
                 )
-            except (httpx.ConnectError, httpx.TimeoutException):
+            except httpx.TimeoutException as exc:
+                _close_logical_call_if_owned(
+                    telemetry, logical_call_id, owned=owned, status="failed"
+                )
+                if status_callback:
+                    status_callback(
+                        "LLM request timed out; not replaying it as an outage"
+                    )
+                raise LLMRequestTimeoutError("LLM request timed out") from exc
+            except httpx.ConnectError:
                 if attempt == _LLM_HTTP_RETRY_MAX:
                     _close_logical_call_if_owned(
                         telemetry, logical_call_id, owned=owned, status="failed"
@@ -535,15 +454,23 @@ async def async_chat_completion(
                 break
             if response.status_code == 400 and json_schema:
                 next_mode = _downgrade_schema_mode(
-                    body, json_schema, schema_mode, status_callback,
-                    status_code=400, base_url=base_url,
+                    body,
+                    json_schema,
+                    schema_mode,
+                    status_callback,
+                    status_code=400,
+                    base_url=base_url,
                 )
                 if next_mode is not None:
                     if att_id:
                         telemetry.finalize_attempt(  # type: ignore[union-attr]
-                            attempt_id=att_id, status="provider_error",
-                            http_status=400, error_type="http", error_code="400",
-                            duration_ms=duration, retry_class="schema_downgrade",
+                            attempt_id=att_id,
+                            status="provider_error",
+                            http_status=400,
+                            error_type="http",
+                            error_code="400",
+                            duration_ms=duration,
+                            retry_class="schema_downgrade",
                             retry_reason="server_rejected_response_format",
                         )
                     schema_mode = next_mode
@@ -579,14 +506,22 @@ async def async_chat_completion(
         if status >= 500:
             if att_id:
                 telemetry.finalize_attempt(  # type: ignore[union-attr]
-                    attempt_id=att_id, status="provider_error", http_status=status,
-                    error_type="http", error_code=str(status),
-                    error_body_summary=error_body, duration_ms=duration,
+                    attempt_id=att_id,
+                    status="provider_error",
+                    http_status=status,
+                    error_type="http",
+                    error_code=str(status),
+                    error_body_summary=error_body,
+                    duration_ms=duration,
                 )
             if json_schema and "Failed to parse input" in response.text:
                 next_mode = _downgrade_schema_mode(
-                    body, json_schema, schema_mode, status_callback,
-                    status_code=status, base_url=base_url,
+                    body,
+                    json_schema,
+                    schema_mode,
+                    status_callback,
+                    status_code=status,
+                    base_url=base_url,
                 )
                 if next_mode is not None:
                     schema_mode = next_mode
@@ -608,9 +543,13 @@ async def async_chat_completion(
         if status >= 400:
             if att_id:
                 telemetry.finalize_attempt(  # type: ignore[union-attr]
-                    attempt_id=att_id, status="provider_error", http_status=status,
-                    error_type="http", error_code=str(status),
-                    error_body_summary=error_body, duration_ms=duration,
+                    attempt_id=att_id,
+                    status="provider_error",
+                    http_status=status,
+                    error_type="http",
+                    error_code=str(status),
+                    error_body_summary=error_body,
+                    duration_ms=duration,
                     discarded_reason="http_error",
                 )
             _close_logical_call_if_owned(
@@ -643,8 +582,11 @@ async def async_chat_completion(
             )
             raise
         _record_completion_metadata(
-            data=data, messages=messages, content=content,
-            finish_reason=finish_reason, started_at=started,
+            data=data,
+            messages=messages,
+            content=content,
+            finish_reason=finish_reason,
+            started_at=started,
         )
         completion = get_last_completion_metadata()
         complete_json = finish_reason == "length" and _is_complete_json_object(content)
@@ -662,16 +604,26 @@ async def async_chat_completion(
                 status="parse_error" if unusable_truncation else "success",
                 http_status=status,
                 error_type="truncated" if unusable_truncation else None,
+                error_body_summary=(
+                    _discarded_output_summary(content, reasoning_len)
+                    if unusable_truncation
+                    else None
+                ),
                 finish_reason=str(finish_reason) if finish_reason is not None else None,
                 input_tokens=completion.input_tokens if completion else None,
                 output_tokens=completion.output_tokens if completion else None,
-                input_tokens_source=completion.usage_source if completion else "unknown",
-                output_tokens_source=completion.usage_source if completion else "unknown",
+                input_tokens_source=completion.usage_source
+                if completion
+                else "unknown",
+                output_tokens_source=completion.usage_source
+                if completion
+                else "unknown",
                 output_chars=len(content),
+                response_fingerprint=_response_fingerprint(content),
                 duration_ms=duration,
-                parse_status="complete_json" if complete_json else (
-                    "truncated" if unusable_truncation else "unparsed"
-                ),
+                parse_status="complete_json"
+                if complete_json
+                else ("truncated" if unusable_truncation else "unparsed"),
                 truncated=unusable_truncation,
                 accepted=not unusable_truncation,
                 discarded_reason=truncation_reason if unusable_truncation else None,
@@ -717,7 +669,8 @@ def chat_completion(
     configured, reserve, requested, effective = compute_effective_output_limit(
         requested_override=max_tokens,
         known_context_limit=llm_settings.get("llm_context_window_tokens"),
-        estimated_input_tokens=sum(len(item.get("content", "")) for item in messages) // 4,
+        estimated_input_tokens=sum(len(item.get("content", "")) for item in messages)
+        // 4,
     )
     known_limit = llm_settings.get("llm_context_window_tokens")
 
@@ -725,7 +678,7 @@ def chat_completion(
     body: dict[str, Any] = {
         "model": model,
         "messages": messages,
-        "temperature": 0,
+        "temperature": llm_settings["temperature"],
         "max_tokens": effective,
     }
     schema_mode = "none"
@@ -774,7 +727,16 @@ def chat_completion(
                     request_changed_fields=request_changed_fields,
                     prompt_metadata=prompt_metadata,
                 )
-            except (httpx.ConnectError, httpx.TimeoutException):
+            except httpx.TimeoutException as exc:
+                _close_logical_call_if_owned(
+                    telemetry, logical_call_id, owned=owned, status="failed"
+                )
+                if status_callback:
+                    status_callback(
+                        "LLM request timed out; not replaying it as an outage"
+                    )
+                raise LLMRequestTimeoutError("LLM request timed out") from exc
+            except httpx.ConnectError:
                 if attempt == _LLM_HTTP_RETRY_MAX:
                     _close_logical_call_if_owned(
                         telemetry, logical_call_id, owned=owned, status="failed"
@@ -792,15 +754,23 @@ def chat_completion(
                 break
             if response.status_code == 400 and json_schema:
                 next_mode = _downgrade_schema_mode(
-                    body, json_schema, schema_mode, status_callback,
-                    status_code=400, base_url=base_url,
+                    body,
+                    json_schema,
+                    schema_mode,
+                    status_callback,
+                    status_code=400,
+                    base_url=base_url,
                 )
                 if next_mode is not None:
                     if att_id:
                         telemetry.finalize_attempt(  # type: ignore[union-attr]
-                            attempt_id=att_id, status="provider_error",
-                            http_status=400, error_type="http", error_code="400",
-                            duration_ms=duration, retry_class="schema_downgrade",
+                            attempt_id=att_id,
+                            status="provider_error",
+                            http_status=400,
+                            error_type="http",
+                            error_code="400",
+                            duration_ms=duration,
+                            retry_class="schema_downgrade",
                             retry_reason="server_rejected_response_format",
                         )
                     schema_mode = next_mode
@@ -836,14 +806,22 @@ def chat_completion(
         if status >= 500:
             if att_id:
                 telemetry.finalize_attempt(  # type: ignore[union-attr]
-                    attempt_id=att_id, status="provider_error", http_status=status,
-                    error_type="http", error_code=str(status),
-                    error_body_summary=error_body, duration_ms=duration,
+                    attempt_id=att_id,
+                    status="provider_error",
+                    http_status=status,
+                    error_type="http",
+                    error_code=str(status),
+                    error_body_summary=error_body,
+                    duration_ms=duration,
                 )
             if json_schema and "Failed to parse input" in response.text:
                 next_mode = _downgrade_schema_mode(
-                    body, json_schema, schema_mode, status_callback,
-                    status_code=status, base_url=base_url,
+                    body,
+                    json_schema,
+                    schema_mode,
+                    status_callback,
+                    status_code=status,
+                    base_url=base_url,
                 )
                 if next_mode is not None:
                     schema_mode = next_mode
@@ -865,9 +843,13 @@ def chat_completion(
         if status >= 400:
             if att_id:
                 telemetry.finalize_attempt(  # type: ignore[union-attr]
-                    attempt_id=att_id, status="provider_error", http_status=status,
-                    error_type="http", error_code=str(status),
-                    error_body_summary=error_body, duration_ms=duration,
+                    attempt_id=att_id,
+                    status="provider_error",
+                    http_status=status,
+                    error_type="http",
+                    error_code=str(status),
+                    error_body_summary=error_body,
+                    duration_ms=duration,
                     discarded_reason="http_error",
                 )
             _close_logical_call_if_owned(
@@ -900,8 +882,11 @@ def chat_completion(
             )
             raise
         _record_completion_metadata(
-            data=data, messages=messages, content=content,
-            finish_reason=finish_reason, started_at=started,
+            data=data,
+            messages=messages,
+            content=content,
+            finish_reason=finish_reason,
+            started_at=started,
         )
         completion = get_last_completion_metadata()
         complete_json = finish_reason == "length" and _is_complete_json_object(content)
@@ -919,16 +904,26 @@ def chat_completion(
                 status="parse_error" if unusable_truncation else "success",
                 http_status=status,
                 error_type="truncated" if unusable_truncation else None,
+                error_body_summary=(
+                    _discarded_output_summary(content, reasoning_len)
+                    if unusable_truncation
+                    else None
+                ),
                 finish_reason=str(finish_reason) if finish_reason is not None else None,
                 input_tokens=completion.input_tokens if completion else None,
                 output_tokens=completion.output_tokens if completion else None,
-                input_tokens_source=completion.usage_source if completion else "unknown",
-                output_tokens_source=completion.usage_source if completion else "unknown",
+                input_tokens_source=completion.usage_source
+                if completion
+                else "unknown",
+                output_tokens_source=completion.usage_source
+                if completion
+                else "unknown",
                 output_chars=len(content),
+                response_fingerprint=_response_fingerprint(content),
                 duration_ms=duration,
-                parse_status="complete_json" if complete_json else (
-                    "truncated" if unusable_truncation else "unparsed"
-                ),
+                parse_status="complete_json"
+                if complete_json
+                else ("truncated" if unusable_truncation else "unparsed"),
                 truncated=unusable_truncation,
                 accepted=not unusable_truncation,
                 discarded_reason=truncation_reason if unusable_truncation else None,

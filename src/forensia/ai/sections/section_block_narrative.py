@@ -107,6 +107,7 @@ def narrate_paragraph_with_retry(
             model=model,
             base_url=base_url,
             json_schema=narrate_schema,
+            telemetry_phase="section-narrative",
             audit_callback=audit_callback,
         )
         return str(parsed.get("body", parsed.get("content", ""))).strip()
@@ -542,6 +543,7 @@ def _write_question_block(
                 model=ctx.model,
                 base_url=ctx.base_url,
                 json_schema=classify_schema,
+                telemetry_phase="section-structured-classify",
                 audit_callback=ctx.audit,
             )
             # Handle picked_row_indices (int array) instead of picked_row_ids
@@ -641,6 +643,7 @@ def _write_narrative_block(
                 model=ctx.model,
                 base_url=ctx.base_url,
                 json_schema=outline_schema,
+                telemetry_phase="section-outline",
                 audit_callback=ctx.audit,
             )
             outline_items: list[dict[str, Any]] = outline.get("outline") or []

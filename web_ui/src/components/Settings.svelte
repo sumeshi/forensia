@@ -6,7 +6,8 @@
   $: llm = [
     { label: "LLM Base URL", value: config?.llm_base_url ?? "not configured" },
     { label: "Model", value: config?.llm_model ?? "not configured" },
-    { label: "Max tokens", value: String(config?.llm_max_tokens ?? "-") }
+    { label: "Max tokens", value: String(config?.llm_max_tokens ?? "-") },
+    { label: "Temperature", value: String(config?.llm_temperature ?? "-") }
   ];
   $: investigation = [
     { label: "Report queries / section", value: String(config?.llm_report_max_queries_per_section ?? "-") },
