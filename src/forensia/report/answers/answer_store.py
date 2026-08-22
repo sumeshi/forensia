@@ -211,13 +211,13 @@ def _persist_structured_answer(case: Case, answer: dict[str, Any]) -> None:
 
 
 def _resolve_max_rows() -> int:
-    """Return STRUCTURED_MARKDOWN_MAX_ROWS from config."""
+    """Return FORENSIA_REPORT_MARKDOWN_MAX_ROWS from config."""
     from forensia.config import settings
 
     return max(1, settings.structured_markdown_max_rows)
 
 
-STRUCTURED_MARKDOWN_MAX_ROWS = _resolve_max_rows()
+FORENSIA_REPORT_MARKDOWN_MAX_ROWS = _resolve_max_rows()
 
 
 def _render_answer_cell(value: Any, format_spec: dict[str, Any]) -> str:

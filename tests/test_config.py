@@ -29,10 +29,10 @@ def test_invalid_integer_environment_values_fall_back_to_defaults() -> None:
             os.environ,
             {
                 "LLM_MAX_TOKENS": "not-an-int",
-                "LLM_OUTPUT_LANGUAGE": "klingon",
+                "FORENSIA_OUTPUT_LANGUAGE": "klingon",
                 "LLM_OUTAGE_WALL_CLOCK_BUDGET_S": "10",
                 "LLM_OUTAGE_PROBE_INTERVAL_S": "60",
-                "STRUCTURED_MARKDOWN_MAX_ROWS": "not-an-int",
+                "FORENSIA_REPORT_MARKDOWN_MAX_ROWS": "not-an-int",
             },
         ):
             config.reload_settings()
@@ -49,7 +49,7 @@ def test_structured_answer_row_limit_uses_reloaded_setting() -> None:
     try:
         with mock.patch.dict(
             os.environ,
-            {"STRUCTURED_MARKDOWN_MAX_ROWS": "3"},
+            {"FORENSIA_REPORT_MARKDOWN_MAX_ROWS": "3"},
         ):
             config.reload_settings()
             rendered = answer_store.render_answer_block(items)

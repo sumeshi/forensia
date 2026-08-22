@@ -56,10 +56,10 @@ def _build_settings() -> Settings:
         llm_model=os.getenv("LLM_MODEL"),
         llm_api_key=os.getenv("LLM_API_KEY") or None,
         llm_max_tokens=_env_int("LLM_MAX_TOKENS", 4096, minimum=1),
-        llm_output_language=_env_choice("LLM_OUTPUT_LANGUAGE", "ja", {"ja", "en"}),
-        llm_memory_max_bytes=_env_int("LLM_MEMORY_MAX_BYTES", 0, minimum=0),
+        llm_output_language=_env_choice("FORENSIA_OUTPUT_LANGUAGE", "ja", {"ja", "en"}),
+        llm_memory_max_bytes=_env_int("FORENSIA_MEMORY_MAX_BYTES", 0, minimum=0),
         llm_report_max_queries_per_section=_env_int(
-            "LLM_REPORT_MAX_QUERIES_PER_SECTION", 3, minimum=1
+            "FORENSIA_REPORT_MAX_QUERIES_PER_SECTION", 3, minimum=1
         ),
         llm_reasoning_reserve_tokens=_env_int(
             "LLM_REASONING_RESERVE_TOKENS", 0, minimum=0
@@ -75,7 +75,7 @@ def _build_settings() -> Settings:
         ),
         forensia_ui_origins=os.getenv("FORENSIA_UI_ORIGINS", ""),
         structured_markdown_max_rows=_env_int(
-            "STRUCTURED_MARKDOWN_MAX_ROWS", 200, minimum=1
+            "FORENSIA_REPORT_MARKDOWN_MAX_ROWS", 200, minimum=1
         ),
         llm_outage_wall_clock_budget_s=outage_budget_s,
         llm_outage_probe_interval_s=min(outage_probe_s, outage_budget_s),

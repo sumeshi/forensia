@@ -59,14 +59,7 @@ uv sync --dev
 
 ### LLM backend configuration
 
-Point forensia at your model endpoint with environment variables or a local `.env` file:
-
-```bash
-export LLM_BASE_URL="http://127.0.0.1:1234"
-export LLM_MODEL="google/gemma-4-e4b"
-```
-
-You can start from the example file:
+Start from the tested Ornith-1.5-9B profile, then edit the local endpoint if needed:
 
 ```bash
 cp .env.example .env

@@ -566,7 +566,7 @@ class MemorySyncTests(unittest.TestCase):
         """With a tiny budget, overview and facts (P0) survive while scratch (P3) is removed."""
         with (
             tempfile.TemporaryDirectory() as tmpdir,
-            patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "300"}),
+            patch.dict(os.environ, {"FORENSIA_MEMORY_MAX_BYTES": "300"}),
         ):
             reload_settings()
             case = Case.init(tmpdir)
@@ -660,7 +660,7 @@ class MemorySyncTests(unittest.TestCase):
         """Even with a near-zero budget, P0 files keep at least _P0_MIN_LINES lines."""
         with (
             tempfile.TemporaryDirectory() as tmpdir,
-            patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "1"}),
+            patch.dict(os.environ, {"FORENSIA_MEMORY_MAX_BYTES": "1"}),
         ):
             reload_settings()
             case = Case.init(tmpdir)
@@ -695,7 +695,7 @@ class MemorySyncTests(unittest.TestCase):
         """When files are truncated, the HEAD (first lines) of P0 files are always kept."""
         with (
             tempfile.TemporaryDirectory() as tmpdir,
-            patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "400"}),
+            patch.dict(os.environ, {"FORENSIA_MEMORY_MAX_BYTES": "400"}),
         ):
             reload_settings()
             case = Case.init(tmpdir)

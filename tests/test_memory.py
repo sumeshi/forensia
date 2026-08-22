@@ -101,7 +101,7 @@ class MemoryTests(unittest.TestCase):
     def test_structured_memory_updates_and_compaction_rules(self) -> None:
         with (
             tempfile.TemporaryDirectory() as tmpdir,
-            patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "256"}),
+            patch.dict(os.environ, {"FORENSIA_MEMORY_MAX_BYTES": "256"}),
         ):
             reload_settings()
             case = Case.init(tmpdir)
@@ -359,7 +359,7 @@ class MemoryTests(unittest.TestCase):
     def test_facts_are_not_compacted_when_oversized(self) -> None:
         with (
             tempfile.TemporaryDirectory() as tmpdir,
-            patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "128"}),
+            patch.dict(os.environ, {"FORENSIA_MEMORY_MAX_BYTES": "128"}),
         ):
             reload_settings()
             case = Case.init(tmpdir)
@@ -422,7 +422,7 @@ class MemoryTests(unittest.TestCase):
     def test_suspicious_table_is_compacted_without_breaking_header(self) -> None:
         with (
             tempfile.TemporaryDirectory() as tmpdir,
-            patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "256"}),
+            patch.dict(os.environ, {"FORENSIA_MEMORY_MAX_BYTES": "256"}),
         ):
             reload_settings()
             case = Case.init(tmpdir)
@@ -448,7 +448,7 @@ class MemoryTests(unittest.TestCase):
             tempfile.TemporaryDirectory() as tmpdir,
             patch.dict(
                 os.environ,
-                {"LLM_MEMORY_MAX_BYTES": "64", "LLM_OUTPUT_LANGUAGE": "ja"},
+                {"FORENSIA_MEMORY_MAX_BYTES": "64", "FORENSIA_OUTPUT_LANGUAGE": "ja"},
             ),
         ):
             reload_settings()
@@ -495,7 +495,7 @@ class MemoryTests(unittest.TestCase):
             tempfile.TemporaryDirectory() as tmpdir,
             patch.dict(
                 os.environ,
-                {"LLM_MEMORY_MAX_BYTES": "64", "LLM_OUTPUT_LANGUAGE": "en"},
+                {"FORENSIA_MEMORY_MAX_BYTES": "64", "FORENSIA_OUTPUT_LANGUAGE": "en"},
             ),
         ):
             reload_settings()
@@ -516,7 +516,7 @@ class MemoryTests(unittest.TestCase):
     def test_overview_compaction_failure_keeps_existing_file(self) -> None:
         with (
             tempfile.TemporaryDirectory() as tmpdir,
-            patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "64"}),
+            patch.dict(os.environ, {"FORENSIA_MEMORY_MAX_BYTES": "64"}),
         ):
             reload_settings()
             case = Case.init(tmpdir)
@@ -596,7 +596,7 @@ class MemoryTests(unittest.TestCase):
     def test_hypothesis_memory_is_llm_compacted_when_oversized(self) -> None:
         with (
             tempfile.TemporaryDirectory() as tmpdir,
-            patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "96"}),
+            patch.dict(os.environ, {"FORENSIA_MEMORY_MAX_BYTES": "96"}),
         ):
             reload_settings()
             case = Case.init(tmpdir)
@@ -625,7 +625,7 @@ class MemoryTests(unittest.TestCase):
     def test_entity_memory_is_llm_compacted_when_oversized(self) -> None:
         with (
             tempfile.TemporaryDirectory() as tmpdir,
-            patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "96"}),
+            patch.dict(os.environ, {"FORENSIA_MEMORY_MAX_BYTES": "96"}),
         ):
             reload_settings()
             case = Case.init(tmpdir)
@@ -683,7 +683,7 @@ class MemoryTests(unittest.TestCase):
     def test_oversized_memory_llm_compaction_failure_keeps_existing_file(self) -> None:
         with (
             tempfile.TemporaryDirectory() as tmpdir,
-            patch.dict(os.environ, {"LLM_MEMORY_MAX_BYTES": "64"}),
+            patch.dict(os.environ, {"FORENSIA_MEMORY_MAX_BYTES": "64"}),
         ):
             reload_settings()
             case = Case.init(tmpdir)
@@ -701,10 +701,10 @@ class MemoryTests(unittest.TestCase):
             self.assertEqual(original, memory.overview_path.read_text(encoding="utf-8"))
 
     def test_get_llm_settings_cache_can_be_cleared(self) -> None:
-        with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "ja"}):
+        with patch.dict(os.environ, {"FORENSIA_OUTPUT_LANGUAGE": "ja"}):
             reload_settings()
             first = get_llm_settings()
-        with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "en"}):
+        with patch.dict(os.environ, {"FORENSIA_OUTPUT_LANGUAGE": "en"}):
             second_before_clear = get_llm_settings()
             reload_settings()
             second_after_clear = get_llm_settings()

@@ -94,7 +94,7 @@ Do not declare:
 - Provenance preservation rules
 - The source of truth for section bodies (that is the `report_sections` table)
 
-Template authoring is kept in English. Scaffold headings, table headers, comments, and placeholders are all English. The output language is controlled at runtime via `LLM_OUTPUT_LANGUAGE`.
+Template authoring is kept in English. Scaffold headings, table headers, comments, and placeholders are all English. The output language is controlled at runtime via `FORENSIA_OUTPUT_LANGUAGE`.
 
 ### 2.6 DB integration
 
@@ -142,7 +142,7 @@ headings and titles.
 | Recommendations strength | Recommendation/action headings lack evidence-strength or verification-related wording | 0.65 |
 | Verdict inflation | The source verdict has no `confirmed`, but the body uses strong assertive wording | 0.6 |
 | Raw evidence dump | A raw evidence table full of NULL / None is mixed in | 0.55 |
-| Output language drift | The body language diverges from `LLM_OUTPUT_LANGUAGE` | 0.4 |
+| Output language drift | The body language diverges from `FORENSIA_OUTPUT_LANGUAGE` | 0.4 |
 | Open-question markers | `?` / `？` / `TBD` / `TODO` / `FIXME` / `XXX` | 0.55 |
 | Empty body | Substantive body excluding tables / headings / quotes is under 80 characters | 0.3 |
 | Bullet-only | Only bullet lines with no narrative | 0.6 |

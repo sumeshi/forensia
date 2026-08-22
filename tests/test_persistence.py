@@ -503,7 +503,7 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual("human_decision", classify_gap_kind(phrase))
 
     def test_final_summary_fallback_follows_output_language(self) -> None:
-        with patch.dict("os.environ", {"LLM_OUTPUT_LANGUAGE": "en"}):
+        with patch.dict("os.environ", {"FORENSIA_OUTPUT_LANGUAGE": "en"}):
             reload_settings()
             self.assertEqual(
                 "No additional progress was made during this investigation.",
@@ -520,7 +520,7 @@ class PersistenceTests(unittest.TestCase):
                 purpose="host triage",
                 sql="SELECT 1",
             )
-            with patch.dict("os.environ", {"LLM_OUTPUT_LANGUAGE": "ja"}):
+            with patch.dict("os.environ", {"FORENSIA_OUTPUT_LANGUAGE": "ja"}):
                 reload_settings()
                 with CaseDB(case) as db:
                     finding_id = insert_investigation_finding(

@@ -342,12 +342,12 @@ def _check_output_language(body: str, ctx: _GateCtx) -> tuple[str | None, float 
     detected_lang = _detect_body_language(body_for_lang)
     if expected_lang in {"ja", "japanese"} and detected_lang == "en":
         return (
-            f"Section body appears to be in English but LLM_OUTPUT_LANGUAGE='{expected_lang}'. LLM ignored language constraint.",
+            f"Section body appears to be in English but FORENSIA_OUTPUT_LANGUAGE='{expected_lang}'. LLM ignored language constraint.",
             0.4,
         )
     elif expected_lang in {"en", "english"} and detected_lang == "ja":
         return (
-            f"Section body appears to be in Japanese but LLM_OUTPUT_LANGUAGE='{expected_lang}'.",
+            f"Section body appears to be in Japanese but FORENSIA_OUTPUT_LANGUAGE='{expected_lang}'.",
             0.4,
         )
     return None, None

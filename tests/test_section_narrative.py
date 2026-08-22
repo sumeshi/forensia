@@ -77,7 +77,7 @@ structured_answer:
 
     def test_status_only_narration_gets_deterministic_fallback(self) -> None:
         self.assertTrue(is_effectively_empty_body("**Status:** answered"))
-        with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "en"}):
+        with patch.dict(os.environ, {"FORENSIA_OUTPUT_LANGUAGE": "en"}):
             reload_settings()
             body = fallback_narrative_body(
                 heading="Executive Summary",
@@ -120,7 +120,7 @@ structured_answer:
         self.assertNotIn("Representative row:", body)
 
     def test_not_found_fallback_does_not_emit_block_skipped_marker(self) -> None:
-        with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "en"}):
+        with patch.dict(os.environ, {"FORENSIA_OUTPUT_LANGUAGE": "en"}):
             reload_settings()
             body = fallback_narrative_body(
                 heading="Network Activity",
@@ -371,7 +371,7 @@ structured_answer:
         joined with ` / ` and exploded the paragraph past 1000 chars, or keypoint identifiers
         (`overview_top_findings=10`) leaked into the prose.
         """
-        with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "en"}):
+        with patch.dict(os.environ, {"FORENSIA_OUTPUT_LANGUAGE": "en"}):
             clear_llm_settings_cache()
             body = fallback_narrative_body(
                 heading="Executive Summary",
@@ -443,7 +443,7 @@ structured_answer:
     def test_fallback_prefers_key_points_over_meta_phrasing(self) -> None:
         """H-2: when key points are available the fallback states observed
         facts, never review-metadata like 'returned N related rows'."""
-        with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "en"}):
+        with patch.dict(os.environ, {"FORENSIA_OUTPUT_LANGUAGE": "en"}):
             clear_llm_settings_cache()
             body = fallback_narrative_body(
                 heading="Executive Summary",
@@ -484,7 +484,7 @@ structured_answer:
         self.assertIn("### Interpretation", markdown)
         self.assertIn("structured evidence", markdown)
         self.assertIn("... (+3 more)", markdown)
-        # STRUCTURED_MARKDOWN_MAX_ROWS is now 200, so all 30 rows are shown
+        # FORENSIA_REPORT_MARKDOWN_MAX_ROWS is now 200, so all 30 rows are shown
         self.assertIn("| 29 |", markdown)
 
     def test_structured_markdown_truncates_above_two_hundred(self) -> None:

@@ -125,7 +125,7 @@ def report(
     report_max_queries_per_section: int = typer.Option(
         0,
         "--report-max-queries-per-section",
-        help="Max iterative agent queries per report block. 0 = use LLM_REPORT_MAX_QUERIES_PER_SECTION env (default 3)",
+        help="Max iterative agent queries per report block. 0 = use FORENSIA_REPORT_MAX_QUERIES_PER_SECTION env (default 3)",
     ),
 ) -> None:
     case = _open_case_or_die(case_dir)
@@ -317,7 +317,7 @@ def investigate(
     report_max_queries_per_section: int = typer.Option(
         0,
         "--report-max-queries-per-section",
-        help="Max iterative agent queries per report block. 0 = use LLM_REPORT_MAX_QUERIES_PER_SECTION env (default 3)",
+        help="Max iterative agent queries per report block. 0 = use FORENSIA_REPORT_MAX_QUERIES_PER_SECTION env (default 3)",
     ),
     max_llm_calls: int = typer.Option(
         0,

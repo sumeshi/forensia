@@ -28,17 +28,17 @@ values fall back to the defaults below; values below the documented minimum are 
 | Variable | Default / automatic behavior | Runtime owner |
 |---|---|---|
 | `LLM_BASE_URL` | Unset. Required only for LLM-backed investigation/report writing; CLI `--llm-base-url` overrides it. | CLI LLM configuration |
-| `LLM_MODEL` | Unset. Required with an LLM endpoint; CLI `--model` overrides it. | CLI LLM configuration |
 | `LLM_API_KEY` | Unset; when present, sent only as a Bearer `Authorization` header to the configured LLM endpoint. It is not returned by `/api/config` or written to LLM audit logs. | LLM HTTP client |
-| `LLM_MAX_TOKENS` | `4096`; output ceiling per completion, minimum 1. It is not a model context-window setting. | LLM HTTP client |
-| `LLM_OUTPUT_LANGUAGE` | `ja`; accepts `ja` or `en` and controls human-facing prompts and generated report language. Invalid values fall back to `ja`. | Prompt/report builders |
-| `LLM_REPORT_MAX_QUERIES_PER_SECTION` | `3`, minimum 1; CLI `--report-max-queries-per-section` overrides it. | Report section agent |
-| `LLM_REASONING_RESERVE_TOKENS` | `0`; added to the completion ceiling for providers that count hidden reasoning in `max_tokens`. | LLM HTTP client |
+| `LLM_MODEL` | Unset. Required with an LLM endpoint; CLI `--model` overrides it. | CLI LLM configuration |
 | `LLM_CONTEXT_WINDOW_TOKENS` | `0` (unknown/automatic); optional total provider context limit used to reserve input space before sending output budget. | LLM HTTP client |
+| `LLM_MAX_TOKENS` | `4096`; output ceiling per completion, minimum 1. It is not a model context-window setting. | LLM HTTP client |
+| `LLM_REASONING_RESERVE_TOKENS` | `0`; added to the completion ceiling for providers that count hidden reasoning in `max_tokens`. | LLM HTTP client |
 | `FORENSIA_PROMPT_BUDGET_TOKENS` | `12000` when unset or `0`; total plan/check input budget. Set this first when tuning context size. | Prompt assembly/trimming |
 | `FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS` | Automatic when unset or `0`: twice the total prompt-token budget. Advanced override for generated DFIR guidance only. | Playbook/context builders |
-| `LLM_MEMORY_MAX_BYTES` | Automatic when unset or `0`: `prompt tokens × 4/3`, clamped to 4096–65536 bytes. Advanced override for overview compaction. | Working Memory |
-| `STRUCTURED_MARKDOWN_MAX_ROWS` | `200`, minimum 1; rows beyond this stay in durable data but are not rendered directly into Markdown. | Structured report renderer |
+| `FORENSIA_MEMORY_MAX_BYTES` | Automatic when unset or `0`: `prompt tokens × 4/3`, clamped to 4096–65536 bytes. Advanced override for overview compaction. | Working Memory |
+| `FORENSIA_OUTPUT_LANGUAGE` | `ja`; accepts `ja` or `en` and controls human-facing prompts and generated report language. Invalid values fall back to `ja`. | Prompt/report builders |
+| `FORENSIA_REPORT_MAX_QUERIES_PER_SECTION` | `3`, minimum 1; CLI `--report-max-queries-per-section` overrides it. | Report section agent |
+| `FORENSIA_REPORT_MARKDOWN_MAX_ROWS` | `200`, minimum 1; rows beyond this stay in durable data but are not rendered directly into Markdown. | Structured report renderer |
 | `LLM_OUTAGE_WALL_CLOCK_BUDGET_S` | `28800`, minimum 1; maximum recovery-wait duration after an LLM outage. | LLM recovery loop |
 | `LLM_OUTAGE_PROBE_INTERVAL_S` | `60`, minimum 1; recovery probe interval, capped at the wall-clock outage budget. | LLM recovery loop |
 | `FORENSIA_API_BASE_URL` | `http://127.0.0.1:8000`; frontend development proxy target. The root `.env` is read by Vite. | `web_ui/vite.config.ts` only |
@@ -126,7 +126,7 @@ Keep the test suite finishing in seconds.
 | `--max-queries-per-hypothesis` | `5` | Search depth per hypothesis |
 | `--no-progress-limit` | `3` | Relax when you want to tolerate low-signal cycles |
 | `--report-every-n-cycles` | `3` | Increase when report re-fill cost is too high |
-| `--report-max-queries-per-section` | `0` | Maximum number of queries for the section block agent. `0` uses the `LLM_REPORT_MAX_QUERIES_PER_SECTION` setting (default 3) |
+| `--report-max-queries-per-section` | `0` | Maximum number of queries for the section block agent. `0` uses the `FORENSIA_REPORT_MAX_QUERIES_PER_SECTION` setting (default 3) |
 | `--profile` | `windows-basic` | Switch to a different rule profile |
 | `--report-only` | `false` | Re-fill the report only, without running the hypothesis loop |
 | `--rerun` | `false` | Reset case tables and runtime outputs, then redo normalize / analyze using the existing `raw/` |

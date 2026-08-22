@@ -144,11 +144,11 @@ def test_total_prompt_budget_is_configurable_and_auto_derived() -> None:
 
     old_system = os.environ.get("FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS")
     old_total = os.environ.get("FORENSIA_PROMPT_BUDGET_TOKENS")
-    old_memory = os.environ.get("LLM_MEMORY_MAX_BYTES")
+    old_memory = os.environ.get("FORENSIA_MEMORY_MAX_BYTES")
     try:
         os.environ["FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS"] = "0"
         os.environ["FORENSIA_PROMPT_BUDGET_TOKENS"] = "0"
-        os.environ["LLM_MEMORY_MAX_BYTES"] = "0"
+        os.environ["FORENSIA_MEMORY_MAX_BYTES"] = "0"
         reload_settings()
         assert get_prompt_budget_tokens() == 12000
         assert get_system_prompt_budget_chars() == 24000
@@ -169,9 +169,9 @@ def test_total_prompt_budget_is_configurable_and_auto_derived() -> None:
         else:
             os.environ["FORENSIA_PROMPT_BUDGET_TOKENS"] = old_total
         if old_memory is None:
-            os.environ.pop("LLM_MEMORY_MAX_BYTES", None)
+            os.environ.pop("FORENSIA_MEMORY_MAX_BYTES", None)
         else:
-            os.environ["LLM_MEMORY_MAX_BYTES"] = old_memory
+            os.environ["FORENSIA_MEMORY_MAX_BYTES"] = old_memory
         reload_settings()
 
 
@@ -267,21 +267,27 @@ def test_no_profile_playbook_truncates_events_instead_of_dropping_everything():
     Priority Investigation Order)."""
     from forensia.ai.case_profile import set_case_profile
     from forensia.ai.prompts.prompt_playbook import dfir_playbook
-    from forensia.config import get_system_prompt_budget_chars
+    from forensia.config import get_system_prompt_budget_chars, settings
 
+    old_system_budget = settings.forensia_system_prompt_budget_chars
+    old_prompt_budget = settings.forensia_prompt_budget_tokens
     set_case_profile(None, None)
     try:
+        settings.forensia_system_prompt_budget_chars = 0
+        settings.forensia_prompt_budget_tokens = 0
         playbook = dfir_playbook("report_section")
-    finally:
-        set_case_profile(None, None)
 
-    assert "priority events only" in playbook
-    assert "## False-Positive Reduction Guidance" in playbook
-    assert "## Application Catalog" in playbook
-    assert "## Logon Type Reference" in playbook
-    # Stays in the same order of magnitude as the budget (phase narrative is
-    # appended after enforcement, so allow headroom above the raw budget).
-    assert len(playbook) < get_system_prompt_budget_chars() * 1.5
+        assert "priority events only" in playbook
+        assert "## False-Positive Reduction Guidance" in playbook
+        assert "## Application Catalog" in playbook
+        assert "## Logon Type Reference" in playbook
+        # Stays in the same order of magnitude as the budget (phase narrative is
+        # appended after enforcement, so allow headroom above the raw budget).
+        assert len(playbook) < get_system_prompt_budget_chars() * 1.5
+    finally:
+        settings.forensia_system_prompt_budget_chars = old_system_budget
+        settings.forensia_prompt_budget_tokens = old_prompt_budget
+        set_case_profile(None, None)
 
 
 def testsections_for_hypothesis_auth_excludes_catalogs() -> None:

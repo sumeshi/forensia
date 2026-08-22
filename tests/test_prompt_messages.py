@@ -79,7 +79,7 @@ class PromptMessageTests(unittest.TestCase):
         self.assertNotIn("x" * 200, payload)
 
     def test_report_section_messages_placeholder_follows_output_language(self) -> None:
-        with patch.dict(os.environ, {"LLM_OUTPUT_LANGUAGE": "en"}):
+        with patch.dict(os.environ, {"FORENSIA_OUTPUT_LANGUAGE": "en"}):
             clear_llm_settings_cache()
             messages = build_report_section_messages(
                 section_meta={"section": "1_overview"},
