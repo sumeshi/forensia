@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -122,6 +123,105 @@ def render_prior_attempts(recent_history: list[dict[str, Any]], limit: int = 5) 
 _load_benign_context_rules = load_benign_context_rules
 
 
+def _hypothesis_prompt_projection(hypothesis: Any, *, peer: bool = False) -> dict[str, Any]:
+    """Project durable hypothesis state into the planner's prompt contract."""
+    if hasattr(hypothesis, "model_dump"):
+        payload = hypothesis.model_dump(mode="json")
+    elif isinstance(hypothesis, dict):
+        payload = dict(hypothesis)
+    else:
+        return {"description": str(hypothesis)}
+    fields = ("id", "description", "status", "verdict", "target_keypoint_id")
+    projected = {key: payload[key] for key in fields if payload.get(key) is not None}
+    if not peer:
+        projected["required_entities"] = payload.get("required_entities") or []
+        projected["verification_spec"] = payload.get("verification_spec") or {}
+    return projected
+
+
+def _planner_context_projection(context: str) -> str:
+    """Remove high-cardinality trace IDs from memory text sent to the planner.
+
+    The complete keypoint cards remain durable and available to the UI.  The
+    count, summary, representative finding and evidence IDs remain in prompt
+    context; opaque theme member IDs do not help select the next query.
+    """
+    return re.sub(
+        r"(?ms)^## Theme Finding IDs\s*\n.*?(?=^## |\Z)",
+        "",
+        context or "",
+    )
+
+
+_PROMPT_ROW_NOISE_FIELDS = {
+    "ingested_at",
+    "provider_guid",
+    "source_file",
+    "source_path",
+}
+
+
+def _raw_event_context(value: Any) -> dict[str, Any]:
+    """Keep event semantics from raw JSON without transport/path boilerplate."""
+    if isinstance(value, str):
+        try:
+            raw = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    elif isinstance(value, dict):
+        raw = value
+    else:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+
+    event = raw.get("event") if isinstance(raw.get("event"), dict) else {}
+    winlog = raw.get("winlog") if isinstance(raw.get("winlog"), dict) else {}
+    provider = winlog.get("provider")
+    provider_name = provider.get("name") if isinstance(provider, dict) else provider
+    context = {
+        "channel": winlog.get("channel") or raw.get("channel"),
+        "provider": provider_name or event.get("provider"),
+        "event_id": winlog.get("event_id") or event.get("code"),
+        "event_data": winlog.get("event_data"),
+        "user_data": winlog.get("user_data"),
+        "message": raw.get("message"),
+    }
+    return {key: value for key, value in context.items() if value not in (None, "", {})}
+
+
+def _result_summary_prompt_projection(result_summary: dict[str, Any] | None) -> dict[str, Any]:
+    """Remove duplicate samples and bound raw event context for LLM prompts."""
+    source = result_summary or {}
+    projected = {
+        key: value
+        for key, value in source.items()
+        if key not in {"head_rows", "tail_rows", "sample_rows"}
+    }
+    rows: list[dict[str, Any]] = []
+    represented_raw_groups: set[tuple[str, str, str]] = set()
+    for source_row in source.get("sample_rows") or []:
+        if not isinstance(source_row, dict):
+            continue
+        row = {
+            key: value
+            for key, value in source_row.items()
+            if key != "raw_json" and key not in _PROMPT_ROW_NOISE_FIELDS
+        }
+        raw_context = _raw_event_context(source_row.get("raw_json"))
+        group = (
+            str(row.get("channel") or raw_context.get("channel") or ""),
+            str(row.get("provider") or raw_context.get("provider") or ""),
+            str(row.get("event_id") or raw_context.get("event_id") or ""),
+        )
+        if raw_context and group not in represented_raw_groups:
+            row["raw_event_context"] = raw_context
+            represented_raw_groups.add(group)
+        rows.append(row)
+    projected["sample_rows"] = rows
+    return projected
+
+
 def build_query_intent_messages(
     hypothesis,
     recent_history: list[dict],
@@ -207,7 +307,7 @@ def build_query_intent_messages(
         f"{_org_knowledge_block(description=getattr(hypothesis, 'description', ''), extra_words=knowledge_extra, tags=_profile_tags())}"
         "<TASK>You are the bounded query action planner. Choose one action and, for sql.query, provide either an exact recipe/template_id with params or a bounded SELECT fallback. The host validates and executes it; do not delegate SQL composition to another model.</TASK>\n"
         "<INPUT_SCHEMA>\n"
-        f"hypothesis: {hypothesis.model_dump() if hasattr(hypothesis, 'model_dump') else hypothesis}\n"
+        f"hypothesis: {json.dumps(_hypothesis_prompt_projection(hypothesis), ensure_ascii=False, default=str)}\n"
         f"{render_prior_attempts(recent_history)}"
         f"time_range: {json.dumps(time_range, ensure_ascii=False, default=str)}\n"
         f"schema: {schema_context}\n"
@@ -225,11 +325,15 @@ def build_query_intent_messages(
         "If prior_check_feedback names specific missing event_ids or evidence types, the new SQL MUST include those event_ids or evidence types. Never ignore prior check feedback.\n"
         "</RULES>"
     )
+    current_id = str(getattr(hypothesis, "id", "") or "")
+    peer_hypotheses = [
+        _hypothesis_prompt_projection(item, peer=True)
+        for item in active_hypotheses
+        if str(getattr(item, "id", "") or "") != current_id
+    ]
     user = (
-        f"hypothesis.description: {hypothesis.description}\n"
-        f"hypothesis.required_entities: {getattr(hypothesis, 'required_entities', [])}\n"
-        f"active_hypotheses: {[h.model_dump() if hasattr(h, 'model_dump') else dict(h) for h in active_hypotheses]}\n"
-        f"extra_context:\n{extra_context_md}\n"
+        f"peer_active_hypotheses: {json.dumps(peer_hypotheses, ensure_ascii=False, default=str)}\n"
+        f"extra_context:\n{_planner_context_projection(extra_context_md)}\n"
         f"prior_check_feedback:\n{prior_check_feedback or '(no prior checks)'}\n"
     )
     if confirmed_findings_block:
@@ -279,25 +383,29 @@ def build_verdict_review_messages(
                 + "\n"
             )
 
-    from forensia.ai.case_profile import get_profile_event_ids
-
-    _pb_ids: set[int] | None = get_profile_event_ids()
-    if _pb_ids is not None:
-        if hasattr(hypothesis, "confirm_when") and isinstance(
-            hypothesis.confirm_when, dict
-        ):
-            extra = hypothesis.confirm_when.get("co_observed_event_ids", [])
-            if extra:
-                _pb_ids.update(int(e) for e in extra if e is not None)
-        for row in (result_summary or {}).get("sample_rows") or []:
-            if not isinstance(row, dict):
-                continue
-            ev = row.get("event_id")
-            if ev is not None:
-                try:
-                    _pb_ids.add(int(ev))
-                except TypeError, ValueError:
-                    pass
+    _pb_ids: set[int] = set()
+    if hasattr(hypothesis, "confirm_when") and isinstance(
+        hypothesis.confirm_when, dict
+    ):
+        extra = hypothesis.confirm_when.get("co_observed_event_ids", [])
+        for event_id in extra:
+            try:
+                _pb_ids.add(int(event_id))
+            except TypeError, ValueError:
+                pass
+    for event_id in (result_summary or {}).get("event_id_set") or []:
+        try:
+            _pb_ids.add(int(event_id))
+        except TypeError, ValueError:
+            pass
+    for row in (result_summary or {}).get("sample_rows") or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            _pb_ids.add(int(row.get("event_id")))
+        except TypeError, ValueError:
+            pass
+    prompt_result_summary = _result_summary_prompt_projection(result_summary)
 
     system = (
         f"{_dfir_playbook('check', event_ids=_pb_ids, sections=_sections_for_hypothesis(hypothesis, (result_summary or {}).get('sample_rows')))}\n"
@@ -319,7 +427,7 @@ def build_verdict_review_messages(
     user = (
         f"hypothesis: {hypothesis.description if hasattr(hypothesis, 'description') else hypothesis}\n"
         f"query: {planned_query.sql if hasattr(planned_query, 'sql') else planned_query}\n"
-        f"result_summary: {json.dumps(result_summary, ensure_ascii=False, default=str)}\n"
+        f"result_summary: {json.dumps(prompt_result_summary, ensure_ascii=False, default=str)}\n"
         f"{strictness_note}"
         f"{benign_notes_block}"
     )
@@ -378,8 +486,9 @@ def build_memory_updater_messages(
     """
     evidence_block = ""
     if result_summary:
+        prompt_result_summary = _result_summary_prompt_projection(result_summary)
         evidence_block = (
-            f"\nevidence_rows: {json.dumps(result_summary.get('sample_rows') or [], default=str, ensure_ascii=False)[:3000]}\n"
+            f"\nevidence_rows: {json.dumps(prompt_result_summary.get('sample_rows') or [], default=str, ensure_ascii=False)[:3000]}\n"
             f"observed_evidence_ids: {result_summary.get('evidence_ids')}\n"
         )
 

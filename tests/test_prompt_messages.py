@@ -28,7 +28,7 @@ from forensia.config import (
     resolve_llm_config,
 )
 from forensia.core.case import Case
-from forensia.core.session import Hypothesis
+from forensia.core.session import Hypothesis, PlannedQuery
 from forensia.db.database import CaseDB
 
 
@@ -444,6 +444,79 @@ class PriorAttemptsBlockTests(unittest.TestCase):
         self.assertIn("query_id=q-009", system)
         # The raw JSON dump of history must be gone.
         self.assertNotIn("recent_history:", system)
+
+    def test_investigation_prompts_project_repeated_and_raw_context(self) -> None:
+        from forensia.ai.prompts.prompt_investigation import (
+            build_query_intent_messages,
+            build_verdict_review_messages,
+        )
+
+        hypothesis = Hypothesis(
+            id="H-001",
+            description="UNIQUE-CURRENT-HYPOTHESIS",
+            confirm_when={"co_observed_event_ids": [4625]},
+        )
+        with patch(
+            "forensia.ai.prompts.prompt_investigation._org_knowledge_block",
+            return_value="",
+        ):
+            plan_messages = build_query_intent_messages(
+                hypothesis=hypothesis,
+                recent_history=[],
+                active_hypotheses=[
+                    hypothesis,
+                    Hypothesis(id="H-002", description="peer hypothesis"),
+                ],
+                extra_context_md=(
+                    "# KP-1\n\n- theme_finding_count: 2\n\n"
+                    "## Theme Finding IDs\n- opaque-1\n- opaque-2\n\n"
+                    "## Evidence IDs\n- ev-1\n"
+                ),
+            )
+        combined = "\n".join(message["content"] for message in plan_messages)
+        self.assertEqual(1, combined.count("UNIQUE-CURRENT-HYPOTHESIS"))
+        self.assertNotIn("confirm_when", combined)
+        self.assertIn("verification_spec", combined)
+        self.assertIn("peer hypothesis", combined)
+        self.assertNotIn("opaque-1", combined)
+        self.assertIn("theme_finding_count: 2", combined)
+        self.assertIn("## Evidence IDs", combined)
+
+        raw_json = (
+            '{"event":{"provider":"microsoft-windows-eventsystem","code":4625},'
+            '"winlog":{"channel":"Application","event_id":4625,'
+            '"provider":{"name":"Microsoft-Windows-EventSystem",'
+            '"guid":"discard-me"},"event_data":{"param1":"86400"}},'
+            '"log":{"file":{"path":"/private/sample.evtx"}},'
+            '"source_file":"hash","ingested_at":"later"}'
+        )
+        summary = {
+            "row_count": 2,
+            "head_rows": [{"evidence_id": "ev-1", "raw_json": raw_json}],
+            "tail_rows": [{"evidence_id": "ev-2", "raw_json": raw_json}],
+            "sample_rows": [
+                {"evidence_id": "ev-1", "event_id": 4625, "raw_json": raw_json},
+                {"evidence_id": "ev-2", "event_id": 4625, "raw_json": raw_json},
+            ],
+            "event_id_set": [4625],
+            "evidence_ids": ["ev-1", "ev-2"],
+        }
+        verdict_messages, _ = build_verdict_review_messages(
+            hypothesis,
+            PlannedQuery(
+                query_id="Q-1", hypothesis_id="H-001", purpose="test", sql="SELECT 1"
+            ),
+            summary,
+        )
+        verdict_user = verdict_messages[1]["content"]
+        self.assertNotIn('"head_rows"', verdict_user)
+        self.assertNotIn('"tail_rows"', verdict_user)
+        self.assertEqual(1, verdict_user.count("raw_event_context"))
+        self.assertIn("Application", verdict_user)
+        self.assertIn("Microsoft-Windows-EventSystem", verdict_user)
+        self.assertIn("param1", verdict_user)
+        self.assertNotIn("/private/sample.evtx", verdict_user)
+        self.assertNotIn("discard-me", verdict_user)
 
     def test_intent_knowledge_terms_include_previous_check_feedback(self) -> None:
         from forensia.ai.prompts.prompt_investigation import build_query_intent_messages

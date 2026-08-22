@@ -429,6 +429,22 @@ def _load_playbook_catalog(event_ids: set[int] | None) -> _PlaybookCatalog:
         else {}
     )
     events_data = _filter_playbook_events(events_data, event_ids)
+    priority_events = (
+        yamls["logon_types"].get("priority_events", [])
+        if isinstance(yamls["logon_types"], dict)
+        else []
+    )
+    if event_ids is not None:
+        priority_events = [
+            entry
+            for entry in priority_events
+            if isinstance(entry, dict)
+            and any(
+                int(value) in event_ids
+                for value in entry.get("event_ids", [])
+                if isinstance(value, (int, str)) and str(value).isdigit()
+            )
+        ]
     return _PlaybookCatalog(
         events_data=events_data,
         logon_types_data=(
@@ -436,11 +452,7 @@ def _load_playbook_catalog(event_ids: set[int] | None) -> _PlaybookCatalog:
             if isinstance(yamls["logon_types"], dict)
             else {}
         ),
-        priority_events=(
-            yamls["logon_types"].get("priority_events", [])
-            if isinstance(yamls["logon_types"], dict)
-            else []
-        ),
+        priority_events=priority_events,
         schema_notes=(
             yamls["evtx_events"].get("notes", {})
             if isinstance(yamls["evtx_events"], dict)
@@ -748,12 +760,11 @@ def _log_playbook_telemetry(
             logging.debug("playbook instrumentation skipped", exc_info=True)
 
 
-def _build_event_id_playbook_index(event_ids: set[int] | None) -> str:
-    """Index all catalog event IDs; mark which are selected for this playbook.
+def _build_event_id_playbook_index(event_ids: set[int] | None, *, phase: str) -> str:
+    """Advertise selected IDs and the bounded catalog continuation contract.
 
-    When *event_ids* is a subset, the full narrative only renders those; this
-    index advertises the broader catalog (stable ids + continuation) so the
-    model knows other event IDs exist without bloating the prompt.
+    Targeted planning/check phases list only selected IDs. Broader phases keep
+    the catalog index for discovery; all phases advertise continuation.
     """
     if event_ids is None:
         return ""
@@ -768,14 +779,18 @@ def _build_event_id_playbook_index(event_ids: set[int] | None) -> str:
     selected = {int(k) for k in events_data if str(k).isdigit()} & (event_ids or set())
     if not selected:
         return ""
+    selected_only = phase in {"hypothesis_plan", "check"}
     lines = [
         "<EVENT_ID_INDEX>",
         "Selected event IDs are fully described in the Event ID Reference below. "
-        "Other catalog event IDs are available on demand (continuation: 'load event rule <id>').",
+        f"The catalog contains {len(events_data)} event IDs; other entries are available on demand "
+        "(continuation: 'load event rule <id>').",
         "<INDEX>",
     ]
     for eid_key in sorted(events_data, key=_playbook_eid_sort_key):
         eid_val = int(eid_key) if isinstance(eid_key, str) else int(eid_key)
+        if selected_only and eid_val not in selected:
+            continue
         info = events_data[eid_key]
         title = info.get("title", "") if isinstance(info, dict) else ""
         mark = " [SELECTED]" if eid_val in selected else ""
@@ -833,7 +848,7 @@ def _dfir_playbook(
     )
     result = budget_result.base_playbook + _load_phase_playbook(phase)
     if event_ids is not None:
-        eid_index = _build_event_id_playbook_index(event_ids)
+        eid_index = _build_event_id_playbook_index(event_ids, phase=phase)
         if eid_index:
             result = result + "\n" + eid_index + "\n"
     _log_playbook_telemetry(

@@ -354,6 +354,13 @@ def test_dfir_playbook_emits_event_id_index_and_instruments(tmp_path: Any) -> No
         # Selected event IDs are fully described; the index advertises others.
         assert " - Event 4624" in playbook
         assert " - Event 4625" in playbook
+        # A bounded check advertises catalog continuation without listing every
+        # unrelated event or priority family in the prompt.
+        index = playbook.split("<EVENT_ID_INDEX>", 1)[1]
+        assert "id=E4624" in index
+        assert "id=E4625" in index
+        assert "id=E1102" not in index
+        assert "First check events [1102, 104]" not in playbook
         row = db.execute("SELECT source_kind FROM retrieval_events").fetchone()
         assert row is not None
         assert row[0] == "dfir_playbook"
