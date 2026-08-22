@@ -135,6 +135,10 @@ class SessionDTO(DTOModel):
     iterations: int | None = None
     status: str | None = None
     terminal_reason: str | None = None
+    owner_id: str | None = None
+    heartbeat_at: str | None = None
+    phase: str | None = None
+    status_reason: str | None = None
 
 
 class FindingAggregatesDTO(DTOModel):

@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import logging
 from collections.abc import Iterable
 from datetime import date as _date
 from pathlib import Path
 from typing import Any
-
-logger = logging.getLogger(__name__)
 
 import yaml
 
@@ -471,50 +468,21 @@ def list_hypotheses_dto(db: CaseDB) -> HypothesesResponseDTO:
 def list_sessions_dto(db: CaseDB) -> list[SessionDTO]:
     """Return all investigation sessions ordered by recency.
 
-    Reconciles stale ``running`` sessions on read so the API never reports a
-    permanently-active session left by a crashed process (T-12.2).
+    This is a read projection.  It must not repair or otherwise mutate the
+    authoritative trace state; a worker may legitimately be between progress
+    events while this endpoint is queried.  Startup reconciliation is owned by
+    the investigation runner and uses its durable lease instead.
     """
-    try:
-        _reconcile_stale_sessions(db)
-    except Exception:
-        logger.debug("Session reconciliation skipped", exc_info=True)
     rows = fetch_records(
         db,
         """
-        SELECT session_id, started_at, finished_at, iterations, status, terminal_reason
+        SELECT session_id, started_at, finished_at, iterations, status, terminal_reason,
+               owner_id, heartbeat_at, phase, status_reason
         FROM investigation_sessions
         ORDER BY started_at DESC, session_id DESC
         """,
     )
     return [SessionDTO.model_validate(_normalize_row(row)) for row in rows]
-
-
-def _reconcile_stale_sessions(db: CaseDB) -> None:
-    """Conservatively close sessions left running by a crashed worker.
-
-    The API read projection owns this small SQL-only repair so it does not
-    depend upward on the workflow package.
-    """
-    running = db.execute(
-        "SELECT session_id, started_at FROM investigation_sessions WHERE status = 'running'"
-    ).fetchall()
-    for session_id, started_at in running:
-        row = db.execute(
-            "SELECT MAX(created_at) FROM investigation_steps WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-        finished = row[0] if row and row[0] is not None else started_at
-        db.execute(
-            "UPDATE investigation_sessions SET status = 'abandoned', finished_at = ?, "
-            "terminal_reason = ? WHERE session_id = ?",
-            (finished, "abandoned: session process did not finalize", session_id),
-        )
-    for status in ("completed", "failed", "interrupted", "abandoned"):
-        db.execute(
-            "UPDATE investigation_sessions SET terminal_reason = ? "
-            "WHERE status = ? AND terminal_reason IS NULL",
-            (f"{status}: session reached terminal state", status),
-        )
 
 
 def list_steps_dto(db: CaseDB, session_id: str) -> list[InvestigationStepDTO]:

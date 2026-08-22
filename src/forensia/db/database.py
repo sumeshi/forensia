@@ -77,6 +77,10 @@ class CaseDB:
             self._apply_investigation_sessions_terminal_reason,
         )
         self._apply_migration_once(
+            "investigation_sessions_lease_v1",
+            self._apply_investigation_sessions_lease,
+        )
+        self._apply_migration_once(
             "llm_provider_attempts_prompt_metadata",
             self._apply_llm_provider_attempts_prompt_metadata,
         )
@@ -108,6 +112,39 @@ class CaseDB:
         self.conn.execute(
             "ALTER TABLE trace.investigation_sessions "
             "ADD COLUMN IF NOT EXISTS terminal_reason VARCHAR"
+        )
+
+    def _apply_investigation_sessions_lease(self) -> None:
+        """Add the durable worker lease used by startup reconciliation.
+
+        A lease is deliberately kept in trace alongside the session receipt:
+        readers can inspect it, while only the owning investigation worker may
+        refresh it.  Missing heartbeats are handled by the workflow owner, not
+        by API projections.
+        """
+        self.conn.execute(
+            "ALTER TABLE trace.investigation_sessions "
+            "ADD COLUMN IF NOT EXISTS owner_id VARCHAR"
+        )
+        self.conn.execute(
+            "ALTER TABLE trace.investigation_sessions "
+            "ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMP"
+        )
+        self.conn.execute(
+            "ALTER TABLE trace.investigation_sessions "
+            "ADD COLUMN IF NOT EXISTS phase VARCHAR"
+        )
+        self.conn.execute(
+            "ALTER TABLE trace.investigation_sessions "
+            "ADD COLUMN IF NOT EXISTS status_reason VARCHAR"
+        )
+        # A legacy running row has no owner that this process can prove dead.
+        # Give it a grace lease on first migration; a later startup can take
+        # it over only after the normal lease timeout has elapsed.
+        self.conn.execute(
+            "UPDATE trace.investigation_sessions SET heartbeat_at = now(), "
+            "owner_id = COALESCE(owner_id, 'legacy-unowned') "
+            "WHERE status = 'running' AND heartbeat_at IS NULL"
         )
 
     def _apply_llm_provider_attempts_prompt_metadata(self) -> None:

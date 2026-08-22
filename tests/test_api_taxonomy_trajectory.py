@@ -99,7 +99,7 @@ class TestContradictionReconciliation(unittest.TestCase):
 
 
 class TestStaleSessionReconciliation(unittest.TestCase):
-    def test_running_session_reconciled_with_conservative_finish(self):
+    def test_session_list_is_read_only_for_running_session(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             started = datetime.now(UTC).replace(tzinfo=None)
@@ -127,11 +127,16 @@ class TestStaleSessionReconciliation(unittest.TestCase):
             sessions = {s["session_id"]: s for s in client.get("/api/sessions").json()}
             self.assertIn("S-STALE", sessions)
             stale = sessions["S-STALE"]
-            self.assertEqual(stale["status"], "abandoned")
-            self.assertIsNotNone(stale["terminal_reason"])
-            self.assertIn("abandoned", stale["terminal_reason"])
-            # finished_at uses the last observed step, not started_at.
-            self.assertEqual(stale["finished_at"], later.isoformat())
+            self.assertEqual(stale["status"], "running")
+            self.assertIsNone(stale["finished_at"])
+            with CaseDB(case) as db:
+                self.assertEqual(
+                    db.execute(
+                        "SELECT status FROM investigation_sessions WHERE session_id = ?",
+                        ("S-STALE",),
+                    ).fetchone()[0],
+                    "running",
+                )
 
 
 class TestFindingAggregatesAndPagination(unittest.TestCase):

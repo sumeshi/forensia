@@ -136,7 +136,7 @@ in the investigation/check trace and does not create a Finding row.
 
 | Table | Role | Main columns |
 |---|---|---|
-| `investigation_sessions` (trace DB) | Execution unit of hypothesis investigation / report generation | `session_id`, `started_at`, `finished_at`, `iterations`, `status`, structured `terminal_reason` |
+| `investigation_sessions` (trace DB) | Execution unit and durable worker lease for hypothesis investigation / report generation | `session_id`, `started_at`, `finished_at`, `iterations`, `status`, structured `terminal_reason`, `owner_id`, `heartbeat_at`, `phase`, `status_reason` |
 | `investigation_steps` (trace DB) | Each step within a session (plan / do / check) | `step_id`, `session_id`, `hypothesis_id`, `iteration`, `phase`, `input_json`, `output_json` |
 | `retrieval_events` (trace DB) | Observability for memory and external-knowledge retrieval; not used as ranking feedback | `event_id`, `session_id`, `scope_kind`, `scope_id`, `phase`, `source_kind`, `query_terms`, `candidate_count`, `selected_refs`, `rejected_refs`, `selected_chars`, `budget`, `created_at` |
 | `llm_logical_calls` (trace DB) | One application-level model decision, independent of retry count | `logical_call_id`, session/phase/scope IDs, request fingerprint, status |
@@ -157,9 +157,12 @@ its provider retries and from deterministic rendering. Token counts carry a
 source (`provider_actual`, `local_estimate`, or `unknown`); configured output,
 reasoning reserve, requested output, and effective wire output are separate
 fields. Prompt telemetry stores named section sizes and selected IDs rather
-than secrets or unbounded prompt/error bodies. A terminal session receipt is
-written before fallible Memory/report projections so the API can reconstruct
-failure and abandonment without treating rolling progress text as authority.
+than secrets or unbounded prompt/error bodies. API reads never reconcile or
+mutate session state. The owning worker refreshes `heartbeat_at` and records
+its current phase/reason; startup may abandon only an expired lease. A terminal
+session receipt is written before fallible Memory/report projections so the API
+can reconstruct failure and abandonment without treating rolling progress text
+as authority.
 
 Evidence assessment is the narrow boundary between retrieval and sufficiency.
 For an adequate, non-empty observation group, `assessment.py` matches the

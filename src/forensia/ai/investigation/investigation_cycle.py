@@ -79,6 +79,7 @@ class _BroadPlanContext:
     observed_keypoint_labels: list[str]
     emit_fn: Callable[..., None] | None
     llm_status_fn: Callable[[str], None]
+    progress_callback: Callable[[dict[str, Any]], None] | None
     case_profile_str: str | None
 
 
@@ -286,6 +287,7 @@ async def _identify_broad_plan_gaps(ctx: _BroadPlanContext) -> list[dict[str, An
         llm_gateway.request_llm_json,
         base_url=ctx.base_url,
         model=ctx.model,
+        _outage_progress_callback=ctx.progress_callback,
         messages=gap_msgs,
         json_schema=gap_schema,
         telemetry_phase="plan-broad-gap",
@@ -366,6 +368,7 @@ async def _draft_broad_plan_hypotheses(
             llm_gateway.request_llm_json,
             base_url=ctx.base_url,
             model=ctx.model,
+            _outage_progress_callback=ctx.progress_callback,
             messages=h_msgs,
             json_schema=h_schema,
             telemetry_phase="plan-broad-draft",
@@ -470,6 +473,7 @@ async def _run_broad_plan_step(
     observed_keypoints: list[dict[str, Any]],
     emit_fn: Callable[..., None] | None,
     llm_status_fn: Callable[[str], None],
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
     case_profile_str: str | None = None,
 ) -> bool:
     """Execute broad planning step (2-stage: gap_identifier → hypothesis_drafter). Returns stop flag."""
@@ -487,6 +491,7 @@ async def _run_broad_plan_step(
         observed_keypoint_labels=observed_keypoint_labels,
         emit_fn=emit_fn,
         llm_status_fn=llm_status_fn,
+        progress_callback=progress_callback,
         case_profile_str=case_profile_str,
     )
     try:
@@ -607,6 +612,7 @@ async def _run_cycle_body(
                 _run_broad_plan_step,
                 base_url=base_url,
                 model=model,
+                _outage_progress_callback=progress_callback,
                 state=state,
                 db=db,
                 session_id=session_id,
@@ -684,6 +690,7 @@ async def _run_cycle_body(
                 query_limit=max_queries_per_hypothesis,
                 emit_fn=_emit,
                 llm_status_fn=llm_status,
+                progress_callback=progress_callback,
                 case_profile_str=case_profile_str,
             )
             if progress:

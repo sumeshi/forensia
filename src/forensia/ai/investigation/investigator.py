@@ -7,6 +7,7 @@ names from forensia.ai.investigation.investigator.
 from __future__ import annotations
 
 import signal
+import time
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -33,6 +34,7 @@ from forensia.ai.investigation.investigation_session import (
     _init_session,
     persist_session_terminal_receipt,
     sync_keypoint_cards,
+    touch_session_heartbeat,
 )
 from forensia.ai.investigation.work_state import (
     classify_active_hypotheses_on_stop,
@@ -123,6 +125,7 @@ async def _run_report_phase(
             async_refresh_report_sections,
             base_url=base_url,
             model=model,
+            _outage_progress_callback=progress_callback,
             case=case,
             db=db,
             session_id=session_id,
@@ -482,6 +485,36 @@ async def investigate(
             active_pack_ids=active_pack_ids if auto_rulepacks else None,
         )
     )
+    owner_id = ctx.owner_id
+    if not owner_id:
+        raise RuntimeError("investigation session has no durable owner lease")
+    last_heartbeat = 0.0
+    last_stage = ""
+
+    def session_progress(payload: dict[str, Any]) -> None:
+        """Publish progress and refresh the session lease at bounded cadence."""
+        nonlocal last_heartbeat, last_stage
+        now = time.monotonic()
+        stage = str(payload.get("stage") or "running")
+        reason = str(payload.get("summary") or "") or None
+        if (
+            now - last_heartbeat >= 10.0
+            or stage == "waiting_for_llm"
+            or stage != last_stage
+        ):
+            touch_session_heartbeat(
+                db,
+                session_id,
+                owner_id,
+                phase=stage,
+                reason=reason,
+            )
+            last_heartbeat = now
+            last_stage = stage
+        if progress_callback:
+            progress_callback(payload)
+
+    ctx.progress_callback = session_progress
     env = _InvestigateEnv(
         case=case,
         db=db,
@@ -494,7 +527,7 @@ async def investigate(
         session_id=session_id,
         template_root=template_root,
         case_profile_str=_prepare_case_profile(case, db),
-        progress_callback=progress_callback,
+        progress_callback=session_progress,
         max_iter=max_iter,
         no_progress_limit=no_progress_limit,
         max_queries_per_hypothesis=max_queries_per_hypothesis,
@@ -549,10 +582,12 @@ async def investigate(
                     stop_summary(db, len(state.active_hypotheses)),
                 ),
                 finished_at=finished_at,
+                owner_id=owner_id,
             )
             db.execute(
-                "UPDATE investigation_sessions SET iterations = ? WHERE session_id = ?",
-                (state.iteration, session_id),
+                "UPDATE investigation_sessions SET iterations = ? "
+                "WHERE session_id = ? AND owner_id = ?",
+                (state.iteration, session_id, owner_id),
             )
         except Exception as exc:
             _log("FINALIZE", f"session receipt failed: {exc}", level="error")

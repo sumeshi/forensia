@@ -501,7 +501,12 @@ CREATE TABLE IF NOT EXISTS trace.investigation_sessions (
     started_at TIMESTAMP,
     finished_at TIMESTAMP,
     iterations INTEGER,
-    status VARCHAR
+    status VARCHAR,
+    terminal_reason VARCHAR,
+    owner_id VARCHAR,
+    heartbeat_at TIMESTAMP,
+    phase VARCHAR,
+    status_reason VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS trace.investigation_steps (

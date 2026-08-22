@@ -7,8 +7,9 @@ import hashlib
 import inspect
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -61,6 +62,7 @@ def _to_json(value: Any) -> str:
 # Terminal status vocabulary written by the investigation harness
 # (investigator.py `finally` block) and reconciled here for stale runs.
 _TERMINAL_STATUS_CODES = ("completed", "stopped", "failed", "cancelled", "abandoned")
+_SESSION_LEASE_TIMEOUT_S = 600
 
 
 def persist_session_terminal_receipt(
@@ -70,6 +72,7 @@ def persist_session_terminal_receipt(
     *,
     terminal_reason: str | None = None,
     finished_at: datetime | None = None,
+    owner_id: str | None = None,
 ) -> None:
     """Persist the durable session terminal receipt before fallible projections.
 
@@ -79,10 +82,36 @@ def persist_session_terminal_receipt(
     """
     finished = finished_at or datetime.now(UTC)
     reason = terminal_reason or format_terminal_reason(status)
+    if owner_id:
+        db.execute(
+            "UPDATE investigation_sessions SET finished_at = ?, status = ?, "
+            "terminal_reason = ?, phase = 'terminal', status_reason = ? "
+            "WHERE session_id = ? AND owner_id = ?",
+            (finished.replace(tzinfo=None), status, reason, reason, session_id, owner_id),
+        )
+    else:
+        db.execute(
+            "UPDATE investigation_sessions SET finished_at = ?, status = ?, "
+            "terminal_reason = ?, phase = 'terminal', status_reason = ? "
+            "WHERE session_id = ?",
+            (finished.replace(tzinfo=None), status, reason, reason, session_id),
+        )
+
+
+def touch_session_heartbeat(
+    db: CaseDB,
+    session_id: str,
+    owner_id: str,
+    *,
+    phase: str | None = None,
+    reason: str | None = None,
+) -> None:
+    """Refresh the owning worker's lease without changing terminal state."""
     db.execute(
-        "UPDATE investigation_sessions SET finished_at = ?, status = ?, "
-        "terminal_reason = ? WHERE session_id = ?",
-        (finished.replace(tzinfo=None), status, reason, session_id),
+        "UPDATE investigation_sessions SET heartbeat_at = now(), "
+        "phase = COALESCE(?, phase), status_reason = COALESCE(?, status_reason) "
+        "WHERE session_id = ? AND owner_id = ? AND status = 'running'",
+        (phase, reason, session_id, owner_id),
     )
 
 
@@ -109,30 +138,37 @@ def _conservative_finish_time(db: CaseDB, session_id: str, started_at: Any) -> A
 def reconcile_stale_sessions(db: CaseDB) -> int:
     """Reconcile stale ``running`` sessions into a structured terminal state.
 
-    Runs on startup (in ``_init_session``) and on every read of the sessions
-    list. A ``running`` session left by SIGKILL/host loss is marked
-    ``abandoned`` with a conservative finish-time fallback and a structured
-    abandonment reason. Terminal sessions missing a ``terminal_reason`` (e.g.
-    finalized by the harness before this column existed) are backfilled from
-    their status (T-12.2). Returns the number of sessions reconciled.
+    Runs on startup (in ``_init_session``). Only an expired or legacy
+    heartbeat may be abandoned; a live owner's lease is never changed by a
+    different process. Terminal sessions missing a ``terminal_reason`` are
+    backfilled from their status. Returns the number of sessions reconciled.
     """
     reconciled = 0
+    cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+        seconds=_SESSION_LEASE_TIMEOUT_S
+    )
     running_rows = db.execute(
-        "SELECT session_id, started_at FROM investigation_sessions "
+        "SELECT session_id, started_at, heartbeat_at FROM investigation_sessions "
         "WHERE status = 'running'"
     ).fetchall()
-    for session_id, started_at in running_rows:
+    active: list[str] = []
+    for session_id, started_at, heartbeat_at in running_rows:
+        if heartbeat_at is not None and heartbeat_at >= cutoff:
+            active.append(str(session_id))
+            continue
         finish = _conservative_finish_time(db, session_id, started_at)
-        db.execute(
-            "UPDATE investigation_sessions SET status = 'abandoned', "
-            "finished_at = ?, terminal_reason = ? WHERE session_id = ?",
-            (
-                finish,
-                format_terminal_reason("abandoned"),
-                session_id,
-            ),
+        persist_session_terminal_receipt(
+            db,
+            str(session_id),
+            "abandoned",
+            terminal_reason=format_terminal_reason("abandoned"),
+            finished_at=finish,
         )
         reconciled += 1
+    if active:
+        raise RuntimeError(
+            "an investigation session already owns this case: " + ", ".join(active)
+        )
     # Backfill structured terminal reasons for any terminal session missing one.
     for status in _TERMINAL_STATUS_CODES:
         db.execute(
@@ -154,6 +190,8 @@ class Ctx:
     memory_plan: str = ""
     memory_check: str = ""
     current_hypothesis_id: str | None = None
+    owner_id: str | None = None
+    progress_callback: Callable[[dict[str, Any]], None] | None = None
 
 
 _MAX_OUTAGE_RETRIES_PER_CALL = 3
@@ -163,6 +201,7 @@ async def _call_with_outage_recovery(
     call_fn,
     base_url: str,
     model: str,
+    _outage_progress_callback: Callable[[dict[str, Any]], None] | None = None,
     **kwargs,
 ):
     for attempt in range(1, _MAX_OUTAGE_RETRIES_PER_CALL + 1):
@@ -178,7 +217,14 @@ async def _call_with_outage_recovery(
         except LLMServerUnavailableError:
             if attempt >= _MAX_OUTAGE_RETRIES_PER_CALL:
                 raise
-            await outage_wait_until_recovered(base_url, model)
+            if _outage_progress_callback is None:
+                await outage_wait_until_recovered(base_url, model)
+            else:
+                await outage_wait_until_recovered(
+                    base_url,
+                    model,
+                    progress_callback=_outage_progress_callback,
+                )
     raise LLMServerUnavailableError("Outage recovery failed")
 
 
@@ -624,6 +670,27 @@ def _init_session(
     """Initialize a new investigation session. Returns (state, ctx, memory, llm_logger, session_id, started_at, template_root)."""
     session_id = f"session-{uuid4().hex[:12]}"
     started_at = datetime.now(UTC).replace(tzinfo=None)
+    owner_id = f"worker-{uuid4().hex[:12]}"
+    # Acquire the case's single-writer lease before any ingest, memory, or
+    # investigation-state projection can mutate the case.  A live lease
+    # aborts startup; only expired leases are reconciled.
+    with db.transaction():
+        reconcile_stale_sessions(db)
+        db.execute(
+            "INSERT INTO investigation_sessions (session_id, started_at, "
+            "finished_at, iterations, status, owner_id, heartbeat_at, phase, "
+            "status_reason) VALUES (?, ?, ?, ?, ?, ?, now(), ?, ?)",
+            (
+                session_id,
+                started_at,
+                None,
+                0,
+                "running",
+                owner_id,
+                "initializing",
+                "session lease acquired",
+            ),
+        )
     memory = MemoryManager(
         case,
         summarize=lambda messages, m: chat_completion(
@@ -661,17 +728,6 @@ def _init_session(
     _seed_rule_hypotheses(db, state, session_id, active_pack_ids=active_pack_ids)
     sync_keypoint_cards(memory, state.findings_snapshot)
     _sync_hypothesis_cards(memory, state.active_hypotheses, state.resolved_hypotheses)
-    ctx = Ctx(report_status=_build_report_status(db))
+    ctx = Ctx(report_status=_build_report_status(db), owner_id=owner_id)
     ctx_refresh_caches(ctx, memory, base_url, model, db=db, session_id=session_id)
-    # Opening this writer means no older investigation process can still own
-    # the same case DB. Reconcile receipts left running by SIGKILL, host loss,
-    # or process termination before recording the new session. The reconcile
-    # uses a conservative finish-time fallback (last observed step/event) and a
-    # structured abandonment reason rather than collapsing wall time to
-    # started_at (T-12.2).
-    reconcile_stale_sessions(db)
-    db.execute(
-        "INSERT INTO investigation_sessions (session_id, started_at, finished_at, iterations, status) VALUES (?, ?, ?, ?, ?)",
-        (session_id, started_at, None, 0, "running"),
-    )
     return state, ctx, memory, llm_logger, session_id, started_at, template_root

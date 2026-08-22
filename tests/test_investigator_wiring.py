@@ -34,8 +34,9 @@ class InvestigateWiringTests(unittest.TestCase):
             with CaseDB(case) as db:
                 db.execute(
                     "INSERT INTO investigation_sessions "
-                    "(session_id, started_at, finished_at, iterations, status) "
-                    "VALUES ('old-running', '2020-01-02 03:04:05', NULL, 0, 'running')"
+                    "(session_id, started_at, finished_at, iterations, status, heartbeat_at) "
+                    "VALUES ('old-running', '2020-01-02 03:04:05', NULL, 0, 'running', "
+                    "'2020-01-02 03:04:05')"
                 )
                 with (
                     mock.patch.object(
@@ -63,12 +64,17 @@ class InvestigateWiringTests(unittest.TestCase):
                 self.assertEqual(result["status"], "completed")
                 self.assertEqual(result["iteration"], 1)
                 row = db.execute(
-                    "SELECT status, finished_at FROM investigation_sessions WHERE session_id = ?",
+                    "SELECT status, finished_at, owner_id, heartbeat_at, phase, "
+                    "status_reason FROM investigation_sessions WHERE session_id = ?",
                     (result["session_id"],),
                 ).fetchone()
                 self.assertIsNotNone(row)
                 self.assertEqual(row[0], "completed")
                 self.assertIsNotNone(row[1])
+                self.assertTrue(str(row[2]).startswith("worker-"))
+                self.assertIsNotNone(row[3])
+                self.assertEqual(row[4], "terminal")
+                self.assertTrue(row[5])
                 self.assertEqual(
                     ("abandoned", "2020-01-02 03:04:05"),
                     tuple(
@@ -248,6 +254,29 @@ class ReportRefreshFailureTests(unittest.TestCase):
                 )
         self.assertEqual("skipped", refresh_status)
 
+    def test_live_session_lease_blocks_startup_reconciliation(self) -> None:
+        from forensia.ai.investigation.investigation_session import (
+            reconcile_stale_sessions,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO investigation_sessions "
+                    "(session_id, started_at, status, owner_id, heartbeat_at) "
+                    "VALUES ('live', now(), 'running', 'worker-a', now())"
+                )
+                with self.assertRaisesRegex(RuntimeError, "already owns"):
+                    reconcile_stale_sessions(db)
+                self.assertEqual(
+                    db.execute(
+                        "SELECT status FROM investigation_sessions "
+                        "WHERE session_id = 'live'"
+                    ).fetchone()[0],
+                    "running",
+                )
+
     def test_run_report_phase_propagates_exhausted_llm_outage(self) -> None:
         """An LLM-server outage is not a per-cycle failure: the phase waits for
         recovery (same policy as the investigation loop) and only an exhausted
@@ -264,13 +293,22 @@ class ReportRefreshFailureTests(unittest.TestCase):
         async def _outage(**kwargs):
             raise LLMServerUnavailableError("server gone")
 
-        async def _instant_recovery_probe(base_url, model):
+        async def _instant_recovery_probe(base_url, model, progress_callback=None):
+            if progress_callback:
+                progress_callback(
+                    {
+                        "stage": "waiting_for_llm",
+                        "status": "running",
+                        "summary": "LLM server unavailable",
+                    }
+                )
             return None
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 state = SessionState(session_id="S-1", iteration=1)
+                progress_events: list[dict] = []
                 with (
                     mock.patch.object(
                         investigator_module, "async_refresh_report_sections", _outage
@@ -293,7 +331,7 @@ class ReportRefreshFailureTests(unittest.TestCase):
                                 base_url="http://127.0.0.1:1",
                                 model="none",
                                 llm_logger=None,
-                                progress_callback=None,
+                                progress_callback=progress_events.append,
                                 focus_sections=[],
                                 report_max_queries_per_section=1,
                                 state=state,
@@ -301,6 +339,12 @@ class ReportRefreshFailureTests(unittest.TestCase):
                                 memory=MemoryManager(case),
                             )
                         )
+                    self.assertTrue(
+                        any(
+                            event.get("stage") == "waiting_for_llm"
+                            for event in progress_events
+                        )
+                    )
 
 
 if __name__ == "__main__":

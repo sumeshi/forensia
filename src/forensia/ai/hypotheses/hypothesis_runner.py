@@ -206,6 +206,7 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
             plan_hypothesis_query,
             base_url=base_url,
             model=model,
+            _outage_progress_callback=rs.ctx.progress_callback,
             state=state,
             hypothesis=hypothesis,
             memory=memory,
@@ -956,7 +957,6 @@ async def _investigate_one_hypothesis(
     case_profile_str: str | None = None,
 ) -> tuple[bool, SessionState, dict[str, str]]:
     """Investigate a single hypothesis with full emit/save/memory lifecycle.
-    Returns (cycle_progress, updated_state, focus_sections).
     """
     rs = _HypothesisRunState(
         hypothesis=hypothesis,
