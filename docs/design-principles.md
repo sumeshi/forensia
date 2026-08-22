@@ -139,7 +139,7 @@ The LLM may "propose" evidence access, but generated SQL cannot mutate the DB.
 - The default is `0` (unlimited). It is disabled by default because cost is not a concern with a local LLM
 - When using a cloud API, explicitly specify a positive value (exceeding it raises `RuntimeError` and terminates the loop, not a soft warning)
 
-Prompt assembly has a separate token budget guard, where `_assemble_messages_with_budget()` trims only the user/dynamic side while protecting the system message.
+Section-agent prompt assembly has a separate token budget guard: its planning and checking paths call `_trim_dynamic_content()` to trim only the user/dynamic side while protecting the system message. Other roles use their own scoped projections and transport-level context-window checks.
 
 ---
 

@@ -10,9 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from forensia.ai.audit import LLMCallLogger
-from forensia.ai.case_profile import (
-    get_profile_event_ids,
-)
+from forensia.ai.case_profile import get_profile_event_ids
 from forensia.ai.checking.assessment import assess_evidence_group
 from forensia.ai.checking.check_normalize import summarize_query_result
 from forensia.ai.checking.checker import check_query_result
@@ -22,6 +20,7 @@ from forensia.ai.checking.settlement import (
     settle_hypothesis,
 )
 from forensia.ai.checking.sufficiency import (
+    SufficiencyResult,
     assess_and_persist_sufficiency,
     create_evidence_links_for_query,
     record_unlinkable_observation,
@@ -191,6 +190,7 @@ class _HypothesisRunState:
     check_result: Any = None
     missing_checks_raw: list[Any] | None = None
     retrieval_evaluation: Any = None
+    sufficiency_result: SufficiencyResult | None = None
 
 
 async def _phase_plan(rs: _HypothesisRunState) -> str:
@@ -601,6 +601,7 @@ def _apply_sufficiency_guard(rs: _HypothesisRunState) -> None:
             session_id=rs.session_id,
         )
     )
+    rs.sufficiency_result = suff_result
     check_result.verdict = final_verdict
     append_hypothesis_reasoning(
         rs.db,
@@ -658,6 +659,7 @@ def _build_settlement_input(rs: _HypothesisRunState) -> SettlementInput:
         consecutive_zero_row_inconclusive=rs.tracker.zero_row_inconclusive_count,
         consecutive_same_missing=rs.tracker.consecutive_same_missing,
         unavailable_missing_event_ids=unavailable_ids or None,
+        sufficiency_result=rs.sufficiency_result,
     )
     if rows and all(is_benign_local_auth(r) for r in rows):
         si = SettlementInput(
@@ -675,6 +677,7 @@ def _build_settlement_input(rs: _HypothesisRunState) -> SettlementInput:
             consecutive_zero_row_inconclusive=si.consecutive_zero_row_inconclusive,
             consecutive_same_missing=si.consecutive_same_missing,
             unavailable_missing_event_ids=si.unavailable_missing_event_ids,
+            sufficiency_result=si.sufficiency_result,
         )
     return si
 
@@ -694,9 +697,6 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
     emit_fn, focus_sections = rs.emit_fn, rs.focus_sections
     state.history = state.history[-50:]
 
-    # Persist and reconcile machine sufficiency exactly once before any
-    # settlement decision.  In particular, a checker ``refuted`` verdict may
-    # become inconclusive when no contradictory evidence supports it.
     _apply_sufficiency_guard(rs)
     final_verdict = check_result.verdict
     if final_verdict in {"confirmed", "refuted", "untestable"}:

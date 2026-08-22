@@ -22,6 +22,7 @@ from forensia.ai.checking.settlement import (
     settle_hypothesis,
 )
 from forensia.ai.checking.sufficiency import (
+    SufficiencyResult,
     create_hypothesis_evidence_link,
 )
 from forensia.core.session import Hypothesis
@@ -411,6 +412,40 @@ class PositiveSettlementTests(unittest.TestCase):
                 decision = settle_hypothesis(db, si)
                 self.assertTrue(decision.allowed)
                 self.assertEqual(decision.verdict, "confirmed")
+
+    def test_checker_confirmed_reuses_authoritative_sufficiency(self) -> None:
+        """Settlement must not recompute and contradict the runner assessment."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from forensia.core.case import Case
+
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                hyp = _make_hypothesis(source_rule_ids=["rule-1"])
+                _make_evidence_link(db)
+                _make_evidence_link(db, evidence_id="evtx-002")
+                si = SettlementInput(
+                    hypothesis=hyp,
+                    checker_verdict="confirmed",
+                    check_summary="confirmed by checker",
+                    sufficiency_result=SufficiencyResult(
+                        status="insufficient",
+                        score=0.25,
+                        reasons=["required capability is unavailable"],
+                        independent_groups=1,
+                        families=["evtx"],
+                        contradictory_groups=0,
+                        missing_requirements=["registry"],
+                        human_review_required=False,
+                    ),
+                )
+
+                decision = settle_hypothesis(db, si)
+
+                self.assertFalse(decision.allowed)
+                self.assertEqual(decision.sufficiency_status, "insufficient")
+                self.assertIn(
+                    "machine_sufficiency=insufficient", decision.gates_failed
+                )
 
     def test_rdp_event_constraint_requires_logon_type_10(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -20,6 +20,7 @@ from typing import Any
 
 from forensia.ai.checking.sufficiency import (
     EvidenceLink,
+    SufficiencyResult,
     evaluate_sufficiency,
     load_evidence_links,
 )
@@ -73,6 +74,10 @@ class SettlementInput:
     consecutive_zero_row_inconclusive: int = 0
     consecutive_same_missing: int = 0
     unavailable_missing_event_ids: list[int] | None = None
+    # The runner computes and persists the authoritative machine assessment
+    # before settlement.  Reuse that exact snapshot so settlement cannot
+    # reinterpret the same evidence with a different capability policy.
+    sufficiency_result: SufficiencyResult | None = None
 
 
 @dataclass(slots=True)
@@ -410,15 +415,25 @@ def decide_settlement(
             gates_failed.append("no_supporting_evidence_link")
 
         # Gate 4b: Machine sufficiency == sufficient
-        suff_result = evaluate_sufficiency(
-            {
-                "hypothesis_id": hypothesis.id,
-                "required_capabilities": [],
-                "evidence_requirements": evidence_requirements or {},
-            },
-            links,
-            coverage,
-        )
+        suff_result = si.sufficiency_result
+        if suff_result is None:
+            # Standalone callers (for example focused settlement tests) do not
+            # have a persisted runner assessment.  Even there, evaluate from
+            # the hypothesis' canonical policy rather than silently dropping
+            # required capabilities.
+            verification_spec = hypothesis.verification_spec
+            required_capabilities = list(
+                getattr(verification_spec, "required_capabilities", []) or []
+            )
+            suff_result = evaluate_sufficiency(
+                {
+                    "hypothesis_id": hypothesis.id,
+                    "required_capabilities": required_capabilities,
+                    "evidence_requirements": evidence_requirements or {},
+                },
+                links,
+                coverage,
+            )
         if suff_result.status == "sufficient":
             gates_passed.append("machine_sufficient")
         else:
@@ -537,6 +552,7 @@ def build_settlement_input(
     consecutive_zero_row_inconclusive: int = 0,
     consecutive_same_missing: int = 0,
     unavailable_missing_event_ids: list[int] | None = None,
+    sufficiency_result: SufficiencyResult | None = None,
 ) -> SettlementInput:
     """Convenience constructor for SettlementInput."""
     return SettlementInput(
@@ -554,6 +570,7 @@ def build_settlement_input(
         consecutive_zero_row_inconclusive=consecutive_zero_row_inconclusive,
         consecutive_same_missing=consecutive_same_missing,
         unavailable_missing_event_ids=unavailable_missing_event_ids,
+        sufficiency_result=sufficiency_result,
     )
 
 
@@ -567,6 +584,7 @@ def build_settlement_input_from_confirm_when(
     consecutive_zero_row_inconclusive: int = 0,
     consecutive_same_missing: int = 0,
     unavailable_missing_event_ids: list[int] | None = None,
+    sufficiency_result: SufficiencyResult | None = None,
 ) -> SettlementInput:
     """Build SettlementInput by assessing co-observation from hypothesis.confirm_when.
 
@@ -611,4 +629,5 @@ def build_settlement_input_from_confirm_when(
         consecutive_zero_row_inconclusive=consecutive_zero_row_inconclusive,
         consecutive_same_missing=consecutive_same_missing,
         unavailable_missing_event_ids=unavailable_missing_event_ids,
+        sufficiency_result=sufficiency_result,
     )

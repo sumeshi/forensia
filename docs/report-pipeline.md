@@ -165,7 +165,7 @@ LLM input is not a fixed string; it is assembled step by step according to phase
 2. **schema_card + SQL cookbook injection**: planner / checker receive the `<SCHEMA_CARDS>` and 6 kinds of `<SQL_COOKBOOK>` for the target table, so they never write SQL from scratch. The SQL validator's allowed tables follow `get_allowed_tables(db)` and the live schema
 3. **Dynamic context**: The case's `time_range`, `uncovered_keypoints`, active / resolved hypotheses, recent history, and observed_keypoints are inserted by role-specific builders in [ai/prompts/](../src/forensia/ai/prompts/), which drop null / empty fields and aggregate repeated rule patterns before serialization
 4. **Per-section slimming of report_brief**: `_slim_report_brief_for_section` looks at the section key and, except for `1_overview`, trims down to only `time_range` / `source_timezone` / `investigation_objective`. It does not dump top_findings or all hypotheses wholesale (for 2/3/4/5 series it selectively restores scoped `top_findings` / `confirmed_hypotheses` / `active_hypotheses`)
-5. **Token budget guard**: `_assemble_messages_with_budget()` trims only the user / dynamic side while protecting the system side
+5. **Section-agent token budget guard**: section planning and checking call `_trim_dynamic_content()` with the configured prompt budget. It trims the user / dynamic side while protecting the system side; other LLM roles rely on their own scoped projections and the transport's context-window checks
 
 ---
 

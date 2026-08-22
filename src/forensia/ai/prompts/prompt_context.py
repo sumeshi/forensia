@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -443,27 +442,6 @@ def _trim_dynamic_content(
         if total_est <= max_total_tokens:
             break
     return trimmed
-
-
-def _assemble_messages_with_budget(
-    builder_func: Callable[
-        ..., list[dict[str, str]] | tuple[list[dict[str, str]], dict]
-    ],
-    *args,
-    max_tokens: int = 28000,
-    **kwargs,
-) -> list[dict[str, str]]:
-    """Build messages via builder, then trim if budget exceeded.
-
-    Preserves system prompt (playbook) while trimming user/dynamic content.
-    Usage: messages = _assemble_messages_with_budget(build_broad_plan_messages, ..., max_tokens=28000)
-    """
-    result = builder_func(*args, **kwargs)
-    if isinstance(result, tuple):
-        messages = result[0]
-    else:
-        messages = result
-    return _trim_dynamic_content(messages, max_total_tokens=max_tokens)
 
 
 def _time_range_guidance(time_range: dict[str, str] | None = None) -> str:
