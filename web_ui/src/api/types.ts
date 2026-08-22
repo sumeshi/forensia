@@ -44,7 +44,6 @@ export type CaseStatsDTO = {
   deferred_hypotheses?: number;
   blocked_hypotheses?: number;
   report_draft_count?: number;
-  report_stable_count?: number;
   report_human_review_pct?: number;
   needs_review_finding_total?: number;
 };

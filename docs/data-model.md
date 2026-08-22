@@ -176,7 +176,7 @@ The existing settlement guard remains the state-transition boundary.
 
 | Table | Role | Main columns |
 |---|---|---|
-| `report_sections` | Section body | `section_key`, `title`, `body`, `confidence`, `status` (`draft`/`stable`/`ai_exhausted`/`human_reviewed`), `update_count`, `gaps`, `last_filled_session`, `last_filled_at`, `stale` |
+| `report_sections` | Section body | `section_key`, `title`, `body`, `confidence`, `status` (`draft`/`ai_exhausted`/`human_reviewed`), `update_count`, `gaps`, `last_filled_session`, `last_filled_at`, `stale` |
 | `section_runs` | Execution history of section blocks (debug) | `run_id`, `section_key`, `block_heading`, `iteration`, `phase`, `payload`, `created_at` |
 | `section_evidence` | Evidence referenced by a section | `section_key`, `block_heading`, `evidence_id`, `role`, `source_query`, `created_at` |
 | `section_facts` | Reusable facts within a section | `fact_id`, `fact_type`, `fact_key`, `fact_value`, `evidence_ids`, `source_query`, `source_section`, `confidence` |

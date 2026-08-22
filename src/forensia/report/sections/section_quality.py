@@ -9,6 +9,7 @@ from typing import Any
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
+from forensia.db.evidence_lookup import find_missing_evidence_ids
 from forensia.db.query import fetch_records
 from forensia.knowledge.resources import schema_dir
 from forensia.report.answers.answer_registry import (
@@ -259,25 +260,7 @@ def _collect_section_coverage(db: CaseDB) -> dict[str, list[dict[str, Any]]]:
 def _validate_body_evidence_ids(db: CaseDB, body: str) -> list[str]:
     """Check that every evidence_id referenced in the body exists in evidence tables."""
     evidence_ids = sorted(set(EVIDENCE_ID_PATTERN.findall(body)))
-    if not evidence_ids:
-        return []
-    placeholders = ", ".join("?" for _ in evidence_ids)
-    found = {
-        str(row[0])
-        for row in db.execute(
-            f"""
-            SELECT evidence_id FROM evtx_events WHERE evidence_id IN ({placeholders})
-            UNION
-            SELECT evidence_id FROM mft_entries WHERE evidence_id IN ({placeholders})
-            UNION
-            SELECT evidence_id FROM prefetch_executions WHERE evidence_id IN ({placeholders})
-            UNION
-            SELECT evidence_id FROM prefetch_timeline WHERE evidence_id IN ({placeholders})
-            """,
-            tuple(evidence_ids * 4),
-        ).fetchall()
-    }
-    return [evidence_id for evidence_id in evidence_ids if evidence_id not in found]
+    return find_missing_evidence_ids(db, evidence_ids)
 
 
 def _verify_block_output(db: CaseDB, body: str) -> tuple[list[str], float]:

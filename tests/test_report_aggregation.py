@@ -205,6 +205,38 @@ class TestEvidenceGapsAreForensicOnly(unittest.TestCase):
         text = " ".join(str(row) for row in rows).lower()
         self.assertNotIn("resolve or refute outstanding hypotheses", text)
 
+    def test_network_gap_tracks_usable_external_traffic(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, src_ip, dst_ip) "
+                    "VALUES (?, ?, ?, ?)",
+                    ("evtx-net-1", 3, "203.0.113.10", "10.0.0.5"),
+                )
+                rows = build_evidence_gaps_table(db)
+        self.assertFalse(
+            any(
+                "insufficient normalized network evidence" in str(row).lower()
+                for row in rows
+            )
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, src_ip, dst_ip) "
+                    "VALUES (?, ?, ?, ?)",
+                    ("evtx-net-2", 3, "127.0.0.1", "-"),
+                )
+                rows = build_evidence_gaps_table(db)
+        self.assertTrue(
+            any(
+                "insufficient normalized network evidence" in str(row).lower()
+                for row in rows
+            )
+        )
+
 
 class TestAntiforensicTableDeduplication(unittest.TestCase):
     """P-8: one on-disk artifact must appear as one antiforensic table row.

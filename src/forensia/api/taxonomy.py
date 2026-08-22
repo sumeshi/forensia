@@ -1,98 +1,80 @@
-"""Canonical hypothesis/report status taxonomy (single source of truth).
+"""Canonical API projections of the YAML-backed status taxonomy.
 
-The YAML vocabulary in ``knowledge/rulepacks/_schema/verdict_taxonomy.yaml`` is
-the documented contract (GOAL.md §7, T-50.1). This module loads that file and
-exposes the authoritative active/resolved partition so the backend
-(``api/service.py``), the snapshot writers, and the Web UI all derive counts
-from the same grouping. If the file cannot be read we fall back to the same
-constants so behaviour never silently diverges.
+The vocabulary in ``knowledge/rulepacks/_schema/verdict_taxonomy.yaml`` is the
+only authority. Application entry points configure ``core.verdicts`` before
+these projections are evaluated; missing or malformed taxonomy data fails
+closed instead of silently falling back to duplicated Python constants.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from typing import Any
 
-# Fallback constants (must mirror the YAML groups block).
-ACTIVE_STATUSES: frozenset[str] = frozenset({"active"})
-RESOLVED_STATUSES: frozenset[str] = frozenset(
-    {"confirmed", "refuted", "untestable", "needs_review", "deferred", "blocked"}
-)
-ALL_HYPOTHESIS_STATUSES: frozenset[str] = ACTIVE_STATUSES | RESOLVED_STATUSES
+from forensia.core.verdicts import taxonomy_block
 
-REPORT_DRAFT_STATUSES: frozenset[str] = frozenset({"draft"})
-REPORT_STABLE_STATUSES: frozenset[str] = frozenset({"ai_exhausted"})
-REPORT_REVIEWED_STATUSES: frozenset[str] = frozenset({"human_reviewed"})
 
+def _strings(value: Any, *, field: str) -> list[str]:
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"taxonomy field {field} must be a non-empty list")
+    if any(not isinstance(item, str) or not item.strip() for item in value):
+        raise ValueError(f"taxonomy field {field} must contain non-empty strings")
+    normalized = [item.strip() for item in value]
+    if len(normalized) != len(set(normalized)):
+        raise ValueError(f"taxonomy field {field} contains duplicate values")
+    return normalized
+
+
+def _normalized_block(category: str, group_names: tuple[str, ...]) -> dict[str, Any]:
+    raw = taxonomy_block(category)
+    values = _strings(raw.get("values"), field=f"{category}.values")
+    raw_groups = raw.get("groups")
+    if not isinstance(raw_groups, dict):
+        raise ValueError(f"taxonomy field {category}.groups must be a mapping")
+    groups = {
+        name: _strings(raw_groups.get(name), field=f"{category}.groups.{name}")
+        for name in group_names
+    }
+    grouped_values = [value for members in groups.values() for value in members]
+    grouped = set(grouped_values)
+    if len(grouped_values) != len(grouped):
+        raise ValueError(f"taxonomy groups for {category} overlap")
+    unknown = grouped - set(values)
+    if unknown:
+        raise ValueError(
+            f"taxonomy groups for {category} contain unknown values: {sorted(unknown)}"
+        )
+    ungrouped = set(values) - grouped
+    if ungrouped:
+        raise ValueError(
+            f"taxonomy values for {category} are not grouped: {sorted(ungrouped)}"
+        )
+    result: dict[str, Any] = {
+        "values": values,
+        "groups": groups,
+        "description": str(raw.get("description") or ""),
+    }
+    if isinstance(raw.get("kpi"), dict):
+        result["kpi"] = dict(raw["kpi"])
+    return result
+
+
+def get_hypothesis_taxonomy() -> dict[str, Any]:
+    """Return the authoritative hypothesis lifecycle taxonomy."""
+    return _normalized_block("hypothesis_status", ("active", "resolved"))
+
+
+def get_report_status_taxonomy() -> dict[str, Any]:
+    """Return the authoritative report-section completion taxonomy."""
+    return _normalized_block(
+        "report_section_status", ("draft", "stable", "reviewed")
+    )
 
 
 def hypothesis_status_group(status: str | None) -> str:
-    """Return ``"active"`` or ``"resolved"`` for a hypothesis status."""
-    if status is None:
-        return "resolved"
-    if status in ACTIVE_STATUSES:
+    """Return the YAML-defined active/resolved group for a status."""
+    groups = get_hypothesis_taxonomy()["groups"]
+    if status in groups["active"]:
         return "active"
-    return "resolved"
-
-
-def is_active_status(status: str | None) -> bool:
-    return status in ACTIVE_STATUSES
-
-
-def is_resolved_status(status: str | None) -> bool:
-    return status in RESOLVED_STATUSES
-
-
-def report_section_group(status: str | None) -> str:
-    """Return draft/stable/reviewed for a report section status."""
-    if status in REPORT_REVIEWED_STATUSES:
-        return "reviewed"
-    if status in REPORT_STABLE_STATUSES:
-        return "stable"
-    return "draft"
-
-
-def get_hypothesis_taxonomy() -> dict:
-    """Return the canonical hypothesis taxonomy block for API consumption."""
-    return {
-        "values": sorted(ALL_HYPOTHESIS_STATUSES),
-        "groups": {
-            "active": sorted(ACTIVE_STATUSES),
-            "resolved": sorted(RESOLVED_STATUSES),
-        },
-        "kpi": {
-            "resolved_total_field": "resolved_hypotheses",
-            "breakdown_fields": [
-                "confirmed_hypotheses", "refuted_hypotheses", "untestable_hypotheses",
-                "needs_review_hypotheses", "deferred_hypotheses", "blocked_hypotheses",
-            ],
-        },
-        "description": "Lifecycle status of a hypothesis.",
-    }
-
-
-def get_report_status_taxonomy() -> dict:
-    """Return the canonical report section status taxonomy block."""
-    return {
-        "values": sorted(
-            REPORT_DRAFT_STATUSES | REPORT_STABLE_STATUSES | REPORT_REVIEWED_STATUSES
-        ),
-        "groups": {
-            "draft": sorted(REPORT_DRAFT_STATUSES),
-            "stable": sorted(REPORT_STABLE_STATUSES),
-            "reviewed": sorted(REPORT_REVIEWED_STATUSES),
-        },
-        "description": "Completion state of a report section.",
-    }
-
-
-def all_statuses() -> frozenset[str]:
-    return ALL_HYPOTHESIS_STATUSES
-
-
-def status_in_taxonomy(status: str | None) -> bool:
-    return status in ALL_HYPOTHESIS_STATUSES
-
-
-def validate_statuses(statuses: Iterable[str]) -> list[str]:
-    """Return the subset of *statuses* that are unknown to the taxonomy."""
-    return [s for s in statuses if s not in ALL_HYPOTHESIS_STATUSES]
+    if status in groups["resolved"]:
+        return "resolved"
+    raise ValueError(f"unknown hypothesis status: {status!r}")

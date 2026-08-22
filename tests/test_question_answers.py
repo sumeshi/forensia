@@ -706,24 +706,24 @@ class QuestionAnswerTests(unittest.TestCase):
                 )
                 body = (
                     "The real event evtx-security-000000000001 supported by evidence. "
-                    "The fabricated event （evtx-security-0001） not in DB. "
-                    "Another fabricated one (evtx-mft-9999) also not present."
+                    "The fabricated event （evtx-security-999999999999） not in DB. "
+                    "Another fabricated one (mft-999999999999-99) also not present."
                 )
                 cleaned, gaps = validate_section_evidence_ids(db, body)
 
                 self.assertIn("evtx-security-000000000001", cleaned)
-                self.assertNotIn("evtx-security-0001", cleaned)
-                self.assertNotIn("security-0001", cleaned)
-                self.assertNotIn("evtx-mft-9999", cleaned)
+                self.assertNotIn("evtx-security-999999999999", cleaned)
+                self.assertNotIn("security-999999999999", cleaned)
+                self.assertNotIn("mft-999999999999-99", cleaned)
                 self.assertNotIn("（）", cleaned)
                 self.assertNotIn("()", cleaned)
                 self.assertNotIn("（,", cleaned)
                 self.assertTrue(
-                    any("evtx-security-0001" in g for g in gaps),
+                    any("evtx-security-999999999999" in g for g in gaps),
                     msg=f"gap missing fabricated ID: {gaps}",
                 )
                 self.assertTrue(
-                    any("evtx-mft-9999" in g for g in gaps),
+                    any("mft-999999999999-99" in g for g in gaps),
                     msg=f"gap missing fabricated ID: {gaps}",
                 )
                 self.assertFalse(
@@ -748,15 +748,15 @@ class QuestionAnswerTests(unittest.TestCase):
                     ),
                 )
                 body = (
-                    "Invalid first （evtx-security-0001, evtx-security-000000000122） here. "
-                    "Invalid last (evtx-security-000000000122, evtx-bogus-1) there."
+                    "Invalid first （evtx-security-999999999999, evtx-security-000000000122） here. "
+                    "Invalid last (evtx-security-000000000122, evtx-bogus-999999999999) there."
                 )
                 cleaned, _gaps = validate_section_evidence_ids(db, body)
 
                 self.assertIn("（evtx-security-000000000122）", cleaned)
                 self.assertIn("(evtx-security-000000000122)", cleaned)
-                self.assertNotIn("evtx-security-0001", cleaned)
-                self.assertNotIn("evtx-bogus-1", cleaned)
+                self.assertNotIn("evtx-security-999999999999", cleaned)
+                self.assertNotIn("evtx-bogus-999999999999", cleaned)
 
 
 class DailySessionTimelineBuilderTests(unittest.TestCase):

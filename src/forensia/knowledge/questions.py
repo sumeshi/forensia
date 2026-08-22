@@ -16,25 +16,20 @@ except ImportError:
 
 import yaml
 
-_VALID_STRUCTURED_STATUSES = {
-    "answered",
-    "partial",
-    "candidate_only",
-    "not_found",
-    "not_searched",
-    "insufficient_evidence",
-    "wrong_query",
-    "unobservable",
-    "not_observable",
-    "error",
-}
-
 # Aliases normalised to the canonical structured_status vocabulary.
 _STATUS_ALIASES = {
     "not_observable": "unobservable",
     "no_observation": "unobservable",
     "unobservble": "unobservable",
 }
+
+
+@lru_cache(maxsize=1)
+def _valid_structured_statuses() -> frozenset[str]:
+    """Return the canonical structured_status values from the YAML taxonomy."""
+    from forensia.core.verdicts import valid_verdicts
+
+    return frozenset(valid_verdicts("structured_status"))
 
 
 def normalize_structured_status(status: str) -> str:
@@ -46,7 +41,7 @@ def normalize_structured_status(status: str) -> str:
 
 
 def is_valid_structured_status(status: str) -> bool:
-    return normalize_structured_status(status) in _VALID_STRUCTURED_STATUSES
+    return normalize_structured_status(status) in _valid_structured_statuses()
 
 
 def _schema_dir() -> Path:
@@ -500,12 +495,12 @@ def sub_requirement_coverage(
                     "path",
                 }
                 if is_path:
-                    matched = any(
+                    value_ok = any(
                         token and token in row_value for token in allowed_values
                     )
                 else:
-                    matched = row_value in allowed_values
-                if not matched:
+                    value_ok = row_value in allowed_values
+                if not value_ok:
                     ok = False
                     break
             if ok:
@@ -557,7 +552,7 @@ def evaluate_question_spec_status(
             str(rules.get("empty_status") or "").strip()
             or ("not_found" if queries_run else "not_searched")
         )
-        if empty_status not in _VALID_STRUCTURED_STATUSES:
+        if empty_status not in _valid_structured_statuses():
             empty_status = normalize_structured_status(
                 "not_found" if queries_run else "not_searched"
             )
@@ -568,7 +563,7 @@ def evaluate_question_spec_status(
             )
         ]
 
-    if fallback in _VALID_STRUCTURED_STATUSES:
+    if fallback in _valid_structured_statuses():
         base_status = fallback
     else:
         base_status = "answered"
@@ -597,7 +592,7 @@ def evaluate_question_spec_status(
             empty_status = normalize_structured_status(
                 str(rules.get("empty_status") or "not_found")
             )
-            if empty_status not in _VALID_STRUCTURED_STATUSES:
+            if empty_status not in _valid_structured_statuses():
                 empty_status = "not_found"
             return empty_status, [
                 str(
@@ -639,6 +634,6 @@ def evaluate_question_spec_status(
                 "No declarative sub-requirement was fully satisfied by the available rows."
             )
 
-    if base_status not in _VALID_STRUCTURED_STATUSES:
+    if base_status not in _valid_structured_statuses():
         base_status = "answered"
     return base_status, reasons

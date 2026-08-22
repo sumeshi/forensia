@@ -32,7 +32,6 @@
   function statusTone(status: string): string {
     if (status === "human_reviewed") return "bg-semantic-ok/20 text-semantic-ok ring-semantic-ok/40";
     if (status === "ai_exhausted") return "bg-semantic-info/20 text-semantic-info ring-semantic-info/40";
-    if (status === "stable") return "bg-semantic-info/20 text-semantic-info ring-semantic-info/40";
     return "bg-semantic-bg-raised text-semantic-fg-muted ring-semantic-bg-raised";
   }
 
@@ -70,7 +69,7 @@
             Mark reviewed
           </button>
         {:else}
-          <button class="rounded-md border border-semantic-bg-raised px-2 py-1 disabled:opacity-55" on:click={() => updateStatus("stable")} disabled={busy}>
+          <button class="rounded-md border border-semantic-bg-raised px-2 py-1 disabled:opacity-55" on:click={() => updateStatus("ai_exhausted")} disabled={busy}>
             Reopen
           </button>
         {/if}

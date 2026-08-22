@@ -7,6 +7,7 @@ from typing import Any
 
 from forensia.core.textutil import normalize_localized_dates
 from forensia.db.database import CaseDB
+from forensia.db.evidence_lookup import find_missing_evidence_ids
 from forensia.db.query import normalize_value
 from forensia.report.evidence_refs import EVIDENCE_ID_PATTERN
 from forensia.report.render.markdown import _render_json_table_blocks
@@ -115,37 +116,17 @@ def _read_persisted_section(db: CaseDB, section_key: str) -> dict[str, Any]:
     return {"gaps": persisted_gaps, "confidence": persisted_confidence}
 
 
-_EVIDENCE_ID_RE = re.compile(r"\b(?:evtx|mft|prefetch)-[a-z0-9-]+\b")
-
-
 def validate_section_evidence_ids(db: CaseDB, body: str) -> tuple[str, list[str]]:
-    """Validate evidence IDs in body against DB. Return (cleaned_body, gaps)."""
-    ids_found = set(_EVIDENCE_ID_RE.findall(body))
+    """Validate evidence IDs in body against DB. Return (cleaned_body, gaps).
+
+    Detection delegates to the authoritative shared lookup; this owner only
+    strips unresolvable references from the body.
+    """
+    ids_found = sorted(set(EVIDENCE_ID_PATTERN.findall(body)))
     if not ids_found:
         return body, []
 
-    invalid: list[str] = []
-    for eid in ids_found:
-        prefix = eid.split("-")[0] if "-" in eid else ""
-        table_map = {
-            "evtx": "evtx_events",
-            "mft": "mft_entries",
-            "prefetch": "prefetch_executions",
-        }
-        table = table_map.get(prefix)
-        if not table:
-            invalid.append(eid)
-            continue
-        try:
-            row = db.execute(
-                f"SELECT 1 FROM {table} WHERE evidence_id = ? LIMIT 1",
-                (eid,),
-            ).fetchone()
-            if not row:
-                invalid.append(eid)
-        except Exception:
-            invalid.append(eid)
-
+    invalid = find_missing_evidence_ids(db, ids_found)
     if not invalid:
         return body, []
 

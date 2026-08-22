@@ -85,19 +85,18 @@ _FINDINGS_STATS_COLS = ["findings_accepted", "findings_suppressed"]
 _HYP_STATS_COLS = [
     "active_hypotheses",
     "resolved_hypotheses",
+    "blocked_hypotheses",
     "confirmed_hypotheses",
+    "deferred_hypotheses",
+    "needs_review_hypotheses",
     "refuted_hypotheses",
     "untestable_hypotheses",
-    "needs_review_hypotheses",
-    "deferred_hypotheses",
-    "blocked_hypotheses",
 ]
 _REPORT_STATS_COLS = [
     "open_gaps",
     "report_human_reviewed",
     "report_ai_exhausted",
     "report_draft_count",
-    "report_stable_count",
     "report_total_count",
 ]
 
@@ -163,11 +162,11 @@ class TestGetCaseStatsDto(unittest.TestCase):
             _make_mock_result(_FINDINGS_STATS_COLS, [(30, 2)]),
             _make_mock_result(
                 _HYP_STATS_COLS,
-                [(10, 15, 2, 2, 1, 8, 1, 1)],
+                [(10, 15, 1, 2, 1, 8, 2, 1)],
             ),
             _make_mock_result(
                 _REPORT_STATS_COLS,
-                [(3, 1, 0, 5, 0, 9)],
+                [(3, 1, 0, 5, 9)],
             ),
             _make_mock_result(["sessions", "total_iterations"], [(2, 15)]),
             _make_mock_result(
@@ -210,7 +209,6 @@ class TestGetCaseStatsDto(unittest.TestCase):
         self.assertEqual(result.report_human_reviewed, 1)
         self.assertEqual(result.report_ai_exhausted, 0)
         self.assertEqual(result.report_draft_count, 5)
-        self.assertEqual(result.report_stable_count, 0)
         self.assertAlmostEqual(result.report_human_review_pct, 100.0 * 1 / 9, places=2)
         # Hosts are returned in first-seen order (rename timeline).
         self.assertEqual(

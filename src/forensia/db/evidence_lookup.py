@@ -36,6 +36,36 @@ def _group_by_prefix(ids: list[str]) -> dict[str, list[str]]:
     return groups
 
 
+def find_missing_evidence_ids(db: CaseDB, evidence_ids: list[str]) -> list[str]:
+    """Return the subset of *evidence_ids* that resolve in no routed table.
+
+    Authoritative existence check shared by report finalization and quality
+    gates; one UNION query per prefix group.
+    """
+    if not evidence_ids:
+        return []
+    groups = _group_by_prefix(evidence_ids)
+    missing: list[str] = []
+    for prefix, tables in _PREFIX_TABLES.items():
+        ids = groups.get(prefix)
+        if not ids:
+            continue
+        id_column = "artifact_id" if prefix == "registry-" else "evidence_id"
+        placeholders = ", ".join("?" for _ in ids)
+        union_sql = " UNION ".join(
+            f"SELECT {id_column} FROM {table} "
+            f"WHERE {id_column} IN ({placeholders})"
+            for table in tables
+        )
+        found = {
+            str(row[0])
+            for row in db.execute(union_sql, tuple(ids * len(tables))).fetchall()
+        }
+        missing.extend(eid for eid in ids if eid not in found)
+    missing.extend(groups.get("unknown", []))
+    return missing
+
+
 def _lookup_table(
     db: CaseDB,
     table: str,

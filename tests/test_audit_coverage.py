@@ -115,13 +115,14 @@ class VerdictEnforcementTests(unittest.TestCase):
         assert_valid_verdict("confirmed", "hypothesis_verdict")  # no error
         assert_valid_verdict("block_supported", "section_verdict")  # no error
         assert_valid_verdict("answered", "structured_status")  # no error
-        assert_valid_verdict("answered", "question_status")  # no error
 
     def test_store_section_run_rejects_invalid(self) -> None:
         from forensia.core.verdicts import assert_valid_verdict
 
         with self.assertRaises(ValueError):
             assert_valid_verdict("bogus_verdict", "section_verdict")
+        with self.assertRaises(ValueError):
+            assert_valid_verdict("anything", "missing_category")
 
     def test_taxonomy_raises_when_not_set(self) -> None:
         """Library callers that never call set_taxonomy_path get a clear error."""

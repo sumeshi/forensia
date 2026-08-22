@@ -6,13 +6,12 @@ Detailed specification of report section filling.
 
 ## 1. Report section state
 
-`report_sections.status` has 4 values:
+`report_sections.status` has 3 canonical values:
 
 | Value | Meaning |
 |---|---|
 | `draft` | Evidence gap exists / weak support |
-| `stable` | No known gaps in the AI workflow |
-| `ai_exhausted` | The AI workflow no longer produces meaningful leads |
+| `ai_exhausted` | No known gaps remain or the AI workflow no longer produces meaningful leads |
 | `human_reviewed` | A human has explicitly reviewed it |
 
 These are workflow states, not evidence states.
@@ -194,12 +193,11 @@ Gap hypotheses emitted by the report writer pass through `_inject_gap_hypotheses
 
 ### 5.3 Planner
 
-Two-stage call: `build_query_intent_messages` → `build_sql_composer_messages`.
+Single LLM decision: `build_query_intent_messages` returns a complete bounded SQL action (recipe `template_id`+`params` or a raw SELECT).
 
-- **schema cards** (`<SCHEMA_CARDS>`): `core_columns` (a short list shown to the planner, 5–13 columns) + `column_descriptions` (one-line descriptions) + `columns` (full list for the SQL validator) from `knowledge/rulepacks/_schema/*.yaml`. The intent planner's `target_table` is chosen mainly from `evtx_events` / `mft_entries` / `mft_timeline` / `prefetch_executions`, and the composer looks at the schema_card and live schema of the target table. The validator's allowlist is built by `get_allowed_tables(db)` from the live DB and also permits derived tables such as `findings` / `prefetch_timeline` / `report_*` / `section_*` as needed
+- **schema cards** (`<SCHEMA_CARDS>`): `core_columns` (a short list shown to the planner, 5–13 columns) + `column_descriptions` (one-line descriptions) + `columns` (full list for the SQL validator) from `knowledge/rulepacks/_schema/*.yaml`. The intent planner's `target_table` is chosen mainly from `evtx_events` / `mft_entries` / `mft_timeline` / `prefetch_executions`. The validator's allowlist is built by `get_allowed_tables(db)` from the live DB and also permits derived tables such as `findings` / `prefetch_timeline` / `report_*` / `section_*` as needed
 - **SQL cookbook** (`<SQL_COOKBOOK>`): SELECT templates (catalog in `_schema/query_templates.yaml`) — event_id enumeration / time range / GROUP BY / COALESCE / MFT path LIKE / Prefetch. Weak LLMs are expected to copy-edit these rather than synthesize from scratch
-- **SQL retry**: When `validate_select_sql` (or the EXPLAIN dry-run) rejects a query, `_retry_sql_composer` re-invokes only `sql_composer` up to `_PLANNER_SQL_MAX_RETRIES = 3` times. The intent stage is not re-executed
-- **Fallback**: If retries still do not yield valid SQL, the plan result carries `stop_reason: "SQL composition failed after retries"` and the hypothesis attempt is recorded as unplannable (no deterministic SQL synthesis fallback in the current implementation)
+- **Host validation**: after the single decision, `validate_select_sql` and the EXPLAIN dry-run check table/column/SELECT-only/allow-list/row-limit deterministically; an invalid action mutates no durable state and returns narrow repair hints
 
 ### 5.4 Executor and fallback
 

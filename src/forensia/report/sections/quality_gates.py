@@ -7,12 +7,33 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
+from functools import lru_cache
 from typing import Any
+
+import yaml
 
 from forensia.config import get_llm_settings
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
+from forensia.knowledge.resources import schema_dir
 from forensia.report.evidence_refs import EVIDENCE_ID_PATTERN
+
+
+@lru_cache(maxsize=1)
+def failure_markers() -> tuple[str, ...]:
+    """Block-failure phrases shared with final report validation.
+
+    Single vocabulary owner: ``_schema/report_validation_vocab.yaml``.
+    """
+    path = schema_dir() / "report_validation_vocab.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    raw = data.get("failure_markers") if isinstance(data, dict) else None
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(f"failure_markers must be a non-empty list: {path}")
+    markers = tuple(str(marker).strip() for marker in raw if str(marker).strip())
+    if not markers:
+        raise ValueError(f"failure_markers contains no usable values: {path}")
+    return markers
 
 # ====================================================================
 # Patterns used by quality gates
@@ -491,14 +512,14 @@ def _check_json_object_leak(
 
 _SEVERE_GATE_SUBSTRINGS = [
     "JSON object leak",
-    "Section block failed",
     "answered_empty_answer",
     "unknown report template keypoint",
 ]
 
 
 def _check_failure_spam(body: str, ctx: _GateCtx) -> tuple[str | None, float | None]:
-    if "Section block failed" in body or "Block skipped" in body:
+    lowered = body.lower()
+    if any(marker.lower() in lowered for marker in failure_markers()):
         return "Section contains failure markers.", 0.15
     return None, None
 
@@ -568,7 +589,9 @@ def _quality_gate_section(
         if cap is not None:
             gated_confidence = min(gated_confidence, cap)
     for gap in gated_gaps:
-        if any(severe in gap for severe in _SEVERE_GATE_SUBSTRINGS):
+        if any(severe in gap for severe in _SEVERE_GATE_SUBSTRINGS) or any(
+            marker.lower() in gap.lower() for marker in failure_markers()
+        ):
             gated_confidence = min(gated_confidence, 0.2)
     return gated_gaps, gated_confidence
 

@@ -56,11 +56,15 @@ def render_written_report(
     report_path.write_text(report_body, encoding="utf-8")
     from forensia.config import get_llm_settings
     from forensia.report.report_brief import build_report_brief
-    from forensia.report.report_validation import validate_report
+    from forensia.report.report_validation import (
+        validate_report,
+        validation_check_names,
+    )
 
     expected_language = str(get_llm_settings().get("output_language", ""))
+    brief = build_report_brief(db, case)
     findings = validate_report(
-        build_report_brief(db, case),
+        brief,
         report_body=report_body,
         expected_language=expected_language,
         db=db,
@@ -68,17 +72,12 @@ def render_written_report(
     fatal = [issue for issue in findings if issue.severity == "error"]
     validation = {
         "publishable": not fatal,
-        "checks_run": [
-            "thesis_alignment",
-            "refuted_leakage",
-            "verdict_contradiction",
-            "sufficiency_consistency",
-            "local_path_leak",
-            "fallback_stub",
-            "failure_marker",
-            "section_generation_failure",
-            "language_consistency",
-        ],
+        "checks_run": validation_check_names(
+            brief,
+            report_body=report_body,
+            expected_language=expected_language,
+            db=db,
+        ),
         "fatal_errors": [issue.as_dict() for issue in fatal],
         "warnings": [
             issue.as_dict() for issue in findings if issue.severity == "warning"

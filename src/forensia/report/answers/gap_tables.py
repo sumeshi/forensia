@@ -7,6 +7,9 @@ from typing import Any
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
 from forensia.knowledge.catalog import catalog_exe_globs, exe_glob_sql
+from forensia.report.answers.keypoints_report_meta import (
+    hypothesis_latest_reasoning_cte,
+)
 from forensia.report.answers.summary_rows import (
     _as_int,
     _network_summary_rows,
@@ -48,8 +51,8 @@ def _forensic_gap_rows(db: CaseDB) -> list[dict[str, Any]]:
     if antiforensic_findings or _has_antiforensic_executions(db):
         gaps.append(dict(gap_specs["antiforensic"]))
     if network and not (
-        _as_int(network[0].get("external_src_rows"))
-        or _as_int(network[0].get("external_dst_rows"))
+        _as_int(network[0].get("outbound_rows"))
+        or _as_int(network[0].get("inbound_rows"))
     ):
         gaps.append(dict(gap_specs["network"]))
     return gaps
@@ -96,12 +99,7 @@ def _hypothesis_rows(
     return fetch_records(
         db,
         f"""
-        WITH latest AS (
-          SELECT *, ROW_NUMBER() OVER (
-            PARTITION BY hypothesis_id ORDER BY created_at DESC, entry_id DESC
-          ) AS rn
-          FROM hypothesis_reasoning
-        )
+        {hypothesis_latest_reasoning_cte()}
         SELECT h.hypothesis_id, h.status, h.verdict, h.description, h.summary,
                COUNT(r.entry_id) AS reasoning_count,
                MAX(r.iteration) AS latest_iteration,

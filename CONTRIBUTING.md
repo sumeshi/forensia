@@ -127,7 +127,7 @@ The reverse direction is equally important: **never persist LLM output without v
 
 ### 3. verdict / status are enums, not free strings
 
-Allowed values and cross-layer mappings are authoritative in `knowledge/rulepacks/_schema/verdict_taxonomy.yaml`. When adding a new value (e.g. `untestable`), edit the taxonomy and follow up with the Python-side Literal / validator. Bypassing the validator is treated as a bug.
+Allowed values and cross-layer mappings are authoritative in `knowledge/rulepacks/_schema/verdict_taxonomy.yaml`. When adding a value (for example `untestable`), edit the taxonomy and update its consumers without adding a duplicate Python allow-list. Bypassing the YAML-backed validator is treated as a bug.
 
 Note that `refuted` (contradicted by evidence) and `untestable` (cannot be verified because the required telemetry is not present in the case) have different meanings. Do not record "no evidence" as a refutation.
 

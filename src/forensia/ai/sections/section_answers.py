@@ -504,12 +504,20 @@ def _flatten_sample_rows(
 
 def is_effectively_empty_body(body: str) -> bool:
     """Return True when narration produced no useful prose beyond a status marker."""
+    from forensia.report.sections.quality_gates import failure_markers
+
     text = str(body or "").strip()
     if not text:
         return True
     text = re.sub(r"^\*\*Status:\*\*\s*[A-Za-z_]+\s*", "", text).strip()
     text = re.sub(r"^#+\s+.+$", "", text, flags=re.MULTILINE).strip()
-    text = re.sub(r"\*Block skipped:[^*]+\*", "", text, flags=re.IGNORECASE).strip()
+    for marker in failure_markers():
+        text = re.sub(
+            rf"\*?{re.escape(marker)}:[^*\n]+\*?",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        ).strip()
     return len(text) < 40
 
 

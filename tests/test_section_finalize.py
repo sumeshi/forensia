@@ -488,8 +488,8 @@ class SectionFinalizeTests(unittest.TestCase):
                     INSERT INTO report_sections (
                         section_key, title, body, confidence, status, update_count, gaps, last_filled_session, last_filled_at, stale
                     ) VALUES
-                        ('1_overview', 'Overview', '# Investigation Overview\n\n## Evidence Scope\n\nOriginal scope text.\n', 0.9, 'stable', 1, '[]', 's-1', now(), FALSE),
-                        ('2_timeline', 'Timeline', '# Timeline\n\n**Status:** partial\n\nBody text with raw_sql reference.\n', 0.9, 'stable', 1, '[]', 's-1', now(), FALSE)
+                        ('1_overview', 'Overview', '# Investigation Overview\n\n## Evidence Scope\n\nOriginal scope text.\n', 0.9, 'ai_exhausted', 1, '[]', 's-1', now(), FALSE),
+                        ('2_timeline', 'Timeline', '# Timeline\n\n**Status:** partial\n\nBody text with raw_sql reference.\n', 0.9, 'ai_exhausted', 1, '[]', 's-1', now(), FALSE)
                     """
                 )
                 db.execute(
@@ -585,7 +585,7 @@ class SectionFinalizeTests(unittest.TestCase):
                         "### Structured Data\n"
                         "- JSON: structured/answers.json\n",
                         0.9,
-                        "stable",
+                        "ai_exhausted",
                         1,
                         "[]",
                         "S-1",
@@ -647,7 +647,7 @@ class SectionFinalizeTests(unittest.TestCase):
                         "### Structured Data\n"
                         "- JSON: structured/answers.json\n",
                         0.9,
-                        "stable",
+                        "ai_exhausted",
                         1,
                         "[]",
                         "S-1",

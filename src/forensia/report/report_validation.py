@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from functools import lru_cache
 from typing import Any
 
@@ -18,7 +19,10 @@ import yaml
 
 from forensia.knowledge.resources import schema_dir
 from forensia.report.evidence_refs import EVIDENCE_ID_PATTERN
-from forensia.report.sections.quality_gates import _detect_body_language
+from forensia.report.sections.quality_gates import (
+    _detect_body_language,
+    failure_markers,
+)
 
 _SCHEMA_DIR = schema_dir()
 _VOCAB_PATH = _SCHEMA_DIR / "report_validation_vocab.yaml"
@@ -205,18 +209,15 @@ def check_fallback_stub(content: str) -> list[ValidationFinding]:
 def check_failure_markers(content: str) -> list[ValidationFinding]:
     """Detect section block failure markers shipped in the final report body.
 
-    Failure markers like 'Section block failed' or 'Section could not be
-    generated' indicate that a block error was rendered as report prose
-    instead of being handled gracefully.
+    Markers are the shared vocabulary from
+    ``_schema/report_validation_vocab.yaml`` (see quality_gates.failure_markers);
+    they indicate that a block error was rendered as report prose instead of
+    being handled gracefully.
     """
     findings: list[ValidationFinding] = []
-    markers = [
-        "Section block failed",
-        "Section could not be generated",
-        "Block skipped",
-    ]
-    for marker in markers:
-        if marker.lower() in content.lower():
+    lowered = content.lower()
+    for marker in failure_markers():
+        if marker.lower() in lowered:
             findings.append(
                 ValidationFinding(
                     "failure_marker",
@@ -721,6 +722,70 @@ def _normalize_for_compare(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
 
 
+def _validation_plan(
+    report_brief: dict[str, Any],
+    *,
+    report_body: str | None,
+    expected_language: str | None,
+    db: Any | None,
+) -> list[tuple[str, Callable[[], list[ValidationFinding]]]]:
+    """The executed validation pipeline as (check_name, run) pairs.
+
+    Single definition of which checks run under which inputs; consumers that
+    need to report ``checks_run`` must derive it from here.
+    """
+    checks: list[tuple[str, Callable[[], list[ValidationFinding]]]] = [
+        ("thesis_alignment", lambda: check_thesis_alignment(report_brief)),
+        ("refuted_leakage", lambda: check_refuted_leakage(report_brief)),
+        ("verdict_contradiction", lambda: check_verdict_contradiction(report_brief)),
+    ]
+    if db is not None:
+        checks.extend(
+            [
+                ("sufficiency_consistency", lambda: check_sufficiency_consistency(db)),
+                (
+                    "persisted_section_failures",
+                    lambda: check_persisted_section_failures(db),
+                ),
+                ("coverage_lineage", lambda: check_coverage_lineage(db)),
+                ("work_state_consistency", lambda: check_work_state_consistency(db)),
+            ]
+        )
+    if report_body:
+        checks.extend(
+            [
+                ("local_path_leak", lambda: check_local_path_leak(report_body)),
+                ("fallback_stub", lambda: check_fallback_stub(report_body)),
+                ("failure_marker", lambda: check_failure_markers(report_body)),
+                ("claim_traceability", lambda: check_claim_traceability(report_body)),
+            ]
+        )
+        if expected_language:
+            checks.append(
+                (
+                    "language_consistency",
+                    lambda: check_language_consistency(report_body, expected_language),
+                )
+            )
+    return checks
+
+
+def validation_check_names(
+    report_brief: dict[str, Any],
+    *,
+    report_body: str | None = None,
+    expected_language: str | None = None,
+    db: Any | None = None,
+) -> list[str]:
+    """Names of the checks validate_report would execute with these inputs."""
+    return [name for name, _ in _validation_plan(
+        report_brief,
+        report_body=report_body,
+        expected_language=expected_language,
+        db=db,
+    )]
+
+
 def validate_report(
     report_brief: dict[str, Any],
     *,
@@ -737,22 +802,13 @@ def validate_report(
     Returns:
         List of ``ValidationFinding`` objects (empty if all checks pass).
     """
-    all_findings: list[ValidationFinding] = []
-    all_findings.extend(check_thesis_alignment(report_brief))
-    all_findings.extend(check_refuted_leakage(report_brief))
-    all_findings.extend(check_verdict_contradiction(report_brief))
-    if db is not None:
-        all_findings.extend(check_sufficiency_consistency(db))
-        all_findings.extend(check_persisted_section_failures(db))
-        all_findings.extend(check_coverage_lineage(db))
-        all_findings.extend(check_work_state_consistency(db))
-    if report_body:
-        all_findings.extend(check_local_path_leak(report_body))
-        all_findings.extend(check_fallback_stub(report_body))
-        all_findings.extend(check_failure_markers(report_body))
-        all_findings.extend(check_claim_traceability(report_body))
-        if expected_language:
-            all_findings.extend(
-                check_language_consistency(report_body, expected_language)
-            )
-    return all_findings
+    return [
+        finding
+        for _, run in _validation_plan(
+            report_brief,
+            report_body=report_body,
+            expected_language=expected_language,
+            db=db,
+        )
+        for finding in run()
+    ]

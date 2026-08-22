@@ -164,6 +164,8 @@ class BenchmarkPartialCompositeTest(unittest.TestCase):
         coverage = sub_requirement_coverage(spec, rows)
         recycle = next(item for item in coverage if item["key"] == "recycle_bin")
         self.assertTrue(recycle["satisfied"])
+        self.assertEqual(1, recycle["matched_rows"])
+        self.assertLessEqual(recycle["matched_rows"], len(rows))
 
 
 class BenchmarkTraceabilityTest(unittest.TestCase):

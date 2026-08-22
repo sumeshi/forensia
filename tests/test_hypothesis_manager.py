@@ -686,7 +686,7 @@ class CollectSectionRequestsTests(unittest.TestCase):
                 # 1_overview: filled and fresh → must NOT be re-rendered.
                 db.execute(
                     "INSERT INTO report_sections (section_key, title, body, confidence, status, update_count, stale) "
-                    "VALUES ('1_overview', 'Overview', 'filled body text', 0.8, 'stable', 1, FALSE)"
+                    "VALUES ('1_overview', 'Overview', 'filled body text', 0.8, 'ai_exhausted', 1, FALSE)"
                 )
                 # 4_gaps: filled but stale → must be re-rendered.
                 db.execute(
@@ -764,7 +764,7 @@ class CollectSectionRequestsTests(unittest.TestCase):
             with CaseDB(case) as db:
                 db.execute(
                     "INSERT INTO report_sections (section_key, title, body, confidence, status, update_count, stale) "
-                    "VALUES ('1_overview', 'Overview', 'filled body text', 0.8, 'stable', 1, FALSE)"
+                    "VALUES ('1_overview', 'Overview', 'filled body text', 0.8, 'ai_exhausted', 1, FALSE)"
                 )
                 db.execute(
                     "INSERT INTO report_sections (section_key, title, body, confidence, status, update_count, stale) "

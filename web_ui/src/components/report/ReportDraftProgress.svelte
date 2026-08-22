@@ -9,7 +9,6 @@
     percent: 0,
     humanReviewed: 0,
     aiExhausted: 0,
-    stable: 0,
     draft: 0,
     total: 0,
     gaps: 0,

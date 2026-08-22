@@ -22,3 +22,10 @@ fallback_stub_phrases:
   - "collected evidence returned"
   - "related rows. Representative row:"
   - "could not be summarized automatically"
+
+# Block-failure phrases rendered into section bodies. One vocabulary shared by
+# the section quality gate and final report validation.
+failure_markers:
+  - "Section block failed"
+  - "Section could not be generated"
+  - "Block skipped"

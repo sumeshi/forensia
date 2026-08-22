@@ -9,11 +9,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 from forensia.core.case import Case
+from forensia.core.verdicts import assert_valid_verdict
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records, normalize_value
 from forensia.report.evidence_refs import (
     _extract_evidence_ids_from_value,
 )
+from forensia.report.sections.quality_gates import failure_markers
 from forensia.report.sections.section_quality import GAP_PATTERN
 
 _SCAFFOLD_PATTERNS = [
@@ -22,8 +24,6 @@ _SCAFFOLD_PATTERNS = [
     re.compile(r"### Answer"),
     re.compile(r"### Missing Reason"),
     re.compile(r"### Queries Run"),
-    re.compile(r"\*Block skipped:\*.*"),
-    re.compile(r"\*Section block failed:\*.*"),
     re.compile(r"### Structured Data"),
     re.compile(r"^-?\s*(JSON|CSV):\s+.*", re.IGNORECASE),
     re.compile(r"^-\s*structured:.*", re.IGNORECASE),
@@ -53,6 +53,9 @@ def _extract_claim_texts(body: str) -> list[str]:
             stripped
             and not skip_metadata_block
             and not any(p.match(stripped) for p in _SCAFFOLD_PATTERNS)
+            and not any(
+                marker.lower() in stripped.lower() for marker in failure_markers()
+            )
         ):
             filtered_lines.append(line)
         else:
@@ -352,10 +355,8 @@ def _upsert_report_section(
         next_status = "draft"
     elif existing_status == "human_reviewed":
         next_status = "human_reviewed"
-    elif existing_status == "ai_exhausted":
-        next_status = "ai_exhausted"
     else:
-        next_status = "stable"
+        next_status = "ai_exhausted"
     db.execute(
         """
         INSERT INTO report_sections (
@@ -400,9 +401,8 @@ def mark_report_sections_ai_exhausted(db: CaseDB) -> None:
 
 
 def set_report_section_status(db: CaseDB, section_key: str, status: str) -> None:
-    """Set a report section's status after validating it is a supported value."""
-    if status not in {"draft", "stable", "ai_exhausted", "human_reviewed"}:
-        raise ValueError(f"unsupported report section status: {status}")
+    """Set a report section's status after validating it against the taxonomy."""
+    assert_valid_verdict(status, "report_section_status")
     db.execute(
         """
         UPDATE report_sections

@@ -16,11 +16,6 @@ from forensia.api.cache import (
 )
 from forensia.api.progress import clear_progress_events
 from forensia.cli.doctor import run_doctor
-from forensia.core.verdicts import set_taxonomy_path
-from forensia.knowledge.resources import schema_dir
-from forensia.report.api_snapshot import write_all_snapshots
-
-set_taxonomy_path(schema_dir() / "verdict_taxonomy.yaml")
 from forensia.cli.stages import (
     _make_initial_progress_state,
     _run_analyze_stage,
@@ -46,6 +41,7 @@ from forensia.core.case import Case
 from forensia.core.case_tasks import CaseTasks
 from forensia.db.database import CaseDB
 from forensia.evidence.ingest import ingest_all
+from forensia.report.api_snapshot import write_all_snapshots
 from forensia.report.render.html import render_html_report
 from forensia.report.render.writer import render_written_report
 from forensia.report.template_export import (

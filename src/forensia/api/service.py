@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from datetime import date as _date
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,8 @@ from forensia.api.dto import (
     SessionDTO,
 )
 from forensia.api.taxonomy import (
+    get_hypothesis_taxonomy,
+    get_report_status_taxonomy,
     hypothesis_status_group,
 )
 from forensia.core.case import Case
@@ -95,8 +98,20 @@ def get_runtime_config_dto() -> RuntimeConfigDTO:
     )
 
 
+def _sql_in(values: Iterable[str]) -> str:
+    """Render canonical taxonomy values as an SQL IN list."""
+    return ", ".join(f"'{value}'" for value in sorted(values))
+
+
 def get_case_stats_dto(db: CaseDB) -> CaseStatsDTO:
     """Aggregate case-wide statistics from multiple tables into a single DTO."""
+    hypothesis_taxonomy = get_hypothesis_taxonomy()
+    active_statuses = frozenset(hypothesis_taxonomy["groups"]["active"])
+    resolved_statuses = frozenset(hypothesis_taxonomy["groups"]["resolved"])
+    report_taxonomy = get_report_status_taxonomy()
+    report_draft_statuses = frozenset(report_taxonomy["groups"]["draft"])
+    report_stable_statuses = frozenset(report_taxonomy["groups"]["stable"])
+    report_reviewed_statuses = frozenset(report_taxonomy["groups"]["reviewed"])
     event_rows = db.execute(
         """
         SELECT
@@ -116,31 +131,28 @@ def get_case_stats_dto(db: CaseDB) -> CaseStatsDTO:
         """
     ).fetchone()
     hypothesis_rows = db.execute(
-        """
+        f"""
         SELECT
-            COUNT(*) FILTER (WHERE status = 'active') AS active_hypotheses,
-            COUNT(*) FILTER (WHERE COALESCE(status, 'unknown') != 'active') AS resolved_hypotheses,
-            COUNT(*) FILTER (WHERE status = 'confirmed') AS confirmed_hypotheses,
-            COUNT(*) FILTER (WHERE status = 'refuted') AS refuted_hypotheses,
-            COUNT(*) FILTER (WHERE status = 'untestable') AS untestable_hypotheses,
-            COUNT(*) FILTER (WHERE status = 'needs_review') AS needs_review_hypotheses,
-            COUNT(*) FILTER (WHERE status = 'deferred') AS deferred_hypotheses,
-            COUNT(*) FILTER (WHERE status = 'blocked') AS blocked_hypotheses
+            COUNT(*) FILTER (WHERE status IN ({_sql_in(active_statuses)})) AS active_hypotheses,
+            COUNT(*) FILTER (WHERE status IN ({_sql_in(resolved_statuses)})) AS resolved_hypotheses,
+            {", ".join(
+                f"COUNT(*) FILTER (WHERE status = '{status}') AS {status}_hypotheses"
+                for status in sorted(resolved_statuses)
+            )}
         FROM hypotheses
         """
     ).fetchone()
     report_rows = db.execute(
-        """
+        f"""
         SELECT
             COALESCE(SUM(CASE
                 WHEN json_array_length(CAST(gaps AS JSON)) IS NULL THEN 0
                 ELSE json_array_length(CAST(gaps AS JSON))
             END), 0) AS open_gaps,
-            COUNT(*) FILTER (WHERE status = 'human_reviewed') AS report_human_reviewed,
-            COUNT(*) FILTER (WHERE status = 'ai_exhausted') AS report_ai_exhausted,
-            COUNT(*) FILTER (WHERE status = 'draft') AS report_draft_count,
-            COUNT(*) FILTER (WHERE status = 'ai_exhausted') AS report_stable_count,
-            COUNT(*) FILTER (WHERE status != 'suppressed') AS report_total_count
+            COUNT(*) FILTER (WHERE status IN ({_sql_in(report_reviewed_statuses)})) AS report_human_reviewed,
+            COUNT(*) FILTER (WHERE status IN ({_sql_in(report_stable_statuses)})) AS report_ai_exhausted,
+            COUNT(*) FILTER (WHERE status IN ({_sql_in(report_draft_statuses)})) AS report_draft_count,
+            COUNT(*) AS report_total_count
         FROM report_sections
         """
     ).fetchone()
@@ -177,9 +189,13 @@ def get_case_stats_dto(db: CaseDB) -> CaseStatsDTO:
         )
         for row in host_rows
     ]
-    report_total = int(report_rows[5] or 0)
+    report_total = int(report_rows[4] or 0)
     report_reviewed = int(report_rows[1] or 0)
     human_review_pct = round(100.0 * report_reviewed / report_total, 2) if report_total else 0.0
+    breakdown = {
+        f"{status}_hypotheses": int(hypothesis_rows[index + 2] or 0)
+        for index, status in enumerate(sorted(resolved_statuses))
+    }
     return CaseStatsDTO(
         evtx_rows=int(event_rows[0] or 0),
         mft_entries=int(event_rows[1] or 0),
@@ -191,19 +207,13 @@ def get_case_stats_dto(db: CaseDB) -> CaseStatsDTO:
         findings_suppressed=int(finding_rows[1] or 0),
         active_hypotheses=int(hypothesis_rows[0] or 0),
         resolved_hypotheses=int(hypothesis_rows[1] or 0),
-        confirmed_hypotheses=int(hypothesis_rows[2] or 0),
-        refuted_hypotheses=int(hypothesis_rows[3] or 0),
-        untestable_hypotheses=int(hypothesis_rows[4] or 0),
-        needs_review_hypotheses=int(hypothesis_rows[5] or 0),
-        deferred_hypotheses=int(hypothesis_rows[6] or 0),
-        blocked_hypotheses=int(hypothesis_rows[7] or 0),
+        **breakdown,
         open_gaps=int(report_rows[0] or 0),
         sessions=int(session_rows[0] or 0),
         total_iterations=int(session_rows[1] or 0),
         report_human_reviewed=report_reviewed,
         report_ai_exhausted=int(report_rows[2] or 0),
         report_draft_count=int(report_rows[3] or 0),
-        report_stable_count=int(report_rows[4] or 0),
         report_human_review_pct=human_review_pct,
     )
 

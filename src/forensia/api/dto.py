@@ -59,7 +59,6 @@ class CaseStatsDTO(DTOModel):
     report_human_reviewed: int = 0
     report_ai_exhausted: int = 0
     report_draft_count: int = 0
-    report_stable_count: int = 0
     report_human_review_pct: float = 0.0
     needs_review_finding_total: int = 0
 

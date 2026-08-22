@@ -48,10 +48,19 @@ def valid_verdicts(category: str) -> list[str]:
     return [str(v) for v in values]
 
 
+def taxonomy_block(category: str) -> dict[str, Any]:
+    """Return the raw YAML block for a category (values, groups, kpi, ...)."""
+    tax = _load_taxonomy()
+    cat = tax.get(category, {})
+    return cat if isinstance(cat, dict) else {}
+
+
 def assert_valid_verdict(verdict: str, category: str) -> None:
     """Raise ValueError if the verdict is not in the allowed set for the category."""
     allowed = valid_verdicts(category)
-    if allowed and verdict not in allowed:
+    if not allowed:
+        raise ValueError(f"Unknown or empty verdict category: {category}")
+    if verdict not in allowed:
         raise ValueError(
             f"Invalid verdict '{verdict}' for {category}. Allowed: {allowed}"
         )

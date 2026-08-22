@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Any
+
+from forensia.db.database import CaseDB
+from forensia.db.query import fetch_records
 from forensia.report.answers.event_semantics import LOG_CLEAR_EVENT_SQL
 from forensia.report.evidence_refs import (
     EVIDENCE_ID_PATTERN,
@@ -9,6 +13,61 @@ from forensia.report.evidence_refs import (
     _extract_needed_evidence,
     _report_keypoint_rows,
 )
+
+
+def hypothesis_latest_reasoning_cte(exclude_error_phase: bool = True) -> str:
+    """Single definition of the "latest reasoning row per hypothesis" CTE.
+
+    All report consumers must resolve the same latest non-error reasoning row.
+    """
+    filter_sql = " WHERE phase != 'error'" if exclude_error_phase else ""
+    return f"""
+            WITH latest AS (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY hypothesis_id ORDER BY created_at DESC, entry_id DESC
+                ) AS rn
+                FROM hypothesis_reasoning{filter_sql}
+            )
+"""
+
+
+def _hypothesis_reasoning_rows(
+    db: CaseDB,
+    *,
+    where: str,
+    params: tuple[Any, ...] = (),
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Shared resolver for hypothesis rows joined with their latest reasoning."""
+    placeholders = ", ".join("?" for _ in params)
+    rendered_where = where.format(placeholders=placeholders) if params else where
+    return fetch_records(
+        db,
+        f"""
+        {hypothesis_latest_reasoning_cte()}
+        SELECT h.hypothesis_id, h.description, h.status, h.verdict,
+               h.summary, h.updated_at, l.body AS latest_reasoning,
+               l.verdict AS latest_verdict
+        FROM hypotheses h
+        LEFT JOIN latest l ON l.hypothesis_id = h.hypothesis_id AND l.rn = 1
+        {rendered_where}
+        ORDER BY h.updated_at DESC NULLS LAST
+        LIMIT {int(limit)}
+        """,
+        params,
+    )
+
+
+def _needed_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "hypothesis_id": row["hypothesis_id"],
+        "description": row["description"],
+        "status": row["status"],
+        "verdict": row["verdict"],
+        "summary": row["summary"],
+        "updated_at": row["updated_at"],
+        "needed_evidence": _extract_needed_evidence(row.get("latest_reasoning")),
+    }
 
 REPORT_META_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
     "gaps_event_coverage": (
@@ -115,35 +174,13 @@ REPORT_META_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
     "unresolved_hypotheses_summary": (
         "Open or unresolved hypotheses from the investigation.",
         lambda db: [
-            {
-                "hypothesis_id": row["hypothesis_id"],
-                "description": row["description"],
-                "status": row["status"],
-                "verdict": row["verdict"],
-                "summary": row["summary"],
-                "updated_at": row["updated_at"],
-                "needed_evidence": _extract_needed_evidence(
-                    row.get("latest_reasoning")
-                ),
-            }
-            for row in _report_keypoint_rows(
+            _needed_evidence_row(row)
+            for row in _hypothesis_reasoning_rows(
                 db,
-                """
-                WITH latest AS (
-                    SELECT *, ROW_NUMBER() OVER (
-                        PARTITION BY hypothesis_id ORDER BY created_at DESC, entry_id DESC
-                    ) AS rn
-                    FROM hypothesis_reasoning
-                    WHERE phase != 'error'
-                )
-                SELECT h.hypothesis_id, h.description, h.status, h.verdict,
-                       h.summary, h.updated_at, l.body AS latest_reasoning
-                FROM hypotheses h
-                LEFT JOIN latest l ON l.hypothesis_id = h.hypothesis_id AND l.rn = 1
+                where="""
                 WHERE COALESCE(h.verdict, h.status) NOT IN ('confirmed', 'refuted', 'rejected', 'untestable')
-                ORDER BY h.updated_at DESC NULLS LAST
-                LIMIT 30
                 """,
+                limit=30,
             )
         ],
     ),
@@ -160,61 +197,21 @@ REPORT_META_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
                     )
                 ),
             }
-            for row in _report_keypoint_rows(
+            for row in _hypothesis_reasoning_rows(
                 db,
-                """
-                WITH latest AS (
-                    SELECT *, ROW_NUMBER() OVER (
-                        PARTITION BY hypothesis_id
-                        ORDER BY created_at DESC, entry_id DESC
-                    ) AS rn
-                    FROM hypothesis_reasoning
-                )
-                SELECT h.hypothesis_id, h.verdict, h.description, h.summary,
-                       l.body AS latest_reasoning,
-                       l.verdict AS latest_verdict
-                FROM hypotheses h
-                LEFT JOIN latest l
-                    ON l.hypothesis_id = h.hypothesis_id AND l.rn = 1
-                WHERE h.status IN ('confirmed', 'refuted')
-                ORDER BY h.updated_at DESC NULLS LAST
-                LIMIT 30
-                """,
+                where="WHERE h.status IN ('confirmed', 'refuted')",
+                limit=30,
             )
         ],
     ),
     "untestable_hypotheses_summary": (
         "Hypotheses that could not be tested due to missing telemetry.",
         lambda db: [
-            {
-                "hypothesis_id": row["hypothesis_id"],
-                "description": row["description"],
-                "status": row["status"],
-                "verdict": row["verdict"],
-                "summary": row["summary"],
-                "updated_at": row["updated_at"],
-                "needed_evidence": _extract_needed_evidence(
-                    row.get("latest_reasoning")
-                ),
-            }
-            for row in _report_keypoint_rows(
+            _needed_evidence_row(row)
+            for row in _hypothesis_reasoning_rows(
                 db,
-                """
-                WITH latest AS (
-                    SELECT *, ROW_NUMBER() OVER (
-                        PARTITION BY hypothesis_id ORDER BY created_at DESC, entry_id DESC
-                    ) AS rn
-                    FROM hypothesis_reasoning
-                    WHERE phase != 'error'
-                )
-                SELECT h.hypothesis_id, h.description, h.status, h.verdict,
-                       h.summary, h.updated_at, l.body AS latest_reasoning
-                FROM hypotheses h
-                LEFT JOIN latest l ON l.hypothesis_id = h.hypothesis_id AND l.rn = 1
-                WHERE COALESCE(h.verdict, h.status) = 'untestable'
-                ORDER BY h.updated_at DESC NULLS LAST
-                LIMIT 20
-                """,
+                where="WHERE COALESCE(h.verdict, h.status) = 'untestable'",
+                limit=20,
             )
         ],
     ),

@@ -46,7 +46,7 @@ class TestReportQualityContract(unittest.TestCase):
                     "INSERT INTO report_sections "
                     "(section_key, title, body, confidence, status, update_count, stale) "
                     "VALUES ('1_bad', 'Bad', ?, 0, 'draft', 1, FALSE), "
-                    "('2_good', 'Good', '# Good\n\nValid body.', 1, 'stable', 1, FALSE)",
+                    "('2_good', 'Good', '# Good\n\nValid body.', 1, 'ai_exhausted', 1, FALSE)",
                     [marker],
                 )
                 rendered = build_report_markdown_from_db(db, case)

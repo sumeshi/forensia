@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -54,16 +54,8 @@ ENTITY_ROLES = {
 class Hypothesis(BaseModel):
     id: str
     description: str
-    status: Literal[
-        "active",
-        "confirmed",
-        "refuted",
-        "untestable",
-        "needs_review",
-        "deferred",
-        "blocked",
-    ] = "active"
-    verdict: Literal["confirmed", "refuted", "untestable"] | None = None
+    status: str = "active"
+    verdict: str | None = None
     summary: str = ""
     source_rule_ids: list[str] = Field(default_factory=list)
     required_entities: list[str] = Field(default_factory=list)
@@ -84,6 +76,12 @@ class Hypothesis(BaseModel):
     def _validate_verdict(cls, v: str | None) -> str | None:
         if v is not None:
             assert_valid_verdict(v, "hypothesis_verdict")
+        return v
+
+    @field_validator("status")
+    @classmethod
+    def _validate_status(cls, v: str) -> str:
+        assert_valid_verdict(v, "hypothesis_status")
         return v
 
     @model_validator(mode="after")
