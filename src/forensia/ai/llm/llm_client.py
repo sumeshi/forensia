@@ -648,9 +648,14 @@ async def async_chat_completion(
         )
         completion = get_last_completion_metadata()
         complete_json = finish_reason == "length" and _is_complete_json_object(content)
-        unusable_truncation = finish_reason == "length" and not complete_json
-        if not content.strip() and reasoning_len > 0:
-            unusable_truncation = True
+        unusable_truncation = (finish_reason == "length" and not complete_json) or (
+            not content.strip() and reasoning_len > 0
+        )
+        truncation_reason = (
+            "finish_reason=length"
+            if finish_reason == "length"
+            else "empty_content_with_reasoning"
+        )
         if att_id and telemetry is not None:
             telemetry.finalize_attempt(
                 attempt_id=att_id,
@@ -669,7 +674,7 @@ async def async_chat_completion(
                 ),
                 truncated=unusable_truncation,
                 accepted=not unusable_truncation,
-                discarded_reason="finish_reason=length" if unusable_truncation else None,
+                discarded_reason=truncation_reason if unusable_truncation else None,
             )
         if complete_json:
             _close_logical_call_if_owned(
@@ -677,10 +682,9 @@ async def async_chat_completion(
             )
             return content
         if unusable_truncation:
-            if owned:
-                _close_logical_call_if_owned(
-                    telemetry, logical_call_id, owned=owned, status="success"
-                )
+            _close_logical_call_if_owned(
+                telemetry, logical_call_id, owned=owned, status="failed"
+            )
             raise LLMOutputTruncatedError(
                 f"LLM output truncated (finish_reason={finish_reason}, reasoning_len={reasoning_len}, content_len={len(content)})",
                 content=content,
@@ -901,9 +905,14 @@ def chat_completion(
         )
         completion = get_last_completion_metadata()
         complete_json = finish_reason == "length" and _is_complete_json_object(content)
-        unusable_truncation = finish_reason == "length" and not complete_json
-        if not content.strip() and reasoning_len > 0:
-            unusable_truncation = True
+        unusable_truncation = (finish_reason == "length" and not complete_json) or (
+            not content.strip() and reasoning_len > 0
+        )
+        truncation_reason = (
+            "finish_reason=length"
+            if finish_reason == "length"
+            else "empty_content_with_reasoning"
+        )
         if att_id and telemetry is not None:
             telemetry.finalize_attempt(
                 attempt_id=att_id,
@@ -922,7 +931,7 @@ def chat_completion(
                 ),
                 truncated=unusable_truncation,
                 accepted=not unusable_truncation,
-                discarded_reason="finish_reason=length" if unusable_truncation else None,
+                discarded_reason=truncation_reason if unusable_truncation else None,
             )
         if complete_json:
             _close_logical_call_if_owned(
@@ -930,10 +939,9 @@ def chat_completion(
             )
             return content
         if unusable_truncation:
-            if owned:
-                _close_logical_call_if_owned(
-                    telemetry, logical_call_id, owned=owned, status="success"
-                )
+            _close_logical_call_if_owned(
+                telemetry, logical_call_id, owned=owned, status="failed"
+            )
             raise LLMOutputTruncatedError(
                 f"LLM output truncated (finish_reason={finish_reason}, reasoning_len={reasoning_len}, content_len={len(content)})",
                 content=content,

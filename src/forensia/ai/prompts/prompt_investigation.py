@@ -5,25 +5,15 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from forensia.ai.llm.schemas import (
     FINDING_EXTRACTOR_SCHEMA,
     MEMORY_UPDATER_SCHEMA,
-    SQL_SELF_CHECK_SCHEMA,
     VERDICT_REVIEW_SCHEMA,
     gap_identifier_schema,
     hypothesis_drafter_schema,
 )
-from forensia.core.session import Hypothesis
-from forensia.knowledge.catalog import (
-    load_benign_context_rules,
-)
-
-if TYPE_CHECKING:
-    pass
-
-
 from forensia.ai.prompts.prompt_context import (
     _case_profile_guidance,
     _org_knowledge_guidance,
@@ -32,6 +22,10 @@ from forensia.ai.prompts.prompt_context import (
 from forensia.ai.prompts.prompt_playbook import (
     _dfir_playbook,
     _sections_for_hypothesis,
+)
+from forensia.core.session import Hypothesis
+from forensia.knowledge.catalog import (
+    load_benign_context_rules,
 )
 from forensia.knowledge.retrieval import knowledge_terms_for_hypothesis, select_snippets
 
@@ -241,99 +235,6 @@ def build_query_intent_messages(
     if confirmed_findings_block:
         system += confirmed_findings_block
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
-
-
-def build_sql_composer_messages(
-    intent: dict,
-    table_schema_card: str = "",
-    template_catalog: list[dict] | None = None,
-    time_range: dict[str, str] | None = None,
-    prior_check_feedback: str = "",
-) -> list[dict[str, str]]:
-    """Build messages for the sql_composer phase.
-
-    Produces a valid DuckDB SELECT statement that satisfies `intent`.
-    Idempotent — no read_more cycle needed.
-    """
-    from forensia.ai.case_profile import get_profile_event_ids
-
-    system = (
-        f"{_dfir_playbook('hypothesis_plan', event_ids=get_profile_event_ids())}\n"
-        f"{_time_range_guidance(time_range)}"
-        "<TASK>You are a sql_composer. Write a DuckDB SQL query that satisfies the given intent. Output template_id or raw SQL.</TASK>\n"
-        "<INPUT_SCHEMA>\n"
-        f"intent: {json.dumps(intent, ensure_ascii=False, default=str)}\n"
-        f"table_schema: {table_schema_card}\n"
-        f"template_catalog: {json.dumps(template_catalog[:10], ensure_ascii=False, default=str)}\n"
-        "</INPUT_SCHEMA>\n"
-        "<OUTPUT_SCHEMA>\n"
-        "{\n"
-        '  "template_id": "string OR null. MUST be either (a) JSON null, or (b) an exact template_id from template_catalog. NEVER the literal string \\"null\\".",\n'
-        '  "sql": "string | null — raw SELECT if no template_id matches. Use SQL_COOKBOOK snippets as reference style.",\n'
-        '  "params": {"key": "value"},\n'
-        '  "purpose": "string — why this query answers the hypothesis"\n'
-        "}\n"
-        "</OUTPUT_SCHEMA>\n"
-        "<RULES>\n"
-        "Exactly ONE of template_id or sql MUST be non-null. The other MUST be null.\n"
-        "template_id MUST be an exact match to a template_catalog entry (use null otherwise).\n"
-        "Target dialect is DuckDB. Do NOT use SQLite syntax (datetime('now', ...), strftime via SQLite quirks) or MySQL/Postgres syntax (DATE_SUB, INTERVAL ... MINUTE keyword form, NOW()). "
-        "For relative time windows on historical evidence, anchor to a literal TIMESTAMP within the case time range, not the current system clock: "
-        "`WHERE ts BETWEEN TIMESTAMP '2024-01-15 10:00:00' AND TIMESTAMP '2024-01-15 10:15:00'`. "
-        "For interval arithmetic use `ts + INTERVAL 15 MINUTE` or `ts - INTERVAL '15' MINUTE` (DuckDB form), never `DATE_SUB(...)`.\n"
-        "Only `evtx_events` carries `computer` / `user_name` columns. `mft_entries`, `mft_timeline`, `prefetch_executions`, `prefetch_timeline`, `registry_artifacts`, and `registry_timeline` do not carry a proven host column. Registry zero rows remain Coverage-partial and cannot refute a hypothesis. "
-        "Do NOT write `JOIN mft_entries m ON e.computer = m.computer` or any host/user equality JOIN across evtx and mft/prefetch — it fails at bind time. "
-        "When the intent calls for 'correlate evtx with mft/prefetch', either (a) issue two separate SELECTs and let the verdict step merge them, or (b) JOIN by `file_path` string match against `process_name` / `command_line` / `message`, optionally narrowed by a timestamp BETWEEN window. Only columns listed under each table's SCHEMA_CARD block exist; never invent columns from the table alias.\n"
-        "When raw SQL is used: ensure all COALESCE arguments have the same data type. Use json_extract_string (returns VARCHAR) when COALESCE-ing with a VARCHAR column, never json_extract (returns JSON).\n"
-        "Never put a VARCHAR-returning function (json_extract_string) and an INTEGER column in the same COALESCE without explicit CAST. "
-        "Use: COALESCE(CAST(json_extract_string(json, '$.x') AS BIGINT), int_col) for integer unification, "
-        "or COALESCE(CAST(json_extract_string(json, '$.x') AS VARCHAR), CAST(int_col AS VARCHAR)) for string unification.\n"
-        "If EXECUTION_ERROR is present, you MUST change the query — at minimum change the table list, the WHERE clause, or eliminate the failing JOIN. Never repeat the same SQL that caused an execution error.\n"
-        "If prior_check_feedback names specific missing event_ids or evidence types, the new SQL MUST include those event_ids or evidence types. Never ignore prior check feedback.\n"
-        "</RULES>"
-    )
-    user = json.dumps(
-        {
-            "intent": intent,
-            "prior_check_feedback": prior_check_feedback or "(no prior checks)",
-        },
-        ensure_ascii=False,
-        default=str,
-    )
-    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
-
-
-def build_sql_self_check_messages(
-    intent: dict[str, Any],
-    schema_card: str,
-) -> tuple[list[dict[str, str]], dict]:
-    system = (
-        "<TASK>You are a SQL schema validator. Check whether the intent can be expressed as valid SQL against the given schema.</TASK>\n"
-        "<OUTPUT_SCHEMA>\n"
-        "{\n"
-        '  "target_table_exists": true,\n'
-        '  "required_columns_present": ["col1", "col2"],\n'
-        '  "missing_columns": [],\n'
-        '  "join_keys": [{"left_table": "...", "left_col": "...", "right_table": "...", "right_col": "..."}],\n'
-        '  "time_column": "timestamp | si_modified | exec_time | ...",\n'
-        '  "ready_to_compose": true,\n'
-        '  "blockers": "string — empty if ready_to_compose=true, else what is missing"\n'
-        "}\n"
-        "</OUTPUT_SCHEMA>\n"
-        "<RULES>\n"
-        "Check that all columns referenced in the intent exist in the schema card.\n"
-        "If JOIN is needed, verify the join key columns exist in both tables.\n"
-        "If ready_to_compose is false, describe what's blocking in the blockers field.\n"
-        "</RULES>\n"
-    )
-    user = (
-        f"intent: {json.dumps(intent, ensure_ascii=False, default=str)}\n"
-        f"schema_card:\n{schema_card}\n"
-    )
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ], SQL_SELF_CHECK_SCHEMA
 
 
 def build_verdict_review_messages(

@@ -289,7 +289,7 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertIn("gap alpha private question", intent_prompt)
         self.assertNotIn("gap beta must not leak", intent_prompt)
 
-    def test_retries_once_when_sql_validation_fails(self) -> None:
+    def test_rejects_invalid_sql_without_another_llm_call(self) -> None:
         state = SessionState(session_id="session-1", iteration=1)
         hypothesis = Hypothesis(id="H1", description="test hypothesis")
         responses = [
@@ -320,9 +320,9 @@ class PlannerRetryTests(unittest.TestCase):
 
         self.assertEqual(1, mock_request.call_count)
         self.assertIsNone(result.query)
-        self.assertIn("SQL composition failed", result.stop_reason or "")
+        self.assertIn("invalid_action: Unknown table", result.stop_reason or "")
 
-    def test_plan_hypothesis_query_logs_debug_when_query_parse_fails(self) -> None:
+    def test_plan_hypothesis_query_dry_runs_columns_in_host(self) -> None:
         state = SessionState(session_id="session-1", iteration=1)
         hypothesis = Hypothesis(id="H1", description="test hypothesis")
         responses = [
@@ -333,30 +333,38 @@ class PlannerRetryTests(unittest.TestCase):
                 "filters_required": [],
                 "time_window": "All",
                 "expected_row_shape": "cols",
-                "template_id": "missing-template",
-                "sql": "",
+                "template_id": None,
+                "sql": "SELECT nonexistent_column FROM evtx_events LIMIT 1",
                 "params": {},
                 "purpose": "broken",
             },
         ]
 
-        with (
-            patch(
-                "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=responses
-            ),
-            self.assertLogs("forensia.ai.investigation.planner", level="DEBUG") as logs,
-        ):
-            result = plan_hypothesis_query(
-                state=state,
-                hypothesis=hypothesis,
-                memory=_MemoryStub(),
-                base_url=_llm_base_url(),
-                model="test-model",
-            )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with (
+                CaseDB(case) as db,
+                patch(
+                    "forensia.ai.llm.llm_gateway.request_llm_json",
+                    side_effect=responses,
+                ),
+                self.assertLogs(
+                    "forensia.ai.investigation.planner", level="DEBUG"
+                ) as logs,
+            ):
+                result = plan_hypothesis_query(
+                    state=state,
+                    hypothesis=hypothesis,
+                    memory=_MemoryStub(),
+                    base_url=_llm_base_url(),
+                    model="test-model",
+                    db=db,
+                )
 
         self.assertIsNone(result.query)
+        self.assertIn("invalid_action: Binder Error", result.stop_reason or "")
         self.assertTrue(
-            any("hypothesis/query parse failed" in line for line in logs.output)
+            any("planned SQL rejected by host validation" in line for line in logs.output)
         )
 
     def test_plan_hypothesis_query_includes_recent_db_history_on_resume(self) -> None:

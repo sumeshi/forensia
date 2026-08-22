@@ -10,7 +10,6 @@ from forensia.ai.llm import llm_gateway
 from forensia.ai.prompts.prompt_sections import (
     build_paragraph_narrate_messages,
     build_section_outline_messages,
-    build_section_review_messages,
     build_structured_classify_messages,
 )
 from forensia.ai.sections.section_answers import (
@@ -328,14 +327,14 @@ def _review_and_rewrite_narrative(
     narrate_messages: list[dict[str, str]],
     narrate_schema: dict[str, Any],
 ) -> str:
-    """R7-01 section_reviewer: rewrite deterministic failures at most once.
+    """R7-01 deterministic narrative review: rewrite flagged bodies at most once.
 
     Deterministic rubric problems (citation overload, pseudo-citations,
-    internal IDs) are computed in code. Clean bodies pass without an extra LLM
-    call. Bodies with deterministic problems are handed to the LLM reviewer as
-    ground truth; on a 'rewrite' verdict the narrator runs once more. The
-    rewrite is kept only when it is no worse, and leftovers are recorded in
-    the section run trace. Failures never block the section.
+    internal IDs) are the decision owner. Clean bodies pass without any LLM
+    call. Flagged bodies get one bounded narrator rewrite guided by those
+    problems; no separate reviewer verdict step exists. The rewrite is kept
+    only when deterministic review shows it is no worse, and leftovers are
+    recorded in the section run trace. Failures never block the section.
     """
     deterministic_problems = review_narrative_body(body)
     if not deterministic_problems:
@@ -354,67 +353,49 @@ def _review_and_rewrite_narrative(
         )
         return body
 
-    review: dict[str, Any] = {}
     remaining: list[str] = deterministic_problems
     try:
-        review_msgs, review_schema = build_section_review_messages(
-            ctx.block_heading,
-            body,
-            ctx.structured_digest or None,
-            deterministic_problems,
-        )
+        problems_str = "; ".join(str(p) for p in deterministic_problems)
+        rewrite_msgs = [
+            *narrate_messages,
+            {
+                "role": "assistant",
+                "content": json.dumps({"body": body}, ensure_ascii=False),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Your previous paragraph (above) has these problems: {problems_str}. "
+                    f"Rewrite the paragraph fixing every problem; "
+                    f"keep only claims supported by the evidence and at most 2-3 citations."
+                ),
+            },
+        ]
         review_audit = ctx.review_audit or ctx.audit
-        review = llm_gateway.request_llm_json(
-            messages=review_msgs,
+        rewritten = narrate_paragraph_with_retry(
+            narrate_messages=rewrite_msgs,
+            narrate_schema=narrate_schema,
             model=ctx.model,
             base_url=ctx.base_url,
-            json_schema=review_schema,
             audit_callback=review_audit,
+            target_language=_report_language(),
         )
-        if deterministic_problems or review.get("verdict") == "rewrite":
-            guidance = str(review.get("guidance") or "")
-            problems_str = "; ".join(
-                str(p) for p in (review.get("problems") or deterministic_problems)
+        rewritten_problems = review_narrative_body(rewritten)
+        if rewritten.strip() and len(rewritten_problems) <= len(
+            deterministic_problems
+        ):
+            body = rewritten
+            remaining = rewritten_problems
+        if remaining:
+            _log(
+                "REVIEW",
+                f"{ctx.section_key}/{ctx.block_heading} — unresolved after rewrite: {remaining}",
+                level="warning",
             )
-            rewrite_msgs = [
-                *narrate_messages,
-                {
-                    "role": "assistant",
-                    "content": json.dumps({"body": body}, ensure_ascii=False),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"Your previous paragraph (above) has these problems: {problems_str}. "
-                        f"Guidance: {guidance}. Rewrite the paragraph fixing every problem; "
-                        f"keep only claims supported by the evidence and at most 2-3 citations."
-                    ),
-                },
-            ]
-            rewritten = narrate_paragraph_with_retry(
-                narrate_messages=rewrite_msgs,
-                narrate_schema=narrate_schema,
-                model=ctx.model,
-                base_url=ctx.base_url,
-                audit_callback=review_audit,
-                target_language=_report_language(),
-            )
-            rewritten_problems = review_narrative_body(rewritten)
-            if rewritten.strip() and len(rewritten_problems) <= len(
-                deterministic_problems
-            ):
-                body = rewritten
-                remaining = rewritten_problems
-            if remaining:
-                _log(
-                    "REVIEW",
-                    f"{ctx.section_key}/{ctx.block_heading} — unresolved after rewrite: {remaining}",
-                    level="warning",
-                )
     except Exception as exc:
         _log(
             "REVIEW",
-            f"LLM review failed for {ctx.section_key}/{ctx.block_heading}: {exc}",
+            f"Narrative rewrite failed for {ctx.section_key}/{ctx.block_heading}: {exc}",
             level="error",
         )
     _store_section_run(
@@ -424,7 +405,8 @@ def _review_and_rewrite_narrative(
         iteration=1,
         phase="review",
         payload={
-            "verdict": str(review.get("verdict") or ""),
+            "verdict": "rewrite",
+            "reviewer": "deterministic",
             "deterministic_problems": deterministic_problems,
             "remaining_problems": remaining,
         },

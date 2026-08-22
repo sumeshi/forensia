@@ -331,19 +331,19 @@ def build_section_agent_plan_messages(
     EXAMPLE_SECTION_PLAN = """
 <EXAMPLE verdict="section_plan">
 Input: block_heading='Logon Summary', template_body='## Logon Summary\\nList all logons.', reusable_facts empty, query_template_catalog has logon templates.
-Output: {"action": "sql", "purpose": "Find all logon events", "sql": "SELECT evidence_id, computer, user_name, src_ip, logon_type, timestamp FROM evtx_events WHERE event_id IN (4624, 4625)"}
+Output: {"action": "sql", "purpose": "Find all logon events", "enough_to_write": false, "sql": "SELECT evidence_id, computer, user_name, src_ip, logon_type, timestamp FROM evtx_events WHERE event_id IN (4624, 4625)"}
 </EXAMPLE>
 """
     EXAMPLE_SECTION_PLAN_TEMPLATE = """
 <EXAMPLE verdict="section_plan_template">
 Input: block_heading='Service Creation', template_body='## Service Creation\\nFind malicious services.', template_id available, params extractable.
-Output: {"action": "template", "template_id": "service-creation", "params": {"computer": "HOST-A"}}
+Output: {"action": "template", "template_id": "service-creation", "enough_to_write": false, "params": {"computer": "HOST-A"}}
 </EXAMPLE>
 """
     EXAMPLE_SECTION_PLAN_KEYPOINT = """
 <EXAMPLE verdict="section_plan_keypoint">
 Input: block_heading='Endpoint identity' with template hint evidence_keypoints=[overview_hosts]. The keypoint_catalog includes {"name": "overview_hosts", "description": "Distinct hosts observed in evidence"}.
-Output: {"action": "keypoint", "keypoint": "overview_hosts", "purpose": "List hosts observed in evidence"}
+Output: {"action": "keypoint", "keypoint": "overview_hosts", "purpose": "List hosts observed in evidence", "enough_to_write": false}
 </EXAMPLE>
 """
 
@@ -516,7 +516,7 @@ Output: {"verdict": "block_contradicted", "status": "not_found", "rationale": "N
         "block_contradicted: Evidence contradicts the template claim; explain contradiction.\n"
         "status rules: answered when evidence supports the block, partial when some evidence exists but not enough, not_found only after an appropriate search has been run and returned zero rows repeatedly, not_searched when the matching query/keypoint was never executed, wrong_query when the search hit the wrong artifact family, insufficient_evidence for other unresolved cases.\n"
         "Never use not_found unless the relevant search has actually run.\n"
-        "block_supported requires at least 2 DIFFERENT KINDS of evidence (different event_id families, different keypoint sources). If all evidence is the same type (e.g. all 4648 findings), verdict should be 'partial' or 'needs_more', not 'block_supported'.\n"
+        "block_supported requires at least 2 DIFFERENT KINDS of evidence (different event_id families, different keypoint sources). If all evidence is the same type (e.g. all 4648 findings), verdict should be 'block_needs_more', not 'block_supported'.\n"
         "</RULES>\n"
     )
     if contradicted_history:
@@ -708,48 +708,3 @@ def build_paragraph_narrate_messages(
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ], PARAGRAPH_NARRATE_SCHEMA
-
-
-SECTION_REVIEW_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "verdict": {"type": "string", "enum": ["pass", "rewrite"]},
-        "problems": {"type": "array", "items": {"type": "string"}},
-        "guidance": {"type": "string"},
-    },
-    "required": ["verdict", "problems", "guidance"],
-}
-
-
-def build_section_review_messages(
-    heading: str,
-    body: str,
-    digest: str | None,
-    deterministic_problems: list[str],
-) -> tuple[list[dict[str, str]], dict[str, Any]]:
-    system = (
-        "<TASK>You are a section_reviewer. Evaluate the narrative paragraph for the given heading. "
-        "Check: does it state what happened, who/when, and what remains open? Does it cite at most 2-3 "
-        "representative evidence IDs (not enumerate findings)? Is it factual, concise, and self-contained? "
-        "Output verdict 'pass' if acceptable, 'rewrite' if needs improvement, with specific guidance.</TASK>\n"
-        '<OUTPUT_SCHEMA>{"verdict": "pass"|"rewrite", "problems": ["..."], "guidance": "..."}</OUTPUT_SCHEMA>\n'
-        "<RULES>\n"
-        "- Executive Summary must state what happened, who/when, and what remains open in ≤2 paragraphs\n"
-        "- At most 3 representative evidence IDs per paragraph\n"
-        "- Must not enumerate findings or list finding_ids\n"
-        "- Must not contain internal IDs (gap-*, H-*, KP-*)\n"
-        "- Must not contain pseudo-citations like (some_label)\n"
-        "- If body is the insufficient-evidence placeholder but digest has data, always rewrite\n"
-        "</RULES>\n"
-    )
-    digest_block = f"\nSection table digest:\n{digest}\n" if digest else ""
-    problems_block = (
-        f"\nDeterministic problems found:\n{chr(10).join('- ' + p for p in deterministic_problems)}\n"
-        if deterministic_problems
-        else ""
-    )
-    user = f"Heading: {heading}\n\nBody:\n{body}\n{digest_block}{problems_block}"
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ], SECTION_REVIEW_SCHEMA

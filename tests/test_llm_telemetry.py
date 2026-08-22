@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+from unittest.mock import patch
+
+import httpx
 import pytest
 
 from forensia.ai.llm import llm_client
@@ -127,3 +131,99 @@ def test_client_creates_timeout_attempt_receipt(tmp_path, monkeypatch) -> None:
     assert rows[0][0] == "timeout"
     assert rows[0][1] == "timeout"
     assert rows[0][2] == "read"
+
+
+def _truncated_response() -> httpx.Response:
+    req = httpx.Request("POST", "http://llama.test/v1/chat/completions")
+    return httpx.Response(
+        200,
+        json={
+            "choices": [
+                {"message": {"content": '{"ok":'}, "finish_reason": "length"}
+            ]
+        },
+        request=req,
+    )
+
+
+def _assert_truncation_receipt(db: CaseDB, session_id: str) -> None:
+    calls = db.execute(
+        "SELECT status FROM llm_logical_calls WHERE session_id = ?", (session_id,)
+    ).fetchall()
+    assert calls == [("failed",)]
+    row = db.execute(
+        """
+        SELECT status, error_type, parse_status, finish_reason, truncated,
+               accepted, discarded_reason
+        FROM llm_provider_attempts WHERE session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    assert row == (
+        "parse_error",
+        "truncated",
+        "truncated",
+        "length",
+        True,
+        False,
+        "finish_reason=length",
+    )
+
+
+def test_unusable_truncation_closes_owned_call_failed_and_marks_attempt(
+    tmp_path,
+) -> None:
+    """Shared sync/async invariant: unusable truncation raises LLMOutputTruncatedError,
+    leaves the owned logical call failed, and the attempt receipt terminal and explicit."""
+    case = Case.init(tmp_path)
+    db = CaseDB(case)
+
+    # --- sync path ---
+    tel = LLMTelemetry(db, session_id="S-sync")
+    set_active_telemetry(tel)
+
+    class _FakeClient:
+        def post(self, url, json, headers):
+            return _truncated_response()
+
+    with (
+        patch.object(llm_client, "_get_http_client", return_value=_FakeClient()),
+        patch.object(llm_client.settings, "llm_api_key", "tok"),
+    ):
+        with pytest.raises(llm_client.LLMOutputTruncatedError):
+            llm_client.chat_completion(
+                [{"role": "user", "content": "go"}],
+                model="m",
+                base_url="http://llama.test",
+            )
+    set_active_telemetry(None)
+    _assert_truncation_receipt(db, "S-sync")
+    assert tel.session_aggregates()["provider_attempt_count"] == 1
+
+    # --- async path ---
+    tel_a = LLMTelemetry(db, session_id="S-async")
+    set_active_telemetry(tel_a)
+
+    class _FakeAsyncClient:
+        async def post(self, url, json, headers):
+            return _truncated_response()
+
+    async def _fake_async_client():
+        return _FakeAsyncClient()
+
+    async def _run() -> None:
+        with (
+            patch.object(llm_client, "_get_async_client", new=_fake_async_client),
+            patch.object(llm_client.settings, "llm_api_key", "tok"),
+        ):
+            with pytest.raises(llm_client.LLMOutputTruncatedError):
+                await llm_client.async_chat_completion(
+                    [{"role": "user", "content": "go"}],
+                    model="m",
+                    base_url="http://llama.test",
+                )
+
+    asyncio.run(_run())
+    set_active_telemetry(None)
+    _assert_truncation_receipt(db, "S-async")
+    assert tel_a.session_aggregates()["provider_attempt_count"] == 1

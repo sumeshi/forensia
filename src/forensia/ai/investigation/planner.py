@@ -1,9 +1,8 @@
-"""Hypothesis query planning: query-intent phase, SQL composition with validation retry."""
+"""Hypothesis query planning: one SQL decision plus deterministic host validation."""
 
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -20,15 +19,12 @@ from forensia.ai.llm.schemas import (
 )
 from forensia.ai.prompts.prompt_context import (
     _build_schema_guidance,
-    _trim_dynamic_content,
 )
 from forensia.ai.prompts.prompt_investigation import (
     build_query_intent_messages,
-    build_sql_composer_messages,
 )
 from forensia.ai.prompts.sql_templates import (
     coerce_list,
-    query_template_catalog,
     render_query_template,
     validate_select_sql,
     validate_select_sql_with_dryrun,
@@ -39,8 +35,6 @@ from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.db.database import CaseDB
 
 logger = logging.getLogger(__name__)
-
-_PLANNER_SQL_MAX_RETRIES = 3
 
 
 def eligible_query_actions(phase: str) -> tuple[str, ...]:
@@ -129,7 +123,9 @@ def normalize_query_intent_action(
     return action, None
 
 
-def _materialize_planned_query(payload: dict[str, Any]) -> PlannedQuery:
+def _materialize_planned_query(
+    payload: dict[str, Any], db: CaseDB | None = None
+) -> PlannedQuery:
     planned_query = PlannedQuery.model_validate(payload)
     tid = planned_query.template_id
     if isinstance(tid, str) and tid.strip().lower() in {"", "null", "none"}:
@@ -139,6 +135,8 @@ def _materialize_planned_query(payload: dict[str, Any]) -> PlannedQuery:
         planned_query.sql = render_query_template(tid, planned_query.params)
     else:
         planned_query.sql = validate_select_sql(planned_query.sql)
+    if db is not None:
+        planned_query.sql = validate_select_sql_with_dryrun(planned_query.sql, db)
     return planned_query
 
 
@@ -160,79 +158,6 @@ class HypothesisPlanResult:
     needs_more: bool
     stop_reason: str | None
     raw_response: dict[str, Any]
-
-
-def _retry_sql_composer(
-    base_messages: list[dict[str, str]],
-    hypothesis_id: str,
-    query_index: int,
-    base_url: str,
-    model: str,
-    status_callback: Callable[[str], None] | None = None,
-    audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None]
-    | None = None,
-    db: CaseDB | None = None,
-) -> dict[str, Any]:
-    """Retry SQL composition up to _PLANNER_SQL_MAX_RETRIES times when SQL validation fails.
-
-    Unlike _retry_query_once, this operates on the flattened composer response
-    format (template_id/sql/params/purpose) without read_more or hypothesis wrapping.
-    When a db handle is available, an EXPLAIN dry-run (R2-05) catches binder
-    errors (unknown functions/columns) before execution so they feed the retry
-    loop instead of failing at execute time.
-    """
-    messages = list(base_messages)
-    for attempt in range(1, _PLANNER_SQL_MAX_RETRIES + 1):
-        parsed = llm_gateway.request_llm_json(
-            messages=messages,
-            model=model,
-            base_url=base_url,
-            status_callback=status_callback,
-            audit_callback=audit_callback,
-        )
-        query_dict = {
-            "query_id": f"{hypothesis_id}-q{query_index}",
-            "hypothesis_id": hypothesis_id,
-            "purpose": parsed.get("purpose", ""),
-            "template_id": parsed.get("template_id"),
-            "params": parsed.get("params", {}),
-            "sql": parsed.get("sql", ""),
-        }
-        try:
-            planned = _materialize_planned_query(query_dict)
-            if db is not None and planned.sql:
-                validate_select_sql_with_dryrun(planned.sql, db)
-            return parsed
-        except ValueError as exc:
-            err_msg = str(exc)
-            # R2-03: check for placeholder literals in rejected SQL
-            sql_text = str(parsed.get("sql", "") or "")
-            placeholder_note = ""
-            if re.search(
-                r"\[\w*placeholder\w*\]|\[(start|end)_time\]|\{\w+\}", sql_text
-            ):
-                placeholder_note = " Your SQL contained an unresolved placeholder literal. Use real values from the hypothesis/case profile, or omit that filter."
-                err_msg += placeholder_note
-            if status_callback:
-                status_callback(
-                    f"SQL composer rejected (attempt {attempt}/{_PLANNER_SQL_MAX_RETRIES}): {err_msg}."
-                )
-            if attempt >= _PLANNER_SQL_MAX_RETRIES:
-                return parsed
-            messages.append(
-                {
-                    "role": "user",
-                    "content": (
-                        f"Attempt {attempt}/{_PLANNER_SQL_MAX_RETRIES}: the previous SQL was rejected. "
-                        f"Error: {err_msg}. "
-                        "MUST return corrected JSON with template_id (or null), sql (raw SELECT), params, purpose. "
-                        "Do NOT leave both template_id and sql blank. "
-                        "Use a valid SELECT statement against evtx_events / mft_entries / mft_timeline / prefetch_executions / findings. "
-                        "Use simple SELECT cols FROM table WHERE event_id = N style if unsure."
-                    ),
-                }
-            )
-    return parsed
 
 
 def request_with_optional_context(
@@ -509,29 +434,6 @@ def _build_hypothesis_history(
     return hypothesis_history, seen_query_ids
 
 
-def _parse_planner_output(
-    parsed: dict[str, Any],
-) -> tuple[Hypothesis | None, PlannedQuery | None]:
-    """Parse LLM planner output into optional Hypothesis and PlannedQuery."""
-    parsed_hypothesis = None
-    if isinstance(parsed.get("hypothesis"), dict):
-        try:
-            parsed_hypothesis = Hypothesis.model_validate(parsed["hypothesis"])
-        except Exception as exc:
-            logger.debug("hypothesis parse failed: %s", exc)
-            parsed_hypothesis = None
-
-    planned_query = None
-    if isinstance(parsed.get("query"), dict):
-        try:
-            planned_query = _materialize_planned_query(parsed["query"])
-        except Exception as exc:
-            logger.debug("hypothesis/query parse failed: %s", exc)
-            planned_query = None
-
-    return parsed_hypothesis, planned_query
-
-
 def _load_prior_check_feedback(db: CaseDB | None, hypothesis: Hypothesis) -> str:
     """Summarize the last check-phase reasoning entries for this hypothesis.
 
@@ -581,14 +483,12 @@ def _plan_query_intent(
     audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None,
     hypothesis: Hypothesis,
     session_id: str | None,
-) -> tuple[dict[str, Any], str]:
-    """Phase 1: plan the query intent (the single SQL decision follows in Phase 2).
+) -> dict[str, Any]:
+    """Run the single query-intent LLM decision.
 
     The model response contains the complete bounded SQL action. All readiness
     validation (table/column/SELECT-only/allow-list/row-limit/dry-run) is
     performed deterministically by the host before execution.
-
-    Returns the normalized single-action response and its selected schema card.
     """
 
     def retrieval_callback(event: dict[str, Any]) -> None:
@@ -623,82 +523,48 @@ def _plan_query_intent(
         retrieval_callback=retrieval_callback,
         json_schema=QUERY_INTENT_SCHEMA,
     )
-    if intent_response.get("_action_error"):
-        return intent_response, ""
-    target_table = str(intent_response.get("target_table") or "evtx_events").strip()
-    composer_schema_card = _build_schema_guidance(target_table, db=db)
-    return intent_response, composer_schema_card
-
-
-def _compose_sql(
-    *,
-    intent_response: dict[str, Any],
-    composer_schema_card: str,
-    time_range: dict[str, str] | None,
-    prior_check_feedback: str,
-    execution_error_block: str,
-    hypothesis: Hypothesis,
-    query_index: int,
-    base_url: str,
-    model: str,
-    db: CaseDB | None,
-    status_callback: Callable[[str], None] | None,
-    audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None,
-) -> dict[str, Any]:
-    """Phase 2: compose the SELECT statement, with SQL validation retry."""
-    composer_messages = build_sql_composer_messages(
-        intent=intent_response,
-        table_schema_card=composer_schema_card,
-        template_catalog=query_template_catalog(),
-        time_range=time_range or {},
-        prior_check_feedback=prior_check_feedback,
-    )
-    if execution_error_block:
-        composer_messages.append(
-            {"role": "user", "content": execution_error_block.strip()}
-        )
-    composer_messages = _trim_dynamic_content(composer_messages)
-    return _retry_sql_composer(
-        base_messages=composer_messages,
-        hypothesis_id=hypothesis.id,
-        query_index=query_index,
-        base_url=base_url,
-        model=model,
-        status_callback=status_callback,
-        audit_callback=audit_callback,
-        db=db,
-    )
-
+    return intent_response
 
 def _build_hypothesis_plan_result(
     hypothesis: Hypothesis,
     query_index: int,
     intent_response: dict[str, Any],
-    composer_response: dict[str, Any],
+    action_response: dict[str, Any],
+    db: CaseDB | None,
 ) -> HypothesisPlanResult:
-    """Build a PlannedQuery from the composer response and wrap it as a plan result."""
+    """Build a PlannedQuery from the single SQL action response and wrap it as a plan result."""
     wrapper = {
         "hypothesis": None,
         "query": {
             "query_id": f"{hypothesis.id}-q{query_index}",
             "hypothesis_id": hypothesis.id,
-            "purpose": composer_response.get("purpose", ""),
-            "template_id": composer_response.get("template_id"),
-            "params": composer_response.get("params", {}),
-            "sql": composer_response.get("sql", ""),
+            "purpose": action_response.get("purpose", ""),
+            "template_id": action_response.get("template_id"),
+            "params": action_response.get("params", {}),
+            "sql": action_response.get("sql", ""),
         }
-        if composer_response.get("template_id") or composer_response.get("sql")
+        if action_response.get("template_id") or action_response.get("sql")
         else None,
     }
-    _, planned_query = _parse_planner_output(wrapper)
+    planned_query: PlannedQuery | None = None
+    validation_error: str | None = None
+    try:
+        planned_query = _materialize_planned_query(wrapper["query"], db)
+    except (ValueError, ValidationError) as exc:
+        validation_error = str(exc).splitlines()[0][:300]
+        logger.debug("planned SQL rejected by host validation: %s", validation_error)
     read_more = [str(item) for item in coerce_list(intent_response.get("read_more"))]
     return HypothesisPlanResult(
         read_more=read_more,
         hypothesis=None,
         query=planned_query,
         needs_more=planned_query is not None,
-        stop_reason=None if planned_query else "SQL composition failed after retries",
-        raw_response=composer_response,
+        stop_reason=(
+            None
+            if planned_query
+            else f"invalid_action: {validation_error or 'SQL action was not materialized'}"
+        ),
+        raw_response=action_response,
     )
 
 
@@ -721,10 +587,9 @@ def plan_hypothesis_query(
     """Plan the next query for a single hypothesis.
 
     Collapsed to a single SQL decision plus deterministic host validation (T-20):
-    1. query_intent_planner: decides WHAT data to fetch (read_more or sql.query)
-    2. sql_composer: one model decision choosing a recipe (template_id+params)
-       or a bounded fallback SELECT; the host then validates table/column/
-       SELECT-only/allow-list/row-limit/dry-run before execution.
+    the query_intent_planner makes one model decision choosing a recipe
+    (template_id+params) or a bounded fallback SELECT; the host then validates
+    table/column/SELECT-only/allow-list/row-limit/dry-run before execution.
 
     The former second "schema-readiness" LLM self-check call was removed."""
     default_context_md = _resolve_planner_context(
@@ -750,7 +615,7 @@ def plan_hypothesis_query(
             findings_snapshot=state.findings_snapshot,
         )
 
-    intent_response, composer_schema_card = _plan_query_intent(
+    intent_response = _plan_query_intent(
         memory=memory,
         intent_messages_builder=intent_messages_builder,
         base_url=base_url,
@@ -797,5 +662,5 @@ def plan_hypothesis_query(
             raw_response=intent_response,
         )
     return _build_hypothesis_plan_result(
-        hypothesis, query_index, intent_response, intent_response
+        hypothesis, query_index, intent_response, intent_response, db
     )

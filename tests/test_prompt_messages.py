@@ -164,23 +164,23 @@ class PromptMessageTests(unittest.TestCase):
                 "top_findings": [{"finding_id": "F-1"}],
                 "active_hypotheses": [{"hypothesis_id": "H-1"}],
                 "confirmed_hypotheses": [{"hypothesis_id": "H-2"}],
-                "evidence_inventory": {
-                    "time_range": "2026-05-01 to 2026-05-02",
-                    "row_counts": {"evtx_events": 12},
-                    "narrative": "drop this",
-                },
+                "prior_sections": {"3_technical": "narrative"},
+                "existing_claims": [{"claim_text": "narrative"}],
+                "evidence_coverage": {"evtx_events": 12},
+                "source_timezone": "Asia/Tokyo",
+                "timezone_offset": "+09:00",
+                "time_range": "2026-05-01 to 2026-05-02",
             }
         )
 
-        self.assertNotIn("investigation_objective", brief)
-        self.assertNotIn("top_findings", brief)
-        self.assertNotIn("active_hypotheses", brief)
         self.assertEqual(
             {
+                "evidence_coverage": {"evtx_events": 12},
+                "source_timezone": "Asia/Tokyo",
+                "timezone_offset": "+09:00",
                 "time_range": "2026-05-01 to 2026-05-02",
-                "row_counts": {"evtx_events": 12},
             },
-            brief["evidence_inventory"],
+            brief,
         )
 
     def test_report_section_messages_include_event_id_guidance(self) -> None:

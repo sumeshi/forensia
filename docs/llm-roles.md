@@ -36,13 +36,11 @@ Raw logs of LLM input/output are saved to `ai_logs/<phase>-<id>.json`.
 
 ### 2.1 Hypothesis investigation loop
 
-`plan_hypothesis_query` ([ai/planner.py](../src/forensia/ai/investigation/planner.py)) is a two-phase composition of Phase 1 (intent) → Phase 2 (composer):
+`plan_hypothesis_query` ([ai/planner.py](../src/forensia/ai/investigation/planner.py)) makes a single LLM SQL decision; the host validates it deterministically:
 
-| Phase | Role | Caller | Prompt builder | Output schema |
-|---|---|---|---|---|
-| Phase 1 | `query_intent_planner` | [planner.plan_hypothesis_query](../src/forensia/ai/investigation/planner.py) | `build_query_intent_messages` | `QUERY_INTENT_SCHEMA` |
-| Phase 1 | `sql_self_check` | same (intent gate) | `build_sql_self_check_messages` | `SQL_SELF_CHECK_SCHEMA` |
-| Phase 2 | `sql_composer` | same (up to 3 retries) | `build_sql_composer_messages` | `SQL_COMPOSER_SCHEMA` |
+| Role | Caller | Prompt builder | Output schema |
+|---|---|---|---|
+| `query_intent_planner` | [planner.plan_hypothesis_query](../src/forensia/ai/investigation/planner.py) | `build_query_intent_messages` | `QUERY_INTENT_SCHEMA` |
 | `verdict_reviewer` | [checking/checker.check_query_result](../src/forensia/ai/checking/checker.py) | `build_verdict_review_messages` | `VERDICT_REVIEW_SCHEMA` |
 | `finding_extractor` | same (when verdict=confirmed) | `build_finding_extractor_messages` | `FINDING_EXTRACTOR_SCHEMA` |
 | `memory_updater` | same | `build_memory_updater_messages` | `MEMORY_UPDATER_SCHEMA` |

@@ -251,31 +251,18 @@ def structured_digest_from_answers(case: Case) -> str:
 def question_report_brief(report_brief: dict[str, Any] | None) -> dict[str, Any]:
     """Strip narrative-heavy fields from report_brief for question mode.
 
-    Benchmark blocks must only receive factual inventories, not LLM-generated
-    narratives, to prevent answer leakage.
+    Benchmark blocks must only receive factual context (coverage summary and
+    case time window/timezone facts), not LLM-generated narratives, to prevent
+    answer leakage.
     """
     brief = dict(report_brief or {})
     keys_to_keep = {
-        "evidence_inventory",
-        "table_inventory",
-        "row_counts",
+        "evidence_coverage",
+        "source_timezone",
+        "timezone_offset",
         "time_range",
-        "time_window",
-        "source_inventory",
     }
-    if "evidence_inventory" in brief:
-        evidence_inventory = brief.get("evidence_inventory")
-        if isinstance(evidence_inventory, dict):
-            brief["evidence_inventory"] = {
-                key: value
-                for key, value in evidence_inventory.items()
-                if key in keys_to_keep
-            }
-    for key in list(brief.keys()):
-        if key in keys_to_keep or key == "evidence_inventory":
-            continue
-        brief.pop(key, None)
-    return brief
+    return {key: value for key, value in brief.items() if key in keys_to_keep}
 
 
 def _structured_report_brief(report_brief: dict[str, Any] | None) -> dict[str, Any]:

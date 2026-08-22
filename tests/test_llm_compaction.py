@@ -224,61 +224,99 @@ class TestEnforceSystemBudgetCompaction:
         assert len(result) <= budget
 
     def test_real_section_plan_prompt_respects_default_budget(self) -> None:
+        import os
+
         from forensia.ai.prompts.prompt_context import _enforce_system_budget
         from forensia.ai.prompts.prompt_sections import (
             build_section_agent_plan_messages,
         )
+        from forensia.config import reload_settings
 
-        messages, _ = build_section_agent_plan_messages(
-            section_key="2_timeline",
-            section_title="Activity Timeline",
-            block_heading="Log Integrity",
-            template_body="## Log Integrity",
-            report_brief={},
-            context_sections={},
-            current_section_outline=[],
-            findings_snapshot=[],
-            keypoint_catalog=[],
-            query_template_catalog=[],
-            prior_runs=[],
-            reusable_facts=[],
-            reusable_evidence=[],
-        )
-        result = _enforce_system_budget(messages[0]["content"])
-        assert len(result) <= 24000
-        assert "<TASK>" in result
-        assert "Output JSON only" in result
+        old_budget = os.environ.get("FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS")
+        old_total = os.environ.get("FORENSIA_PROMPT_BUDGET_TOKENS")
+        os.environ["FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS"] = "0"
+        os.environ["FORENSIA_PROMPT_BUDGET_TOKENS"] = "0"
+        reload_settings()
+        try:
+            messages, _ = build_section_agent_plan_messages(
+                section_key="2_timeline",
+                section_title="Activity Timeline",
+                block_heading="Log Integrity",
+                template_body="## Log Integrity",
+                report_brief={},
+                context_sections={},
+                current_section_outline=[],
+                findings_snapshot=[],
+                keypoint_catalog=[],
+                query_template_catalog=[],
+                prior_runs=[],
+                reusable_facts=[],
+                reusable_evidence=[],
+            )
+            result = _enforce_system_budget(messages[0]["content"])
+            assert len(result) <= 24000
+            assert "<TASK>" in result
+            assert "Output JSON only" in result
+        finally:
+            if old_budget is None:
+                os.environ.pop("FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS", None)
+            else:
+                os.environ["FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS"] = old_budget
+            if old_total is None:
+                os.environ.pop("FORENSIA_PROMPT_BUDGET_TOKENS", None)
+            else:
+                os.environ["FORENSIA_PROMPT_BUDGET_TOKENS"] = old_total
+            reload_settings()
 
     def test_real_section_plan_retains_question_specific_reference(self) -> None:
+        import os
+
         from forensia.ai.prompts.prompt_context import _enforce_system_budget
         from forensia.ai.prompts.prompt_sections import (
             build_section_agent_plan_messages,
         )
+        from forensia.config import reload_settings
 
-        messages, _ = build_section_agent_plan_messages(
-            section_key="2_timeline",
-            section_title="Activity Timeline",
-            block_heading="Log Integrity",
-            template_body="## Log Integrity",
-            report_brief={},
-            context_sections={},
-            current_section_outline=[],
-            findings_snapshot=[],
-            keypoint_catalog=[],
-            query_template_catalog=[],
-            prior_runs=[],
-            reusable_facts=[],
-            reusable_evidence=[],
-        )
-        system = (
-            messages[0]["content"]
-            + "\n<ORG_KNOWLEDGE>\n"
-            + "Event 1102 means the Security log was cleared.\n"
-            + "</ORG_KNOWLEDGE>\n"
-        )
-        result = _enforce_system_budget(system)
-        assert len(result) <= 24000
-        assert "Event 1102 means the Security log was cleared" in result
+        old_budget = os.environ.get("FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS")
+        old_total = os.environ.get("FORENSIA_PROMPT_BUDGET_TOKENS")
+        os.environ["FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS"] = "0"
+        os.environ["FORENSIA_PROMPT_BUDGET_TOKENS"] = "0"
+        reload_settings()
+        try:
+            messages, _ = build_section_agent_plan_messages(
+                section_key="2_timeline",
+                section_title="Activity Timeline",
+                block_heading="Log Integrity",
+                template_body="## Log Integrity",
+                report_brief={},
+                context_sections={},
+                current_section_outline=[],
+                findings_snapshot=[],
+                keypoint_catalog=[],
+                query_template_catalog=[],
+                prior_runs=[],
+                reusable_facts=[],
+                reusable_evidence=[],
+            )
+            system = (
+                messages[0]["content"]
+                + "\n<ORG_KNOWLEDGE>\n"
+                + "Event 1102 means the Security log was cleared.\n"
+                + "</ORG_KNOWLEDGE>\n"
+            )
+            result = _enforce_system_budget(system)
+            assert len(result) <= 24000
+            assert "Event 1102 means the Security log was cleared" in result
+        finally:
+            if old_budget is None:
+                os.environ.pop("FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS", None)
+            else:
+                os.environ["FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS"] = old_budget
+            if old_total is None:
+                os.environ.pop("FORENSIA_PROMPT_BUDGET_TOKENS", None)
+            else:
+                os.environ["FORENSIA_PROMPT_BUDGET_TOKENS"] = old_total
+            reload_settings()
 
 
 class TestTrimDynamicContentMarker:

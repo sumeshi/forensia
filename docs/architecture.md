@@ -25,7 +25,7 @@ flowchart LR
     H -->|assessment + sufficiency| B
     K -->|persist| B
     K -->|durable facts| M[("memory/*.md")]
-    H -->|stable section| R[Section Agent]
+    H -->|completed section| R[Section Agent]
     R -->|finalize_section| B
     R -->|report.md| O["reports/report.md"]
     B -->|snapshots| S["reports/api/*.json"]
@@ -161,9 +161,8 @@ sequenceDiagram
 
     Inv->>Mem: load overview / facts / active_hypotheses
     Inv->>Plan: plan_hypothesis_query(hypothesis, time_range)
-    Plan->>LLM: Phase 1: query_intent_planner
-    Plan->>LLM: → sql_self_check (gate, may repeat intent)
-    Plan->>LLM: Phase 2: sql_composer (≤3 retries on validation fail)
+    Plan->>LLM: query_intent_planner (one SQL decision)
+    Note over Plan,LLM: host validates table/columns/SELECT-only/dry-run
     Plan-->>Inv: PlannedQuery
     Inv->>DB: SELECT
     DB-->>Inv: rows

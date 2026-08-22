@@ -178,12 +178,13 @@ FINDING_EXTRACTOR_SCHEMA: dict[str, Any] = {
     "title": "FindingExtractor",
     "type": "object",
     "additionalProperties": False,
+    "required": ["findings"],
     "properties": {
-        "new_hypotheses": {"type": "array", "items": {"type": "object"}},
-        "new_findings": {
+        "findings": {
             "type": "array",
             "items": {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "title": {"type": "string"},
                     "severity": {
@@ -199,13 +200,6 @@ FINDING_EXTRACTOR_SCHEMA: dict[str, Any] = {
                 "required": ["title", "severity", "evidence_ids", "claim_type"],
             },
         },
-        "finding_title": {"type": "string"},
-        "finding_summary": {"type": "string"},
-        "finding_severity": {
-            "type": "string",
-            "enum": ["low", "medium", "high", "critical"],
-        },
-        "suspicious_evidence_report": {"type": "string"},
     },
 }
 
@@ -358,47 +352,33 @@ SECTION_AGENT_CHECK_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
     "required": ["verdict"],
     "properties": {
-        "verdict": {
-            "enum": ["block_supported", "block_contradicted", "partial", "needs_more"]
+        "verdict": {"enum": ["block_supported", "block_needs_more", "block_contradicted"]},
+        "status": {
+            "enum": [
+                "answered",
+                "partial",
+                "not_found",
+                "not_searched",
+                "insufficient_evidence",
+                "wrong_query",
+            ]
         },
         "rationale": {"type": "string"},
         "missing_questions": {"type": "array", "items": {"type": "string"}},
-    },
-}
-
-# DEPRECATED (T-20): the second "schema-readiness" LLM call was removed.
-# Host validation (validate_select_sql / validate_select_sql_with_dryrun)
-# now owns table/column/SELECT-only/allow-list/row-limit/dry-run checks.
-# Retained only for backward-compatible import by prompt_investigation.py.
-SQL_SELF_CHECK_SCHEMA: dict[str, Any] = {
-    "title": "SQLSelfCheck",
-    "type": "object",
-    "additionalProperties": False,
-    "required": [
-        "ready_to_compose",
-        "target_table_exists",
-        "missing_columns",
-        "blockers",
-    ],
-    "properties": {
-        "ready_to_compose": {"type": "boolean"},
-        "target_table_exists": {"type": "boolean"},
-        "required_columns_present": {"type": "array", "items": {"type": "string"}},
-        "missing_columns": {"type": "array", "items": {"type": "string"}},
-        "join_keys": {
+        "fact_updates": {
             "type": "array",
             "items": {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
-                    "left_table": {"type": "string"},
-                    "left_col": {"type": "string"},
-                    "right_table": {"type": "string"},
-                    "right_col": {"type": "string"},
+                    "fact_type": {"type": "string"},
+                    "fact_key": {"type": "string"},
+                    "fact_value": {},
+                    "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                 },
+                "required": ["fact_type", "fact_key", "fact_value"],
             },
         },
-        "time_column": {"type": "string"},
-        "blockers": {"type": "string"},
     },
 }
 
