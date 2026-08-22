@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from typing import Any
@@ -12,15 +13,32 @@ import duckdb
 from forensia.core.case import Case
 from forensia.db.schema import CORE_SCHEMA_SQL, TRACE_SCHEMA_SQL, TRACE_TABLES
 
+_CASE_CONNECTION_LOCKS: dict[str, threading.RLock] = {}
+_CASE_CONNECTION_LOCKS_GUARD = threading.Lock()
+
+
+def _case_connection_lock(case: Case) -> threading.RLock:
+    key = str(case.database_path.resolve())
+    with _CASE_CONNECTION_LOCKS_GUARD:
+        return _CASE_CONNECTION_LOCKS.setdefault(key, threading.RLock())
+
 
 class CaseDB:
     def __init__(self, case: Case):
         """Connect to the case DuckDB database, attach trace DB, and initialize schema."""
         self.case = case
+        self._connection_lock = _case_connection_lock(case)
+        self._connection_lock.acquire()
+        self._closed = False
         self.case.db_dir.mkdir(parents=True, exist_ok=True)
-        self.conn = duckdb.connect(str(case.database_path))
-        self.conn.execute(f"ATTACH '{case.trace_database_path.as_posix()}' AS trace")
-        self.init_schema()
+        try:
+            self.conn = duckdb.connect(str(case.database_path))
+            self.conn.execute(f"ATTACH '{case.trace_database_path.as_posix()}' AS trace")
+            self.init_schema()
+        except Exception:
+            self._closed = True
+            self._connection_lock.release()
+            raise
 
     def init_schema(self) -> None:
         """Apply core and trace schema SQL, then run pending migrations."""
@@ -83,6 +101,10 @@ class CaseDB:
         self._apply_migration_once(
             "llm_provider_attempts_prompt_metadata",
             self._apply_llm_provider_attempts_prompt_metadata,
+        )
+        self._apply_migration_once(
+            "llm_provider_attempts_transcripts_v1",
+            self._apply_llm_provider_attempts_transcripts,
         )
 
     def _apply_migration_once(
@@ -152,6 +174,17 @@ class CaseDB:
         self.conn.execute(
             "ALTER TABLE trace.llm_provider_attempts "
             "ADD COLUMN IF NOT EXISTS prompt_metadata JSON"
+        )
+
+    def _apply_llm_provider_attempts_transcripts(self) -> None:
+        """Persist the exact API payload and raw provider response per attempt."""
+        self.conn.execute(
+            "ALTER TABLE trace.llm_provider_attempts "
+            "ADD COLUMN IF NOT EXISTS request_body JSON"
+        )
+        self.conn.execute(
+            "ALTER TABLE trace.llm_provider_attempts "
+            "ADD COLUMN IF NOT EXISTS response_body VARCHAR"
         )
 
     def _apply_hypotheses_verification_spec_v1(self) -> None:
@@ -798,7 +831,13 @@ class CaseDB:
             )
 
     def close(self) -> None:
-        self.conn.close()
+        if self._closed:
+            return
+        try:
+            self.conn.close()
+        finally:
+            self._closed = True
+            self._connection_lock.release()
 
     def __enter__(self) -> CaseDB:
         return self

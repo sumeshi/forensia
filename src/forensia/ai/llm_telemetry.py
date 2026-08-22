@@ -40,6 +40,9 @@ from forensia.db.database import CaseDB
 _ACTIVE_TELEMETRY: ContextVar[LLMTelemetry | None] = ContextVar(
     "active_llm_telemetry", default=None
 )
+_ACTIVE_SCOPE: ContextVar[dict[str, Any]] = ContextVar(
+    "active_llm_scope", default={}
+)
 
 
 def set_active_telemetry(
@@ -56,6 +59,16 @@ def reset_active_telemetry(token: Token[LLMTelemetry | None]) -> None:
 
 def get_active_telemetry() -> LLMTelemetry | None:
     return _ACTIVE_TELEMETRY.get()
+
+
+@contextmanager
+def telemetry_scope(**scope: Any) -> Iterator[None]:
+    """Attach durable domain ownership to logical calls in this execution scope."""
+    token = _ACTIVE_SCOPE.set({**_ACTIVE_SCOPE.get(), **scope})
+    try:
+        yield
+    finally:
+        _ACTIVE_SCOPE.reset(token)
 
 RecordStatus = Literal["open", "success", "failed", "discarded"]
 AttemptStatus = Literal[
@@ -130,6 +143,11 @@ class LLMTelemetry:
         request_fingerprint: str | None = None,
         session_id: str | None = None,
     ) -> str:
+        scope = _ACTIVE_SCOPE.get()
+        iteration = iteration if iteration is not None else scope.get("iteration")
+        hypothesis_id = hypothesis_id or scope.get("hypothesis_id")
+        section_id = section_id or scope.get("section_id")
+        action_id = action_id or scope.get("action_id")
         logical_call_id = f"lc-{uuid.uuid4().hex[:20]}"
         self.db.execute(
             """
@@ -188,6 +206,7 @@ class LLMTelemetry:
         policy_decision: str | None = None,
         request_changed_fields: dict[str, Any] | None = None,
         prompt_metadata: dict[str, Any] | None = None,
+        request_body: dict[str, Any] | None = None,
     ) -> str:
         attempt_id = f"pa-{uuid.uuid4().hex[:20]}"
         if parent_attempt_id is None:
@@ -203,9 +222,9 @@ class LLMTelemetry:
                 requested_output_limit, effective_output_limit, input_chars,
                 connect_timeout_ms, read_timeout_ms, logical_deadline_ms,
                 retry_class, retry_reason, policy_decision, request_changed_fields,
-                prompt_metadata,
+                prompt_metadata, request_body,
                 start_time, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 attempt_id,
@@ -233,11 +252,23 @@ class LLMTelemetry:
                 policy_decision,
                 _json_or_none(request_changed_fields),
                 _json_or_none(prompt_metadata),
+                _json_or_none(request_body),
                 now_utc(),
                 now_utc(),
             ),
         )
         return attempt_id
+
+    def record_attempt_response(
+        self, *, attempt_id: str | None, response_body: str
+    ) -> None:
+        """Store the raw provider body as soon as an HTTP response is received."""
+        if attempt_id is None:
+            return
+        self.db.execute(
+            "UPDATE llm_provider_attempts SET response_body = ? WHERE attempt_id = ?",
+            (response_body, attempt_id),
+        )
 
     def finalize_attempt(
         self,

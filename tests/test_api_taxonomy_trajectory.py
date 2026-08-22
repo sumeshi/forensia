@@ -253,6 +253,11 @@ class TestSessionTrajectory(unittest.TestCase):
                     requested_output_limit=4096,
                     input_chars=100,
                     phase="plan",
+                    request_body={"messages": [{"role": "user", "content": "why"}]},
+                )
+                telemetry.record_attempt_response(
+                    attempt_id=attempt,
+                    response_body='{"choices":[{"message":{"content":"because"}}]}',
                 )
                 telemetry.finalize_attempt(
                     attempt_id=attempt,
@@ -304,6 +309,11 @@ class TestSessionTrajectory(unittest.TestCase):
             self.assertEqual(attempts["items"][0]["duration_ms"], 1234)
             self.assertEqual(attempts["items"][0]["input_tokens"], 10)
             self.assertEqual(attempts["items"][0]["output_tokens"], 20)
+            self.assertEqual(
+                attempts["items"][0]["request_body"]["messages"][0]["content"],
+                "why",
+            )
+            self.assertIn("because", attempts["items"][0]["response_body"])
 
 
 if __name__ == "__main__":

@@ -641,6 +641,8 @@ CREATE TABLE IF NOT EXISTS trace.llm_provider_attempts (
     policy_decision VARCHAR,
     request_changed_fields JSON,
     prompt_metadata JSON,
+    request_body JSON,
+    response_body VARCHAR,
     created_at TIMESTAMP
 );
 

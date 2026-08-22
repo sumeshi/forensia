@@ -222,10 +222,13 @@ def _post_attempt(
             policy_decision=policy_decision,
             request_changed_fields=request_changed_fields,
             prompt_metadata=prompt_metadata,
+            request_body=body,
         )
     started = time.monotonic()
     try:
         response = client.post(url, json=body, headers=headers)
+        if telemetry:
+            telemetry.record_attempt_response(attempt_id=att_id, response_body=response.text)
     except httpx.TimeoutException:
         if att_id:
             telemetry.finalize_attempt(  # type: ignore[union-attr]
@@ -304,10 +307,13 @@ async def _a_post_attempt(
             policy_decision=policy_decision,
             request_changed_fields=request_changed_fields,
             prompt_metadata=prompt_metadata,
+            request_body=body,
         )
     started = time.monotonic()
     try:
         response = await client.post(url, json=body, headers=headers)
+        if telemetry:
+            telemetry.record_attempt_response(attempt_id=att_id, response_body=response.text)
     except httpx.TimeoutException:
         if att_id:
             telemetry.finalize_attempt(  # type: ignore[union-attr]

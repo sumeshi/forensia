@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from unittest.mock import patch
 
@@ -61,6 +63,34 @@ class PersistenceTests(unittest.TestCase):
     @staticmethod
     def _llm_base_url() -> str:
         return resolve_llm_config()[0] or "http://test-llm.invalid"
+
+    def test_case_connections_for_one_case_are_serialized(self) -> None:
+        """Parallel Web reads must not concurrently ATTACH the same trace DB."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            first_open = threading.Event()
+            release_first = threading.Event()
+            second_open = threading.Event()
+
+            def hold_first() -> None:
+                with CaseDB(case):
+                    first_open.set()
+                    release_first.wait(timeout=2)
+
+            def open_second() -> None:
+                first_open.wait(timeout=2)
+                with CaseDB(case):
+                    second_open.set()
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                first = pool.submit(hold_first)
+                second = pool.submit(open_second)
+                self.assertTrue(first_open.wait(timeout=2))
+                self.assertFalse(second_open.wait(timeout=0.1))
+                release_first.set()
+                first.result(timeout=2)
+                second.result(timeout=2)
+                self.assertTrue(second_open.is_set())
 
     def setUp(self) -> None:
         # llm_gateway is the single seam for LLM JSON calls; patch here.

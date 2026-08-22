@@ -27,6 +27,14 @@ def _row(row: dict[str, Any]) -> dict[str, Any]:
     return {key: normalize_value(value) for key, value in row.items()}
 
 
+def _attempt_row(row: dict[str, Any]) -> dict[str, Any]:
+    normalized = _row(row)
+    # Raw provider output must remain byte-for-byte readable text. Generic DB
+    # normalization would parse JSON-looking responses into objects.
+    normalized["response_body"] = row.get("response_body")
+    return normalized
+
+
 def list_logical_calls_page_dto(
     db: CaseDB,
     session_id: str,
@@ -131,7 +139,8 @@ def get_logical_call_attempts_page_dto(
                requested_output_limit, effective_output_limit, input_chars,
                output_chars, connect_timeout_ms, read_timeout_ms,
                logical_deadline_ms, retry_class, retry_reason, policy_decision,
-               request_changed_fields, prompt_metadata, start_time, end_time,
+               request_changed_fields, prompt_metadata, request_body, response_body,
+               start_time, end_time,
                duration_ms, http_status, error_type, error_code,
                error_body_summary, exception_class, finish_reason, parse_status,
                truncated, accepted, discarded_reason, response_fingerprint,
@@ -144,7 +153,7 @@ def get_logical_call_attempts_page_dto(
         """,
         [*params, limit, offset],
     )
-    items = [ProviderAttemptDTO.model_validate(_row(row)) for row in rows]
+    items = [ProviderAttemptDTO.model_validate(_attempt_row(row)) for row in rows]
     session_row = db.execute(
         "SELECT session_id FROM llm_provider_attempts WHERE logical_call_id = ? LIMIT 1",
         (logical_call_id,),

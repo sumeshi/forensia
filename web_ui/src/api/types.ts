@@ -265,6 +265,8 @@ export type ProviderAttemptDTO = {
   retry_ordinal: number;
   request_fingerprint?: string | null;
   prompt_metadata?: Record<string, unknown> | null;
+  request_body?: Record<string, unknown> | null;
+  response_body?: string | null;
   configured_output_limit?: number | null;
   reasoning_reserve_tokens?: number | null;
   known_context_limit?: number | null;

@@ -47,6 +47,7 @@ from forensia.ai.llm.llm_client import (
     LLMRequestTimeoutError,
     LLMServerUnavailableError,
 )
+from forensia.ai.llm_telemetry import telemetry_scope
 from forensia.ai.prompts.prompt_investigation import (
     build_gap_identifier_messages,
     build_hypothesis_drafter_messages,
@@ -657,15 +658,18 @@ async def _run_cycle_body(
                 break
             state.focus_hypothesis_id = hypothesis.id
             state.focus_depth = 0
-            ctx_refresh_caches(
-                ctx,
-                memory,
-                base_url,
-                model,
-                hypothesis=hypothesis,
-                db=db,
-                session_id=session_id,
-            )
+            with telemetry_scope(
+                hypothesis_id=hypothesis.id, iteration=plan_cycle
+            ):
+                ctx_refresh_caches(
+                    ctx,
+                    memory,
+                    base_url,
+                    model,
+                    hypothesis=hypothesis,
+                    db=db,
+                    session_id=session_id,
+                )
             focus_sections = _guess_related_sections(hypothesis.description)
             _log("HYPOTHESIS", f"{hypothesis.id} — {hypothesis.description}")
             _emit(
@@ -674,25 +678,28 @@ async def _run_cycle_body(
                 iteration=plan_cycle,
                 report_kw={"focus_sections": focus_sections},
             )
-            progress, state, sections = await _investigate_one_hypothesis(
-                hypothesis=hypothesis,
-                state=state,
-                ctx=ctx,
-                memory=memory,
-                db=db,
-                base_url=base_url,
-                model=model,
-                plan_cycle=plan_cycle,
-                llm_logger=llm_logger,
-                session_id=session_id,
-                max_queries_per_hypothesis=max_queries_per_hypothesis,
-                case=case,
-                query_limit=max_queries_per_hypothesis,
-                emit_fn=_emit,
-                llm_status_fn=llm_status,
-                progress_callback=progress_callback,
-                case_profile_str=case_profile_str,
-            )
+            with telemetry_scope(
+                hypothesis_id=hypothesis.id, iteration=plan_cycle
+            ):
+                progress, state, sections = await _investigate_one_hypothesis(
+                    hypothesis=hypothesis,
+                    state=state,
+                    ctx=ctx,
+                    memory=memory,
+                    db=db,
+                    base_url=base_url,
+                    model=model,
+                    plan_cycle=plan_cycle,
+                    llm_logger=llm_logger,
+                    session_id=session_id,
+                    max_queries_per_hypothesis=max_queries_per_hypothesis,
+                    case=case,
+                    query_limit=max_queries_per_hypothesis,
+                    emit_fn=_emit,
+                    llm_status_fn=llm_status,
+                    progress_callback=progress_callback,
+                    case_profile_str=case_profile_str,
+                )
             if progress:
                 cycle_progress = True
 

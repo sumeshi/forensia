@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import patch
 
 import httpx
@@ -10,6 +11,7 @@ from forensia.ai.llm import llm_client
 from forensia.ai.llm_telemetry import (
     LLMTelemetry,
     set_active_telemetry,
+    telemetry_scope,
 )
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
@@ -36,6 +38,18 @@ def test_deterministic_op_is_not_counted_as_llm_attempt(telemetry) -> None:
         "SELECT op_type, target FROM llm_deterministic_ops"
     ).fetchall()
     assert rows[0] == ("render", "appendix-24")
+
+
+def test_logical_call_inherits_hypothesis_scope(telemetry) -> None:
+    with telemetry_scope(hypothesis_id="H-CHAIN", iteration=3):
+        logical_call_id = telemetry.begin_logical_call(phase="hypothesis_plan")
+
+    row = telemetry.db.execute(
+        "SELECT hypothesis_id, iteration FROM llm_logical_calls "
+        "WHERE logical_call_id = ?",
+        (logical_call_id,),
+    ).fetchone()
+    assert row == ("H-CHAIN", 3)
 
 
 def test_client_creates_attempt_receipts_for_retry_then_success(
@@ -93,11 +107,17 @@ def test_client_creates_attempt_receipts_for_retry_then_success(
     set_active_telemetry(None)
 
     rows = db.execute(
-        "SELECT status, http_status, retry_ordinal FROM llm_provider_attempts ORDER BY retry_ordinal"
+        "SELECT status, http_status, retry_ordinal, request_body, response_body "
+        "FROM llm_provider_attempts ORDER BY retry_ordinal"
     ).fetchall()
     # one failed 500 attempt + one success attempt
     assert rows[0][0] == "provider_error" and rows[0][1] == 500
     assert rows[1][0] == "success" and rows[1][1] == 200
+    assert json.loads(rows[0][3])["messages"] == [
+        {"role": "user", "content": "go"}
+    ]
+    assert rows[0][4] == "boom"
+    assert json.loads(rows[1][4])["choices"][0]["message"]["content"] == '{"ok": true}'
     assert tel.session_aggregates()["logical_call_count"] == 1
 
 
@@ -158,7 +178,8 @@ def _assert_truncation_receipt(db: CaseDB, session_id: str) -> None:
     row = db.execute(
         """
         SELECT status, error_type, parse_status, finish_reason, truncated,
-               accepted, discarded_reason, error_body_summary, response_fingerprint
+               accepted, discarded_reason, error_body_summary, response_fingerprint,
+               request_body, response_body
         FROM llm_provider_attempts WHERE session_id = ?
         """,
         (session_id,),
@@ -174,6 +195,8 @@ def _assert_truncation_receipt(db: CaseDB, session_id: str) -> None:
     )
     assert "content_head='{" in row[7]
     assert len(row[8]) == 24
+    assert json.loads(row[9])["messages"] == [{"role": "user", "content": "go"}]
+    assert json.loads(row[10])["choices"][0]["message"]["content"] == '{"ok":'
 
 
 def test_unusable_truncation_closes_owned_call_failed_and_marks_attempt(

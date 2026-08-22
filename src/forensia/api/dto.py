@@ -209,6 +209,8 @@ class ProviderAttemptDTO(DTOModel):
     policy_decision: str | None = None
     request_changed_fields: dict[str, object] | None = None
     prompt_metadata: dict[str, object] | None = None
+    request_body: dict[str, object] | None = None
+    response_body: str | None = None
     start_time: str | None = None
     end_time: str | None = None
     duration_ms: int | None = None
