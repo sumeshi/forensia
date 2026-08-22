@@ -697,7 +697,6 @@ async def _run_cycle_body(
                     query_limit=max_queries_per_hypothesis,
                     emit_fn=_emit,
                     llm_status_fn=llm_status,
-                    progress_callback=progress_callback,
                     case_profile_str=case_profile_str,
                 )
             if progress:

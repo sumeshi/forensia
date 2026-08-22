@@ -88,6 +88,73 @@ class InvestigateWiringTests(unittest.TestCase):
                     ),
                 )
 
+    def test_hypothesis_cycle_matches_runner_signature(self) -> None:
+        """The real cycle caller must use the deep-dive runner's exact API."""
+        from types import SimpleNamespace
+
+        from forensia.ai.audit import LLMCallLogger
+        from forensia.ai.investigation import investigation_cycle
+        from forensia.ai.investigation.investigation_session import Ctx
+        from forensia.core.memory import MemoryManager
+        from forensia.core.session import Hypothesis, SessionState
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            hypothesis = Hypothesis(
+                id="H-WIRING", description="exercise deep-dive wiring", status="active"
+            )
+            state = SessionState(
+                session_id="S-WIRING", active_hypotheses=[hypothesis]
+            )
+            with CaseDB(case) as db:
+                runner = mock.create_autospec(
+                    investigation_cycle._investigate_one_hypothesis,
+                    return_value=(False, state, {}),
+                )
+                with (
+                    mock.patch.object(
+                        investigation_cycle,
+                        "_call_with_outage_recovery",
+                        new=mock.AsyncMock(return_value=False),
+                    ),
+                    mock.patch.object(
+                        investigation_cycle,
+                        "select_focus_hypotheses_v2",
+                        return_value=[
+                            SimpleNamespace(
+                                eligible=True, hypothesis_id=hypothesis.id
+                            )
+                        ],
+                    ),
+                    mock.patch.object(
+                        investigation_cycle, "ctx_refresh_caches", return_value=None
+                    ),
+                    mock.patch.object(
+                        investigation_cycle,
+                        "_investigate_one_hypothesis",
+                        new=runner,
+                    ),
+                ):
+                    asyncio.run(
+                        investigation_cycle._run_cycle_body(
+                            state=state,
+                            ctx=Ctx(),
+                            db=db,
+                            case=case,
+                            session_id="S-WIRING",
+                            base_url="http://127.0.0.1:9",
+                            model="none",
+                            memory=MemoryManager(case),
+                            llm_logger=LLMCallLogger(case, "S-WIRING"),
+                            progress_callback=None,
+                            max_queries_per_hypothesis=1,
+                            plan_cycle=1,
+                            max_iter=1,
+                            report_only=False,
+                        )
+                    )
+                runner.assert_awaited_once()
+
     def test_stopped_cycle_persists_state_before_final_refresh(self) -> None:
         from forensia.ai.investigation import investigator as investigator_module
 
