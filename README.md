@@ -59,7 +59,8 @@ uv sync --dev
 
 ### LLM backend configuration
 
-Start from the tested Ornith-1.5-9B profile, then edit the local endpoint if needed:
+Forensia accepts any OpenAI-compatible model and does not branch on model IDs. To start
+quickly, copy the tested example profile, then edit its model, endpoint, and capacity values:
 
 ```bash
 cp .env.example .env
