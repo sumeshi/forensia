@@ -537,6 +537,10 @@ def _claim_spec_conformance_error(candidate: Hypothesis) -> str | None:
             hint = load_event_id_hints().get(event_id) or {}
             if not contexts and (hint.get("channels") or hint.get("providers")):
                 return f"event-context-missing:{event_id}"
+            # Unconstrained catalog IDs retain their legacy numeric semantics;
+            # an event_contexts list need not enumerate every co-observed ID.
+            if not contexts:
+                continue
             if not any(
                 _event_context_eligible(
                     event_id,

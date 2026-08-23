@@ -155,6 +155,27 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
             admit_new_hypothesis(invalid, state),
         )
 
+    def test_context_list_may_omit_unconstrained_co_observed_ids(self) -> None:
+        candidate = Hypothesis(
+            id="draft-mixed-context",
+            description="RDP followed by PowerShell script block execution",
+            required_entities=["computer"],
+            confirm_when={
+                "co_observed_event_ids": [4624, 4104],
+                "event_contexts": [
+                    {
+                        "event_id": 4104,
+                        "channel": "Microsoft-Windows-PowerShell/Operational",
+                        "provider": "Microsoft-Windows-PowerShell",
+                    }
+                ],
+            },
+        )
+        self.assertEqual(
+            (True, "accepted"),
+            admit_new_hypothesis(candidate, SessionState(session_id="S-mixed")),
+        )
+
     def test_event_context_is_derived_from_authoritative_evtx_rows(self) -> None:
         candidate = Hypothesis(
             id="draft-derived-context",
