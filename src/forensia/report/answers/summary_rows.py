@@ -23,6 +23,7 @@ from forensia.report.answers.event_semantics import LOG_CLEAR_EVENT_SQL
 from forensia.report.evidence_refs import (
     _sql_like_any,
 )
+from forensia.report.metrics import query_case_metrics
 from forensia.report.render.markdown import (
     _build_host_note,
 )
@@ -35,45 +36,36 @@ logger = logging.getLogger(__name__)
 
 
 def _count_table(db: CaseDB) -> list[dict[str, Any]]:
-    rows = fetch_records(
-        db,
-        """
-        SELECT
-          (SELECT COUNT(*) FROM evtx_events) AS evtx_events,
-          (SELECT COUNT(*) FROM mft_entries) AS mft_entries,
-          (SELECT COUNT(*) FROM prefetch_executions) AS prefetch_executions,
-          (SELECT COUNT(DISTINCT UPPER(TRIM(computer))) FROM evtx_events WHERE COALESCE(computer, '') != '') AS hosts,
-          (SELECT COUNT(DISTINCT channel) FROM evtx_events WHERE COALESCE(channel, '') != '') AS channels
-        """,
-    )
-    if not rows:
-        return []
-    row = rows[0]
+    metrics = query_case_metrics(db)
+    artifact_counts = metrics["artifact_row_counts"]
+    channels = db.execute(
+        "SELECT COUNT(DISTINCT channel) FROM evtx_events WHERE COALESCE(channel, '') != ''"
+    ).fetchone()
     time_range = _query_evtx_time_range(db)
     return [
         {
             "metric": "EVTX events",
-            "value": row.get("evtx_events"),
+            "value": artifact_counts["evtx"],
             "scope": f"{time_range.get('first_event', 'unknown')} to {time_range.get('last_event', 'unknown')}",
         },
         {
             "metric": "MFT entries",
-            "value": row.get("mft_entries"),
+            "value": artifact_counts["mft"],
             "scope": "Filesystem metadata",
         },
         {
             "metric": "Prefetch executions",
-            "value": row.get("prefetch_executions"),
+            "value": artifact_counts["prefetch"],
             "scope": "Application execution artifacts",
         },
         {
             "metric": "Hosts",
-            "value": row.get("hosts"),
+            "value": metrics["normalized_host_count"],
             "scope": "Distinct EVTX computer names",
         },
         {
             "metric": "EVTX channels",
-            "value": row.get("channels"),
+            "value": int(channels[0] or 0) if channels else 0,
             "scope": "Distinct channels",
         },
     ]

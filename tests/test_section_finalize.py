@@ -431,6 +431,37 @@ class SectionFinalizeTests(unittest.TestCase):
                     msg=f"Expected strength gap in {result['gaps']}",
                 )
 
+    def test_finalize_section_rejects_exclusive_evtx_scope_claim(self) -> None:
+        """The artifact-scope guard applies across supported report languages."""
+        cases = (
+            ("english", "All artifacts are EVTX.", "mft_entries", "mft-1"),
+            ("japanese", "アーティファクトはすべてEVTX形式です。", "prefetch_executions", "pf-1"),
+        )
+        for language, body, artifact_table, artifact_id in cases:
+            with self.subTest(language=language):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    case = Case.init(tmpdir)
+                    with CaseDB(case) as db:
+                        db.execute(
+                            "INSERT INTO evtx_events (evidence_id, event_id) VALUES ('ev-1', 4648)"
+                        )
+                        db.execute(
+                            f"INSERT INTO {artifact_table} (evidence_id) VALUES (?)",
+                            (artifact_id,),
+                        )
+                        result = finalize_section(
+                            db=db,
+                            section_key="1_overview",
+                            title="Scope",
+                            body=f"## Scope\n\n{body}",
+                            evidence_results=[],
+                        )
+
+                self.assertTrue(
+                    any("non-EVTX" in str(gap) for gap in result["gaps"]),
+                    msg=f"Expected artifact scope gap in {result['gaps']}",
+                )
+
     def test_execute_event_keyword_fallback_search_uses_event_id_keywords(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)

@@ -21,6 +21,62 @@ from forensia.ai.checking.check_normalize import (
 from forensia.ai.prompts.prompt_investigation import (
     _load_benign_context_rules,
 )
+from forensia.knowledge.catalog import (
+    event_context_eligible,
+    event_context_from_row,
+    load_event_id_hints,
+)
+
+
+def _context_qualified_rows(
+    confirm_when: dict[str, Any], rows: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Exclude rows whose provider/channel cannot support a constrained ID."""
+
+    raw_ids = confirm_when.get("co_observed_event_ids") or []
+    constrained: set[int] = set()
+    for value in raw_ids:
+        try:
+            event_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        hint = load_event_id_hints().get(event_id) or {}
+        if hint.get("channels") or hint.get("providers"):
+            constrained.add(event_id)
+    if not constrained:
+        return rows
+    declared: dict[int, set[tuple[str | None, str | None]]] = {}
+    for item in confirm_when.get("event_contexts") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            event_id = int(item.get("event_id"))
+        except (TypeError, ValueError):
+            continue
+        declared.setdefault(event_id, set()).add(
+            (
+                str(item.get("channel") or "").strip() or None,
+                str(item.get("provider") or "").strip() or None,
+            )
+        )
+    qualified: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            event_id = int(row.get("event_id"))
+        except (TypeError, ValueError):
+            qualified.append(row)
+            continue
+        if event_id not in constrained:
+            qualified.append(row)
+            continue
+        channel, provider = event_context_from_row(row)
+        if not event_context_eligible(event_id, channel=channel, provider=provider):
+            continue
+        allowed = declared.get(event_id)
+        if allowed and (channel, provider) not in allowed:
+            continue
+        qualified.append(row)
+    return qualified
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +174,7 @@ def _co_observation_satisfied(
     `co_observed_event_ids`.
     Returns (satisfied, reason_string).
     """
+    rows = _context_qualified_rows(confirm_when, rows)
     co_ids = confirm_when.get("co_observed_event_ids") or []
     required_ids: set[int] = set()
     for eid in co_ids:
@@ -305,11 +362,37 @@ def verify_verdict_consistency(
     claimed_event_ids.update(rationale_eids)
 
     observed_event_ids: set[int] = set()
+    sample_rows = result_summary.get("sample_rows") or []
+    authoritative_ids: set[int] = set()
     for eid in result_summary.get("event_id_set") or []:
         try:
-            observed_event_ids.add(int(eid))
+            authoritative_ids.add(int(eid))
         except TypeError, ValueError:
             pass
+    source_event_ids = authoritative_ids
+    if hypothesis and sample_rows and hasattr(hypothesis, "confirm_when"):
+        confirm_when = hypothesis.confirm_when or {}
+        constrained_ids = {
+            int(value)
+            for value in confirm_when.get("co_observed_event_ids") or []
+            if str(value).strip().isdigit()
+            and (
+                load_event_id_hints().get(int(value), {}).get("channels")
+                or load_event_id_hints().get(int(value), {}).get("providers")
+            )
+        }
+        if constrained_ids:
+            qualified_rows = _context_qualified_rows(confirm_when, sample_rows)
+            qualified_constrained = {
+                int(row.get("event_id"))
+                for row in qualified_rows
+                if str(row.get("event_id") or "").strip().isdigit()
+                and int(row.get("event_id")) in constrained_ids
+            }
+            source_event_ids = (
+                (authoritative_ids - constrained_ids) | qualified_constrained
+            )
+    observed_event_ids.update(source_event_ids)
 
     missing_ids = claimed_event_ids - observed_event_ids
     if missing_ids:

@@ -10,6 +10,7 @@ from forensia.ai.checking.settlement import SettlementInput, settle_hypothesis
 from forensia.ai.hypotheses.hypothesis_manager import (
     admit_new_hypothesis,
     merge_active_hypotheses,
+    qualify_event_contexts,
 )
 from forensia.ai.hypotheses.hypothesis_model import (
     _description_has_material_unknown,
@@ -191,6 +192,7 @@ def _seed_rule_hypotheses(
                     else None
                 ),
             )
+            qualify_event_contexts(hyp, db)
             admission_state = state.model_copy(deep=True)
             admission_state.active_hypotheses.extend(seeded)
             ok, reason = admit_new_hypothesis(hyp, admission_state)

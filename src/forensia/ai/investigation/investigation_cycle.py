@@ -18,6 +18,7 @@ from forensia.ai.hypotheses.hypothesis_manager import (
     _guess_related_sections,
     admit_new_hypothesis,
     merge_active_hypotheses,
+    qualify_event_contexts,
 )
 from forensia.ai.hypotheses.hypothesis_model import (
     _filter_valid_entities,
@@ -399,6 +400,7 @@ def _admit_broad_plan_hypotheses(
 ) -> None:
     admitted = []
     for hyp in drafted_hypotheses:
+        qualify_event_contexts(hyp, ctx.db)
         ok, reason = admit_new_hypothesis(hyp, ctx.state)
         if ok:
             admitted.append(hyp)

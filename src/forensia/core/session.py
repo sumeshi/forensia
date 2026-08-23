@@ -149,4 +149,8 @@ class SessionState(BaseModel):
     findings_snapshot: list[dict[str, Any]] = Field(default_factory=list)
     history: list[HistoryEntry] = Field(default_factory=list)
     last_execution_error: dict[str, Any] | None = None
+    # Host-side planner validation feedback is consumed by the next
+    # query-intent call.  Keep it separate from SQL execution failures so the
+    # planner never mistakes a materialization error for a failed query.
+    last_planner_error: dict[str, Any] | None = None
     proposed_keypoints: dict[str, int] = Field(default_factory=dict)

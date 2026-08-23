@@ -127,7 +127,9 @@ DEFAULT_AUDITED_EVENT_IDS: list[int] = [
     4722,
     4723,
     4724,
+    4725,
     4726,
+    4727,
     4728,
     4729,
     4730,
@@ -287,6 +289,23 @@ def hypothesis_drafter_schema() -> dict[str, Any]:
                             "co_observed_event_ids": {
                                 "type": "array",
                                 "items": {"enum": DEFAULT_AUDITED_EVENT_IDS},
+                            },
+                            "event_contexts": {
+                                "type": "array",
+                                "description": (
+                                    "Optional catalog-qualified context for each event ID; "
+                                    "required when channel/provider changes event semantics."
+                                ),
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "required": ["event_id", "channel", "provider"],
+                                    "properties": {
+                                        "event_id": {"type": "integer"},
+                                        "channel": {"type": "string"},
+                                        "provider": {"type": "string"},
+                                    },
+                                },
                             },
                             "same_host": {"type": "boolean"},
                             "within_minutes": {"type": "integer"},

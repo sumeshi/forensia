@@ -139,6 +139,8 @@ events:
       - user logoff
   4648:
     title: Explicit credential logon
+    channels: ["Security"]
+    providers: ["Microsoft-Windows-Security-Auditing"]
     required_fields:
       - subject_user
       - target_user
@@ -276,6 +278,7 @@ events:
       - user account management
   4722:
     title: Account enabled
+    claim_terms: ["enabled", "reactivated"]
     required_fields:
       - subject_user
       - target_user
@@ -285,6 +288,8 @@ events:
     disallowed_without_extra:
       - attacker re-enabling backdoor
       - privilege escalation
+    channels: ["Security"]
+    providers: ["Microsoft-Windows-Security-Auditing"]
     keywords_for_string_search:
       - account enabled
       - user enabled
@@ -316,8 +321,27 @@ events:
     keywords_for_string_search:
       - password reset
       - forced password change
+  4725:
+    title: Account disabled
+    claim_terms: ["disabled", "deactivated"]
+    required_fields:
+      - subject_user
+      - target_user
+    channels: ["Security"]
+    providers: ["Microsoft-Windows-Security-Auditing"]
+    allowed_claims:
+      - account was disabled
+      - account was deactivated
+    disallowed_without_extra:
+      - attacker disabling an account
+      - defense evasion
+      - privilege escalation
+    keywords_for_string_search:
+      - account disabled
+      - user disabled
   4726:
     title: Account deleted
+    claim_terms: ["deleted", "removed"]
     required_fields:
       - subject_user
       - target_user
@@ -327,9 +351,29 @@ events:
     disallowed_without_extra:
       - attacker removing traces
       - privilege escalation (need group context)
+    channels: ["Security"]
+    providers: ["Microsoft-Windows-Security-Auditing"]
     keywords_for_string_search:
       - account deleted
       - user removed
+  4727:
+    title: Global security-enabled group created
+    claim_terms: ["global", "security-enabled"]
+    required_fields:
+      - subject_user
+      - target_group
+    channels: ["Security"]
+    providers: ["Microsoft-Windows-Security-Auditing"]
+    allowed_claims:
+      - global security-enabled group was created
+      - global security group creation was observed
+    disallowed_without_extra:
+      - attacker-created group
+      - privilege escalation
+      - persistence
+    keywords_for_string_search:
+      - global security group created
+      - group creation
   4732:
     title: Member added to local group
     required_fields:
@@ -532,6 +576,8 @@ events:
     required_fields:
       - script_block
       - computer
+    channels: ["Microsoft-Windows-PowerShell/Operational"]
+    providers: ["Microsoft-Windows-PowerShell"]
     allowed_claims:
       - PowerShell script block was executed
       - PowerShell code execution observed
@@ -654,6 +700,7 @@ events:
     disallowed_without_extra:
       - legitimate software install
       - driver install
+      - persistence (service installation alone does not establish persistence)
     keywords_for_string_search:
       - service install
       - service created

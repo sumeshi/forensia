@@ -31,7 +31,7 @@ families:
         channel: Security
         negative_policy: "0 rows is weak negative"
       persistence:
-        event_ids: [4697, 4698, 7045]
+        event_ids: [4697, 4698]
         channel: Security
         negative_policy: "0 rows is weak negative"
       lateral_movement:

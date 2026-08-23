@@ -759,6 +759,11 @@ def slim_report_brief_for_section(report_brief: dict, section_key: str) -> dict:
         "time_range": report_brief.get("time_range"),
         "source_timezone": report_brief.get("source_timezone"),
         "investigation_objective": report_brief.get("investigation_objective"),
+        "case_metrics": report_brief.get("case_metrics"),
+        "publication_state": report_brief.get("publication_state"),
+        "publication_status": report_brief.get("publication_status"),
+        "evidence_confidence": report_brief.get("evidence_confidence"),
+        "claim_scope": report_brief.get("claim_scope"),
     }
     finding_fields = (
         "finding_id",

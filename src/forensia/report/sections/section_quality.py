@@ -11,6 +11,7 @@ from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.db.evidence_lookup import find_missing_evidence_ids
 from forensia.db.query import fetch_records
+from forensia.knowledge.catalog import event_context_eligible, event_context_from_row
 from forensia.knowledge.resources import schema_dir
 from forensia.report.answers.answer_registry import (
     build_structured_answer,
@@ -23,6 +24,7 @@ from forensia.report.answers.answer_store import (
 from forensia.report.evidence_refs import (
     EVIDENCE_ID_PATTERN,
 )
+from forensia.report.metrics import query_case_metrics
 from forensia.report.render.markdown import (
     _strip_hidden_report_columns_from_markdown_tables,
 )
@@ -140,12 +142,38 @@ def _collect_event_ids_from_results(
     return event_ids
 
 
+def _collect_event_contexts_from_results(
+    evidence_results: list[dict[str, Any]] | None,
+) -> dict[int, list[tuple[str | None, str | None]]]:
+    """Collect event contexts; event IDs alone are not semantic evidence."""
+
+    contexts: dict[int, list[tuple[str | None, str | None]]] = {}
+    for result in evidence_results or []:
+        rows = (
+            (result.get("sample_rows") or [])
+            + (result.get("head_rows") or [])
+            + (result.get("tail_rows") or [])
+        )
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                event_id = int(row.get("event_id"))
+            except (TypeError, ValueError):
+                continue
+            context = event_context_from_row(row)
+            if context not in contexts.setdefault(event_id, []):
+                contexts[event_id].append(context)
+    return contexts
+
+
 def _event_claim_gaps(
     body: str, evidence_results: list[dict[str, Any]] | None
 ) -> list[str]:
     """Check if the body uses disallowed wording for event IDs that require extra support."""
     hints = _load_event_id_hints()
     event_ids = _collect_event_ids_from_results(evidence_results)
+    contexts = _collect_event_contexts_from_results(evidence_results)
     if not hints or not event_ids:
         return []
     lowered = body.casefold()
@@ -154,8 +182,35 @@ def _event_claim_gaps(
         hint = hints.get(event_id)
         if not hint:
             continue
+        # If a row carries channel/provider metadata and that context does not
+        # match the catalog, do not lend the row another provider's meaning.
+        # Emit a quality gap when the draft actually uses that semantic label.
+        row_contexts = contexts.get(event_id) or []
+        eligible_contexts = [
+            (channel, provider)
+            for channel, provider in row_contexts
+            if event_context_eligible(event_id, channel=channel, provider=provider)
+        ]
+        if row_contexts and not eligible_contexts:
+            semantic_terms = set(
+                re.findall(
+                    r"[a-z0-9][a-z0-9_-]{4,}",
+                    " ".join(
+                        [str(hint.get("title") or "")]
+                        + [str(item) for item in hint.get("allowed_claims") or []]
+                    ).casefold(),
+                )
+            )
+            if semantic_terms and any(term in lowered for term in semantic_terms):
+                label = (
+                    f"Event ID {event_id} claim uses a channel/provider context "
+                    "that is not eligible under the event catalog."
+                )
+                if label not in gaps:
+                    gaps.append(label)
+            continue
         disallowed = [
-            str(item).casefold()
+            str(item).casefold().split(" (", 1)[0].strip()
             for item in hint.get("disallowed_without_extra") or []
             if str(item).strip()
         ]
@@ -164,6 +219,53 @@ def _event_claim_gaps(
             if label not in gaps:
                 gaps.append(label)
     return gaps
+
+
+_EXCLUSIVE_EVTX_SCOPE_PATTERNS = (
+    re.compile(
+        r"\b(?:all|every|entire|only|solely|exclusively)\s+(?:the\s+)?"
+        r"(?:artifacts?|evidence|sources?|records?|data)\b.{0,100}\b"
+        r"(?:evtx|event\s+logs?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:evtx|event\s+logs?)\b.{0,100}\b(?:only|solely|exclusively)\b"
+        r".{0,40}\b(?:artifacts?|evidence|sources?|records?|data)\b",
+        re.IGNORECASE,
+    ),
+    # Keep the same structural rule for Japanese output: this is a language
+    # variant of an exclusive artifact/evidence scope claim, not a case term.
+    re.compile(
+        r"(?:アーティファクト|証拠|ソース|記録|データ)[^。\n]{0,30}"
+        r"(?:すべて|全て|のみ|だけ)[^。\n]{0,30}(?:EVTX|イベントログ)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:EVTX|イベントログ)[^。\n]{0,30}(?:のみ|だけ)[^。\n]{0,30}"
+        r"(?:アーティファクト|証拠|ソース|記録|データ)",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _artifact_scope_gaps(db: CaseDB, body: str) -> list[str]:
+    """Reject exclusive-EVTX scope claims when other normalized artifacts exist."""
+    if not any(pattern.search(body) for pattern in _EXCLUSIVE_EVTX_SCOPE_PATTERNS):
+        return []
+    metrics = query_case_metrics(db)
+    counts = metrics.get("artifact_row_counts") or {}
+    non_evtx = {
+        family: int(count or 0)
+        for family, count in counts.items()
+        if family != "evtx" and int(count or 0) > 0
+    }
+    if not non_evtx:
+        return []
+    families = ", ".join(sorted(non_evtx))
+    return [
+        "Scope claim says all artifacts/evidence are EVTX, but normalized non-EVTX "
+        f"artifact families are present ({families}); describe artifact coverage separately."
+    ]
 
 
 def _parse_section_run_payload(payload: Any) -> dict[str, Any]:

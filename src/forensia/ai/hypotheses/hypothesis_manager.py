@@ -36,7 +36,11 @@ from forensia.core.log import log as _log
 from forensia.core.session import Hypothesis, SessionState
 from forensia.core.textutil import normalize_text as _normalize_text
 from forensia.db.database import CaseDB
-from forensia.knowledge.catalog import load_event_id_hints
+from forensia.knowledge.catalog import (
+    event_context_eligible,
+    event_context_from_row,
+    load_event_id_hints,
+)
 from forensia.knowledge.rules.loader import load_rule_by_id
 from forensia.report.sections.section_taxonomy import (
     guess_related_sections as _guess_related_sections,
@@ -506,6 +510,52 @@ def _claim_spec_conformance_error(candidate: Hypothesis) -> str | None:
     if not isinstance(event_ids, list) or not event_ids:
         return "non-testable-verification-spec"
 
+    # A bare event ID is not enough to establish semantics for providers that
+    # reuse IDs.  When the planner supplies event_contexts, validate each
+    # declaration against the catalog before checking claim wording.  This is
+    # especially important for 4104: Application/Winlogon 4104 is not a
+    # PowerShell script-block event.
+    event_contexts = support.get("event_contexts") or []
+    if event_contexts:
+        if not isinstance(event_contexts, list):
+            return "invalid-event-contexts"
+        context_by_id: dict[int, list[dict[str, Any]]] = {}
+        for context in event_contexts:
+            if not isinstance(context, dict):
+                return "invalid-event-context"
+            try:
+                context_event_id = int(context.get("event_id"))
+            except (TypeError, ValueError):
+                return "invalid-event-context-event-id"
+            context_by_id.setdefault(context_event_id, []).append(context)
+        for raw_event_id in event_ids:
+            try:
+                event_id = int(raw_event_id)
+            except (TypeError, ValueError):
+                continue
+            contexts = context_by_id.get(event_id)
+            hint = load_event_id_hints().get(event_id) or {}
+            if not contexts and (hint.get("channels") or hint.get("providers")):
+                return f"event-context-missing:{event_id}"
+            if not any(
+                _event_context_eligible(
+                    event_id,
+                    channel=context.get("channel"),
+                    provider=context.get("provider"),
+                )
+                for context in contexts
+            ):
+                return f"event-context-mismatch:{event_id}"
+    else:
+        for raw_event_id in event_ids:
+            try:
+                event_id = int(raw_event_id)
+            except (TypeError, ValueError):
+                continue
+            hint = load_event_id_hints().get(event_id) or {}
+            if hint.get("channels") or hint.get("providers"):
+                return f"event-context-missing:{event_id}"
+
     # Event meaning is declarative. Do not allow a candidate to reinterpret a
     # known event (for example 4672 as process creation or 4624 as password
     # reset) merely by putting that event ID in its VerificationSpec.
@@ -516,6 +566,30 @@ def _claim_spec_conformance_error(candidate: Hypothesis) -> str | None:
         except (TypeError, ValueError):
             continue
         hint = load_event_id_hints().get(event_id) or {}
+        claim_terms = [
+            str(term).strip().casefold()
+            for term in hint.get("claim_terms") or []
+            if str(term).strip()
+        ]
+        # Rulepack event IDs are semantic authorities, not just a numeric
+        # vocabulary.  If a description explicitly names a lifecycle action,
+        # require the action terms declared for that event.  This rejects, for
+        # example, "user deleted" attached to 4722 and "user enabled" attached
+        # to 4727 while allowing deliberately non-specific investigation text.
+        if claim_terms:
+            all_claim_terms = {
+                str(term).strip().casefold()
+                for other_hint in load_event_id_hints().values()
+                for term in other_hint.get("claim_terms") or []
+                if str(term).strip()
+            }
+            explicit_actions = {
+                term for term in all_claim_terms if term in description_lower
+            }
+            if explicit_actions and not any(
+                term in description_lower for term in claim_terms
+            ):
+                return f"event-semantic-mismatch:{event_id}"
         for disallowed in hint.get("disallowed_without_extra") or []:
             phrase = str(disallowed or "").strip().casefold()
             # Parenthesized rationale is metadata, not part of the claim
@@ -549,6 +623,85 @@ def _claim_spec_conformance_error(candidate: Hypothesis) -> str | None:
         if not isinstance(min_count, int) or isinstance(min_count, bool) or min_count < 2:
             return "claim-spec-min-count-missing"
     return None
+
+
+def _event_context_eligible(
+    event_id: int,
+    *,
+    channel: Any = None,
+    provider: Any = None,
+) -> bool:
+    """Small local seam so admission remains easy to test and catalog-owned."""
+
+    from forensia.knowledge.catalog import event_context_eligible
+
+    return event_context_eligible(event_id, channel=channel, provider=provider)
+
+
+def qualify_event_contexts(candidate: Hypothesis, db: CaseDB) -> Hypothesis:
+    """Bind constrained event IDs to eligible contexts observed in this case.
+
+    Rule-seeded and LLM-drafted hypotheses historically carried only numeric
+    IDs.  Derive their channel/provider signature from the authoritative EVTX
+    rows before admission so valid PowerShell 4104 evidence remains testable,
+    while an Application/Winlogon 4104 cannot inherit PowerShell semantics.
+    """
+
+    support = dict(candidate.confirm_when or {})
+    event_ids = support.get("co_observed_event_ids")
+    if not isinstance(event_ids, list):
+        return candidate
+    declared = support.get("event_contexts")
+    declared_by_id: dict[int, list[dict[str, Any]]] = {}
+    for item in declared or []:
+        if isinstance(item, dict):
+            try:
+                declared_by_id.setdefault(int(item.get("event_id")), []).append(item)
+            except (TypeError, ValueError):
+                continue
+    contexts: list[dict[str, Any]] = [
+        item for values in declared_by_id.values() for item in values
+    ]
+    for raw_event_id in event_ids:
+        try:
+            event_id = int(raw_event_id)
+        except (TypeError, ValueError):
+            continue
+        hint = load_event_id_hints().get(event_id) or {}
+        if not hint.get("channels") and not hint.get("providers"):
+            continue
+        if declared_by_id.get(event_id):
+            continue
+        try:
+            rows = db.execute(
+                "SELECT DISTINCT channel, "
+                "json_extract_string(raw_json, '$.winlog.provider.name') AS provider "
+                "FROM evtx_events WHERE event_id = ? "
+                "ORDER BY channel NULLS LAST, provider NULLS LAST",
+                (event_id,),
+            ).fetchall()
+        except Exception:
+            rows = []
+        seen: set[tuple[str | None, str | None]] = set()
+        for channel, db_provider in rows:
+            row_channel, provider = event_context_from_row(
+                {"channel": channel, "provider": db_provider}
+            )
+            signature = (row_channel, provider)
+            if signature in seen or not event_context_eligible(
+                event_id, channel=row_channel, provider=provider
+            ):
+                continue
+            seen.add(signature)
+            contexts.append(
+                {"event_id": event_id, "channel": row_channel, "provider": provider}
+            )
+    if contexts:
+        support["event_contexts"] = contexts
+        candidate.confirm_when = support
+        if candidate.verification_spec is not None:
+            candidate.verification_spec.support_conditions = dict(support)
+    return candidate
 
 
 def admit_new_hypothesis(

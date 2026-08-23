@@ -16,6 +16,7 @@ from forensia.report.sections.quality_gates import (
     _quality_gate_section,
 )
 from forensia.report.sections.section_quality import (
+    _artifact_scope_gaps,
     _correlation_finding_ids,
     _duplicate_finding_titles,
     _event_claim_gaps,
@@ -97,6 +98,11 @@ def _run_post_upsert_gap_checks(
             candidate_confidence = min(candidate_confidence, 0.65)
             needs_update = True
     for gap in _event_claim_gaps(body, evidence_results):
+        if gap not in candidate_gaps:
+            candidate_gaps.append(gap)
+            candidate_confidence = min(candidate_confidence, 0.7)
+            needs_update = True
+    for gap in _artifact_scope_gaps(db, body):
         if gap not in candidate_gaps:
             candidate_gaps.append(gap)
             candidate_confidence = min(candidate_confidence, 0.7)

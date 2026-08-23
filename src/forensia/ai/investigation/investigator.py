@@ -223,6 +223,42 @@ def _check_termination(
     return None, no_progress_count, ""
 
 
+def _planner_only_terminal_reason(db: CaseDB, session_id: str) -> str | None:
+    """Return an explicit terminal code when planning never reached execution.
+
+    This is deliberately scoped to one durable session.  A planner retry is
+    operational activity, but it is not semantic investigation progress; a
+    session containing only plan steps must not be reported as an ordinary
+    no-progress stop.
+    """
+    row = db.execute(
+        """
+        SELECT
+            SUM(CASE WHEN phase = 'plan-hypothesis' THEN 1 ELSE 0 END) AS plan_steps,
+            SUM(CASE WHEN phase IN ('do', 'check') THEN 1 ELSE 0 END) AS do_check_steps
+        FROM investigation_steps
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    if not row or int(row[0] or 0) == 0 or int(row[1] or 0) > 0:
+        return None
+    failure = db.execute(
+        """
+        SELECT COUNT(*)
+        FROM hypothesis_reasoning
+        WHERE session_id = ?
+          AND body LIKE '[planner-validation]%'
+        """,
+        (session_id,),
+    ).fetchone()
+    return (
+        "planner_validation_failure"
+        if failure and int(failure[0] or 0) > 0
+        else "planner_no_executable_action"
+    )
+
+
 @dataclass
 class _InvestigateEnv:
     """Session-wide objects and knobs shared by the investigate() phase helpers."""
@@ -378,6 +414,15 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
             cycle_progress=cycle_progress,
         )
         if terminal_status is not None:
+            if (
+                terminal_status == "stopped"
+                and stop_reason_code == "no_progress_limit"
+                and not env.report_only
+            ):
+                stop_reason_code = (
+                    _planner_only_terminal_reason(env.db, env.session_id)
+                    or stop_reason_code
+                )
             if stop_reason_code == "no_gaps_no_hypotheses":
                 mark_report_sections_ai_exhausted(env.db)
             elif terminal_status == "stopped":
@@ -388,10 +433,13 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
                     env.memory,
                 )
             return terminal_status, report_refresh_failures, stop_reason_code
+    planner_only_reason = None if env.report_only else _planner_only_terminal_reason(
+        env.db, env.session_id
+    )
     _classify_active_hypotheses_on_stop(
         env.db, env.state.active_hypotheses, "max_iterations", env.memory
     )
-    return "stopped", report_refresh_failures, "max_iterations"
+    return "stopped", report_refresh_failures, planner_only_reason or "max_iterations"
 
 
 async def _final_report_refresh(env: _InvestigateEnv) -> int:

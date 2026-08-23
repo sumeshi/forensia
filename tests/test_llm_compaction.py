@@ -318,6 +318,143 @@ class TestEnforceSystemBudgetCompaction:
                 os.environ["FORENSIA_PROMPT_BUDGET_TOKENS"] = old_total
             reload_settings()
 
+    def test_section_plan_uses_neutral_playbook_for_methodology(self) -> None:
+        from forensia.ai.prompts.prompt_sections import (
+            build_section_agent_plan_messages,
+        )
+
+        messages, _ = build_section_agent_plan_messages(
+            section_key="1_overview",
+            section_title="Investigation Overview",
+            block_heading="Scope and Methodology",
+            template_body="Define the investigated time window, systems, and evidence sources.",
+            report_brief={
+                "top_findings": [{"finding_id": "F1", "evidence_ids": ["evtx-1"]}],
+                "investigation_objective": "Assess activity",
+            },
+            context_sections={},
+            current_section_outline=[],
+            findings_snapshot=[{"finding_id": "F1", "summary": "signal"}],
+            keypoint_catalog=[],
+            query_template_catalog=[],
+            prior_runs=[],
+            reusable_facts=[],
+            reusable_evidence=[],
+        )
+        assert "## Event ID Reference" not in messages[0]["content"]
+        assert "report_brief: {'investigation_objective': 'Assess activity'}" in messages[1]["content"]
+
+    def test_section_plan_scopes_event_reference_to_contract(self) -> None:
+        from forensia.ai.prompts.prompt_sections import (
+            build_section_agent_plan_messages,
+        )
+
+        messages, _ = build_section_agent_plan_messages(
+            section_key="3_technical",
+            section_title="Technical Analysis",
+            block_heading="Successful Logon",
+            template_body="Investigate event 4624.",
+            report_brief={},
+            context_sections={},
+            current_section_outline=[],
+            findings_snapshot=[],
+            keypoint_catalog=[],
+            query_template_catalog=[],
+            prior_runs=[],
+            reusable_facts=[],
+            reusable_evidence=[],
+        )
+        assert "## Event ID Reference" in messages[0]["content"]
+        assert "4624" in messages[0]["content"]
+
+    def test_section_plan_prior_runs_keep_action_result_reason(self) -> None:
+        from forensia.ai.prompts.report_evidence_projection import (
+            project_section_plan_prior_runs,
+        )
+
+        runs = project_section_plan_prior_runs(
+            [
+                {
+                    "block_heading": "X",
+                    "iteration": 1,
+                    "phase": "plan",
+                    "payload": {
+                        "action": "sql",
+                        "sql": "SELECT " + "x" * 1000,
+                        "purpose": "Find evidence",
+                        "result": {"status": "not_found", "sample_rows": [{"x": "y"}]},
+                    },
+                }
+            ],
+            db=None,
+        )
+        assert runs == [
+            {
+                "block_heading": "X",
+                "iteration": 1,
+                "phase": "plan",
+                "action": "sql",
+                "result": {"status": "not_found"},
+                "reason": "Find evidence",
+            }
+        ]
+
+    def test_section_plan_catalog_keeps_late_explicit_candidate(self) -> None:
+        from forensia.ai.prompts.prompt_sections import (
+            build_section_agent_plan_messages,
+        )
+
+        keypoints = [
+            {"name": f"noise_{i}", "description": "unrelated"} for i in range(79)
+        ]
+        keypoints.append(
+            {"name": "target_late_keypoint", "description": "host identity"}
+        )
+        messages, _ = build_section_agent_plan_messages(
+            section_key="1_overview",
+            section_title="Overview",
+            block_heading="Host Identity",
+            template_body="Use the target_late_keypoint evidence.",
+            report_brief={},
+            context_sections={},
+            current_section_outline=[],
+            findings_snapshot=[],
+            keypoint_catalog=keypoints,
+            query_template_catalog=[],
+            prior_runs=[],
+            reusable_facts=[],
+            reusable_evidence=[],
+            evidence_keypoints=["target_late_keypoint"],
+        )
+        assert "target_late_keypoint" in messages[1]["content"]
+
+    def test_neutral_plan_ignores_global_catalog_terms(self) -> None:
+        from forensia.ai.prompts.prompt_sections import (
+            build_section_agent_plan_messages,
+        )
+
+        messages, _ = build_section_agent_plan_messages(
+            section_key="5_recommendations",
+            section_title="Recommendations",
+            block_heading="Action Plan",
+            template_body="Prioritize follow-up actions.",
+            report_brief={},
+            context_sections={},
+            current_section_outline=[],
+            findings_snapshot=[],
+            keypoint_catalog=[
+                {"name": "powershell_execution", "description": "PowerShell IOC"}
+            ],
+            query_template_catalog=[
+                {"template_id": "network_ioc", "description": "IP and hash"}
+            ],
+            prior_runs=[],
+            reusable_facts=[],
+            reusable_evidence=[],
+        )
+        assert "## Application Catalog" not in messages[0]["content"]
+        assert "## IOC Catalog" not in messages[0]["content"]
+
 
 class TestTrimDynamicContentMarker:
     """Verify that _trim_dynamic_content uses the truncation marker."""

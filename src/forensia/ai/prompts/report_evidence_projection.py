@@ -7,6 +7,8 @@ arrays with citable representatives and evidence-derived coverage metadata.
 
 from __future__ import annotations
 
+import json
+import re
 from collections import Counter
 from typing import Any
 
@@ -17,6 +19,129 @@ from forensia.db.query import fetch_records
 _LARGE_EVIDENCE_SET = 20
 _MAX_REPRESENTATIVES = 10
 _MAX_DISTRIBUTION_VALUES = 6
+_PLAN_EVENT_ID_TOKEN = re.compile(r"(?<!\d)(\d{3,5})(?!\d)")
+_PLAN_EVENT_TERMS = (
+    "event", "logon", "authentication", "credential", "account", "service",
+    "task", "powershell", "script", "process", "execution", "wmi", "rdp",
+    "network", "lateral",
+)
+
+
+def compact_section_plan_items(
+    items: list[dict[str, Any]] | None,
+    *,
+    fields: tuple[str, ...],
+    limit: int,
+) -> list[dict[str, Any]]:
+    compact: list[dict[str, Any]] = []
+    for item in (items or [])[:limit]:
+        if not isinstance(item, dict):
+            continue
+        row = {
+            field: item[field]
+            for field in fields
+            if item.get(field) not in (None, "", [], {})
+        }
+        if row:
+            compact.append(row)
+    return compact
+
+
+def project_section_plan_catalog(
+    items: list[dict[str, Any]] | None,
+    *,
+    fields: tuple[str, ...],
+    section_key: str,
+    block_heading: str,
+    template_body: str,
+    question_spec: dict[str, Any] | None,
+    evidence_keypoints: list[str] | None,
+) -> list[dict[str, Any]]:
+    """Project a catalog while retaining explicit and related late candidates."""
+    source = [item for item in (items or []) if isinstance(item, dict)]
+    if len(source) <= 64:
+        return compact_section_plan_items(source, fields=fields, limit=len(source))
+    explicit_text = " ".join(str(item) for item in evidence_keypoints or [])
+    if question_spec:
+        explicit_text += " " + json.dumps(question_spec, ensure_ascii=False, default=str)
+    contract = " ".join((section_key, block_heading, template_body, explicit_text)).lower()
+    stop = {"the", "and", "for", "with", "from", "this", "that"}
+    contract_tokens = {token for token in re.findall(r"[a-z0-9_]{3,}", contract) if token not in stop}
+    ranked: list[tuple[int, int, dict[str, Any]]] = []
+    for index, item in enumerate(source):
+        name = str(item.get("name") or item.get("template_id") or "")
+        text = " ".join(str(item.get(field) or "") for field in fields).lower()
+        explicit = int(bool(name and name.lower() in contract))
+        score = len(contract_tokens & set(re.findall(r"[a-z0-9_]{3,}", text)))
+        ranked.append((explicit, score, {**item, "_catalog_index": index}))
+    if not any(explicit or score for explicit, score, _ in ranked):
+        return compact_section_plan_items(source, fields=fields, limit=len(source))
+    ranked.sort(key=lambda row: (-row[0], -row[1], row[2]["_catalog_index"]))
+    explicit_count = sum(row[0] for row in ranked)
+    selected = [row[2] for row in ranked[: max(64, explicit_count)]]
+    for item in selected:
+        item.pop("_catalog_index", None)
+    return compact_section_plan_items(selected, fields=fields, limit=len(selected))
+
+
+def section_plan_scope(
+    *,
+    section_key: str,
+    block_heading: str,
+    template_body: str,
+    question_spec: dict[str, Any] | None,
+    evidence_keypoints: list[str] | None,
+    keypoint_catalog: list[dict[str, Any]],
+    query_template_catalog: list[dict[str, Any]],
+) -> tuple[set[int], set[str]]:
+    """Choose the bounded playbook slice for one section-plan decision."""
+    contract_parts = [section_key, block_heading, template_body]
+    contract_parts.extend(str(item) for item in evidence_keypoints or [])
+    catalog_parts = [
+        str(item.get("name", "")) + " " + str(item.get("description", ""))
+        for item in keypoint_catalog if isinstance(item, dict)
+    ]
+    catalog_parts.extend(
+        str(item.get("template_id", "")) + " " + str(item.get("description", ""))
+        for item in query_template_catalog if isinstance(item, dict)
+    )
+    if question_spec:
+        contract_parts.append(json.dumps(question_spec, ensure_ascii=False, default=str))
+    contract = " ".join(contract_parts)
+    lowered = (contract + " " + " ".join(catalog_parts)).lower()
+    neutral = section_key in {"4_gaps", "5_recommendations"} or any(
+        marker in lowered
+        for marker in (
+            "scope and methodology", "methodology", "recommendation basis",
+            "immediate containment", "action plan", "eradication, recovery",
+            "longer-term risk", "residual risk", "gap assessment", "required follow-up",
+        )
+    )
+    event_ids: set[int] = set()
+    if not neutral:
+        try:
+            from forensia.knowledge.catalog import load_dfir_yamls
+            data = load_dfir_yamls().get("event_ids", {})
+            known = {int(key) for key in (data.get("events", {}) if isinstance(data, dict) else {}) if str(key).isdigit()}
+        except Exception:
+            known = set()
+        event_ids = {
+            int(token) for token in _PLAN_EVENT_ID_TOKEN.findall(contract)
+            if not known or int(token) in known
+        }
+    sections: set[str] = {"schema"}
+    if not neutral and (event_ids or any(term in lowered for term in _PLAN_EVENT_TERMS)):
+        sections.add("event_ids")
+    if not neutral:
+        if any(term in lowered for term in ("logon", "authentication", "credential", "rdp")):
+            sections.add("logon_types")
+        if any(term in lowered for term in ("process", "execution", "powershell", "script", "application")):
+            sections.add("app_catalog")
+        if any(term in lowered for term in ("mft", "prefetch", "registry", "artifact", "file")):
+            sections.add("artifact_inference")
+        if any(term in lowered for term in ("ioc", "indicator", "ip", "hash", "domain")):
+            sections.add("ioc_catalog")
+    return event_ids, sections
 
 _METADATA_QUERIES: tuple[tuple[str, str, str], ...] = (
     (
@@ -303,6 +428,117 @@ def project_report_prior_runs(
             projected_run["payload"] = projected_payload
         projected_runs.append(projected_run)
     return projected_runs
+
+
+def project_section_plan_prior_runs(
+    runs: list[dict[str, Any]] | None, *, db: CaseDB | None
+) -> list[dict[str, Any]]:
+    """Keep only the decision history needed by a section-plan prompt.
+
+    ``section_runs.payload`` contains the complete LLM/audit payload (including
+    SQL, sampled rows, and bookkeeping).  A planner only needs to know which
+    action was attempted, what it returned, and why the next action may need to
+    change.  Keeping that contract here also prevents the plan prompt from
+    duplicating the evidence/findings projection sent beside it.
+    """
+    projected_runs: list[dict[str, Any]] = []
+    for run in runs or []:
+        if not isinstance(run, dict):
+            continue
+        payload = run.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+
+        action = payload.get("action") or payload.get("action_type") or run.get("phase")
+        result = payload.get("result")
+        if isinstance(result, dict):
+            result = project_report_results([result], db=db)[0]
+            # Preserve the planner-relevant status/count fields while bounding
+            # accidental nested payloads from older runs.
+            result = {
+                key: result[key]
+                for key in (
+                    "status",
+                    "verdict",
+                    "row_count",
+                    "count",
+                    "kind",
+                    "source_kind",
+                    "source_ref",
+                    "error",
+                    "evidence_count",
+                    "representative_evidence_ids",
+                    "citable",
+                )
+                if key in result
+            }
+        elif result not in (None, ""):
+            result = str(result)[:400]
+        else:
+            result = {
+                key: payload[key]
+                for key in ("status", "verdict", "row_count", "count", "error")
+                if key in payload
+            }
+
+        reason = (
+            payload.get("reason")
+            or payload.get("rationale")
+            or payload.get("purpose")
+            or payload.get("description")
+            or run.get("reason")
+            or run.get("verdict")
+        )
+        projected: dict[str, Any] = {
+            "block_heading": run.get("block_heading"),
+            "iteration": run.get("iteration"),
+            "phase": run.get("phase"),
+            "action": str(action)[:120] if action is not None else "",
+            "result": result,
+            "reason": str(reason)[:500] if reason is not None else "",
+        }
+        # The verdict is useful for contradiction/error recovery and is much
+        # smaller than the original check payload.
+        if run.get("verdict") not in (None, ""):
+            projected["verdict"] = run["verdict"]
+        projected_runs.append(projected)
+    return projected_runs
+
+
+def project_section_plan_brief(
+    brief: dict[str, Any] | None, *, section_key: str
+) -> dict[str, Any]:
+    """Return the small case-context projection needed to choose an action.
+
+    Findings and hypotheses are supplied through ``findings_snapshot`` and
+    reusable evidence in the plan prompt.  They are intentionally omitted here
+    so the report brief does not repeat the same evidence list.
+    """
+    if not isinstance(brief, dict):
+        return {}
+    projected: dict[str, Any] = {}
+    for key in (
+        "time_range",
+        "source_timezone",
+        "investigation_objective",
+        "case_status",
+        "publication_status",
+        "publication_state",
+        "evidence_confidence",
+        "claim_scope",
+        "case_metrics",
+    ):
+        value = brief.get(key)
+        if value not in (None, "", [], {}):
+            projected[key] = value
+    # The overview planner needs source coverage to select the appropriate
+    # artifact family, but not the complete per-finding evidence payload.
+    if section_key == "1_overview":
+        coverage = brief.get("evidence_coverage")
+        if isinstance(coverage, dict):
+            sections = coverage.get("sections")
+            if isinstance(sections, dict):
+                projected["evidence_coverage_sections"] = list(sections)
+    return projected
 
 
 def project_report_brief(

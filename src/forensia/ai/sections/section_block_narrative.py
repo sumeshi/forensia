@@ -675,7 +675,7 @@ def _write_narrative_block(
             structured_digest=ctx.structured_digest,
             report_context={
                 key: value
-                for key in ("time_range", "source_timezone", "timezone_offset")
+                for key in ("time_range", "source_timezone", "timezone_offset", "case_metrics")
                 if (value := ctx.prompt_report_brief.get(key)) not in (None, "", {})
             },
             db=ctx.db,

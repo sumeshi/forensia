@@ -88,6 +88,81 @@ class InvestigateWiringTests(unittest.TestCase):
                     ),
                 )
 
+    def test_planner_only_session_gets_explicit_terminal_reason(self) -> None:
+        from forensia.ai.investigation import investigator as investigator_module
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO investigation_steps (
+                        step_id, session_id, hypothesis_id, iteration, phase,
+                        input_json, output_json, created_at
+                    ) VALUES ('S-1', 'session-planner', 'H-1', 1,
+                              'plan-hypothesis', '{}', '{}', now())
+                    """
+                )
+                db.execute(
+                    """
+                    INSERT INTO hypothesis_reasoning (
+                        entry_id, hypothesis_id, session_id, iteration, phase,
+                        body, created_at
+                    ) VALUES ('R-1', 'H-1', 'session-planner', 1, 'plan',
+                              '[planner-validation] invalid_action: bad SQL', now())
+                    """
+                )
+                self.assertEqual(
+                    "planner_validation_failure",
+                    investigator_module._planner_only_terminal_reason(
+                        db, "session-planner"
+                    ),
+                )
+
+    def test_terminal_reason_ignores_unrelated_or_executed_steps(self) -> None:
+        from forensia.ai.investigation import investigator as investigator_module
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO investigation_steps (
+                        step_id, session_id, hypothesis_id, iteration, phase,
+                        input_json, output_json, created_at
+                    ) VALUES ('S-unrelated', 'session-unrelated', NULL, 1,
+                              'plan-broad', '{}', '{}', now())
+                    """
+                )
+                self.assertIsNone(
+                    investigator_module._planner_only_terminal_reason(
+                        db, "session-unrelated"
+                    )
+                )
+                db.execute(
+                    """
+                    INSERT INTO investigation_steps (
+                        step_id, session_id, hypothesis_id, iteration, phase,
+                        input_json, output_json, created_at
+                    ) VALUES ('S-executed', 'session-executed', 'H-1', 1,
+                              'plan-hypothesis', '{}', '{}', now())
+                    """
+                )
+                db.execute(
+                    """
+                    INSERT INTO investigation_steps (
+                        step_id, session_id, hypothesis_id, iteration, phase,
+                        input_json, output_json, created_at
+                    ) VALUES ('S-do', 'session-executed', 'H-1', 1,
+                              'do', '{}', '{}', now())
+                    """
+                )
+                self.assertIsNone(
+                    investigator_module._planner_only_terminal_reason(
+                        db, "session-executed"
+                    )
+                )
+
     def test_hypothesis_cycle_matches_runner_signature(self) -> None:
         """The real cycle caller must use the deep-dive runner's exact API."""
         from types import SimpleNamespace

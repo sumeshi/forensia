@@ -46,7 +46,13 @@ def _generate_event_id_narrative() -> str:
             required = info.get("required_fields", [])
             allowed = info.get("allowed_claims", [])
             disallowed = info.get("disallowed_without_extra", [])
+            channels = info.get("channels", [])
+            providers = info.get("providers", [])
             line = f"- Event {eid} ({title})"
+            if channels:
+                line += f" | ONLY meaningful on channel(s): {', '.join(str(c) for c in channels)}"
+            if providers:
+                line += f" | ONLY meaningful for provider(s): {', '.join(str(p) for p in providers)}"
             if required:
                 line += f" | query columns: {', '.join(required)}"
             if allowed:

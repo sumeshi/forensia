@@ -136,6 +136,26 @@ class PromptMessageTests(unittest.TestCase):
         self.assertIn("Match wording to confidence", system)
         self.assertIn("Recommended actions must scale with evidence strength", system)
 
+    def test_publication_gate_is_passed_to_overview_and_recommendations(self) -> None:
+        state = {
+            "publication_status": "needs_review",
+            "evidence_confidence": "not_established",
+            "claim_scope": "deterministic_signals_only",
+        }
+        for section, expected in (
+            ("1_overview", "Investigation Conclusion"),
+            ("5_recommendations", "verification-first"),
+        ):
+            messages = build_report_section_messages(
+                section_meta={"section": section},
+                evidence_results=[],
+                context_sections={},
+                template_body="# Section",
+                report_brief={"publication_state": state},
+            )
+            self.assertIn("needs_review/incomplete", messages[0]["content"])
+            self.assertIn(expected, messages[0]["content"])
+
     def test_report_section_messages_include_language_confidence_matrix_and_categories(
         self,
     ) -> None:

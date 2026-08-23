@@ -57,7 +57,16 @@ class PlannerRetryTests(unittest.TestCase):
             id="H-confirm",
             description="RDP followed by PowerShell",
             source_rule_ids=["windows-rdp-lsm-21-logon"],
-            confirm_when={"co_observed_event_ids": [4624, 4104]},
+            confirm_when={
+                "co_observed_event_ids": [4624, 4104],
+                "event_contexts": [
+                    {
+                        "event_id": 4104,
+                        "channel": "Microsoft-Windows-PowerShell/Operational",
+                        "provider": "Microsoft-Windows-PowerShell",
+                    }
+                ],
+            },
         )
 
         self.assertFalse(
@@ -77,7 +86,36 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertTrue(
             tracker.should_auto_confirm(
                 None,
-                [{"event_id": 4624}, {"event_id": 4104}],
+                [
+                    {"event_id": 4624},
+                    {
+                        "event_id": 4104,
+                        "channel": "Microsoft-Windows-PowerShell/Operational",
+                        "raw_json": {
+                            "winlog": {
+                                "provider": {"name": "Microsoft-Windows-PowerShell"}
+                            }
+                        },
+                    },
+                ],
+                hypothesis,
+            )
+        )
+        self.assertFalse(
+            tracker.should_auto_confirm(
+                None,
+                [
+                    {"event_id": 4624},
+                    {
+                        "event_id": 4104,
+                        "channel": "Application",
+                        "raw_json": {
+                            "winlog": {
+                                "provider": {"name": "Microsoft-Windows-Winlogon"}
+                            }
+                        },
+                    },
+                ],
                 hypothesis,
             )
         )
@@ -169,6 +207,34 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertEqual("q_failed_logon_by_ip_window", result.query.template_id)
         self.assertIn("GROUP BY src_ip", result.query.sql)
 
+    def test_materializes_explicit_nested_sql_action(self) -> None:
+        """The typed nested action, rather than its response wrapper, is materialized."""
+        state = SessionState(session_id="session-nested-action", iteration=1)
+        hypothesis = Hypothesis(id="H-nested", description="inspect events")
+        response = {
+            "action": {
+                "type": "sql.query",
+                "intent": "inspect events",
+                "target_table": "evtx_events",
+                "sql": "SELECT event_id FROM evtx_events LIMIT 1",
+            },
+        }
+        with patch(
+            "forensia.ai.llm.llm_gateway.request_llm_json", return_value=response
+        ):
+            result = plan_hypothesis_query(
+                state=state,
+                hypothesis=hypothesis,
+                memory=_MemoryStub(),
+                base_url=_llm_base_url(),
+                model="test-model",
+            )
+
+        self.assertIsNotNone(result.query)
+        self.assertEqual(
+            "SELECT event_id FROM evtx_events LIMIT 1", result.query.sql
+        )
+
     def test_action_gate_accepts_explicit_sql_and_legacy_intent(self) -> None:
         explicit, explicit_error = normalize_query_intent_action(
             {
@@ -190,6 +256,78 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertIsNone(explicit_error)
         self.assertEqual("sql.query", legacy.type if legacy else None)
         self.assertIsNone(legacy_error)
+
+    def test_planner_validation_feedback_is_consumed_by_next_call(self) -> None:
+        state = SessionState(
+            session_id="session-validation-feedback",
+            iteration=1,
+            last_planner_error={
+                "hypothesis_id": "H-feedback",
+                "reason": "invalid_action: Unknown table",
+            },
+        )
+        hypothesis = Hypothesis(id="H-feedback", description="inspect events")
+        seen_messages: list[list[dict[str, str]]] = []
+
+        def respond(**kwargs):
+            seen_messages.append(kwargs["messages"])
+            return {
+                "action": {
+                    "type": "sql.query",
+                    "intent": "inspect events",
+                    "target_table": "evtx_events",
+                    "sql": "SELECT event_id FROM evtx_events LIMIT 1",
+                }
+            }
+
+        with patch(
+            "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=respond
+        ):
+            result = plan_hypothesis_query(
+                state=state,
+                hypothesis=hypothesis,
+                memory=_MemoryStub(),
+                base_url=_llm_base_url(),
+                model="test-model",
+            )
+
+        self.assertIsNotNone(result.query)
+        self.assertIsNone(state.last_planner_error)
+        prompt = "\n".join(message["content"] for message in seen_messages[0])
+        self.assertIn("<PLANNER_VALIDATION_ERROR>", prompt)
+        self.assertIn("Unknown table", prompt)
+
+        other_state = SessionState(
+            session_id="session-validation-feedback-other",
+            iteration=1,
+            last_planner_error={"hypothesis_id": "H-feedback", "reason": "secret"},
+        )
+        other_messages: list[list[dict[str, str]]] = []
+
+        def respond_other(**kwargs):
+            other_messages.append(kwargs["messages"])
+            return {
+                "action": {
+                    "type": "sql.query",
+                    "intent": "inspect events",
+                    "target_table": "evtx_events",
+                    "sql": "SELECT event_id FROM evtx_events LIMIT 1",
+                }
+            }
+
+        with patch(
+            "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=respond_other
+        ):
+            plan_hypothesis_query(
+                state=other_state,
+                hypothesis=Hypothesis(id="H-other", description="other question"),
+                memory=_MemoryStub(),
+                base_url=_llm_base_url(),
+                model="test-model",
+            )
+        other_prompt = "\n".join(m["content"] for m in other_messages[0])
+        self.assertNotIn("<PLANNER_VALIDATION_ERROR>", other_prompt)
+        self.assertIsNotNone(other_state.last_planner_error)
 
     def test_unknown_action_stops_before_sql_composition(self) -> None:
         state = SessionState(session_id="session-action", iteration=1)

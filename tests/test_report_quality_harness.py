@@ -17,6 +17,7 @@ from forensia.db.database import CaseDB
 from forensia.report.report_validation import (
     check_failure_markers,
     check_sufficiency_consistency,
+    derive_publication_state,
     validate_report,
 )
 
@@ -286,6 +287,30 @@ class TestReportQualityContract(unittest.TestCase):
                 )
                 self.assertFalse(artifact["publishable"])
                 self.assertTrue(artifact["fatal_errors"])
+
+    def test_unconfirmed_rule_signals_are_reader_visible_as_incomplete(self) -> None:
+        """Generated prose cannot hide that no hypothesis loop was executed."""
+        from forensia.report.render.writer import build_report_markdown_from_db
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO report_sections (
+                        section_key, title, body, confidence, status, update_count, stale
+                    ) VALUES ('1_overview', 'Overview', '# Overview\\n\\nRule signal text.',
+                              1.0, 'ai_exhausted', 1, FALSE)
+                    """
+                )
+                state = derive_publication_state(db)
+                report = build_report_markdown_from_db(db, case)
+
+            assert state["publication_status"] == "needs_review"
+            assert state["evidence_confidence"] == "not_established"
+            assert "needs_review` / `incomplete" in report
+            assert "deterministic signals/review candidates" in report
+            assert "Scope constraint" in report
 
     def test_table_validation_catches_empty_required_columns(self) -> None:
         """Table with all-empty required columns must be flagged."""

@@ -12,11 +12,13 @@ from __future__ import annotations
 import tempfile
 import unittest
 
+from forensia.ai.checking.check_guardrails import _co_observation_satisfied
 from forensia.ai.hypotheses.hypothesis_manager import (
     MAX_SECTION_UPDATES,
     admit_new_hypothesis,
     mark_section_stale,
     merge_active_hypotheses,
+    qualify_event_contexts,
     resolve_hypothesis,
 )
 from forensia.ai.hypotheses.hypothesis_model import (
@@ -27,6 +29,7 @@ from forensia.ai.hypotheses.hypothesis_model import (
 from forensia.core.case import Case
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
+from forensia.report.sections.section_quality import _event_claim_gaps
 from forensia.report.sections.section_taxonomy import sections_for_keypoint
 
 
@@ -85,6 +88,158 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
                     (False, f"event-semantic-mismatch:{event_id}"),
                     admit_new_hypothesis(candidate, state),
                 )
+
+    def test_rejects_account_lifecycle_event_reinterpretations(self) -> None:
+        state = SessionState(session_id="S-lifecycle-semantic")
+        for description, event_id in (
+            ("Account deleted (4722)", 4722),
+            ("User enabled (4727)", 4727),
+            ("Account enabled (4726)", 4726),
+        ):
+            with self.subTest(event_id=event_id):
+                candidate = Hypothesis(
+                    id="draft-lifecycle-semantic",
+                    description=description,
+                    required_entities=["computer"],
+                    confirm_when={
+                        "co_observed_event_ids": [event_id],
+                        "event_contexts": [
+                            {
+                                "event_id": event_id,
+                                "channel": "Security",
+                                "provider": "Microsoft-Windows-Security-Auditing",
+                            }
+                        ],
+                    },
+                )
+                self.assertEqual(
+                    (False, f"event-semantic-mismatch:{event_id}"),
+                    admit_new_hypothesis(candidate, state),
+                )
+
+    def test_event_context_is_catalog_qualified(self) -> None:
+        state = SessionState(session_id="S-provider-semantic")
+        valid = Hypothesis(
+            id="draft-powershell",
+            description="PowerShell script block execution was observed",
+            required_entities=["computer"],
+            confirm_when={
+                "co_observed_event_ids": [4104],
+                "event_contexts": [
+                    {
+                        "event_id": 4104,
+                        "channel": "Microsoft-Windows-PowerShell/Operational",
+                        "provider": "Microsoft-Windows-PowerShell",
+                    }
+                ],
+            },
+        )
+        self.assertEqual((True, "accepted"), admit_new_hypothesis(valid, state))
+        invalid = Hypothesis(
+            id="draft-winlogon",
+            description=valid.description,
+            required_entities=["computer"],
+            confirm_when={
+                "co_observed_event_ids": [4104],
+                "event_contexts": [
+                    {
+                        "event_id": 4104,
+                        "channel": "Application",
+                        "provider": "Microsoft-Windows-Winlogon",
+                    }
+                ],
+            },
+        )
+        self.assertEqual(
+            (False, "event-context-mismatch:4104"),
+            admit_new_hypothesis(invalid, state),
+        )
+
+    def test_event_context_is_derived_from_authoritative_evtx_rows(self) -> None:
+        candidate = Hypothesis(
+            id="draft-derived-context",
+            description="PowerShell script block execution was observed",
+            required_entities=["computer"],
+            confirm_when={"co_observed_event_ids": [4104]},
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO evtx_events (event_id, channel, raw_json) VALUES (?, ?, ?)",
+                    (
+                        4104,
+                        "Microsoft-Windows-PowerShell/Operational",
+                        '{"winlog":{"provider":{"name":"Microsoft-Windows-PowerShell"}}}',
+                    ),
+                )
+                db.execute(
+                    "INSERT INTO evtx_events (event_id, channel, raw_json) VALUES (?, ?, ?)",
+                    (
+                        4104,
+                        "Application",
+                        '{"winlog":{"provider":{"name":"Microsoft-Windows-Winlogon"}}}',
+                    ),
+                )
+                qualify_event_contexts(candidate, db)
+        self.assertEqual(
+            candidate.confirm_when["event_contexts"][0]["provider"],
+            "Microsoft-Windows-PowerShell",
+        )
+        self.assertEqual(
+            (True, "accepted"),
+            admit_new_hypothesis(candidate, SessionState(session_id="S-derived")),
+        )
+
+    def test_co_observation_ignores_ineligible_provider_rows(self) -> None:
+        rows = [
+            {
+                "event_id": 4104,
+                "channel": "Application",
+                "raw_json": {
+                    "winlog": {"provider": {"name": "Microsoft-Windows-Winlogon"}}
+                },
+            }
+        ]
+        condition = {
+            "co_observed_event_ids": [4104],
+            "event_contexts": [
+                {
+                    "event_id": 4104,
+                    "channel": "Microsoft-Windows-PowerShell/Operational",
+                    "provider": "Microsoft-Windows-PowerShell",
+                }
+            ],
+        }
+        satisfied, reason = _co_observation_satisfied(condition, rows)
+        self.assertFalse(satisfied)
+        self.assertIn("missing", reason)
+
+    def test_quality_uses_eligible_context_when_rows_are_mixed(self) -> None:
+        rows = [
+            {
+                "event_id": 4104,
+                "channel": "Microsoft-Windows-PowerShell/Operational",
+                "raw_json": {
+                    "winlog": {
+                        "provider": {"name": "Microsoft-Windows-PowerShell"}
+                    }
+                },
+            },
+            {
+                "event_id": 4104,
+                "channel": "Application",
+                "raw_json": {
+                    "winlog": {
+                        "provider": {"name": "Microsoft-Windows-Winlogon"}
+                    }
+                },
+            },
+        ]
+        gaps = _event_claim_gaps(
+            "PowerShell script block execution was observed", [{"sample_rows": rows}]
+        )
+        self.assertFalse(any("channel/provider context" in gap for gap in gaps))
 
 
 def _setup_confirmed_invariant(db: CaseDB, hypothesis_id: str) -> None:

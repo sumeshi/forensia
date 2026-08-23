@@ -47,7 +47,11 @@ from forensia.ai.investigation.investigation_session import (
     ctx_refresh_caches,
 )
 from forensia.ai.investigation.memory_sync import apply_memory_updates
-from forensia.ai.investigation.planner import plan_hypothesis_query
+from forensia.ai.investigation.planner import (
+    persist_hypothesis_plan_result,
+    plan_hypothesis_query,
+    planner_retry_allowed,
+)
 from forensia.ai.investigation.progress import (
     HypothesisProgressTracker,
     query_fingerprint,
@@ -191,10 +195,10 @@ class _HypothesisRunState:
     missing_checks_raw: list[Any] | None = None
     retrieval_evaluation: Any = None
     sufficiency_result: SufficiencyResult | None = None
+    planner_retry_granted: bool = False
 
 
 async def _phase_plan(rs: _HypothesisRunState) -> str:
-    """Query planning: LLM plan call, step persistence, hypothesis upsert."""
     hypothesis, state, ctx = rs.hypothesis, rs.state, rs.ctx
     memory, db, case = rs.memory, rs.db, rs.case
     base_url, model, plan_cycle = rs.base_url, rs.model, rs.plan_cycle
@@ -241,26 +245,19 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
             body=f"[internal-error] {err_msg}",
         )
         return "break"
-    _save_step(
+    hypothesis, flow = persist_hypothesis_plan_result(
         db=db,
         session_id=session_id,
         iteration=plan_cycle,
-        phase="plan-hypothesis",
-        hypothesis_id=hypothesis.id,
-        input_json={
-            "hypothesis": hypothesis.model_dump(),
-            "query_index": query_index,
-        },
-        output_json=hypothesis_plan.raw_response,
-        suffix=f"{hypothesis.id}-{query_index:02d}",
+        hypothesis=hypothesis,
+        query_index=query_index,
+        plan=hypothesis_plan,
+        state=state,
+        emit=rs.emit_fn,
     )
-    if hypothesis_plan.hypothesis is not None:
-        hypothesis = rs.hypothesis = hypothesis_plan.hypothesis
-        _upsert_hypothesis(db, hypothesis, origin="broad_plan", session_id=session_id)
-    if not hypothesis_plan.query:
-        if not hypothesis_plan.needs_more:
-            return "break"
-        return "continue"
+    rs.hypothesis = hypothesis
+    if flow != "ok":
+        return flow
     rs.hypothesis_plan = hypothesis_plan
     return "ok"
 
@@ -978,13 +975,16 @@ async def _investigate_one_hypothesis(
         focus_sections=_guess_related_sections(hypothesis.description),
     )
     limit = query_limit if query_limit is not None else max_queries_per_hypothesis
-    for query_index in range(1, limit + 1):
-        rs.query_index = query_index
-        rs.state.focus_depth = query_index
+    while rs.query_index < limit:
+        rs.query_index += 1
+        query_index = rs.state.focus_depth = rs.query_index
         flow = await _phase_plan(rs)
         if flow == "break":
             break
         if flow == "continue":
+            if planner_retry_allowed(state, hypothesis, rs.planner_retry_granted):
+                limit += 1
+                rs.planner_retry_granted = True
             continue
         if _phase_execute(rs) == "continue":
             continue

@@ -164,10 +164,15 @@ def _render_event_narrative(events_data: dict) -> str:
             required = info.get("required_fields", [])
             keywords = info.get("keywords_for_string_search", [])
             channels = info.get("channels", [])
+            providers = info.get("providers", [])
             line_parts = [f"Event {eid_str} ({title})"]
             if channels:
                 line_parts.append(
                     f" ONLY meaningful on channel(s): {', '.join(str(c) for c in channels)} — the same ID on other channels is unrelated"
+                )
+            if providers:
+                line_parts.append(
+                    f" ONLY meaningful for provider(s): {', '.join(str(p) for p in providers)} — verify provider before assigning this meaning"
                 )
             if required:
                 line_parts.append(f" always query: {', '.join(required)}")
@@ -625,7 +630,27 @@ def _truncate_events_to_priority(
     }
     if not trimmed or len(trimmed) >= len(catalog.events_data):
         return section_entries, False
-    trimmed_narrative = _render_event_narrative(trimmed)
+    # Priority-only mode is itself a budget projection. Keep the semantic
+    # contract (title, channel/provider eligibility, and claim guardrails) but
+    # omit repeated query-column/keyword prose so interpretation sections such
+    # as FP and Application Catalog survive the same prompt budget.
+    compact_parts: list[str] = []
+    for eid, info in sorted(trimmed.items(), key=lambda item: _playbook_eid_sort_key(item[0])):
+        if not isinstance(info, dict):
+            continue
+        line = f" - Event {eid} ({info.get('title', '')})"
+        if info.get("channels"):
+            line += f" | channel: {', '.join(str(v) for v in info['channels'])}"
+        if info.get("providers"):
+            line += f" | provider: {', '.join(str(v) for v in info['providers'])}"
+        if info.get("allowed_claims"):
+            line += f" | may claim: {'; '.join(str(v) for v in info['allowed_claims'])}"
+        if info.get("disallowed_without_extra"):
+            line += " | DO NOT claim: " + "; ".join(
+                str(v) for v in info["disallowed_without_extra"]
+            )
+        compact_parts.append(line)
+    trimmed_narrative = "\n".join(compact_parts)
     return [
         (
             key,
@@ -779,7 +804,7 @@ def _build_event_id_playbook_index(event_ids: set[int] | None, *, phase: str) ->
     selected = {int(k) for k in events_data if str(k).isdigit()} & (event_ids or set())
     if not selected:
         return ""
-    selected_only = phase in {"hypothesis_plan", "check"}
+    selected_only = phase in {"hypothesis_plan", "check", "section_agent_plan"}
     lines = [
         "<EVENT_ID_INDEX>",
         "Selected event IDs are fully described in the Event ID Reference below. "

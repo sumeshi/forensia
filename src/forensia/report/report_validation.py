@@ -95,6 +95,144 @@ class ValidationFinding:
         }
 
 
+def derive_publication_state(db: Any) -> dict[str, Any]:
+    """Derive the publication gate from durable investigation state.
+
+    ``report_sections.status`` describes generation state, while the evidence
+    confidence below describes whether an investigative conclusion is actually
+    established.  They are intentionally kept as separate values: an
+    ``ai_exhausted`` section with a high prose score is not evidence that a
+    hypothesis was confirmed.
+    """
+    state: dict[str, Any] = {
+        "publication_status": "complete",
+        "confirmed_hypothesis_count": 0,
+        "confirmed_without_evidence_count": 0,
+        "hypothesis_execution_step_count": 0,
+        "plan_step_count": 0,
+        "draft_sections": [],
+        "section_statuses": {},
+        "evidence_confidence": "established",
+        "claim_scope": "confirmed_conclusions",
+        "reasons": [],
+    }
+    if db is None:
+        state.update(
+            {
+                "publication_status": "needs_review",
+                "evidence_confidence": "not_established",
+                "claim_scope": "deterministic_signals_only",
+                "reasons": ["database_unavailable"],
+            }
+        )
+        return state
+
+    try:
+        state["confirmed_hypothesis_count"] = int(
+            db.execute(
+                "SELECT COUNT(*) FROM hypotheses WHERE status = 'confirmed'"
+            ).fetchone()[0]
+        )
+    except Exception:
+        state["reasons"].append("confirmed_hypotheses_unavailable")
+
+    try:
+        state["confirmed_without_evidence_count"] = int(
+            len(db.execute(
+                """
+                SELECT COUNT(*)
+                FROM hypotheses h
+                LEFT JOIN hypothesis_evidence he ON he.hypothesis_id = h.hypothesis_id
+                WHERE h.status = 'confirmed'
+                GROUP BY h.hypothesis_id
+                HAVING COUNT(he.link_id) = 0
+                """
+            ).fetchall())
+        )
+    except Exception:
+        state["reasons"].append("hypothesis_evidence_unavailable")
+
+    # Hypothesis ``do`` and ``check`` are the durable receipts that prove the
+    # planner actually investigated a hypothesis. Section query runs are not a
+    # substitute for this loop.
+    try:
+        state["hypothesis_execution_step_count"] = int(
+            db.execute(
+                "SELECT COUNT(*) FROM trace.investigation_steps "
+                "WHERE phase IN ('do', 'check')"
+            ).fetchone()[0]
+        )
+        state["plan_step_count"] = int(
+            db.execute(
+                "SELECT COUNT(*) FROM trace.investigation_steps "
+                "WHERE phase IN ('plan-hypothesis', 'hypothesis-plan')"
+            ).fetchone()[0]
+        )
+    except Exception:
+        state["reasons"].append("hypothesis_execution_receipts_unavailable")
+
+    try:
+        rows = db.execute(
+            "SELECT section_key, status FROM report_sections ORDER BY section_key"
+        ).fetchall()
+        statuses = {str(row[0]): str(row[1] or "draft") for row in rows}
+        state["section_statuses"] = statuses
+        state["draft_sections"] = sorted(
+            key for key, status in statuses.items() if status == "draft"
+        )
+    except Exception:
+        state["reasons"].append("section_statuses_unavailable")
+
+    reasons = state["reasons"]
+    if state["confirmed_hypothesis_count"] == 0:
+        reasons.append("no_confirmed_hypotheses")
+    if state["confirmed_without_evidence_count"]:
+        reasons.append("confirmed_hypotheses_without_evidence")
+    if state["hypothesis_execution_step_count"] == 0:
+        reasons.append("hypothesis_investigation_not_executed")
+    if state["draft_sections"]:
+        reasons.append("draft_sections_present")
+    if reasons:
+        state["publication_status"] = "needs_review"
+        state["evidence_confidence"] = "not_established"
+        state["claim_scope"] = "deterministic_signals_only"
+    return state
+
+
+def check_publication_readiness(db: Any) -> list[ValidationFinding]:
+    """Fail publication when generated prose outruns durable investigation."""
+    state = derive_publication_state(db)
+    findings: list[ValidationFinding] = []
+    if state["confirmed_hypothesis_count"] == 0:
+        findings.append(
+            ValidationFinding(
+                "publication_readiness",
+                "error",
+                "No confirmed hypothesis exists; rule findings are deterministic signals/review candidates, not confirmed conclusions",
+                "evidence_confidence=not_established",
+            )
+        )
+    if state["hypothesis_execution_step_count"] == 0:
+        findings.append(
+            ValidationFinding(
+                "publication_readiness",
+                "error",
+                "No hypothesis do/check execution receipt exists; investigation is incomplete",
+                f"plan_steps={state['plan_step_count']}",
+            )
+        )
+    if state["draft_sections"]:
+        findings.append(
+            ValidationFinding(
+                "publication_readiness",
+                "error",
+                "Draft report sections cannot be published without an explicit needs_review warning",
+                f"sections={state['draft_sections']}",
+            )
+        )
+    return findings
+
+
 # ---------------------------------------------------------------------------
 # Individual checks
 # ---------------------------------------------------------------------------
@@ -742,6 +880,7 @@ def _validation_plan(
     if db is not None:
         checks.extend(
             [
+                ("publication_readiness", lambda: check_publication_readiness(db)),
                 ("sufficiency_consistency", lambda: check_sufficiency_consistency(db)),
                 (
                     "persisted_section_failures",

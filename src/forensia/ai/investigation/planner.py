@@ -160,6 +160,86 @@ class HypothesisPlanResult:
     raw_response: dict[str, Any]
 
 
+def persist_hypothesis_plan_result(
+    *,
+    db: CaseDB,
+    session_id: str,
+    iteration: int,
+    hypothesis: Hypothesis,
+    query_index: int,
+    plan: HypothesisPlanResult,
+    state: SessionState,
+    emit: Callable[..., None] | None = None,
+) -> tuple[Hypothesis, str]:
+    """Persist one planner result and return the runner flow decision."""
+    from forensia.ai.hypotheses.hypothesis_store import _upsert_hypothesis
+    from forensia.ai.investigation.investigation_session import (
+        _save_step,
+        append_hypothesis_reasoning,
+    )
+
+    output = dict(plan.raw_response)
+    output["_plan_status"] = {
+        "query_materialized": plan.query is not None,
+        "needs_more": plan.needs_more,
+        "stop_reason": plan.stop_reason,
+    }
+    _save_step(
+        db=db,
+        session_id=session_id,
+        iteration=iteration,
+        phase="plan-hypothesis",
+        hypothesis_id=hypothesis.id,
+        input_json={"hypothesis": hypothesis.model_dump(), "query_index": query_index},
+        output_json=output,
+        suffix=f"{hypothesis.id}-{query_index:02d}",
+    )
+    if plan.hypothesis is not None:
+        hypothesis = plan.hypothesis
+        _upsert_hypothesis(db, hypothesis, origin="broad_plan", session_id=session_id)
+    if plan.query or plan.needs_more and not plan.stop_reason:
+        return hypothesis, "ok" if plan.query else "continue"
+    if not plan.stop_reason:
+        return hypothesis, "break"
+    reason = str(plan.stop_reason)
+    append_hypothesis_reasoning(
+        db=db,
+        hypothesis_id=hypothesis.id,
+        session_id=session_id,
+        iteration=iteration,
+        phase="plan",
+        body=f"[planner-validation] {reason}",
+    )
+    # This is consumed by the next query-intent call; no SQL ran here.
+    state.last_planner_error = {
+        "hypothesis_id": hypothesis.id,
+        "reason": reason[:500],
+    }
+    if emit:
+        emit(
+            "investigate/plan",
+            f"[plan] planner validation failed; retrying {hypothesis.id}: {reason}",
+            iteration=iteration,
+            hypothesis_id=hypothesis.id,
+            planner_error=reason,
+        )
+    logger.warning(
+        "%s planner validation failed; retrying: %s", hypothesis.id, reason
+    )
+    return hypothesis, "continue"
+
+
+def planner_retry_allowed(
+    state: SessionState, hypothesis: Hypothesis, already_granted: bool
+) -> bool:
+    """Allow one bounded retry only for the hypothesis that failed planning."""
+    return bool(
+        state.last_planner_error
+        and state.last_planner_error.get("hypothesis_id") == hypothesis.id
+        and not already_granted
+    )
+
+
 def request_with_optional_context(
     memory: MemoryManager,
     messages_builder: Callable[[str], list[dict[str, str]]],
@@ -485,6 +565,21 @@ def _consume_execution_error_block(state: SessionState) -> str:
     return block
 
 
+def _consume_planner_error_block(state: SessionState, hypothesis_id: str) -> str:
+    """Format and clear host planner validation feedback for the next call."""
+    if not state.last_planner_error or state.last_planner_error.get("hypothesis_id") != hypothesis_id:
+        return ""
+    block = (
+        f"\n<PLANNER_VALIDATION_ERROR>\n"
+        "The previous planner action was rejected by host validation. "
+        "Correct the action before trying again; do not repeat the rejected payload.\n"
+        f"reason: {state.last_planner_error.get('reason', 'unknown validation error')}\n"
+        "</PLANNER_VALIDATION_ERROR>\n"
+    )
+    state.last_planner_error = None
+    return block
+
+
 def _plan_query_intent(
     *,
     memory: MemoryManager,
@@ -552,7 +647,9 @@ def _build_hypothesis_plan_result(
         "query": {
             "query_id": f"{hypothesis.id}-q{query_index}",
             "hypothesis_id": hypothesis.id,
-            "purpose": action_response.get("purpose", ""),
+            "purpose": intent_response.get(
+                "purpose", action_response.get("purpose", "")
+            ),
             "template_id": action_response.get("template_id"),
             "params": action_response.get("params", {}),
             "sql": action_response.get("sql", ""),
@@ -578,7 +675,7 @@ def _build_hypothesis_plan_result(
             if planned_query
             else f"invalid_action: {validation_error or 'SQL action was not materialized'}"
         ),
-        raw_response=action_response,
+        raw_response=intent_response,
     )
 
 
@@ -615,6 +712,7 @@ def plan_hypothesis_query(
     schema_card = _build_schema_guidance("evtx_events", db=db)
     prior_check_feedback = _load_prior_check_feedback(db, hypothesis)
     execution_error_block = _consume_execution_error_block(state)
+    planner_error_block = _consume_planner_error_block(state, hypothesis.id)
 
     def intent_messages_builder(extra_context: str) -> list[dict[str, str]]:
         return build_query_intent_messages(
@@ -623,7 +721,7 @@ def plan_hypothesis_query(
             active_hypotheses=state.active_hypotheses,
             time_range=time_range or {},
             schema_context=schema_card,
-            extra_context_md=extra_context + execution_error_block,
+            extra_context_md=extra_context + execution_error_block + planner_error_block,
             prior_check_feedback=prior_check_feedback,
             case_profile=case_profile,
             findings_snapshot=state.findings_snapshot,
@@ -675,6 +773,11 @@ def plan_hypothesis_query(
             stop_reason="invalid_action: SQL action needs template_id or bounded SELECT",
             raw_response=intent_response,
         )
+    # Materialize only the normalized action.  The LLM response is a wrapper
+    # (``{"action": {...}}``); passing that wrapper to the materializer makes
+    # valid nested actions look like missing SQL.  Keep the original response
+    # as the audit payload, while the typed action is the sole query source.
+    normalized_action = action.model_dump(mode="json")
     return _build_hypothesis_plan_result(
-        hypothesis, query_index, intent_response, intent_response, db
+        hypothesis, query_index, intent_response, normalized_action, db
     )

@@ -47,14 +47,18 @@ from forensia.ai.prompts.prompt_playbook import (
     _load_schema_notes,
 )
 from forensia.ai.prompts.report_evidence_projection import (
+    compact_section_plan_items,
     project_report_brief,
     project_report_evidence_rows,
     project_report_prior_runs,
     project_report_results,
+    project_section_plan_brief,
+    project_section_plan_catalog,
+    project_section_plan_prior_runs,
+    section_plan_scope,
 )
 
 logger = logging.getLogger(__name__)
-
 
 def _section_verification_block(verification_notes: list[str] | None) -> str:
     return f"verification_notes_from_prior_subsections: {verification_notes or []}\n\n"
@@ -73,6 +77,39 @@ def _section_evidence_block(raw_evidence_rows: list[dict] | None) -> str:
 
 def _section_coverage_block(report_brief: dict) -> str:
     return _format_evidence_coverage(report_brief)
+
+
+def _publication_guidance(
+    section_key: str, publication_state: Any
+) -> str:
+    """Return pre-generation claim constraints for narrative report roles."""
+    if not isinstance(publication_state, dict) or publication_state.get(
+        "publication_status"
+    ) != "needs_review":
+        return ""
+    claim_scope = str(
+        publication_state.get("claim_scope") or "deterministic_signals_only"
+    )
+    common = (
+        "Publication gate: this case is needs_review/incomplete. Evidence "
+        f"confidence is {publication_state.get('evidence_confidence', 'not_established')}; "
+        f"claim scope is {claim_scope}. Rule findings are deterministic signals "
+        "and review candidates, not confirmed conclusions. Do not promote them "
+        "to a confirmed incident story."
+    )
+    if section_key == "1_overview":
+        return (
+            common
+            + " The Executive Summary and Investigation Conclusion must state "
+            "that no confirmed hypothesis is available."
+        )
+    if section_key == "5_recommendations":
+        return (
+            common
+            + " Recommendations must be verification-first and must not assume "
+            "unauthorized access, account tampering, persistence, or lateral movement."
+        )
+    return common
 
 
 def _format_outline(outline: list[dict]) -> str:
@@ -122,6 +159,9 @@ def build_report_section_messages(
     placeholder = "[INSUFFICIENT EVIDENCE: reason]"
     section_key = str(section_meta.get("section") or "")
     prompt_report_brief = project_report_brief(report_brief, db=db)
+    publication_guidance = _publication_guidance(
+        section_key, prompt_report_brief.get("publication_state")
+    )
     cov = _section_coverage_block(prompt_report_brief)
     if cov and str(section_meta.get("section") or "").strip() == "1_overview":
         cov = f"Use the following evidence coverage summary as the canonical Evidence Scope. Do not invent sources that are not listed.\n{cov}\n"
@@ -171,7 +211,8 @@ def build_report_section_messages(
         "no_causation: Correlation is not proof of causation.\n"
         "confirmed_hypotheses: Reflect in appropriate sections; refuted_hypotheses only in 'Discarded Hypotheses' subsection.\n"
         "Recommended actions must scale with evidence strength.\n"
-        f"app_categories: {app_cat}\n{_format_artifact_inference()}{_build_event_id_guidance(evidence_results)}{strength}{exec_rules}</RULES>\n"
+        f"app_categories: {app_cat}\n{_format_artifact_inference()}{_build_event_id_guidance(evidence_results)}{strength}{exec_rules}"
+        f"{publication_guidance}\n</RULES>\n"
         f"{_section_evidence_block(prompt_raw_evidence_rows)}{cov or ''}"
         f"{digest_block}"
         "<EXAMPLE verdict=\"report_section\">\nInput: section_meta={'section': '3_technical'}, evidence_results=[{'sample_rows': [{'evidence_id': 'E1', 'process_name': 'powershell.exe'}]}]\nOutput: \"## Process Execution\\n\\nOne suspicious process was observed: powershell.exe (evidence_id: E1).\"\n</EXAMPLE>\n"
@@ -189,6 +230,7 @@ def build_report_section_messages(
     user = (
         f"section_meta: {section_meta}\ncurrent_subsection: {section_heading or '(full section)'}\n"
         f"report_brief: {slim_report_brief_for_section(prompt_report_brief, str(section_meta.get('section') or ''))}\n"
+        f"publication_constraints: {publication_guidance or 'none'}\n"
         f"{_section_context_block(context_sections, current_section_outline or [])}"
         f"{_section_verification_block(verification_notes)}"
         f"evidence_results: {evidence}\n{raw_block}\n"
@@ -340,9 +382,57 @@ def build_section_agent_plan_messages(
     error-recovery logic to switch to keypoint after repeated SQL failures."""
 
     prompt_report_brief = project_report_brief(report_brief, db=db)
+    plan_brief = project_section_plan_brief(
+        prompt_report_brief, section_key=section_key
+    )
+    publication_guidance = _publication_guidance(
+        section_key, prompt_report_brief.get("publication_state")
+    )
     prompt_reusable_facts = project_report_evidence_rows(reusable_facts, db=db)
     prompt_reusable_evidence = project_report_evidence_rows(reusable_evidence, db=db)
-    prompt_prior_runs = project_report_prior_runs(prior_runs, db=db)
+    prompt_prior_runs = project_section_plan_prior_runs(prior_runs, db=db)
+    plan_event_ids, plan_playbook_sections = section_plan_scope(
+        section_key=section_key,
+        block_heading=block_heading,
+        template_body=template_body,
+        question_spec=question_spec,
+        evidence_keypoints=evidence_keypoints,
+        keypoint_catalog=keypoint_catalog,
+        query_template_catalog=query_template_catalog,
+    )
+    plan_findings = compact_section_plan_items(
+        project_report_evidence_rows(findings_snapshot, db=db),
+        fields=(
+            "finding_id",
+            "title",
+            "summary",
+            "severity",
+            "confidence",
+            "status",
+            "source_rule_ids",
+            "evidence_ids",
+            "representative_evidence_ids",
+        ),
+        limit=10,
+    )
+    plan_keypoints = project_section_plan_catalog(
+        keypoint_catalog,
+        fields=("name", "description", "source_kind", "source_ref"),
+        section_key=section_key,
+        block_heading=block_heading,
+        template_body=template_body,
+        question_spec=question_spec,
+        evidence_keypoints=evidence_keypoints,
+    )
+    plan_templates = project_section_plan_catalog(
+        query_template_catalog,
+        fields=("template_id", "description", "required_params"),
+        section_key=section_key,
+        block_heading=block_heading,
+        template_body=template_body,
+        question_spec=question_spec,
+        evidence_keypoints=evidence_keypoints,
+    )
     schema_guidance = _build_schema_guidance(
         "evtx_events", db=db, session_id=session_id
     )
@@ -371,9 +461,6 @@ Output: {"action": "keypoint", "keypoint": "overview_hosts", "purpose": "List ho
         f"<SCHEMA_NOTES>\n{schema_notes}\n</SCHEMA_NOTES>\n" if schema_notes else ""
     )
 
-    from forensia.ai.case_profile import get_profile_event_ids
-
-    _sa_ev = get_profile_event_ids()
     _sa_tables: set[str] | None = None
     if db is not None:
         try:
@@ -386,7 +473,7 @@ Output: {"action": "keypoint", "keypoint": "overview_hosts", "purpose": "List ho
                 "Failed to introspect DB tables for section plan prompt", exc_info=True
             )
     system = (
-        f"{_dfir_playbook('section_agent_plan', event_ids=_sa_ev, tables=_sa_tables)}\n"
+        f"{_dfir_playbook('section_agent_plan', event_ids=plan_event_ids, tables=_sa_tables, sections=plan_playbook_sections, db=db, session_id=session_id)}\n"
         f"{_time_range_guidance(time_range)}"
         "<TASK>You are a DFIR section-planning agent. Decide next evidence-gathering action for report block.</TASK>\n"
         "<INPUT_SCHEMA>section_key, block_heading, template_block, structured_memory_context, findings_snapshot, keypoint_catalog, query_template_catalog, prior_runs</INPUT_SCHEMA>\n"
@@ -414,8 +501,9 @@ Output: {"action": "keypoint", "keypoint": "overview_hosts", "purpose": "List ho
         "stop_early: Set action=write when enough evidence exists.\n"
         "If template_evidence_keypoints is non-empty and action=keypoint is appropriate, prefer those names verbatim.\n"
         "Avoid re-using keypoints already used by other sections (listed in prior_section_keypoints_in_this_report). Choose different evidence for this section.\n"
+        f"{publication_guidance}\n"
         "</RULES>\n"
-        f"{build_investigation_framework(db)}"
+        f"{build_investigation_framework(db, event_ids=plan_event_ids, include_event_guidance=bool(plan_event_ids or 'logon_types' in plan_playbook_sections))}"
         f"{schema_guidance}"
         f"{EXAMPLE_SECTION_PLAN}{EXAMPLE_SECTION_PLAN_TEMPLATE}{EXAMPLE_SECTION_PLAN_KEYPOINT}"
         "Output JSON only. "
@@ -427,14 +515,15 @@ Output: {"action": "keypoint", "keypoint": "overview_hosts", "purpose": "List ho
         f"block_heading: {block_heading}\n\n"
         f"template_block:\n{template_body}\n\n"
         f"structured_memory_context:\n{memory_context_md}\n\n"
-        f"report_brief: {slim_report_brief_for_section(prompt_report_brief, section_key)}\n\n"
+        f"report_brief: {plan_brief}\n\n"
+        f"publication_constraints: {publication_guidance or 'none'}\n\n"
         f"previous_sections: {truncate_context_sections(context_sections)}\n\n"
         f"current_section_outline: {_format_outline(current_section_outline or [])}\n\n"
-        f"findings_snapshot: {findings_snapshot[:10]}\n\n"
+        f"findings_snapshot: {plan_findings}\n\n"
         f"reusable_section_facts: {prompt_reusable_facts[:12]}\n\n"
         f"reusable_section_evidence: {prompt_reusable_evidence[:20]}\n\n"
-        f"keypoint_catalog: {keypoint_catalog}\n\n"
-        f"query_template_catalog: {query_template_catalog}\n\n"
+        f"keypoint_catalog: {plan_keypoints}\n\n"
+        f"query_template_catalog: {plan_templates}\n\n"
         f"template_evidence_keypoints: {evidence_keypoints or []}\n\n"
         f"semantic_question_spec: {question_spec or {}}\n\n"
         f"prior_section_keypoints_in_this_report: {prior_section_keypoints or []}\n\n"

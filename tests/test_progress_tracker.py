@@ -122,9 +122,15 @@ class TestHeuristicConfirmWhenNeverAutoConfirms:
         rows = [
             {
                 "event_id": 7045,
+                "channel": "System",
                 "computer": "HOST-A",
                 "src_ip": "10.0.0.5",
                 "timestamp": "2024-01-01T00:00:00Z",
             }
         ]
         assert tracker.should_auto_confirm(None, rows, hypothesis) is True
+        assert tracker.should_auto_confirm(
+            None,
+            [{**rows[0], "channel": "Application"}],
+            hypothesis,
+        ) is False

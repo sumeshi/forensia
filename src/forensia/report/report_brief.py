@@ -15,10 +15,12 @@ from forensia.report.benign_auth import finding_is_auth_scoped, is_benign_local_
 from forensia.report.evidence_refs import (
     _extract_evidence_ids_from_value,
 )
+from forensia.report.metrics import query_case_metrics
 from forensia.report.render.markdown import (
     _render_timestamp_with_timezone,
     _tz_offset_str,
 )
+from forensia.report.report_validation import derive_publication_state
 from forensia.report.sections.section_quality import _collect_section_coverage
 from forensia.report.sections.section_store import _claim_text_key
 
@@ -94,6 +96,11 @@ def _query_top_findings(
             if evidence_ids:
                 item["evidence_ids"] = evidence_ids[:5]
             item["evidence"] = _sanitize_evidence_paths(item.get("evidence"))
+            # Rule findings are deterministic observations.  Keep their role
+            # explicit in every report prompt so prose generation cannot
+            # silently promote them to a confirmed investigative conclusion.
+            item["evidence_role"] = "deterministic_signal"
+            item["claim_status"] = "review_candidate"
             item.pop("signal_rank", None)
         normalized.append(item)
         if len(normalized) >= limit:
@@ -328,6 +335,7 @@ def _build_report_brief(
     """Assemble a structured brief of top findings, hypotheses, section excerpts, and coverage data for LLM context."""
     tz_name = getattr(case, "source_timezone", "UTC") if case else "UTC"
     tz_offset = _tz_offset_str(tz_name) if tz_name != "UTC" else ""
+    publication_state = derive_publication_state(db)
     return {
         "top_findings": [normalize_value(item) for item in _query_top_findings(db)],
         "active_hypotheses": [
@@ -349,9 +357,17 @@ def _build_report_brief(
         "prior_sections": _query_prior_sections(db),
         "existing_claims": _dedupe_claims(_query_existing_claims(db)),
         "evidence_coverage": _summarize_section_coverage(db),
+        "case_metrics": query_case_metrics(db),
         "source_timezone": tz_name,
         "timezone_offset": tz_offset,
         "time_range": _query_evtx_time_range(db, case),
+        # Shared pre-generation contract. Section roles consume this state;
+        # rule findings remain review candidates until a durable hypothesis
+        # execution and confirmed verdict exist.
+        "publication_state": publication_state,
+        "publication_status": publication_state["publication_status"],
+        "evidence_confidence": publication_state["evidence_confidence"],
+        "claim_scope": publication_state["claim_scope"],
     }
 
 

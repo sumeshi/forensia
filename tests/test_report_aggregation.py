@@ -18,13 +18,14 @@ import unittest
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.report.answers.gap_tables import build_evidence_gaps_table
-from forensia.report.answers.summary_rows import antiforensic_rows
+from forensia.report.answers.summary_rows import _count_table, antiforensic_rows
 from forensia.report.finding_themes import (
     build_recommendations_table,
     classify_finding_theme,
     finding_theme_counts,
     signal_finding_rows,
 )
+from forensia.report.metrics import query_case_metrics
 from forensia.report.report_brief import query_top_findings
 
 
@@ -77,6 +78,67 @@ class TestFindingThemeConfiguration(unittest.TestCase):
 
     def test_unmatched_finding_uses_declared_fallback(self) -> None:
         self.assertEqual("other", classify_finding_theme({"title": "Unclassified"}))
+
+
+class TestCanonicalReportMetrics(unittest.TestCase):
+    """Report sections consume one DB-owned event/host/artifact metric set."""
+
+    def test_event_host_and_artifact_metrics_are_canonical(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                for index in range(15):
+                    host = (
+                        "informant-PC"
+                        if index < 10
+                        else " INFORMANT-PC "
+                        if index < 12
+                        else "37L4247F27-25"
+                    )
+                    db.execute(
+                        "INSERT INTO evtx_events (evidence_id, event_id, channel, timestamp, computer, raw_json) VALUES (?, 4648, 'Security', ?, ?, ?)",
+                        (
+                            f"evtx-4648-{index}",
+                            f"2015-03-25 15:{index:02d}:00",
+                            host,
+                            '{"winlog":{"channel":"Security","provider":{"name":"Microsoft-Windows-Security-Auditing"}}}',
+                        ),
+                    )
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, computer) VALUES ('evtx-4624', 4624, 'informant-PC')"
+                )
+                db.execute("INSERT INTO mft_entries (evidence_id) VALUES ('mft-1'), ('mft-2')")
+                db.execute("INSERT INTO prefetch_executions (evidence_id) VALUES ('pf-1')")
+
+                metrics = query_case_metrics(db)
+                count_rows = _count_table(db)
+
+        self.assertEqual(15, metrics["semantic_event_counts"]["4648"])
+        self.assertEqual(2, metrics["normalized_host_count"])
+        self.assertEqual({"evtx": 16, "mft": 2, "prefetch": 1}, metrics["artifact_row_counts"])
+        self.assertEqual(15, metrics["event_counts"]["4648"])
+        self.assertEqual(2, next(row["value"] for row in count_rows if row["metric"] == "Hosts"))
+        informant = next(
+            row for row in metrics["hosts"] if row["canonical"] == "INFORMANT-PC"
+        )
+        self.assertEqual(2, informant["observed_spellings"])
+
+    def test_semantic_4648_metric_excludes_unrelated_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, channel, raw_json) VALUES ('security-4648', 4648, 'Security', ?)",
+                    ('{"winlog":{"channel":"Security","provider":{"name":"Microsoft-Windows-Security-Auditing"}}}',),
+                )
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, channel, raw_json) VALUES ('other-4648', 4648, 'Application', ?)",
+                    ('{"winlog":{"channel":"Application","provider":{"name":"Other-Provider"}}}',),
+                )
+                metrics = query_case_metrics(db)
+
+        self.assertEqual(2, metrics["event_counts"]["4648"])
+        self.assertEqual(1, metrics["semantic_event_counts"]["4648"])
 
 
 class TestFindingThemeCountsConsistency(unittest.TestCase):

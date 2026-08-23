@@ -117,7 +117,12 @@ validates the action and query-intent arguments before invoking the existing
 scope filter, self-check, or SQL composer. A legacy response without `action`
 is normalized only when a non-empty `read_more` list or a complete known-table
 query intent makes the meaning unambiguous; otherwise planning stops without
-SQL composition.
+SQL composition. For a valid nested action, the host materializes the normalized
+action object rather than the outer response wrapper. If host validation or
+materialization fails, the failure is persisted in the plan step and hypothesis
+reasoning, injected into the next planner prompt, and retried once within a
+bounded planner-only allowance; it is not counted as query execution progress.
+`do`/`check` receipts remain the evidence that the hypothesis loop actually ran.
 `knowledge.retrieve` remains an internal deterministic prompt-assembly step and
 is not exposed as an LLM-callable action.
 
@@ -144,7 +149,7 @@ See [ai/llm/schemas.py](../src/forensia/ai/llm/schemas.py) directly for the full
 
 ## 4. Common prompt parts
 
-Common helpers live in the [src/forensia/ai/prompts/](../src/forensia/ai/prompts/) package.
+Common helpers live in the [src/forensia/ai/prompts/](../src/forensia/ai/prompts/) package. Section planning uses a role-specific projection: only block/keypoint/question-relevant Event IDs and playbook sections are included, while the report brief, findings snapshot, catalogs, and prior runs are compacted to fields needed for planning. This is a prompt projection only; DuckDB evidence and persisted report answers remain complete.
 
 | Function | Purpose |
 |---|---|

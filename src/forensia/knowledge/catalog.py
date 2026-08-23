@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 import logging
 import re
 from functools import lru_cache
@@ -68,6 +69,67 @@ def load_event_id_hints() -> dict[int, dict[str, Any]]:
         if isinstance(value, dict):
             events[event_id] = value
     return events
+
+
+def event_context_eligible(
+    event_id: int | str,
+    *,
+    channel: str | None = None,
+    provider: str | None = None,
+) -> bool:
+    """Return whether an event ID is semantically valid for its log context.
+
+    Windows reuses event IDs across providers and channels (notably event 4104).
+    The event catalog is the authority for those constraints.  A context-aware
+    caller should pass both values when available; a missing value is treated as
+    unknown and therefore cannot satisfy a constrained catalog entry.
+    Entries without a declared constraint remain eligible for backward-compatible
+    catalog records.
+    """
+
+    try:
+        hint = load_event_id_hints().get(int(event_id))
+    except (TypeError, ValueError):
+        return False
+    if not hint:
+        return False
+
+    def normalized(value: Any) -> str:
+        return str(value or "").strip().casefold()
+
+    channels = [normalized(value) for value in hint.get("channels") or [] if value]
+    providers = [normalized(value) for value in hint.get("providers") or [] if value]
+    if channels and normalized(channel) not in channels:
+        return False
+    if providers and normalized(provider) not in providers:
+        return False
+    return True
+
+
+def event_context_from_row(row: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Extract channel/provider from an evidence row without trusting event ID alone."""
+
+    channel = row.get("channel")
+    provider = row.get("provider")
+    raw_json = row.get("raw_json")
+    if provider is None and raw_json:
+        try:
+            raw = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
+            if isinstance(raw, dict):
+                winlog = raw.get("winlog")
+                if isinstance(winlog, dict):
+                    provider_obj = winlog.get("provider")
+                    if isinstance(provider_obj, dict):
+                        provider = provider_obj.get("name")
+                    elif provider_obj:
+                        provider = provider_obj
+                    channel = channel or winlog.get("channel")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+    return (
+        str(channel).strip() if channel not in (None, "") else None,
+        str(provider).strip() if provider not in (None, "") else None,
+    )
 
 
 # ── Benign context rules ───────────────────────────────────────────────────

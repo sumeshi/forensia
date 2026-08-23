@@ -125,6 +125,14 @@ are managed in a local working directory. See [BENCHMARK.md](../BENCHMARK.md) /
 
 After each section body is filled, `quality_gate_section` ([report/sections/quality_gates.py](../src/forensia/report/sections/quality_gates.py)) runs registered static checks, adding a gap per detection and lowering confidence down to a cap. The checks are template-independent and apply to all sections.
 
+Publication readiness is a separate deterministic gate from section workflow status. The
+report validation projection checks that confirmed hypotheses have evidence and that the
+hypothesis loop produced `do`/`check` receipts. If no confirmed, evidenced investigation
+is available, the report is marked `needs_review` / `incomplete`, rule findings are labeled
+deterministic signals/review candidates, and overview/conclusion/recommendation prompts are
+constrained from presenting them as confirmed incident conclusions. An `ai_exhausted`
+section or a high prose score does not imply high evidence confidence.
+
 Quality checks infer their applicability from the generated Markdown structure and
 evidence context. Templates do not expose Python feature flags. Timeline checks
 recognize timestamp-first tables; recommendation checks recognize relevant
@@ -163,8 +171,8 @@ LLM input is not a fixed string; it is assembled step by step according to phase
 
 1. **DFIR playbook injection (phase-aware)**: `_dfir_playbook(phase)` reads `_schema/playbook/<phase>.md`. For planning phases (`broad_plan`, `hypothesis_plan`), Application Catalog / Artifact-to-Application Inference / FP Reduction are intentionally omitted (these are for evidence interpretation). For interpretation phases (`check`, `report_section`, `section_agent_check`), the full set is injected
 2. **schema_card + SQL cookbook injection**: planner / checker receive the `<SCHEMA_CARDS>` and 6 kinds of `<SQL_COOKBOOK>` for the target table, so they never write SQL from scratch. The SQL validator's allowed tables follow `get_allowed_tables(db)` and the live schema
-3. **Dynamic context**: The case's `time_range`, `uncovered_keypoints`, active / resolved hypotheses, recent history, and observed_keypoints are inserted by role-specific builders in [ai/prompts/](../src/forensia/ai/prompts/), which drop null / empty fields and aggregate repeated rule patterns before serialization. Large aggregate evidence sets keep their complete IDs in DuckDB/persisted results; report prompts receive a deterministic projection containing counts, semantic distributions, and real temporal/bucket representatives selected from DuckDB metadata.
-4. **Per-section slimming of report_brief**: `_slim_report_brief_for_section` looks at the section key and, except for `1_overview`, trims down to only `time_range` / `source_timezone` / `investigation_objective`. It does not dump top_findings or all hypotheses wholesale (for 2/3/4/5 series it selectively restores scoped `top_findings` / `confirmed_hypotheses` / `active_hypotheses`)
+3. **Dynamic context**: The case's `time_range`, `uncovered_keypoints`, active / resolved hypotheses, recent history, and observed_keypoints are inserted by role-specific builders in [ai/prompts/](../src/forensia/ai/prompts/), which drop null / empty fields and aggregate repeated rule patterns before serialization. Large aggregate evidence sets keep their complete IDs in DuckDB/persisted results; report prompts receive a deterministic projection containing counts, semantic distributions, and real temporal/bucket representatives selected from DuckDB metadata. Section-agent planning additionally scopes Event ID/playbook material to the block, keypoint, question, and template context and compacts report brief, findings, catalogs, and prior runs for that role.
+4. **Per-section slimming of report_brief**: `_slim_report_brief_for_section` looks at the section key and, except for `1_overview`, trims down to only `time_range` / `source_timezone` / `investigation_objective`. Section planning uses the stricter `project_section_plan_brief` projection and a compact prior-run representation; it does not dump top_findings or all hypotheses wholesale (for 2/3/4/5 series it selectively restores scoped `top_findings` / `confirmed_hypotheses` / `active_hypotheses`).
 5. **Section-agent token budget guard**: section planning and checking call `_trim_dynamic_content()` with the configured prompt budget. It trims the user / dynamic side while protecting the system side; other LLM roles rely on their own scoped projections and the transport's context-window checks
 
 ---

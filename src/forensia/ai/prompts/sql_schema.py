@@ -437,7 +437,12 @@ def _fmt_table_notes(table_name: str) -> str:
     return "\n".join(lines)
 
 
-def build_investigation_framework(db: CaseDB | None = None) -> str:
+def build_investigation_framework(
+    db: CaseDB | None = None,
+    *,
+    event_ids: set[int] | None = None,
+    include_event_guidance: bool = True,
+) -> str:
     """Build investigation framework from schema declarations.
 
     PROMPT-4: Framework is built from YAML schema, not Python literals.
@@ -445,19 +450,33 @@ def build_investigation_framework(db: CaseDB | None = None) -> str:
     logon_schema = load_logon_type_schema()
     app_catalog = load_app_catalog()
 
-    # Logon type reference
+    # Logon type reference. Neutral section-plan blocks opt out so they do not
+    # receive the case-wide event catalog while choosing a writing action.
     logontype_lines = []
-    for lt in sorted(logon_schema.get("types", {}).items(), key=lambda x: int(x[0])):
-        lt_id, lt_def = lt
-        logontype_lines.append(
-            f"  {lt_id}  = {lt_def.get('name', '?')} ({lt_def.get('description', '')})"
-        )
+    if include_event_guidance:
+        for lt in sorted(logon_schema.get("types", {}).items(), key=lambda x: int(x[0])):
+            lt_id, lt_def = lt
+            logontype_lines.append(
+                f"  {lt_id}  = {lt_def.get('name', '?')} ({lt_def.get('description', '')})"
+            )
 
     # Priority events
     priority_lines = [
         "Priority SQL guidance — investigate in this order when no prior history exists:"
     ]
-    for i, pe in enumerate(logon_schema.get("priority_events", []), 1):
+    priority_entries = logon_schema.get("priority_events", [])
+    if event_ids is not None:
+        priority_entries = [
+            pe
+            for pe in priority_entries
+            if isinstance(pe, dict)
+            and any(
+                int(eid) in event_ids
+                for eid in pe.get("event_ids", [])
+                if str(eid).isdigit()
+            )
+        ]
+    for i, pe in enumerate(priority_entries if include_event_guidance else [], 1):
         eids = pe.get("event_ids", [])
         lts = pe.get("logon_types", [])
         suffix = f" with logon_type IN ({lts})" if lts else ""
@@ -494,11 +513,15 @@ def build_investigation_framework(db: CaseDB | None = None) -> str:
         "  To:   destination host (computer)\n"
         "  What: event_id, process_name, command_line, service_name\n"
         "  How:  logon method (interpret logon_type carefully)\n\n"
-        "LogonType reference:\n"
-        + "\n".join(logontype_lines)
-        + "\n\n"
-        + "\n".join(priority_lines)
-        + "\n\n"
+        + (
+            "LogonType reference:\n"
+            + "\n".join(logontype_lines)
+            + "\n\n"
+            + "\n".join(priority_lines)
+            + "\n\n"
+            if include_event_guidance
+            else ""
+        )
         + _fmt_table_notes("evtx_events")
         + "\n"
         + "\n".join(app_lines)
