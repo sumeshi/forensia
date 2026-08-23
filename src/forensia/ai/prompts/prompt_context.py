@@ -955,12 +955,21 @@ def _rows_to_markdown_table(rows: list[dict[str, Any]], max_rows: int = 30) -> s
 
 
 def _format_evidence_row(e: dict[str, Any]) -> str:
-    evid = e.get("evidence_id") or e.get("id") or "?"
+    representative_ids = e.get("representative_evidence_ids")
+    if isinstance(representative_ids, list) and representative_ids:
+        evid = ", ".join(str(item) for item in representative_ids)
+    else:
+        evid = e.get("evidence_id") or e.get("id") or "?"
     if "summary" in e:
         return f"- {evid}: {e['summary'][:300]}"
     keys = [
         k
         for k in (
+            "first_event",
+            "last_event",
+            "event_count",
+            "evidence_count",
+            "_source_keypoint",
             "event_id",
             "timestamp",
             "computer",
@@ -973,4 +982,13 @@ def _format_evidence_row(e: dict[str, Any]) -> str:
         if k in e
     ]
     parts = ", ".join(f"{k}={e[k]}" for k in keys[:8])
+    distributions = e.get("evidence_distribution")
+    if isinstance(distributions, dict):
+        coverage = ", ".join(
+            f"{name}_distinct={value.get('distinct_count')}"
+            for name, value in distributions.items()
+            if isinstance(value, dict) and value.get("distinct_count") is not None
+        )
+        if coverage:
+            parts = f"{parts}, {coverage}" if parts else coverage
     return f"- {evid}: {parts}"

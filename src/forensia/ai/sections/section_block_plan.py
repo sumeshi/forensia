@@ -394,6 +394,7 @@ def _run_block_check(
         question_spec=ctx.question_spec.to_prompt_dict()
         if ctx.question_spec is not None
         else None,
+        db=ctx.db,
     )
     # R3-07: Enforce system message budget at message assembly level
     if check_messages and check_messages[0].get("role") == "system":

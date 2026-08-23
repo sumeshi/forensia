@@ -12,6 +12,9 @@ from forensia.ai.prompts.prompt_sections import (
     build_section_outline_messages,
     build_structured_classify_messages,
 )
+from forensia.ai.prompts.report_evidence_projection import (
+    project_report_evidence_rows,
+)
 from forensia.ai.sections.section_answers import (
     _flatten_sample_rows,
     _format_structured_answer,
@@ -444,7 +447,12 @@ def _write_block_body(
         raw_rows = _select_columns_by_template(
             raw_rows, ctx.section_key, ctx.template_body
         )
-    prompt_rows = _summarize_flat_evidence_rows(raw_rows) if raw_rows else None
+    projected_raw_rows = project_report_evidence_rows(raw_rows, db=ctx.db)
+    prompt_rows = (
+        _summarize_flat_evidence_rows(projected_raw_rows)
+        if projected_raw_rows
+        else None
+    )
 
     if ctx.question_mode:
         body, messages, status_inner = _write_question_block(
@@ -537,6 +545,7 @@ def _write_question_block(
                 evidence_rows=prompt_rows or [],
                 expected_shape=expected_shape,
                 time_range=ctx.case.time_range,
+                db=ctx.db,
             )
             classification = llm_gateway.request_llm_json(
                 messages=classify_messages,
@@ -619,11 +628,12 @@ def _write_narrative_block(
         messages = []
     else:
         flat_evidence = _flatten_sample_rows(collected_results, rows_only=True)
+        prompt_flat_evidence = project_report_evidence_rows(flat_evidence, db=ctx.db)
         executive_from_brief = (
             ctx.block_heading.strip().lower() == "executive summary"
             and bool(ctx.structured_digest)
         )
-        if flat_evidence and not executive_from_brief:
+        if prompt_flat_evidence and not executive_from_brief:
             prior_section_keypoints = list(
                 {
                     str(r.get("keypoint") or r.get("source_kind") or "")
@@ -633,10 +643,11 @@ def _write_narrative_block(
             )
             outline_messages, outline_schema = build_section_outline_messages(
                 template_body=ctx.template_body,
-                relevant_evidence=flat_evidence,
+                relevant_evidence=prompt_flat_evidence,
                 time_range=ctx.case.time_range,
                 section_meta={"section": ctx.section_key, "title": ctx.title},
                 prior_section_keypoints=prior_section_keypoints,
+                db=ctx.db,
             )
             outline = llm_gateway.request_llm_json(
                 messages=outline_messages,
@@ -659,9 +670,15 @@ def _write_narrative_block(
         narrate_messages, narrate_schema = build_paragraph_narrate_messages(
             heading=ctx.block_heading,
             key_points=all_key_points,
-            evidence_rows=flat_evidence[:10],
+            evidence_rows=prompt_flat_evidence[:10],
             template_body=ctx.template_body,
             structured_digest=ctx.structured_digest,
+            report_context={
+                key: value
+                for key in ("time_range", "source_timezone", "timezone_offset")
+                if (value := ctx.prompt_report_brief.get(key)) not in (None, "", {})
+            },
+            db=ctx.db,
         )
         body = narrate_paragraph_with_retry(
             narrate_messages=narrate_messages,
@@ -681,7 +698,7 @@ def _write_narrative_block(
                 heading=ctx.block_heading,
                 status=status_inner,
                 collected_results=collected_results,
-                flat_evidence=flat_evidence,
+                flat_evidence=prompt_flat_evidence,
                 actual_query_count=actual_query_count,
                 actual_query_row_counts=actual_query_row_counts,
                 key_points=all_key_points,

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import copy
+import json
 import os
+import re
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -18,7 +22,11 @@ from forensia.ai.prompts.prompt_sections import (
     build_paragraph_narrate_messages,
     build_question_classify_messages,
     build_report_section_messages,
+    build_section_outline_messages,
     build_structured_classify_messages,
+)
+from forensia.ai.prompts.report_evidence_projection import (
+    project_report_evidence_row,
 )
 from forensia.ai.prompts.sql_schema import build_investigation_framework
 from forensia.ai.sections.section_exec import question_report_brief
@@ -30,6 +38,7 @@ from forensia.config import (
 from forensia.core.case import Case
 from forensia.core.session import Hypothesis, PlannedQuery
 from forensia.db.database import CaseDB
+from forensia.report.sections.section_quality import validate_body_evidence_ids
 
 
 class _MemoryStub:
@@ -560,6 +569,161 @@ class NarratePromptContractTests(unittest.TestCase):
         )
         self.assertIn('{"body"', messages[0]["content"])
         self.assertIn("Do not return a bare string", messages[0]["content"])
+
+    def test_large_aggregate_evidence_is_semantically_projected(self) -> None:
+        """A complete 5,199-ID set stays authoritative but never floods report prompts."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            db = CaseDB(case)
+            try:
+                evidence_ids = [
+                    f"evtx-security-{index:012d}" for index in range(1, 5200)
+                ]
+                base = datetime(2015, 3, 22, 12, 0, 0)
+                db.insert_many(
+                    """
+                    INSERT INTO evtx_events (
+                        evidence_id, timestamp, channel, computer, target_user, event_id
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            evidence_id,
+                            base + timedelta(seconds=index),
+                            ("Security", "System", "Application")[index % 3],
+                            ("host-a", "host-b")[index % 2],
+                            ("alice", "bob", "carol")[index % 3],
+                            (4624, 4625, 4648, 4720)[index % 4],
+                        )
+                        for index, evidence_id in enumerate(evidence_ids)
+                    ],
+                )
+                unordered_ids = evidence_ids[2600:] + evidence_ids[:2600]
+                aggregate = {
+                    "first_event": str(base),
+                    "last_event": str(base + timedelta(seconds=5198)),
+                    "event_count": 5199,
+                    "evidence_ids": unordered_ids,
+                    "_source_keypoint": "raw_sql",
+                }
+                original = copy.deepcopy(aggregate)
+
+                projected = project_report_evidence_row(aggregate, db=db)
+                projected_from_reverse = project_report_evidence_row(
+                    {**aggregate, "evidence_ids": list(reversed(unordered_ids))},
+                    db=db,
+                )
+
+                self.assertEqual(original, aggregate)
+                self.assertEqual(projected, projected_from_reverse)
+                self.assertEqual(5199, projected["event_count"])
+                self.assertEqual(5199, projected["evidence_count"])
+                self.assertEqual(str(base), projected["first_event"])
+                self.assertEqual(
+                    str(base + timedelta(seconds=5198)), projected["last_event"]
+                )
+                self.assertNotIn("evidence_ids", projected)
+                representatives = projected["representative_evidence_ids"]
+                self.assertIn(evidence_ids[0], representatives)
+                self.assertIn(evidence_ids[-1], representatives)
+                self.assertTrue(set(representatives).issubset(evidence_ids))
+                self.assertLessEqual(len(representatives), 10)
+                distribution = projected["evidence_distribution"]
+                self.assertEqual(3, distribution["source_family"]["distinct_count"])
+                self.assertEqual(2, distribution["host"]["distinct_count"])
+                self.assertEqual(3, distribution["user"]["distinct_count"])
+                self.assertEqual(4, distribution["event_family"]["distinct_count"])
+
+                narrative, _ = build_paragraph_narrate_messages(
+                    heading="Time Basis and Coverage",
+                    key_points=[],
+                    evidence_rows=[aggregate],
+                    template_body="Covered period, source coverage, timezone, gaps.",
+                    report_context={"source_timezone": "UTC"},
+                    db=db,
+                )
+                outline, _ = build_section_outline_messages(
+                    template_body="## Time Basis and Coverage",
+                    relevant_evidence=[aggregate],
+                    section_meta={"section": "2_timeline"},
+                    db=db,
+                )
+                structured, _ = build_structured_classify_messages(
+                    question="What period is covered?",
+                    block_heading="Time Basis and Coverage",
+                    evidence_rows=[aggregate],
+                    expected_shape={
+                        "fields": ["first_event", "last_event", "event_count"]
+                    },
+                    db=db,
+                )
+                report_messages = build_report_section_messages(
+                    section_meta={"section": "1_overview"},
+                    evidence_results=[],
+                    context_sections={},
+                    template_body="## Evidence Scope",
+                    report_brief={"top_findings": [aggregate]},
+                    db=db,
+                )
+                prompt_texts = [
+                    narrative[1]["content"],
+                    outline[1]["content"],
+                    structured[1]["content"],
+                    report_messages[1]["content"],
+                ]
+                raw_size = len(json.dumps([aggregate]))
+                for prompt_text in prompt_texts:
+                    self.assertIn("evidence_count", prompt_text)
+                    self.assertIn("first_event", prompt_text)
+                    self.assertIn("last_event", prompt_text)
+                    self.assertIn("raw_sql", prompt_text)
+                    self.assertLess(len(prompt_text), raw_size // 10)
+                    self.assertLessEqual(
+                        len(re.findall(r"evtx-security-\d{12}", prompt_text)), 20
+                    )
+                self.assertIn('"source_timezone": "UTC"', narrative[1]["content"])
+
+                body = "Observed coverage (" + ", ".join(representatives[:3]) + ")."
+                self.assertEqual([], validate_body_evidence_ids(db, body))
+
+                small = {
+                    "event_count": 3,
+                    "evidence_ids": evidence_ids[:3],
+                    "_source_keypoint": "raw_sql",
+                }
+                self.assertEqual(small, project_report_evidence_row(small, db=db))
+
+                unavailable = project_report_evidence_row(aggregate, db=None)
+                self.assertNotIn("evidence_ids", unavailable)
+                self.assertEqual([], unavailable["representative_evidence_ids"])
+                self.assertFalse(unavailable["citable"])
+                no_db_messages, _ = build_paragraph_narrate_messages(
+                    heading="Time Basis and Coverage",
+                    key_points=[],
+                    evidence_rows=[aggregate],
+                    template_body="## Time Basis and Coverage",
+                )
+                self.assertNotIn(evidence_ids[0], no_db_messages[1]["content"])
+                self.assertLess(len(no_db_messages[1]["content"]), raw_size // 10)
+
+                unresolved = project_report_evidence_row(
+                    {
+                        "event_count": 21,
+                        "evidence_ids": [
+                            f"evtx-security-{index:012d}"
+                            for index in range(900_000, 900_021)
+                        ],
+                    },
+                    db=db,
+                )
+                self.assertEqual([], unresolved["representative_evidence_ids"])
+                self.assertFalse(unresolved["citable"])
+                self.assertEqual(
+                    21,
+                    unresolved["evidence_projection"]["unresolved_evidence_count"],
+                )
+            finally:
+                db.close()
 
     def test_slim_report_brief_keeps_case_level_context_for_narrative_sections(self):
         brief = {

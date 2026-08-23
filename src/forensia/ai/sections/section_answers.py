@@ -582,12 +582,21 @@ def _representative_ids(
             seen_findings.add(text)
             finding_ids.append(text)
 
+    for row in flat_rows:
+        representative_ids = row.get("representative_evidence_ids")
+        if isinstance(representative_ids, list):
+            for evidence_id in representative_ids:
+                add_evidence(evidence_id)
+        else:
+            add_evidence(row.get("evidence_id"))
+        add_finding(row.get("finding_id"))
     for result in collected_results:
-        for evidence_id in result.get("evidence_ids") or []:
+        for evidence_id in (
+            result.get("representative_evidence_ids")
+            or result.get("evidence_ids")
+            or []
+        ):
             add_evidence(evidence_id)
         for finding_id in result.get("finding_ids") or []:
             add_finding(finding_id)
-    for row in flat_rows:
-        add_evidence(row.get("evidence_id"))
-        add_finding(row.get("finding_id"))
     return evidence_ids[:3], finding_ids[:3]

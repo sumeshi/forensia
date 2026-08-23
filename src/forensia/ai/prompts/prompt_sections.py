@@ -46,6 +46,12 @@ from forensia.ai.prompts.prompt_playbook import (
     _format_artifact_inference,
     _load_schema_notes,
 )
+from forensia.ai.prompts.report_evidence_projection import (
+    project_report_brief,
+    project_report_evidence_rows,
+    project_report_prior_runs,
+    project_report_results,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -115,12 +121,17 @@ def build_report_section_messages(
 
     placeholder = "[INSUFFICIENT EVIDENCE: reason]"
     section_key = str(section_meta.get("section") or "")
-    cov = _section_coverage_block(report_brief or {})
+    prompt_report_brief = project_report_brief(report_brief, db=db)
+    cov = _section_coverage_block(prompt_report_brief)
     if cov and str(section_meta.get("section") or "").strip() == "1_overview":
         cov = f"Use the following evidence coverage summary as the canonical Evidence Scope. Do not invent sources that are not listed.\n{cov}\n"
+    prompt_evidence_results = project_report_results(evidence_results, db=db)
+    prompt_raw_evidence_rows = project_report_evidence_rows(raw_evidence_rows, db=db)
     evidence = [
-        r for r in evidence_results if str(r.get("kind") or "rows") != "rows"
-    ] or evidence_results
+        r
+        for r in prompt_evidence_results
+        if str(r.get("kind") or "rows") != "rows"
+    ] or prompt_evidence_results
     sv = _collect_source_verdicts(evidence_results)
     strength = ""
     if sv and all(v != "confirmed" for v in sv):
@@ -161,23 +172,23 @@ def build_report_section_messages(
         "confirmed_hypotheses: Reflect in appropriate sections; refuted_hypotheses only in 'Discarded Hypotheses' subsection.\n"
         "Recommended actions must scale with evidence strength.\n"
         f"app_categories: {app_cat}\n{_format_artifact_inference()}{_build_event_id_guidance(evidence_results)}{strength}{exec_rules}</RULES>\n"
-        f"{_section_evidence_block(raw_evidence_rows)}{cov or ''}"
+        f"{_section_evidence_block(prompt_raw_evidence_rows)}{cov or ''}"
         f"{digest_block}"
         "<EXAMPLE verdict=\"report_section\">\nInput: section_meta={'section': '3_technical'}, evidence_results=[{'sample_rows': [{'evidence_id': 'E1', 'process_name': 'powershell.exe'}]}]\nOutput: \"## Process Execution\\n\\nOne suspicious process was observed: powershell.exe (evidence_id: E1).\"\n</EXAMPLE>\n"
         f"Output Markdown only (no fences). {_lang_instruction()}"
     )
     raw_block = ""
-    if raw_evidence_rows:
-        raw_block = f"\nnormalized_evidence_rows (summaries only; do not mirror raw tables):\n{_rows_to_markdown_table(raw_evidence_rows)}\n"
+    if prompt_raw_evidence_rows:
+        raw_block = f"\nnormalized_evidence_rows (summaries only; do not mirror raw tables):\n{_rows_to_markdown_table(prompt_raw_evidence_rows)}\n"
     requirement_index = _build_report_requirement_index(
-        report_brief, db=db, session_id=session_id
+        prompt_report_brief, db=db, session_id=session_id
     )
     evidence_group_index = _build_evidence_group_index(
         evidence_results, db=db, session_id=session_id
     )
     user = (
         f"section_meta: {section_meta}\ncurrent_subsection: {section_heading or '(full section)'}\n"
-        f"report_brief: {slim_report_brief_for_section(report_brief or {}, str(section_meta.get('section') or ''))}\n"
+        f"report_brief: {slim_report_brief_for_section(prompt_report_brief, str(section_meta.get('section') or ''))}\n"
         f"{_section_context_block(context_sections, current_section_outline or [])}"
         f"{_section_verification_block(verification_notes)}"
         f"evidence_results: {evidence}\n{raw_block}\n"
@@ -210,12 +221,14 @@ def build_question_classify_messages(
     evidence_rows: list[dict],
     expected_shape: dict | None,
     time_range: dict[str, str] | None = None,
+    db: CaseDB | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
     """role: question_classifier.
     Goal: decide answer status and pick which evidence_rows answer the question.
     Output: {status, picked_row_indices, rationale}
     """
-    schema = question_classify_schema(len(evidence_rows))
+    prompt_evidence_rows = project_report_evidence_rows(evidence_rows, db=db)
+    schema = question_classify_schema(len(prompt_evidence_rows))
     system = (
         "<TASK>You are a question_classifier. Decide the answer status and pick which evidence rows answer the question. "
         "Do NOT write narrative.</TASK>\n"
@@ -233,7 +246,7 @@ def build_question_classify_messages(
     user = (
         f"question: {question}\n"
         f"block_heading: {block_heading}\n"
-        f"evidence_rows: {json.dumps(evidence_rows[:20], default=str, ensure_ascii=False)}\n"
+        f"evidence_rows: {json.dumps(prompt_evidence_rows[:20], default=str, ensure_ascii=False)}\n"
         f"expected_shape: {json.dumps(expected_shape or {}, ensure_ascii=False, default=str)}\n"
     )
     return [
@@ -248,12 +261,14 @@ def build_structured_classify_messages(
     evidence_rows: list[dict],
     expected_shape: dict | None,
     time_range: dict[str, str] | None = None,
+    db: CaseDB | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
     """role: structured_classifier.
     Goal: decide answer status and pick which evidence_rows answer a reusable QuestionSpec.
     Output: {status, picked_row_indices, rationale}
     """
-    schema = structured_classify_schema(len(evidence_rows))
+    prompt_evidence_rows = project_report_evidence_rows(evidence_rows, db=db)
+    schema = structured_classify_schema(len(prompt_evidence_rows))
     system = (
         "<TASK>You are a structured_classifier. Decide the answer status and pick which evidence rows answer the question. "
         "Do NOT write narrative.</TASK>\n"
@@ -272,7 +287,7 @@ def build_structured_classify_messages(
     user = (
         f"question: {question}\n"
         f"block_heading: {block_heading}\n"
-        f"evidence_rows: {json.dumps(evidence_rows[:20], default=str, ensure_ascii=False)}\n"
+        f"evidence_rows: {json.dumps(prompt_evidence_rows[:20], default=str, ensure_ascii=False)}\n"
         f"expected_shape: {json.dumps(expected_shape or {}, ensure_ascii=False, default=str)}\n"
     )
     return [
@@ -324,6 +339,10 @@ def build_section_agent_plan_messages(
     Supports action types: sql, template, keypoint, facts, write. Includes
     error-recovery logic to switch to keypoint after repeated SQL failures."""
 
+    prompt_report_brief = project_report_brief(report_brief, db=db)
+    prompt_reusable_facts = project_report_evidence_rows(reusable_facts, db=db)
+    prompt_reusable_evidence = project_report_evidence_rows(reusable_evidence, db=db)
+    prompt_prior_runs = project_report_prior_runs(prior_runs, db=db)
     schema_guidance = _build_schema_guidance(
         "evtx_events", db=db, session_id=session_id
     )
@@ -408,18 +427,18 @@ Output: {"action": "keypoint", "keypoint": "overview_hosts", "purpose": "List ho
         f"block_heading: {block_heading}\n\n"
         f"template_block:\n{template_body}\n\n"
         f"structured_memory_context:\n{memory_context_md}\n\n"
-        f"report_brief: {slim_report_brief_for_section(report_brief, section_key)}\n\n"
+        f"report_brief: {slim_report_brief_for_section(prompt_report_brief, section_key)}\n\n"
         f"previous_sections: {truncate_context_sections(context_sections)}\n\n"
         f"current_section_outline: {_format_outline(current_section_outline or [])}\n\n"
         f"findings_snapshot: {findings_snapshot[:10]}\n\n"
-        f"reusable_section_facts: {reusable_facts[:12]}\n\n"
-        f"reusable_section_evidence: {reusable_evidence[:20]}\n\n"
+        f"reusable_section_facts: {prompt_reusable_facts[:12]}\n\n"
+        f"reusable_section_evidence: {prompt_reusable_evidence[:20]}\n\n"
         f"keypoint_catalog: {keypoint_catalog}\n\n"
         f"query_template_catalog: {query_template_catalog}\n\n"
         f"template_evidence_keypoints: {evidence_keypoints or []}\n\n"
         f"semantic_question_spec: {question_spec or {}}\n\n"
         f"prior_section_keypoints_in_this_report: {prior_section_keypoints or []}\n\n"
-        f"prior_runs: {_filter_prior_runs_by_heading(prior_runs, block_heading)}\n"
+        f"prior_runs: {_filter_prior_runs_by_heading(prompt_prior_runs, block_heading)}\n"
     )
     _instrument_retrieval(
         db,
@@ -462,9 +481,20 @@ def build_section_agent_check_messages(
     Injects contradiction-history context and status taxonomy
     (answered/partial/not_found/not_searched/insufficient_evidence/wrong_query)."""
 
+    prompt_collected_results = project_report_results(collected_results, db=db)
+    prompt_latest_result = (
+        prompt_collected_results[-1]
+        if collected_results
+        and latest_result is collected_results[-1]
+        and prompt_collected_results
+        else project_report_results([latest_result], db=db)[0]
+    )
+    prompt_reusable_facts = project_report_evidence_rows(reusable_facts, db=db)
+    prompt_reusable_evidence = project_report_evidence_rows(reusable_evidence, db=db)
+    prompt_prior_runs = project_report_prior_runs(prior_runs, db=db)
     contradicted_history = [
         run
-        for run in prior_runs
+        for run in prompt_prior_runs
         if run.get("verdict") in {"block_contradicted", "refuted"}
     ]
     EXAMPLE_SECTION_CHECK = """
@@ -529,14 +559,14 @@ Output: {"verdict": "block_contradicted", "status": "not_found", "rationale": "N
         f"template_block:\n{template_body}\n\n"
         f"semantic_question_spec: {question_spec or {}}\n\n"
         f"structured_memory_context:\n{memory_context_md}\n\n"
-        f"reusable_section_facts: {reusable_facts[:12]}\n\n"
-        f"reusable_section_evidence: {reusable_evidence[:20]}\n\n"
-        f"latest_result: {latest_result}\n\n"
-        f"collected_results: {collected_results}\n\n"
+        f"reusable_section_facts: {prompt_reusable_facts[:12]}\n\n"
+        f"reusable_section_evidence: {prompt_reusable_evidence[:20]}\n\n"
+        f"latest_result: {prompt_latest_result}\n\n"
+        f"collected_results: {prompt_collected_results}\n\n"
     )
     if contradicted_history:
         user += f"contradicted_attempts_previous_iterations: {contradicted_history}\n\n"
-    user += f"prior_runs: {_filter_prior_runs_by_heading(prior_runs, block_heading)}\n"
+    user += f"prior_runs: {_filter_prior_runs_by_heading(prompt_prior_runs, block_heading)}\n"
     _instrument_retrieval(
         db,
         session_id=session_id,
@@ -593,8 +623,9 @@ def build_section_outline_messages(
         "</EXAMPLE>\n"
         "Output JSON only. "
     )
+    prompt_evidence = project_report_evidence_rows(relevant_evidence, db=db)
     evidence_summary = "\n".join(
-        _format_evidence_row(e) for e in (relevant_evidence or [])[:30]
+        _format_evidence_row(e) for e in prompt_evidence[:30]
     )
     user = (
         f"section_meta: {json.dumps(section_meta, ensure_ascii=False, default=str)}\n"
@@ -627,6 +658,7 @@ def build_paragraph_narrate_messages(
     template_body: str,
     language: str = "en",
     structured_digest: str | None = None,
+    report_context: dict[str, Any] | None = None,
     db: CaseDB | None = None,
     session_id: str | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
@@ -653,7 +685,11 @@ def build_paragraph_narrate_messages(
     # brief. A block-local query can still support the rest of the overview,
     # but must not narrow the summary to whichever artifact family it returned.
     prompt_key_points = [] if is_executive_summary else key_points
-    prompt_evidence_rows = [] if is_executive_summary else evidence_rows
+    prompt_evidence_rows = (
+        []
+        if is_executive_summary
+        else project_report_evidence_rows(evidence_rows, db=db)
+    )
     system = (
         "<TASK>You are a section_narrator. Write one markdown paragraph for the given heading using the supplied evidence. "
         "Cite evidence_ids inline. Keep the paragraph factual and concise.</TASK>\n"
@@ -668,6 +704,7 @@ def build_paragraph_narrate_messages(
         "Never use localized date formats (e.g., '2015年3月22日' or 'March 22, 2015'). "
         "Timestamps in narrative should use the format 'YYYY-MM-DD HH:MM:SS UTC'.\n"
         "No meta-statements: write what was observed, not what was reviewed. Avoid 'investigation covered', 'scope included', 'comprehensive review of' style phrasing.\n"
+        "For time-basis claims, use only explicit timezone/normalization/gap facts in report_context, the template, or evidence rows. If an assumption or conflict is not established, state that limitation instead of inventing one.\n"
         "Do NOT write `## {heading}` in your output — the heading is prepended by the renderer. Only write paragraph content below the heading.\n"
         "If the status is not_searched or not_found, this function should not be called. If you see such a status, output nothing.\n"
         "Key points may be prefixed with verdict labels: [confirmed], [refuted], [finding, confidence=N]. Refuted items may only be mentioned as ruled-out. Confirmed and refuted items must not be blended into one claim.\n"
@@ -689,6 +726,7 @@ def build_paragraph_narrate_messages(
         f"Heading: {heading}\n"
         f"Key points: {json.dumps(prompt_key_points, ensure_ascii=False, default=str)}\n"
         f"Template body context: {template_body[:500]}\n"
+        f"Report context: {json.dumps(report_context or {}, default=str, ensure_ascii=False)}\n"
         f"Evidence rows: {json.dumps(prompt_evidence_rows[:10], default=str, ensure_ascii=False)}\n"
     )
     _instrument_retrieval(

@@ -444,6 +444,11 @@ def _row_to_summary_line(row: dict[str, Any]) -> str:
     if not row:
         return "no fields"
     preferred_fields = (
+        "first_event",
+        "last_event",
+        "event_count",
+        "evidence_count",
+        "_source_keypoint",
         "timestamp",
         "event_id",
         "record_id",
@@ -461,6 +466,8 @@ def _row_to_summary_line(row: dict[str, Any]) -> str:
         "description",
         "command_line",
         "evidence_id",
+        "representative_evidence_ids",
+        "evidence_distribution",
     )
     parts: list[str] = []
     remaining_keys = [key for key in row.keys() if key not in preferred_fields]
