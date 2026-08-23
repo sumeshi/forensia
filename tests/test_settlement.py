@@ -202,7 +202,7 @@ class SettlementGateTests(unittest.TestCase):
                 _make_evidence_link(db, evidence_id="evtx-002")
                 si = SettlementInput(
                     hypothesis=hyp,
-                    checker_verdict="inconclusive",
+                    checker_verdict="confirmed",
                     check_summary="LogonType 5 / loopback only",
                     sample_rows=[
                         {
@@ -355,7 +355,7 @@ class PositiveSettlementTests(unittest.TestCase):
 
                 si = SettlementInput(
                     hypothesis=hyp,
-                    checker_verdict="inconclusive",
+                    checker_verdict="confirmed",
                     check_summary="co-observed events found",
                     sample_rows=[
                         {
@@ -383,6 +383,43 @@ class PositiveSettlementTests(unittest.TestCase):
                 self.assertEqual(decision.verdict, "confirmed")
                 self.assertIn("evidence_link_exists", decision.gates_passed)
                 self.assertIn("required_entities_concrete", decision.gates_passed)
+
+    def test_checker_inconclusive_is_not_overridden_by_co_observation(self) -> None:
+        """Correlation gates cannot replace the semantic verdict owner."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from forensia.core.case import Case
+
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                hyp = _make_hypothesis(
+                    source_rule_ids=["rule-account-change"],
+                    required_entities=["target_user"],
+                    confirm_when={"co_observed_event_ids": [4738]},
+                )
+                _make_evidence_link(db, evidence_id="evtx-4738")
+                si = SettlementInput(
+                    hypothesis=hyp,
+                    checker_verdict="inconclusive",
+                    check_summary="corroborating event does not establish primary claim",
+                    sample_rows=[{"event_id": 4738, "target_user": "alice"}],
+                    co_observation_satisfied=True,
+                    sufficiency_result=SufficiencyResult(
+                        status="sufficient",
+                        score=0.8,
+                        reasons=["support threshold met"],
+                        independent_groups=1,
+                        families=["evtx"],
+                        contradictory_groups=0,
+                        missing_requirements=[],
+                        human_review_required=False,
+                    ),
+                )
+
+                decision = settle_hypothesis(db, si)
+
+                self.assertFalse(decision.allowed)
+                self.assertEqual(decision.verdict, "inconclusive")
+                self.assertEqual(decision.reason, "No settlement conditions met")
 
     def test_checker_confirmed_with_sufficient_is_confirmed(self) -> None:
         """Checker confirmed + machine sufficient = confirmed."""

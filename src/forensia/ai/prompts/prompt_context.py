@@ -193,30 +193,30 @@ def _build_schema_index(
     )
     return index, selected_full
 
-
 def _build_recipe_index(
-    selected_recipes: list[str] | None = None,
-    db: CaseDB | None = None,
+    selected_recipes: list[str] | None = None, db: CaseDB | None = None,
     session_id: str | None = None,
 ) -> tuple[str, str]:
-    """Index SQL cookbook recipes; expand only *selected_recipes* (or all)."""
-    raw = sql_cookbook()
-    recipes = _parse_sql_recipes(raw)
+    recipes = _parse_sql_recipes(sql_cookbook())
     entries: list[ContextIndexEntry] = []
     for rid, (title, body) in recipes.items():
         entries.append(
             ContextIndexEntry(
                 stable_id=rid,
                 title=title,
-                purpose="reference SQL recipe",
+                purpose="cookbook SQL example; never a template_id",
                 size_chars=len(body),
                 relevance_hint="reference",
-                continuation=f"load recipe `{rid}`",
+                continuation=f"load cookbook example `{rid}` and adapt it as raw SQL",
             )
         )
-    index = render_context_index("RECIPE_INDEX", entries)
-    # An omitted selection means index-only. Callers must explicitly request
-    # recipe bodies so a global cookbook is never silently resent.
+    index = (
+        "<COOKBOOK_EXAMPLE_POLICY>RECIPE_INDEX IDs are retrieval-only, never "
+        "executable template_id values. Adapt loaded examples into sql with "
+        "template_id=null.</COOKBOOK_EXAMPLE_POLICY>\n" + render_context_index(
+            "RECIPE_INDEX", entries
+        )
+    )
     full = "\n".join(
         body for rid, (_, body) in recipes.items() if rid in (selected_recipes or [])
     )

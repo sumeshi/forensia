@@ -391,15 +391,15 @@ def decide_settlement(
             gates_passed=["auto_untestable_same_missing"],
         )
 
-    # ── Path 4: Confirmed (from checker verdict or auto-confirm) ──
-    is_auto_confirm = (
-        si.checker_verdict == "inconclusive"
-        and si.co_observation_satisfied
-        and bool(hypothesis.source_rule_ids)  # only rule-seeded
-    )
+    # ── Path 4: Confirmed ──
+    # Co-observation is a deterministic correlation gate, not a semantic
+    # verdict.  In particular, a rule may declare a corroborating event that
+    # is weaker than the primary claim (for example an account-change event
+    # adjacent to a password reset).  Never use that correlation alone to
+    # override a checker that explicitly found the claim inconclusive.
     is_checker_confirmed = si.checker_verdict == "confirmed"
 
-    if is_checker_confirmed or is_auto_confirm:
+    if is_checker_confirmed:
         gates_passed: list[str] = []
         gates_failed: list[str] = []
 
@@ -468,13 +468,6 @@ def decide_settlement(
         else:
             gates_passed.append("not_benign_auth")
 
-        # Gate 4g: Auto-confirm only when checker was inconclusive
-        # (prevents auto-confirm from overriding a refuted/untestable verdict)
-        if is_auto_confirm and si.checker_verdict not in ("inconclusive",):
-            gates_failed.append(
-                f"auto_confirm_override_prevented: checker_verdict={si.checker_verdict}"
-            )
-
         if gates_failed:
             return SettlementDecision(
                 verdict="inconclusive",
@@ -495,6 +488,20 @@ def decide_settlement(
             sufficiency_status=suff_result.status,
             sufficiency_score=suff_result.score,
         )
+
+    # An inconclusive semantic verdict remains inconclusive even when the
+    # deterministic correlation constraints pass.  Still evaluate those
+    # constraints so the next planning attempt can observe concrete defects
+    # (for example mismatched identities or an ineligible logon type).
+    if si.checker_verdict == "inconclusive":
+        corr_ok, corr_reason = _check_correlation_constraints(si, sample_rows)
+        if not corr_ok:
+            return SettlementDecision(
+                verdict="inconclusive",
+                reason=f"Correlation constraints failed: {corr_reason}",
+                allowed=False,
+                gates_failed=[f"correlation: {corr_reason}"],
+            )
 
     # ── Path 5: Assessed contradiction ──
     # A checker refutation is admissible only when the deterministic

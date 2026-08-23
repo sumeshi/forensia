@@ -141,6 +141,34 @@ def _collect_claim_provenance(
     }
 
 
+def _project_claim_provenance(
+    claim_text: str,
+    available: dict[str, list[str]],
+) -> dict[str, list[str]]:
+    """Keep only provenance identifiers explicitly cited by one claim.
+
+    Evidence results are collected at section scope, but a section can contain
+    several unrelated claims.  Copying the full section provenance onto every
+    claim makes mere identifier existence look like semantic support.  A claim
+    therefore receives only identifiers that are both available to the section
+    and present in that claim's own text.
+    """
+    def is_explicitly_cited(identifier: str) -> bool:
+        identifier_chars = r"A-Za-z0-9_.-"
+        return bool(
+            re.search(
+                rf"(?<![{identifier_chars}]){re.escape(identifier)}"
+                rf"(?![{identifier_chars}])",
+                claim_text,
+            )
+        )
+
+    return {
+        key: [value for value in available.get(key, []) if is_explicitly_cited(value)]
+        for key in ("evidence_ids", "finding_ids", "hypothesis_ids")
+    }
+
+
 def _claim_support_status(
     db: CaseDB,
     evidence_ids: list[str],
@@ -218,15 +246,16 @@ def _upsert_claims(
     now = datetime.now(UTC).replace(tzinfo=None)
     claims = _extract_claim_texts(body)
     provenance = _collect_claim_provenance(evidence_results)
-    support_status = _claim_support_status(
-        db,
-        provenance["evidence_ids"],
-        provenance["finding_ids"],
-        provenance["hypothesis_ids"],
-    )
     db.execute("DELETE FROM claims WHERE section_key = ?", (section_key,))
     rows: list[tuple[Any, ...]] = []
     for index, claim_text in enumerate(claims, start=1):
+        claim_provenance = _project_claim_provenance(claim_text, provenance)
+        support_status = _claim_support_status(
+            db,
+            claim_provenance["evidence_ids"],
+            claim_provenance["finding_ids"],
+            claim_provenance["hypothesis_ids"],
+        )
         claim_id = hashlib.sha1(
             f"{section_key}-{index}-{claim_text}".encode()
         ).hexdigest()[:16]
@@ -235,9 +264,9 @@ def _upsert_claims(
                 claim_id,
                 section_key,
                 claim_text,
-                json.dumps(provenance["finding_ids"], ensure_ascii=False),
-                json.dumps(provenance["hypothesis_ids"], ensure_ascii=False),
-                json.dumps(provenance["evidence_ids"], ensure_ascii=False),
+                json.dumps(claim_provenance["finding_ids"], ensure_ascii=False),
+                json.dumps(claim_provenance["hypothesis_ids"], ensure_ascii=False),
+                json.dumps(claim_provenance["evidence_ids"], ensure_ascii=False),
                 support_status,
                 now,
                 now,

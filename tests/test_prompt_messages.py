@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from forensia.ai.llm.schemas import PARAGRAPH_NARRATE_SCHEMA
 from forensia.ai.prompts.prompt_context import (
+    _build_recipe_index,
     _build_schema_guidance,
     _trim_dynamic_content,
     slim_report_brief_for_section,
@@ -924,6 +925,13 @@ class IndexedContextTests(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertEqual("schema_hints", row[0])
         self.assertIn("evtx_events", row[1])
+
+    def test_cookbook_index_does_not_advertise_executable_template_ids(self) -> None:
+        index, _selected = _build_recipe_index()
+
+        self.assertIn("never a template_id", index)
+        self.assertIn("template_id=null", index)
+        self.assertNotIn("load recipe `", index)
 
 if __name__ == "__main__":
     unittest.main()

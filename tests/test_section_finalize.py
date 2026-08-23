@@ -25,6 +25,7 @@ from forensia.report.report_brief import build_report_brief
 from forensia.report.sections.quality_gates import quality_gate_section
 from forensia.report.sections.section_assembly import prepare_section_request
 from forensia.report.sections.section_finalize import finalize_section
+from forensia.report.sections.section_store import _project_claim_provenance
 from forensia.report.template_export import export_packaged_report_templates
 
 
@@ -430,6 +431,63 @@ class SectionFinalizeTests(unittest.TestCase):
                     any("cautious wording" in str(gap) for gap in result["gaps"]),
                     msg=f"Expected strength gap in {result['gaps']}",
                 )
+
+    def test_claims_keep_only_their_explicit_section_provenance(self) -> None:
+        projected = _project_claim_provenance(
+            "H-0010 is the cited hypothesis.",
+            {"hypothesis_ids": ["H-001", "H-0010"]},
+        )
+        self.assertEqual(["H-0010"], projected["hypothesis_ids"])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                for evidence_id, event_id in (
+                    ("evtx-security-000000000001", 4624),
+                    ("evtx-system-000000000002", 7045),
+                ):
+                    db.execute(
+                        """
+                        INSERT INTO evtx_events (
+                            evidence_id, source_file, channel, event_id, record_id,
+                            timestamp, computer, raw_json, tags, severity
+                        ) VALUES (?, 'source.evtx', 'Security', ?, 1, now(),
+                                  'host1', '{}', '[]', 'info')
+                        """,
+                        (evidence_id, event_id),
+                    )
+                finalize_section(
+                    db=db,
+                    section_key="3_technical",
+                    title="Technical",
+                    body=(
+                        "## Authentication\n\n"
+                        "A logon was observed (evtx-security-000000000001).\n\n"
+                        "## Service\n\n"
+                        "A service was observed (evtx-system-000000000002)."
+                    ),
+                    evidence_results=[
+                        {
+                            "kind": "rows",
+                            "evidence_ids": [
+                                "evtx-security-000000000001",
+                                "evtx-system-000000000002",
+                            ],
+                        }
+                    ],
+                )
+
+                claims = db.execute(
+                    "SELECT claim_text, evidence_ids, support_status "
+                    "FROM claims ORDER BY claim_text"
+                ).fetchall()
+
+            self.assertEqual(2, len(claims))
+            for claim_text, raw_ids, support_status in claims:
+                evidence_ids = json.loads(raw_ids)
+                self.assertEqual(1, len(evidence_ids))
+                self.assertIn(evidence_ids[0], claim_text)
+                self.assertEqual("supported", support_status)
 
     def test_finalize_section_rejects_exclusive_evtx_scope_claim(self) -> None:
         """The artifact-scope guard applies across supported report languages."""

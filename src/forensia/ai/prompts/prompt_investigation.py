@@ -305,7 +305,7 @@ def build_query_intent_messages(
         f"{_time_range_guidance(time_range)}"
         f"{_case_profile_guidance(case_profile)}"
         f"{_org_knowledge_block(description=getattr(hypothesis, 'description', ''), extra_words=knowledge_extra, tags=_profile_tags())}"
-        "<TASK>You are the bounded query action planner. Choose one action and, for sql.query, provide either an exact recipe/template_id with params or a bounded SELECT fallback. The host validates and executes it; do not delegate SQL composition to another model.</TASK>\n"
+        "<TASK>You are the bounded query action planner. Choose one action and, for sql.query, provide either an exact executable template_catalog ID with params or a bounded SELECT fallback. Cookbook/RECIPE_INDEX IDs are reference-only and must be adapted into raw SQL with template_id=null. The host validates and executes it; do not delegate SQL composition to another model.</TASK>\n"
         "<INPUT_SCHEMA>\n"
         f"hypothesis: {json.dumps(_hypothesis_prompt_projection(hypothesis), ensure_ascii=False, default=str)}\n"
         f"{render_prior_attempts(recent_history)}"
@@ -316,11 +316,11 @@ def build_query_intent_messages(
         "Return exactly one of these JSON objects:\n"
         '{"action": {"type": "memory.read_more", "paths": ["exact scoped memory paths"]}}\n'
         '{"action": {"type": "sql.query", "intent": "what to retrieve", "target_table": "known table", '
-        '"template_id": "recipe_id or null", "params": {}, "sql": "SELECT ... or empty", '
+        '"template_id": "executable template_catalog ID or null", "params": {}, "sql": "SELECT ... or empty", '
         '"filters_required": [], "time_window": "bounds", "expected_row_shape": "columns"}}\n'
         "</OUTPUT_SCHEMA>\n"
         "<RULES>\n"
-        "Choose exactly one action. Use memory.read_more only when additional scoped context is required; after that expansion, choose sql.query and never request memory again. The memory action MUST contain at least one exact relative path. The sql.query action MUST include a complete intent, known target_table, and either a valid template_id+params or bounded SELECT. Do not emit unknown actions, free-form tools, or an empty/ambiguous action.\n"
+        "Choose exactly one action. Use memory.read_more only when additional scoped context is required; after that expansion, choose sql.query and never request memory again. The memory action MUST contain at least one exact relative path. The sql.query action MUST include a complete intent, known target_table, and either a template_id listed by template_catalog with params or bounded SELECT. RECIPE_INDEX IDs are never valid template_id values. Do not emit unknown actions, free-form tools, or an empty/ambiguous action.\n"
         "If EXECUTION_ERROR is present, you MUST change the query — at minimum change the table list, the WHERE clause, or eliminate the failing JOIN. Never repeat the same SQL that caused an execution error.\n"
         "If prior_check_feedback names specific missing event_ids or evidence types, the new SQL MUST include those event_ids or evidence types. Never ignore prior check feedback.\n"
         "</RULES>"

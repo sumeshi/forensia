@@ -312,6 +312,44 @@ class TestReportQualityContract(unittest.TestCase):
             assert "deterministic signals/review candidates" in report
             assert "Scope constraint" in report
 
+    def test_needs_review_notice_does_not_hide_confirmed_hypothesis(self) -> None:
+        from forensia.report.render.writer import build_report_markdown_from_db
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    """
+                    INSERT INTO hypotheses (
+                        hypothesis_id, description, status, verdict, summary, origin,
+                        created_session, created_at, updated_at
+                    ) VALUES ('H-001', 'supported claim', 'confirmed', 'confirmed',
+                              'confirmed', 'rule', 'S-1', now(), now())
+                    """
+                )
+                db.execute(
+                    """
+                    INSERT INTO hypothesis_evidence (
+                        link_id, hypothesis_id, evidence_id, role, source_family,
+                        strength, created_session, created_at
+                    ) VALUES ('EL-1', 'H-001', 'evtx-security-000000000001',
+                              'supporting', 'evtx', 'moderate', 'S-1', now())
+                    """
+                )
+                db.execute(
+                    """
+                    INSERT INTO report_sections (
+                        section_key, title, body, confidence, status, update_count, stale
+                    ) VALUES ('1_overview', 'Overview', '# Overview\n\nConfirmed body.',
+                              1.0, 'draft', 1, FALSE)
+                    """
+                )
+
+                report = build_report_markdown_from_db(db, case)
+
+            assert "1 confirmed hypothesis is available" in report
+            assert "No confirmed hypothesis is available" not in report
+
     def test_table_validation_catches_empty_required_columns(self) -> None:
         """Table with all-empty required columns must be flagged."""
         from forensia.report.answers.table_registry import _validate_table_output

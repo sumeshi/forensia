@@ -36,10 +36,18 @@ def _publication_notice(state: dict[str, object]) -> str:
 
 
 def _section_publication_constraint(section_key: str, state: dict[str, object]) -> str:
-    """Constrain narrative sections when no confirmed investigative conclusion exists."""
+    """Constrain narrative sections when publication requirements are incomplete."""
     if state.get("publication_status") != "needs_review":
         return ""
+    confirmed = int(state.get("confirmed_hypothesis_count") or 0)
     if section_key == "1_overview":
+        if confirmed:
+            return (
+                f"> **Scope constraint:** {confirmed} confirmed hypothesis is available, "
+                "but publication requirements remain incomplete. Limit conclusions to "
+                "that hypothesis and treat other rule findings as deterministic "
+                "signals/review candidates."
+            )
         return (
             "> **Scope constraint:** No confirmed hypothesis is available. Treat rule "
             "findings as deterministic signals/review candidates; the overview and "
@@ -48,8 +56,8 @@ def _section_publication_constraint(section_key: str, state: dict[str, object]) 
     if section_key == "5_recommendations":
         return (
             "> **Scope constraint:** Recommendations are verification-first only. Do "
-            "not assume unauthorized access, account tampering, persistence, or "
-            "lateral movement from rule findings alone."
+            "not assume unauthorized access, account tampering, persistence, or lateral "
+            "movement beyond the scope of confirmed hypotheses."
         )
     return ""
 
