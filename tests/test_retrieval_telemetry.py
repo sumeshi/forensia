@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
+from forensia.ai.checking.settlement import decide_settlement
 from forensia.ai.hypotheses.execution import build_sql_receipt
+from forensia.ai.hypotheses.hypothesis_runner import (
+    _build_settlement_input,
+    _phase_execute,
+)
+from forensia.ai.investigation.planner import _materialize_planned_query
 from forensia.ai.retrieval_telemetry import (
     RetrievalEvaluation,
     ToolReceipt,
@@ -12,7 +20,7 @@ from forensia.ai.retrieval_telemetry import (
     record_retrieval_event,
 )
 from forensia.core.case import Case
-from forensia.core.session import Hypothesis, PlannedQuery
+from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.db.database import CaseDB
 
 
@@ -163,3 +171,119 @@ def test_fallback_receipt_keeps_pre_limit_count_and_truncation() -> None:
     assert receipt.arguments["fallback_row_count"] == 24
     assert receipt.returned_count == 20
     assert receipt.truncated is True
+
+
+@pytest.mark.parametrize(
+    ("state", "sql", "expected"),
+    [
+        (
+            "available",
+            "SELECT evidence_id FROM evtx_events WHERE event_id = 4688 LIMIT 20",
+            "refuted",
+        ),
+        (
+            "partial",
+            "SELECT evidence_id FROM evtx_events WHERE event_id = 4688 LIMIT 20",
+            "untestable",
+        ),
+        (
+            "unknown",
+            "SELECT evidence_id FROM evtx_events WHERE event_id = 4688 LIMIT 20",
+            "untestable",
+        ),
+        (
+            "unavailable",
+            "SELECT evidence_id FROM evtx_events WHERE event_id = 4688 LIMIT 20",
+            "untestable",
+        ),
+        (
+            "available",
+            "SELECT evidence_id FROM evtx_events WHERE event_id = 4688 AND computer = 'WS-X' LIMIT 20",
+            "untestable",
+        ),
+        (
+            "available",
+            "SELECT evidence_id FROM evtx_events WHERE event_id = 4624 LIMIT 20",
+            "untestable",
+        ),
+        (
+            "available",
+            "SELECT evidence_id FROM evtx_events TABLESAMPLE SYSTEM(0 PERCENT) WHERE event_id = 4688 LIMIT 20",
+            "untestable",
+        ),
+        (
+            "available",
+            "SELECT unnest([]) FROM evtx_events WHERE event_id = 4688 LIMIT 20",
+            "untestable",
+        ),
+        (
+            "available",
+            "SELECT evidence_id FROM evtx_events WHERE event_id = 4688 LIMIT 10 PERCENT",
+            "untestable",
+        ),
+    ],
+)
+def test_runner_empty_sql_reaches_only_observable_refutation(
+    tmp_path, state, sql, expected
+):
+    case = Case.init(tmp_path)
+    with CaseDB(case) as db:
+        # Other artifact families cannot veto or prove the EVTX lookup.
+        db.execute(
+            "INSERT INTO evidence_coverage (capability, host, channel, source_family, state, source_ids) "
+            "VALUES ('process_execution', '', 'Security', 'evtx', ?, '[]'), "
+            "('process_execution', '', '', 'mft', 'unavailable', '[]')",
+            [state],
+        )
+        hypothesis = Hypothesis(
+            id="H-absence",
+            description="Process execution",
+            confirm_when={"co_observed_event_ids": [4688]},
+            refute_when={"zero_rows": True},
+        )
+        query = _materialize_planned_query(
+            {
+                "query_id": "Q-absence",
+                "hypothesis_id": hypothesis.id,
+                "purpose": "verify absence",
+                "sql": sql,
+            },
+            db,
+        )
+        rs = SimpleNamespace(
+            hypothesis=hypothesis,
+            state=SessionState(session_id="S-test"),
+            db=db,
+            session_id="S-test",
+            plan_cycle=1,
+            query_index=0,
+            emit_fn=None,
+            focus_sections={},
+            hypothesis_plan=SimpleNamespace(query=query),
+            tracker=SimpleNamespace(
+                record=lambda *a, **k: None,
+                zero_row_inconclusive_count=3,
+                consecutive_same_missing=0,
+            ),
+            missing_checks_raw=[],
+            sufficiency_result=None,
+            check_result=SimpleNamespace(verdict="inconclusive", report_text="empty"),
+        )
+        with patch(
+            "forensia.ai.hypotheses.hypothesis_runner.resolve_zero_row_fallbacks",
+            side_effect=lambda **kwargs: (kwargs["rows"], None),
+        ):
+            assert _phase_execute(rs) == "ok"
+        si = _build_settlement_input(rs)
+        assert decide_settlement(si, links=[], coverage={}).verdict == expected
+        if expected == "refuted":
+            assert rs.retrieval_evaluation.scope_status == "valid"
+            assert rs.retrieval_evaluation.coverage_status == "available"
+            assert si.absence_scope == "observable"
+        payload = db.execute(
+            "SELECT output_json FROM investigation_steps WHERE phase = 'do'"
+        ).fetchone()[0]
+        assert (
+            json.loads(payload)["retrieval_evaluation"]
+            == rs.retrieval_evaluation.model_dump()
+        )

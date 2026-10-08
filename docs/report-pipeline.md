@@ -100,7 +100,7 @@ Template authoring is kept in English. Scaffold headings, table headers, comment
 - Filled section bodies are UPSERTed into `report_sections`
 - confidence is determined from the body's initial score, quality gates, evidence_id validation, claim support, and extra gaps
 - claims are extracted from the body and written to `claims`
-- claim provenance is computed from finding_id / hypothesis_id / evidence_id in the body and verification results
+- claim provenance is computed from finding_id / hypothesis_id / evidence_id in the body and verification results; support status reflects currently-usable evidence only — historical or non-current `hypothesis_evidence` links (evidence row removed, or source identity no longer matching) are excluded from sufficiency support counting while remaining stored as history
 - gaps are aggregated from explicit insufficient-evidence markers, section agent extra gaps, quality gates, and claim/evidence validation, and become hypothesis candidates for the next cycle
 - If a block has `question` / `answer_spec` / `mode: structured`, `questions.py` resolves it to a QuestionSpec in `question_routing.yaml` and saves the result to `section_questions`. Case-wide probes are saved with `section_key='__case_probe__'`
 - Structured answers are persisted to `reports/structured/answers.json` and CSV, and per-section resolution results are dumped to `reports/debug/<section>_questions.json`
@@ -234,20 +234,49 @@ Only when verdict==confirmed is `build_finding_extractor_messages` invoked to ex
 | Method | Condition | Effect |
 |---|---|---|
 | `should_auto_confirm(rule_context, rows, hypothesis)` | `_co_observation_satisfied` ([ai/checking/check_guardrails.py](../src/forensia/ai/checking/check_guardrails.py)) groups rows by `same_host` and all `co_observed_event_ids` co-occur within the `within_minutes` time window | Forces confirmed, ignoring the LLM verdict. Rows without time / host columns are treated as unsatisfied. A hypothesis without a declared `co_observed_event_ids` is not auto-confirmed |
-| `should_auto_refute(threshold=3)` | 3 consecutive 0-row inconclusive (and no partial signal) | If the rule declares `refute_when.zero_rows`, forces refuted; otherwise forces untestable |
+| `should_auto_refute(threshold=3)` | 3 consecutive 0-row inconclusive (and no partial signal) | Refuted only when the rule declares `refute_when.zero_rows` AND the runner judged the absence observable (`SettlementInput.absence_scope == "observable"`: valid retrieval scope, observable emptiness, and all required capabilities `available` in Coverage). Otherwise untestable — partial/unknown/unavailable coverage, a rejected scope, or an incomplete retrieval never refute — with the blocking reason recorded in `absence_note` |
 | `should_pivot(fp)` | The same query fingerprint appears 2 or more times | Instructs the planner to pivot |
 | `_unavailable_missing_event_ids` | The inconclusive `missing_questions` reference only Event IDs that do not exist in the case (with no mft/prefetch alternative path) | Immediately untestable on the first check |
-| `_investigate_one_hypothesis` short-circuit ([ai/hypotheses/hypothesis_runner.py](../src/forensia/ai/hypotheses/hypothesis_runner.py)) | The first plan cannot compose SQL or a template | The attempt ends without a check phase and counts toward auto-refute |
+| `_investigate_one_hypothesis` short-circuit ([ai/hypotheses/hypothesis_runner.py](../src/forensia/ai/hypotheses/hypothesis_runner.py)) | The first plan cannot compose SQL or a template | No observable absence is established; a planning failure cannot justify refutation |
+
+The runner certifies absence scope only for direct case-wide EVTX event-ID
+lookups matching the canonical Spec, without host/time/keyword narrowing,
+sampling, derived rows or offset. The Coverage check uses the queried EVTX
+family, so unavailable MFT coverage neither proves nor vetoes EVTX absence.
+Other scopes remain unknown; safe SELECT validation alone is insufficient.
 
 `refuted` (disproven by evidence) and `untestable` (cannot be verified because required telemetry is absent) are distinguished, and untestable ones are listed in the report's Gap section with the missing telemetry.
 
 When the investigation reaches a stop condition, `work_state.py` transitions
 every still-active hypothesis into `deferred`, `blocked`, `needs_review`, or
-`untestable` and creates the linked normalized Gap/Task records. Section refresh
-only resolves gaps with `origin=section`; it cannot accidentally close
-configuration or termination gaps. On a later session, persisted retry
-conditions are evaluated after Coverage refresh, and only affected hypotheses
-return to `active`. Conclusive resolution closes their linked work records.
+`untestable` and creates the linked normalized Gap/Task records. Section
+refresh (`inject_gap_hypotheses`) only touches gaps with `origin=section`; it
+cannot accidentally close configuration or termination gaps. On a later
+session, persisted retry conditions are evaluated after Coverage refresh, and
+only affected hypotheses return to `active`. Conclusive resolution (a linked
+hypothesis reaching `confirmed`/`refuted`) closes their linked work records.
+
+Gap resolution distinguishes report-side edits from actual outcomes
+(GOAL §9.4):
+
+- **Conclusion**: when the linked hypothesis reaches `confirmed` or `refuted`,
+  `resolve_linked_work` closes the Gap and its Task. A linked hypothesis that
+  is `untestable` does NOT resolve the Gap: the request could not be answered
+  in this scope, so the Gap stays open with
+  `coverage_reason='linked_hypothesis_untestable'` until acquisition completes.
+- **Editorial change**: disappearance or rewording of a request keeps its
+  admitted Gap and Tasks open. Neither text similarity nor a shared section
+  establishes resolution. Absent requests receive `report_request_absent` in
+  the existing reason fields when no more specific reason is recorded. New
+  admission still links equivalent existing hypotheses through its owner.
+
+Completion therefore never reads the report's prose gap array
+(`report_status.total_gaps`): the loop counts durable open `report_gaps`
+(`open`/`in_progress`/`needs_review`) and open `investigation_tasks`
+(`open`/`in_progress`), and `no_gaps_no_hypotheses` is reported only when both
+durable sets are empty. With prose gaps exhausted but durable work open, the
+loop falls through to the no-progress machinery and stops with a reason
+instead of completing.
 
 `query_fingerprint` canonicalizes the sqlglot AST and hashes it together with event_id / computer markers. It absorbs whitespace and alias differences. When sqlglot is unavailable, it falls back to string normalization.
 
@@ -276,7 +305,7 @@ When a hypothesis is finalized, `_resolve_hypothesis` does the following.
 
 A cycle ends when any of the following holds:
 
-- All active hypotheses are resolved, broad_plan returns `stop`, and the report gaps are empty
+- All active hypotheses are resolved, broad_plan returns `stop`, and the durable open Gap/Task rows (`open`/`in_progress`/`needs_review` gaps, `open`/`in_progress` tasks) are empty — not the report prose `total_gaps`
 - 3 consecutive cycles with no progress (`--no-progress-limit`)
 - `--max-iter` cycles completed
 

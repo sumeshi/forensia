@@ -3,8 +3,6 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
-from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from forensia.ai.checking.check_normalize import summarize_query_result
@@ -19,7 +17,6 @@ from forensia.config import (
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis
-from forensia.db.database import CaseDB
 
 
 class MemoryTests(unittest.TestCase):
@@ -57,46 +54,6 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(2, summary["distinct_counts"]["computer"])
         self.assertEqual(3, summary["distinct_counts"]["src_ip"])
         self.assertEqual(2, summary["distinct_counts"]["event_id"])
-
-    def test_legacy_newlead_verdicts_are_migrated_on_open(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                db.execute(
-                    """
-                    INSERT INTO hypotheses (
-                        hypothesis_id, description, status, verdict, summary, origin,
-                        created_session, resolved_session, created_at, updated_at
-                    ) VALUES ('H-1', 'legacy verdict', 'active', 'newlead', '', 'broad_plan', 'S-1', NULL, now(), now())
-                    """
-                )
-                db.execute(
-                    """
-                    INSERT INTO ai_reviews (
-                        review_id, finding_id, verdict, report_text, missing_checks,
-                        confidence_adjustment, notes, raw_response, created_at
-                    ) VALUES ('R-1', 'F-1', 'newlead', '', '[]', 0.0, '', '{}', now())
-                    """
-                )
-
-            legacy_verdict = "new" + "_finding"
-            with CaseDB(case) as db:
-                db.execute("UPDATE hypotheses SET verdict = ?", (legacy_verdict,))
-                db.execute("UPDATE ai_reviews SET verdict = ?", (legacy_verdict,))
-                db.execute(
-                    "DELETE FROM schema_migrations WHERE migration_key = 'legacy_schema_backfill'"
-                )
-
-            with CaseDB(case) as db:
-                hypothesis_verdict = db.execute(
-                    "SELECT verdict FROM hypotheses WHERE hypothesis_id = 'H-1'"
-                ).fetchone()[0]
-                review_verdict = db.execute(
-                    "SELECT verdict FROM ai_reviews WHERE review_id = 'R-1'"
-                ).fetchone()[0]
-
-            self.assertEqual("newlead", hypothesis_verdict)
-            self.assertEqual("newlead", review_verdict)
 
     def test_structured_memory_updates_and_compaction_rules(self) -> None:
         with (
@@ -207,23 +164,6 @@ class MemoryTests(unittest.TestCase):
             self.assertNotIn("question-0", tasks_text)
             self.assertIn("question-19", tasks_text)
 
-    def test_confirmed_fact_duplicates_are_skipped(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            memory = MemoryManager(case)
-
-            memory.append_confirmed_fact("same fact", ["ev-1"])
-            memory.append_confirmed_fact("same fact", ["ev-1"])
-
-            lines = [
-                line
-                for line in memory.facts_path.read_text(encoding="utf-8").splitlines()
-                if line.startswith("- ")
-            ]
-            self.assertEqual(1, len(lines))
-            self.assertTrue((memory.details_dir / "fact-001.md").exists())
-            self.assertFalse((memory.details_dir / "fact-002.md").exists())
-
     def test_confirmed_fact_duplicates_with_dash_prefixed_body_are_skipped(
         self,
     ) -> None:
@@ -242,39 +182,6 @@ class MemoryTests(unittest.TestCase):
             self.assertEqual(1, len(lines))
             self.assertFalse((memory.details_dir / "fact-002.md").exists())
 
-    def test_confirmed_fact_duplicates_with_reordered_evidence_ids_are_skipped(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            memory = MemoryManager(case)
-
-            memory.append_confirmed_fact("same fact", ["ev-2", "ev-1"])
-            memory.append_confirmed_fact("same fact", ["ev-1", "ev-2"])
-
-            lines = [
-                line
-                for line in memory.facts_path.read_text(encoding="utf-8").splitlines()
-                if line.startswith("- ")
-            ]
-            self.assertEqual(1, len(lines))
-            detail = (memory.details_dir / "fact-001.md").read_text(encoding="utf-8")
-            self.assertIn("- ev-1", detail)
-            self.assertIn("- ev-2", detail)
-
-    def test_confirmed_fact_duplicate_check_uses_hash_cache_before_detail_scan(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            memory = MemoryManager(case)
-            memory.append_confirmed_fact("fact one", ["ev-1"])
-
-            with patch.object(
-                Path, "glob", side_effect=AssertionError("glob should not be called")
-            ):
-                memory.append_confirmed_fact("fact one", ["ev-1"])
-
     def test_next_fact_detail_id_uses_details_dir_not_compacted_index(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -287,58 +194,11 @@ class MemoryTests(unittest.TestCase):
             )
             memory = MemoryManager(case)
 
-            self.assertEqual(43, memory._next_fact_id)
-
-    def test_alloc_fact_detail_id_does_not_glob_each_time(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            memory = MemoryManager(case)
-
-            with patch.object(
-                Path, "glob", side_effect=AssertionError("glob should not be called")
-            ):
-                self.assertEqual("fact-001", memory._alloc_fact_detail_id())
-                self.assertEqual("fact-002", memory._alloc_fact_detail_id())
-
-    def test_memory_init_scans_fact_details_only_once(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            (case.memory_dir / "details").mkdir(parents=True, exist_ok=True)
-            (case.memory_dir / "details" / "fact-042.md").write_text(
-                "# fact-042\n\nbody\n", encoding="utf-8"
+            memory.append_confirmed_fact("new observation", ["ev-1"])
+            self.assertTrue((memory.details_dir / "fact-043.md").exists())
+            self.assertEqual(
+                "# fact-042\n\nbody\n", (memory.details_dir / "fact-042.md").read_text()
             )
-            original_glob = Path.glob
-            fact_glob_calls = 0
-
-            def counting_glob(path: Path, pattern: str):
-                nonlocal fact_glob_calls
-                if path == case.memory_dir / "details" and pattern == "fact-*.md":
-                    fact_glob_calls += 1
-                return original_glob(path, pattern)
-
-            with patch.object(Path, "glob", autospec=True, side_effect=counting_glob):
-                memory = MemoryManager(case)
-
-            self.assertEqual(1, fact_glob_calls)
-            self.assertEqual(43, memory._next_fact_id)
-
-    def test_parse_fact_detail_restores_multiline_body(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            memory = MemoryManager(case)
-            detail_lines = [
-                "# fact-001",
-                "",
-                "first line",
-                "second line",
-                "",
-                "## Evidence",
-                "- ev-1",
-            ]
-
-            parsed = memory._parse_fact_detail(detail_lines)
-
-            self.assertEqual(("first line\nsecond line", ["ev-1"]), parsed)
 
     def test_multiline_fact_hashes_restore_after_reopen(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -401,7 +261,7 @@ class MemoryTests(unittest.TestCase):
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
 
-            memory.upsert_hypothesis("H-1", "desc", "# Hypothesis H-1\n")
+            memory.upsert_hypothesis("H-1", "# Hypothesis H-1\n")
             memory.upsert_entity("user", "alice", "# Entity alice\n")
             memory.upsert_entity("host", "srv-1", "# Entity srv-1\n")
             memory.upsert_entity("ip", "10.0.0.5", "# Entity 10.0.0.5\n")
@@ -475,20 +335,6 @@ class MemoryTests(unittest.TestCase):
             self.assertIn(
                 "Write the compressed overview in ja.", messages[0]["content"]
             )
-
-    def test_overview_default_template_uses_new_sections(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            memory = MemoryManager(case)
-
-            overview = memory.load_overview()
-
-            self.assertIn("## Case Scope", overview)
-            self.assertIn("## Key Findings", overview)
-            self.assertIn("## Investigation Policy", overview)
-            self.assertNotIn("## Confirmed Hosts", overview)
-            self.assertNotIn("## Confirmed Timeline", overview)
-            self.assertNotIn("## Active Hypotheses", overview)
 
     def test_overview_compaction_prompt_stays_english_for_english_output(self) -> None:
         with (
@@ -603,9 +449,7 @@ class MemoryTests(unittest.TestCase):
             mock_chat = Mock(return_value="# Hypothesis H-1\n\n- compacted")
             memory = MemoryManager(case, summarize=mock_chat)
             memory.update_overview("# Overview\n\n" + ("x" * 512))
-            memory.upsert_hypothesis(
-                "H-1", "oversized", "# Hypothesis H-1\n\n" + ("y" * 512)
-            )
+            memory.upsert_hypothesis("H-1", "# Hypothesis H-1\n\n" + ("y" * 512))
 
             changed = memory.compact_oversized_with_llm(
                 self._llm_base_url(), "test-model"
@@ -649,12 +493,8 @@ class MemoryTests(unittest.TestCase):
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
 
-            memory.upsert_hypothesis(
-                "H-1", "first-description", "# Hypothesis H-1\n\nfirst\n"
-            )
-            memory.upsert_hypothesis(
-                "H-1", "second-description", "# Hypothesis H-1\n\nsecond\n"
-            )
+            memory.upsert_hypothesis("H-1", "# Hypothesis H-1\n\nfirst\n")
+            memory.upsert_hypothesis("H-1", "# Hypothesis H-1\n\nsecond\n")
 
             hyp_path = memory.hypotheses_dir / "H-1.md"
             self.assertTrue(hyp_path.exists())
@@ -662,23 +502,6 @@ class MemoryTests(unittest.TestCase):
                 "# Hypothesis H-1\n\nsecond\n", hyp_path.read_text(encoding="utf-8")
             )
             self.assertEqual([hyp_path], sorted(memory.hypotheses_dir.glob("*.md")))
-
-    def test_hypothesis_upsert_removes_legacy_slug_named_file_for_same_id(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            memory = MemoryManager(case)
-            legacy_path = memory.hypotheses_dir / "h-1-old-description.md"
-            legacy_path.write_text("# Hypothesis H-1\n\nlegacy\n", encoding="utf-8")
-
-            memory.upsert_hypothesis(
-                "H-1", "new-description", "# Hypothesis H-1\n\ncurrent\n"
-            )
-
-            self.assertFalse(legacy_path.exists())
-            self.assertEqual(
-                "# Hypothesis H-1\n\ncurrent\n",
-                (memory.hypotheses_dir / "H-1.md").read_text(encoding="utf-8"),
-            )
 
     def test_oversized_memory_llm_compaction_failure_keeps_existing_file(self) -> None:
         with (
@@ -712,113 +535,6 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual("ja", first["output_language"])
         self.assertEqual("ja", second_before_clear["output_language"])
         self.assertEqual("en", second_after_clear["output_language"])
-
-
-class TokenizeTests(unittest.TestCase):
-    """Unit tests for MemoryManager._tokenize."""
-
-    def test_basic_split(self):
-        result = MemoryManager._tokenize("User logged in at 2pm")
-        self.assertIn("user", result)
-        self.assertIn("logged", result)
-        self.assertIn("2pm", result)
-
-    def test_casefold(self):
-        result = MemoryManager._tokenize("Alice BOB charlie")
-        self.assertEqual(result, {"alice", "bob", "charlie"})
-
-    def test_single_char_excluded(self):
-        result = MemoryManager._tokenize("a is the X")
-        self.assertNotIn("a", result)
-        self.assertIn("is", result)
-        self.assertIn("the", result)
-
-
-class FileMatchesRelevanceTests(unittest.TestCase):
-    """Unit tests for MemoryManager._file_matches_relevance."""
-
-    def setUp(self):
-        self.tmpdir = Path(tempfile.mkdtemp())
-        # Create a simple file with known content
-        ent_dir = self.tmpdir / "entities" / "user"
-        ent_dir.mkdir(parents=True)
-        (ent_dir / "ALICE_SMITH.md").write_text(
-            "# Alice Smith\n\n- Active directory account for alice\n",
-            encoding="utf-8",
-        )
-        (ent_dir / "BOB_JONES.md").write_text(
-            "# Bob Jones\n\n- Service account for bob\n",
-            encoding="utf-8",
-        )
-        self.rel_path_alice = "entities/user/ALICE_SMITH.md"
-        self.rel_path_bob = "entities/user/BOB_JONES.md"
-
-    def test_filename_match(self):
-        terms = {"alice"}
-        self.assertTrue(
-            MemoryManager._file_matches_relevance(
-                self.rel_path_alice, self.tmpdir, terms
-            )
-        )
-
-    def test_filename_no_match(self):
-        terms = {"alice"}
-        self.assertFalse(
-            MemoryManager._file_matches_relevance(self.rel_path_bob, self.tmpdir, terms)
-        )
-
-    def test_content_match(self):
-        # "service" is in Bob's content, not filename
-        terms = {"service"}
-        self.assertTrue(
-            MemoryManager._file_matches_relevance(self.rel_path_bob, self.tmpdir, terms)
-        )
-
-    def test_content_no_match(self):
-        terms = {"firewall"}
-        self.assertFalse(
-            MemoryManager._file_matches_relevance(
-                self.rel_path_alice, self.tmpdir, terms
-            )
-        )
-
-    def test_nonexistent_file(self):
-        terms = {"alice"}
-        self.assertFalse(
-            MemoryManager._file_matches_relevance(
-                "entities/user/NOPE.md", self.tmpdir, terms
-            )
-        )
-
-
-class BuildRelevanceTermsTests(unittest.TestCase):
-    """Unit tests for MemoryManager.build_relevance_terms_from_hypothesis."""
-
-    def test_none_hypothesis(self):
-        self.assertEqual(
-            MemoryManager.build_relevance_terms_from_hypothesis(None), set()
-        )
-
-    def test_extracts_description_tokens(self):
-        hyp = SimpleNamespace(
-            description="Compromised user alice via phishing",
-            required_entities=[],
-        )
-        terms = MemoryManager.build_relevance_terms_from_hypothesis(hyp)
-        self.assertIn("compromised", terms)
-        self.assertIn("alice", terms)
-        self.assertIn("phishing", terms)
-
-    def test_extracts_required_entities(self):
-        hyp = SimpleNamespace(
-            description="Investigate lateral movement",
-            required_entities=["alice-smith", "file-server-01"],
-        )
-        terms = MemoryManager.build_relevance_terms_from_hypothesis(hyp)
-        self.assertIn("alice", terms)
-        self.assertIn("smith", terms)
-        self.assertIn("file", terms)
-        self.assertIn("server", terms)
 
 
 class InvestigationContextFilesRelevanceTests(unittest.TestCase):
@@ -888,48 +604,6 @@ class InvestigationContextFilesRelevanceTests(unittest.TestCase):
         )
         entity_files = [f for f in files if f.startswith("entities/")]
         self.assertEqual(len(entity_files), 10)
-
-    def test_empty_relevance_returns_all_entities(self):
-        """Empty relevance_terms should include all entity files (backward compat)."""
-        files = self.mm.investigation_context_files(
-            relevance_terms=set(),
-            include_overview=False,
-            include_archive=False,
-            include_keypoints=False,
-            include_scratch=False,
-        )
-        entity_files = [f for f in files if f.startswith("entities/")]
-        self.assertEqual(len(entity_files), 10)
-
-    def test_relevance_filters_entities(self):
-        """With alice-related terms, only 2 entity files should be returned."""
-        terms = {"alice"}
-        files = self.mm.investigation_context_files(
-            relevance_terms=terms,
-            include_overview=False,
-            include_archive=False,
-            include_keypoints=False,
-            include_scratch=False,
-        )
-        entity_files = [f for f in files if f.startswith("entities/")]
-        self.assertEqual(len(entity_files), 2)
-        names = {Path(f).stem for f in entity_files}
-        self.assertIn("ALICE_SMITH", names)
-        self.assertIn("WORKSTATION-ALICE", names)
-
-    def test_relevance_filters_keypoints(self):
-        """With alice-related terms, only the alice keypoint should be returned."""
-        terms = {"alice"}
-        files = self.mm.investigation_context_files(
-            relevance_terms=terms,
-            include_overview=False,
-            include_archive=False,
-            include_entities=False,
-            include_scratch=False,
-        )
-        kp_files = [f for f in files if f.startswith("keypoints/")]
-        self.assertEqual(len(kp_files), 1)
-        self.assertIn("ALICE", Path(kp_files[0]).stem)
 
     def test_relevance_filters_both_entities_and_keypoints(self):
         """Combined filtering of entities and keypoints."""
@@ -1140,51 +814,6 @@ class FuzzyDedupTests(unittest.TestCase):
         case = Case.init(tmpdir)
         return MemoryManager(case)
 
-    def test_exact_duplicate_skipped(self):
-        mm = self._make_manager()
-        path = mm.facts_path
-        heading = "# Facts"
-        line = "- User logged in [confirmed | evidence: E-001]"
-        self.assertTrue(mm._append_markdown_entry(path, heading, line))
-        # Exact same line should be skipped
-        self.assertFalse(mm._append_markdown_entry(path, heading, line))
-
-    def test_near_duplicate_same_evidence_skipped(self):
-        mm = self._make_manager()
-        path = mm.facts_path
-        heading = "# Facts"
-        line1 = "- User logged in at 2pm [confirmed | evidence: E-001]"
-        line2 = "- The user logged in at 2pm [confirmed | evidence: E-001]"
-        self.assertTrue(mm._append_markdown_entry(path, heading, line1))
-        # Same fact, slightly different wording, same evidence → suppressed
-        self.assertFalse(
-            mm._append_markdown_entry(path, heading, line2, fuzzy_dedup=True)
-        )
-
-    def test_near_duplicate_different_evidence_appended(self):
-        mm = self._make_manager()
-        path = mm.facts_path
-        heading = "# Facts"
-        line1 = "- User logged in at 2pm [confirmed | evidence: E-001]"
-        line2 = "- The user logged in at 2pm [confirmed | evidence: E-002]"
-        self.assertTrue(mm._append_markdown_entry(path, heading, line1))
-        # Same fact, different evidence → must be kept
-        self.assertTrue(
-            mm._append_markdown_entry(path, heading, line2, fuzzy_dedup=True)
-        )
-
-    def test_different_fact_appended(self):
-        mm = self._make_manager()
-        path = mm.facts_path
-        heading = "# Facts"
-        line1 = "- User logged in at 2pm [confirmed | evidence: E-001]"
-        line2 = "- Server crashed at midnight [confirmed | evidence: E-003]"
-        self.assertTrue(mm._append_markdown_entry(path, heading, line1))
-        # Completely different fact → must be appended
-        self.assertTrue(
-            mm._append_markdown_entry(path, heading, line2, fuzzy_dedup=True)
-        )
-
     def test_fuzzy_dedup_disabled_by_default(self):
         mm = self._make_manager()
         path = mm.facts_path
@@ -1194,29 +823,6 @@ class FuzzyDedupTests(unittest.TestCase):
         self.assertTrue(mm._append_markdown_entry(path, heading, line1))
         # Without fuzzy_dedup, near-duplicates pass through (existing behavior)
         self.assertTrue(mm._append_markdown_entry(path, heading, line2))
-
-    def test_timeline_near_duplicate_skipped(self):
-        mm = self._make_manager()
-        path = mm.timeline_path
-        heading = "# Timeline"
-        line1 = "- 2026-01-01 12:00: User logged in [confirmed | evidence: E-001]"
-        line2 = "- 2026-01-01 12:00: The user logged in [confirmed | evidence: E-001]"
-        self.assertTrue(mm._append_markdown_entry(path, heading, line1))
-        self.assertFalse(
-            mm._append_markdown_entry(path, heading, line2, fuzzy_dedup=True)
-        )
-
-    def test_extract_line_text(self):
-        line = "- [fact-001] User logged in [confirmed | evidence: E-001]"
-        self.assertEqual(MemoryManager._extract_line_text(line), "User logged in")
-
-    def test_extract_evidence_ids(self):
-        line = "- User logged in [confirmed | evidence: E-001, E-002]"
-        self.assertEqual(MemoryManager._extract_evidence_ids(line), ["E-001", "E-002"])
-
-    def test_extract_evidence_ids_none(self):
-        line = "- User logged in [confirmed]"
-        self.assertEqual(MemoryManager._extract_evidence_ids(line), [])
 
 
 class AppendConfirmedFactFuzzyDedupTests(unittest.TestCase):

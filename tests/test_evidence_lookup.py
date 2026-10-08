@@ -75,48 +75,6 @@ class EvidenceLookupTest(unittest.TestCase):
             ),
         )
 
-    # ---- full records per table kind ----
-
-    def test_fetch_evtx_record(self):
-        result = fetch_evidence_records(self.db, ["evtx-security-000000000001"])
-        self.assertIn("evtx-security-000000000001", result)
-        row = result["evtx-security-000000000001"]
-        self.assertEqual(row.get("event_id"), 4624)
-        self.assertEqual(row.get("channel"), "Security")
-        self.assertEqual(row.get("_source"), "evtx_events")
-
-    def test_fetch_mft_record(self):
-        result = fetch_evidence_records(self.db, ["mft-000000078080-01"])
-        self.assertIn("mft-000000078080-01", result)
-        row = result["mft-000000078080-01"]
-        self.assertEqual(row.get("file_name"), "Task List.ersy")
-        self.assertEqual(row.get("_source"), "mft_entries")
-
-    def test_fetch_prefetch_executions_record(self):
-        result = fetch_evidence_records(self.db, ["prefetch-ccleaner64.exe-779bd542"])
-        self.assertIn("prefetch-ccleaner64.exe-779bd542", result)
-        row = result["prefetch-ccleaner64.exe-779bd542"]
-        self.assertEqual(row.get("executable_name"), "CCLEANER64.EXE")
-        self.assertEqual(row.get("_source"), "prefetch_executions")
-
-    def test_fetch_prefetch_timeline_record(self):
-        result = fetch_evidence_records(self.db, ["prefetch-eraser.exe-abc123"])
-        self.assertIn("prefetch-eraser.exe-abc123", result)
-        row = result["prefetch-eraser.exe-abc123"]
-        self.assertEqual(row.get("executable_name"), "ERASER.EXE")
-        self.assertEqual(row.get("_source"), "prefetch_timeline")
-
-    # ---- raw JSON merged ----
-
-    def test_raw_json_merged(self):
-        result = fetch_evidence_records(self.db, ["evtx-security-000000000001"])
-        row = result["evtx-security-000000000001"]
-        self.assertIn("raw", row)
-        self.assertEqual(row["raw"]["target_user"], "informant")
-        self.assertNotIn("raw_json", row)
-
-    # ---- unknown ID ----
-
     def test_unknown_id_returns_none(self):
         result = lookup_evidence_record(self.db, "evtx-security-999999999999")
         self.assertIsNone(result)
@@ -125,6 +83,7 @@ class EvidenceLookupTest(unittest.TestCase):
 
     def test_bulk_fetch_dedupes(self):
         ids = [
+            "evtx-security-000000000001",
             "evtx-security-000000000001",
             "mft-000000078080-01",
             "prefetch-ccleaner64.exe-779bd542",
@@ -140,26 +99,35 @@ class EvidenceLookupTest(unittest.TestCase):
         self.assertIn("prefetch-eraser.exe-abc123", result)
         self.assertIn("registry-system-services-0001", result)
         self.assertNotIn("evtx-security-999999999999", result)
+        evtx = result["evtx-security-000000000001"]
+        self.assertEqual(evtx["event_id"], 4624)
+        self.assertEqual(evtx["channel"], "Security")
+        self.assertEqual(evtx["raw"]["target_user"], "informant")
+        self.assertNotIn("raw_json", evtx)
+        self.assertEqual(result["mft-000000078080-01"]["file_name"], "Task List.ersy")
+        self.assertEqual(
+            result["prefetch-ccleaner64.exe-779bd542"]["executable_name"],
+            "CCLEANER64.EXE",
+        )
+        self.assertEqual(
+            result["prefetch-eraser.exe-abc123"]["executable_name"], "ERASER.EXE"
+        )
+        expected_sources = [
+            "evtx_events",
+            "mft_entries",
+            "prefetch_executions",
+            "prefetch_timeline",
+            "registry_artifacts",
+        ]
+        for evidence_id, source in zip(
+            dict.fromkeys(ids[:-1]), expected_sources, strict=True
+        ):
+            self.assertEqual(result[evidence_id]["_source"], source)
+        self.assertEqual(
+            lookup_evidence_record(self.db, "mft-000000078080-01"),
+            result["mft-000000078080-01"],
+        )
         self.assertEqual(
             find_missing_evidence_ids(self.db, ids),
             ["evtx-security-999999999999"],
         )
-
-    def test_fetch_with_empty_ids(self):
-        result = fetch_evidence_records(self.db, [])
-        self.assertEqual(result, {})
-
-    def test_lookup_evidence_record_returns_single(self):
-        rec = lookup_evidence_record(self.db, "mft-000000078080-01")
-        self.assertIsNotNone(rec)
-        self.assertEqual(rec["file_name"], "Task List.ersy")
-
-    def test_duplicate_ids_not_doubled(self):
-        result = fetch_evidence_records(
-            self.db,
-            [
-                "evtx-security-000000000001",
-                "evtx-security-000000000001",
-            ],
-        )
-        self.assertEqual(len(result), 1)

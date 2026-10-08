@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import warnings
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class FindingTemplate(BaseModel):
@@ -61,26 +60,6 @@ class Rule(BaseModel):
     fallback_search: list[dict[str, Any]] = Field(default_factory=list)
     applies_when: dict | None = None
 
-    @model_validator(mode="before")
-    @classmethod
-    def _coerce_attack(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            raw = data.get("attack")
-            if isinstance(raw, list) and raw and isinstance(raw[0], str):
-                rule_id = data.get("id", "unknown")
-                warnings.warn(
-                    f"rule {rule_id}: attack uses short-form ['{', '.join(raw)}'], "
-                    f"tactic will be empty — use full-form [{{tactic, technique_id, technique_name}}] instead",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-                data["attack"] = [
-                    {"tactic": "", "technique_id": s, "technique_name": ""}
-                    if s.startswith("T")
-                    else {"tactic": s, "technique_id": "", "technique_name": ""}
-                    for s in raw
-                ]
-        return data
 
 
 class Finding(BaseModel):

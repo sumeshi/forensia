@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from forensia.ai.prompts.prompt_catalog import sql_cookbook
-from forensia.ai.prompts.sql_schema import _build_live_schema_guidance
+from forensia.ai.prompts.sql_schema import schema_column_guidance
 from forensia.config import get_llm_settings
 from forensia.core.compaction import TRUNCATION_MARKER, mechanical_compact
 from forensia.knowledge.catalog import load_event_id_hints, load_schema_hints
@@ -856,7 +856,7 @@ def _build_schema_guidance(
         blocks.append("<SELECTED_SCHEMA_CARDS>")
         blocks.append(selected_card)
         blocks.append("</SELECTED_SCHEMA_CARDS>")
-    live = _build_live_schema_guidance(db)
+    live = schema_column_guidance(db)
     if live:
         blocks.append(live)
     recipe_index, recipe_full = _build_recipe_index(db=db, session_id=session_id)

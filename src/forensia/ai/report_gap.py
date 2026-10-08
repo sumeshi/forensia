@@ -70,9 +70,7 @@ class GapHypothesisOutput(BaseModel):
                 raise ValueError(f"Description contains prohibited phrase: '{phrase}'")
         # Unresolved template/angle-bracket placeholders are never admissible.
         if re.search(r"\{[A-Za-z_][A-Za-z0-9_]*\}|<[^>]+>", v):
-            raise ValueError(
-                "Description contains unresolved placeholder token"
-            )
+            raise ValueError("Description contains unresolved placeholder token")
         # Entity-scoped unknowns (e.g. "unknown src_ip", "target_user is null").
         if re.search(
             r"\b(?:unknown|null|none)\b\s+(?:src_ip|target_user|subject_user|"
@@ -391,6 +389,37 @@ def _persist_admission_outcome(
 # Imported above.
 
 
+def _handle_orphaned_section_gaps(db: CaseDB, keep_open_ids: set[str]) -> None:
+    """Note absent report requests without resolving or withdrawing their work.
+
+    Text similarity and a shared section do not establish requirement identity.
+    The existing conclusion/review owner must close admitted Gap/Task state.
+    """
+    params = sorted(keep_open_ids)
+    excluded = ""
+    if params:
+        placeholders = ", ".join("?" for _ in params)
+        excluded = f" AND gap_id NOT IN ({placeholders})"
+    orphans = db.execute(
+        "SELECT gap_id, coverage_reason FROM report_gaps "
+        "WHERE status = 'open' AND origin = 'section'" + excluded,
+        params,
+    ).fetchall()
+    for gap_id, existing_reason in orphans:
+        if not str(existing_reason or "").strip():
+            db.execute(
+                "UPDATE report_gaps SET coverage_reason = 'report_request_absent', "
+                "updated_at = now() WHERE gap_id = ?",
+                [gap_id],
+            )
+        db.execute(
+            "UPDATE investigation_tasks SET reason = 'report_request_absent', "
+            "updated_at = now() WHERE status IN ('open', 'in_progress') "
+            "AND gap_id = ? AND (reason IS NULL OR reason = '')",
+            [gap_id],
+        )
+
+
 def inject_gap_hypotheses(
     db: CaseDB,
     state: SessionState,
@@ -404,6 +433,11 @@ def inject_gap_hypotheses(
     Uses the unified admission gate (admit_new_hypothesis) to check against
     active, resolved, and refuted hypotheses — preventing refuted claims like
     poqexec.exe from being re-admitted through the gap injection path.
+
+    Prose absence is not resolution (GOAL 9.4): an open section-origin Gap
+    whose request string left the report prose keeps its open state. Similarity
+    and section membership never resolve work; conclusive linked work is
+    closed by its own owner (resolve_linked_work).
     """
     added = 0
     current_gap_ids = {
@@ -412,6 +446,7 @@ def inject_gap_hypotheses(
         if _normalize_text(str(gap))
     }
     gap_sections: dict[str, str] = {}
+    prose_gap_ids: set[str] = set()
     for section_key, raw_gaps in db.execute(
         "SELECT section_key, gaps FROM report_sections WHERE gaps IS NOT NULL"
     ).fetchall():
@@ -422,26 +457,16 @@ def inject_gap_hypotheses(
             except TypeError, ValueError:
                 section_gaps = []
         for section_gap in section_gaps if isinstance(section_gaps, list) else []:
-            gap_sections[_normalize_text(str(section_gap))] = str(section_key or "")
-    if current_gap_ids:
-        placeholders = ", ".join("?" for _ in current_gap_ids)
-        db.execute(
-            f"UPDATE report_gaps SET status = 'resolved', updated_at = now() "
-            f"WHERE status = 'open' AND origin = 'section' "
-            f"AND gap_id NOT IN ({placeholders})",
-            sorted(current_gap_ids),
-        )
-    else:
-        db.execute(
-            "UPDATE report_gaps SET status = 'resolved', updated_at = now() "
-            "WHERE status = 'open' AND origin = 'section'"
-        )
-    db.execute(
-        "UPDATE investigation_tasks SET status = 'resolved', updated_at = now() "
-        "WHERE status = 'open' AND gap_id IN "
-        "(SELECT gap_id FROM report_gaps WHERE status = 'resolved' "
-        "AND origin = 'section')"
-    )
+            normalized = _normalize_text(str(section_gap))
+            gap_sections[normalized] = str(section_key or "")
+            if normalized:
+                prose_gap_ids.add(
+                    "GAP-" + hashlib.sha256(str(section_gap).encode()).hexdigest()[:16]
+                )
+    # A Gap stays requested while its string is in the stored section prose
+    # (including sections not refreshed in this cycle) or in this run's list.
+    keep_open_ids = prose_gap_ids | current_gap_ids
+    _handle_orphaned_section_gaps(db, keep_open_ids)
     for gap in gaps:
         normalized_gap = _normalize_text(gap)
         if not normalized_gap:
@@ -461,22 +486,29 @@ def inject_gap_hypotheses(
                    section_key = CASE WHEN EXCLUDED.section_key = '' THEN report_gaps.section_key ELSE EXCLUDED.section_key END,
                    status = 'open',
                    origin = 'section',
+                   coverage_reason = NULL,
                    updated_at = now()""",
             [gap_id, section_key, gap, gap_kind],
         )
 
         existing = _existing_hypothesis(state, gap)
         if existing is not None:
-            status = (
-                "resolved"
-                if existing.status in {"confirmed", "refuted", "untestable"}
-                else "open"
-            )
-            db.execute(
-                "UPDATE report_gaps SET hypothesis_id = ?, status = ?, updated_at = now() "
-                "WHERE gap_id = ?",
-                [existing.id, status, gap_id],
-            )
+            if existing.status in {"confirmed", "refuted"}:
+                db.execute(
+                    "UPDATE report_gaps SET hypothesis_id = ?, status = 'resolved', "
+                    "updated_at = now() WHERE gap_id = ?",
+                    [existing.id, gap_id],
+                )
+            else:
+                # untestable means the scope could not answer the request yet
+                # (GOAL 9.4): it is not evidence-acquisition completion, so the
+                # Gap stays open with the blocking outcome recorded.
+                db.execute(
+                    "UPDATE report_gaps SET hypothesis_id = ?, status = 'open', "
+                    "coverage_reason = 'linked_hypothesis_untestable', updated_at = now() "
+                    "WHERE gap_id = ?",
+                    [existing.id, gap_id],
+                )
             continue
 
         existing_task = db.execute(

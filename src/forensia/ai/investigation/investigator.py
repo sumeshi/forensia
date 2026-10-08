@@ -19,9 +19,9 @@ from rich import print
 
 from forensia.ai.audit import LLMCallLogger
 from forensia.ai.case_profile import (
+    CaseEvidenceProfile,
     _format_case_profile,
     build_case_profile,
-    set_case_profile,
 )
 from forensia.ai.hypotheses.hypothesis_store import _all_hypotheses
 from forensia.ai.investigation.investigation_cycle import (
@@ -56,7 +56,6 @@ from forensia.ai.report_gap import (
     report_cycle_progress,
 )
 from forensia.ai.sections.section_refresher import async_refresh_report_sections
-from forensia.config import get_llm_settings
 from forensia.core.case import Case
 from forensia.core.log import log as _log
 from forensia.core.memory import MemoryManager
@@ -83,10 +82,7 @@ def final_summary(state: SessionState) -> str:
         return "\n".join(lines)
     if state.history:
         return "\n".join(entry.summary for entry in state.history[-5:] if entry.summary)
-    output_language = str(get_llm_settings()["output_language"]).lower()
-    return {
-        "en": "No additional progress was made during this investigation.",
-    }.get(output_language, "No additional progress was made during this investigation.")
+    return "No additional progress was made during this investigation."
 
 
 async def _run_report_phase(
@@ -201,12 +197,36 @@ def _classify_active_hypotheses_on_stop(
     return counts
 
 
+def _durable_open_work_counts(db: CaseDB) -> tuple[int, int]:
+    """Count durable unresolved work the completion gate must honor (T05).
+
+    The report's prose gap array is an editorial projection: a section reword
+    can drop every gap string while admitted work remains open.  Completion
+    therefore reads the authoritative ``report_gaps`` and
+    ``investigation_tasks`` lifecycle rows instead of ``total_gaps``.
+    """
+    open_gaps = int(
+        db.execute(
+            "SELECT COUNT(*) FROM report_gaps "
+            "WHERE status IN ('open', 'in_progress', 'needs_review')"
+        ).fetchone()[0]
+    )
+    open_tasks = int(
+        db.execute(
+            "SELECT COUNT(*) FROM investigation_tasks "
+            "WHERE status IN ('open', 'in_progress')"
+        ).fetchone()[0]
+    )
+    return open_gaps, open_tasks
+
+
 def _check_termination(
     *,
     report_only: bool,
     broad_plan_stop: bool,
     active_hypotheses: list,
-    report_after: dict[str, Any],
+    durable_open_gaps: int,
+    durable_open_tasks: int,
     no_progress_count: int,
     no_progress_limit: int,
     cycle_progress: bool,
@@ -214,8 +234,15 @@ def _check_termination(
     """Check if the investigation loop should stop. Returns (terminal_status or None, updated_no_progress_count, stop_reason_code)."""
     if report_only:
         return "completed", no_progress_count, "report_only_mode"
-    unresolved_gap_count = int(report_after.get("total_gaps", 0))
-    if broad_plan_stop and not active_hypotheses and unresolved_gap_count == 0:
+    # Completion reads durable admitted work, not the report prose (GOAL 9.4):
+    # with prose gaps exhausted but durable gaps/tasks still open, the loop
+    # falls through to the no-progress machinery instead of completing.
+    if (
+        broad_plan_stop
+        and not active_hypotheses
+        and durable_open_gaps == 0
+        and durable_open_tasks == 0
+    ):
         return "completed", no_progress_count, "no_gaps_no_hypotheses"
     no_progress_count = 0 if cycle_progress else no_progress_count + 1
     if no_progress_count >= no_progress_limit:
@@ -273,7 +300,7 @@ class _InvestigateEnv:
     llm_logger: LLMCallLogger
     session_id: str
     template_root: Path
-    case_profile_str: str
+    case_profile: CaseEvidenceProfile
     progress_callback: Callable[[dict[str, Any]], None] | None
     max_iter: int
     no_progress_limit: int
@@ -310,18 +337,21 @@ def _resolve_rulepacks(profile: str, db: CaseDB, auto_rulepacks: bool) -> set[st
     return active_pack_ids
 
 
-def _prepare_case_profile(case: Case, db: CaseDB) -> str:
-    """Extract the case time range and register the case profile globally."""
+def _prepare_case_profile(case: Case, db: CaseDB, profile: str) -> CaseEvidenceProfile:
+    """Build the session projection from current evidence, without global state."""
     case.extract_time_range(db.conn)
     case_profile_dict = build_case_profile(db)
-    case_profile_str = _format_case_profile(case_profile_dict)
+    case_profile = _format_case_profile(case_profile_dict)
     profile_event_ids = {
         e["event_id"]
         for e in case_profile_dict.get("event_ids", [])
         if isinstance(e.get("event_id"), int)
     }
-    set_case_profile(case_profile_str, profile_event_ids)
-    return case_profile_str
+    return CaseEvidenceProfile(
+        profile_name=profile,
+        event_ids=frozenset(profile_event_ids),
+        summary=case_profile,
+    )
 
 
 def _enforce_llm_budget(llm_logger: LLMCallLogger, max_llm_calls: int) -> None:
@@ -373,7 +403,7 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
             plan_cycle=plan_cycle,
             max_iter=env.max_iter,
             report_only=env.report_only,
-            case_profile_str=env.case_profile_str,
+            case_profile=env.case_profile,
         )
         if env.ctx.interrupted:
             return "stopped", report_refresh_failures, "interrupted"
@@ -404,11 +434,13 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
         cycle_progress = cycle_progress or report_cycle_progress
         env.memory.regenerate_timeline_from_db(env.db)
         refresh_evidence_coverage(env.db)
+        durable_open_gaps, durable_open_tasks = _durable_open_work_counts(env.db)
         terminal_status, no_progress_count, stop_reason_code = _check_termination(
             report_only=env.report_only,
             broad_plan_stop=broad_plan_stop,
             active_hypotheses=env.state.active_hypotheses,
-            report_after=report_after,
+            durable_open_gaps=durable_open_gaps,
+            durable_open_tasks=durable_open_tasks,
             no_progress_count=no_progress_count,
             no_progress_limit=env.no_progress_limit,
             cycle_progress=cycle_progress,
@@ -433,8 +465,10 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
                     env.memory,
                 )
             return terminal_status, report_refresh_failures, stop_reason_code
-    planner_only_reason = None if env.report_only else _planner_only_terminal_reason(
-        env.db, env.session_id
+    planner_only_reason = (
+        None
+        if env.report_only
+        else _planner_only_terminal_reason(env.db, env.session_id)
     )
     _classify_active_hypotheses_on_stop(
         env.db, env.state.active_hypotheses, "max_iterations", env.memory
@@ -574,7 +608,7 @@ async def investigate(
         llm_logger=llm_logger,
         session_id=session_id,
         template_root=template_root,
-        case_profile_str=_prepare_case_profile(case, db),
+        case_profile=_prepare_case_profile(case, db, profile),
         progress_callback=session_progress,
         max_iter=max_iter,
         no_progress_limit=no_progress_limit,
@@ -649,7 +683,11 @@ async def investigate(
                 stop_summary=summary,
             )
         except Exception as exc:
-            _log("FINALIZE", f"investigation state projection failed: {exc}", level="error")
+            _log(
+                "FINALIZE",
+                f"investigation state projection failed: {exc}",
+                level="error",
+            )
         try:
             memory.regenerate_timeline_from_db(db)
         except Exception as exc:

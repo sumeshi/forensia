@@ -283,13 +283,11 @@ def _apply_entity_updates(ctx: _MemoryUpdateContext) -> None:
 
 def _rewrite_hypothesis_memories(ctx: _MemoryUpdateContext) -> None:
     for hypothesis in ctx.active_hypotheses:
-        slug = hypothesis.description[:40]
         content = _render_hypothesis_memory(ctx.db, hypothesis)
-        ctx.memory.upsert_hypothesis(hypothesis.id, slug, content)
+        ctx.memory.upsert_hypothesis(hypothesis.id, content)
     for hypothesis in ctx.resolved_hypotheses:
-        slug = hypothesis.description[:40]
         content = _render_hypothesis_memory(None, hypothesis)
-        ctx.memory.upsert_hypothesis(hypothesis.id, slug, content)
+        ctx.memory.upsert_hypothesis(hypothesis.id, content)
 
 
 def apply_memory_updates(

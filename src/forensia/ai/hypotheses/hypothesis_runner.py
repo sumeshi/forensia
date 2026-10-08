@@ -6,17 +6,18 @@ import json
 import re
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from forensia.ai.audit import LLMCallLogger
-from forensia.ai.case_profile import get_profile_event_ids
+from forensia.ai.case_profile import CaseEvidenceProfile, observed_event_ids
 from forensia.ai.checking.assessment import assess_evidence_group
 from forensia.ai.checking.check_normalize import summarize_query_result
 from forensia.ai.checking.checker import check_query_result
 from forensia.ai.checking.settlement import (
     SettlementInput,
     build_settlement_input_from_confirm_when,
+    judge_absence_scope,
     settle_hypothesis,
 )
 from forensia.ai.checking.sufficiency import (
@@ -29,6 +30,7 @@ from forensia.ai.hypotheses.execution import (
     build_receipt_step_payload,
     build_sql_receipt,
     resolve_zero_row_fallbacks,
+    sql_absence_scope,
 )
 from forensia.ai.hypotheses.hypothesis_manager import (
     _guess_related_sections,
@@ -63,6 +65,7 @@ from forensia.core.memory import MemoryManager
 from forensia.core.session import HistoryEntry, Hypothesis, SessionState
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
+from forensia.knowledge.coverage import derive_required_capabilities
 from forensia.knowledge.rules.loader import load_rule_by_id
 
 
@@ -120,20 +123,6 @@ def _unavailable_missing_event_ids(
     return sorted(referenced)
 
 
-def _observed_keypoints_from_findings(
-    snapshot: list[dict[str, Any]], limit: int = 20
-) -> list[str]:
-    """Format findings as stable labels for broad-planning context."""
-    keypoints: list[str] = []
-    for item in snapshot[:limit]:
-        title = str(item.get("title") or "").strip()
-        finding_id = str(item.get("finding_id") or "").strip()
-        if not title:
-            continue
-        keypoints.append(f"{finding_id}: {title}" if finding_id else title)
-    return keypoints
-
-
 def _matching_findings(
     snapshot: list[dict[str, Any]], hypothesis: Hypothesis | None
 ) -> list[dict[str, Any]]:
@@ -159,7 +148,11 @@ def _matching_findings(
 def _rationale_signature(rationale: str) -> str:
     text = rationale.lower()
     eids = sorted(set(re.findall(r"\b(?:event\s*id\s*)?(\d{3,5})\b", text)))
-    keywords = sorted(set(re.findall(r"\b(missing|requires|correlation|not\s+present|absent)\b", text)))
+    keywords = sorted(
+        set(
+            re.findall(r"\b(missing|requires|correlation|not\s+present|absent)\b", text)
+        )
+    )
     return "eid:" + ",".join(eids) + "|kw:" + ",".join(keywords)
 
 
@@ -180,7 +173,7 @@ class _HypothesisRunState:
     case: Case
     emit_fn: Callable[..., None] | None
     llm_status_fn: Callable[[str], None] | None
-    case_profile_str: str | None
+    case_profile: CaseEvidenceProfile | None
     candidates: list[dict[str, Any]]
     tracker: HypothesisProgressTracker
     focus_sections: dict[str, str]
@@ -204,7 +197,7 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
     base_url, model, plan_cycle = rs.base_url, rs.model, rs.plan_cycle
     llm_logger, session_id = rs.llm_logger, rs.session_id
     query_index, llm_status_fn = rs.query_index, rs.llm_status_fn
-    case_profile_str = rs.case_profile_str
+    case_profile = rs.case_profile
     try:
         hypothesis_plan = await _call_with_outage_recovery(
             plan_hypothesis_query,
@@ -215,7 +208,6 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
             hypothesis=hypothesis,
             memory=memory,
             db=db,
-            overview_md=ctx.memory_overview,
             default_context_md=ctx.memory_plan,
             status_callback=llm_status_fn or (lambda msg: _log("LLM", msg)),
             audit_callback=lambda msgs, out, parsed, hid=hypothesis.id, qi=query_index: (
@@ -231,7 +223,7 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
             ),
             query_index=query_index,
             time_range=case.time_range,
-            case_profile=case_profile_str,
+            case_profile=case_profile,
         )
     except Exception as exc:
         err_msg = f"LLM failed for {hypothesis.id}: {exc}"
@@ -245,7 +237,7 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
             body=f"[internal-error] {err_msg}",
         )
         return "break"
-    hypothesis, flow = persist_hypothesis_plan_result(
+    flow = persist_hypothesis_plan_result(
         db=db,
         session_id=session_id,
         iteration=plan_cycle,
@@ -255,7 +247,6 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
         state=state,
         emit=rs.emit_fn,
     )
-    rs.hypothesis = hypothesis
     if flow != "ok":
         return flow
     rs.hypothesis_plan = hypothesis_plan
@@ -295,9 +286,11 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
         )
     query_fp = query_fingerprint(planned_query.sql)
     started = time.monotonic()
-    required_capabilities = list(
-        getattr(hypothesis.verification_spec, "required_capabilities", []) or []
+    required_capabilities = derive_required_capabilities(
+        hypothesis.verification_spec.required_capabilities,
+        hypothesis.verification_spec.support_conditions,
     )
+    scope_status, source_families = sql_absence_scope(hypothesis, planned_query.sql)
     try:
         rows = fetch_records(db, planned_query.sql)
         original_row_count = len(rows)
@@ -392,6 +385,8 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
         receipt,
         required_fields=["normalized_sql"],
         required_capabilities=required_capabilities,
+        scope_status=scope_status,
+        source_families=source_families,
     )
     rs.retrieval_evaluation = evaluation
     _save_step(
@@ -643,9 +638,16 @@ def _build_settlement_input(rs: _HypothesisRunState) -> SettlementInput:
     """Construct the SettlementInput from current run state."""
     from forensia.report.benign_auth import is_benign_local_auth
 
+    _scope_status, source_families = sql_absence_scope(
+        rs.hypothesis, rs.planned_query.sql if rs.planned_query else ""
+    )
+    absence_scope, absence_note = judge_absence_scope(
+        rs.db, rs.hypothesis, rs.retrieval_evaluation, source_families=source_families
+    )
+
     rows = rs.rows or []
     unavailable_ids = _unavailable_missing_event_ids(
-        rs.missing_checks_raw or [], get_profile_event_ids()
+        rs.missing_checks_raw or [], observed_event_ids(rs.db)
     )
     si = build_settlement_input_from_confirm_when(
         hypothesis=rs.hypothesis,
@@ -656,26 +658,12 @@ def _build_settlement_input(rs: _HypothesisRunState) -> SettlementInput:
         consecutive_zero_row_inconclusive=rs.tracker.zero_row_inconclusive_count,
         consecutive_same_missing=rs.tracker.consecutive_same_missing,
         unavailable_missing_event_ids=unavailable_ids or None,
+        absence_scope=absence_scope,
+        absence_note=absence_note,
         sufficiency_result=rs.sufficiency_result,
     )
     if rows and all(is_benign_local_auth(r) for r in rows):
-        si = SettlementInput(
-            hypothesis=si.hypothesis,
-            checker_verdict=si.checker_verdict,
-            check_summary=si.check_summary,
-            sample_rows=si.sample_rows,
-            co_observed_event_ids=si.co_observed_event_ids,
-            co_observation_satisfied=si.co_observation_satisfied,
-            co_observation_reason=si.co_observation_reason,
-            same_host=si.same_host,
-            within_minutes=si.within_minutes,
-            is_benign_auth=True,
-            has_rule_refute_when_zero_rows=si.has_rule_refute_when_zero_rows,
-            consecutive_zero_row_inconclusive=si.consecutive_zero_row_inconclusive,
-            consecutive_same_missing=si.consecutive_same_missing,
-            unavailable_missing_event_ids=si.unavailable_missing_event_ids,
-            sufficiency_result=si.sufficiency_result,
-        )
+        si = replace(si, is_benign_auth=True)
     return si
 
 
@@ -711,9 +699,13 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
         final_verdict = decision.verdict
         check_result.verdict = final_verdict
         append_settlement_feedback(
-            db, hypothesis.id, session_id, plan_cycle,
+            db,
+            hypothesis.id,
+            session_id,
+            plan_cycle,
             planned_query.query_id if planned_query else None,
-            pre_settlement_verdict, decision,
+            pre_settlement_verdict,
+            decision,
         )
         if not decision.allowed:
             _log("SETTLEMENT", f"{hypothesis.id} confirmed BLOCKED: {decision.reason}")
@@ -951,10 +943,9 @@ async def _investigate_one_hypothesis(
     query_limit: int | None = None,
     emit_fn: Callable[..., None] | None = None,
     llm_status_fn: Callable[[str], None] | None = None,
-    case_profile_str: str | None = None,
+    case_profile: CaseEvidenceProfile | None = None,
 ) -> tuple[bool, SessionState, dict[str, str]]:
-    """Investigate a single hypothesis with full emit/save/memory lifecycle.
-    """
+    """Investigate a single hypothesis with full emit/save/memory lifecycle."""
     rs = _HypothesisRunState(
         hypothesis=hypothesis,
         state=state,
@@ -969,7 +960,7 @@ async def _investigate_one_hypothesis(
         case=case,
         emit_fn=emit_fn,
         llm_status_fn=llm_status_fn,
-        case_profile_str=case_profile_str,
+        case_profile=case_profile,
         candidates=_matching_findings(state.findings_snapshot, hypothesis),
         tracker=HypothesisProgressTracker(),
         focus_sections=_guess_related_sections(hypothesis.description),

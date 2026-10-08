@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class MemoryReadMoreAction(BaseModel):
@@ -49,6 +49,12 @@ class SQLQueryAction(BaseModel):
     time_window: str = ""
     expected_row_shape: str = ""
 
+    @model_validator(mode="after")
+    def _one_execution_path(self) -> SQLQueryAction:
+        if bool(self.template_id) == bool(self.sql.strip()):
+            raise ValueError("Choose exactly one of template_id or bounded SELECT")
+        return self
+
 
 QueryIntentAction = Annotated[
     MemoryReadMoreAction | SQLQueryAction,
@@ -57,7 +63,7 @@ QueryIntentAction = Annotated[
 
 
 class QueryIntentResponse(BaseModel):
-    """One bounded planner action; legacy payloads normalize before this contract."""
+    """The complete planner response: exactly one bounded action."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -371,7 +377,9 @@ SECTION_AGENT_CHECK_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
     "required": ["verdict"],
     "properties": {
-        "verdict": {"enum": ["block_supported", "block_needs_more", "block_contradicted"]},
+        "verdict": {
+            "enum": ["block_supported", "block_needs_more", "block_contradicted"]
+        },
         "status": {
             "enum": [
                 "answered",

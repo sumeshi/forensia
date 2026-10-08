@@ -283,42 +283,6 @@ class CoverageRefreshIdempotentTests(unittest.TestCase):
                     # Should not have duplicates
                     self.assertEqual(len(source_ids), len(set(source_ids)))
 
-    def test_migration_backfills_source_metadata_once(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                db.execute(
-                    "INSERT INTO ingested_files (sha256, path, source_kind) "
-                    "VALUES ('legacy-evtx', '/legacy/Security.evtx', 'evtx')"
-                )
-                db.execute(
-                    "INSERT INTO evidence_sources "
-                    "(source_id, artifact_family, ingest_status, row_count, hosts, "
-                    "min_time, max_time, created_at, updated_at) VALUES "
-                    "('legacy-evtx', 'evtx', 'normalized', 99, [], "
-                    "'1601-01-01', '3320-11-16', now(), now())"
-                )
-                db.execute(
-                    "INSERT INTO evtx_events "
-                    "(evidence_id, source_file, channel, computer, timestamp) VALUES "
-                    "('evtx-legacy', '/legacy/Security.evtx', 'Security', "
-                    "'HOST-1', '2015-03-22')"
-                )
-                db.execute(
-                    "DELETE FROM schema_migrations "
-                    "WHERE migration_key = 'r8_03_coverage_lineage_v2'"
-                )
-            with CaseDB(case) as db:
-                row = db.execute(
-                    "SELECT row_count, channel, hosts, min_time, max_time "
-                    "FROM evidence_sources WHERE source_id = 'legacy-evtx'"
-                ).fetchone()
-                self.assertEqual(row[0], 1)
-                self.assertEqual(row[1], "Security")
-                self.assertIn("HOST-1", str(row[2]))
-                self.assertEqual(row[3], datetime(2015, 3, 22))
-                self.assertEqual(row[4], datetime(2015, 3, 22))
-
 
 class EVTXSourceMetadataTests(unittest.TestCase):
     """Test EVTX source metadata consistency."""

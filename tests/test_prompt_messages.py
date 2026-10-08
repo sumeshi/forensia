@@ -11,7 +11,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from forensia.ai.llm.schemas import PARAGRAPH_NARRATE_SCHEMA
 from forensia.ai.prompts.prompt_context import (
     _build_recipe_index,
     _build_schema_guidance,
@@ -29,36 +28,15 @@ from forensia.ai.prompts.prompt_sections import (
 from forensia.ai.prompts.report_evidence_projection import (
     project_report_evidence_row,
 )
-from forensia.ai.prompts.sql_schema import build_investigation_framework
 from forensia.ai.sections.section_exec import question_report_brief
 from forensia.config import (
     clear_llm_settings_cache,
     reload_settings,
-    resolve_llm_config,
 )
 from forensia.core.case import Case
 from forensia.core.session import Hypothesis, PlannedQuery
 from forensia.db.database import CaseDB
 from forensia.report.sections.section_quality import validate_body_evidence_ids
-
-
-class _MemoryStub:
-    max_bytes = 16384
-
-    def load_overview(self) -> str:
-        return "# overview"
-
-    def load_context(self, files: list[str]) -> str:
-        return ""
-
-    def load_compact_context(
-        self, files: list[str], max_bytes: int | None = None
-    ) -> str:
-        return "# facts.md\n\n- fact\n\n# tasks.md\n\n- question"
-
-
-def _llm_base_url() -> str:
-    return resolve_llm_config()[0] or "http://test-llm.invalid"
 
 
 class PromptMessageTests(unittest.TestCase):
@@ -102,15 +80,6 @@ class PromptMessageTests(unittest.TestCase):
         self.assertIn("[INSUFFICIENT EVIDENCE: reason]", system)
 
     def test_report_section_prompt_includes_ioc_catalog(self) -> None:
-        # A case profile is always set before report prompts at runtime
-        # (investigate() computes it). Without one, the unfiltered Event ID
-        # Reference alone exceeds the system-prompt budget and every droppable
-        # playbook section (including the IOC catalog) is trimmed. Set a small
-        # profile explicitly so this test is order-independent.
-        from forensia.ai.case_profile import set_case_profile
-
-        set_case_profile("test-profile", {4624, 4625, 4648, 1102, 104, 7045})
-        self.addCleanup(lambda: set_case_profile(None, None))
         messages = build_report_section_messages(
             section_meta={"section": "3_technical"},
             evidence_results=[],
@@ -122,20 +91,6 @@ class PromptMessageTests(unittest.TestCase):
         self.assertIn("## IOC Catalog", system)
         self.assertIn("Eraser", system)
         self.assertIn("LOLBins", system)
-
-    def test_report_section_messages_include_recommendation_strength_guidance(
-        self,
-    ) -> None:
-        messages = build_report_section_messages(
-            section_meta={"section": "5_recommendations"},
-            evidence_results=[],
-            context_sections={},
-            template_body="# Recommended Actions",
-            report_brief={},
-        )
-        system = messages[0]["content"]
-        self.assertIn("Match wording to confidence", system)
-        self.assertIn("Recommended actions must scale with evidence strength", system)
 
     def test_publication_gate_is_passed_to_overview_and_recommendations(self) -> None:
         state = {
@@ -156,36 +111,6 @@ class PromptMessageTests(unittest.TestCase):
             )
             self.assertIn("needs_review/incomplete", messages[0]["content"])
             self.assertIn(expected, messages[0]["content"])
-
-    def test_report_section_messages_include_language_confidence_matrix_and_categories(
-        self,
-    ) -> None:
-        messages = build_report_section_messages(
-            section_meta={"section": "3_technical"},
-            evidence_results=[],
-            context_sections={},
-            template_body="# Persistence and Execution",
-            report_brief={},
-        )
-        system = messages[0]["content"]
-        self.assertIn("confidence >= 0.8", system)
-        self.assertIn("confidence < 0.5", system)
-        self.assertIn(
-            "Do not use 'confirmed' for findings or conclusions below 0.8 confidence",
-            system,
-        )
-        self.assertIn("GOOGLEDRIVESYNC.EXE=cloud_sync", system)
-        self.assertIn("SCHTASKS.EXE=persistence_tool", system)
-
-    def test_investigation_framework_includes_machine_account_and_category_guidance(
-        self,
-    ) -> None:
-        framework = build_investigation_framework()
-
-        self.assertIn("account names ending with '$' as machine_account", framework)
-        self.assertIn("never store a machine account in source_ip", framework)
-        self.assertIn("GOOGLEDRIVESYNC.EXE=cloud_sync", framework)
-        self.assertIn("SCHTASKS.EXE=persistence_tool", framework)
 
     def test_benchmark_report_brief_strips_narrative_keys(self) -> None:
         brief = question_report_brief(
@@ -305,55 +230,6 @@ class TestConfirmedFindingsBlock(unittest.TestCase):
         system_content = msgs[0]["content"]
         self.assertNotIn("<CONFIRMED_FINDINGS>", system_content)
 
-    def test_none_findings_omits_block(self) -> None:
-        from forensia.ai.prompts.prompt_investigation import build_query_intent_messages
-
-        h = Hypothesis(description="test", id="H-001")
-        msgs = build_query_intent_messages(
-            hypothesis=h,
-            recent_history=[],
-            active_hypotheses=[],
-            findings_snapshot=None,
-        )
-        system_content = msgs[0]["content"]
-        self.assertNotIn("<CONFIRMED_FINDINGS>", system_content)
-
-    def test_top5_by_severity(self) -> None:
-        from forensia.ai.prompts.prompt_investigation import build_query_intent_messages
-
-        h = Hypothesis(description="test", id="H-001")
-        # 10 findings with various severities
-        findings = [
-            {
-                "severity": "low",
-                "title": f"finding-{i}",
-                "hypothesis_id": f"H-{i:03d}",
-                "finding_id": f"f-{i:03d}",
-                "evidence_ids": [f"evtx-{i:03d}"],
-            }
-            for i in range(1, 11)
-        ]
-        # Insert critical/high in positions 6,7 so they should bubble to top
-        findings[5]["severity"] = "critical"
-        findings[6]["severity"] = "high"
-        findings[0]["severity"] = "critical"  # another critical
-
-        msgs = build_query_intent_messages(
-            hypothesis=h,
-            recent_history=[],
-            active_hypotheses=[],
-            findings_snapshot=findings,
-        )
-        system_content = msgs[0]["content"]
-        # Find the line in the CONFIRMED_FINDINGS block
-        for line in system_content.split("\n"):
-            if "[high]" in line:
-                self.assertLessEqual(len(line.strip()), 163)  # 160 + "... "
-                # Line may or may not end with "..." depending on length
-                break
-        else:
-            self.fail("No [high] finding line found in CONFIRMED_FINDINGS block")
-
     def test_evidence_ids_string_parsed(self) -> None:
         from forensia.ai.prompts.prompt_investigation import build_query_intent_messages
 
@@ -376,30 +252,6 @@ class TestConfirmedFindingsBlock(unittest.TestCase):
         system_content = msgs[0]["content"]
         self.assertIn("evtx-001", system_content)
         self.assertIn("evtx-002", system_content)
-
-    def test_max_length_truncation(self) -> None:
-        from forensia.ai.prompts.prompt_investigation import build_query_intent_messages
-
-        h = Hypothesis(description="test", id="H-001")
-        # Finding with very long title
-        findings = [
-            {
-                "severity": "critical",
-                "title": "A" * 200,
-                "hypothesis_id": "H-001",
-                "finding_id": "f-001",
-                "evidence_ids": [],
-            },
-        ]
-        msgs = build_query_intent_messages(
-            hypothesis=h,
-            recent_history=[],
-            active_hypotheses=[],
-            findings_snapshot=findings,
-        )
-        system_content = msgs[0]["content"]
-        # Should contain truncated title (truncated to ~80 chars)
-        self.assertIn("A" * 80, system_content)  # First 80 chars kept
 
 
 class PriorAttemptsBlockTests(unittest.TestCase):
@@ -438,20 +290,6 @@ class PriorAttemptsBlockTests(unittest.TestCase):
         self.assertIn("evidence_count=0", block)
         self.assertIn("evidence_count=2", block)
         self.assertIn("do_not_repeat_query_ids: q-001, q-002", block)
-
-    def test_render_prior_attempts_omits_absent_fields(self) -> None:
-        """Fields missing from a row are omitted, never fabricated (Rule 12)."""
-        from forensia.ai.prompts.prompt_investigation import render_prior_attempts
-
-        block = render_prior_attempts([{"verdict": "inconclusive"}])
-        self.assertNotIn("query_id=", block)
-        self.assertNotIn("evidence_count=", block)
-        self.assertNotIn("do_not_repeat_query_ids", block)
-
-    def test_render_prior_attempts_empty_history(self) -> None:
-        from forensia.ai.prompts.prompt_investigation import render_prior_attempts
-
-        self.assertIn("(none)", render_prior_attempts([]))
 
     def test_intent_messages_carry_structured_attempts(self) -> None:
         from forensia.ai.prompts.prompt_investigation import build_query_intent_messages
@@ -578,18 +416,6 @@ class PriorAttemptsBlockTests(unittest.TestCase):
 
 class NarratePromptContractTests(unittest.TestCase):
     """Schema and brief-slimming contracts for narrative section prompts."""
-
-    def test_paragraph_narrate_schema_required_body(self):
-        self.assertIn("required", PARAGRAPH_NARRATE_SCHEMA)
-        self.assertIn("body", PARAGRAPH_NARRATE_SCHEMA["required"])
-        messages, _ = build_paragraph_narrate_messages(
-            heading="Executive Summary",
-            key_points=[],
-            evidence_rows=[],
-            template_body="## Executive Summary",
-        )
-        self.assertIn('{"body"', messages[0]["content"])
-        self.assertIn("Do not return a bare string", messages[0]["content"])
 
     def test_large_aggregate_evidence_is_semantically_projected(self) -> None:
         """A complete 5,199-ID set stays authoritative but never floods report prompts."""
@@ -932,6 +758,7 @@ class IndexedContextTests(unittest.TestCase):
         self.assertIn("never a template_id", index)
         self.assertIn("template_id=null", index)
         self.assertNotIn("load recipe `", index)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,6 +8,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
+from forensia.ai.case_profile import CaseEvidenceProfile
 from forensia.ai.llm.schemas import (
     FINDING_EXTRACTOR_SCHEMA,
     MEMORY_UPDATER_SCHEMA,
@@ -31,11 +32,9 @@ from forensia.knowledge.catalog import (
 from forensia.knowledge.retrieval import knowledge_terms_for_hypothesis, select_snippets
 
 
-def _profile_tags() -> list[str]:
+def _profile_tags(case_profile: CaseEvidenceProfile | None) -> list[str]:
     """Knowledge tags derived from the active profile name (windows-basic → ["windows"])."""
-    from forensia.ai.case_profile import get_profile_name
-
-    name = get_profile_name()
+    name = case_profile.profile_name if case_profile else ""
     return [name.split("-", 1)[0]] if name else []
 
 
@@ -123,7 +122,9 @@ def render_prior_attempts(recent_history: list[dict[str, Any]], limit: int = 5) 
 _load_benign_context_rules = load_benign_context_rules
 
 
-def _hypothesis_prompt_projection(hypothesis: Any, *, peer: bool = False) -> dict[str, Any]:
+def _hypothesis_prompt_projection(
+    hypothesis: Any, *, peer: bool = False
+) -> dict[str, Any]:
     """Project durable hypothesis state into the planner's prompt contract."""
     if hasattr(hypothesis, "model_dump"):
         payload = hypothesis.model_dump(mode="json")
@@ -166,7 +167,7 @@ def _raw_event_context(value: Any) -> dict[str, Any]:
     if isinstance(value, str):
         try:
             raw = json.loads(value)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             return {}
     elif isinstance(value, dict):
         raw = value
@@ -190,7 +191,9 @@ def _raw_event_context(value: Any) -> dict[str, Any]:
     return {key: value for key, value in context.items() if value not in (None, "", {})}
 
 
-def _result_summary_prompt_projection(result_summary: dict[str, Any] | None) -> dict[str, Any]:
+def _result_summary_prompt_projection(
+    result_summary: dict[str, Any] | None,
+) -> dict[str, Any]:
     """Remove duplicate samples and bound raw event context for LLM prompts."""
     source = result_summary or {}
     projected = {
@@ -230,7 +233,7 @@ def build_query_intent_messages(
     schema_context: str = "",
     extra_context_md: str = "",
     prior_check_feedback: str = "",
-    case_profile: str | None = None,
+    case_profile: CaseEvidenceProfile | None = None,
     findings_snapshot: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     """Build messages for the query_intent_planner phase.
@@ -238,9 +241,11 @@ def build_query_intent_messages(
     Decides WHAT data to fetch for this hypothesis, not HOW.
     Uses read_more expansion for memory context.
     """
-    from forensia.ai.case_profile import get_profile_event_ids
-
-    profile_event_ids: set[int] | None = get_profile_event_ids()
+    profile_event_ids = (
+        set(case_profile.event_ids)
+        if case_profile and case_profile.event_ids is not None
+        else None
+    )
     hypothesis_event_ids: set[int] = set()
     if hasattr(hypothesis, "confirm_when") and isinstance(
         hypothesis.confirm_when, dict
@@ -303,8 +308,8 @@ def build_query_intent_messages(
     system = (
         f"{_dfir_playbook('hypothesis_plan', event_ids=_pb_ids, sections=_sections_for_hypothesis(hypothesis))}\n"
         f"{_time_range_guidance(time_range)}"
-        f"{_case_profile_guidance(case_profile)}"
-        f"{_org_knowledge_block(description=getattr(hypothesis, 'description', ''), extra_words=knowledge_extra, tags=_profile_tags())}"
+        f"{_case_profile_guidance(case_profile.summary if case_profile else None)}"
+        f"{_org_knowledge_block(description=getattr(hypothesis, 'description', ''), extra_words=knowledge_extra, tags=_profile_tags(case_profile))}"
         "<TASK>You are the bounded query action planner. Choose one action and, for sql.query, provide either an exact executable template_catalog ID with params or a bounded SELECT fallback. Cookbook/RECIPE_INDEX IDs are reference-only and must be adapted into raw SQL with template_id=null. The host validates and executes it; do not delegate SQL composition to another model.</TASK>\n"
         "<INPUT_SCHEMA>\n"
         f"hypothesis: {json.dumps(_hypothesis_prompt_projection(hypothesis), ensure_ascii=False, default=str)}\n"
@@ -541,7 +546,7 @@ def build_gap_identifier_messages(
     active_hypotheses_slim: list[dict],
     time_range: dict[str, str] | None = None,
     status_callback: Callable[[str], None] | None = None,
-    case_profile: str | None = None,
+    case_profile: CaseEvidenceProfile | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
     """role: gap_identifier.
     Goal: identify which uncovered_keypoints lack active hypothesis coverage.
@@ -570,8 +575,8 @@ def build_gap_identifier_messages(
     ]
     system = (
         "<TASK>You are a gap_identifier. From available_keypoints, pick the ones that lack active hypothesis coverage.</TASK>\n"
-        f"{_case_profile_guidance(case_profile)}"
-        f"{_org_knowledge_block(extra_words=_gap_extra, tags=_profile_tags())}"
+        f"{_case_profile_guidance(case_profile.summary if case_profile else None)}"
+        f"{_org_knowledge_block(extra_words=_gap_extra, tags=_profile_tags(case_profile))}"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
         '  "gap_areas": [{"keypoint_id": "EXACT name from available_keypoints", "why_uncovered": "str", "required_entities": ["snake_case column names"]}]\n'
@@ -610,7 +615,7 @@ def build_hypothesis_drafter_messages(
     available_rules: list[dict],
     time_range: dict[str, str] | None = None,
     status_callback: Callable[[str], None] | None = None,
-    case_profile: str | None = None,
+    case_profile: CaseEvidenceProfile | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
     """role: hypothesis_drafter.
     Goal: draft ONE hypothesis targeting the given gap_area.
@@ -619,8 +624,8 @@ def build_hypothesis_drafter_messages(
     _gap_words = [gap_area.get("keypoint_id", "")]
     system = (
         "<TASK>You are a hypothesis_drafter. Draft ONE falsifiable hypothesis targeting the given gap_area.</TASK>\n"
-        f"{_case_profile_guidance(case_profile)}"
-        f"{_org_knowledge_block(extra_words=_gap_words, tags=_profile_tags())}"
+        f"{_case_profile_guidance(case_profile.summary if case_profile else None)}"
+        f"{_org_knowledge_block(extra_words=_gap_words, tags=_profile_tags(case_profile))}"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
         '  "hypothesis": {\n'

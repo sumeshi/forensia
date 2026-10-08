@@ -11,7 +11,7 @@ import httpx
 
 from forensia.ai.audit import LLMCallLogger
 from forensia.ai.case_profile import (
-    get_profile_event_ids,
+    CaseEvidenceProfile,
 )
 from forensia.ai.hypotheses.hypothesis_manager import (
     MAX_ACTIVE_HYPOTHESES,
@@ -22,11 +22,9 @@ from forensia.ai.hypotheses.hypothesis_manager import (
 )
 from forensia.ai.hypotheses.hypothesis_model import (
     _filter_valid_entities,
-    hypothesis_similarity,
 )
 from forensia.ai.hypotheses.hypothesis_runner import (
     _investigate_one_hypothesis,
-    _observed_keypoints_from_findings,
 )
 from forensia.ai.hypotheses.hypothesis_store import _all_hypotheses
 from forensia.ai.hypotheses.seeding import (
@@ -41,7 +39,7 @@ from forensia.ai.investigation.investigation_session import (
 )
 from forensia.ai.investigation.planner import _compute_uncovered_keypoints
 from forensia.ai.investigation.selection import (
-    select_focus_hypotheses as select_focus_hypotheses_v2,
+    select_focus_hypotheses,
 )
 from forensia.ai.llm import llm_gateway
 from forensia.ai.llm.llm_client import (
@@ -68,6 +66,20 @@ from forensia.report.answers.keypoint_catalog import (
 _BROAD_DRAFT_MAX_TOKENS = 4096
 
 
+def _observed_keypoints_from_findings(
+    snapshot: list[dict[str, Any]], limit: int = 20
+) -> list[str]:
+    """Format findings as stable labels for broad-planning context."""
+    keypoints: list[str] = []
+    for item in snapshot[:limit]:
+        title = str(item.get("title") or "").strip()
+        finding_id = str(item.get("finding_id") or "").strip()
+        if not title:
+            continue
+        keypoints.append(f"{finding_id}: {title}" if finding_id else title)
+    return keypoints
+
+
 @dataclass(slots=True)
 class _BroadPlanContext:
     state: SessionState
@@ -82,7 +94,7 @@ class _BroadPlanContext:
     emit_fn: Callable[..., None] | None
     llm_status_fn: Callable[[str], None]
     progress_callback: Callable[[dict[str, Any]], None] | None
-    case_profile_str: str | None
+    case_profile: CaseEvidenceProfile | None
 
 
 def _normalize_hypothesis_tokens(text: str) -> set[str]:
@@ -135,68 +147,9 @@ def _audit_broad_plan_hypotheses(
     return audits
 
 
-def _hypothesis_focus_score(
-    state: SessionState, hypothesis: Hypothesis
-) -> tuple[int, int, int, int]:
-    """Rank hypotheses by fairness first, then rough confidence.
-
-    Newly drafted hypotheses must get at least one investigation pass. Otherwise
-    high-confidence but repeatedly inconclusive hypotheses monopolize every
-    cycle and later hypotheses remain visibly half-started in the report/API.
-    """
-    recent_iteration = -1
-    for entry in reversed(state.history):
-        if entry.hypothesis_id == hypothesis.id:
-            recent_iteration = int(entry.iteration)
-            break
-    confidence_proxy = len(hypothesis.source_rule_ids) + (
-        1 if hypothesis.required_entities else 0
-    )
-    never_investigated = 1 if recent_iteration < 0 else 0
-    least_recent_first = -recent_iteration if recent_iteration >= 0 else 0
-    return (
-        never_investigated,
-        least_recent_first,
-        confidence_proxy,
-        -len(hypothesis.description),
-    )
-
-
-def select_focus_hypotheses(
-    state: SessionState, max_items: int = 2
-) -> list[Hypothesis]:
-    ranked = sorted(
-        state.active_hypotheses,
-        key=lambda item: _hypothesis_focus_score(state, item),
-        reverse=True,
-    )
-    return ranked[: max(1, max_items)] if ranked else []
-
-
-def _dedup_new_hypotheses(
-    new_hypotheses: list[Hypothesis],
-    active_hypotheses: list[Hypothesis],
-    threshold: float = 0.85,
-) -> list[Hypothesis]:
-    """Filter out hypotheses that are too similar to existing active ones."""
-    accepted = []
-    for new_h in new_hypotheses:
-        is_duplicate = False
-        for existing in active_hypotheses:
-            if (
-                hypothesis_similarity(new_h.description, existing.description)
-                > threshold
-            ):
-                is_duplicate = True
-                break
-        if not is_duplicate:
-            accepted.append(new_h)
-
-    # _known_db_columns and _filter_valid_entities moved to hypothesis_manager.py
-    # (shared with the unified admission gate).  Import kept above.
-
-
-def _parse_hypothesis_from_drafter(parsed: dict[str, Any]) -> Hypothesis | None:
+def _parse_hypothesis_from_drafter(
+    parsed: dict[str, Any], case_profile: CaseEvidenceProfile | None
+) -> Hypothesis | None:
     """Parse drafter LLM output into a Hypothesis object.
 
     The drafter returns ``{"hypothesis": {"description": "...", "required_entities": [...], "source_rule_ids": [...], "confirm_when": {...}, "refute_when": {...}}}``.
@@ -228,7 +181,7 @@ def _parse_hypothesis_from_drafter(parsed: dict[str, Any]) -> Hypothesis | None:
     if isinstance(cw, dict):
         co_ids = cw.get("co_observed_event_ids")
         if co_ids and isinstance(co_ids, list):
-            available_ids = get_profile_event_ids()
+            available_ids = case_profile.event_ids if case_profile else None
             if available_ids is not None:
                 numeric_ids: list[int] = []
                 for eid in co_ids:
@@ -283,7 +236,7 @@ async def _identify_broad_plan_gaps(ctx: _BroadPlanContext) -> list[dict[str, An
         observed_keypoints=ctx.observed_keypoints,
         uncovered_keypoints=uncovered_keypoints,
         active_hypotheses_slim=active_hypotheses_slim,
-        case_profile=ctx.case_profile_str,
+        case_profile=ctx.case_profile,
     )
     gap_parsed = await _call_with_outage_recovery(
         llm_gateway.request_llm_json,
@@ -326,7 +279,9 @@ async def _identify_broad_plan_gaps(ctx: _BroadPlanContext) -> list[dict[str, An
     return gap_areas
 
 
-def _rank_broad_plan_rules(gap_areas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _rank_broad_plan_rules(
+    gap_areas: list[dict[str, Any]], case_profile: CaseEvidenceProfile | None
+) -> list[dict[str, Any]]:
     rule_cache = _get_rule_cache()
     all_rule_models = list(rule_cache.values())
     all_gap_kp_text = " ".join(str(g.get("keypoint_id", "")) for g in gap_areas)
@@ -335,7 +290,7 @@ def _rank_broad_plan_rules(gap_areas: list[dict[str, Any]]) -> list[dict[str, An
         if all_gap_kp_text
         else set()
     )
-    profile_eids = get_profile_event_ids() or set()
+    profile_eids = case_profile.event_ids if case_profile else None
 
     def _rule_relevance_score(rule: Any) -> float:
         score = 0.0
@@ -364,7 +319,7 @@ async def _draft_broad_plan_hypotheses(
     drafted_hypotheses: list[Hypothesis] = []
     for gap in gap_areas:
         h_msgs, h_schema = build_hypothesis_drafter_messages(
-            gap, available_rules, case_profile=ctx.case_profile_str
+            gap, available_rules, case_profile=ctx.case_profile
         )
         h_parsed = await _call_with_outage_recovery(
             llm_gateway.request_llm_json,
@@ -385,7 +340,7 @@ async def _draft_broad_plan_hypotheses(
                 base_url=ctx.base_url,
             ),
         )
-        hyp = _parse_hypothesis_from_drafter(h_parsed)
+        hyp = _parse_hypothesis_from_drafter(h_parsed, ctx.case_profile)
         if hyp:
             kpid = gap.get("keypoint_id", "")
             if kpid:
@@ -477,7 +432,7 @@ async def _run_broad_plan_step(
     emit_fn: Callable[..., None] | None,
     llm_status_fn: Callable[[str], None],
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
-    case_profile_str: str | None = None,
+    case_profile: CaseEvidenceProfile | None = None,
 ) -> bool:
     """Execute broad planning step (2-stage: gap_identifier → hypothesis_drafter). Returns stop flag."""
     observed_keypoint_labels = _broad_plan_observed_labels(observed_keypoints)
@@ -495,11 +450,11 @@ async def _run_broad_plan_step(
         emit_fn=emit_fn,
         llm_status_fn=llm_status_fn,
         progress_callback=progress_callback,
-        case_profile_str=case_profile_str,
+        case_profile=case_profile,
     )
     try:
         gap_areas = await _identify_broad_plan_gaps(ctx)
-        available_rules = _rank_broad_plan_rules(gap_areas)
+        available_rules = _rank_broad_plan_rules(gap_areas, case_profile)
         drafted_hypotheses = await _draft_broad_plan_hypotheses(
             ctx, gap_areas, available_rules
         )
@@ -552,7 +507,7 @@ async def _run_cycle_body(
     plan_cycle: int,
     max_iter: int,
     report_only: bool,
-    case_profile_str: str | None = None,
+    case_profile: CaseEvidenceProfile | None = None,
 ) -> tuple[bool, bool, list[str], dict[str, Any]]:
     """Run one plan cycle: broad plan + hypothesis loop.
 
@@ -624,45 +579,31 @@ async def _run_cycle_body(
                 observed_keypoints=observed_keypoints,
                 emit_fn=_emit,
                 llm_status_fn=llm_status,
-                case_profile_str=case_profile_str,
+                case_profile=case_profile,
             )
         remaining_cycles = max(1, max_iter - plan_cycle + 1)
         focus_max = max(
             2, (len(state.active_hypotheses) + remaining_cycles - 1) // remaining_cycles
         )
-        # Use M4 selector if investigation_state table exists (M1 migration ran)
-        try:
-            selection_results = select_focus_hypotheses_v2(
-                db,
-                limit=focus_max,
-                findings_snapshot=state.findings_snapshot,
-                session_id=session_id,
-                iteration=plan_cycle,
-            )
-            focus_hypotheses = []
-            for sr in selection_results:
-                if sr.eligible:
-                    hyp = next(
-                        (
-                            h
-                            for h in state.active_hypotheses
-                            if h.id == sr.hypothesis_id
-                        ),
-                        None,
-                    )
-                    if hyp:
-                        focus_hypotheses.append(hyp)
-        except Exception:
-            # Fallback to legacy selector if M4 tables not available
-            focus_hypotheses = select_focus_hypotheses(state, max_items=focus_max)
+        selection_results = select_focus_hypotheses(
+            db,
+            limit=focus_max,
+            findings_snapshot=state.findings_snapshot,
+            session_id=session_id,
+            iteration=plan_cycle,
+        )
+        active_by_id = {hyp.id: hyp for hyp in state.active_hypotheses}
+        focus_hypotheses = [
+            active_by_id[result.hypothesis_id]
+            for result in selection_results
+            if result.eligible and result.hypothesis_id in active_by_id
+        ]
         for hypothesis in focus_hypotheses:
             if ctx.interrupted:
                 break
             state.focus_hypothesis_id = hypothesis.id
             state.focus_depth = 0
-            with telemetry_scope(
-                hypothesis_id=hypothesis.id, iteration=plan_cycle
-            ):
+            with telemetry_scope(hypothesis_id=hypothesis.id, iteration=plan_cycle):
                 ctx_refresh_caches(
                     ctx,
                     memory,
@@ -680,9 +621,7 @@ async def _run_cycle_body(
                 iteration=plan_cycle,
                 report_kw={"focus_sections": focus_sections},
             )
-            with telemetry_scope(
-                hypothesis_id=hypothesis.id, iteration=plan_cycle
-            ):
+            with telemetry_scope(hypothesis_id=hypothesis.id, iteration=plan_cycle):
                 progress, state, sections = await _investigate_one_hypothesis(
                     hypothesis=hypothesis,
                     state=state,
@@ -699,7 +638,7 @@ async def _run_cycle_body(
                     query_limit=max_queries_per_hypothesis,
                     emit_fn=_emit,
                     llm_status_fn=llm_status,
-                    case_profile_str=case_profile_str,
+                    case_profile=case_profile,
                 )
             if progress:
                 cycle_progress = True

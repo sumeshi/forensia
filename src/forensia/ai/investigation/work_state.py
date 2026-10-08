@@ -8,7 +8,7 @@ from typing import Any
 
 from forensia.core.session import Hypothesis
 from forensia.db.database import CaseDB
-from forensia.knowledge.coverage import infer_capabilities
+from forensia.knowledge.coverage import derive_required_capabilities
 
 _OBJECTIVE_GAP_TEXT = "Investigation objective not configured"
 _TERMINAL_CLASSIFICATIONS = {"deferred", "blocked", "needs_review", "untestable"}
@@ -57,17 +57,33 @@ def _json_object(value: Any) -> dict[str, Any]:
 def _required_capabilities(
     db: CaseDB, hypothesis_id: str, description: str
 ) -> list[str]:
+    """Derive required capabilities via the shared derivation owner.
+
+    The canonical ``verification_spec`` column is preferred (declared
+    ``required_capabilities`` first, then its support conditions); rows
+    without a spec keep the legacy text inference over the description, the
+    ``confirm_when`` projection, and ``evidence_requirements``.
+    """
     row = db.execute(
-        "SELECT confirm_when, evidence_requirements FROM hypotheses "
-        "WHERE hypothesis_id = ?",
+        "SELECT confirm_when, evidence_requirements, verification_spec "
+        "FROM hypotheses WHERE hypothesis_id = ?",
         [hypothesis_id],
     ).fetchone()
+    confirm_when: dict[str, Any] = {}
+    spec: dict[str, Any] = {}
     parts = [description]
     if row:
-        parts.extend(
-            json.dumps(_json_object(value), sort_keys=True) for value in row if value
-        )
-    return sorted(set(infer_capabilities(" ".join(parts))))
+        confirm_when = _json_object(row[0])
+        evidence_requirements = _json_object(row[1])
+        spec = _json_object(row[2])
+        if evidence_requirements:
+            parts.append(json.dumps(evidence_requirements, sort_keys=True))
+    return derive_required_capabilities(
+        spec.get("required_capabilities") or [],
+        spec.get("support_conditions"),
+        confirm_when=confirm_when or None,
+        description=" ".join(parts),
+    )
 
 
 def _coverage_state(db: CaseDB, capabilities: list[str]) -> tuple[list[str], list[str]]:

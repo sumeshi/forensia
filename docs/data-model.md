@@ -53,8 +53,34 @@ Each row in `hypotheses` has one canonical `verification_spec` JSON object
 required entities, scope/correlation policy, and evidence requirements used by
 the investigation kernel. The legacy `confirm_when`, `refute_when`, and
 `evidence_requirements` columns remain lossless compatibility projections while
-existing planner/checker callers migrate. Case opening backfills the canonical
-object for older databases and is idempotent.
+current rule declarations and planner/checker callers use those fields. These
+active producer adapters remain; case opening never backfills older databases.
+
+`VerificationSpec` field status (evidence: readers/producers searched across
+`src/`, `tests/`, and `scripts/`):
+
+| Field | Status | Consumers / producers |
+|---|---|---|
+| `spec_version` | wired | Validation (`Literal["1"]`) |
+| `support_conditions` | wired | Admission pre-screen + Assessment co-observation adapter (`EVALUABLE_CONDITION_KEYS` in `core/verification.py`); primary inference input of the shared capability derivation |
+| `refute_conditions` | wired | Settlement gates (e.g. `zero_rows`) |
+| `required_capabilities` | read-wired, no pipeline producer | Readers: `hypothesis_runner.py`, `sufficiency.py`, `settlement.py`, and the shared derivation owner `derive_required_capabilities` in `knowledge/coverage.py` (used by `selection.py`, `work_state.py`, and the sufficiency legacy fallback). Nothing in the pipeline writes a declared list yet; canonical support event IDs are mapped through the existing artifact capability catalog. Canonical conditions take priority over legacy fields/prose, which are inferred only when no canonical conditions are supplied. |
+| `required_entities` | wired | Admission/claim conformance (`hypothesis_manager.py`) |
+| `evidence_requirements` | wired | Sufficiency policy (`evidence_sufficiency.yaml`, e.g. `minimum_independent_groups`) |
+| `required_source_families` | declared-but-unwired | No reader and no producer anywhere |
+| `scope` | preserved, unsupported for absence certification | Nonempty values prevent `sql_absence_scope` certification; no semantic scope evaluator or pipeline producer. Persistence round-trip values continue to load |
+| `correlation` | preserved, unsupported for absence certification | Nonempty values prevent `sql_absence_scope` certification. Evaluated correlation lives in `support_conditions`; no pipeline producer for the dedicated field |
+| `derivation_dedup_policy` | declared-but-unwired | No reader and no producer anywhere; deduplication currently happens via derivation groups on evidence links |
+| `allowed_settlement_states` | declared-but-unwired | No reader and no producer anywhere; settlement states come from the existing settlement gates |
+| `untestable_conditions` | declared-but-unwired | No reader and no producer anywhere; untestable classification currently comes from stop/sufficiency states |
+
+The declared-but-unwired fields are kept rather than removed: the persistence
+round-trip test proves the store accepts and preserves `scope`, and because the
+model uses `extra="forbid"`, removing a field would make any persisted
+`verification_spec` containing it fail validation on load (old databases would
+break). Their intended meanings are recorded above so the semantics are not
+silently discarded; whether they get wired or removed is a deliberate decision
+for later milestones (M1/M2 agenda), not a side effect of this change.
 
 ## Working and API projections
 
@@ -121,7 +147,7 @@ Host identification:
 | `findings` | Rule detection results | `finding_id`, `rule_id`, `title`, `summary`, `severity`, `confidence`, `status` (`new`/`accepted`/`suppressed`), `tags`, `attack`, `evidence`, `ai_summary`, `missing_checks`, `created_at` |
 | `hypotheses` | Hypotheses under investigation | Existing hypothesis fields plus `evidence_requirements`, selection/retry state, blocking state, sufficiency status/score/reason and human-review flag |
 | `hypothesis_relations` | Validated hypothesis graph | endpoint IDs, `relation_type`, `origin`, `confidence`, `rationale`, creation session/time |
-| `hypothesis_evidence` | Typed, deduplicated assessed evidence-to-hypothesis provenance | hypothesis/evidence/query IDs, `assessment_id` (`EA-v1-*` for deterministic assessments), `role`, `source_family`, `derivation_group`, `strength` |
+| `hypothesis_evidence` | Typed, deduplicated assessed evidence-to-hypothesis provenance (historical records; current support is derived at read time) | hypothesis/evidence/query IDs, `assessment_id` (`EA-v1-*` for deterministic assessments), `role`, `source_family`, `derivation_group`, `strength` |
 | `hypothesis_reasoning` | Reasoning history of hypothesis verification | `entry_id`, `hypothesis_id`, `session_id`, `iteration`, `phase` (including `sufficiency`), `verdict`, `query_id`, `body`, `created_at` |
 
 `findings.attack` is a JSON string in `[{tactic, technique_id, technique_name}]` form. It is aggregated into a tactic × technique matrix by `list_attack_coverage_dto` ([src/forensia/api/service.py](../src/forensia/api/service.py)).
@@ -175,6 +201,15 @@ represented as independently assessed history or counted by Sufficiency and
 Settlement. Sufficiency consumes assessed links without assigning their roles.
 The existing settlement guard remains the state-transition boundary.
 
+Settlement also carries the runner-computed scope-wise absence judgment
+(`SettlementInput.absence_scope`/`absence_note`). A rule-declared
+`refute_when.zero_rows` auto-refutation is admissible only when the absence
+is observable: valid retrieval scope, observable emptiness from the latest
+RetrievalEvaluation, and every required capability in state `available` in
+the Coverage projection. Unknown/partial coverage, a rejected scope, or an
+incomplete retrieval downgrade the repeated zero-row/same-missing paths to
+`untestable` with the blocking reason; absence of telemetry is not a disproof.
+
 ### 1.4 Report generation
 
 | Table | Role | Main columns |
@@ -189,9 +224,25 @@ The existing settlement guard remains the state-transition boundary.
 
 When source replacement removes a referenced evidence ID, assessed
 `hypothesis_evidence` links are retained for history, but linked Hypotheses and
-Claims move to review and affected `report_sections` become stale. Claim
-existence checks use the normalized EVTX, MFT, Prefetch, and Registry evidence
-tables; provenance alone does not keep a removed artifact supported.
+Claims move to review and affected `report_sections` become stale — including
+sections holding reusable `section_facts` that cite the removed ID. The removal
+survey covers `hypothesis_evidence`, `section_evidence`, `claims.evidence_ids`,
+`section_facts.evidence_ids`, and `case_timeline.evidence_id`; `case_timeline`
+rows are historical records of a regeneratable projection and are kept as-is.
+Claim existence checks use the normalized EVTX, MFT, Prefetch, and Registry
+evidence tables; provenance alone does not keep a removed artifact supported.
+
+Whether a `hypothesis_evidence` link still counts as usable support is not
+stored on the link. Sufficiency, settlement, and the confirmed-verdict
+invariant share a read-time currentness predicate (`evidence_link_currentness`):
+the referenced evidence row must still exist under the same `source_file`
+identity (existence alone for content-derived registry `artifact_id`s).
+Unverifiable identities are excluded and require reassessment. New admission
+captures the source from normalized Evidence; read-time checks never fill a
+historical blank source using today's row. Reassessment after a source change
+adds a source-bound link while retaining the old one. Excluded links remain
+historical records in `hypothesis_evidence`. Same-ID/same-source content or
+Spec/policy changes are not detected by this predicate (T04 remains partial).
 
 There is no separate Investigation Requirement table. A report request is a
 `report_gaps` row; an associated `investigation_tasks` row stores ownership and
@@ -211,7 +262,7 @@ INSERTs into `section_evidence` happen in a single place: [`_store_section_evide
 | Table | Role | Main columns |
 |---|---|---|
 | `ai_reviews` (trace DB) | LLM review results | `review_id`, `finding_id`, `verdict`, `report_text`, `missing_checks`, `confidence_adjustment`, `notes`, `raw_response` |
-| `schema_migrations` | Schema version management | `version`, `applied_at` |
+| `forensia_schema` (each of core / trace DB) | Latest-only format contract; mismatched or unversioned cases are rejected without automatic migration | `version` |
 
 ---
 

@@ -10,12 +10,10 @@ from forensia.knowledge.resources import profile_path, profiles_dir, rulepacks_d
 
 logger = logging.getLogger(__name__)
 
-_PROFILE_CACHE: dict[str, dict[str, Any]] = {}
 
-
-@dataclass
+@dataclass(frozen=True)
 class CaseEvidenceProfile:
-    """Explicit profile context object replacing module globals.
+    """Session-owned projection of the case's evidence availability.
 
     ``event_ids=None`` means "no profile computed" (unknown); an empty set
     means "profile computed and the case has zero EVTX event IDs" (e.g. an
@@ -24,31 +22,18 @@ class CaseEvidenceProfile:
     """
 
     profile_name: str = ""
-    event_ids: set[int] | None = None
+    event_ids: frozenset[int] | None = None
+    summary: str = ""
 
 
-# Legacy module-global state — deprecated, will be removed in R5
-_profile: CaseEvidenceProfile = CaseEvidenceProfile()
-
-
-def set_case_profile(profile_name: str | None, event_ids: set[int] | None) -> None:
-    """Set the case profile globally (deprecated: use CaseEvidenceProfile directly)."""
-    global _profile
-    _profile = CaseEvidenceProfile(profile_name=profile_name or "", event_ids=event_ids)
-
-
-def get_profile_name() -> str:
-    """Return the active profile name (e.g. "windows-basic"), or "" if unset."""
-    return _profile.profile_name
-
-
-def get_profile_event_ids() -> set[int] | None:
-    # Return a copy: several prompt builders extend the result with
-    # hypothesis/row-derived IDs, and mutating the module-global set would
-    # corrupt "which event IDs exist in this case" semantics used by the
-    # drafter filter and untestable detection.
-    # None (no profile) and empty set (profile with no event IDs) are distinct.
-    return set(_profile.event_ids) if _profile.event_ids is not None else None
+def observed_event_ids(db) -> set[int]:
+    """Read current availability from this case, including the empty-case result."""
+    return {
+        int(row[0])
+        for row in db.execute(
+            "SELECT DISTINCT event_id FROM evtx_events WHERE event_id IS NOT NULL"
+        ).fetchall()
+    }
 
 
 def _build_profile_queries(conn) -> dict[str, Any]:
@@ -153,16 +138,10 @@ def build_case_profile(db) -> dict[str, Any]:
     """Build a case evidence-availability profile using pure SQL queries.
 
     Uses the already-open CaseDB connection (opening a second connection to the
-    same DuckDB file risks lock conflicts). Results are cached per database
-    path so repeated calls within the same process return the same profile.
+    same DuckDB file risks lock conflicts). Rebuild from current data so a
+    later ingest or rerun cannot reuse a stale process-wide profile.
     """
-    cache_key = str(db.case.database_path)
-    cached = _PROFILE_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-    profile = _build_profile_queries(db)
-    _PROFILE_CACHE[cache_key] = profile
-    return profile
+    return _build_profile_queries(db)
 
 
 def propose_scope_candidates(db, objective: str = "") -> dict[str, Any]:

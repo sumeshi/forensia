@@ -33,7 +33,8 @@ def fetch_referenced_evidence_ids(db: CaseDB, source_kind: str) -> set[str]:
     """Return materialized IDs that currently have durable dependents.
 
     Replacement invalidation only needs IDs referenced by hypotheses, claims,
-    or report sections. Avoid snapshotting large evidence tables such as MFT.
+    report sections, reusable section facts, or the case timeline. Avoid
+    snapshotting large evidence tables such as MFT.
     """
     tables = _SOURCE_TABLES.get(source_kind, ())
     if not tables:
@@ -50,6 +51,16 @@ def fetch_referenced_evidence_ids(db: CaseDB, source_kind: str) -> set[str]:
     }
     for (raw_ids,) in db.execute("SELECT evidence_ids FROM claims").fetchall():
         referenced.update(_json_string_list(raw_ids))
+    for (raw_ids,) in db.execute("SELECT evidence_ids FROM section_facts").fetchall():
+        referenced.update(_json_string_list(raw_ids))
+    referenced.update(
+        str(row[0])
+        for row in db.execute(
+            "SELECT evidence_id FROM case_timeline "
+            "WHERE evidence_id IS NOT NULL"
+        ).fetchall()
+        if row[0]
+    )
     if not referenced:
         return set()
 
@@ -70,7 +81,15 @@ def fetch_referenced_evidence_ids(db: CaseDB, source_kind: str) -> set[str]:
 
 
 def invalidate_removed_evidence(db: CaseDB, evidence_ids: set[str]) -> None:
-    """Move dependents of removed evidence to review without deleting history."""
+    """Move dependents of removed evidence to review without deleting history.
+
+    Dependents are assessed hypothesis links (their hypotheses move to
+    needs_review), claims, and report sections referenced directly or via
+    ``section_facts.source_section``.  ``case_timeline`` rows are historical
+    records of a regeneratable projection with no mutable stale state, so they
+    are only kept as-is; the timeline memory projection re-validates evidence
+    presence on regeneration.
+    """
     if not evidence_ids:
         return
 
@@ -107,6 +126,11 @@ def invalidate_removed_evidence(db: CaseDB, evidence_ids: set[str]) -> None:
             affected_claims.add(str(claim_id))
             if section_key:
                 affected_sections.add(str(section_key))
+    for raw_ids, source_section in db.execute(
+        "SELECT evidence_ids, source_section FROM section_facts"
+    ).fetchall():
+        if source_section and set(_json_string_list(raw_ids)) & evidence_ids:
+            affected_sections.add(str(source_section))
 
     with db.transaction():
         if linked_hypotheses:

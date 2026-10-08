@@ -73,21 +73,12 @@ def snapshot_metadata(db: CaseDB) -> dict[str, Any]:
     running_row = db.execute(
         "SELECT COUNT(*) FROM investigation_sessions WHERE status = 'running'"
     ).fetchone()
-    values = list(row) if isinstance(row, (tuple, list)) else []
     revision = hashlib.sha256(
-        json.dumps(values, default=str, separators=(",", ":")).encode()
+        json.dumps(row, default=str, separators=(",", ":")).encode()
     ).hexdigest()[:16]
-    durable_status = (
-        str(state_row[0] or "") if isinstance(state_row, (tuple, list)) else ""
-    )
-    in_progress = (
-        bool(int(running_row[0] or 0))
-        if isinstance(running_row, (tuple, list))
-        else False
-    )
-    if durable_status == "active":
-        in_progress = True
-    updated_values = [str(value) for value in values[4:] if value is not None]
+    durable_status = str(state_row[0] or "") if state_row else ""
+    in_progress = running_row[0] > 0 or durable_status == "active"
+    updated_values = [str(value) for value in row[4:] if value is not None]
     # Timestamps in the case DB are stored naive UTC. Present them as explicit
     # UTC so the UI never reinterprets them as local time (GOAL.md §7, T-50.7).
     authoritative_updated_at = None

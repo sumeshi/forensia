@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from pathlib import Path
 
-from forensia.ai.case_profile import get_profile_event_ids, set_case_profile
+from forensia.ai.case_profile import build_case_profile, observed_event_ids
 from forensia.ai.prompts.prompt_sections import (
     build_paragraph_narrate_messages,
     build_section_outline_messages,
@@ -80,15 +81,26 @@ class EvidencePresentationContracts(unittest.TestCase):
 
 
 class SharedPolicyContracts(unittest.TestCase):
-    def tearDown(self) -> None:
-        set_case_profile(None, None)
-
-    def test_profile_event_ids_are_returned_as_a_copy(self) -> None:
-        set_case_profile("profile", {4624, 4648})
-        first = get_profile_event_ids()
-        assert first is not None
-        first.add(99999)
-        self.assertEqual({4624, 4648}, get_profile_event_ids())
+    def test_case_profile_reads_current_case_after_ingest_and_reopen(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            first_case = Case.init(Path(tmpdir) / "first")
+            second_case = Case.init(Path(tmpdir) / "second")
+            with CaseDB(first_case) as first, CaseDB(second_case) as second:
+                self.assertEqual(set(), observed_event_ids(first))
+                first.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id) VALUES ('E1', 4624)"
+                )
+                self.assertEqual({4624}, observed_event_ids(first))
+                self.assertEqual([], build_case_profile(second)["event_ids"])
+                first.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id) VALUES ('E2', 4625)"
+                )
+                self.assertEqual(
+                    {4624, 4625},
+                    {row["event_id"] for row in build_case_profile(first)["event_ids"]},
+                )
+            with CaseDB(first_case) as reopened:
+                self.assertEqual({4624, 4625}, observed_event_ids(reopened))
 
     def test_antiforensic_catalog_drives_tool_matching(self) -> None:
         globs = catalog_exe_globs("antiforensic_tools")

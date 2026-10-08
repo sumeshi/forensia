@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import sqlglot
+from sqlglot import exp
+
 from forensia.ai.llm_telemetry import get_active_telemetry
 from forensia.ai.retrieval_telemetry import ToolReceipt, coverage_snapshot
 from forensia.core.log import log as _log
@@ -15,6 +18,80 @@ from forensia.knowledge.rules.engine import (
     execute_fallback_search,
 )
 from forensia.knowledge.rules.loader import load_rule_by_id
+
+
+def sql_absence_scope(hypothesis: Hypothesis, sql: str) -> tuple[str, list[str] | None]:
+    """Certify the small case-wide EVTX scope represented by current Coverage.
+
+    SQL safety/schema validation belongs to the planner. For negative evidence
+    we additionally require a direct lookup of exactly the declared event IDs,
+    with no joins, host/time/keyword narrowing, sampling, offset, or derived
+    rows. Only column projections and an ordinary positive row limit qualify.
+    More complex scopes remain unknown; executing a valid SELECT alone is not
+    proof of their observability. This is a conservative recognition rule, not
+    a second query planner or a general SQL equivalence engine.
+    """
+    spec = hypothesis.verification_spec
+    if spec is None or spec.scope or spec.correlation:
+        return "unknown", None
+    declared = spec.support_conditions.get("co_observed_event_ids") or []
+    try:
+        required_ids = {int(value) for value in declared}
+        tree = sqlglot.parse_one(sql, read="duckdb")
+    except TypeError, ValueError, sqlglot.errors.ParseError:
+        return "unknown", None
+    if not required_ids or not isinstance(tree, exp.Select):
+        return "unknown", None
+    if any(
+        not isinstance(column.unalias(), (exp.Column, exp.Star))
+        for column in tree.expressions
+    ):
+        return "unknown", None
+    limit = tree.args.get("limit")
+    if limit and limit.args.get("limit_options"):
+        return "unknown", None
+    tables = list(tree.find_all(exp.Table))
+    if (
+        len(tables) != 1
+        or tables[0].name.lower() != "evtx_events"
+        or tables[0].db
+        or tables[0].catalog
+        or len(list(tree.find_all(exp.Select))) != 1
+        or any(
+            tree.args.get(key)
+            for key in (
+                "with_",
+                "joins",
+                "offset",
+                "group",
+                "having",
+                "qualify",
+                "sample",
+            )
+        )
+        or any(tables[0].args.get(key) for key in ("sample", "pivots"))
+    ):
+        return "unknown", None
+    where = tree.args.get("where")
+    predicate = where.this if where else None
+    while isinstance(predicate, exp.Paren):
+        predicate = predicate.this
+    if isinstance(predicate, exp.EQ):
+        column, values = predicate.this, [predicate.expression]
+    elif isinstance(predicate, exp.In) and not predicate.args.get("query"):
+        column, values = predicate.this, predicate.expressions
+    else:
+        return "unknown", None
+    if not isinstance(column, exp.Column) or column.name.lower() != "event_id":
+        return "unknown", None
+    if any(
+        not isinstance(value, exp.Literal) or not value.this.isdigit()
+        for value in values
+    ):
+        return "unknown", None
+    if {int(value.this) for value in values} != required_ids:
+        return "unknown", None
+    return "valid", ["evtx"]
 
 
 def resolve_zero_row_fallbacks(
@@ -164,7 +241,9 @@ def build_sql_receipt(
                 target="sql.query",
                 session_id=session_id,
                 hypothesis_id=hypothesis.id,
-                duration_ms=int(round(duration_ms)) if duration_ms is not None else None,
+                duration_ms=int(round(duration_ms))
+                if duration_ms is not None
+                else None,
                 note="host-executed SELECT",
             )
         except Exception:

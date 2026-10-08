@@ -11,14 +11,10 @@ from forensia.ai.sections.section_exec import (
     _is_valid_status,
 )
 from forensia.core.case import Case
-from forensia.db.database import CaseDB
 from forensia.knowledge.catalog import catalog_marker_map as _catalog_marker_map
 from forensia.knowledge.catalog import catalog_names as _catalog_names
 from forensia.knowledge.questions import (
     resolve_question_spec,
-)
-from forensia.report.answers.answer_builders_host import (
-    _build_daily_session_timeline_rows,
 )
 from forensia.report.answers.answer_store import (
     _normalize_structured_answer,
@@ -234,14 +230,6 @@ def _cloud_service_marker_map() -> dict[str, tuple[str, ...]]:
         "paths",
         "registry",
     )
-
-
-def build_daily_session_timeline(
-    db: CaseDB,
-    qualifiers: dict[str, str | None] | None = None,
-) -> list[dict[str, Any]]:
-    """Structured answer builder (compatibility shim): delegates to report.answer_registry."""
-    return _build_daily_session_timeline_rows(db, qualifiers)
 
 
 def _extract_daily_table(

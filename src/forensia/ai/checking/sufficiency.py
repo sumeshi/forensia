@@ -8,9 +8,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from forensia.db.database import CaseDB
+from forensia.db.evidence_lookup import lookup_evidence_record, routed_family
 from forensia.knowledge.coverage import (
+    derive_required_capabilities,
     get_coverage_summary,
-    infer_capabilities,
     load_evidence_sufficiency_policy,
 )
 
@@ -98,11 +99,6 @@ def record_unlinkable_observation(
     )
 
 
-def load_unlinkable_observations(db: CaseDB, hypothesis_id: str) -> list[tuple[str, int]]:
-    """Return (reason, observed_rows) tuples for the current session/run."""
-    return load_unlinkable_observations_for_session(db, hypothesis_id)
-
-
 def load_unlinkable_observations_for_session(
     db: CaseDB, hypothesis_id: str, created_session: str | None = None
 ) -> list[tuple[str, int]]:
@@ -119,9 +115,7 @@ def load_unlinkable_observations_for_session(
             "WHERE hypothesis_id = ?" + session_clause,
             params,
         ).fetchall()
-        return [
-            (str(r[0] or ""), int(r[1]) if r[1] is not None else 0) for r in rows
-        ]
+        return [(str(r[0] or ""), int(r[1]) if r[1] is not None else 0) for r in rows]
     except Exception:
         return []
 
@@ -152,15 +146,65 @@ def _load_scoring_weights() -> dict[str, float]:
     }
 
 
-def load_evidence_links(db: CaseDB, hypothesis_id: str) -> list[EvidenceLink]:
-    """Load evidence links for a hypothesis."""
+def evidence_link_currentness(
+    db: CaseDB, link: EvidenceLink
+) -> tuple[bool, str | None]:
+    """Return ``(True, None)`` when a link's evidence is verifiably current.
+
+    Currentness is derived at read time from stored identities only; the
+    hypothesis_evidence row is never mutated or deleted by this check.  Two
+    verifications apply:
+
+    1. The referenced evidence row must still exist in the normalized table(s)
+       routed by the evidence_id prefix (db/evidence_lookup.py).  ``mft-``
+       resolves against mft_entries only — mft_timeline rows share the entry's
+       evidence_id and are derived from it, so no separate timeline branch is
+       needed; ``prefetch-`` already routes to both prefetch tables.
+    2. When both the link and the found row carry a non-empty ``source_file``
+       (the raw source SHA-256 for evtx/mft/prefetch), they must match.
+       Registry links are content-derived ``artifact_id`` values, so existence
+       alone is sufficient.
+
+    Unverifiable non-content-addressed links require reassessment. Do not
+    backfill a historical link from today's source and call it current.
+    Same-ID/same-source content or verification-policy changes still require
+    additional invalidation; this check does not claim to detect them.
+    """
+    evidence_id = str(link.evidence_id or "").strip()
+    if not evidence_id or routed_family(evidence_id) is None:
+        return False, "evidence_identity_unverifiable"
+    row = lookup_evidence_record(db, evidence_id)
+    if row is None:
+        return False, "evidence_row_missing"
+    link_source = str(link.source_file or "").strip()
+    row_source = str(row.get("source_file") or "").strip()
+    if routed_family(evidence_id) == "registry":
+        return True, None
+    if not link_source or not row_source:
+        return False, "source_identity_unverifiable"
+    if link_source != row_source:
+        return False, "source_file_mismatch"
+    return True, None
+
+
+def load_evidence_links(
+    db: CaseDB, hypothesis_id: str, *, current_only: bool = False
+) -> list[EvidenceLink]:
+    """Load evidence links for a hypothesis.
+
+    With ``current_only=True`` links whose evidence row no longer exists or
+    whose recorded source identity no longer matches the materialized row are
+    excluded (see ``evidence_link_currentness``).  The excluded
+    hypothesis_evidence rows themselves are historical records and are never
+    deleted or mutated here.
+    """
     rows = db.execute(
         "SELECT link_id, hypothesis_id, evidence_id, finding_id, query_id, "
         "assessment_id, role, source_family, source_file, derivation_group, strength "
         "FROM hypothesis_evidence WHERE hypothesis_id = ?",
         [hypothesis_id],
     ).fetchall()
-    return [
+    links = [
         EvidenceLink(
             link_id=r[0],
             hypothesis_id=r[1],
@@ -176,6 +220,9 @@ def load_evidence_links(db: CaseDB, hypothesis_id: str) -> list[EvidenceLink]:
         )
         for r in rows
     ]
+    if current_only:
+        links = [link for link in links if evidence_link_currentness(db, link)[0]]
+    return links
 
 
 def _group_by_derivation(links: list[EvidenceLink]) -> dict[str, list[EvidenceLink]]:
@@ -501,28 +548,39 @@ def assess_and_persist_sufficiency(
 ) -> tuple[SufficiencyResult, str, str, list[str]]:
     """Run the authoritative machine assessment and persist its projections."""
     if verification_spec is not None:
-        # An admitted hypothesis' canonical VerificationSpec is authoritative,
-        # including an intentional empty capability list.  Text inference is
-        # retained only for legacy callers that have no spec to provide.
-        required_capabilities = [
-            str(item)
-            for item in (
-                getattr(verification_spec, "required_capabilities", None)
-                or verification_spec.get("required_capabilities", [])
-                if isinstance(verification_spec, dict)
-                else getattr(verification_spec, "required_capabilities", [])
-            )
-            if str(item)
-        ]
+        spec = (
+            verification_spec
+            if isinstance(verification_spec, dict)
+            else verification_spec.model_dump()
+        )
+        required_capabilities = derive_required_capabilities(
+            spec.get("required_capabilities"), spec.get("support_conditions")
+        )
     else:
-        required_capabilities = infer_capabilities(investigation_text)
+        # Legacy callers without a spec: text inference only, through the
+        # shared derivation owner (spec=None contributes no declared list).
+        required_capabilities = derive_required_capabilities(
+            description=investigation_text
+        )
+    # Split historical from currently-usable links with the shared predicate.
+    # Stale links stay in hypothesis_evidence; they only stop counting here.
+    current_links: list[EvidenceLink] = []
+    stale_counts: dict[str, int] = {}
+    for link in load_evidence_links(db, hypothesis_id):
+        is_current, stale_reason = evidence_link_currentness(db, link)
+        if is_current:
+            current_links.append(link)
+        else:
+            stale_counts[stale_reason or "unverifiable"] = (
+                stale_counts.get(stale_reason or "unverifiable", 0) + 1
+            )
     result = evaluate_sufficiency(
         {
             "hypothesis_id": hypothesis_id,
             "required_capabilities": required_capabilities,
             "evidence_requirements": evidence_requirements or {},
         },
-        load_evidence_links(db, hypothesis_id),
+        current_links,
         get_coverage_summary(db),
         unlinkable_reasons=[
             reason
@@ -531,6 +589,15 @@ def assess_and_persist_sufficiency(
             )
         ],
     )
+    if stale_counts:
+        # Deterministic wording (sufficiency_reason is not hashed anywhere).
+        result.reasons.append(
+            "historical/non-current evidence links excluded from current "
+            "support: "
+            + ", ".join(
+                f"{reason}={count}" for reason, count in sorted(stale_counts.items())
+            )
+        )
     final_verdict, reconciliation_reason = reconcile_verdicts(result, llm_verdict)
     if final_verdict == "needs_review":
         final_verdict = "inconclusive"
@@ -580,11 +647,18 @@ def create_hypothesis_evidence_link(
         raise ValueError(f"Invalid evidence role: {role}")
     if strength not in VALID_STRENGTHS:
         raise ValueError(f"Invalid evidence strength: {strength}")
+    # Capture the source from normalized Evidence, even when the query did not
+    # expose source_file. This is new observation admission, not a historical
+    # read-time backfill. Content-addressed Registry IDs need only existence.
+    if not source_file and routed_family(evidence_id) != "registry":
+        record = lookup_evidence_record(db, evidence_id)
+        source_file = str((record or {}).get("source_file") or "").strip()
     existing = db.execute(
         "SELECT link_id, COALESCE(assessment_id, '') FROM hypothesis_evidence "
         "WHERE hypothesis_id = ? AND evidence_id = ? AND role = ? "
-        "AND COALESCE(query_id, '') = COALESCE(?, '') LIMIT 1",
-        [hypothesis_id, evidence_id, role, query_id],
+        "AND COALESCE(query_id, '') = COALESCE(?, '') "
+        "AND COALESCE(source_file, '') = ? LIMIT 1",
+        [hypothesis_id, evidence_id, role, query_id, source_file],
     ).fetchone()
     if existing:
         if assessment_id and assessment_id != str(existing[1] or ""):

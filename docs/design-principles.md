@@ -125,7 +125,7 @@ SQL produced by the LLM is treated as read-only evidence access.
 - Only `SELECT` and `WITH` are allowed
 - Multi-statement queries are rejected
 - Destructive SQL is rejected
-- Tables are restricted by an allowlist (`get_allowed_tables(db)` + `_LEGACY_ALLOWED_TABLES`)
+- Tables are restricted by an allowlist (`get_allowed_tables(db)` + `QUERY_TABLES`)
 
 The LLM may "propose" evidence access, but generated SQL cannot mutate the DB.
 

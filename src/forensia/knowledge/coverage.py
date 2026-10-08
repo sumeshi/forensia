@@ -313,9 +313,7 @@ def compute_evidence_coverage(db: CaseDB) -> list[dict[str, Any]]:
                 if s["ingest_status"] in ("normalized", "parsed")
             ]
             failed = [
-                s
-                for s in scoped_sources
-                if s["ingest_status"] in {"failed", "partial"}
+                s for s in scoped_sources if s["ingest_status"] in {"failed", "partial"}
             ]
             empty = [s for s in scoped_sources if s["ingest_status"] == "empty"]
 
@@ -478,15 +476,103 @@ def get_coverage_summary(db: CaseDB) -> dict[str, Any]:
     return summary
 
 
-def get_capability_for_table(table_name: str) -> list[str]:
-    """Return capability names that use the given table."""
-    capabilities = load_artifact_capabilities()
-    result = []
-    for family_config in capabilities.get("families", {}).values():
-        if table_name in family_config.get("tables", []):
-            for cap_name in family_config.get("capabilities", {}):
-                result.append(cap_name)
-    return result
+def relevant_coverage_states(
+    coverage: dict[str, Any],
+    required_capabilities: list[str] | None,
+    *,
+    source_families: list[str] | None = None,
+) -> dict[str, list[str]] | None:
+    """Return coverage states restricted to the required capabilities.
+
+    Maps "family:capability" summary keys (as produced by
+    ``get_coverage_summary``) back to capability names and collects every
+    matching state, because one capability can be covered by several
+    families.  Capabilities with no matching coverage row map to
+    ``["unknown"]``.
+
+    Returns ``None`` when no required capability was declared: the coverage
+    projection then cannot represent the queried scope at all, and callers
+    must treat the absence as not observable instead of guessing from
+    unrelated families.
+    """
+    capabilities = {
+        str(item).strip() for item in (required_capabilities or []) if str(item).strip()
+    }
+    if not capabilities:
+        return None
+    states: dict[str, list[str]] = {capability: [] for capability in capabilities}
+    for key, value in coverage.items():
+        if (
+            source_families is not None
+            and str(key).split(":", 1)[0] not in source_families
+        ):
+            continue
+        capability = str(key).split(":", 1)[-1]
+        if capability not in states:
+            continue
+        state = value.get("state") if isinstance(value, dict) else None
+        states[capability].append(str(state or "unknown"))
+    for capability, matched in states.items():
+        if not matched:
+            states[capability] = ["unknown"]
+    return states
+
+
+def derive_required_capabilities(
+    required_capabilities: list[str] | None = None,
+    support_conditions: dict[str, Any] | None = None,
+    confirm_when: dict[str, Any] | None = None,
+    description: str = "",
+) -> list[str]:
+    """Derive the capabilities a hypothesis needs, with one shared priority.
+
+    This is the single derivation owner for the direct ``hypotheses`` row
+    readers (candidate selection, work state) and the legacy sufficiency
+    fallback, so the required capability list cannot diverge between call
+    sites that re-derive it with different inputs.
+
+    Priority: a non-empty declared ``required_capabilities`` list from the
+    canonical VerificationSpec wins outright.  Otherwise the declared support
+    event IDs map through the existing artifact capability catalog. Legacy
+    text inference supplements the supplied conditions/description; callers
+    with a canonical Spec use its conditions and do not reinterpret prose.
+    """
+    declared = sorted(
+        {
+            str(item).strip()
+            for item in (required_capabilities or [])
+            if str(item).strip()
+        }
+    )
+    if declared:
+        return declared
+    inferred: set[str] = set()
+    conditions = support_conditions if support_conditions is not None else confirm_when
+    if conditions:
+        # Structured event requirements do not need a table-name keyword in
+        # their JSON to identify the capabilities declared for those events.
+        event_ids = {
+            int(value)
+            for value in conditions.get("co_observed_event_ids") or []
+            if str(value).strip().isdigit()
+        }
+        evtx_caps = (
+            load_artifact_capabilities()
+            .get("families", {})
+            .get("evtx", {})
+            .get("capabilities", {})
+        )
+        inferred.update(
+            name
+            for name, config in evtx_caps.items()
+            if event_ids & set(config.get("event_ids") or [])
+        )
+        inferred.update(
+            infer_capabilities(json.dumps(conditions, ensure_ascii=False).lower())
+        )
+    if support_conditions is None and description:
+        inferred.update(infer_capabilities(description))
+    return sorted(inferred)
 
 
 def infer_capabilities(text: str) -> list[str]:

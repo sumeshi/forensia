@@ -8,7 +8,7 @@ cannot be expressed as data.
 
 | Scenario | Files normally touched | Registration |
 |---|---|---|
-| Artifact type | `evidence/<kind>.py` (ingest + normalize), schema/migration, `evidence/artifacts.py`, test | `register_artifact_adapter(...)` once |
+| Artifact type | `evidence/<kind>.py` (ingest + normalize), current schema/version, `evidence/artifacts.py`, test | `register_artifact_adapter(...)` once |
 | Detection rule/rulepack | `knowledge/rulepacks/<pack>/*.yaml`; optionally profile YAML and `pack.yaml` | Automatic YAML discovery |
 | Structured question | `_schema/question_routing.yaml`; custom deterministic builder only when generic SQL is insufficient | Generic: none; custom: `register_structured_answer_builder(...)` once |
 | Report section/block | `report/templates/<n>_<name>.md`; optional resolver module and registration | `register_report_keypoint(...)` once when a new resolver is needed |
@@ -28,7 +28,7 @@ the adapter records `partial` when plugin completeness is not proven.
 
 An artifact type exceeds three files because parsing, normalization, and the
 database schema are deliberately separate contracts. Combining them would hide
-migrations or make parsers depend on DuckDB. The adapter registry still keeps
+schema ownership or make parsers depend on DuckDB. The adapter registry still keeps
 runtime dispatch to one registration point.
 
 ## Add an artifact type
@@ -36,8 +36,8 @@ runtime dispatch to one registration point.
 1. Put raw parsing in `src/forensia/evidence/<kind>.py`. Produce traceable JSONL
    rows with `source_file` and `evidence_id`.
 2. Put set-based DuckDB loading in `src/forensia/evidence/<kind>.py`.
-3. Add its table/schema card and a `CaseDB` migration when an existing table
-   changes.
+3. Add its table/schema card in the current schema. Bump `SCHEMA_VERSION`
+   for incompatible persisted changes; update consumers together without old-format adapters.
 4. Implement `ArtifactAdapter` in `evidence/artifacts.py` (or a plugin module) and
    call `register_artifact_adapter(AdapterClass)` once.
 5. Test detection, ingest metadata, differential normalization, and replacement

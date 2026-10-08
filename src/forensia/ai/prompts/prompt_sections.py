@@ -6,6 +6,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from forensia.ai.case_profile import observed_event_ids
 from forensia.ai.llm.schemas import (
     PARAGRAPH_NARRATE_SCHEMA,
     SECTION_AGENT_CHECK_SCHEMA,
@@ -184,9 +185,7 @@ def build_report_section_messages(
         or "see investigation framework"
     )
 
-    from forensia.ai.case_profile import get_profile_event_ids
-
-    _pb_ids: set[int] | None = get_profile_event_ids()
+    _pb_ids = observed_event_ids(db) if db is not None else None
     if _pb_ids is not None:
         collected = collect_event_ids(evidence_results)
         if collected:
@@ -598,9 +597,7 @@ Input: collected_results empty, template_body='## Malicious Services\\nList mali
 Output: {"verdict": "block_contradicted", "status": "not_found", "rationale": "No service-related evidence found in collected results.", "missing_questions": ["Query for event_id 4697/7045 returned 0 rows earlier"]}
 </EXAMPLE>
 """
-    from forensia.ai.case_profile import get_profile_event_ids
-
-    _sac_ids: set[int] | None = get_profile_event_ids()
+    _sac_ids = observed_event_ids(db) if db is not None else None
     if _sac_ids is not None:
         for result in (collected_results or []) + [latest_result]:
             if not isinstance(result, dict):

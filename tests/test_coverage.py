@@ -9,11 +9,56 @@ from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.db.evidence_sources import register_evidence_source
 from forensia.knowledge.coverage import (
+    derive_required_capabilities,
     get_coverage_summary,
     load_artifact_capabilities,
     load_evidence_sufficiency_policy,
     refresh_evidence_coverage,
 )
+
+
+class RequiredCapabilityDerivationTests(unittest.TestCase):
+    """T02: one shared derivation owner with declared-spec priority."""
+
+    def test_declared_capabilities_short_circuit_inference(self) -> None:
+        self.assertEqual(
+            derive_required_capabilities(
+                ["logon"],
+                support_conditions={"keywords": ["evtx_events 4624"]},
+                confirm_when={"keywords": ["evtx_events 4624"]},
+                description="evtx_events 4624",
+            ),
+            ["logon"],
+        )
+
+    def test_spec_conditions_win_over_legacy_inference(self) -> None:
+        self.assertEqual(
+            derive_required_capabilities(
+                [],
+                support_conditions={"keywords": ["registry_artifacts"]},
+                confirm_when={"keywords": ["evtx_events 4624"]},
+                description="evtx_events 4624",
+            ),
+            ["registry_observation"],
+        )
+        self.assertEqual(
+            derive_required_capabilities(
+                support_conditions={"co_observed_event_ids": [4688]},
+                description="registry_artifacts",
+            ),
+            ["process_execution"],
+        )
+        self.assertEqual(
+            derive_required_capabilities(
+                confirm_when={"keywords": ["evtx_events 4624"]}
+            ),
+            ["lateral_movement", "logon"],
+        )
+        self.assertEqual(
+            derive_required_capabilities(description="registry_artifacts"),
+            ["registry_observation"],
+        )
+        self.assertEqual(derive_required_capabilities(), [])
 
 
 class EvidenceSourceTests(unittest.TestCase):

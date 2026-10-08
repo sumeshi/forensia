@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-import logging
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
+import duckdb
 import yaml
 
+from forensia.db.schema import CORE_SCHEMA_SQL
 from forensia.knowledge.resources import schema_dir
 
 if TYPE_CHECKING:
     from forensia.db.database import CaseDB
 
-logger = logging.getLogger(__name__)
-
-_LEGACY_ALLOWED_TABLES = {
+QUERY_TABLES = {
     "evtx_events",
     "mft_entries",
     "mft_timeline",
@@ -32,300 +31,32 @@ _LEGACY_ALLOWED_TABLES = {
 
 def get_allowed_tables(db: CaseDB | None = None) -> set[str]:
     if db is None:
-        return _LEGACY_ALLOWED_TABLES
-    try:
-        rows = db.execute("""
-            SELECT table_name FROM information_schema.tables
-            WHERE table_schema = 'main'
-        """).fetchall()
-        all_tables = {str(r[0]) for r in rows}
-        allowed = set()
-        for t in all_tables:
-            if t.startswith(
-                (
-                    "evtx_",
-                    "mft_",
-                    "prefetch_",
-                    "registry_",
-                    "findings",
-                    "hypotheses",
-                    "report_",
-                    "claims",
-                    "section_",
-                )
-            ):
-                allowed.add(t)
-        if allowed:
-            return allowed
-    except Exception:
-        logger.warning(
-            "Failed to introspect DB schema for allowed tables; falling back to legacy table list",
-            exc_info=True,
+        return set(QUERY_TABLES)
+    return {
+        table
+        for table in load_live_schema(db)
+        if table.startswith(
+            (
+                "evtx_",
+                "mft_",
+                "prefetch_",
+                "registry_",
+                "findings",
+                "hypotheses",
+                "report_",
+                "claims",
+                "section_",
+            )
         )
-    return _LEGACY_ALLOWED_TABLES
+    }
 
 
-TABLE_COLUMN_REFERENCE: dict[
-    str, tuple[str, ...]
-] = {  # fallback only — live schema overrides when db is available
-    "evtx_events": (
-        "evidence_id",
-        "source_file",
-        "channel",
-        "event_id",
-        "record_id",
-        "timestamp",
-        "computer",
-        "user_name",
-        "target_user",
-        "subject_user",
-        "src_ip",
-        "logon_type",
-        "process_name",
-        "command_line",
-        "service_name",
-        "message",
-        "raw_json",
-        "tags",
-        "severity",
-    ),
-    "mft_entries": (
-        "evidence_id",
-        "source_file",
-        "record_number",
-        "file_path",
-        "file_name",
-        "extension",
-        "is_directory",
-        "is_deleted",
-        "size",
-        "si_created",
-        "si_modified",
-        "si_accessed",
-        "si_mft_modified",
-        "fn_created",
-        "fn_modified",
-        "fn_accessed",
-        "fn_mft_modified",
-        "raw_json",
-        "tags",
-        "severity",
-    ),
-    "mft_timeline": (
-        "timeline_id",
-        "evidence_id",
-        "record_number",
-        "file_path",
-        "file_name",
-        "timestamp",
-        "timestamp_type",
-        "source_file",
-        "description",
-        "tags",
-    ),
-    "findings": (
-        "finding_id",
-        "rule_id",
-        "title",
-        "summary",
-        "severity",
-        "confidence",
-        "status",
-        "tags",
-        "attack",
-        "evidence",
-        "ai_summary",
-        "missing_checks",
-        "created_at",
-    ),
-    "hypotheses": (
-        "hypothesis_id",
-        "description",
-        "status",
-        "verdict",
-        "summary",
-        "origin",
-        "created_session",
-        "resolved_session",
-        "created_at",
-        "updated_at",
-    ),
-    "report_sections": (
-        "section_key",
-        "title",
-        "body",
-        "confidence",
-        "status",
-        "update_count",
-        "gaps",
-        "last_filled_session",
-        "last_filled_at",
-    ),
-    "claims": (
-        "claim_id",
-        "section_key",
-        "claim_text",
-        "finding_ids",
-        "hypothesis_ids",
-        "evidence_ids",
-        "support_status",
-        "created_at",
-        "updated_at",
-    ),
-    "ai_reviews": (
-        "review_id",
-        "finding_id",
-        "verdict",
-        "report_text",
-        "missing_checks",
-        "confidence_adjustment",
-        "notes",
-        "raw_response",
-        "created_at",
-    ),
-    "investigation_sessions": (
-        "session_id",
-        "started_at",
-        "finished_at",
-        "iterations",
-        "status",
-    ),
-    "investigation_steps": (
-        "step_id",
-        "session_id",
-        "hypothesis_id",
-        "iteration",
-        "phase",
-        "input_json",
-        "output_json",
-        "created_at",
-    ),
-    "hypothesis_reasoning": (
-        "entry_id",
-        "hypothesis_id",
-        "session_id",
-        "iteration",
-        "phase",
-        "verdict",
-        "query_id",
-        "body",
-        "created_at",
-    ),
-    "progress_events": (
-        "event_index",
-        "stage",
-        "status",
-        "iteration",
-        "current_query",
-        "summary",
-        "payload",
-        "created_at",
-    ),
-    "prefetch_executions": (
-        "evidence_id",
-        "source_file",
-        "executable_name",
-        "exec_count",
-        "last_exec_time",
-        "exec_times",
-        "prefetch_hash",
-        "filenames",
-        "volumes",
-        "raw_json",
-        "tags",
-        "severity",
-    ),
-    "prefetch_timeline": (
-        "timeline_id",
-        "evidence_id",
-        "executable_name",
-        "prefetch_hash",
-        "exec_time",
-        "exec_index",
-        "source_file",
-        "tags",
-    ),
-    "registry_artifacts": (
-        "artifact_id",
-        "dataset_id",
-        "source_ids",
-        "plugin",
-        "hive",
-        "key_path",
-        "value_name",
-        "timestamp",
-        "timestamp_kind",
-        "raw_json",
-        "created_at",
-    ),
-    "registry_timeline": (
-        "timeline_id",
-        "artifact_id",
-        "dataset_id",
-        "source_ids",
-        "timestamp",
-        "timestamp_kind",
-        "raw_timestamp",
-        "summary",
-    ),
-    "ingested_files": ("sha256", "path", "source_kind", "size", "ingested_at"),
-    "section_facts": (
-        "fact_id",
-        "fact_type",
-        "fact_key",
-        "fact_value",
-        "evidence_ids",
-        "source_query",
-        "source_section",
-        "confidence",
-        "created_at",
-        "updated_at",
-    ),
-    "section_evidence": (
-        "section_key",
-        "block_heading",
-        "evidence_id",
-        "role",
-        "source_query",
-        "created_at",
-    ),
-    "query_cache": ("sql_hash", "sql_text", "result_json", "executed_at"),
-    "section_runs": (
-        "run_id",
-        "section_key",
-        "block_heading",
-        "iteration",
-        "phase",
-        "payload",
-        "verdict",
-        "created_at",
-    ),
-    "section_questions": (
-        "question_id",
-        "section_key",
-        "block_heading",
-        "question_text",
-        "question_type",
-        "answer_spec",
-        "intent",
-        "confidence",
-        "matched_rule",
-        "required_evidence",
-        "status",
-        "created_at",
-        "updated_at",
-    ),
-    "section_run_coverage": (
-        "section_key",
-        "block_heading",
-        "source_query",
-        "evidence_table",
-        "row_count",
-        "used_in_answer",
-        "queried",
-        "created_at",
-    ),
-}
+@lru_cache(maxsize=1)
+def _declared_schema() -> dict[str, tuple[str, ...]]:
+    """Derive no-case prompt guidance from the current schema, never a second column list."""
+    with duckdb.connect() as conn:
+        conn.execute(CORE_SCHEMA_SQL)
+        return load_live_schema(conn)
 
 
 def load_live_schema(db: CaseDB) -> dict[str, tuple[str, ...]]:
@@ -341,25 +72,12 @@ def load_live_schema(db: CaseDB) -> dict[str, tuple[str, ...]]:
     return {k: tuple(v) for k, v in result.items()}
 
 
-def _build_live_schema_guidance(db: CaseDB | None = None) -> str:
-    if db is None:
-        return ""
-    try:
-        live = load_live_schema(db)
-    except Exception:
-        return ""
-
+def schema_column_guidance(db: CaseDB | None = None) -> str:
+    schema = load_live_schema(db) if db is not None else _declared_schema()
     allowed = get_allowed_tables(db)
-
-    parts: list[str] = []
-    for table_name in sorted(live):
-        if table_name not in allowed:
-            continue
-        cols = live[table_name]
-        parts.append(f"  {table_name} columns: {', '.join(cols)}")
-    if not parts:
-        return ""
-    return "tables:\n" + "\n".join(parts)
+    return "tables:\n" + "\n".join(
+        f"  {table} columns: {', '.join(schema[table])}" for table in sorted(allowed)
+    )
 
 
 # PROMPT-4: Load domain knowledge from YAML schema files
@@ -454,7 +172,9 @@ def build_investigation_framework(
     # receive the case-wide event catalog while choosing a writing action.
     logontype_lines = []
     if include_event_guidance:
-        for lt in sorted(logon_schema.get("types", {}).items(), key=lambda x: int(x[0])):
+        for lt in sorted(
+            logon_schema.get("types", {}).items(), key=lambda x: int(x[0])
+        ):
             lt_id, lt_def = lt
             logontype_lines.append(
                 f"  {lt_id}  = {lt_def.get('name', '?')} ({lt_def.get('description', '')})"
@@ -489,21 +209,7 @@ def build_investigation_framework(
     for exe, cat in app_catalog.get("mappings", {}).items():
         app_lines.append(f"  {exe}={cat.get('category', '?')}.")
 
-    live_guidance = _build_live_schema_guidance(db)
-
-    if live_guidance:
-        table_section = live_guidance + "\n"
-    else:
-        allowed = get_allowed_tables(db)
-        table_lines = [
-            f"  {table_name} columns: {', '.join(TABLE_COLUMN_REFERENCE[table_name])}."
-            for table_name in sorted(allowed)
-        ]
-        table_section = (
-            f"Available tables: {', '.join(sorted(allowed))}.\n"
-            + "\n".join(table_lines)
-            + "\n"
-        )
+    table_section = schema_column_guidance(db) + "\n"
 
     return (
         "Investigation framework — apply every iteration:\n"

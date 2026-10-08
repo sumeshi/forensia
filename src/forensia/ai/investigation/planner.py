@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from forensia.ai.case_profile import CaseEvidenceProfile
 from forensia.ai.hypotheses.hypothesis_store import _recent_reasoning_rows
 from forensia.ai.llm import llm_gateway
 from forensia.ai.llm.schemas import (
@@ -24,7 +25,6 @@ from forensia.ai.prompts.prompt_investigation import (
     build_query_intent_messages,
 )
 from forensia.ai.prompts.sql_templates import (
-    coerce_list,
     render_query_template,
     validate_select_sql,
     validate_select_sql_with_dryrun,
@@ -52,12 +52,7 @@ def normalize_query_intent_action(
     *,
     phase: str = "initial",
 ) -> tuple[MemoryReadMoreAction | SQLQueryAction | None, str | None]:
-    """Validate and normalize the small action contract at the planner boundary.
-
-    Older local models omitted ``action``.  Their output is accepted only when
-    it has one unambiguous meaning: a non-empty ``read_more`` list means memory
-    expansion, otherwise a complete intent with a known table means SQL.
-    """
+    """Validate the single action envelope emitted by the current planner."""
 
     try:
         eligible = eligible_query_actions(phase)
@@ -66,54 +61,10 @@ def normalize_query_intent_action(
     if not isinstance(payload, dict):
         return None, "action payload is not an object"
 
-    if "action" in payload:
-        if coerce_list(payload.get("read_more")):
-            return None, "explicit action conflicts with legacy read_more"
-        try:
-            # ``request_with_optional_context`` annotates the original response
-            # with the normalized action while preserving legacy fields for
-            # audit/debugging.  Validate only the action envelope here so those
-            # retained fields do not turn a valid decision into an extra-field
-            # error on the second normalization pass.
-            action = QueryIntentResponse.model_validate(
-                {"action": payload["action"]}
-            ).action
-        except ValidationError:
-            return None, "unknown or malformed action"
-    else:
-        requested_paths = coerce_list(payload.get("read_more"))
-        if requested_paths:
-            if "memory.read_more" not in eligible:
-                return (
-                    None,
-                    "memory.read_more is not eligible after read_more expansion",
-                )
-            paths = [str(path).strip() for path in requested_paths]
-            if not paths or any(not path for path in paths):
-                return None, "legacy read_more paths are invalid"
-            action = MemoryReadMoreAction(type="memory.read_more", paths=paths)
-        else:
-            try:
-                action = SQLQueryAction(
-                    type="sql.query",
-                    intent=str(payload.get("intent") or "").strip(),
-                    target_table=str(payload.get("target_table") or "").strip(),
-                    template_id=(
-                        str(payload["template_id"]).strip()
-                        if payload.get("template_id")
-                        else None
-                    ),
-                    params=dict(payload.get("params") or {}),
-                    sql=str(payload.get("sql") or "").strip(),
-                    filters_required=[
-                        str(item)
-                        for item in coerce_list(payload.get("filters_required"))
-                    ],
-                    time_window=str(payload.get("time_window") or ""),
-                    expected_row_shape=str(payload.get("expected_row_shape") or ""),
-                )
-            except ValidationError:
-                return None, "missing action and incomplete query intent"
+    try:
+        action = QueryIntentResponse.model_validate(payload).action
+    except ValidationError:
+        return None, "unknown or malformed action"
 
     if action.type not in eligible:
         return None, f"{action.type} is not eligible in {phase} phase"
@@ -128,9 +79,6 @@ def _materialize_planned_query(
 ) -> PlannedQuery:
     planned_query = PlannedQuery.model_validate(payload)
     tid = planned_query.template_id
-    if isinstance(tid, str) and tid.strip().lower() in {"", "null", "none"}:
-        planned_query.template_id = None
-        tid = None
     if tid:
         planned_query.sql = render_query_template(tid, planned_query.params)
     else:
@@ -141,21 +89,19 @@ def _materialize_planned_query(
 
 
 @dataclass(slots=True)
-class _PlannerContext:
-    """Container for pre-resolved planner dependencies to reduce verbosity."""
+class _QueryIntentResult:
+    """Keep host validation and selected context separate from raw model output."""
 
-    hypothesis: Hypothesis
-    seen_query_ids: set[str]
-    hypothesis_history: list[dict[str, Any]]
-    context_md: str
+    action: MemoryReadMoreAction | SQLQueryAction | None
+    raw_response: dict[str, Any]
+    read_more: list[str]
+    error: str | None = None
 
 
 @dataclass(slots=True)
 class HypothesisPlanResult:
     read_more: list[str]
-    hypothesis: Hypothesis | None
     query: PlannedQuery | None
-    needs_more: bool
     stop_reason: str | None
     raw_response: dict[str, Any]
 
@@ -170,9 +116,8 @@ def persist_hypothesis_plan_result(
     plan: HypothesisPlanResult,
     state: SessionState,
     emit: Callable[..., None] | None = None,
-) -> tuple[Hypothesis, str]:
-    """Persist one planner result and return the runner flow decision."""
-    from forensia.ai.hypotheses.hypothesis_store import _upsert_hypothesis
+) -> str:
+    """Persist query planning without changing the admitted hypothesis."""
     from forensia.ai.investigation.investigation_session import (
         _save_step,
         append_hypothesis_reasoning,
@@ -181,7 +126,6 @@ def persist_hypothesis_plan_result(
     output = dict(plan.raw_response)
     output["_plan_status"] = {
         "query_materialized": plan.query is not None,
-        "needs_more": plan.needs_more,
         "stop_reason": plan.stop_reason,
     }
     _save_step(
@@ -194,13 +138,10 @@ def persist_hypothesis_plan_result(
         output_json=output,
         suffix=f"{hypothesis.id}-{query_index:02d}",
     )
-    if plan.hypothesis is not None:
-        hypothesis = plan.hypothesis
-        _upsert_hypothesis(db, hypothesis, origin="broad_plan", session_id=session_id)
-    if plan.query or plan.needs_more and not plan.stop_reason:
-        return hypothesis, "ok" if plan.query else "continue"
+    if plan.query:
+        return "ok"
     if not plan.stop_reason:
-        return hypothesis, "break"
+        return "break"
     reason = str(plan.stop_reason)
     append_hypothesis_reasoning(
         db=db,
@@ -223,10 +164,8 @@ def persist_hypothesis_plan_result(
             hypothesis_id=hypothesis.id,
             planner_error=reason,
         )
-    logger.warning(
-        "%s planner validation failed; retrying: %s", hypothesis.id, reason
-    )
-    return hypothesis, "continue"
+    logger.warning("%s planner validation failed; retrying: %s", hypothesis.id, reason)
+    return "continue"
 
 
 def planner_retry_allowed(
@@ -252,26 +191,19 @@ def request_with_optional_context(
     hypothesis_id: str | None = None,
     retrieval_callback: Callable[[dict[str, Any]], None] | None = None,
     json_schema: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Request LLM with optional read_more context expansion.
+) -> _QueryIntentResult:
+    """Request LLM with optional scoped memory expansion.
 
-    First call uses default context. If the response includes read_more paths,
+    First call uses default context. If the action requests memory paths,
     loads those paths and re-queries the LLM with the expanded context.
     """
     default_context = initial_context
     if default_context is None:
-        load_investigation_context = getattr(memory, "load_investigation_context", None)
-        if callable(load_investigation_context):
-            default_context = load_investigation_context(
-                None,
-                max_bytes=max(1024, memory.max_bytes // 3),
-                include_overview=False,
-            )
-        else:
-            default_context = memory.load_compact_context(
-                ["facts.md", "tasks.md"],
-                max_bytes=max(1024, memory.max_bytes // 3),
-            )
+        default_context = memory.load_investigation_context(
+            hypothesis_id,
+            max_bytes=max(1024, memory.max_bytes // 3),
+            include_overview=False,
+        )
     parsed = llm_gateway.request_llm_json(
         messages=messages_builder(default_context),
         model=model,
@@ -283,22 +215,15 @@ def request_with_optional_context(
     )
     action, action_error = normalize_query_intent_action(parsed, phase="initial")
     if action_error:
-        parsed["_action_error"] = action_error
-        parsed["read_more"] = []
-        return parsed
+        return _QueryIntentResult(None, parsed, [], action_error)
     assert action is not None
-    parsed["action"] = action.model_dump(mode="json")
     if isinstance(action, SQLQueryAction):
-        parsed.update(action.model_dump(mode="json", exclude={"type"}))
-        parsed["read_more"] = []
-        return parsed
+        return _QueryIntentResult(action, parsed, [])
 
     requested_paths = list(action.paths)
-    scope_filter = getattr(memory, "filter_paths_for_scope", None)
-    if callable(scope_filter):
-        read_more, rejected_paths = scope_filter(requested_paths, hypothesis_id)
-    else:
-        read_more, rejected_paths = requested_paths, []
+    read_more, rejected_paths = memory.filter_paths_for_scope(
+        requested_paths, hypothesis_id
+    )
     if rejected_paths:
         read_more = []
     if not read_more:
@@ -332,10 +257,9 @@ def request_with_optional_context(
                     "retrieval_evaluation": evaluation.model_dump(mode="json"),
                 }
             )
-        if rejected_paths:
-            parsed["_action_error"] = "memory.read_more paths rejected by scope"
-        parsed["read_more"] = []
-        return parsed
+        return _QueryIntentResult(
+            None, parsed, [], "memory.read_more paths rejected by scope"
+        )
     extra_context = memory.load_compact_context(read_more, max_bytes=memory.max_bytes)
     separator = "\n\n<READ_MORE_CONTEXT>\n"
     base_bytes = default_context.encode("utf-8")
@@ -397,14 +321,7 @@ def request_with_optional_context(
     reparsed_action, reparsed_error = normalize_query_intent_action(
         reparsed, phase="after_read_more"
     )
-    if reparsed_error:
-        reparsed["_action_error"] = reparsed_error
-    elif reparsed_action is not None:
-        reparsed["action"] = reparsed_action.model_dump(mode="json")
-        if isinstance(reparsed_action, SQLQueryAction):
-            reparsed.update(reparsed_action.model_dump(mode="json", exclude={"type"}))
-    reparsed["read_more"] = read_more
-    return reparsed
+    return _QueryIntentResult(reparsed_action, reparsed, read_more, reparsed_error)
 
 
 def _compute_uncovered_keypoints(
@@ -469,24 +386,16 @@ def _resolve_planner_context(
     memory: MemoryManager,
     hypothesis: Hypothesis,
     default_context_md: str | None,
-    initial_context: str | None = None,
 ) -> str:
     """Resolve investigation context for the planner when no default_context_md is provided."""
     if default_context_md is None:
-        load_investigation_context = getattr(memory, "load_investigation_context", None)
-        if callable(load_investigation_context):
-            _relevance = memory.build_relevance_terms_from_hypothesis(hypothesis)
-            default_context_md = load_investigation_context(
-                hypothesis.id,
-                relevance_terms=_relevance or None,
-                max_bytes=max(1024, memory.max_bytes // 3),
-                include_overview=False,
-            )
-        else:
-            default_context_md = memory.load_compact_context(
-                ["facts.md", "tasks.md"],
-                max_bytes=max(1024, memory.max_bytes // 3),
-            )
+        relevance = memory.build_relevance_terms_from_hypothesis(hypothesis)
+        default_context_md = memory.load_investigation_context(
+            hypothesis.id,
+            relevance_terms=relevance or None,
+            max_bytes=max(1024, memory.max_bytes // 3),
+            include_overview=False,
+        )
     return default_context_md
 
 
@@ -495,7 +404,7 @@ def _build_hypothesis_history(
     hypothesis: Hypothesis,
     db: CaseDB | None = None,
     limit: int = 10,
-) -> tuple[list[dict[str, Any]], set[str]]:
+) -> list[dict[str, Any]]:
     """Build hypothesis history list and seen query IDs from state history and DB reasoning rows."""
     hypothesis_history = [
         item.model_dump()
@@ -513,7 +422,7 @@ def _build_hypothesis_history(
             hypothesis_history.append(row)
             if query_id:
                 seen_query_ids.add(query_id)
-    return hypothesis_history, seen_query_ids
+    return hypothesis_history
 
 
 def _load_prior_check_feedback(db: CaseDB | None, hypothesis: Hypothesis) -> str:
@@ -567,7 +476,10 @@ def _consume_execution_error_block(state: SessionState) -> str:
 
 def _consume_planner_error_block(state: SessionState, hypothesis_id: str) -> str:
     """Format and clear host planner validation feedback for the next call."""
-    if not state.last_planner_error or state.last_planner_error.get("hypothesis_id") != hypothesis_id:
+    if (
+        not state.last_planner_error
+        or state.last_planner_error.get("hypothesis_id") != hypothesis_id
+    ):
         return ""
     block = (
         f"\n<PLANNER_VALIDATION_ERROR>\n"
@@ -592,7 +504,7 @@ def _plan_query_intent(
     audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None,
     hypothesis: Hypothesis,
     session_id: str | None,
-) -> dict[str, Any]:
+) -> _QueryIntentResult:
     """Run the single query-intent LLM decision.
 
     The model response contains the complete bounded SQL action. All readiness
@@ -634,50 +546,6 @@ def _plan_query_intent(
     )
     return intent_response
 
-def _build_hypothesis_plan_result(
-    hypothesis: Hypothesis,
-    query_index: int,
-    intent_response: dict[str, Any],
-    action_response: dict[str, Any],
-    db: CaseDB | None,
-) -> HypothesisPlanResult:
-    """Build a PlannedQuery from the single SQL action response and wrap it as a plan result."""
-    wrapper = {
-        "hypothesis": None,
-        "query": {
-            "query_id": f"{hypothesis.id}-q{query_index}",
-            "hypothesis_id": hypothesis.id,
-            "purpose": intent_response.get(
-                "purpose", action_response.get("purpose", "")
-            ),
-            "template_id": action_response.get("template_id"),
-            "params": action_response.get("params", {}),
-            "sql": action_response.get("sql", ""),
-        }
-        if action_response.get("template_id") or action_response.get("sql")
-        else None,
-    }
-    planned_query: PlannedQuery | None = None
-    validation_error: str | None = None
-    try:
-        planned_query = _materialize_planned_query(wrapper["query"], db)
-    except (ValueError, ValidationError) as exc:
-        validation_error = str(exc).splitlines()[0][:300]
-        logger.debug("planned SQL rejected by host validation: %s", validation_error)
-    read_more = [str(item) for item in coerce_list(intent_response.get("read_more"))]
-    return HypothesisPlanResult(
-        read_more=read_more,
-        hypothesis=None,
-        query=planned_query,
-        needs_more=planned_query is not None,
-        stop_reason=(
-            None
-            if planned_query
-            else f"invalid_action: {validation_error or 'SQL action was not materialized'}"
-        ),
-        raw_response=intent_response,
-    )
-
 
 def plan_hypothesis_query(
     state: SessionState,
@@ -686,14 +554,13 @@ def plan_hypothesis_query(
     base_url: str,
     model: str,
     db: CaseDB | None = None,
-    overview_md: str | None = None,
     default_context_md: str | None = None,
     status_callback: Callable[[str], None] | None = None,
     audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None]
     | None = None,
     query_index: int = 1,
     time_range: dict[str, str] | None = None,
-    case_profile: str | None = None,
+    case_profile: CaseEvidenceProfile | None = None,
 ) -> HypothesisPlanResult:
     """Plan the next query for a single hypothesis.
 
@@ -704,9 +571,9 @@ def plan_hypothesis_query(
 
     The former second "schema-readiness" LLM self-check call was removed."""
     default_context_md = _resolve_planner_context(
-        memory, hypothesis, default_context_md, initial_context=None
+        memory, hypothesis, default_context_md
     )
-    hypothesis_history, _seen_query_ids = _build_hypothesis_history(
+    hypothesis_history = _build_hypothesis_history(
         state, hypothesis, db, limit=10
     )
     schema_card = _build_schema_guidance("evtx_events", db=db)
@@ -721,7 +588,9 @@ def plan_hypothesis_query(
             active_hypotheses=state.active_hypotheses,
             time_range=time_range or {},
             schema_context=schema_card,
-            extra_context_md=extra_context + execution_error_block + planner_error_block,
+            extra_context_md=extra_context
+            + execution_error_block
+            + planner_error_block,
             prior_check_feedback=prior_check_feedback,
             case_profile=case_profile,
             findings_snapshot=state.findings_snapshot,
@@ -739,45 +608,30 @@ def plan_hypothesis_query(
         hypothesis=hypothesis,
         session_id=state.session_id,
     )
-    if intent_response.get("_action_error"):
-        reason = str(intent_response["_action_error"])
-        return HypothesisPlanResult(
-            read_more=[
-                str(item) for item in coerce_list(intent_response.get("read_more"))
-            ],
-            hypothesis=None,
-            query=None,
-            needs_more=False,
-            stop_reason=f"invalid_action: {reason}",
-            raw_response=intent_response,
-        )
-    # SQLQueryAction already contains a recipe or bounded SELECT. The host
-    # materializes and validates it; a second LLM composer would recreate the
-    # removed readiness/composition loop and double the prompt cost.
-    action, action_error = normalize_query_intent_action(intent_response, phase="initial")
-    if not isinstance(action, SQLQueryAction):
-        return HypothesisPlanResult(
-            read_more=[str(item) for item in coerce_list(intent_response.get("read_more"))],
-            hypothesis=None,
-            query=None,
-            needs_more=False,
-            stop_reason=action_error or "SQL action was not selected",
-            raw_response=intent_response,
-        )
-    if not action.template_id and not action.sql.strip():
-        return HypothesisPlanResult(
-            read_more=[],
-            hypothesis=None,
-            query=None,
-            needs_more=False,
-            stop_reason="invalid_action: SQL action needs template_id or bounded SELECT",
-            raw_response=intent_response,
-        )
-    # Materialize only the normalized action.  The LLM response is a wrapper
-    # (``{"action": {...}}``); passing that wrapper to the materializer makes
-    # valid nested actions look like missing SQL.  Keep the original response
-    # as the audit payload, while the typed action is the sole query source.
-    normalized_action = action.model_dump(mode="json")
-    return _build_hypothesis_plan_result(
-        hypothesis, query_index, intent_response, normalized_action, db
+    action = intent_response.action
+    error = intent_response.error
+    planned_query = None
+    if not error and isinstance(action, SQLQueryAction):
+        try:
+            planned_query = _materialize_planned_query(
+                {
+                    "query_id": f"{hypothesis.id}-q{query_index}",
+                    "hypothesis_id": hypothesis.id,
+                    "purpose": action.intent,
+                    "template_id": action.template_id,
+                    "params": action.params,
+                    "sql": action.sql,
+                },
+                db,
+            )
+        except (ValueError, ValidationError) as exc:
+            error = str(exc).splitlines()[0][:300]
+            logger.debug("planned SQL rejected by host validation: %s", error)
+    elif not error:
+        error = "SQL action was not selected"
+    return HypothesisPlanResult(
+        read_more=intent_response.read_more,
+        query=planned_query,
+        stop_reason=f"invalid_action: {error}" if error else None,
+        raw_response=intent_response.raw_response,
     )

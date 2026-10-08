@@ -5,7 +5,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 
-from forensia.ai.report_gap import inject_gap_hypotheses
+from forensia.ai.report_gap import inject_gap_hypotheses, project_investigation_tasks
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import SessionState
@@ -89,45 +89,6 @@ class InvestigationStateTests(unittest.TestCase):
                 self.assertEqual(state["status"], "active")
                 self.assertEqual(state["stop_reason_code"], "")
 
-    def test_v2_migration_backfills_legacy_sources_and_gaps(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            source_path = str(case.path / "Security.evtx")
-            with CaseDB(case) as db:
-                db.execute(
-                    "INSERT INTO ingested_files (sha256, path, source_kind) "
-                    "VALUES ('legacy-sha', ?, 'evtx')",
-                    [source_path],
-                )
-                db.execute(
-                    "INSERT INTO evtx_events (evidence_id, source_file, channel, "
-                    "event_id, timestamp, computer) VALUES "
-                    "('legacy-evidence', ?, 'Security', 4624, now(), 'HOST-1')",
-                    [source_path],
-                )
-                db.execute(
-                    "INSERT INTO report_sections (section_key, title, gaps) "
-                    "VALUES ('summary', 'Summary', '[\"Legacy unresolved gap\"]')"
-                )
-                db.execute(
-                    "DELETE FROM schema_migrations "
-                    "WHERE migration_key = 'harness_state_v2_backfill'"
-                )
-                db.execute("DELETE FROM evidence_sources")
-                db.execute("DELETE FROM report_gaps")
-            with CaseDB(case) as db:
-                source = db.execute(
-                    "SELECT row_count, channel, hosts FROM evidence_sources "
-                    "WHERE source_id = 'legacy-sha'"
-                ).fetchone()
-                self.assertEqual(source[0], 1)
-                self.assertEqual(source[1], "Security")
-                self.assertIn("HOST-1", str(source[2]))
-                gap = db.execute(
-                    "SELECT section_key, status FROM report_gaps"
-                ).fetchone()
-                self.assertEqual(gap, ("summary", "open"))
-
 
 class ReportGapsTests(unittest.TestCase):
     """Test report_gaps table."""
@@ -168,7 +129,7 @@ class ReportGapsTests(unittest.TestCase):
                 ).fetchone()
                 self.assertEqual(row[0], "resolved")
 
-    def test_gap_sync_resolves_task_and_projects_memory(self) -> None:
+    def test_prose_absence_keeps_gap_task_open_and_projected(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             memory = MemoryManager(case)
@@ -189,6 +150,9 @@ class ReportGapsTests(unittest.TestCase):
                     "External reputation lookup",
                     memory.tasks_memory_path.read_text(encoding="utf-8"),
                 )
+                # The request prose vanishing is a report-side edit, not a
+                # resolution: the Gap and its Task stay open and the Memory
+                # projection keeps listing the work (T05, GOAL 9.4).
                 inject_gap_hypotheses(
                     db=db,
                     state=state,
@@ -196,10 +160,29 @@ class ReportGapsTests(unittest.TestCase):
                     session_id="S-1",
                     memory=memory,
                 )
+                gap_row = db.execute(
+                    "SELECT status, coverage_reason FROM report_gaps"
+                ).fetchone()
+                self.assertEqual(gap_row, ("open", "report_request_absent"))
                 self.assertEqual(
                     db.execute("SELECT status FROM investigation_tasks").fetchone()[0],
-                    "resolved",
+                    "open",
                 )
+                self.assertEqual(
+                    db.execute("SELECT reason FROM investigation_tasks").fetchone()[0],
+                    "report_request_absent",
+                )
+                self.assertIn(
+                    "External reputation lookup",
+                    memory.tasks_memory_path.read_text(encoding="utf-8"),
+                )
+                # A real conclusion owner closing the Task removes it from the
+                # Memory projection.
+                db.execute(
+                    "UPDATE investigation_tasks SET status = 'resolved', "
+                    "updated_at = now()"
+                )
+                project_investigation_tasks(db, memory)
                 self.assertIn(
                     "## Investigation Tasks\n- none",
                     memory.tasks_memory_path.read_text(encoding="utf-8"),

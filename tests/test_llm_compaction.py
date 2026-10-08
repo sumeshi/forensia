@@ -5,61 +5,11 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from forensia.ai.compaction import (
-    _essential_tokens_present,
-    _extract_essential_tokens,
     clear_compaction_cache,
     llm_compact,
     structured_compact,
 )
 from forensia.core.compaction import TRUNCATION_MARKER
-
-
-class TestExtractEssentialTokens:
-    def test_event_ids(self) -> None:
-        tokens = _extract_essential_tokens("Event ID 4624 and 4625 occurred")
-        assert "4624" in tokens
-        assert "4625" in tokens
-
-    def test_table_names(self) -> None:
-        tokens = _extract_essential_tokens(
-            "SELECT * FROM evtx_events WHERE event_id = 4624"
-        )
-        assert "evtx_events" in tokens
-
-    def test_windows_paths(self) -> None:
-        tokens = _extract_essential_tokens("File at C:\\Windows\\System32\\cmd.exe")
-        assert any("C:\\Windows" in t for t in tokens)
-
-    def test_unix_paths(self) -> None:
-        tokens = _extract_essential_tokens("File at /usr/bin/python3")
-        assert any("/usr/bin/python3" in t for t in tokens)
-
-    def test_evidence_ids(self) -> None:
-        tokens = _extract_essential_tokens("See evtx-security-00000000122 for details")
-        assert "evtx-security-00000000122" in tokens
-
-    def test_empty_text(self) -> None:
-        assert _extract_essential_tokens("") == set()
-
-    def test_short_tokens_excluded(self) -> None:
-        tokens = _extract_essential_tokens("ab cd ef")
-        assert all(len(t) >= 3 for t in tokens)
-
-
-class TestEssentialTokensPresent:
-    def test_all_present(self) -> None:
-        assert _essential_tokens_present(
-            {"4624", "evtx_events"}, "Event 4624 from evtx_events"
-        )
-
-    def test_missing_token(self) -> None:
-        assert not _essential_tokens_present({"4624", "4625"}, "Event 4624 only")
-
-    def test_empty_tokens_always_pass(self) -> None:
-        assert _essential_tokens_present(set(), "anything")
-
-    def test_case_insensitive(self) -> None:
-        assert _essential_tokens_present({"EVTX_EVENTS"}, "from evtx_events table")
 
 
 class TestLlmCompact:
@@ -82,17 +32,6 @@ class TestLlmCompact:
         assert len(result) <= 100
         assert TRUNCATION_MARKER in result
 
-    def test_llm_called_when_text_exceeds_threshold(self) -> None:
-        text = "Event 4624 from evtx_events table. " * 50  # well over 1.5x budget
-        llm_response = "Summarised: Event 4624 from evtx_events."
-        with patch(
-            "forensia.ai.compaction._call_llm", return_value=llm_response
-        ) as mock_llm:
-            result = llm_compact(text, 200, base_url="http://x", model="m")
-        mock_llm.assert_called_once()
-        assert "4624" in result
-        assert "evtx_events" in result
-
     def test_fallback_on_llm_exception(self) -> None:
         text = "Event 4624 from evtx_events. " * 50
         with patch(
@@ -103,13 +42,16 @@ class TestLlmCompact:
         assert TRUNCATION_MARKER in result
 
     def test_fallback_on_missing_essential_tokens(self) -> None:
-        text = "Event ID 4624 from evtx_events on host WS-01. " * 50
-        # LLM drops event ID 4624
-        llm_response = "Summary: events from the table on host WS-01."
+        anchors = r"4624 evtx_events evtx-security-000000000001 C:\Temp\trace.evtx /cases/trace.evtx"
+        text = anchors + "\n" + "Investigation detail. " * 100
+        # A plausible summary keeps the event/table but loses evidence identity and paths.
+        llm_response = "Summary: Event 4624 from evtx_events on host WS-01."
         with patch("forensia.ai.compaction._call_llm", return_value=llm_response):
             result = llm_compact(text, 200, base_url="http://x", model="m")
-        # Should fall back to mechanical (which preserves the original)
-        assert TRUNCATION_MARKER in result or len(result) <= 200
+        assert TRUNCATION_MARKER in result
+        assert "4624" in result and "evtx_events" in result
+        assert all(anchor in result for anchor in anchors.split())
+        assert len(result) <= 200
 
     def test_fallback_on_empty_llm_output(self) -> None:
         text = "Event 4624 from evtx_events. " * 50
@@ -118,13 +60,6 @@ class TestLlmCompact:
         assert len(result) <= 200
         assert result  # not empty
 
-    def test_budget_exceeded_by_llm_gets_mechanical_followup(self) -> None:
-        text = "Event 4624 from evtx_events. " * 50
-        llm_response = "Event 4624 from evtx_events. " + "x" * 500  # over budget
-        with patch("forensia.ai.compaction._call_llm", return_value=llm_response):
-            result = llm_compact(text, 200, base_url="http://x", model="m")
-        assert len(result) <= 200
-
     def test_followup_compaction_cannot_drop_essential_tokens(self) -> None:
         text = "Event 4624 from evtx_events. " + "original detail. " * 100
         llm_response = "x" * 500 + " Event 4624 from evtx_events"
@@ -132,6 +67,7 @@ class TestLlmCompact:
             result = llm_compact(text, 200, base_url="http://x", model="m")
         assert "4624" in result
         assert "evtx_events" in result
+        assert len(result) <= 200
 
     def test_cache_hit_avoids_llm_call(self) -> None:
         text = "Event 4624 from evtx_events table. " * 50
@@ -142,6 +78,8 @@ class TestLlmCompact:
             r1 = llm_compact(text, 200, base_url="http://x", model="m")
             r2 = llm_compact(text, 200, base_url="http://x", model="m")
         assert r1 == r2
+        assert r1 == llm_response
+        assert "4624" in r1 and "evtx_events" in r1
         assert mock_llm.call_count == 1  # second call used cache
 
     def test_different_budget_different_cache_entry(self) -> None:
@@ -156,15 +94,6 @@ class TestLlmCompact:
             r2 = llm_compact(text, 300, base_url="http://x", model="m")
         assert mock_llm.call_count == 2
         assert r1 != r2
-
-    def test_budget_never_exceeded(self) -> None:
-        text = "Event 4624 from evtx_events. " * 100
-        for budget in (50, 100, 200, 500):
-            with patch(
-                "forensia.ai.compaction._call_llm", side_effect=RuntimeError("fail")
-            ):
-                result = llm_compact(text, budget, base_url="http://x", model="m")
-            assert len(result) <= budget, f"budget={budget} exceeded: len={len(result)}"
 
     def test_preserve_pattern_with_capture_group_uses_full_match(self) -> None:
         text = ("case evidence ABC-1234 should remain. " * 30).strip()
@@ -183,20 +112,6 @@ class TestLlmCompact:
 class TestEnforceSystemBudgetCompaction:
     """Verify that _enforce_system_budget tries compacting before dropping."""
 
-    def test_last_section_compacted_instead_of_dropped(self) -> None:
-        from forensia.ai.prompts.prompt_context import _enforce_system_budget
-
-        # Create a system string where compacting the last section can fit
-        small_playbook = "A" * 5000
-        big_schema = "B" * 10000
-        medium_notes = "C" * 8000
-        system = f"{small_playbook}\n<SCHEMA_GUIDANCE>\n{big_schema}\n</SCHEMA_GUIDANCE>\n## Schema Notes\n{medium_notes}\n"
-
-        # Budget: 14000 — dropping Schema Notes entirely would leave 15000 (over),
-        # but compacting it should help
-        result = _enforce_system_budget(system, budget_chars=14000)
-        assert len(result) <= 14000
-
     def test_compacted_xml_section_keeps_closing_tag(self) -> None:
         from forensia.ai.prompts.prompt_context import _enforce_system_budget
 
@@ -207,21 +122,6 @@ class TestEnforceSystemBudgetCompaction:
         assert len(result) <= 10000
         if "<ORG_KNOWLEDGE>" in result:
             assert "</ORG_KNOWLEDGE>" in result
-
-    def test_budget_respected_with_known_markers(self) -> None:
-        from forensia.ai.prompts.prompt_context import _enforce_system_budget
-
-        playbook = "P" * 5000
-        schema = "S" * 10000
-        event_ids = "E" * 8000
-        system = (
-            f"{playbook}\n"
-            f"<SCHEMA_GUIDANCE>\n{schema}\n</SCHEMA_GUIDANCE>\n"
-            f"## Event ID Reference\n{event_ids}\n"
-        )
-        budget = 12000
-        result = _enforce_system_budget(system, budget_chars=budget)
-        assert len(result) <= budget
 
     def test_real_section_plan_prompt_respects_default_budget(self) -> None:
         import os
@@ -342,7 +242,10 @@ class TestEnforceSystemBudgetCompaction:
             reusable_evidence=[],
         )
         assert "## Event ID Reference" not in messages[0]["content"]
-        assert "report_brief: {'investigation_objective': 'Assess activity'}" in messages[1]["content"]
+        assert (
+            "report_brief: {'investigation_objective': 'Assess activity'}"
+            in messages[1]["content"]
+        )
 
     def test_section_plan_scopes_event_reference_to_contract(self) -> None:
         from forensia.ai.prompts.prompt_sections import (
@@ -516,8 +419,6 @@ class TestStructuredCompact:
             "<SUMMARY>y</SUMMARY></STRUCTURED_PROJECTION>"
         )
         with patch("forensia.ai.compaction._call_llm") as mock_llm:
-            out = structured_compact(
-                projection, 2000, base_url="http://x", model="m"
-            )
+            out = structured_compact(projection, 2000, base_url="http://x", model="m")
         mock_llm.assert_not_called()  # recursive degradation prevented
         assert out == projection

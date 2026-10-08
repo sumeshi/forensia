@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from fastapi.testclient import TestClient
 
 from forensia.api.progress import record_progress_event
+from forensia.api.service import get_case_stats_dto
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.web.app import create_app
@@ -18,6 +19,10 @@ class WebApiTests(unittest.TestCase):
             case = Case.init(tmpdir)
             now = datetime.now(UTC).replace(tzinfo=None)
             with CaseDB(case) as db:
+                empty_stats = get_case_stats_dto(db)
+                self.assertEqual(0, empty_stats.evtx_rows)
+                self.assertEqual(0, empty_stats.findings_accepted)
+                self.assertEqual(0, empty_stats.active_hypotheses)
                 db.execute(
                     """
                     INSERT INTO findings (
@@ -207,12 +212,23 @@ class WebApiTests(unittest.TestCase):
 
             client = TestClient(create_app(case))
 
-            self.assertEqual(200, client.get("/api/case").status_code)
+            case_response = client.get("/api/case")
+            self.assertEqual(200, case_response.status_code)
+            self.assertEqual(case.path.name, case_response.json()["case_name"])
+            self.assertEqual("raw", case_response.json()["paths"]["raw"])
             config_response = client.get("/api/config")
             self.assertEqual(200, config_response.status_code)
             self.assertIn("llm_base_url", config_response.json())
-            self.assertEqual(1, client.get("/api/stats").json()["findings_accepted"])
+            self.assertNotIn("llm_api_key", config_response.json())
+            stats = client.get("/api/stats").json()
+            self.assertEqual(1, stats["findings_accepted"])
+            self.assertEqual(1, stats["evtx_rows"])
+            self.assertEqual(1, stats["channel_count"])
+            self.assertEqual(1, stats["host_count"])
             self.assertEqual(1, len(client.get("/api/findings").json()))
+            self.assertEqual([], client.get("/api/findings?status=suppressed").json())
+            self.assertEqual([], client.get("/api/findings?severity=low").json())
+            self.assertEqual([], client.get("/api/findings?offset=1&limit=1").json())
             self.assertEqual(
                 "F-1", client.get("/api/findings/F-1").json()["finding_id"]
             )
@@ -236,6 +252,8 @@ class WebApiTests(unittest.TestCase):
             report_section = client.get("/api/report-sections").json()[0]
             self.assertEqual("ai_exhausted", report_section["status"])
             self.assertEqual(2, report_section["update_count"])
+            self.assertIn("<table>", report_section["body_html"])
+            self.assertIn("<th>A</th>", report_section["body_html"])
             markdown_response = client.get("/api/report-markdown")
             self.assertEqual(200, markdown_response.status_code)
             self.assertEqual(

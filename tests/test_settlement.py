@@ -19,6 +19,7 @@ from forensia.ai.checking.settlement import (
     _is_loopback_ip,
     build_settlement_input,
     decide_settlement,
+    judge_absence_scope,
     settle_hypothesis,
 )
 from forensia.ai.checking.sufficiency import (
@@ -26,6 +27,7 @@ from forensia.ai.checking.sufficiency import (
     create_hypothesis_evidence_link,
 )
 from forensia.core.session import Hypothesis
+from forensia.core.verification import VerificationSpec
 from forensia.db.database import CaseDB
 
 
@@ -36,6 +38,7 @@ def _make_hypothesis(
     source_rule_ids: list[str] | None = None,
     required_entities: list[str] | None = None,
     confirm_when: dict | None = None,
+    verification_spec: VerificationSpec | None = None,
 ) -> Hypothesis:
     return Hypothesis(
         id=hid,
@@ -44,6 +47,7 @@ def _make_hypothesis(
         source_rule_ids=source_rule_ids or [],
         required_entities=required_entities or [],
         confirm_when=confirm_when,
+        verification_spec=verification_spec,
     )
 
 
@@ -56,6 +60,7 @@ def _make_evidence_link(
     source_family: str = "evtx",
     strength: str = "moderate",
 ) -> str:
+    _backing_evidence_row(db, evidence_id, source_family)
     return create_hypothesis_evidence_link(
         db,
         hypothesis_id=hypothesis_id,
@@ -65,6 +70,15 @@ def _make_evidence_link(
         strength=strength,
         query_id="Q-test",
         assessment_id="EA-test",
+    )
+
+
+def _backing_evidence_row(db: CaseDB, evidence_id: str, source_family: str) -> None:
+    """Insert a source-bound normalized row for the link admission path."""
+    table = "prefetch_executions" if source_family == "prefetch" else "evtx_events"
+    db.execute(
+        f"INSERT INTO {table} (evidence_id, source_file) VALUES (?, 'test-source')",
+        [evidence_id],
     )
 
 
@@ -171,6 +185,14 @@ class SettlementGateTests(unittest.TestCase):
                     sample_rows=[
                         {
                             "event_id": 21,
+                            "channel": "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational",
+                            "raw_json": {
+                                "winlog": {
+                                    "provider": {
+                                        "name": "Microsoft-Windows-TerminalServices-LocalSessionManager"
+                                    }
+                                }
+                            },
                             "target_user": "admin",
                             "src_ip": "127.0.0.1",
                         }
@@ -213,6 +235,14 @@ class SettlementGateTests(unittest.TestCase):
                         },
                         {
                             "event_id": 4624,
+                            "channel": "Security",
+                            "raw_json": {
+                                "winlog": {
+                                    "provider": {
+                                        "name": "Microsoft-Windows-Security-Auditing"
+                                    }
+                                }
+                            },
                             "target_user": "admin",
                             "src_ip": "-",
                             "logon_type": 5,
@@ -360,6 +390,14 @@ class PositiveSettlementTests(unittest.TestCase):
                     sample_rows=[
                         {
                             "event_id": 21,
+                            "channel": "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational",
+                            "raw_json": {
+                                "winlog": {
+                                    "provider": {
+                                        "name": "Microsoft-Windows-TerminalServices-LocalSessionManager"
+                                    }
+                                }
+                            },
                             "target_user": "admin",
                             "src_ip": "192.168.1.100",
                             "computer": "HOST-PC",
@@ -367,6 +405,14 @@ class PositiveSettlementTests(unittest.TestCase):
                         },
                         {
                             "event_id": 4624,
+                            "channel": "Security",
+                            "raw_json": {
+                                "winlog": {
+                                    "provider": {
+                                        "name": "Microsoft-Windows-Security-Auditing"
+                                    }
+                                }
+                            },
                             "target_user": "admin",
                             "src_ip": "192.168.1.100",
                             "computer": "HOST-PC",
@@ -480,9 +526,7 @@ class PositiveSettlementTests(unittest.TestCase):
 
                 self.assertFalse(decision.allowed)
                 self.assertEqual(decision.sufficiency_status, "insufficient")
-                self.assertIn(
-                    "machine_sufficiency=insufficient", decision.gates_failed
-                )
+                self.assertIn("machine_sufficiency=insufficient", decision.gates_failed)
 
     def test_rdp_event_constraint_requires_logon_type_10(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -602,7 +646,8 @@ class AutoRefuteTests(unittest.TestCase):
     """Test auto-refute and auto-untestable paths."""
 
     def test_zero_row_consecutive_refute(self) -> None:
-        """3+ consecutive zero-row inconclusive with rule refute_when = refuted."""
+        """3+ consecutive zero-row inconclusive with rule refute_when and an
+        observable absence scope = refuted."""
         with tempfile.TemporaryDirectory() as tmpdir:
             from forensia.core.case import Case
 
@@ -619,9 +664,11 @@ class AutoRefuteTests(unittest.TestCase):
                     check_summary="no results",
                     consecutive_zero_row_inconclusive=3,
                     has_rule_refute_when_zero_rows=True,
+                    absence_scope="observable",
                 )
                 decision = settle_hypothesis(db, si)
                 self.assertEqual(decision.verdict, "refuted")
+                self.assertIn("auto_refute_zero_rows", decision.gates_passed)
 
     def test_zero_row_consecutive_untestable(self) -> None:
         """3+ consecutive zero-row inconclusive without rule refute = untestable."""
@@ -645,8 +692,69 @@ class AutoRefuteTests(unittest.TestCase):
                 decision = settle_hypothesis(db, si)
                 self.assertEqual(decision.verdict, "untestable")
 
+    def test_zero_row_refute_requires_observable_absence(self) -> None:
+        """Rule refute_when.zero_rows alone cannot refute: a non-observable
+        absence scope (partial/unknown coverage, rejected scope, incomplete
+        retrieval) downgrades to untestable with the explicit reason."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from forensia.core.case import Case
+
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                hyp = _make_hypothesis(
+                    hid="H-001",
+                    description="test",
+                    source_rule_ids=["rule-1"],
+                )
+                note = (
+                    "required capability coverage not available: process_exec=partial"
+                )
+                si = SettlementInput(
+                    hypothesis=hyp,
+                    checker_verdict="inconclusive",
+                    check_summary="no results",
+                    consecutive_zero_row_inconclusive=3,
+                    has_rule_refute_when_zero_rows=True,
+                    absence_scope="unknown",
+                    absence_note=note,
+                )
+                decision = settle_hypothesis(db, si)
+                self.assertEqual(decision.verdict, "untestable")
+                self.assertIn("auto_untestable_zero_rows", decision.gates_passed)
+                self.assertNotIn("auto_refute_zero_rows", decision.gates_passed)
+                self.assertIn("absence is not observable", decision.reason)
+                self.assertIn(note, decision.reason)
+
+    def test_same_missing_refute_requires_observable_absence(self) -> None:
+        """Same-missing refutation needs the same observable-absence gate."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from forensia.core.case import Case
+
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                hyp = _make_hypothesis(
+                    hid="H-001",
+                    description="test",
+                    source_rule_ids=["rule-1"],
+                )
+                note = "retrieval scope_status=rejected"
+                si = SettlementInput(
+                    hypothesis=hyp,
+                    checker_verdict="inconclusive",
+                    check_summary="same missing",
+                    consecutive_same_missing=3,
+                    has_rule_refute_when_zero_rows=True,
+                    absence_scope="unknown",
+                    absence_note=note,
+                )
+                decision = settle_hypothesis(db, si)
+                self.assertEqual(decision.verdict, "untestable")
+                self.assertIn("auto_untestable_same_missing", decision.gates_passed)
+                self.assertNotIn("auto_refute_same_missing", decision.gates_passed)
+                self.assertIn(note, decision.reason)
+
     def test_same_missing_consecutive_refute(self) -> None:
-        """3+ consecutive same-missing checks = refuted or untestable."""
+        """3+ consecutive same-missing checks with an observable absence = refuted."""
         with tempfile.TemporaryDirectory() as tmpdir:
             from forensia.core.case import Case
 
@@ -663,9 +771,11 @@ class AutoRefuteTests(unittest.TestCase):
                     check_summary="same missing",
                     consecutive_same_missing=3,
                     has_rule_refute_when_zero_rows=True,
+                    absence_scope="observable",
                 )
                 decision = settle_hypothesis(db, si)
                 self.assertEqual(decision.verdict, "refuted")
+                self.assertIn("auto_refute_same_missing", decision.gates_passed)
 
     def test_unavailable_event_ids_untestable(self) -> None:
         """Missing event IDs that are unavailable in telemetry = untestable."""
@@ -688,6 +798,100 @@ class AutoRefuteTests(unittest.TestCase):
                 decision = settle_hypothesis(db, si)
                 self.assertEqual(decision.verdict, "untestable")
                 self.assertIn("4688", decision.reason)
+
+
+class AbsenceJudgmentTests(unittest.TestCase):
+    """The settlement-side absence judgment (T03) feeding SettlementInput.
+
+    Verifies ``judge_absence_scope``'s mapping from the latest
+    RetrievalEvaluation plus the Coverage states of the required capabilities
+    to ``absence_scope``/``absence_note``.
+    """
+
+    @staticmethod
+    def _hyp_with_capabilities(capabilities: list[str]):
+        from forensia.core.verification import VerificationSpec
+
+        return _make_hypothesis(
+            hid="H-001",
+            description="test",
+            verification_spec=VerificationSpec(required_capabilities=capabilities),
+        )
+
+    @staticmethod
+    def _insert_coverage_state(
+        db: CaseDB, capability: str, state: str, family: str = "evtx"
+    ) -> None:
+        db.execute(
+            "INSERT INTO evidence_coverage (capability, host, channel, "
+            "source_family, state, reason_code, source_ids) "
+            "VALUES (?, NULL, '', ?, ?, '', '[]')",
+            [capability, family, state],
+        )
+
+    @staticmethod
+    def _evaluation(**kwargs):
+        from forensia.ai.retrieval_telemetry import RetrievalEvaluation
+
+        defaults = {
+            "receipt_id": "R-1",
+            "outcome": "adequate",
+            "scope_status": "valid",
+            "coverage_status": "available",
+            "empty_semantics": "observable",
+        }
+        defaults.update(kwargs)
+        return RetrievalEvaluation(**defaults)
+
+    def test_rejected_scope_is_not_observable(self) -> None:
+        """A rejected retrieval scope cannot support absence."""
+        from forensia.core.case import Case
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                self._insert_coverage_state(db, "process_exec", "available")
+                hyp = self._hyp_with_capabilities(["process_exec"])
+                scope, note = judge_absence_scope(
+                    db, hyp, self._evaluation(scope_status="rejected")
+                )
+                self.assertEqual(scope, "unknown")
+                self.assertIn("scope_status=rejected", note)
+
+    def test_unknown_empty_semantics_is_not_observable(self) -> None:
+        """An empty result with unknown coverage semantics is not absence."""
+        from forensia.core.case import Case
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                self._insert_coverage_state(db, "process_exec", "available")
+                hyp = self._hyp_with_capabilities(["process_exec"])
+                scope, note = judge_absence_scope(
+                    db,
+                    hyp,
+                    self._evaluation(
+                        outcome="partial",
+                        coverage_status="unknown",
+                        empty_semantics="unknown",
+                    ),
+                )
+                self.assertEqual(scope, "unknown")
+                self.assertIn("empty result not observable", note)
+
+    def test_uncovered_scope_is_not_observable(self) -> None:
+        """When no required capability is declared, Coverage cannot represent
+        the scope; the deficit is kept instead of guessing."""
+        from forensia.core.case import Case
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                self._insert_coverage_state(db, "process_exec", "available")
+                hyp = self._hyp_with_capabilities([])
+                scope, note = judge_absence_scope(db, hyp, self._evaluation())
+                self.assertEqual(scope, "unknown")
+                self.assertIn("uncovered-scope", note)
 
 
 class BenignAuthTests(unittest.TestCase):
@@ -801,75 +1005,6 @@ class DBInvariantTests(unittest.TestCase):
                     session_id="test-session",
                 )
                 # Should be needs_review because no evidence links
-                row = db.execute(
-                    "SELECT status FROM hypotheses WHERE hypothesis_id = 'H-001'"
-                ).fetchone()
-                self.assertEqual(row[0], "needs_review")
-
-
-class MigrationTests(unittest.TestCase):
-    """Test R8-01 migration re-queues legacy confirmed + insufficient."""
-
-    def test_migration_requeues_confirmed_insufficient(self) -> None:
-        """Legacy confirmed + insufficient → needs_review after migration."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            from forensia.core.case import Case
-
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                # Simulate legacy data: confirmed + insufficient
-                db.execute(
-                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
-                    "sufficiency_status) VALUES "
-                    "('H-001', 'legacy bad', 'confirmed', 'insufficient'), "
-                    "('H-002', 'legacy sufficient', 'confirmed', 'sufficient'), "
-                    "('H-003', 'legacy partial', 'confirmed', 'partial')"
-                )
-                # Add an evidence link for H-002 so it passes the evidence check
-                create_hypothesis_evidence_link(
-                    db,
-                    hypothesis_id="H-002",
-                    evidence_id="evtx-001",
-                    role="supporting",
-                    query_id="Q-test",
-                )
-                # Manually trigger the migration
-                db._apply_r8_01_settlement_invariant()
-
-                # H-001 and H-003 should be needs_review (insufficient/partial)
-                row1 = db.execute(
-                    "SELECT status FROM hypotheses WHERE hypothesis_id = 'H-001'"
-                ).fetchone()
-                self.assertEqual(row1[0], "needs_review")
-
-                row3 = db.execute(
-                    "SELECT status FROM hypotheses WHERE hypothesis_id = 'H-003'"
-                ).fetchone()
-                self.assertEqual(row3[0], "needs_review")
-
-                # H-002 should remain confirmed (sufficient + has evidence)
-                row2 = db.execute(
-                    "SELECT status FROM hypotheses WHERE hypothesis_id = 'H-002'"
-                ).fetchone()
-                self.assertEqual(row2[0], "confirmed")
-
-    def test_migration_requeues_confirmed_no_evidence(self) -> None:
-        """Legacy confirmed + no evidence links → needs_review after migration."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            from forensia.core.case import Case
-
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                # Simulate legacy data: confirmed + sufficient but no evidence links
-                db.execute(
-                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
-                    "sufficiency_status) VALUES "
-                    "('H-001', 'no evidence', 'confirmed', 'sufficient')"
-                )
-                # Manually trigger the migration
-                db._apply_r8_01_settlement_invariant()
-
-                # H-001 should be needs_review because no evidence links
                 row = db.execute(
                     "SELECT status FROM hypotheses WHERE hypothesis_id = 'H-001'"
                 ).fetchone()

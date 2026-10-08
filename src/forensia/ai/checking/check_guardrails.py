@@ -38,7 +38,7 @@ def _context_qualified_rows(
     for value in raw_ids:
         try:
             event_id = int(value)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         hint = load_event_id_hints().get(event_id) or {}
         if hint.get("channels") or hint.get("providers"):
@@ -51,7 +51,7 @@ def _context_qualified_rows(
             continue
         try:
             event_id = int(item.get("event_id"))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         declared.setdefault(event_id, set()).add(
             (
@@ -63,7 +63,7 @@ def _context_qualified_rows(
     for row in rows:
         try:
             event_id = int(row.get("event_id"))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             qualified.append(row)
             continue
         if event_id not in constrained:
@@ -170,11 +170,16 @@ def _co_observation_satisfied(
 ) -> tuple[bool, str]:
     """Check if co-observed event IDs satisfy correlation constraints.
 
-    Supports `same_host`, `same_entities`, `within_minutes`, `min_count`, and
-    `co_observed_event_ids`.
+    Field constraints filter eligible rows before host/entity grouping and the
+    window search, so all conditions use the same witnesses.
     Returns (satisfied, reason_string).
     """
     rows = _context_qualified_rows(confirm_when, rows)
+    rows, constraint_reason = _event_constraint_rows(
+        confirm_when.get("event_constraints"), rows
+    )
+    if constraint_reason:
+        return False, constraint_reason
     co_ids = confirm_when.get("co_observed_event_ids") or []
     required_ids: set[int] = set()
     for eid in co_ids:
@@ -197,7 +202,12 @@ def _co_observation_satisfied(
         return (False, "min_count must be a positive integer")
 
     # Simple presence check when no correlation constraints
-    if not same_host and not same_entities and within_minutes is None and min_count == 1:
+    if (
+        not same_host
+        and not same_entities
+        and within_minutes is None
+        and min_count == 1
+    ):
         observed_ids: set[int] = set()
         for row in rows:
             eid = row.get("event_id")
@@ -253,7 +263,7 @@ def _co_observation_satisfied(
             try:
                 if int(row.get("event_id")) in required_ids:
                     relevant_row_count += 1
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
         if within_minutes is None and relevant_row_count < min_count:
             continue
@@ -291,9 +301,10 @@ def _co_observation_satisfied(
                     if window_counts[events[left][1]] == 0:
                         del window_counts[events[left][1]]
                     left += 1
-                if required_ids.issubset(window_counts.keys()) and sum(
-                    window_counts.values()
-                ) >= min_count:
+                if (
+                    required_ids.issubset(window_counts.keys())
+                    and sum(window_counts.values()) >= min_count
+                ):
                     found = True
                     break
             if found:
@@ -319,6 +330,56 @@ def _co_observation_satisfied(
     if min_count > 1:
         parts.append(f"min_count={min_count}")
     return (False, "; ".join(parts))
+
+
+def _event_constraint_rows(
+    event_constraints: Any, rows: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Keep rows satisfying every field constraint for their event."""
+    if event_constraints is None or event_constraints == {}:
+        return rows, None
+    if not isinstance(event_constraints, dict):
+        return [], (
+            "event_constraints must be a JSON object mapping event IDs to field constraints"
+        )
+    eligible = rows
+    for raw_event_id, constraints in event_constraints.items():
+        if not isinstance(constraints, dict):
+            return [], f"event {raw_event_id} field constraints must be a JSON object"
+        event_rows = [
+            row
+            for row in eligible
+            if str(row.get("event_id") or "").strip() == str(raw_event_id)
+        ]
+        if not event_rows:
+            return [], f"event {raw_event_id} required for field constraints"
+        for field_name, expected_values in constraints.items():
+            expected = {
+                str(value).strip().casefold()
+                for value in (
+                    expected_values
+                    if isinstance(expected_values, list)
+                    else [expected_values]
+                )
+            }
+            event_rows = [
+                row
+                for row in event_rows
+                if row.get(field_name) is not None
+                and str(row[field_name]).strip().casefold() in expected
+            ]
+            if not event_rows:
+                return [], (
+                    f"event {raw_event_id} requires {field_name} in {sorted(expected)}"
+                )
+        matched_rows = {id(row) for row in event_rows}
+        eligible = [
+            row
+            for row in eligible
+            if str(row.get("event_id") or "").strip() != str(raw_event_id)
+            or id(row) in matched_rows
+        ]
+    return eligible, None
 
 
 def verify_verdict_consistency(
@@ -390,8 +451,8 @@ def verify_verdict_consistency(
                 and int(row.get("event_id")) in constrained_ids
             }
             source_event_ids = (
-                (authoritative_ids - constrained_ids) | qualified_constrained
-            )
+                authoritative_ids - constrained_ids
+            ) | qualified_constrained
     observed_event_ids.update(source_event_ids)
 
     missing_ids = claimed_event_ids - observed_event_ids

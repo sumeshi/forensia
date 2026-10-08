@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from forensia.ai.checking.check_guardrails import _co_observation_satisfied
+from forensia.core.verification import EVALUABLE_CONDITION_KEYS
 
 AssessmentRole = Literal[
     "supporting",
@@ -36,31 +37,42 @@ class EvidenceAssessment:
 
 def _condition_matches(
     condition: dict[str, Any], rows: list[dict[str, Any]]
-) -> tuple[bool, list[str]]:
-    """Evaluate only the condition vocabulary already enforced by guardrails."""
+) -> tuple[bool, list[str], str]:
+    """Evaluate one VerificationSpec condition against observation rows.
 
-    supported = {
-        "co_observed_event_ids",
-        "same_host",
-        "within_minutes",
-        "same_entities",
-        "min_count",
-    }
-    if not isinstance(condition, dict) or set(condition) - supported:
-        return False, []
+    Returns ``(satisfied, matched_fields, rejection_reason)``.  The condition
+    keys come from the shared vocabulary in ``core/verification.py``
+    (``EVALUABLE_CONDITION_KEYS``).  Keys outside it fail closed with an
+    explicit unsupported-key reason and are never treated as satisfied.
+    ``event_contexts`` needs no separate handling here: the co-observation
+    adapter itself reads it from the condition payload and filters rows to
+    catalog-qualified channel/provider contexts. Field constraints filter the
+    observations before the shared host/entity/time-window correlation search.
+    """
+
+    if not isinstance(condition, dict):
+        return False, [], "conditions not satisfied"
+    unsupported = sorted(set(condition) - EVALUABLE_CONDITION_KEYS)
+    if unsupported:
+        return False, [], f"unsupported condition keys: {unsupported}"
     raw_ids = condition.get("co_observed_event_ids")
     if not isinstance(raw_ids, list) or not raw_ids:
-        return False, []
+        # A condition without event IDs (for example bare event_contexts)
+        # would be trivially satisfied by the co-observation adapter; keep it
+        # unmatched.  Admission rejects such support specs as non-testable.
+        return False, [], "conditions not satisfied"
     try:
         for value in raw_ids:
             int(value)
     except TypeError, ValueError:
         # Finding IDs and other condition types require a different observation
         # adapter; do not silently treat them as satisfied event conditions.
-        return False, []
+        return False, [], "conditions not satisfied"
     satisfied, _reason = _co_observation_satisfied(condition, rows)
-    matched = [key for key in supported if key in condition]
-    return satisfied, matched if satisfied else []
+    if not satisfied:
+        return False, [], "conditions not satisfied"
+    matched = [key for key in sorted(EVALUABLE_CONDITION_KEYS) if key in condition]
+    return True, matched, ""
 
 
 def assess_evidence_group(
@@ -74,8 +86,12 @@ def assess_evidence_group(
 ) -> EvidenceAssessment:
     """Classify observations without reading a checker or final verdict.
 
-    Unsupported VerificationSpec conditions remain contextual. Empty or
-    non-adequate retrievals cannot create supporting/contradictory relations.
+    Condition keys outside the shared verification vocabulary remain
+    contextual with an explicit unsupported-key reason; known conditions that
+    the observations do not satisfy stay contextual too. ``event_contexts`` is
+    evaluated through the co-observation adapter, which filters rows to
+    catalog-qualified channel/provider contexts. Empty or non-adequate
+    retrievals cannot create supporting/contradictory relations.
     """
 
     normalized_ids = tuple(
@@ -105,8 +121,10 @@ def assess_evidence_group(
     if retrieval_outcome != "adequate":
         role, reason = "contextual", f"retrieval outcome is {retrieval_outcome}"
     elif normalized_ids and rows:
-        refute_match, refute_fields = _condition_matches(refute, rows)
-        support_match, support_fields = _condition_matches(support, rows)
+        refute_match, refute_fields, refute_reason = _condition_matches(refute, rows)
+        support_match, support_fields, support_reason = _condition_matches(
+            support, rows
+        )
         if refute_match:
             role, reason, matched = (
                 "contradictory",
@@ -119,6 +137,12 @@ def assess_evidence_group(
                 "matched support conditions",
                 support_fields,
             )
+        elif support_reason != "conditions not satisfied":
+            # An unsupported condition key must be distinguishable from a
+            # known condition that the observations simply did not satisfy.
+            role, reason = "contextual", support_reason
+        elif refute_reason != "conditions not satisfied":
+            role, reason = "contextual", refute_reason
         else:
             role, reason = "contextual", "observed but conditions were not satisfied"
 

@@ -19,13 +19,6 @@ from forensia.db.database import CaseDB
 
 
 class InvestigateWiringTests(unittest.TestCase):
-    def tearDown(self) -> None:
-        # investigate() sets the module-global case profile; reset it so later
-        # tests cannot accidentally depend on this test's profile (order bugs).
-        from forensia.ai.case_profile import set_case_profile
-
-        set_case_profile(None, None)
-
     def test_report_only_cycle_completes_without_llm(self) -> None:
         from forensia.ai.investigation import investigator as investigator_module
 
@@ -163,9 +156,8 @@ class InvestigateWiringTests(unittest.TestCase):
                     )
                 )
 
-    def test_hypothesis_cycle_matches_runner_signature(self) -> None:
-        """The real cycle caller must use the deep-dive runner's exact API."""
-        from types import SimpleNamespace
+    def test_cycle_executes_only_durably_eligible_hypotheses(self) -> None:
+        """The cycle uses durable eligibility before calling the deep-dive runner."""
 
         from forensia.ai.audit import LLMCallLogger
         from forensia.ai.investigation import investigation_cycle
@@ -178,10 +170,20 @@ class InvestigateWiringTests(unittest.TestCase):
             hypothesis = Hypothesis(
                 id="H-WIRING", description="exercise deep-dive wiring", status="active"
             )
-            state = SessionState(
-                session_id="S-WIRING", active_hypotheses=[hypothesis]
-            )
+            state = SessionState(session_id="S-WIRING", active_hypotheses=[hypothesis])
             with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, blocked_reason) "
+                    "VALUES (?, ?, 'active', ''), ('H-BLOCKED', 'Wait for prerequisite', 'active', 'prerequisite')",
+                    (hypothesis.id, hypothesis.description),
+                )
+                state.active_hypotheses.append(
+                    Hypothesis(
+                        id="H-BLOCKED",
+                        description="Wait for prerequisite",
+                        status="active",
+                    )
+                )
                 runner = mock.create_autospec(
                     investigation_cycle._investigate_one_hypothesis,
                     return_value=(False, state, {}),
@@ -191,15 +193,6 @@ class InvestigateWiringTests(unittest.TestCase):
                         investigation_cycle,
                         "_call_with_outage_recovery",
                         new=mock.AsyncMock(return_value=False),
-                    ),
-                    mock.patch.object(
-                        investigation_cycle,
-                        "select_focus_hypotheses_v2",
-                        return_value=[
-                            SimpleNamespace(
-                                eligible=True, hypothesis_id=hypothesis.id
-                            )
-                        ],
                     ),
                     mock.patch.object(
                         investigation_cycle, "ctx_refresh_caches", return_value=None
@@ -229,6 +222,67 @@ class InvestigateWiringTests(unittest.TestCase):
                         )
                     )
                 runner.assert_awaited_once()
+                self.assertEqual(
+                    hypothesis.id, runner.await_args.kwargs["hypothesis"].id
+                )
+                self.assertEqual(
+                    [("H-BLOCKED", 0), ("H-WIRING", 1)],
+                    db.execute(
+                        "SELECT hypothesis_id, selection_count FROM hypotheses ORDER BY hypothesis_id"
+                    ).fetchall(),
+                )
+
+    def test_selection_failure_persists_failed_session_without_execution(self) -> None:
+        from forensia.ai.investigation import investigation_cycle
+        from forensia.ai.investigation import investigator as investigator_module
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO hypotheses (hypothesis_id, description, status) "
+                    "VALUES ('H-1', 'Wait for prerequisite', 'active')"
+                )
+                with (
+                    mock.patch.object(
+                        investigation_cycle,
+                        "_run_broad_plan_step",
+                        new=mock.AsyncMock(return_value=False),
+                    ),
+                    mock.patch.object(
+                        investigation_cycle,
+                        "select_focus_hypotheses",
+                        side_effect=RuntimeError("selection failed"),
+                    ),
+                    mock.patch.object(
+                        investigation_cycle,
+                        "_investigate_one_hypothesis",
+                        new=mock.AsyncMock(),
+                    ) as runner,
+                    self.assertRaisesRegex(RuntimeError, "selection failed"),
+                ):
+                    asyncio.run(
+                        investigator_module.investigate(
+                            case=case,
+                            db=db,
+                            base_url="http://127.0.0.1:9",
+                            model="none",
+                            max_iter=1,
+                            report_every_n_cycles=2,
+                        )
+                    )
+                runner.assert_not_awaited()
+                session = db.execute(
+                    "SELECT status, phase, finished_at FROM investigation_sessions"
+                ).fetchone()
+                self.assertEqual(session[:2], ("failed", "terminal"))
+                self.assertIsNotNone(session[2])
+                self.assertEqual(
+                    ("failed", "exception"),
+                    db.execute(
+                        "SELECT status, stop_reason_code FROM investigation_state WHERE state_id = 'case'"
+                    ).fetchone(),
+                )
 
     def test_stopped_cycle_persists_state_before_final_refresh(self) -> None:
         from forensia.ai.investigation import investigator as investigator_module
@@ -487,6 +541,81 @@ class ReportRefreshFailureTests(unittest.TestCase):
                             for event in progress_events
                         )
                     )
+
+
+class TerminationDurableWorkTests(unittest.TestCase):
+    """T05: the completion gate reads durable Gap/Task rows, not report prose."""
+
+    def test_open_durable_gap_blocks_completion(self) -> None:
+        from forensia.ai.investigation.investigator import _check_termination
+
+        # B0 repro: prose total_gaps == 0 but one open termination-origin gap.
+        status, no_progress_count, reason = _check_termination(
+            report_only=False,
+            broad_plan_stop=True,
+            active_hypotheses=[],
+            durable_open_gaps=1,
+            durable_open_tasks=0,
+            no_progress_count=0,
+            no_progress_limit=3,
+            cycle_progress=False,
+        )
+        self.assertIsNone(status)
+        self.assertEqual(no_progress_count, 1)
+        self.assertEqual(reason, "")
+
+    def test_empty_durable_work_completes_with_no_gaps_no_hypotheses(self) -> None:
+        from forensia.ai.investigation.investigator import _check_termination
+
+        status, no_progress_count, reason = _check_termination(
+            report_only=False,
+            broad_plan_stop=True,
+            active_hypotheses=[],
+            durable_open_gaps=0,
+            durable_open_tasks=0,
+            no_progress_count=0,
+            no_progress_limit=3,
+            cycle_progress=False,
+        )
+        self.assertEqual(
+            (status, no_progress_count, reason),
+            ("completed", 0, "no_gaps_no_hypotheses"),
+        )
+
+    def test_open_durable_task_blocks_completion(self) -> None:
+        from forensia.ai.investigation.investigator import _check_termination
+
+        status, _, _ = _check_termination(
+            report_only=False,
+            broad_plan_stop=True,
+            active_hypotheses=[],
+            durable_open_gaps=0,
+            durable_open_tasks=2,
+            no_progress_count=0,
+            no_progress_limit=3,
+            cycle_progress=False,
+        )
+        self.assertIsNone(status)
+
+    def test_durable_open_work_counts_read_authoritative_rows(self) -> None:
+        from forensia.ai.investigation.investigator import _durable_open_work_counts
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                self.assertEqual(_durable_open_work_counts(db), (0, 0))
+                db.execute(
+                    "INSERT INTO report_gaps (gap_id, description, status, origin) "
+                    "VALUES ('GAP-STOP-1', 't', 'open', 'termination')"
+                )
+                db.execute(
+                    "INSERT INTO investigation_tasks (task_id, description, status) "
+                    "VALUES ('TASK-STOP-1', 't', 'open')"
+                )
+                db.execute(
+                    "INSERT INTO report_gaps (gap_id, description, status, origin) "
+                    "VALUES ('GAP-old', 't', 'resolved', 'section')"
+                )
+                self.assertEqual(_durable_open_work_counts(db), (1, 1))
 
 
 if __name__ == "__main__":

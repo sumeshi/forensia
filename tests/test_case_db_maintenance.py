@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+import duckdb
 
 from forensia.cli import app as cli_module
 from forensia.cli.support import (
@@ -20,7 +23,7 @@ from forensia.db.database import CaseDB
 
 
 class CaseDbMaintenanceTests(unittest.TestCase):
-    """DB schema migration/backfill, settings cache, progress pusher, report-only run."""
+    """Current schema/reopen and unsupported-case rejection, settings cache, progress pusher, report-only run."""
 
     def tearDown(self) -> None:
         reload_settings()
@@ -37,20 +40,83 @@ class CaseDbMaintenanceTests(unittest.TestCase):
     def _llm_base_url() -> str:
         return resolve_llm_config()[0] or "http://test-llm.invalid"
 
-    def test_schema_backfill_migration_runs_once(self) -> None:
+    def test_current_schema_reopens_without_rewriting_case_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                applied_count = db.execute(
-                    "SELECT COUNT(*) FROM schema_migrations WHERE migration_key = 'legacy_schema_backfill'"
-                ).fetchone()[0]
-            with CaseDB(case) as db:
-                applied_count_reopen = db.execute(
-                    "SELECT COUNT(*) FROM schema_migrations WHERE migration_key = 'legacy_schema_backfill'"
-                ).fetchone()[0]
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id) VALUES ('E1', 4624)"
+                )
+                db.execute(
+                    "INSERT INTO hypothesis_reasoning (entry_id, body) VALUES ('R1', 'prior attempt')"
+                )
+            with CaseDB(case) as reopened:
+                self.assertEqual(
+                    ("E1", 4624),
+                    reopened.execute(
+                        "SELECT evidence_id, event_id FROM evtx_events"
+                    ).fetchone(),
+                )
+                self.assertEqual(
+                    ("R1", "prior attempt"),
+                    reopened.execute(
+                        "SELECT entry_id, body FROM hypothesis_reasoning"
+                    ).fetchone(),
+                )
 
-            self.assertEqual(1, applied_count)
-            self.assertEqual(1, applied_count_reopen)
+    def test_unsupported_schema_is_rejected_without_changing_original_databases(
+        self,
+    ) -> None:
+        for invalid in (
+            "unversioned",
+            "core_version",
+            "trace_version",
+            "missing_trace",
+        ):
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as tmpdir:
+                case = Case.init(tmpdir)
+                if invalid == "unversioned":
+                    case.db_dir.mkdir(parents=True, exist_ok=True)
+                    with duckdb.connect(str(case.database_path)) as conn:
+                        conn.execute(
+                            "CREATE TABLE original_evidence AS SELECT 'keep me' AS value"
+                        )
+                    with duckdb.connect(str(case.trace_database_path)) as conn:
+                        conn.execute(
+                            "CREATE TABLE original_trace AS SELECT 'keep trace' AS value"
+                        )
+                else:
+                    with CaseDB(case):
+                        pass
+                    if invalid == "missing_trace":
+                        case.trace_database_path.unlink()
+                    else:
+                        path = (
+                            case.database_path
+                            if invalid == "core_version"
+                            else case.trace_database_path
+                        )
+                        with duckdb.connect(str(path)) as conn:
+                            conn.execute("UPDATE forensia_schema SET version = -1")
+                originals = {
+                    path: hashlib.sha256(path.read_bytes()).hexdigest()
+                    for path in (case.database_path, case.trace_database_path)
+                    if path.exists()
+                }
+                with self.assertRaisesRegex(
+                    ValueError, "Unsupported case schema|Incomplete case database pair"
+                ):
+                    CaseDB(case)
+                self.assertEqual(
+                    originals,
+                    {
+                        path: hashlib.sha256(path.read_bytes()).hexdigest()
+                        for path in originals
+                    },
+                )
+                self.assertEqual(
+                    invalid != "missing_trace", case.trace_database_path.exists()
+                )
 
     def test_schema_creates_indexes_for_lookup_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

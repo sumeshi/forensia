@@ -142,15 +142,12 @@ class MemoryWriterMixin:
             return
         path.write_text(content, encoding="utf-8")
 
-    def upsert_hypothesis(self, hyp_id: str, slug: str, content: str) -> None:
-        """Write hypothesis content, removing any stale legacy files with the same slug prefix."""
+    def upsert_hypothesis(self, hyp_id: str, content: str) -> None:
+        """Write the hypothesis projection at its stable ID."""
         stable_id = (
             sub(r"[^a-zA-Z0-9._-]+", "-", str(hyp_id).strip()).strip("-") or "unknown"
         )
         path = self.hypotheses_dir / f"{stable_id}.md"
-        for legacy_path in self.hypotheses_dir.glob(f"{slugify(hyp_id)}-*.md"):
-            if legacy_path != path:
-                legacy_path.unlink(missing_ok=True)
         path.write_text(content, encoding="utf-8")
 
     def upsert_keypoint(self, kp_id: str, content: str) -> None:

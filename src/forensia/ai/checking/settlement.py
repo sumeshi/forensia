@@ -16,7 +16,7 @@ The settlement gate enforces:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from forensia.ai.checking.sufficiency import (
     EvidenceLink,
@@ -24,9 +24,14 @@ from forensia.ai.checking.sufficiency import (
     evaluate_sufficiency,
     load_evidence_links,
 )
+from forensia.ai.retrieval_telemetry import RetrievalEvaluation
 from forensia.core.session import Hypothesis
 from forensia.db.database import CaseDB
-from forensia.knowledge.coverage import get_coverage_summary
+from forensia.knowledge.coverage import (
+    derive_required_capabilities,
+    get_coverage_summary,
+    relevant_coverage_states,
+)
 
 # Values that are NOT concrete entity instantiations.
 _DISQUALIFIED_ENTITY_VALUES = frozenset(
@@ -74,6 +79,13 @@ class SettlementInput:
     consecutive_zero_row_inconclusive: int = 0
     consecutive_same_missing: int = 0
     unavailable_missing_event_ids: list[int] | None = None
+    # Scope-wise absence judgment computed by the runner from the latest
+    # zero-row RetrievalEvaluation and the Coverage states of the hypothesis'
+    # required capabilities.  A rule-declared zero_rows refutation is only
+    # admissible when the absence itself is observable; "unknown" or
+    # "unavailable" keeps the hypothesis untestable instead of refuted.
+    absence_scope: Literal["observable", "unknown", "unavailable"] = "unknown"
+    absence_note: str = ""
     # The runner computes and persists the authoritative machine assessment
     # before settlement.  Reuse that exact snapshot so settlement cannot
     # reinterpret the same evidence with a different capability policy.
@@ -188,9 +200,14 @@ def _check_correlation_constraints(
     if not confirm_when:
         return True, "no correlation constraints declared"
 
-    # If co-observation was already checked and failed, that's a gate failure
-    if confirm_when.get("co_observed_event_ids") and not si.co_observation_satisfied:
-        return False, f"co-observation not satisfied: {si.co_observation_reason}"
+    # Recheck the complete condition on its qualified, field-matching rows.
+    # A caller-supplied co-observation flag cannot bypass the shared predicate.
+    if confirm_when.get("co_observed_event_ids"):
+        from forensia.ai.checking.check_guardrails import _co_observation_satisfied
+
+        correlated, reason = _co_observation_satisfied(confirm_when, sample_rows or [])
+        if not correlated:
+            return False, f"co-observation not satisfied: {reason}"
 
     # same_host constraint
     if confirm_when.get("same_host") and not si.same_host:
@@ -207,11 +224,6 @@ def _check_correlation_constraints(
                     f"same_host required but events span multiple hosts: {hosts}",
                 )
         # If no sample rows, trust the co_observation check
-
-    # within_minutes constraint
-    if confirm_when.get("within_minutes") is not None and not si.within_minutes:
-        # Already checked by co_observation_satisfied
-        pass
 
     # Required identity values that occur in multiple event types must refer
     # to the same entity.  Merely finding concrete values somewhere in the
@@ -235,38 +247,70 @@ def _check_correlation_constraints(
         if len(values_by_event) >= 2 and not set.intersection(*values_by_event):
             return False, f"required entity {entity!r} differs across correlated events"
 
-    # Optional rule-declared per-event field constraints (for example,
-    # Security 4624 must be LogonType 10 when confirming an RDP session).
-    for raw_event_id, constraints in (
-        confirm_when.get("event_constraints") or {}
-    ).items():
-        if not isinstance(constraints, dict):
-            continue
-        event_rows = [
-            row
-            for row in (sample_rows or [])
-            if str(row.get("event_id") or "").strip() == str(raw_event_id)
-        ]
-        if not event_rows:
-            return False, f"event {raw_event_id} required for field constraints"
-        for field_name, expected_values in constraints.items():
-            expected = {
-                str(value).strip().casefold()
-                for value in (
-                    expected_values
-                    if isinstance(expected_values, list)
-                    else [expected_values]
-                )
-            }
-            if not any(
-                str(row.get(field_name) or "").strip().casefold() in expected
-                for row in event_rows
-            ):
-                return False, (
-                    f"event {raw_event_id} requires {field_name} in {sorted(expected)}"
-                )
-
     return True, "correlation constraints satisfied"
+
+
+def judge_absence_scope(
+    db: CaseDB,
+    hypothesis: Hypothesis,
+    evaluation: RetrievalEvaluation | None,
+    *,
+    source_families: list[str] | None = None,
+) -> tuple[Literal["observable", "unknown", "unavailable"], str]:
+    """Judge whether the latest retrieval can support a scope-wise absence.
+
+    A rule-declared zero-rows refutation is admissible only when the absence
+    itself is observable: the retrieval scope was valid, the emptiness was
+    observable (not an unknown-coverage empty result), and the Coverage
+    projection shows every required capability available over the queried
+    scope.  Any other state — rejected/unknown scope, invalid or unavailable
+    retrieval, partial/unknown capability coverage, or no relevant coverage
+    rows — returns a non-observable scope plus a note naming the deficit, and
+    the settlement gate keeps the hypothesis untestable in that case.
+    """
+    required_capabilities = derive_required_capabilities(
+        hypothesis.verification_spec.required_capabilities,
+        hypothesis.verification_spec.support_conditions,
+    )
+    if evaluation is None:
+        return "unknown", "no retrieval evaluation for the latest attempt"
+    if evaluation.scope_status != "valid":
+        return "unknown", f"retrieval scope_status={evaluation.scope_status}"
+    if evaluation.outcome == "unavailable":
+        return "unavailable", "retrieval outcome=unavailable"
+    if evaluation.outcome == "invalid":
+        return "unknown", "retrieval outcome=invalid"
+    if evaluation.empty_semantics != "observable":
+        return (
+            "unknown",
+            "empty result not observable "
+            f"(empty_semantics={evaluation.empty_semantics}, "
+            f"coverage_status={evaluation.coverage_status})",
+        )
+    states = relevant_coverage_states(
+        get_coverage_summary(db), required_capabilities, source_families=source_families
+    )
+    if states is None:
+        return (
+            "unknown",
+            "uncovered-scope: no required capabilities declared, Coverage "
+            "cannot represent the queried scope",
+        )
+    incomplete = {
+        capability: matched
+        for capability, matched in sorted(states.items())
+        if any(state != "available" for state in matched)
+    }
+    if incomplete:
+        detail = ", ".join(
+            f"{capability}={','.join(matched)}"
+            for capability, matched in incomplete.items()
+        )
+        return "unknown", f"required capability coverage not available: {detail}"
+    return (
+        "observable",
+        "valid scope with observable emptiness; required capabilities available",
+    )
 
 
 def _check_no_unresolved_contradictions(
@@ -300,7 +344,7 @@ def settle_hypothesis(
     """Load authoritative state and delegate to the pure decision function."""
     return decide_settlement(
         si,
-        links=load_evidence_links(db, si.hypothesis.id),
+        links=load_evidence_links(db, si.hypothesis.id, current_only=True),
         coverage=get_coverage_summary(db),
         evidence_requirements=evidence_requirements,
     )
@@ -351,14 +395,27 @@ def decide_settlement(
         si.checker_verdict == "inconclusive"
         and si.consecutive_zero_row_inconclusive >= 3
     ):
-        if si.has_rule_refute_when_zero_rows:
+        if si.has_rule_refute_when_zero_rows and si.absence_scope == "observable":
             return SettlementDecision(
                 verdict="refuted",
                 reason=(
-                    "Auto-refuted: repeated 0-row inconclusive results, "
-                    "consistent with rule-declared refute_when.zero_rows condition."
+                    "Auto-refuted: repeated 0-row inconclusive results over an "
+                    "observable absence scope (valid retrieval, available "
+                    "coverage), consistent with rule-declared "
+                    "refute_when.zero_rows condition."
                 ),
                 gates_passed=["auto_refute_zero_rows"],
+            )
+        if si.has_rule_refute_when_zero_rows:
+            return SettlementDecision(
+                verdict="untestable",
+                reason=(
+                    "Untestable: repeated 0-row inconclusive results — "
+                    "rule-declared refute_when.zero_rows is not applied "
+                    "because the absence is not observable: "
+                    f"{si.absence_note or 'absence scope unknown'}"
+                ),
+                gates_passed=["auto_untestable_zero_rows"],
             )
         return SettlementDecision(
             verdict="untestable",
@@ -372,14 +429,26 @@ def decide_settlement(
 
     # ── Path 3: Auto-refute (3+ consecutive same-missing) ──
     if si.consecutive_same_missing >= 3:
-        if si.has_rule_refute_when_zero_rows:
+        if si.has_rule_refute_when_zero_rows and si.absence_scope == "observable":
             return SettlementDecision(
                 verdict="refuted",
                 reason=(
                     "hypothesis requires evidence not present in current dataset "
-                    "(3+ consecutive same-missing check)"
+                    "(3+ consecutive same-missing check) over an observable "
+                    "absence scope (valid retrieval, available coverage)"
                 ),
                 gates_passed=["auto_refute_same_missing"],
+            )
+        if si.has_rule_refute_when_zero_rows:
+            return SettlementDecision(
+                verdict="untestable",
+                reason=(
+                    "hypothesis requires evidence not present in current dataset "
+                    "(3+ consecutive same-missing check) — rule-declared "
+                    "refute_when.zero_rows is not applied because the absence "
+                    f"is not observable: {si.absence_note or 'absence scope unknown'}"
+                ),
+                gates_passed=["auto_untestable_same_missing"],
             )
         return SettlementDecision(
             verdict="untestable",
@@ -422,8 +491,9 @@ def decide_settlement(
             # the hypothesis' canonical policy rather than silently dropping
             # required capabilities.
             verification_spec = hypothesis.verification_spec
-            required_capabilities = list(
-                getattr(verification_spec, "required_capabilities", []) or []
+            required_capabilities = derive_required_capabilities(
+                verification_spec.required_capabilities,
+                verification_spec.support_conditions,
             )
             suff_result = evaluate_sufficiency(
                 {
@@ -559,6 +629,8 @@ def build_settlement_input(
     consecutive_zero_row_inconclusive: int = 0,
     consecutive_same_missing: int = 0,
     unavailable_missing_event_ids: list[int] | None = None,
+    absence_scope: Literal["observable", "unknown", "unavailable"] = "unknown",
+    absence_note: str = "",
     sufficiency_result: SufficiencyResult | None = None,
 ) -> SettlementInput:
     """Convenience constructor for SettlementInput."""
@@ -577,6 +649,8 @@ def build_settlement_input(
         consecutive_zero_row_inconclusive=consecutive_zero_row_inconclusive,
         consecutive_same_missing=consecutive_same_missing,
         unavailable_missing_event_ids=unavailable_missing_event_ids,
+        absence_scope=absence_scope,
+        absence_note=absence_note,
         sufficiency_result=sufficiency_result,
     )
 
@@ -591,6 +665,8 @@ def build_settlement_input_from_confirm_when(
     consecutive_zero_row_inconclusive: int = 0,
     consecutive_same_missing: int = 0,
     unavailable_missing_event_ids: list[int] | None = None,
+    absence_scope: Literal["observable", "unknown", "unavailable"] = "unknown",
+    absence_note: str = "",
     sufficiency_result: SufficiencyResult | None = None,
 ) -> SettlementInput:
     """Build SettlementInput by assessing co-observation from hypothesis.confirm_when.
@@ -636,5 +712,7 @@ def build_settlement_input_from_confirm_when(
         consecutive_zero_row_inconclusive=consecutive_zero_row_inconclusive,
         consecutive_same_missing=consecutive_same_missing,
         unavailable_missing_event_ids=unavailable_missing_event_ids,
+        absence_scope=absence_scope,
+        absence_note=absence_note,
         sufficiency_result=sufficiency_result,
     )

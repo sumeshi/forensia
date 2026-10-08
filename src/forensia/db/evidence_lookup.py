@@ -12,13 +12,30 @@ from typing import Any
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
 
-# Prefix-to-table routing: prefetch IDs may live in either table.
+# Prefix-to-table routing: prefetch IDs may live in either table.  ``mft-``
+# routes to mft_entries only: in the current pipeline mft_timeline rows share
+# the entry's evidence_id and are derived from it, so entry existence covers
+# timeline references (legacy standalone timeline raw files are no longer
+# produced).
 _PREFIX_TABLES: dict[str, tuple[str, ...]] = {
     "evtx-": ("evtx_events",),
     "mft-": ("mft_entries",),
     "prefetch-": ("prefetch_executions", "prefetch_timeline"),
     "registry-": ("registry_artifacts",),
 }
+
+
+def routed_family(evidence_id: str) -> str | None:
+    """Return the routing family ('evtx'/'mft'/'prefetch'/'registry') for an id.
+
+    ``None`` means the id matches no routed prefix and its records cannot be
+    looked up here.
+    """
+    eid = str(evidence_id)
+    for prefix in _PREFIX_TABLES:
+        if eid.startswith(prefix):
+            return prefix.rstrip("-")
+    return None
 
 
 def _group_by_prefix(ids: list[str]) -> dict[str, list[str]]:

@@ -5,9 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from forensia.ai.checking.check_normalize import parse_new_hypotheses
-from forensia.ai.investigation.investigation_cycle import select_focus_hypotheses
 from forensia.ai.investigation.planner import (
-    normalize_query_intent_action,
     plan_hypothesis_query,
     request_with_optional_context,
     validate_select_sql,
@@ -22,23 +20,9 @@ from forensia.config import (
     resolve_llm_config,
 )
 from forensia.core.case import Case
+from forensia.core.memory import MemoryManager
 from forensia.core.session import HistoryEntry, Hypothesis, SessionState
 from forensia.db.database import CaseDB
-
-
-class _MemoryStub:
-    max_bytes = 16384
-
-    def load_overview(self) -> str:
-        return "# overview"
-
-    def load_context(self, files: list[str]) -> str:
-        return ""
-
-    def load_compact_context(
-        self, files: list[str], max_bytes: int | None = None
-    ) -> str:
-        return "# facts.md\n\n- fact\n\n# tasks.md\n\n- question"
 
 
 def _llm_base_url() -> str:
@@ -47,6 +31,19 @@ def _llm_base_url() -> str:
 
 class PlannerRetryTests(unittest.TestCase):
     """Query planning, SQL templates/validation, retry, and fingerprint behavior."""
+
+    def _memory(self) -> MemoryManager:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        memory = MemoryManager(Case.init(temp.name))
+        memory.facts_path.write_text("# facts.md\n\n- fact", encoding="utf-8")
+        (memory.base_dir / "tasks.md").write_text(
+            "# tasks.md\n\n- question", encoding="utf-8"
+        )
+        (memory.details_dir / "extra.md").write_text(
+            "# compact extra", encoding="utf-8"
+        )
+        return memory
 
     def tearDown(self) -> None:
         reload_settings()
@@ -120,37 +117,6 @@ class PlannerRetryTests(unittest.TestCase):
             )
         )
 
-    def test_select_focus_hypotheses_prioritizes_uninvestigated_items(self) -> None:
-        state = SessionState(
-            session_id="S-1",
-            active_hypotheses=[
-                Hypothesis(
-                    id="H-001",
-                    description="Repeatedly investigated high confidence hypothesis",
-                    source_rule_ids=["r1", "r2", "r3"],
-                    required_entities=["computer", "target_user"],
-                ),
-                Hypothesis(
-                    id="H-002",
-                    description="Newly drafted hypothesis with no reasoning yet",
-                    source_rule_ids=["r4"],
-                ),
-            ],
-        )
-        state.history.append(
-            HistoryEntry(
-                iteration=10,
-                query_id="H-001-q1",
-                hypothesis_id="H-001",
-                verdict="inconclusive",
-                summary="still inconclusive",
-            )
-        )
-
-        selected = select_focus_hypotheses(state, max_items=1)
-
-        self.assertEqual(["H-002"], [item.id for item in selected])
-
     def test_validate_select_sql_allows_investigation_state_tables(self) -> None:
         for sql in (
             "SELECT * FROM hypotheses",
@@ -180,15 +146,16 @@ class PlannerRetryTests(unittest.TestCase):
         hypothesis = Hypothesis(id="H0", description="failed logon burst")
         responses = [
             {
-                "read_more": [],
-                "intent": "Find failed logon events grouped by source IP",
-                "target_table": "evtx_events",
-                "filters_required": ["event_id = 4625"],
-                "time_window": "case time range",
-                "expected_row_shape": "event_id, timestamp, src_ip",
-                "template_id": "q_failed_logon_by_ip_window",
-                "params": {"hours": 24, "threshold": 5},
-                "purpose": "failed logons by src_ip",
+                "action": {
+                    "type": "sql.query",
+                    "intent": "Find failed logon events grouped by source IP",
+                    "target_table": "evtx_events",
+                    "filters_required": ["event_id = 4625"],
+                    "time_window": "case time range",
+                    "expected_row_shape": "event_id, timestamp, src_ip",
+                    "template_id": "q_failed_logon_by_ip_window",
+                    "params": {"hours": 24, "threshold": 5},
+                }
             },
         ]
 
@@ -198,7 +165,7 @@ class PlannerRetryTests(unittest.TestCase):
             result = plan_hypothesis_query(
                 state=state,
                 hypothesis=hypothesis,
-                memory=_MemoryStub(),
+                memory=self._memory(),
                 base_url=_llm_base_url(),
                 model="test-model",
             )
@@ -225,37 +192,15 @@ class PlannerRetryTests(unittest.TestCase):
             result = plan_hypothesis_query(
                 state=state,
                 hypothesis=hypothesis,
-                memory=_MemoryStub(),
+                memory=self._memory(),
                 base_url=_llm_base_url(),
                 model="test-model",
             )
 
         self.assertIsNotNone(result.query)
-        self.assertEqual(
-            "SELECT event_id FROM evtx_events LIMIT 1", result.query.sql
-        )
-
-    def test_action_gate_accepts_explicit_sql_and_legacy_intent(self) -> None:
-        explicit, explicit_error = normalize_query_intent_action(
-            {
-                "action": {
-                    "type": "sql.query",
-                    "intent": "inspect events",
-                    "target_table": "evtx_events",
-                },
-            }
-        )
-        legacy, legacy_error = normalize_query_intent_action(
-            {
-                "read_more": [],
-                "intent": "inspect events",
-                "target_table": "evtx_events",
-            }
-        )
-        self.assertEqual("sql.query", explicit.type if explicit else None)
-        self.assertIsNone(explicit_error)
-        self.assertEqual("sql.query", legacy.type if legacy else None)
-        self.assertIsNone(legacy_error)
+        self.assertEqual("SELECT event_id FROM evtx_events LIMIT 1", result.query.sql)
+        self.assertEqual("inspect events", result.query.purpose)
+        self.assertEqual(response, result.raw_response)
 
     def test_planner_validation_feedback_is_consumed_by_next_call(self) -> None:
         state = SessionState(
@@ -280,13 +225,11 @@ class PlannerRetryTests(unittest.TestCase):
                 }
             }
 
-        with patch(
-            "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=respond
-        ):
+        with patch("forensia.ai.llm.llm_gateway.request_llm_json", side_effect=respond):
             result = plan_hypothesis_query(
                 state=state,
                 hypothesis=hypothesis,
-                memory=_MemoryStub(),
+                memory=self._memory(),
                 base_url=_llm_base_url(),
                 model="test-model",
             )
@@ -321,7 +264,7 @@ class PlannerRetryTests(unittest.TestCase):
             plan_hypothesis_query(
                 state=other_state,
                 hypothesis=Hypothesis(id="H-other", description="other question"),
-                memory=_MemoryStub(),
+                memory=self._memory(),
                 base_url=_llm_base_url(),
                 model="test-model",
             )
@@ -329,28 +272,43 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertNotIn("<PLANNER_VALIDATION_ERROR>", other_prompt)
         self.assertIsNotNone(other_state.last_planner_error)
 
-    def test_unknown_action_stops_before_sql_composition(self) -> None:
-        state = SessionState(session_id="session-action", iteration=1)
-        hypothesis = Hypothesis(id="H-action", description="test hypothesis")
-        with patch(
-            "forensia.ai.llm.llm_gateway.request_llm_json",
-            return_value={
-                "action": {"type": "knowledge.retrieve"},
+    def test_invalid_action_stops_before_execution_and_keeps_raw_response(self) -> None:
+        sql_action = {
+            "type": "sql.query",
+            "intent": "inspect events",
+            "target_table": "evtx_events",
+            "sql": "SELECT event_id FROM evtx_events LIMIT 1",
+        }
+        for response in (
+            {"action": {"type": "knowledge.retrieve"}},
+            {
                 "intent": "inspect events",
                 "target_table": "evtx_events",
+                "sql": sql_action["sql"],
             },
-        ) as request:
-            result = plan_hypothesis_query(
-                state=state,
-                hypothesis=hypothesis,
-                memory=_MemoryStub(),
-                base_url=_llm_base_url(),
-                model="test-model",
-            )
-        self.assertIsNone(result.query)
-        self.assertFalse(result.needs_more)
-        self.assertIn("unknown or malformed action", result.stop_reason or "")
-        request.assert_called_once()
+            {"read_more": ["facts.md"]},
+            {"action": sql_action, "sql": "SELECT * FROM findings"},
+            {"action": {**sql_action, "template_id": "q_failed_logon_by_ip_window"}},
+        ):
+            with (
+                self.subTest(response=response),
+                patch(
+                    "forensia.ai.llm.llm_gateway.request_llm_json",
+                    return_value=response,
+                ) as request,
+            ):
+                result = plan_hypothesis_query(
+                    state=SessionState(session_id="session-action", iteration=1),
+                    hypothesis=Hypothesis(id="H-action", description="inspect events"),
+                    memory=self._memory(),
+                    base_url=_llm_base_url(),
+                    model="test-model",
+                )
+                self.assertIsNone(result.query)
+                self.assertIn("unknown or malformed action", result.stop_reason or "")
+                self.assertEqual(response, result.raw_response)
+                self.assertNotIn("_action_error", response)
+                request.assert_called_once()
 
     def test_repeated_memory_action_is_ineligible_after_expansion(self) -> None:
         state = SessionState(session_id="session-action", iteration=1)
@@ -359,7 +317,7 @@ class PlannerRetryTests(unittest.TestCase):
             {
                 "action": {
                     "type": "memory.read_more",
-                    "paths": ["archive/refuted.md"],
+                    "paths": ["details/extra.md"],
                 }
             },
             {
@@ -375,12 +333,11 @@ class PlannerRetryTests(unittest.TestCase):
             result = plan_hypothesis_query(
                 state=state,
                 hypothesis=hypothesis,
-                memory=_MemoryStub(),
+                memory=self._memory(),
                 base_url=_llm_base_url(),
                 model="test-model",
             )
         self.assertIsNone(result.query)
-        self.assertFalse(result.needs_more)
         self.assertIn("not eligible", result.stop_reason or "")
         self.assertEqual(2, request.call_count)
 
@@ -394,18 +351,15 @@ class PlannerRetryTests(unittest.TestCase):
         )
         responses = [
             {
-                "read_more": [],
-                "intent": "inspect alpha",
-                "target_table": "evtx_events",
-                "filters_required": [],
-                "time_window": "case range",
-                "expected_row_shape": "event_id",
-            },
-            {
-                "template_id": None,
-                "sql": "SELECT event_id FROM evtx_events LIMIT 1",
-                "params": {},
-                "purpose": "inspect alpha",
+                "action": {
+                    "type": "sql.query",
+                    "intent": "inspect alpha",
+                    "target_table": "evtx_events",
+                    "sql": "SELECT event_id FROM evtx_events LIMIT 1",
+                    "filters_required": [],
+                    "time_window": "case range",
+                    "expected_row_shape": "event_id",
+                }
             },
         ]
         seen_messages: list[list[dict[str, str]]] = []
@@ -418,7 +372,7 @@ class PlannerRetryTests(unittest.TestCase):
             plan_hypothesis_query(
                 state=state,
                 hypothesis=current,
-                memory=_MemoryStub(),
+                memory=self._memory(),
                 base_url=_llm_base_url(),
                 model="test-model",
             )
@@ -432,16 +386,17 @@ class PlannerRetryTests(unittest.TestCase):
         hypothesis = Hypothesis(id="H1", description="test hypothesis")
         responses = [
             {
-                "read_more": [],
-                "intent": "test intent",
-                "target_table": "evtx_events",
-                "filters_required": [],
-                "time_window": "All",
-                "expected_row_shape": "cols",
-                "template_id": None,
-                "sql": "SELECT * FROM nope",
-                "params": {},
-                "purpose": "test",
+                "action": {
+                    "type": "sql.query",
+                    "intent": "test intent",
+                    "target_table": "evtx_events",
+                    "sql": "SELECT * FROM nope",
+                    "filters_required": [],
+                    "time_window": "All",
+                    "expected_row_shape": "cols",
+                    "template_id": None,
+                    "params": {},
+                }
             },
         ]
 
@@ -451,7 +406,7 @@ class PlannerRetryTests(unittest.TestCase):
             result = plan_hypothesis_query(
                 state=state,
                 hypothesis=hypothesis,
-                memory=_MemoryStub(),
+                memory=self._memory(),
                 base_url=_llm_base_url(),
                 model="test-model",
             )
@@ -465,16 +420,17 @@ class PlannerRetryTests(unittest.TestCase):
         hypothesis = Hypothesis(id="H1", description="test hypothesis")
         responses = [
             {
-                "read_more": [],
-                "intent": "test intent",
-                "target_table": "evtx_events",
-                "filters_required": [],
-                "time_window": "All",
-                "expected_row_shape": "cols",
-                "template_id": None,
-                "sql": "SELECT nonexistent_column FROM evtx_events LIMIT 1",
-                "params": {},
-                "purpose": "broken",
+                "action": {
+                    "type": "sql.query",
+                    "intent": "test intent",
+                    "target_table": "evtx_events",
+                    "sql": "SELECT nonexistent_column FROM evtx_events LIMIT 1",
+                    "filters_required": [],
+                    "time_window": "All",
+                    "expected_row_shape": "cols",
+                    "template_id": None,
+                    "params": {},
+                }
             },
         ]
 
@@ -493,7 +449,7 @@ class PlannerRetryTests(unittest.TestCase):
                 result = plan_hypothesis_query(
                     state=state,
                     hypothesis=hypothesis,
-                    memory=_MemoryStub(),
+                    memory=self._memory(),
                     base_url=_llm_base_url(),
                     model="test-model",
                     db=db,
@@ -502,15 +458,24 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertIsNone(result.query)
         self.assertIn("invalid_action: Binder Error", result.stop_reason or "")
         self.assertTrue(
-            any("planned SQL rejected by host validation" in line for line in logs.output)
+            any(
+                "planned SQL rejected by host validation" in line
+                for line in logs.output
+            )
         )
 
     def test_plan_hypothesis_query_includes_recent_db_history_on_resume(self) -> None:
         state = SessionState(session_id="session-db", iteration=2)
         hypothesis = Hypothesis(id="H1", description="test hypothesis")
         responses = [
-            {"read_more": [], "intent": "test", "target_table": "evtx_events"},
-            {"sql": "SELECT 1", "purpose": "test"},
+            {
+                "action": {
+                    "type": "sql.query",
+                    "intent": "test",
+                    "target_table": "evtx_events",
+                    "sql": "SELECT event_id FROM evtx_events LIMIT 1",
+                }
+            },
         ]
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -544,7 +509,7 @@ class PlannerRetryTests(unittest.TestCase):
                     plan_hypothesis_query(
                         state=state,
                         hypothesis=hypothesis,
-                        memory=_MemoryStub(),
+                        memory=self._memory(),
                         base_url=_llm_base_url(),
                         model="test-model",
                         db=db,
@@ -580,8 +545,14 @@ class PlannerRetryTests(unittest.TestCase):
         )
         hypothesis = Hypothesis(id="H1", description="test hypothesis")
         responses = [
-            {"read_more": [], "intent": "test", "target_table": "evtx_events"},
-            {"sql": "SELECT 1", "purpose": "test"},
+            {
+                "action": {
+                    "type": "sql.query",
+                    "intent": "test",
+                    "target_table": "evtx_events",
+                    "sql": "SELECT event_id FROM evtx_events LIMIT 1",
+                }
+            },
         ]
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -601,7 +572,7 @@ class PlannerRetryTests(unittest.TestCase):
                     plan_hypothesis_query(
                         state=state,
                         hypothesis=hypothesis,
-                        memory=_MemoryStub(),
+                        memory=self._memory(),
                         base_url=_llm_base_url(),
                         model="test-model",
                         db=db,
@@ -629,51 +600,6 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertIn("event_id = 4624 AND logon_type IN ('2','10')", framework)
         self.assertIn("4728/4732", framework)
 
-    def test_returns_none_when_retry_is_still_invalid(self) -> None:
-        state = SessionState(session_id="session-2", iteration=1)
-        hypothesis = Hypothesis(id="H2", description="test hypothesis")
-        responses = [
-            {
-                "read_more": [],
-                "intent": "test intent",
-                "target_table": "evtx_events",
-                "filters_required": [],
-                "time_window": "All",
-                "expected_row_shape": "cols",
-            },
-            {
-                "template_id": None,
-                "sql": "SELECT * FROM nope",
-                "params": {},
-                "purpose": "test",
-            },
-            {
-                "template_id": None,
-                "sql": "DELETE FROM findings",
-                "params": {},
-                "purpose": "retry1",
-            },
-            {
-                "template_id": None,
-                "sql": "DELETE FROM findings",
-                "params": {},
-                "purpose": "retry2",
-            },
-        ]
-
-        with patch(
-            "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=responses
-        ):
-            result = plan_hypothesis_query(
-                state=state,
-                hypothesis=hypothesis,
-                memory=_MemoryStub(),
-                base_url=_llm_base_url(),
-                model="test-model",
-            )
-
-        self.assertIsNone(result.query)
-
     def test_route_trace_write_skips_regex_for_select(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -694,10 +620,17 @@ class PlannerRetryTests(unittest.TestCase):
 
         with patch(
             "forensia.ai.llm.llm_gateway.request_llm_json",
-            return_value={"read_more": []},
+            return_value={
+                "action": {
+                    "type": "sql.query",
+                    "intent": "inspect events",
+                    "target_table": "evtx_events",
+                    "sql": "SELECT event_id FROM evtx_events LIMIT 1",
+                }
+            },
         ):
             request_with_optional_context(
-                memory=_MemoryStub(),
+                memory=self._memory(),
                 messages_builder=builder,
                 base_url=_llm_base_url(),
                 model="test-model",
@@ -710,15 +643,27 @@ class PlannerRetryTests(unittest.TestCase):
     def test_request_with_optional_context_uses_compact_context_for_read_more(
         self,
     ) -> None:
-        memory = _MemoryStub()
+        memory = self._memory()
         seen: list[str] = []
         with (
-            patch.object(
-                memory, "load_compact_context", return_value="# compact extra"
-            ) as mock_compact,
             patch(
                 "forensia.ai.llm.llm_gateway.request_llm_json",
-                side_effect=[{"read_more": ["archive/refuted.md"]}, {"read_more": []}],
+                side_effect=[
+                    {
+                        "action": {
+                            "type": "memory.read_more",
+                            "paths": ["details/extra.md"],
+                        }
+                    },
+                    {
+                        "action": {
+                            "type": "sql.query",
+                            "intent": "inspect events",
+                            "target_table": "evtx_events",
+                            "sql": "SELECT event_id FROM evtx_events LIMIT 1",
+                        }
+                    },
+                ],
             ),
         ):
             request_with_optional_context(
@@ -730,7 +675,6 @@ class PlannerRetryTests(unittest.TestCase):
                 model="test-model",
             )
 
-        mock_compact.assert_any_call(["archive/refuted.md"], max_bytes=memory.max_bytes)
         self.assertEqual(2, len(seen))
         self.assertIn(seen[0], seen[1])
         self.assertIn("# compact extra", seen[1])
@@ -738,13 +682,16 @@ class PlannerRetryTests(unittest.TestCase):
     def test_request_with_optional_context_enforces_hypothesis_scope(self) -> None:
         case_dir = tempfile.TemporaryDirectory()
         self.addCleanup(case_dir.cleanup)
-        from forensia.core.memory import MemoryManager
-
         memory = MemoryManager(Case.init(case_dir.name))
         events: list[dict] = []
         with patch(
             "forensia.ai.llm.llm_gateway.request_llm_json",
-            return_value={"read_more": ["scratch/H-B/tasks.md"]},
+            return_value={
+                "action": {
+                    "type": "memory.read_more",
+                    "paths": ["scratch/H-B/tasks.md"],
+                }
+            },
         ) as request:
             result = request_with_optional_context(
                 memory=memory,
@@ -755,7 +702,7 @@ class PlannerRetryTests(unittest.TestCase):
                 retrieval_callback=events.append,
             )
 
-        self.assertEqual([], result["read_more"])
+        self.assertEqual([], result.read_more)
         self.assertEqual(1, request.call_count)
         self.assertEqual(["scratch/H-B/tasks.md"], events[0]["rejected_refs"])
         self.assertEqual("rejected", events[0]["scope_status"])
@@ -791,16 +738,17 @@ class PlannerRetryTests(unittest.TestCase):
         hypothesis = Hypothesis(id="H-single", description="test hypothesis")
         responses = [
             {
-                "read_more": [],
-                "intent": "test intent",
-                "target_table": "evtx_events",
-                "filters_required": [],
-                "time_window": "All",
-                "expected_row_shape": "cols",
-                "template_id": None,
-                "sql": "SELECT event_id FROM findings LIMIT 1",
-                "params": {},
-                "purpose": "test",
+                "action": {
+                    "type": "sql.query",
+                    "intent": "test intent",
+                    "target_table": "evtx_events",
+                    "sql": "SELECT event_id FROM findings LIMIT 1",
+                    "filters_required": [],
+                    "time_window": "All",
+                    "expected_row_shape": "cols",
+                    "template_id": None,
+                    "params": {},
+                }
             },
         ]
 
@@ -810,7 +758,7 @@ class PlannerRetryTests(unittest.TestCase):
             result = plan_hypothesis_query(
                 state=state,
                 hypothesis=hypothesis,
-                memory=_MemoryStub(),
+                memory=self._memory(),
                 base_url=_llm_base_url(),
                 model="test-model",
             )
@@ -821,6 +769,7 @@ class PlannerRetryTests(unittest.TestCase):
         for call in mock_request.call_args_list:
             for message in call.kwargs["messages"]:
                 self.assertNotIn("ready_to_compose", str(message.get("content")))
+
 
 if __name__ == "__main__":
     unittest.main()

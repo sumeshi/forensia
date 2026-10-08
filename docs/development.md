@@ -82,11 +82,15 @@ uv run forensia serve ./cases/demo
 
 ## 2. Testing policy
 
-Keep the test suite finishing in seconds.
+Keep tests only where a failure would violate a responsibility boundary or a meaningful
+user-visible contract. Their maintenance and execution cost must match that guarantee.
 
-- **Do not write tests that make real LLM calls**. A full cycle of `investigate(...)` or a real-server-dependent section refresh has too many side effects (DuckDB writes, memory I/O, file walks) to stay lightweight. When exercising `run_section_block_agent` and similar, keep it within structured answer / deterministic builder / mocked JSON responses
-- **Do not write tests that hit a real LLM server**. The previous `tests/test_benchmark_e2e_real_llm.py` (gated by `FORENSIA_LLM_BASE_URL`) was removed for the same reason
-- Instead, cover with: unit tests for pure-function helpers (`_quality_gate_section`, `_render_structured_answer_markdown`, etc.), DB-only persistence tests, and CLI / HTTP tests that do not import the LLM module
+- Keep pytest offline and use disposable cases. Replace LLM responses and injected external failures at their boundaries; keep actual case state, tools, persistence, and projections on the path being verified. Do not call a real LLM server from pytest
+- Test observable behavior at its responsibility boundary: deterministic evaluation, real temporary DB/file persistence, and CLI / HTTP results with LLM responses mocked where necessary. Prefer extending an existing scenario over adding overlapping helper and adapter tests
+- Give each invariant one primary test owner. Avoid repeated per-field/type checks, SQL-string or mock-forwarding assertions, and private cache/counter/layout assertions when the public result already protects the behavior. Keep separate cases for distinct failure paths and safety boundaries
+- Runtime contracts own the design. Do not retain obsolete APIs, fallback algorithms, or mock-specific branches to satisfy a test. Update or remove the test when the design changes; confirm the resulting behavior through the real temporary-case/CLI/API path
+- Retain regression coverage for Evidence/provenance, Assessment/Sufficiency/Settlement, admitted work and termination, persistence/resume, and bounded execution. Use actual output checks for routine presentation/helper changes rather than adding tests that merely mirror the implementation
+- Test editable knowledge through its executable semantics and contracts, not exact file counts or prose snapshots. Do not use machine-dependent wall-clock thresholds as correctness checks; measure performance separately
 - **Determinism-gate regression tests**: verdict consistency gates, fallback demotion, memory filters, and extracted finding validation are covered in `tests/test_checker_gates.py`; early untestable resolution is covered in `tests/test_hypothesis_seeding.py`. Whenever you change these gates, update them at the same time
 - When you genuinely want to observe investigation-loop behavior, run `forensia investigate ...` against a local model and inspect `ai_logs/` by eye. Do not turn it into a pytest
 
@@ -104,6 +108,10 @@ Keep the test suite finishing in seconds.
 | `forensia doctor` | CLI command. Runs 8 checks in order — schema coverage / playbook drift / import layer contract (`scripts/check_imports.py`) / verdict taxonomy AST scan / report template policy / report validation self-check / ruff lint / pytest — and exits 0 only when all pass |
 
 `scripts/` is not a Python package. Tests that import from `scripts/` rely on `conftest.py` adding the repository root to `sys.path`.
+
+Doctor's pytest step excludes `test_memory.py`, `test_ingest.py`, `test_persistence.py`,
+and `test_web_api.py`. Round completion still requires the separate full
+`pytest tests/ -q` gate.
 
 ---
 
@@ -142,9 +150,19 @@ Keep the test suite finishing in seconds.
 
 `_reset_case_tables()` invoked by `--rerun` must clear not only the evidence-derived normalized tables but also the derived workflow state. At minimum include `findings` / `hypotheses` / `report_sections` / `claims` / `section_facts` / `section_evidence` / `section_runs` / `section_questions` / `query_cache` / trace tables (including `retrieval_events`) / `ingested_files` / `prefetch_timeline`. When you add a new mutable table, update `_reset_case_tables()` and the reset test in `tests/test_case_db_maintenance.py` at the same time.
 
-### 4.3 Schema changes and migrations
+### 4.3 Latest-only case schema
 
-Changing `CREATE TABLE IF NOT EXISTS` in `db/schema.py` is not applied to existing case DBs. When adding columns to an existing table, always add a migration (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`) to `_apply_migration_once("<key>", ...)` in `db/database.py` (examples: `hypotheses_source_decl_id`, `mft_entries_fn_name`).
+`db/schema.py` owns the complete current schema and `SCHEMA_VERSION`. A new case
+creates core and trace databases, each with a `forensia_schema(version)` marker.
+Reopening a current case creates connection-local trace views and preserves durable
+case state. There is no automatic migration, backfill, or verdict repair on open.
+
+When changing an incompatible schema or persisted meaning, update every consumer and
+bump `SCHEMA_VERSION` together. Unversioned or mismatched core/trace databases and
+incomplete database pairs are rejected before persistent DDL/DML. Preserve old cases
+and ingest their original artifacts into a **new case directory** for current runs;
+`--rerun` does not upgrade an unsupported case. Any future data conversion is separate,
+explicit work on a frozen copy, with provenance and recovery checks.
 
 ---
 

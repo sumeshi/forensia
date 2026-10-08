@@ -23,11 +23,36 @@ HTTP layer characteristics:
 
 ### Hypothesis verification policy
 
-Hypothesis drafting may propose legacy `confirm_when`, `refute_when`, and
+Hypothesis drafting proposes the current declaration fields `confirm_when`, `refute_when`, and
 `evidence_requirements` fields. Admission normalizes these into the versioned
 `VerificationSpec` on the `Hypothesis` model before persistence. The kernel,
 rather than the LLM verdict, owns the resulting verification policy; in
 particular `refute_when` is retained through rule seeding, reload, and resume.
+
+The support-condition key vocabulary has one owner:
+`EVALUABLE_CONDITION_KEYS` in [core/verification.py](../src/forensia/core/verification.py)
+documents each key (`co_observed_event_ids`, `event_contexts`, `same_host`,
+`within_minutes`, `same_entities`, `min_count`, `event_constraints`) and which
+gate evaluates it. Admission pre-screens these keys (required
+`co_observed_event_ids`, catalog-qualified `event_contexts`, claim-wording
+cross-checks) and Assessment evaluates the same key set through the
+co-observation adapter, including catalog-qualified `event_contexts`
+channel/provider filtering. `event_constraints` (`{event_id: {field: [values]}}`,
+for example `logon_type=10` on a Security 4624 row) filters eligible rows
+before host/entity/time-window checks in the shared
+`_co_observation_satisfied` predicate. Assessment and Settlement therefore
+require the same witnesses; a matching field on another host or outside the
+window cannot validate the correlation. Missing fields fail closed. Condition keys outside the vocabulary are never treated as satisfied:
+Assessment keeps the observation contextual and records an explicit
+unsupported-key reason. `keywords` in `confirm_when` is deliberately outside
+the vocabulary: nothing evaluates it over rows, so it is a rulepack hint
+(the planner/checker-facing keyword vocabularies live in
+`fallback_search[].keywords` and `event_ids.yaml`'s
+`keywords_for_string_search`), and a spec carrying it fails closed at
+Assessment with an explicit unsupported-key reason while a keywords-only
+support spec is rejected at admission as `non-testable-verification-spec`.
+Refute conditions use a separate vocabulary (for example `zero_rows`) owned
+by the settlement gates.
 
 Accepted input/output logs are saved to `ai_logs/<phase>-<id>.json`. Every provider
 attempt, including timeouts and truncation, is recorded in trace DB telemetry; unusable
@@ -108,20 +133,22 @@ See [`_apply_memory_updates`](../src/forensia/ai/investigation/memory_sync.py) f
 
 ### 3.3 `QUERY_INTENT_SCHEMA` and the bounded action gate
 
-The query-intent response must select one typed action object: `{ "type":
-"memory.read_more", "paths": [...] }` or `{ "type": "sql.query", "intent":
-"...", "target_table": "..." }`. The
-planner kernel computes eligibility by phase: both actions are eligible on the
-initial call, and only `sql.query` is eligible after a memory expansion. It
-validates the action and query-intent arguments before invoking the existing
-scope filter, self-check, or SQL composer. A legacy response without `action`
-is normalized only when a non-empty `read_more` list or a complete known-table
-query intent makes the meaning unambiguous; otherwise planning stops without
-SQL composition. For a valid nested action, the host materializes the normalized
-action object rather than the outer response wrapper. If host validation or
-materialization fails, the failure is persisted in the plan step and hypothesis
-reasoning, injected into the next planner prompt, and retried once within a
-bounded planner-only allowance; it is not counted as query execution progress.
+The complete response is `{"action": {...}}`, defined by `QueryIntentResponse`.
+The initial call permits `memory.read_more` or `sql.query`; after one memory
+expansion only `sql.query` is eligible. A SQL action selects exactly one recipe
+(`template_id` + `params`) or bounded SELECT. Flattened responses, extra envelope
+fields, unknown tools and ambiguous execution paths are rejected.
+
+The host invokes MemoryManager's required scoped-read API and validates SQL
+deterministically. There is no second SQL composer or schema self-check call.
+Raw model output stays unchanged for audit; selected Memory paths and host
+validation are separate runtime results. Query planning cannot rewrite an
+admitted hypothesis and derives query purpose from the action's intent.
+
+If validation or materialization fails, the failure is persisted in the plan
+step and hypothesis reasoning, injected into the next planner prompt, and
+retried once within a bounded planner-only allowance. A rejected action does
+not count as query execution progress.
 `do`/`check` receipts remain the evidence that the hypothesis loop actually ran.
 `knowledge.retrieve` remains an internal deterministic prompt-assembly step and
 is not exposed as an LLM-callable action.

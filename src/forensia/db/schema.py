@@ -1,3 +1,5 @@
+SCHEMA_VERSION = 1
+
 CORE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS evtx_events (
     evidence_id VARCHAR,

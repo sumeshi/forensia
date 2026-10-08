@@ -11,10 +11,10 @@ from typing import Any
 
 import duckdb
 
-from forensia.ai.prompts.sql_schema import _LEGACY_ALLOWED_TABLES
+from forensia.ai.prompts.sql_schema import QUERY_TABLES
 from forensia.knowledge.resources import schema_dir
 
-ALLOWED_IDENTIFIER_REFERENCES = _LEGACY_ALLOWED_TABLES | {
+ALLOWED_IDENTIFIER_REFERENCES = QUERY_TABLES | {
     "evidence_id",
     "artifact_id",
     "dataset_id",
@@ -242,16 +242,6 @@ def _render_template_params(
         else:
             raise ValueError(f"{spec.template_id}.{name} has unsupported type")
     return rendered
-
-
-def coerce_list(value: Any) -> list[Any]:
-    if isinstance(value, list):
-        return value
-    if isinstance(value, dict):
-        return [value]
-    if isinstance(value, str) and value:
-        return [value]
-    return []
 
 
 def validate_select_sql(sql: str) -> str:

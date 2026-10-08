@@ -39,7 +39,7 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 
 | Path | Responsibilities |
 |---|---|
-| [src/forensia/db/database.py](../src/forensia/db/database.py) | `CaseDB` class. DuckDB connection (case + attached trace DB) + schema initialization + migration |
+| [src/forensia/db/database.py](../src/forensia/db/database.py) | `CaseDB` class. DuckDB connection (case + attached trace DB) + current schema initialization and latest-only version admission |
 | [src/forensia/db/query.py](../src/forensia/db/query.py) | Query helpers (`fetch_records`, `normalize_value`) |
 | [src/forensia/db/schema.py](../src/forensia/db/schema.py) | Table DDL definitions (case tables + `trace.*` tables) |
 
@@ -66,13 +66,16 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 | [src/forensia/knowledge/rules/engine.py](../src/forensia/knowledge/rules/engine.py) | Rule SQL execution + finding generation + `fallback_search` + timeline feeding |
 | [src/forensia/knowledge/rulepacks/](../src/forensia/knowledge/rulepacks/) | YAML rule definitions (windows/, leakage/, _schema/) |
 | [src/forensia/knowledge/profiles/](../src/forensia/knowledge/profiles/) | Profile YAML (rule selection policy) |
+| [src/forensia/knowledge/coverage.py](../src/forensia/knowledge/coverage.py) | Coverage projection from `evidence_sources` (refresh/summary) + capability declaration reader + `derive_required_capabilities`, the single derivation owner for required capabilities (declared spec list → support-conditions/`confirm_when`/description inference) |
 
 ## AI — investigation loop (`ai/investigation/`)
 
 | Path | Responsibilities |
 |---|---|
 | [src/forensia/ai/investigation/investigator.py](../src/forensia/ai/investigation/investigator.py) | `investigate(...)` entry point: plan-cycle loop, report phase, termination, LLM budget |
-| [src/forensia/ai/investigation/investigation_cycle.py](../src/forensia/ai/investigation/investigation_cycle.py) | One plan cycle: broad plan (gap identify → hypothesis draft) + hypothesis loop body |
+| [src/forensia/ai/investigation/investigation_cycle.py](../src/forensia/ai/investigation/investigation_cycle.py) | One plan cycle: broad plan (gap identify → hypothesis draft) + hypothesis loop body; delegates eligibility/ranking to the single selector in `selection.py` |
+| [src/forensia/ai/investigation/selection.py](../src/forensia/ai/investigation/selection.py) | Next-best hypothesis selection: deterministic priority scoring, eligibility gating (incl. required-capability coverage, derived via the shared derivation owner), focus selection |
+| [src/forensia/ai/investigation/work_state.py](../src/forensia/ai/investigation/work_state.py) | Stop-time classification into Gap/Task work with persisted `required_capability`/`required_source` (from the shared derivation owner) and retry/reopen re-evaluation |
 | [src/forensia/ai/investigation/investigation_session.py](../src/forensia/ai/investigation/investigation_session.py) | Session setup, memory-context caches, step logging, keypoint-card sync |
 | [src/forensia/ai/investigation/planner.py](../src/forensia/ai/investigation/planner.py) | `plan_hypothesis_query`: bounded action eligibility (`memory.read_more` → `sql.query`) → one LLM recipe/fallback-SQL decision → deterministic host validation |
 | [src/forensia/ai/investigation/memory_sync.py](../src/forensia/ai/investigation/memory_sync.py) | `_apply_memory_updates`: checker output → facts / timeline / tasks / entities / hypothesis cards |
@@ -82,7 +85,7 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 | [src/forensia/ai/llm_telemetry.py](../src/forensia/ai/llm_telemetry.py) | Session-scoped logical-call/provider-attempt/deterministic-operation receipts in the existing Trace DB |
 | [src/forensia/ai/compaction.py](../src/forensia/ai/compaction.py) | Fail-open LLM compaction with deterministic fallback and required-token validation |
 | [src/forensia/ai/retrieval_telemetry.py](../src/forensia/ai/retrieval_telemetry.py) | Observational retrieval events plus the versioned tool-receipt and one-attempt Retrieval Evaluation contracts; never assigns Evidence roles or verdicts |
-| [src/forensia/ai/case_profile.py](../src/forensia/ai/case_profile.py) | Case profile (observed event IDs / artifact families) + profile advisor |
+| [src/forensia/ai/case_profile.py](../src/forensia/ai/case_profile.py) | Session-owned case profile (observed event IDs / artifact families), current DB availability reads, profile advisor; no process-wide case cache |
 
 ## AI — subpackages
 
@@ -91,8 +94,8 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 | [src/forensia/ai/llm/](../src/forensia/ai/llm/) | LLM transport: `llm_client.py` (HTTP/retry/context handling), `request_metadata.py` (bounded fingerprints/section metadata), `llm_gateway.py` (`request_llm_json`), `json_response.py` (JSON parse/repair), `schemas.py` (output JSON schemas) |
 | [src/forensia/ai/prompts/](../src/forensia/ai/prompts/) | Prompt builders: `prompt_investigation.py` (planner/checker), `prompt_sections.py` (section agent), `report_evidence_projection.py` (report-only semantic projection of large evidence sets; persisted IDs remain authoritative), `prompt_context.py` (context slimming, budget guard), `prompt_playbook.py` (`_dfir_playbook`), `sql_schema.py` (schema cards, allowed tables), `sql_templates.py` (query template catalog from `_schema/query_templates.yaml` + `validate_select_sql`) |
 | [src/forensia/ai/hypotheses/](../src/forensia/ai/hypotheses/) | Hypothesis lifecycle: `hypothesis_model.py` (parsing), `hypothesis_manager.py` (merge/dedup/resolve), `hypothesis_store.py` (DB persistence), `hypothesis_runner.py` (per-hypothesis orchestration), `execution.py` (existing SQL fallback and receipt assembly), `seeding.py` (rule-seeded findings/hypotheses) |
-| [src/forensia/core/verification.py](../src/forensia/core/verification.py) | Versioned `VerificationSpec` model and lossless legacy-field normalization/projection used by all hypothesis creation and persistence paths |
-| [src/forensia/ai/checking/](../src/forensia/ai/checking/) | Query-result boundaries: `checker.py` (LLM proposal/finding extraction/memory updates), `assessment.py` (`VerificationSpec` + observation → Evidence role), `sufficiency.py` (assessed-link aggregation), `settlement.py` (settlement gates/state transition), `check_guardrails.py` (checker proposal and correlation consistency), `check_normalize.py` (result summarization), `check_apply.py` (DB application) |
+| [src/forensia/core/verification.py](../src/forensia/core/verification.py) | Versioned `VerificationSpec` model, lossless legacy-field normalization/projection used by all hypothesis creation and persistence paths, and the shared evaluable support-condition vocabulary (`EVALUABLE_CONDITION_KEYS`) that admission and Assessment both use |
+| [src/forensia/ai/checking/](../src/forensia/ai/checking/) | Query-result boundaries: `checker.py` (LLM proposal/finding extraction/memory updates), `assessment.py` (`VerificationSpec` + observation → Evidence role; evaluates the shared condition vocabulary incl. `event_contexts` via the co-observation adapter, unsupported keys fail closed with an explicit reason), `sufficiency.py` (assessed-link aggregation), `settlement.py` (settlement gates/state transition), `check_guardrails.py` (checker proposal and correlation consistency), `check_normalize.py` (result summarization), `check_apply.py` (DB application) |
 | [src/forensia/ai/sections/](../src/forensia/ai/sections/) | Report-section agents: `section_refresher.py` (refresh entry point), `section_agent.py` (per-block agent), `section_block_plan.py` / `section_block_context.py` / `section_block_narrative.py` (plan / context / narrate phases), `section_exec.py` (query execution), `section_answers.py` (structured answer formatting), `section_run_store.py` (run/evidence/fact persistence) |
 
 ## Report

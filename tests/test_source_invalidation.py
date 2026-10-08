@@ -144,5 +144,75 @@ class SourceInvalidationTests(unittest.TestCase):
                 )
 
 
+    def test_removed_evidence_stales_section_facts_dependents(self) -> None:
+        """section_facts and case_timeline references are part of the invalidation survey."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(Path(tmpdir) / "case")
+            with CaseDB(case) as db:
+                self._seed_dependents(db)
+                db.execute(
+                    """
+                    INSERT INTO section_facts (
+                        fact_id, fact_type, fact_value, evidence_ids,
+                        source_query, source_section, confidence,
+                        created_at, updated_at
+                    ) VALUES (
+                        'fact-1', 'fact_type', '"v"', ?, 'q1', 'section-2',
+                        0.8, now(), now()
+                    )
+                    """,
+                    [json.dumps(["evtx-old"])],
+                )
+                db.execute(
+                    """
+                    INSERT INTO report_sections (
+                        section_key, title, body, status, update_count, stale
+                    ) VALUES ('section-2', 'Other', 'body', 'draft', 1, false)
+                    """
+                )
+                db.execute(
+                    """
+                    INSERT INTO case_timeline (
+                        entry_id, timestamp, source, ref_id, host, summary, evidence_id
+                    ) VALUES ('t-1', now(), 'evtx', 'r1', 'host', 'summary', 'evtx-old')
+                    """
+                )
+
+                class ReplacementAdapter:
+                    name = "evtx"
+
+                    def normalize(self, case, db, source_keys=None):
+                        del case, source_keys
+                        db.execute(
+                            "DELETE FROM evtx_events WHERE evidence_id = 'evtx-old'"
+                        )
+                        return NormalizeResult(source_kind="evtx", rows=0)
+
+                with patch(
+                    "forensia.evidence.normalize.get_artifact_adapters",
+                    return_value=(ReplacementAdapter(),),
+                ):
+                    normalize_all(case, db)
+
+                self.assertEqual(
+                    (True,),
+                    db.execute(
+                        "SELECT stale FROM report_sections "
+                        "WHERE section_key = 'section-2'"
+                    ).fetchone(),
+                )
+                # History is kept: facts and timeline rows are not deleted.
+                self.assertEqual(
+                    (1,), db.execute("SELECT COUNT(*) FROM section_facts").fetchone()
+                )
+                self.assertEqual(
+                    (1,),
+                    db.execute(
+                        "SELECT COUNT(*) FROM case_timeline "
+                        "WHERE evidence_id = 'evtx-old'"
+                    ).fetchone(),
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

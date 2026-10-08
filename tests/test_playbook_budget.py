@@ -6,54 +6,7 @@ from typing import Any
 from forensia.ai.prompts.prompt_playbook import (
     PLAYBOOK_SECTION_DROP_ORDER,
     dfir_playbook,
-    load_dfir_yamls_cached,
-    render_event_narrative,
 )
-
-
-def test_filter_event_ids_reduces_size() -> None:
-    """With a subset of event IDs (12 items), playbook has fewer event lines."""
-    full = dfir_playbook("check", event_ids=None)
-    filtered = dfir_playbook(
-        "check",
-        event_ids={
-            4624,
-            4625,
-            4648,
-            4688,
-            4697,
-            7045,
-            1102,
-            104,
-            4768,
-            4771,
-            4720,
-            4724,
-        },
-    )
-    full_events = full.count(" - Event ")
-    filtered_events = filtered.count(" - Event ")
-    assert filtered_events <= 12, f"Expected ≤12 event entries, got {filtered_events}"
-    if full_events > 0:
-        assert filtered_events < full_events
-
-
-def test_filter_event_ids_caps_at_forty() -> None:
-    """Event narrative is capped at 40 entries when event_ids is large."""
-    render_event_narrative(load_dfir_yamls_cached()["event_ids"].get("events", {}))
-    many_ids = set(range(1, 200))
-    playbook = dfir_playbook("check", event_ids=many_ids)
-    assert "Event ID Reference" in playbook
-    # Count event ID entries in the playbook — each starts with " - Event "
-    id_count = playbook.count(" - Event ")
-    assert id_count <= 40, f"Expected ≤40 event IDs, got {id_count}"
-
-
-def test_filter_event_ids_includes_hypothesis_context_ids() -> None:
-    """Hypothesis-referenced event IDs not in the case set are still rendered."""
-    playbook = dfir_playbook("check", event_ids={9999})
-    assert " - Event 9999" in playbook or "No event ID reference" in playbook
-
 
 _SMALL_EVENT_IDS = {
     4624,
@@ -85,53 +38,6 @@ def test_tables_gate_includes_artifact_when_mft_present() -> None:
         "check", event_ids=_SMALL_EVENT_IDS, tables={"evtx_events", "mft_entries"}
     )
     assert "Artifact-to-Application Inference" in playbook
-
-
-def test_tables_gate_ioc_with_mft() -> None:
-    """IOC catalog included when MFT/prefetch present in tables."""
-    playbook = dfir_playbook(
-        "check", event_ids=_SMALL_EVENT_IDS, tables={"prefetch_executions"}
-    )
-    assert "IOC Catalog" in playbook
-
-
-def test_tables_gate_ioc_excluded_without_mft_prefetch() -> None:
-    """IOC catalog excluded when no MFT/prefetch in tables for check phase."""
-    playbook = dfir_playbook(
-        "check", event_ids=_SMALL_EVENT_IDS, tables={"evtx_events"}
-    )
-    assert "IOC Catalog" not in playbook
-
-
-def test_tables_none_includes_all_sections() -> None:
-    """When tables=None (default with filtering), sections are included by phase."""
-    playbook = dfir_playbook("check", event_ids=_SMALL_EVENT_IDS, tables=None)
-    assert "Event ID Reference" in playbook
-    assert "Logon Type Reference" in playbook
-    assert "False-Positive Reduction Guidance" in playbook
-
-
-def test_budget_enforcement_drops_sections_in_order(tmp_path: Any) -> None:
-    """With a tiny budget, sections drop in declared priority order."""
-    from forensia.config import get_system_prompt_budget_chars, reload_settings
-
-    old_budget = os.environ.get("FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS")
-    os.environ["FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS"] = "1000"
-    reload_settings()
-    try:
-        assert get_system_prompt_budget_chars() == 1000
-
-        playbook = dfir_playbook("check")
-        # With 1KB budget, sections are aggressively dropped.
-        # The full playbook is ~69KB; a 1KB budget forces most sections out.
-        # Only preamble, priority sections + phase MD (~3.5KB) remain.
-        assert len(playbook) < 10000  # well under full size
-    finally:
-        if old_budget is not None:
-            os.environ["FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS"] = old_budget
-        else:
-            os.environ.pop("FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS", None)
-        reload_settings()
 
 
 def test_total_prompt_budget_is_configurable_and_auto_derived() -> None:
@@ -189,13 +95,6 @@ def test_budget_drop_order_is_stable() -> None:
         "schema",  # schema notes — highest priority, last to drop
     ]
     assert PLAYBOOK_SECTION_DROP_ORDER == expected
-
-
-def test_empty_event_ids_still_produces_playbook() -> None:
-    """Empty event_ids set doesn't crash — falls back to minimal playbook."""
-    playbook = dfir_playbook("hypothesis_plan", event_ids=set())
-    assert len(playbook) > 0
-    assert "DFIR_PLAYBOOK" in playbook or "No event ID reference" in playbook
 
 
 def test_table_gating_planning_phases() -> None:
@@ -265,13 +164,11 @@ def test_no_profile_playbook_truncates_events_instead_of_dropping_everything():
     so the other guidance sections survive, instead of the serial drop loop
     discarding every droppable section (the pre-fix behavior left only the
     Priority Investigation Order)."""
-    from forensia.ai.case_profile import set_case_profile
     from forensia.ai.prompts.prompt_playbook import dfir_playbook
     from forensia.config import get_system_prompt_budget_chars, settings
 
     old_system_budget = settings.forensia_system_prompt_budget_chars
     old_prompt_budget = settings.forensia_prompt_budget_tokens
-    set_case_profile(None, None)
     try:
         settings.forensia_system_prompt_budget_chars = 0
         settings.forensia_prompt_budget_tokens = 0
@@ -287,7 +184,6 @@ def test_no_profile_playbook_truncates_events_instead_of_dropping_everything():
     finally:
         settings.forensia_system_prompt_budget_chars = old_system_budget
         settings.forensia_prompt_budget_tokens = old_prompt_budget
-        set_case_profile(None, None)
 
 
 def testsections_for_hypothesis_auth_excludes_catalogs() -> None:

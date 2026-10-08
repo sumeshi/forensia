@@ -259,62 +259,6 @@ class PersistenceTests(unittest.TestCase):
             self.assertIsNotNone(row[0])
             self.assertIn('"zero_rows": true', str(row[1]))
 
-    def test_verification_spec_migration_backfills_legacy_row_idempotently(
-        self,
-    ) -> None:
-        """Opening a pre-spec case preserves rows and rerunning init is harmless."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            now = datetime.now(UTC).replace(tzinfo=None)
-            with CaseDB(case) as db:
-                db.execute(
-                    """
-                    INSERT INTO hypotheses (
-                        hypothesis_id, description, status, verdict, summary,
-                        origin, created_session, created_at, updated_at,
-                        required_entities, confirm_when, refute_when, evidence_requirements
-                    ) VALUES (?, ?, 'active', NULL, '', 'legacy', 'S-old', ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        "H-LEGACY-SPEC",
-                        "legacy hypothesis",
-                        now,
-                        now,
-                        '["host"]',
-                        '{"same_host": true}',
-                        '{"zero_rows": true}',
-                        '{"minimum_independent_groups": 1}',
-                    ),
-                )
-                # Simulate a legacy row created before the migration: remove
-                # only this migration marker and its canonical payload while
-                # retaining the legacy columns/state.
-                db.execute(
-                    "DELETE FROM schema_migrations WHERE migration_key = ?",
-                    ("hypotheses_verification_spec_v1",),
-                )
-                db.execute(
-                    "UPDATE hypotheses SET verification_spec = NULL WHERE hypothesis_id = ?",
-                    ("H-LEGACY-SPEC",),
-                )
-                before = db.execute(
-                    "SELECT verification_spec FROM hypotheses WHERE hypothesis_id = 'H-LEGACY-SPEC'"
-                ).fetchone()[0]
-                self.assertIsNone(before)
-                db.init_schema()
-                second, _ = load_persisted_hypotheses(db)
-                after = db.execute(
-                    "SELECT verification_spec FROM hypotheses WHERE hypothesis_id = 'H-LEGACY-SPEC'"
-                ).fetchone()[0]
-                db.init_schema()
-                after_repeat = db.execute(
-                    "SELECT verification_spec FROM hypotheses WHERE hypothesis_id = 'H-LEGACY-SPEC'"
-                ).fetchone()[0]
-
-            self.assertIsNotNone(after)
-            self.assertEqual(after, after_repeat)
-            self.assertEqual(second[0].refute_when, {"zero_rows": True})
-
     def test_merge_active_hypotheses_assigns_sequential_ids_and_dedupes_description(
         self,
     ) -> None:

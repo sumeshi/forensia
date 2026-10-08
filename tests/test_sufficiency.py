@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 
@@ -9,6 +10,7 @@ from forensia.ai.checking.assessment import assess_evidence_group
 from forensia.ai.checking.sufficiency import (
     EvidenceLink,
     SufficiencyResult,
+    assess_and_persist_sufficiency,
     create_evidence_links_for_query,
     create_hypothesis_evidence_link,
     evaluate_sufficiency,
@@ -317,6 +319,242 @@ class SufficiencyEvaluationTests(unittest.TestCase):
                 )
                 self.assertNotIn(assessment.role, {"supporting", "contradictory"})
 
+    def test_qualified_event_contexts_reach_supporting(self) -> None:
+        """A persisted spec with qualified event_contexts is evaluable.
+
+        Admission (via qualify_event_contexts / the planner contract) injects
+        qualified event_contexts into support_conditions; those conditions used
+        to fail closed at Assessment, so the hypothesis could never reach
+        supporting. The eligible row matches the catalog-qualified
+        channel/provider; the provider-reused ineligible row must not satisfy
+        the condition (mirrors
+        test_hypothesis_manager.test_co_observation_ignores_ineligible_provider_rows).
+        """
+
+        hypothesis = Hypothesis(
+            id="H-CTX",
+            description="PowerShell script block execution was observed",
+            confirm_when={
+                "co_observed_event_ids": [4104],
+                "event_contexts": [
+                    {
+                        "event_id": 4104,
+                        "channel": "Microsoft-Windows-PowerShell/Operational",
+                        "provider": "Microsoft-Windows-PowerShell",
+                    }
+                ],
+            },
+        )
+        eligible_rows = [
+            {
+                "evidence_id": "evtx-1",
+                "event_id": 4104,
+                "channel": "Microsoft-Windows-PowerShell/Operational",
+                "raw_json": {
+                    "winlog": {"provider": {"name": "Microsoft-Windows-PowerShell"}}
+                },
+            }
+        ]
+        assessment = assess_evidence_group(
+            hypothesis=hypothesis,
+            rows=eligible_rows,
+            evidence_ids=["evtx-1"],
+        )
+        self.assertEqual(assessment.role, "supporting")
+        self.assertEqual(
+            set(assessment.matched_conditions),
+            {"co_observed_event_ids", "event_contexts"},
+        )
+
+        ineligible_rows = [
+            {
+                "evidence_id": "evtx-2",
+                "event_id": 4104,
+                "channel": "Application",
+                "raw_json": {
+                    "winlog": {"provider": {"name": "Microsoft-Windows-Winlogon"}}
+                },
+            }
+        ]
+        rejected = assess_evidence_group(
+            hypothesis=hypothesis,
+            rows=ineligible_rows,
+            evidence_ids=["evtx-2"],
+        )
+        self.assertEqual(rejected.role, "contextual")
+        self.assertEqual(rejected.reason, "observed but conditions were not satisfied")
+
+    def test_unsupported_condition_key_records_explicit_reason(self) -> None:
+        """Unknown condition keys stay contextual with an explicit reason."""
+
+        hypothesis = Hypothesis(
+            id="H-KEYWORDS",
+            description="unknown condition key",
+            confirm_when={"keywords": ["sc.exe"]},
+        )
+        assessment = assess_evidence_group(
+            hypothesis=hypothesis,
+            rows=[{"evidence_id": "evtx-1", "event_id": 7045}],
+            evidence_ids=["evtx-1"],
+        )
+        self.assertEqual(assessment.role, "contextual")
+        self.assertEqual(assessment.reason, "unsupported condition keys: ['keywords']")
+
+    def test_event_constraints_share_host_entity_and_time_witnesses(self) -> None:
+        from forensia.ai.checking.settlement import (
+            build_settlement_input_from_confirm_when,
+            decide_settlement,
+        )
+
+        hypothesis = Hypothesis(
+            id="H-RDP-WINDOW",
+            description="RDP session",
+            confirm_when={
+                "co_observed_event_ids": [21, 4624],
+                "same_host": True,
+                "same_entities": ["target_user"],
+                "within_minutes": 5,
+                "event_constraints": {4624: {"logon_type": ["10"]}},
+            },
+        )
+        rows = [
+            {
+                "evidence_id": "evtx-21",
+                "event_id": 21,
+                "computer": "WS-A",
+                "target_user": "alice",
+                "timestamp": "2026-10-07T00:00:00",
+                "channel": "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational",
+                "raw_json": {
+                    "winlog": {
+                        "provider": {
+                            "name": "Microsoft-Windows-TerminalServices-LocalSessionManager"
+                        }
+                    }
+                },
+            },
+            {
+                "evidence_id": "evtx-4624-a",
+                "event_id": 4624,
+                "computer": "WS-A",
+                "target_user": "alice",
+                "timestamp": "2026-10-07T00:01:00",
+                "logon_type": 5,
+                "channel": "Security",
+                "raw_json": {
+                    "winlog": {
+                        "provider": {"name": "Microsoft-Windows-Security-Auditing"}
+                    }
+                },
+            },
+        ]
+        extra = {**rows[-1], "evidence_id": "evtx-4624-b", "logon_type": 10}
+        variants = [
+            ({"timestamp": "2026-10-07T01:00:00"}, False),
+            ({"computer": "WS-B"}, False),
+            ({"target_user": "bob"}, False),
+            ({}, True),
+        ]
+        for change, expected in variants:
+            with self.subTest(change=change):
+                observations = [*rows, {**extra, **change}]
+                assessment = assess_evidence_group(
+                    hypothesis=hypothesis,
+                    rows=observations,
+                    evidence_ids=[row["evidence_id"] for row in observations],
+                )
+                self.assertEqual(assessment.role == "supporting", expected)
+                si = build_settlement_input_from_confirm_when(
+                    hypothesis=hypothesis,
+                    checker_verdict="confirmed",
+                    check_summary="proposed confirmation",
+                    sample_rows=observations,
+                )
+                decision = decide_settlement(si, links=[], coverage={})
+                correlation_failed = any(
+                    gate.startswith("correlation:") for gate in decision.gates_failed
+                )
+                self.assertEqual(correlation_failed, not expected)
+
+    def test_event_constraints_fail_closed_on_unknown_sub_key(self) -> None:
+        """An unknown constraint field fails closed with an explicit reason."""
+
+        rows = [
+            {"evidence_id": "evtx-4624", "event_id": 4624, "logon_type": 10},
+        ]
+        hypothesis = Hypothesis(
+            id="H-RDP-UNKNOWN",
+            description="RDP session established from a remote host",
+            confirm_when={
+                "co_observed_event_ids": [21, 4624],
+                "event_constraints": {4624: {"boot_type": ["10"]}},
+            },
+        )
+        assessment = assess_evidence_group(
+            hypothesis=hypothesis,
+            rows=rows,
+            evidence_ids=["evtx-4624"],
+        )
+        self.assertEqual(assessment.role, "contextual")
+
+
+class RequiredCapabilityDerivationTests(unittest.TestCase):
+    """T02: declared spec capabilities win; legacy fallback stays text-based."""
+
+    def _insert_hypothesis(
+        self, db: CaseDB, hypothesis_id: str, *, spec: dict | None
+    ) -> None:
+        db.execute(
+            "INSERT INTO hypotheses (hypothesis_id, description, status, "
+            "confirm_when, verification_spec, created_at, updated_at) "
+            "VALUES (?, ?, 'active', ?, ?, now(), now())",
+            [
+                hypothesis_id,
+                f"Description {hypothesis_id}",
+                json.dumps({"keywords": ["evtx_events 4624"]}),
+                json.dumps(spec) if spec is not None else None,
+            ],
+        )
+
+    def test_declared_spec_capabilities_short_circuit_text_inference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                self._insert_hypothesis(
+                    db,
+                    "H-SPEC-CAPS",
+                    spec={
+                        "spec_version": "1",
+                        "required_capabilities": ["declared_cap"],
+                        "support_conditions": {},
+                    },
+                )
+                _result, _verdict, _reason, caps = assess_and_persist_sufficiency(
+                    db,
+                    hypothesis_id="H-SPEC-CAPS",
+                    investigation_text="evtx_events 4624",
+                    evidence_requirements={},
+                    llm_verdict="confirmed",
+                    verification_spec={
+                        "spec_version": "1",
+                        "required_capabilities": ["declared_cap"],
+                        "support_conditions": {},
+                    },
+                )
+                self.assertEqual(caps, ["declared_cap"])
+
+    def test_null_spec_legacy_fallback_keeps_text_inference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                self._insert_hypothesis(db, "H-LEGACY-CAPS", spec=None)
+                _result, _verdict, _reason, caps = assess_and_persist_sufficiency(
+                    db,
+                    hypothesis_id="H-LEGACY-CAPS",
+                    investigation_text="evtx_events 4624",
+                    evidence_requirements={},
+                    llm_verdict="confirmed",
+                )
+                self.assertEqual(caps, ["lateral_movement", "logon"])
+
 
 class VerdictReconciliationTests(unittest.TestCase):
     """Test LLM/machine verdict reconciliation."""
@@ -536,3 +774,133 @@ class EvidenceLinkPersistenceTests(unittest.TestCase):
                     ).fetchone()[0],
                     "unobservable",
                 )
+
+
+class CurrentLinkTests(unittest.TestCase):
+    """T04: historical links must not count as currently-usable support."""
+
+    def _seed(self, db: CaseDB, *, source_file: str = "sha-a") -> None:
+        db.execute(
+            "INSERT INTO evtx_events (evidence_id, source_file) VALUES ('evtx-1', ?)",
+            [source_file],
+        )
+        db.execute(
+            "INSERT INTO hypotheses (hypothesis_id, status, created_at, updated_at) "
+            "VALUES ('H-CUR', 'active', now(), now())"
+        )
+        create_evidence_links_for_query(
+            db,
+            hypothesis_id="H-CUR",
+            evidence_ids=["evtx-1"],
+            query_id="Q-current",
+            role="supporting",
+            assessment_id="EA-cur",
+            derivation_group="evtx-1",
+        )
+
+    def _assess(self, db: CaseDB) -> SufficiencyResult:
+        result, _verdict, _reason, _caps = assess_and_persist_sufficiency(
+            db,
+            hypothesis_id="H-CUR",
+            investigation_text="",
+            evidence_requirements={},
+            llm_verdict="confirmed",
+        )
+        return result
+
+    def _link_count(self, db: CaseDB) -> int:
+        return int(
+            db.execute(
+                "SELECT COUNT(*) FROM hypothesis_evidence WHERE hypothesis_id = 'H-CUR'"
+            ).fetchone()[0]
+        )
+
+    def test_deleted_evidence_row_stops_support_but_keeps_link_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                self._seed(db)
+                self.assertEqual(self._assess(db).status, "sufficient")
+
+                db.execute("DELETE FROM evtx_events WHERE evidence_id = 'evtx-1'")
+                result = self._assess(db)
+                self.assertEqual(result.status, "insufficient")
+                # The stale link stays as a historical record.
+                self.assertEqual(self._link_count(db), 1)
+
+    def test_same_id_new_source_is_excluded_and_same_source_is_current(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                self._seed(db)
+                self.assertEqual(self._assess(db).status, "sufficient")
+
+                # Same evidence_id re-created under a different source: the
+                # recorded identity no longer matches, so the link is
+                # conservatively excluded from current support.
+                db.execute("DELETE FROM evtx_events WHERE evidence_id = 'evtx-1'")
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, source_file) "
+                    "VALUES ('evtx-1', 'sha-new')"
+                )
+                self.assertEqual(self._assess(db).status, "insufficient")
+
+                # Re-created under the originally linked source again, the
+                # link counts as current without re-assessment.
+                db.execute("DELETE FROM evtx_events WHERE evidence_id = 'evtx-1'")
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, source_file) "
+                    "VALUES ('evtx-1', 'sha-a')"
+                )
+                self.assertEqual(self._assess(db).status, "sufficient")
+                self.assertEqual(self._link_count(db), 1)
+
+    def test_unresolvable_currentness_requires_reassessment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                # Empty source_file on both link and row: the check cannot be
+                # resolved, so it stays historical without current support.
+                self._seed(db, source_file="")
+                result = self._assess(db)
+                self.assertEqual(result.status, "insufficient")
+                self.assertEqual(self._link_count(db), 1)
+                self.assertTrue(
+                    any(
+                        "source_identity_unverifiable" in reason
+                        for reason in result.reasons
+                    )
+                )
+
+    def test_new_assessment_captures_source_without_rewriting_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                self._seed(db)
+                self.assertEqual(
+                    load_evidence_links(db, "H-CUR")[0].source_file, "sha-a"
+                )
+                db.execute("UPDATE evtx_events SET source_file = 'sha-new'")
+                self.assertEqual(self._assess(db).status, "insufficient")
+                create_evidence_links_for_query(
+                    db,
+                    hypothesis_id="H-CUR",
+                    evidence_ids=["evtx-1"],
+                    query_id="Q-current",
+                    role="supporting",
+                    assessment_id="EA-reassessed",
+                    derivation_group="evtx-1",
+                )
+                self.assertEqual(self._link_count(db), 2)
+                self.assertEqual(
+                    load_evidence_links(db, "H-CUR", current_only=True)[0].source_file,
+                    "sha-new",
+                )
+                self.assertEqual(self._assess(db).status, "sufficient")
+
+    def test_legacy_link_source_is_not_backfilled_from_today(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                self._seed(db)
+                db.execute("UPDATE hypothesis_evidence SET source_file = ''")
+                self.assertEqual(self._assess(db).status, "insufficient")
+                self.assertEqual(load_evidence_links(db, "H-CUR")[0].source_file, "")

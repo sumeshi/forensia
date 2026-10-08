@@ -62,6 +62,18 @@ Entry points:
 
 ---
 
+Cases use the latest-only `SCHEMA_VERSION` contract in each DuckDB database.
+Startup creates the full current schema for a new case; reopening current cases
+does not run migrations or repair verdicts. Unsupported or incomplete case DB pairs
+are rejected without persistent writes; the original artifacts can be ingested into
+a new directory. See [development.md](development.md#43-latest-only-case-schema).
+
+Investigation passes an immutable `CaseEvidenceProfile` projection explicitly through
+cycle, runner and prompt builders. Its profile name is the selected rule profile,
+its summary/event IDs derive from the current DB, and it has no module-global state
+or path-keyed cache. Standalone report and Settlement availability reads use their
+own case DB, so another investigation cannot contaminate them.
+
 ## 2. Data flow per stage
 
 ### 2.1 Ingest
@@ -180,10 +192,25 @@ sequenceDiagram
 Main stages:
 
 1. **broad_plan**: `gap_identifier` extracts uncovered observation points, and `hypothesis_drafter` drafts a hypothesis per gap
-2. **select**: `selection.py` filters blocked/unobservable/exhausted candidates and ranks eligible hypotheses from deterministic priority components. The full score breakdown is stored in Trace.
+2. **select**: `selection.py` filters blocked/unobservable/exhausted candidates and ranks eligible hypotheses from deterministic priority components. Required capabilities come from the shared derivation owner `derive_required_capabilities` (`knowledge/coverage.py`): a declared `required_capabilities` list on the canonical VerificationSpec wins, otherwise structured event IDs in its support conditions map through the existing artifact capability catalog. A canonical condition payload takes priority over legacy fields and prose; callers without it retain legacy inference. The full score breakdown is stored in Trace. CaseDB initializes the required schema; selection errors propagate to the investigation's failed terminal receipt instead of invoking a second selector that bypasses eligibility.
 3. **plan**: The query-intent kernel validates a small typed action menu: the initial phase permits `memory.read_more` or `sql.query`, while the post-expansion phase permits only `sql.query`. One LLM decision selects a parameterized recipe or bounded fallback SQL. The host then checks schema/table eligibility, SELECT-only policy, limits and dry-run deterministically; there is no LLM schema-readiness or second SQL-composer call. The normalized nested action is the sole query source; the original wrapper is retained for audit. A host-rejected action records a planner-validation reason and gets one bounded repair opportunity through the next planner prompt before the hypothesis is stopped.
 4. **execute/check**: Issues a safe SELECT, applies fallback behavior and obtains the Checker's proposed verdict. The existing hypothesis SQL execution records a versioned `ToolReceipt` and one-attempt `RetrievalEvaluation` inside the same `trace.investigation_steps.output_json`; the receipt records query/provenance/result observations only and does not assign Evidence roles or consume checker verdicts. Planner-only validation failures are not execution progress and cannot substitute for `do`/`check` receipts.
-5. **assessment/sufficiency/settlement**: `assess_evidence_group` classifies each adequate observation group from `VerificationSpec`, observation fields and provenance; it never reads the checker verdict. Links from the same query share a conservative derivation group. Sufficiency ignores legacy links without an assessment ID, and Settlement does not pass through checker `refuted` / `untestable` proposals without an assessed contradiction or an explicit observable/unavailable auto condition.
+5. **assessment/sufficiency/settlement**: `assess_evidence_group` classifies each adequate observation group from `VerificationSpec`, observation fields and provenance; it never reads the checker verdict. Links from the same query share a conservative derivation group. Sufficiency ignores legacy links without an assessment ID, and Settlement does not pass through checker `refuted` / `untestable` proposals without an assessed contradiction or an explicit observable/unavailable auto condition. Support counting further distinguishes historical from currently-usable links through the shared read-time predicate `evidence_link_currentness`: a link whose evidence row was removed, whose source identity is unverifiable, or whose recorded `source_file` no longer matches the materialized row is excluded from sufficiency scoring, settlement gates, and the confirmed invariant, while the `hypothesis_evidence` row itself is kept (never deleted) as history.
+For absence-based refutation, `sql_absence_scope` certifies only a direct,
+case-wide EVTX lookup of exactly the Spec's event IDs, with column projections,
+no narrowing predicates, sampling, joins, derived rows or offset. Ordinary
+positive row limits are allowed. The runner passes this scope to the stored
+RetrievalEvaluation; the settlement gate also requires observable emptiness,
+all required EVTX capabilities available, and a rule-declared zero-row refute
+condition. Coverage does not certify host/time completeness; narrower or
+unrepresented scopes remain unknown. Positive retrievals still use Assessment.
+
+New evidence links capture source identity from normalized Evidence even when
+SQL does not project it. Historical blank-source links are not backfilled at
+read time. Registry IDs are content-derived and need only existence. Same-ID,
+same-source content changes and Spec/policy changes are not yet invalidated;
+T04 remains partial.
+
 6. **relate/resolve**: Checker-derived hypotheses receive validated parent edges. Verdict effects unblock, block or flag adjacent hypotheses without changing them to an incompatible status.
 7. **report/gaps**: Refreshes Claims and sections, synchronizes normalized Gap/Task lifecycle, and projects authoritative tasks into Markdown Memory.
 
@@ -194,6 +221,13 @@ retry condition. A later ingest reactivates only work whose required capability
 or source condition became satisfiable. The stop reason code remains stable for
 automation, while classification counts are stored separately in
 `investigation_state.stop_summary`.
+
+Readiness predicates that consume required capabilities (selection eligibility,
+work-state reopen, stop classification, sufficiency observability) still apply
+their own per-question rules, for example "block if some relevant coverage is
+unavailable" versus "reopen only when all required capabilities are at least
+partial". Unifying these predicates into one shared work judgment is deferred
+to the M1 Agenda work (TASKS T06/T07), not silently dropped.
 
 For the input/output schema of each LLM role, see [llm-roles.md](llm-roles.md).
 
@@ -369,6 +403,15 @@ Report gaps are admission requests represented by the existing `report_gaps`
 row. `investigation_tasks` carries ownership and retry state for non-hypothesis
 work. Admission links equivalent existing work first, then validates a
 normalized `VerificationSpec` before persisting a new Hypothesis. Report
-content cannot set priority or verdict. Termination observes durable
-Gap/Task/Hypothesis lifecycle, assessed evidence, contradiction, and Coverage
-changes; body length and formatting are not progress.
+content cannot set priority or verdict. A request string leaving the report
+prose is an editorial change, not a resolution: similarity or membership in
+the same section cannot close admitted work. The Gap stays open, annotated
+with `coverage_reason='report_request_absent'` if no specific reason exists,
+and a linked
+`untestable` hypothesis keeps the Gap open rather than completing acquisition.
+Termination observes durable Gap/Task/Hypothesis lifecycle, assessed evidence,
+contradiction, and Coverage changes; body length and formatting are not
+progress. The completion gate counts durable open `report_gaps` and
+`investigation_tasks` rows instead of the report prose `total_gaps`, so a
+section reword cannot report a session as completed while admitted work is
+open.

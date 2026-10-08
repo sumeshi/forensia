@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import tempfile
 import unittest
 
@@ -200,6 +202,155 @@ class ObjectiveAndGapStoreTests(unittest.TestCase):
                 self.assertEqual(row[0], "open")
 
 
+class ProseChangeResolutionTests(unittest.TestCase):
+    """T05: report wording changes are not resolutions of admitted work."""
+
+    @staticmethod
+    def _gap_id(gap: str) -> str:
+        return "GAP-" + hashlib.sha256(gap.encode()).hexdigest()[:16]
+
+    def test_reworded_gap_keeps_admitted_work_open(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                state = SessionState(session_id="S-1")
+                old_gap = "External reputation lookup for 203.0.113.5"
+                db.execute(
+                    "INSERT INTO report_sections (section_key, title, gaps) "
+                    "VALUES ('summary', 'Summary', ?)",
+                    [json.dumps([old_gap])],
+                )
+                inject_gap_hypotheses(db, state, [old_gap], "S-1")
+                old_id = self._gap_id(old_gap)
+                self.assertEqual(
+                    db.execute(
+                        "SELECT status FROM report_gaps WHERE gap_id = ?", [old_id]
+                    ).fetchone()[0],
+                    "open",
+                )
+                new_gap = "External reputation lookup for the IP 203.0.113.5"
+                db.execute(
+                    "UPDATE report_sections SET gaps = ? WHERE section_key = 'summary'",
+                    [json.dumps([new_gap])],
+                )
+                inject_gap_hypotheses(db, state, [new_gap], "S-1")
+                old_row = db.execute(
+                    "SELECT status, coverage_reason FROM report_gaps WHERE gap_id = ?",
+                    [old_id],
+                ).fetchone()
+                self.assertEqual(old_row[0], "open")
+                self.assertEqual(old_row[1], "report_request_absent")
+                self.assertEqual(
+                    db.execute(
+                        "SELECT status FROM investigation_tasks WHERE gap_id = ?",
+                        [old_id],
+                    ).fetchone()[0],
+                    "open",
+                )
+                self.assertEqual(
+                    db.execute(
+                        "SELECT status FROM report_gaps WHERE gap_id = ?",
+                        [self._gap_id(new_gap)],
+                    ).fetchone()[0],
+                    "open",
+                )
+
+    def test_prose_absent_without_successor_keeps_gap_open(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                state = SessionState(session_id="S-1")
+                gap = "Confirm successful logon event 4624 for host WS-1"
+                gap_id = self._gap_id(gap)
+                db.execute(
+                    "INSERT INTO report_gaps (gap_id, description, kind, status, "
+                    "origin) VALUES (?, ?, 'internal_db_check', 'open', 'section')",
+                    [gap_id, gap],
+                )
+                # Request withdrawn from the prose with no reworded successor:
+                # the Gap stays open with the absence recorded.
+                inject_gap_hypotheses(db, state, [], "S-1")
+                row = db.execute(
+                    "SELECT status, coverage_reason FROM report_gaps WHERE gap_id = ?",
+                    [gap_id],
+                ).fetchone()
+                self.assertEqual(row, ("open", "report_request_absent"))
+
+    def test_unrelated_question_in_same_section_cannot_complete_old_work(self) -> None:
+        from forensia.ai.investigation.investigator import (
+            _check_termination,
+            _durable_open_work_counts,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                state = SessionState(session_id="S-1")
+                old = "External reputation lookup for 203.0.113.5"
+                new = "Manager approval for incident response action"
+                db.execute(
+                    "INSERT INTO report_sections (section_key, title, gaps) "
+                    "VALUES ('4_gaps', 'Gaps', ?)",
+                    [json.dumps([old])],
+                )
+                inject_gap_hypotheses(db, state, [old], "S-1")
+                db.execute("UPDATE report_sections SET gaps = ?", [json.dumps([new])])
+                inject_gap_hypotheses(db, state, [new], "S-1")
+                # Only the new human work was completed; the original external
+                # lookup has no conclusion or explicit withdrawal.
+                db.execute(
+                    "UPDATE investigation_tasks SET status = 'resolved' WHERE gap_id = ?",
+                    [self._gap_id(new)],
+                )
+                db.execute(
+                    "UPDATE report_gaps SET status = 'resolved' WHERE gap_id = ?",
+                    [self._gap_id(new)],
+                )
+                self.assertEqual(_durable_open_work_counts(db), (1, 1))
+                status, _, _ = _check_termination(
+                    report_only=False,
+                    broad_plan_stop=True,
+                    active_hypotheses=[],
+                    durable_open_gaps=1,
+                    durable_open_tasks=1,
+                    no_progress_count=0,
+                    no_progress_limit=3,
+                    cycle_progress=False,
+                )
+                self.assertIsNone(status)
+
+    def test_untestable_linked_hypothesis_keeps_gap_open(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                gap = "Confirm successful logon event 4624 for host WS-1"
+                state = SessionState(
+                    session_id="S-1",
+                    resolved_hypotheses=[
+                        Hypothesis(id="H-1", description=gap, status="untestable")
+                    ],
+                )
+                added = inject_gap_hypotheses(db, state, [gap], "S-1")
+                self.assertEqual(added, 0)
+                row = db.execute(
+                    "SELECT status, coverage_reason, hypothesis_id FROM report_gaps"
+                ).fetchone()
+                self.assertEqual(row[0], "open")
+                self.assertEqual(row[1], "linked_hypothesis_untestable")
+                self.assertEqual(row[2], "H-1")
+
+    def test_confirmed_or_refuted_linked_hypothesis_resolves_gap(self) -> None:
+        for status in ("confirmed", "refuted"):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with CaseDB(Case.init(tmpdir)) as db:
+                    gap = "Confirm successful logon event 4624 for host WS-1"
+                    state = SessionState(
+                        session_id="S-1",
+                        resolved_hypotheses=[
+                            Hypothesis(id="H-1", description=gap, status=status)
+                        ],
+                    )
+                    inject_gap_hypotheses(db, state, [gap], "S-1")
+                    row = db.execute("SELECT status FROM report_gaps").fetchone()
+                    self.assertEqual(row[0], "resolved")
+
+
 class RetryAndProjectionTests(unittest.TestCase):
     def test_only_task_with_satisfied_capability_reopens(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -235,6 +386,38 @@ class RetryAndProjectionTests(unittest.TestCase):
                 )
                 self.assertEqual(statuses["H-LOGON"], "active")
                 self.assertEqual(statuses["H-POWERSHELL"], "blocked")
+
+    def test_spec_declared_capabilities_preferred_for_stop_task(self) -> None:
+        """T02: work state reads declared caps from the canonical spec."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                db.execute(
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                    "confirm_when, verification_spec, created_at, updated_at) "
+                    "VALUES (?, ?, 'active', ?, ?, now(), now())",
+                    [
+                        "H-SPEC-CAPS",
+                        "registry persistence hypothesis",
+                        json.dumps({"keywords": ["evtx_events 4624"]}),
+                        json.dumps(
+                            {
+                                "spec_version": "1",
+                                "required_capabilities": ["registry_observation"],
+                            }
+                        ),
+                    ],
+                )
+                hypothesis = Hypothesis(
+                    id="H-SPEC-CAPS", description="registry persistence hypothesis"
+                )
+                classify_active_hypotheses_on_stop(
+                    db, [hypothesis], "no_progress_limit"
+                )
+                row = db.execute(
+                    "SELECT required_capability FROM investigation_tasks "
+                    "WHERE hypothesis_id = 'H-SPEC-CAPS'"
+                ).fetchone()
+                self.assertEqual(row[0], "registry_observation")
 
     def test_terminal_needs_review_is_not_loaded_until_retry(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -10,6 +10,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from forensia.db.database import CaseDB
+from forensia.knowledge.coverage import relevant_coverage_states
 
 
 class ResultRefs(BaseModel):
@@ -103,6 +104,7 @@ def evaluate_retrieval(
     *,
     required_fields: list[str] | None = None,
     required_capabilities: list[str] | None = None,
+    source_families: list[str] | None = None,
     scope_status: Literal["valid", "rejected", "unknown"] = "unknown",
 ) -> RetrievalEvaluation:
     """Evaluate exactly one receipt; never infer role, sufficiency, or verdict."""
@@ -114,15 +116,10 @@ def evaluate_retrieval(
     required = [str(item) for item in (required_capabilities or []) if item]
     if coverage == "observed" and required:
         all_capabilities = receipt.coverage_snapshot.get("capabilities") or {}
-        states: list[str] = []
-        for capability in required:
-            matches = [
-                str(value.get("state") or "unknown")
-                for key, value in all_capabilities.items()
-                if isinstance(value, dict) and str(key).endswith(f":{capability}")
-            ]
-            states.extend(matches or ["unknown"])
-        state_set = set(states)
+        matched = relevant_coverage_states(
+            all_capabilities, required, source_families=source_families
+        )
+        state_set = {state for states in (matched or {}).values() for state in states}
         if state_set == {"available"}:
             coverage_status: Literal[
                 "available", "partial", "unknown", "unavailable"

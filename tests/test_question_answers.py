@@ -6,7 +6,6 @@ import unittest
 from datetime import UTC, datetime
 
 from forensia.ai.sections.section_agent import run_section_block_agent
-from forensia.ai.sections.section_answers import build_daily_session_timeline
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.knowledge.catalog import load_event_class_definitions
@@ -783,8 +782,16 @@ class DailySessionTimelineBuilderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                rows = build_daily_session_timeline(db)
-                self.assertEqual(rows, [])
+                answer = build_structured_answer(
+                    case,
+                    db,
+                    answer_spec="daily_session_timeline",
+                    answer_id="daily",
+                    section_key="2_timeline",
+                    block_heading="Daily session timeline",
+                )
+                self.assertEqual(answer["answer"], [])
+                self.assertEqual(answer["status"], "not_found")
 
     def test_builder_returns_correct_shape_over_two_days(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -893,7 +900,14 @@ class DailySessionTimelineBuilderTests(unittest.TestCase):
                     ),
                 )
 
-                rows = build_daily_session_timeline(db)
+                rows = build_structured_answer(
+                    case,
+                    db,
+                    answer_spec="daily_session_timeline",
+                    answer_id="daily",
+                    section_key="2_timeline",
+                    block_heading="Daily session timeline",
+                )["answer"]
 
         self.assertEqual(len(rows), 2)
 
@@ -956,8 +970,14 @@ class DailySessionTimelineBuilderTests(unittest.TestCase):
                     ),
                 )
 
-                qualifiers = {"hour_from": "09:00", "hour_to": "18:00"}
-                rows = build_daily_session_timeline(db, qualifiers)
+                rows = build_structured_answer(
+                    case,
+                    db,
+                    answer_spec="daily_session_timeline",
+                    answer_id="daily",
+                    section_key="2_timeline",
+                    block_heading="Daily session timeline between 09:00 and 18:00",
+                )["answer"]
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["date"], "2015-03-22")

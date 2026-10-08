@@ -12,7 +12,7 @@ from typing import Any
 import yaml
 
 from forensia.db.database import CaseDB
-from forensia.knowledge.coverage import infer_capabilities
+from forensia.knowledge.coverage import derive_required_capabilities
 
 logger = logging.getLogger(__name__)
 
@@ -85,9 +85,25 @@ def _tokenize(text: str) -> set[str]:
 
 
 def _capabilities_for_hypothesis(hyp: dict[str, Any]) -> set[str]:
-    """Infer the capabilities a hypothesis can actually consume."""
-    text = json.dumps(hyp.get("confirm_when") or {}, ensure_ascii=False).lower()
-    return set(infer_capabilities(text))
+    """Derive the capabilities a hypothesis can actually consume.
+
+    Declared ``required_capabilities`` on the canonical spec take priority;
+    otherwise structured event IDs map through the artifact catalog. The
+    legacy ``confirm_when`` projection is the fallback
+    for rows that predate the canonical spec.
+    """
+    spec = hyp.get("verification_spec")
+    if isinstance(spec, str):
+        spec = _json_value(spec, None)
+    if not isinstance(spec, dict):
+        spec = {}
+    return set(
+        derive_required_capabilities(
+            spec.get("required_capabilities") or [],
+            spec.get("support_conditions"),
+            confirm_when=hyp.get("confirm_when") or None,
+        )
+    )
 
 
 @dataclass
@@ -158,7 +174,7 @@ def gather_selection_context(db: CaseDB) -> SelectionContext:
         "SELECT hypothesis_id, description, status, verdict, summary, origin, "
         "source_rule_ids, source_decl_id, required_entities, confirm_when, "
         "source_gap_id, selection_count, last_selected_at, next_eligible_at, "
-        "blocked_reason, sufficiency_status, sufficiency_score "
+        "blocked_reason, sufficiency_status, sufficiency_score, verification_spec "
         "FROM hypotheses WHERE status = 'active'"
     ).fetchall()
 
@@ -183,6 +199,7 @@ def gather_selection_context(db: CaseDB) -> SelectionContext:
                 "blocked_reason": r[14] or "",
                 "sufficiency_status": r[15] or "",
                 "sufficiency_score": r[16] or 0.0,
+                "verification_spec": _json_value(r[17], None) if r[17] else None,
             }
         )
 

@@ -44,7 +44,7 @@ If a rule also seeds the LLM-driven hypothesis loop, declare the following. The 
   - `segment`: kill-chain segment (`persistence`, `lateral-movement`, etc.)
   - `description`: Hypothesis sentence with `{field}` placeholders (bound to query row columns)
   - `required_entities`: Entity names required for confirmation
-  - `confirm_when`: Correlation criteria such as `{co_observed_event_ids: [...], same_host: bool, within_minutes: int}`. `HypothesisProgressTracker` uses it to judge auto-confirm
+  - `confirm_when`: Correlation criteria such as `{co_observed_event_ids: [...], same_host: bool, within_minutes: int}`. `HypothesisProgressTracker` uses it to judge auto-confirm. Additional evaluable keys: `event_contexts` (catalog-qualified channel/provider declarations), `same_entities`, `min_count`, and `event_constraints` (`{event_id: {field: [values]}}`, e.g. `{4624: {logon_type: ['10']}}` — each declared event must appear in the observed rows with an expected field value; unknown fields fail closed). `keywords` is not an evaluable observation condition — it is treated as a rulepack hint and a keywords-only support spec is rejected at admission as `non-testable-verification-spec`
   - `refute_when`: Refutation criteria such as `{zero_rows: true}`
   - `follow_up_questions`: Questions automatically spawned on confirmation
   - `report_sections`: Section keys to mark stale on resolution
@@ -167,7 +167,7 @@ This is a post-generation presentation / triage control, not a pre-filter.
 - `json_field_extractors` (optional): DuckDB JSON extraction expressions to pull from raw_json when a column is NULL
 - `notes` (optional): Hints such as timestomp caveats or Prefetch's `no_host_column`
 
-To add a new investigable table, place `_schema/<table>.yaml` and, as needed, update `_LEGACY_ALLOWED_TABLES` / `get_allowed_tables()` and the SQL template allowlist in `sql_schema.py`. The YAML is consumed automatically by `_load_schema_hints()`.
+To add a new investigable table, place `_schema/<table>.yaml` and, as needed, update `QUERY_TABLES` / `get_allowed_tables()` and the SQL template allowlist in `sql_schema.py`. The YAML is consumed automatically by `_load_schema_hints()`.
 
 ### 4.2 Playbook auto-regeneration
 

@@ -330,7 +330,7 @@ def resolve_hypothesis(
             )
 
         # Check EvidenceLink invariant
-        links = load_evidence_links(db, hypothesis_id)
+        links = load_evidence_links(db, hypothesis_id, current_only=True)
         supporting = [l for l in links if l.role == "supporting"]
         if not supporting:
             _log(
