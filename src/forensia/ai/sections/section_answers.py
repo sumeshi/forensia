@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from functools import lru_cache
 from typing import Any
@@ -140,35 +139,6 @@ def _format_structured_answer(
         normalized_answer,
         block_heading,
         template_dir=getattr(case, "report_template_dir", None),
-    )
-
-
-def format_question_answer(
-    classification: dict,
-    picked_rows: list[dict],
-    expected_shape: dict | None,
-    section_key: str,
-    block_heading: str,
-    status: str,
-    case: Case,
-    question_id: str = "",
-    queries_run: list[str] | None = None,
-    evidence_rows: list[dict] | None = None,
-    answer_spec: str = "",
-) -> str:
-    """Compatibility wrapper for older tests/callers."""
-    return _format_structured_answer(
-        classification=classification,
-        picked_rows=picked_rows,
-        expected_shape=expected_shape,
-        section_key=section_key,
-        block_heading=block_heading,
-        status=status,
-        case=case,
-        question_id=question_id,
-        queries_run=queries_run,
-        evidence_rows=evidence_rows,
-        answer_spec=answer_spec,
     )
 
 
@@ -525,29 +495,6 @@ def _insufficient_evidence_placeholder() -> str:
     open-question markers, hedge words without citations).
     """
     return "No sufficient evidence was collected for this block. Details are tracked in the Investigation Gaps section."
-
-
-def _compact_narrative_value(value: Any, *, max_chars: int = 90) -> str:
-    if isinstance(value, (dict, list)):
-        text = json.dumps(value, ensure_ascii=False, default=str)
-    else:
-        text = str(value if value is not None else "")
-    text = text.replace("\n", " ").strip()
-    if text in {"", "-", "None", "null"}:
-        return ""
-    if len(text) > max_chars:
-        return text[: max_chars - 3].rstrip() + "..."
-    return text
-
-
-def _result_source_label(result: dict[str, Any]) -> str:
-    for key in ("keypoint", "source_kind", "source_ref", "description"):
-        value = _compact_narrative_value(result.get(key), max_chars=64)
-        if value:
-            if value.lower().startswith("select "):
-                return "evidence_query"
-            return value
-    return "unknown_source"
 
 
 def _representative_ids(

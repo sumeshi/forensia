@@ -1,4 +1,16 @@
-SCHEMA_VERSION = 1
+# Version 4: hypothesis_evidence gained verification_spec_fingerprint — the
+# canonical Spec in force when its assessment was admitted.
+# Version 3: hypothesis_evidence gained content_fingerprint — the canonical
+# content identity of the row backing a link at assessment time (R03/T04).
+# Read-time currentness compares it with the live row so an in-place content
+# change of the same evidence_id is not silently refilled as support.
+# Version 2: hypotheses dropped the parallel declaration columns
+# (confirm_when/refute_when/evidence_requirements); the canonical
+# verification_spec JSON is the only stored condition representation.
+# Case databases with a different version are rejected before any
+# persistent DDL/DML (see db/database._check_schema_version); existing
+# cases are preserved and their artifacts are re-ingested into new cases.
+SCHEMA_VERSION = 4
 
 CORE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS evtx_events (
@@ -123,9 +135,6 @@ CREATE TABLE IF NOT EXISTS hypotheses (
     source_rule_ids JSON,
     source_decl_id VARCHAR,
     required_entities JSON,
-    confirm_when JSON,
-    refute_when JSON,
-    evidence_requirements JSON,
     verification_spec JSON,
     source_gap_id VARCHAR,
     selection_count INTEGER DEFAULT 0,
@@ -477,6 +486,8 @@ CREATE TABLE IF NOT EXISTS hypothesis_evidence (
     source_family VARCHAR,
     source_file VARCHAR,
     derivation_group VARCHAR,
+    content_fingerprint VARCHAR,
+    verification_spec_fingerprint VARCHAR,
     strength VARCHAR,
     created_session VARCHAR,
     created_at TIMESTAMP

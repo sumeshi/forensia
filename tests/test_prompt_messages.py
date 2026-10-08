@@ -451,7 +451,7 @@ class NarratePromptContractTests(unittest.TestCase):
                     "last_event": str(base + timedelta(seconds=5198)),
                     "event_count": 5199,
                     "evidence_ids": unordered_ids,
-                    "_source_keypoint": "raw_sql",
+                    "_source_keypoint": "evidence_query",
                 }
                 original = copy.deepcopy(aggregate)
 
@@ -523,7 +523,7 @@ class NarratePromptContractTests(unittest.TestCase):
                     self.assertIn("evidence_count", prompt_text)
                     self.assertIn("first_event", prompt_text)
                     self.assertIn("last_event", prompt_text)
-                    self.assertIn("raw_sql", prompt_text)
+                    self.assertIn("evidence_query", prompt_text)
                     self.assertLess(len(prompt_text), raw_size // 10)
                     self.assertLessEqual(
                         len(re.findall(r"evtx-security-\d{12}", prompt_text)), 20
@@ -536,7 +536,7 @@ class NarratePromptContractTests(unittest.TestCase):
                 small = {
                     "event_count": 3,
                     "evidence_ids": evidence_ids[:3],
-                    "_source_keypoint": "raw_sql",
+                    "_source_keypoint": "evidence_query",
                 }
                 self.assertEqual(small, project_report_evidence_row(small, db=db))
 

@@ -780,7 +780,6 @@ def slim_report_brief_for_section(report_brief: dict, section_key: str) -> dict:
         "verdict",
         "summary",
         "required_entities",
-        "confirm_when",
     )
     if family in {"2", "3", "5"}:
         brief["top_findings"] = _slim_brief_items(

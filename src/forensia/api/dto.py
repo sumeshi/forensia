@@ -79,7 +79,7 @@ class FindingDTO(DTOModel):
     confidence: float | None = None
     status: str | None = None
     tags: list[Any] | dict[str, Any] | None = None
-    attack: list[AttackMappingDTO | str] | None = None
+    attack: list[AttackMappingDTO] | None = None
     evidence: list[Any] | None = None
     evidence_ids: list[str] = []
     evidence_count: int = 0

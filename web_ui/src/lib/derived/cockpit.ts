@@ -114,9 +114,7 @@ export const recentResolvedSummary = derived([hypotheses], ([$hypotheses]) => {
 
 export const verdictBreakdown = derived([hypotheses], ([$hypotheses]) => {
   // Canonical status taxonomy (T-51.2): count every hypothesis by its durable
-  // `status` rather than inferring from the `verdict` field. The `inconclusive`
-  // key is retained for backward-compatible UI but is now derived from status
-  // too (legacy verdict-based UI may still reference it).
+  // `status` rather than inferring from the `verdict` field.
   const counts: Record<string, number> = {
     active: 0,
     confirmed: 0,
@@ -124,13 +122,11 @@ export const verdictBreakdown = derived([hypotheses], ([$hypotheses]) => {
     untestable: 0,
     needs_review: 0,
     deferred: 0,
-    blocked: 0,
-    inconclusive: 0
+    blocked: 0
   };
   for (const h of [...$hypotheses.active, ...$hypotheses.resolved]) {
     const status = h.status ?? "unknown";
     if (status in counts) counts[status] += 1;
-    if (h.verdict === "inconclusive") counts.inconclusive += 1;
   }
   return counts;
 });

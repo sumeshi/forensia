@@ -80,7 +80,6 @@ def assess_evidence_group(
     hypothesis: Any,
     rows: list[dict[str, Any]],
     evidence_ids: list[str],
-    query_id: str = "",
     derivation_group: str = "",
     retrieval_outcome: str = "adequate",
 ) -> EvidenceAssessment:
@@ -92,26 +91,24 @@ def assess_evidence_group(
     evaluated through the co-observation adapter, which filters rows to
     catalog-qualified channel/provider contexts. Empty or non-adequate
     retrievals cannot create supporting/contradictory relations.
+
+    ``derivation_group`` is the declared derivation root of the observation
+    (same declared root stays one independence group at sufficiency/settlement).
+    It defaults to the first evidence id: the derivation root is a property of
+    the observed content, never of the acquisition attempt.  The query id is
+    acquisition history and is deliberately absent from the assessment
+    identity, so re-observing the same evidence is the same assessment.
     """
 
     normalized_ids = tuple(
         dict.fromkeys(str(item).strip() for item in evidence_ids if str(item).strip())
     )
     spec = getattr(hypothesis, "verification_spec", None)
-    support = (
-        getattr(spec, "support_conditions", None)
-        or getattr(hypothesis, "confirm_when", None)
-        or {}
-    )
-    refute = (
-        getattr(spec, "refute_conditions", None)
-        or getattr(hypothesis, "refute_when", None)
-        or {}
-    )
+    support = getattr(spec, "support_conditions", None) or {}
+    refute = getattr(spec, "refute_conditions", None) or {}
     version = str(getattr(spec, "spec_version", "legacy") or "legacy")
     group = (
         derivation_group
-        or query_id
         or (normalized_ids[0] if normalized_ids else "empty")
     )
 

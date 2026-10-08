@@ -9,7 +9,7 @@ from forensia.db.database import CaseDB
 from forensia.db.evidence_sources import register_evidence_source
 from forensia.evidence.artifacts import get_artifact_adapters
 from forensia.evidence.invalidation import (
-    fetch_referenced_evidence_ids,
+    fetch_referenced_evidence_fingerprints,
     invalidate_removed_evidence,
 )
 
@@ -41,7 +41,9 @@ def normalize_all(
         "registry_artifacts": 0,
     }
     for adapter in get_artifact_adapters():
-        evidence_before = fetch_referenced_evidence_ids(db, adapter.name)
+        ids_before, fingerprints_before = fetch_referenced_evidence_fingerprints(
+            db, adapter.name
+        )
         try:
             result = adapter.normalize(case, db, source_keys=source_keys)
         except Exception as exc:
@@ -64,8 +66,28 @@ def normalize_all(
                             error_summary=str(exc),
                         )
             raise
-        evidence_after = fetch_referenced_evidence_ids(db, adapter.name)
-        invalidate_removed_evidence(db, evidence_before - evidence_after)
+        ids_after, fingerprints_after = fetch_referenced_evidence_fingerprints(
+            db, adapter.name
+        )
+        invalidate_removed_evidence(db, ids_before - ids_after)
+        # Same-ID content change under the same source identity: dependents
+        # must be re-evaluated; link history is kept and the read-time
+        # currentness check additionally refuses the changed rows as support.
+        content_changed = {
+            evidence_id
+            for evidence_id in ids_before & ids_after
+            if fingerprints_before.get(evidence_id)
+            != fingerprints_after.get(evidence_id)
+        }
+        if content_changed:
+            invalidate_removed_evidence(
+                db,
+                content_changed,
+                reason=(
+                    "Assessed evidence content changed under the same source "
+                    "identity; re-evaluation required"
+                ),
+            )
         if result.source_kind == "evtx":
             counts["evtx_rows"] = result.rows
         elif result.source_kind == "mft":
@@ -80,68 +102,6 @@ def normalize_all(
     _update_source_status(db, source_keys, counts, raw_dir=case.raw_dir)
 
     return counts
-
-
-def _resolve_source_path(db: CaseDB, sha256: str, source_kind: str) -> str | None:
-    """Resolve the source_file path used in normalized tables for a given ingested file.
-
-    Tries multiple path formats: absolute path from ingested_files,
-    relative path from case root, and basename (for prefetch).
-    Returns the path that matches rows in the normalized table.
-    """
-    source_row = db.execute(
-        "SELECT path FROM ingested_files WHERE sha256 = ?", [sha256]
-    ).fetchone()
-    if not source_row:
-        return ""
-    abs_path = str(source_row[0] or "")
-    if not abs_path:
-        return ""
-
-    table = {
-        "evtx": "evtx_events",
-        "mft": "mft_entries",
-        "prefetch": "prefetch_executions",
-    }.get(source_kind)
-    if table is None:
-        return abs_path
-
-    # Current raw records use the ingested SHA-256 as their durable source
-    # identity.  Path matching below is retained only for legacy case data.
-    count_row = db.execute(
-        f"SELECT COUNT(*) FROM {table} WHERE source_file = ?", [sha256]
-    ).fetchone()
-    if count_row and int(count_row[0] or 0) > 0:
-        return sha256
-
-    # Legacy absolute path.
-    count_row = db.execute(
-        f"SELECT COUNT(*) FROM {table} WHERE source_file = ?", [abs_path]
-    ).fetchone()
-    if count_row and int(count_row[0] or 0) > 0:
-        return abs_path
-
-    # Try relative path (strip common prefixes)
-    p = Path(abs_path)
-    for parent_len in range(1, len(p.parts)):
-        relative = str(Path(*p.parts[parent_len:]))
-        count_row = db.execute(
-            f"SELECT COUNT(*) FROM {table} WHERE source_file = ?", [relative]
-        ).fetchone()
-        if count_row and int(count_row[0] or 0) > 0:
-            return relative
-
-    # Try basename (for prefetch or when path was stored differently)
-    basename = p.name
-    count_row = db.execute(
-        f"SELECT COUNT(*) FROM {table} WHERE source_file = ?", [basename]
-    ).fetchone()
-    if count_row and int(count_row[0] or 0) > 0:
-        return basename
-
-    # An empty parser result legitimately has no normalized row.  The caller
-    # distinguishes that case from lost non-empty output.
-    return None
 
 
 def _raw_source_state(raw_dir: Path, source_kind: str, key: str) -> str:
@@ -188,8 +148,6 @@ def _update_source_status(
             for row in rows:
                 sha256: str = row[0]
                 source_kind: str = row[1]
-                matched_source = _resolve_source_path(db, sha256, source_kind)
-                lookup_path = matched_source or sha256
                 table = {
                     "evtx": "evtx_events",
                     "mft": "mft_entries",
@@ -197,6 +155,8 @@ def _update_source_status(
                 }.get(source_kind)
                 if table is None:
                     continue
+                # Normalized rows carry the ingested SHA-256 as their durable
+                # source identity; the raw JSONL writers store it verbatim.
                 metadata = db.execute(
                     "SELECT COUNT(*), "
                     "MIN(timestamp) FILTER (WHERE EXTRACT(year FROM timestamp) BETWEEN 1980 AND 2200), "
@@ -208,7 +168,7 @@ def _update_source_status(
                         f"SELECT COUNT(*), NULL, NULL, [], [] FROM {table} "
                         "WHERE source_file = ?"
                     ),
-                    [lookup_path],
+                    [sha256],
                 ).fetchone()
                 row_count = int(metadata[0] or 0)
                 hosts = [str(item) for item in (metadata[3] or []) if item]
@@ -227,7 +187,7 @@ def _update_source_status(
                         f"MIN({timestamp_column}) FILTER (WHERE EXTRACT(year FROM {timestamp_column}) BETWEEN 1980 AND 2200), "
                         f"MAX({timestamp_column}) FILTER (WHERE EXTRACT(year FROM {timestamp_column}) BETWEEN 1980 AND 2200) "
                         f"FROM {timeline_table} WHERE source_file = ?",
-                        [lookup_path],
+                        [sha256],
                     ).fetchone()
                     min_time, max_time = time_row if time_row else (None, None)
                 status = "normalized" if row_count > 0 else "empty"

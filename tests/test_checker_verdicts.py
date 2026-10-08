@@ -10,24 +10,8 @@ from forensia.config import (
     resolve_llm_config,
 )
 from forensia.core.case import Case
-from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery
 from forensia.db.database import CaseDB
-
-
-class _MemoryStub:
-    max_bytes = 16384
-
-    def load_overview(self) -> str:
-        return "# overview"
-
-    def load_context(self, files: list[str]) -> str:
-        return ""
-
-    def load_compact_context(
-        self, files: list[str], max_bytes: int | None = None
-    ) -> str:
-        return "# facts.md\n\n- fact\n\n# tasks.md\n\n- question"
 
 
 def _llm_base_url() -> str:
@@ -43,7 +27,6 @@ class CheckerVerdictTests(unittest.TestCase):
     def test_invalid_verdict_falls_back_to_inconclusive(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
-            memory = MemoryManager(case)
             with (
                 CaseDB(case) as db,
                 patch(
@@ -76,7 +59,6 @@ class CheckerVerdictTests(unittest.TestCase):
                         "sample_rows": [],
                         "evidence_ids": [],
                     },
-                    memory=memory,
                     base_url=_llm_base_url(),
                     model="test-model",
                 )
@@ -92,7 +74,6 @@ class CheckerVerdictTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
-            memory = MemoryManager(case)
             responses = [
                 {"verdict": "refuted", "rationale": "No evidence found"},
                 {
@@ -131,7 +112,6 @@ class CheckerVerdictTests(unittest.TestCase):
                         "sample_rows": [],
                         "evidence_ids": [],
                     },
-                    memory=memory,
                     base_url=_llm_base_url(),
                     model="test-model",
                 )
@@ -147,7 +127,6 @@ class CheckerVerdictTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
-            memory = MemoryManager(case)
             responses = [
                 {"verdict": "confirmed", "rationale": "Seems confirmed"},
                 {
@@ -189,7 +168,6 @@ class CheckerVerdictTests(unittest.TestCase):
                         "sample_rows": [],
                         "evidence_ids": [],
                     },
-                    memory=memory,
                     base_url=_llm_base_url(),
                     model="test-model",
                 )
@@ -205,7 +183,6 @@ class CheckerVerdictTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
-            memory = MemoryManager(case)
             responses = [
                 {"verdict": "inconclusive", "rationale": "Missing src_ip"},
                 {
@@ -244,7 +221,6 @@ class CheckerVerdictTests(unittest.TestCase):
                         "sample_rows": [],
                         "evidence_ids": ["ev-1"],
                     },
-                    memory=memory,
                     base_url=_llm_base_url(),
                     model="test-model",
                 )
@@ -266,7 +242,6 @@ class CheckerVerdictTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
-            memory = MemoryManager(case)
             responses = [
                 {"verdict": "inconclusive", "rationale": "Insufficient data"},
                 {
@@ -315,7 +290,6 @@ class CheckerVerdictTests(unittest.TestCase):
                         "sample_rows": [],
                         "evidence_ids": ["ev-1"],
                     },
-                    memory=memory,
                     base_url=_llm_base_url(),
                     model="test-model",
                 )
@@ -342,7 +316,6 @@ class CheckerVerdictTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
-            memory = MemoryManager(case)
             with (
                 CaseDB(case) as db,
                 patch(
@@ -408,7 +381,6 @@ class CheckerVerdictTests(unittest.TestCase):
                         "sample_rows": [],
                         "evidence_ids": ["ev-1"],
                     },
-                    memory=memory,
                     base_url=_llm_base_url(),
                     model="test-model",
                 )

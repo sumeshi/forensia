@@ -26,7 +26,7 @@ GAP_PATTERN = re.compile(
     re.IGNORECASE,
 )
 BLOCK_HINT_PATTERN = re.compile(
-    r"<!--\s*(?P<name>evidence_keypoints|mode|question_id|benchmark_id|answer_id|answer_spec|builder)\s*:\s*(?P<value>.*?)\s*-->",
+    r"<!--\s*(?P<name>evidence_keypoints|mode|question_id|answer_id|answer_spec|builder)\s*:\s*(?P<value>.*?)\s*-->",
     re.IGNORECASE,
 )
 QUESTION_HINT_PATTERN = re.compile(
@@ -103,7 +103,7 @@ def parse_block_hints(block_body: str) -> dict[str, Any]:
                 hints["evidence_keypoints"].append(keypoint)
         elif name == "mode":
             hints["mode"] = value.casefold()
-        elif name in ("question_id", "benchmark_id"):
+        elif name == "question_id":
             hints["question_id"] = value.strip()
             hints["answer_id"] = value.strip()
         elif name == "answer_id":

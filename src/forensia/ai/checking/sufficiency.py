@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
 from typing import Any
 
 from forensia.db.database import CaseDB
-from forensia.db.evidence_lookup import lookup_evidence_record, routed_family
+from forensia.db.evidence_lookup import (
+    lookup_evidence_record,
+    routed_family,
+)
+from forensia.evidence.content_identity import (
+    fingerprint_from_record,
+)
 from forensia.knowledge.coverage import (
     derive_required_capabilities,
     get_coverage_summary,
@@ -31,6 +38,19 @@ class EvidenceLink:
     source_file: str
     derivation_group: str
     strength: str
+    # Canonical content identity of the backing evidence row at assessment
+    # time (evidence/content_identity.py).  Empty means the identity could
+    # not be established when the link was written; such links are never
+    # counted as current support.
+    content_fingerprint: str = ""
+    verification_spec_fingerprint: str = ""
+
+
+def verification_spec_fingerprint(spec: Any) -> str:
+    """Return a stable identity for a canonical VerificationSpec."""
+    payload = spec.model_dump(mode="json")
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -149,11 +169,11 @@ def _load_scoring_weights() -> dict[str, float]:
 def evidence_link_currentness(
     db: CaseDB, link: EvidenceLink
 ) -> tuple[bool, str | None]:
-    """Return ``(True, None)`` when a link's evidence is verifiably current.
+    """Return ``(True, None)`` when a link's judged material is verifiably current.
 
     Currentness is derived at read time from stored identities only; the
-    hypothesis_evidence row is never mutated or deleted by this check.  Two
-    verifications apply:
+    hypothesis_evidence row is never mutated or deleted by this check.
+    Four verifications apply:
 
     1. The referenced evidence row must still exist in the normalized table(s)
        routed by the evidence_id prefix (db/evidence_lookup.py).  ``mft-``
@@ -162,13 +182,20 @@ def evidence_link_currentness(
        needed; ``prefetch-`` already routes to both prefetch tables.
     2. When both the link and the found row carry a non-empty ``source_file``
        (the raw source SHA-256 for evtx/mft/prefetch), they must match.
-       Registry links are content-derived ``artifact_id`` values, so existence
-       alone is sufficient.
+    3. The link's recorded ``content_fingerprint`` must match the fingerprint
+       of the row as it exists now (evidence/content_identity.py).  This
+       detects an in-place content change of the same evidence_id under the
+       same source identity — for example the same raw file re-normalized
+       with modified rows — which the source comparison cannot see.  Registry
+       rows are content-addressed (``artifact_id``) and skip the source-file
+       match; their content fingerprint covers identification.
+    4. The link's ``verification_spec_fingerprint`` must match the current
+       canonical Spec for its Hypothesis.
 
-    Unverifiable non-content-addressed links require reassessment. Do not
-    backfill a historical link from today's source and call it current.
-    Same-ID/same-source content or verification-policy changes still require
-    additional invalidation; this check does not claim to detect them.
+    An empty stored or live fingerprint makes currentness undecidable; the
+    link is conservatively excluded from current support (``requires
+    re-evaluation``) and is never silently refilled. The sufficiency policy is
+    re-applied on every assessment.
     """
     evidence_id = str(link.evidence_id or "").strip()
     if not evidence_id or routed_family(evidence_id) is None:
@@ -176,14 +203,46 @@ def evidence_link_currentness(
     row = lookup_evidence_record(db, evidence_id)
     if row is None:
         return False, "evidence_row_missing"
-    link_source = str(link.source_file or "").strip()
-    row_source = str(row.get("source_file") or "").strip()
-    if routed_family(evidence_id) == "registry":
-        return True, None
-    if not link_source or not row_source:
-        return False, "source_identity_unverifiable"
-    if link_source != row_source:
-        return False, "source_file_mismatch"
+    if routed_family(evidence_id) != "registry":
+        link_source = str(link.source_file or "").strip()
+        row_source = str(row.get("source_file") or "").strip()
+        if not link_source or not row_source:
+            return False, "source_identity_unverifiable"
+        if link_source != row_source:
+            return False, "source_file_mismatch"
+    # Registry rows are content-addressed (artifact_id); every other family
+    # is addressed by the raw source SHA-256.  Either way the recorded
+    # content fingerprint identifies the judged material itself.
+    link_fingerprint = str(link.content_fingerprint or "").strip()
+    live_fingerprint = fingerprint_from_record(row)
+    if not link_fingerprint or not live_fingerprint:
+        return False, "content_unverifiable"
+    if link_fingerprint != live_fingerprint:
+        return False, "content_changed"
+    spec_row = db.execute(
+        "SELECT verification_spec FROM hypotheses WHERE hypothesis_id = ?",
+        [link.hypothesis_id],
+    ).fetchone()
+    if not spec_row or not spec_row[0]:
+        return False, "verification_spec_unverifiable"
+    raw_spec = spec_row[0]
+    if isinstance(raw_spec, str):
+        try:
+            raw_spec = json.loads(raw_spec)
+        except json.JSONDecodeError:
+            return False, "verification_spec_unverifiable"
+    try:
+        from forensia.core.verification import VerificationSpec
+
+        current_spec_fingerprint = verification_spec_fingerprint(
+            VerificationSpec.model_validate(raw_spec)
+        )
+    except Exception:
+        return False, "verification_spec_unverifiable"
+    if not link.verification_spec_fingerprint:
+        return False, "verification_spec_unverifiable"
+    if link.verification_spec_fingerprint != current_spec_fingerprint:
+        return False, "verification_spec_changed"
     return True, None
 
 
@@ -200,7 +259,8 @@ def load_evidence_links(
     """
     rows = db.execute(
         "SELECT link_id, hypothesis_id, evidence_id, finding_id, query_id, "
-        "assessment_id, role, source_family, source_file, derivation_group, strength "
+        "assessment_id, role, source_family, source_file, derivation_group, "
+        "strength, content_fingerprint, verification_spec_fingerprint "
         "FROM hypothesis_evidence WHERE hypothesis_id = ?",
         [hypothesis_id],
     ).fetchall()
@@ -217,6 +277,8 @@ def load_evidence_links(
             source_file=r[8] or "",
             derivation_group=r[9] or "",
             strength=r[10] or "moderate",
+            content_fingerprint=r[11] or "",
+            verification_spec_fingerprint=r[12] or "",
         )
         for r in rows
     ]
@@ -225,12 +287,32 @@ def load_evidence_links(
     return links
 
 
+def derivation_root_key(link: EvidenceLink) -> str:
+    """Return the derivation root a link belongs to (independence boundary).
+
+    A link is part of the same derivation root as another link when the
+    derivation root itself is the same, not when the acquisition attempt is:
+    the query id is acquisition history and never manufactures independence.
+
+    - An explicitly declared ``derivation_group`` names one root; links
+      sharing it are never independent (same-root re-search invariant).
+    - Otherwise the root is the content identity of the backing row:
+      the evidence record within its source.  The same evidence fetched
+      again via different queries collapses to one root and cannot become
+      multiple independent groups.
+    """
+    declared = str(link.derivation_group or "").strip()
+    if declared:
+        return f"declared:{declared}"
+    source = str(link.source_file or "").strip()
+    return f"row:{link.evidence_id}|{source}"
+
+
 def _group_by_derivation(links: list[EvidenceLink]) -> dict[str, list[EvidenceLink]]:
-    """Group evidence links by derivation_group (same root record)."""
+    """Group evidence links by derivation root (see derivation_root_key)."""
     groups: dict[str, list[EvidenceLink]] = {}
     for link in links:
-        key = link.derivation_group or link.evidence_id
-        groups.setdefault(key, []).append(link)
+        groups.setdefault(derivation_root_key(link), []).append(link)
     return groups
 
 
@@ -540,28 +622,26 @@ def assess_and_persist_sufficiency(
     db: CaseDB,
     *,
     hypothesis_id: str,
-    investigation_text: str,
     evidence_requirements: dict[str, Any] | None,
     llm_verdict: str,
-    verification_spec: Any | None = None,
+    verification_spec: dict[str, Any] | Any,
     session_id: str | None = None,
 ) -> tuple[SufficiencyResult, str, str, list[str]]:
-    """Run the authoritative machine assessment and persist its projections."""
-    if verification_spec is not None:
-        spec = (
-            verification_spec
-            if isinstance(verification_spec, dict)
-            else verification_spec.model_dump()
-        )
-        required_capabilities = derive_required_capabilities(
-            spec.get("required_capabilities"), spec.get("support_conditions")
-        )
-    else:
-        # Legacy callers without a spec: text inference only, through the
-        # shared derivation owner (spec=None contributes no declared list).
-        required_capabilities = derive_required_capabilities(
-            description=investigation_text
-        )
+    """Run the authoritative machine assessment and persist its projections.
+
+    ``verification_spec`` is required: capabilities derive from the canonical
+    spec only (declared list first, then its support conditions).  There is
+    no text-inference fallback that would re-derive different requirements
+    at a different verification stage.
+    """
+    spec = (
+        verification_spec
+        if isinstance(verification_spec, dict)
+        else verification_spec.model_dump()
+    )
+    required_capabilities = derive_required_capabilities(
+        spec.get("required_capabilities"), spec.get("support_conditions")
+    )
     # Split historical from currently-usable links with the shared predicate.
     # Stale links stay in hypothesis_evidence; they only stop counting here.
     current_links: list[EvidenceLink] = []
@@ -647,35 +727,51 @@ def create_hypothesis_evidence_link(
         raise ValueError(f"Invalid evidence role: {role}")
     if strength not in VALID_STRENGTHS:
         raise ValueError(f"Invalid evidence strength: {strength}")
-    # Capture the source from normalized Evidence, even when the query did not
-    # expose source_file. This is new observation admission, not a historical
-    # read-time backfill. Content-addressed Registry IDs need only existence.
-    if not source_file and routed_family(evidence_id) != "registry":
-        record = lookup_evidence_record(db, evidence_id)
-        source_file = str((record or {}).get("source_file") or "").strip()
-    existing = db.execute(
-        "SELECT link_id, COALESCE(assessment_id, '') FROM hypothesis_evidence "
-        "WHERE hypothesis_id = ? AND evidence_id = ? AND role = ? "
-        "AND COALESCE(query_id, '') = COALESCE(?, '') "
-        "AND COALESCE(source_file, '') = ? LIMIT 1",
-        [hypothesis_id, evidence_id, role, query_id, source_file],
+    # Capture the source and canonical content identity from normalized
+    # Evidence at admission (new observation, not a read-time backfill of
+    # history). Content-addressed Registry IDs need only existence.
+    record = lookup_evidence_record(db, evidence_id)
+    content_fingerprint = fingerprint_from_record(record)
+    spec_row = db.execute(
+        "SELECT verification_spec FROM hypotheses WHERE hypothesis_id = ?",
+        [hypothesis_id],
     ).fetchone()
-    if existing:
-        if assessment_id and assessment_id != str(existing[1] or ""):
-            db.execute(
-                "UPDATE hypothesis_evidence SET assessment_id = ?, derivation_group = "
-                "COALESCE(NULLIF(?, ''), derivation_group) WHERE link_id = ?",
-                [assessment_id, derivation_group, existing[0]],
-            )
-        elif derivation_group:
-            db.execute(
-                "UPDATE hypothesis_evidence SET derivation_group = ? WHERE link_id = ?",
-                [derivation_group, existing[0]],
-            )
-        return str(existing[0])
-    link_id = f"EL-{uuid.uuid4().hex[:12]}"
+    raw_spec = spec_row[0] if spec_row else None
+    if isinstance(raw_spec, str):
+        raw_spec = json.loads(raw_spec)
+    from forensia.core.verification import VerificationSpec
+
+    if not isinstance(raw_spec, dict):
+        raise ValueError(
+            f"hypothesis {hypothesis_id} has no canonical VerificationSpec; "
+            "cannot record an evidence judgment without its verification contract"
+        )
+    spec_fingerprint = verification_spec_fingerprint(
+        VerificationSpec.model_validate(raw_spec)
+    )
+    if record is not None and not source_file and routed_family(evidence_id) != "registry":
+        source_file = str(record.get("source_file") or "").strip()
+    # A link records one judgment of one materialized content version. Keep
+    # previous judgments intact even when the same query is retried.
     if not derivation_group:
         derivation_group = evidence_id
+    existing = db.execute(
+        "SELECT link_id FROM hypothesis_evidence "
+        "WHERE hypothesis_id = ? AND evidence_id = ? AND role = ? "
+        "AND COALESCE(query_id, '') = COALESCE(?, '') "
+        "AND COALESCE(source_file, '') = ? "
+        "AND COALESCE(content_fingerprint, '') = ? "
+        "AND COALESCE(verification_spec_fingerprint, '') = ? "
+        "AND COALESCE(assessment_id, '') = ? "
+        "AND COALESCE(derivation_group, '') = ? LIMIT 1",
+        [
+            hypothesis_id, evidence_id, role, query_id, source_file,
+            content_fingerprint, spec_fingerprint, assessment_id, derivation_group,
+        ],
+    ).fetchone()
+    if existing:
+        return str(existing[0])
+    link_id = f"EL-{uuid.uuid4().hex[:12]}"
     if not source_family and evidence_id:
         prefix = evidence_id.split("-")[0] if "-" in evidence_id else ""
         source_family = prefix
@@ -684,8 +780,10 @@ def create_hypothesis_evidence_link(
         INSERT INTO hypothesis_evidence (
             link_id, hypothesis_id, evidence_id, finding_id, query_id,
             assessment_id, role, source_family, source_file,
-            derivation_group, strength, created_session, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())
+            derivation_group, content_fingerprint, verification_spec_fingerprint,
+            strength,
+            created_session, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())
         """,
         [
             link_id,
@@ -698,6 +796,8 @@ def create_hypothesis_evidence_link(
             source_family,
             source_file,
             derivation_group,
+            content_fingerprint,
+            spec_fingerprint,
             strength,
             created_session,
         ],

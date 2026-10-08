@@ -1,10 +1,13 @@
-"""Invalidate existing domain dependents when normalized evidence is replaced."""
+"""Invalidate existing domain dependents when normalized evidence is replaced or changed."""
 
 from __future__ import annotations
 
 import json
 
 from forensia.db.database import CaseDB
+from forensia.evidence.content_identity import (
+    bulk_evidence_content_fingerprints,
+)
 
 _SOURCE_TABLES: dict[str, tuple[tuple[str, str], ...]] = {
     "evtx": (("evtx_events", "evidence_id"),),
@@ -29,16 +32,8 @@ def _json_string_list(value: object) -> list[str]:
     return [str(item) for item in value] if isinstance(value, list) else []
 
 
-def fetch_referenced_evidence_ids(db: CaseDB, source_kind: str) -> set[str]:
-    """Return materialized IDs that currently have durable dependents.
-
-    Replacement invalidation only needs IDs referenced by hypotheses, claims,
-    report sections, reusable section facts, or the case timeline. Avoid
-    snapshotting large evidence tables such as MFT.
-    """
-    tables = _SOURCE_TABLES.get(source_kind, ())
-    if not tables:
-        return set()
+def _referenced_dependent_ids(db: CaseDB) -> set[str]:
+    """IDs whose dependents live in hypotheses, claims, sections, facts, timeline."""
     referenced = {
         str(row[0])
         for row in db.execute(
@@ -61,9 +56,15 @@ def fetch_referenced_evidence_ids(db: CaseDB, source_kind: str) -> set[str]:
         ).fetchall()
         if row[0]
     )
-    if not referenced:
-        return set()
+    return referenced
 
+
+def _materialized_ids(
+    db: CaseDB, source_kind: str, referenced: set[str]
+) -> set[str]:
+    tables = _SOURCE_TABLES.get(source_kind, ())
+    if not tables or not referenced:
+        return set()
     ordered_ids = tuple(sorted(referenced))
     placeholders = ", ".join("?" for _ in ordered_ids)
     materialized: set[str] = set()
@@ -80,15 +81,57 @@ def fetch_referenced_evidence_ids(db: CaseDB, source_kind: str) -> set[str]:
     return materialized
 
 
-def invalidate_removed_evidence(db: CaseDB, evidence_ids: set[str]) -> None:
-    """Move dependents of removed evidence to review without deleting history.
+def fetch_referenced_evidence_ids(db: CaseDB, source_kind: str) -> set[str]:
+    """Return materialized IDs that currently have durable dependents.
 
-    Dependents are assessed hypothesis links (their hypotheses move to
-    needs_review), claims, and report sections referenced directly or via
-    ``section_facts.source_section``.  ``case_timeline`` rows are historical
+    Replacement invalidation only needs IDs referenced by hypotheses, claims,
+    report sections, reusable section facts, or the case timeline. Avoid
+    snapshotting large evidence tables such as MFT; only referenced IDs are
+    surveyed.
+    """
+    referenced = _referenced_dependent_ids(db)
+    if not referenced:
+        return set()
+    return _materialized_ids(db, source_kind, referenced)
+
+
+def fetch_referenced_evidence_fingerprints(
+    db: CaseDB, source_kind: str
+) -> tuple[set[str], dict[str, str]]:
+    """Return (materialized IDs, ID -> content fingerprint) for the survey.
+
+    Used by callers that must distinguish removed materialized IDs from IDs
+    whose backing content changed under the same identity.  Fingerprints use
+    the shared canonicalization in ``evidence/content_identity.py`` so they
+    agree with the fingerprint a hypothesis evidence link records at
+    assessment time.
+    """
+    referenced = _referenced_dependent_ids(db)
+    if not referenced:
+        return set(), {}
+    materialized = _materialized_ids(db, source_kind, referenced)
+    if not materialized:
+        return set(), {}
+    fingerprints = bulk_evidence_content_fingerprints(db, materialized)
+    return materialized, fingerprints
+
+
+def invalidate_removed_evidence(
+    db: CaseDB,
+    evidence_ids: set[str],
+    *,
+    reason: str = "Assessed evidence was removed by source replacement",
+) -> None:
+    """Move dependents of removed or content-changed evidence to review.
+
+    Dependents are assessed hypothesis links (their hypotheses reopen as
+    active with sufficiency marked needs_review), claims, and report sections
+    referenced directly or via ``section_facts.source_section``.
+    ``case_timeline`` rows are historical
     records of a regeneratable projection with no mutable stale state, so they
     are only kept as-is; the timeline memory projection re-validates evidence
-    presence on regeneration.
+    presence on regeneration.  Link history is never deleted; the supplied
+    reason is recorded on the affected hypotheses.
     """
     if not evidence_ids:
         return
@@ -138,16 +181,20 @@ def invalidate_removed_evidence(db: CaseDB, evidence_ids: set[str]) -> None:
             db.execute(
                 f"""
                 UPDATE hypotheses
-                SET status = 'needs_review',
+                SET status = 'active',
                     verdict = NULL,
                     resolved_session = NULL,
                     sufficiency_status = 'needs_review',
-                    sufficiency_reason = 'Assessed evidence was removed by source replacement',
+                    sufficiency_reason = ?,
                     human_review_required = TRUE,
+                    selection_count = 0,
+                    last_selected_at = NULL,
+                    next_eligible_at = NULL,
+                    blocked_reason = NULL,
                     updated_at = now()
                 WHERE hypothesis_id IN ({hypothesis_placeholders})
                 """,
-                tuple(sorted(linked_hypotheses)),
+                (reason, *sorted(linked_hypotheses)),
             )
         if affected_claims:
             claim_placeholders = ", ".join("?" for _ in affected_claims)

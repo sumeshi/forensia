@@ -322,8 +322,9 @@ def _setup_confirmed_invariant(db: CaseDB, hypothesis_id: str) -> None:
     """Set up sufficiency and evidence links so confirmed verdict passes invariants."""
     # First ensure the hypothesis exists in the DB
     db.execute(
-        "INSERT INTO hypotheses (hypothesis_id, description, status, sufficiency_status) "
-        "VALUES (?, 'test', 'active', 'unknown') ON CONFLICT (hypothesis_id) DO NOTHING",
+        "INSERT INTO hypotheses (hypothesis_id, description, status, sufficiency_status, "
+        "verification_spec) VALUES (?, 'test', 'active', 'unknown', "
+        "'{\"spec_version\":\"1\"}') ON CONFLICT (hypothesis_id) DO NOTHING",
         (hypothesis_id,),
     )
     db.execute(
@@ -413,10 +414,10 @@ class TestResolvedHypothesisDedup:
                     """INSERT INTO hypotheses (
                         hypothesis_id, description, status, verdict, summary, origin,
                         created_session, resolved_session, created_at, updated_at,
-                        source_rule_ids, required_entities, confirm_when
+                        source_rule_ids, required_entities
                     ) VALUES (
                         'H-001', ?, 'confirmed', 'confirmed', 'done', 'broad_plan',
-                        'S-1', 'S-2', now(), now(), '["rule-1"]', '["host"]', NULL
+                        'S-1', 'S-2', now(), now(), '["rule-1"]', '["host"]'
                     )""",
                     (desc_a,),
                 )
@@ -473,6 +474,165 @@ class TestResolvedHypothesisDedup:
                     f"expected log about binding, got: {captured.out}"
                 )
 
+    def test_spec_change_reopens_resolved_hypothesis(self) -> None:
+        from forensia.ai.checking.sufficiency import (
+            create_hypothesis_evidence_link,
+            evidence_link_currentness,
+            load_evidence_links,
+        )
+        from forensia.ai.hypotheses.hypothesis_store import (
+            _upsert_hypothesis,
+            load_persisted_hypotheses,
+        )
+        from forensia.ai.investigation.selection import select_focus_hypotheses
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                resolved = Hypothesis(
+                    id="H-001",
+                    description="4624 event shows remote interactive logon",
+                    status="confirmed",
+                    verdict="confirmed",
+                    summary="Previously confirmed",
+                    target_keypoint_id="host_execution_activity",
+                )
+                _insert_section(db, "3_technical", update_count=MAX_SECTION_UPDATES)
+                _upsert_hypothesis(
+                    db,
+                    resolved,
+                    origin="rule",
+                    session_id="session-old",
+                    resolved_session="session-old",
+                )
+                db.execute(
+                    "UPDATE hypotheses SET selection_count = 7, "
+                    "last_selected_at = now(), next_eligible_at = now() + INTERVAL '1 day', "
+                    "blocked_reason = 'old retry block', sufficiency_status = 'sufficient', "
+                    "sufficiency_score = 1.0 WHERE hypothesis_id = 'H-001'"
+                )
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, source_file) "
+                    "VALUES ('evtx-H-001', 'source-H-001')"
+                )
+                create_hypothesis_evidence_link(
+                    db,
+                    hypothesis_id="H-001",
+                    evidence_id="evtx-H-001",
+                    assessment_id="EA-old-spec",
+                )
+                db.execute(
+                    "INSERT INTO claims (claim_id, section_key, claim_text, "
+                    "finding_ids, hypothesis_ids, evidence_ids, support_status, "
+                    "created_at, updated_at) VALUES ('C-H-001', '3_technical', "
+                    "'old claim', '[]', '[\"H-001\"]', '[\"evtx-H-001\"]', "
+                    "'supported', now(), now())"
+                )
+                assert len(load_evidence_links(db, "H-001", current_only=True)) == 1
+                assert db.execute(
+                    "SELECT support_status FROM claims WHERE claim_id = 'C-H-001'"
+                ).fetchone()[0] == "supported"
+                assert db.execute(
+                    "SELECT stale FROM report_sections WHERE section_key = '3_technical'"
+                ).fetchone()[0] is False
+                resolved_projection = [resolved]
+                reopened = merge_active_hypotheses(
+                    db=db,
+                    current=[],
+                    updates=[
+                        Hypothesis(
+                            id="H-new",
+                            description=resolved.description,
+                            status="active",
+                            refute_when={"zero_rows": True},
+                        )
+                    ],
+                    resolved=resolved_projection,
+                    session_id="session-spec-change",
+                    origin="broad_plan",
+                )
+
+                assert len(reopened) == 1
+                assert reopened[0].id == "H-001"
+                assert reopened[0].status == "active"
+                assert reopened[0].verdict is None
+                assert reopened[0].verification_spec.refute_conditions == {
+                    "zero_rows": True
+                }
+                assert resolved_projection == []
+                row = db.execute(
+                    "SELECT status, verdict, resolved_session, selection_count, "
+                    "last_selected_at, next_eligible_at, blocked_reason, "
+                    "sufficiency_status FROM hypotheses WHERE hypothesis_id = 'H-001'"
+                ).fetchone()
+                assert row == ("active", None, None, 0, None, None, None, "needs_review")
+                active, terminal = load_persisted_hypotheses(db)
+                assert [item.id for item in active] == ["H-001"]
+                assert terminal == []
+                selected = select_focus_hypotheses(
+                    db,
+                    limit=1,
+                    session_id="session-spec-change",
+                    iteration=1,
+                )
+                assert [result.hypothesis_id for result in selected if result.eligible] == [
+                    "H-001"
+                ]
+                history = load_evidence_links(db, "H-001")
+                current = load_evidence_links(db, "H-001", current_only=True)
+                assert len(history) == 1 and current == []
+                assert evidence_link_currentness(db, history[0])[1] == "verification_spec_changed"
+                assert db.execute(
+                    "SELECT support_status FROM claims WHERE claim_id = 'C-H-001'"
+                ).fetchone()[0] == "needs_review"
+                assert db.execute(
+                    "SELECT stale FROM report_sections WHERE section_key = '3_technical'"
+                ).fetchone()[0] is True
+
+    def test_same_id_spec_update_with_different_description_reopens_once(self) -> None:
+        from forensia.ai.hypotheses.hypothesis_store import _upsert_hypothesis
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                resolved = Hypothesis(
+                    id="H-009",
+                    description="Original resolved claim",
+                    status="confirmed",
+                    verdict="confirmed",
+                )
+                _upsert_hypothesis(
+                    db,
+                    resolved,
+                    origin="rule",
+                    session_id="session-old",
+                    resolved_session="session-old",
+                )
+                resolved_projection = [resolved]
+                reopened = merge_active_hypotheses(
+                    db=db,
+                    current=[],
+                    updates=[
+                        Hypothesis(
+                            id="H-009",
+                            description="Different wording for the same persisted claim",
+                            status="active",
+                            refute_when={"zero_rows": True},
+                        )
+                    ],
+                    resolved=resolved_projection,
+                    session_id="session-new",
+                    origin="broad_plan",
+                )
+
+                assert len(reopened) == 1
+                assert reopened[0].id == "H-009"
+                assert reopened[0].description == "Original resolved claim"
+                assert reopened[0].status == "active"
+                assert reopened[0].verdict is None
+                assert resolved_projection == []
+                assert db.execute(
+                    "SELECT COUNT(*) FROM hypotheses WHERE hypothesis_id = 'H-009'"
+                ).fetchone()[0] == 1
+
 
 class TestHypothesisEvidenceStrength:
     """Unit tests for hypothesis_evidence_strength scoring."""
@@ -500,7 +660,7 @@ class TestHypothesisEvidenceStrength:
             description="Rule-seeded with evidence",
             status="active",
             source_rule_ids=["rule-1"],
-            confirm_when={"co_observed_event_ids": ["E-001"]},
+            confirm_when={"co_observed_event_ids": [4624]},
         )
         assert hypothesis_evidence_strength(h) == 2
 
@@ -520,7 +680,7 @@ class TestHypothesisEvidenceStrength:
             description="Rule-seeded with refute criteria",
             status="active",
             source_rule_ids=["rule-1"],
-            refute_when={"co_observed_event_ids": ["E-002"]},
+            refute_when={"zero_rows": True},
         )
         assert hypothesis_evidence_strength(h) == 2
 

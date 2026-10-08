@@ -53,14 +53,6 @@ def _parse_registry_timestamp(value: Any) -> datetime | None:
     return parsed
 
 
-def _source_id(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _registry_member_paths(db: CaseDB, source_ids: object) -> frozenset[str] | None:
     """Resolve source IDs to their operational ingest paths.
 
@@ -648,7 +640,7 @@ class RegistryArtifactAdapter:
         self,
         case: Case,
         path: Path,
-        source_sha: str | None = None,
+        source_sha: str,
         progress_callback=None,
     ) -> IngestResult:
         from forensia.evidence.artifacts import IngestResult
@@ -660,7 +652,7 @@ class RegistryArtifactAdapter:
         return self.ingest_dataset(
             case,
             dataset,
-            source_ids={path: source_sha or _source_id(path)},
+            source_ids={path: source_sha},
             progress_callback=progress_callback,
         )
 

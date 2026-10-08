@@ -384,12 +384,7 @@ def _verify_block_output(db: CaseDB, body: str) -> tuple[list[str], float]:
 
 
 def _strip_narrative_status_lines(body: str) -> str:
-    """Remove internal block status badges from human-facing narrative sections.
-
-    The raw_sql → evidence query replacement is a legacy safeguard for section bodies
-    persisted before `_result_source_label` was renamed; new runs emit `evidence_query`
-    via the source label itself and never hit the replace branch.
-    """
+    """Remove internal block status badges from human-facing narrative sections."""
     lines = []
     for line in str(body or "").splitlines():
         stripped = line.strip()
@@ -401,7 +396,6 @@ def _strip_narrative_status_lines(body: str) -> str:
             continue
         lines.append(line)
     text = "\n".join(lines)
-    text = text.replace("raw_sql", "evidence query")
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 

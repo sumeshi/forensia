@@ -39,7 +39,7 @@ class WebApiTests(unittest.TestCase):
                         0.9,
                         "accepted",
                         '["svc"]',
-                        '["T1543"]',
+                        '[{"tactic":"persistence","technique_id":"T1543","technique_name":"Windows Service"}]',
                         '[{"service_name":"evilsvc"}]',
                         "Likely persistence",
                         "[]",

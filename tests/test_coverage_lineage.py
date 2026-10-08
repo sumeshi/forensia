@@ -327,6 +327,37 @@ class EVTXSourceMetadataTests(unittest.TestCase):
                 self.assertEqual(row[3].year, 2015)
                 self.assertEqual(row[4].year, 2015)
 
+    def test_rows_under_legacy_path_identity_are_flagged_not_matched(self) -> None:
+        """Normalized rows keyed by the old path identity are not silently re-read."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            (case.raw_dir / "evtx-abc123-security.jsonl").write_text("{}\n")
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO ingested_files (sha256, path, source_kind) "
+                    "VALUES ('abc123', '/evidence/Security.evtx', 'evtx')"
+                )
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, source_file) "
+                    "VALUES ('evtx-1', '/evidence/Security.evtx')"
+                )
+                with self.assertLogs(
+                    "forensia.evidence.normalize", level="ERROR"
+                ) as logs:
+                    _update_source_status(
+                        db, ["abc123"], {"evtx_rows": 1}, raw_dir=case.raw_dir
+                    )
+                status, error_code = db.execute(
+                    "SELECT ingest_status, error_code FROM evidence_sources "
+                    "WHERE source_id = 'abc123'"
+                ).fetchone()
+
+            self.assertEqual(("failed", "normalized_rows_missing"), (status, error_code))
+            self.assertTrue(
+                any("abc123" in message for message in logs.output),
+                logs.output,
+            )
+
 
 class ReportValidationCoverageLineageTests(unittest.TestCase):
     """Test report validation for coverage lineage."""

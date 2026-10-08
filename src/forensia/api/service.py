@@ -911,7 +911,7 @@ def list_attack_coverage_dto(db: CaseDB) -> list[AttackCoverageRowDTO]:
                 continue
             tactic = str(entry.get("tactic") or "").lower().strip()
             technique_id = str(entry.get("technique_id") or "").strip().upper()
-            technique_name = str(entry.get("technique_name") or entry.get("name") or "")
+            technique_name = str(entry.get("technique_name") or "")
             if not tactic or not technique_id:
                 continue
             if tactic not in tactic_order:

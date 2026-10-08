@@ -21,6 +21,7 @@ from typing import Any, Literal
 from forensia.ai.checking.sufficiency import (
     EvidenceLink,
     SufficiencyResult,
+    derivation_root_key,
     evaluate_sufficiency,
     load_evidence_links,
 )
@@ -327,11 +328,11 @@ def _check_no_unresolved_contradictions(
     ]
     if not contradictory:
         return True, "no contradictory evidence"
-    # Group by derivation
+    # Group by derivation root; query id is acquisition history and never
+    # splits or merges roots.
     groups: dict[str, list[EvidenceLink]] = {}
     for link in contradictory:
-        key = link.derivation_group or link.evidence_id
-        groups.setdefault(key, []).append(link)
+        groups.setdefault(derivation_root_key(link), []).append(link)
     return False, f"{len(groups)} unresolved contradictory groups"
 
 
@@ -578,7 +579,7 @@ def decide_settlement(
     # assessment produced at least one contradictory observation group.
     if si.checker_verdict == "refuted":
         contradictory_groups = {
-            l.derivation_group or l.evidence_id
+            derivation_root_key(l)
             for l in links
             if l.role == "contradictory" and str(l.assessment_id or "").strip()
         }

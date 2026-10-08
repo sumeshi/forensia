@@ -72,7 +72,6 @@ def assess(rows: list[dict[str, object]]) -> dict[str, object]:
         hypothesis=hypothesis,
         rows=rows,
         evidence_ids=["evtx-4624-a", "evtx-4104-b"],
-        query_id="Q-001",
     )
     return {
         "admitted_support_condition_keys": sorted(support),

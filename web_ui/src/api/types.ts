@@ -64,7 +64,7 @@ export type FindingDTO = {
   confidence?: number | null;
   status?: string | null;
   tags?: Array<unknown> | Record<string, unknown> | null;
-  attack?: Array<AttackMappingDTO | string> | null;
+  attack?: AttackMappingDTO[] | null;
   evidence?: Array<Record<string, unknown>> | null;
   evidence_ids?: string[];
   evidence_count?: number;

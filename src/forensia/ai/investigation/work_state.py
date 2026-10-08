@@ -42,47 +42,35 @@ def ensure_objective_gap(db: CaseDB, objective: str) -> str:
     return gap_id
 
 
-def _json_object(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str) and value:
-        try:
-            parsed = json.loads(value)
-            return parsed if isinstance(parsed, dict) else {}
-        except json.JSONDecodeError:
-            return {}
-    return {}
+def _required_capabilities(db: CaseDB, hypothesis_id: str) -> list[str]:
+    """Derive required capabilities from the canonical VerificationSpec.
 
-
-def _required_capabilities(
-    db: CaseDB, hypothesis_id: str, description: str
-) -> list[str]:
-    """Derive required capabilities via the shared derivation owner.
-
-    The canonical ``verification_spec`` column is preferred (declared
-    ``required_capabilities`` first, then its support conditions); rows
-    without a spec keep the legacy text inference over the description, the
-    ``confirm_when`` projection, and ``evidence_requirements``.
+    The spec is the only stored condition representation: declared
+    ``required_capabilities`` win, otherwise its support conditions map
+    through the shared artifact catalog.  A row without a parsable spec is an
+    explicit failure, never a text-inference fallback.
     """
     row = db.execute(
-        "SELECT confirm_when, evidence_requirements, verification_spec "
-        "FROM hypotheses WHERE hypothesis_id = ?",
+        "SELECT verification_spec FROM hypotheses WHERE hypothesis_id = ?",
         [hypothesis_id],
     ).fetchone()
-    confirm_when: dict[str, Any] = {}
-    spec: dict[str, Any] = {}
-    parts = [description]
-    if row:
-        confirm_when = _json_object(row[0])
-        evidence_requirements = _json_object(row[1])
-        spec = _json_object(row[2])
-        if evidence_requirements:
-            parts.append(json.dumps(evidence_requirements, sort_keys=True))
+    raw_spec = row[0] if row else None
+    if isinstance(raw_spec, str):
+        try:
+            raw_spec = json.loads(raw_spec)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"hypothesis {hypothesis_id} has an unparsable verification_spec: {exc}"
+            ) from exc
+    if not isinstance(raw_spec, dict) or not raw_spec:
+        raise ValueError(
+            f"hypothesis {hypothesis_id} has no canonical verification_spec; "
+            "the case database does not match the current format "
+            "(preserve the case and ingest into a new case directory)"
+        )
     return derive_required_capabilities(
-        spec.get("required_capabilities") or [],
-        spec.get("support_conditions"),
-        confirm_when=confirm_when or None,
-        description=" ".join(parts),
+        raw_spec.get("required_capabilities") or [],
+        raw_spec.get("support_conditions"),
     )
 
 
@@ -157,7 +145,7 @@ def _upsert_terminal_work(
     reason: str,
 ) -> None:
     """Create or refresh the authoritative Task/Gap pair for a terminal hypothesis."""
-    required_capabilities = _required_capabilities(db, hypothesis_id, description)
+    required_capabilities = _required_capabilities(db, hypothesis_id)
     unavailable_capabilities, required_sources = _coverage_state(
         db, required_capabilities
     )
@@ -253,9 +241,7 @@ def classify_active_hypotheses_on_stop(
             evidence_count = int(row[1] or 0) if row else 0
             sufficiency_status = str(row[2] or "") if row else ""
             prior_blocked_reason = str(row[3] or "") if row else ""
-            required_capabilities = _required_capabilities(
-                db, hypothesis_id, hypothesis.description
-            )
+            required_capabilities = _required_capabilities(db, hypothesis_id)
             unavailable_capabilities, required_sources = _coverage_state(
                 db, required_capabilities
             )

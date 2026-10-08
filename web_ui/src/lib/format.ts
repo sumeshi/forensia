@@ -78,12 +78,11 @@ type AttackMapping = {
 };
 
 export function formatAttackMappings(
-  values: Array<AttackMapping | string> | null | undefined
+  values: Array<AttackMapping> | null | undefined
 ): string {
   if (!values?.length) return "-";
   const labels = values
     .map((value) => {
-      if (typeof value === "string") return value.trim();
       const techniqueId = value?.technique_id?.trim() ?? "";
       const techniqueName = value?.technique_name?.trim() ?? "";
       const tactic = value?.tactic?.trim() ?? "";

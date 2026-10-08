@@ -253,7 +253,9 @@ class NormalizeMftTests(unittest.TestCase):
             self.assertEqual(2, timeline)
             self.assertEqual([("/file1.txt",), ("/file2.txt",)], paths)
 
-    def test_entries_replace_matching_legacy_timeline_without_reading_it(self) -> None:
+    def test_timeline_is_derived_from_entries_and_leftover_timeline_files_untouched(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
             (case.raw_dir / "mft-entries-sourcekey.jsonl").write_text(
@@ -263,30 +265,57 @@ class NormalizeMftTests(unittest.TestCase):
                         "source_file": "disk/$MFT",
                         "header": {"record_number": 1},
                         "attributes": {
+                            "StandardInformation": {
+                                "data": {
+                                    "created": "2024-01-01T00:00:00Z",
+                                    "modified": "2024-01-01T01:00:00Z",
+                                    "accessed": "2024-01-01T02:00:00Z",
+                                    "mft_modified": "2024-01-01T03:00:00Z",
+                                }
+                            },
                             "FileName": {
                                 "data": {
                                     "path": "/one.txt",
-                                    "created": "2024-01-01T00:00:00Z",
+                                    "created": "2024-01-02T00:00:00Z",
+                                    "modified": "2024-01-02T01:00:00Z",
+                                    "accessed": "2024-01-02T02:00:00Z",
+                                    "mft_modified": "2024-01-02T03:00:00Z",
                                 }
-                            }
+                            },
                         },
                     }
                 )
                 + "\n",
                 encoding="utf-8",
             )
-            # Old cases can contain a much larger duplicate timeline JSONL.
-            # A matching entries file must make this file unnecessary.
-            (case.raw_dir / "mft-timeline-sourcekey.jsonl").write_text(
-                "not-json\n", encoding="utf-8"
-            )
+            # A timeline JSONL left behind by an older ingest version is never
+            # read back and must not be deleted: entries are the single source
+            # of the derived timeline.
+            legacy_path = case.raw_dir / "mft-timeline-sourcekey.jsonl"
+            legacy_path.write_text("not-json\n", encoding="utf-8")
 
             with CaseDB(case) as db:
                 entries, timeline = normalize_mft(case, db)
-                rows = db.execute("SELECT timestamp_type FROM mft_timeline").fetchall()
+                rows = db.execute(
+                    "SELECT timestamp_type FROM mft_timeline ORDER BY timestamp_type"
+                ).fetchall()
 
-            self.assertEqual((1, 1), (entries, timeline))
-            self.assertEqual([("FN_CREATED",)], rows)
+            self.assertEqual(1, entries)
+            self.assertEqual(8, timeline)
+            self.assertEqual(
+                [
+                    ("FN_ACCESSED",),
+                    ("FN_CREATED",),
+                    ("FN_MFT_MODIFIED",),
+                    ("FN_MODIFIED",),
+                    ("SI_ACCESSED",),
+                    ("SI_CREATED",),
+                    ("SI_MFT_MODIFIED",),
+                    ("SI_MODIFIED",),
+                ],
+                rows,
+            )
+            self.assertTrue(legacy_path.exists())
 
     def test_bulk_load_settings_are_restored(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

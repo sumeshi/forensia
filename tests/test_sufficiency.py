@@ -5,8 +5,13 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from typing import Any
 
 from forensia.ai.checking.assessment import assess_evidence_group
+from forensia.ai.checking.settlement import (
+    build_settlement_input_from_confirm_when,
+    decide_settlement,
+)
 from forensia.ai.checking.sufficiency import (
     EvidenceLink,
     SufficiencyResult,
@@ -14,6 +19,7 @@ from forensia.ai.checking.sufficiency import (
     create_evidence_links_for_query,
     create_hypothesis_evidence_link,
     evaluate_sufficiency,
+    evidence_link_currentness,
     load_evidence_links,
     load_unlinkable_observations_for_session,
     reconcile_verdicts,
@@ -502,17 +508,16 @@ class RequiredCapabilityDerivationTests(unittest.TestCase):
     """T02: declared spec capabilities win; legacy fallback stays text-based."""
 
     def _insert_hypothesis(
-        self, db: CaseDB, hypothesis_id: str, *, spec: dict | None
+        self, db: CaseDB, hypothesis_id: str, *, spec: dict | None = None
     ) -> None:
         db.execute(
             "INSERT INTO hypotheses (hypothesis_id, description, status, "
-            "confirm_when, verification_spec, created_at, updated_at) "
-            "VALUES (?, ?, 'active', ?, ?, now(), now())",
+            "verification_spec, created_at, updated_at) "
+            "VALUES (?, ?, 'active', ?, now(), now())",
             [
                 hypothesis_id,
                 f"Description {hypothesis_id}",
-                json.dumps({"keywords": ["evtx_events 4624"]}),
-                json.dumps(spec) if spec is not None else None,
+                json.dumps(spec or {"spec_version": "1"}),
             ],
         )
 
@@ -531,7 +536,6 @@ class RequiredCapabilityDerivationTests(unittest.TestCase):
                 _result, _verdict, _reason, caps = assess_and_persist_sufficiency(
                     db,
                     hypothesis_id="H-SPEC-CAPS",
-                    investigation_text="evtx_events 4624",
                     evidence_requirements={},
                     llm_verdict="confirmed",
                     verification_spec={
@@ -542,16 +546,19 @@ class RequiredCapabilityDerivationTests(unittest.TestCase):
                 )
                 self.assertEqual(caps, ["declared_cap"])
 
-    def test_null_spec_legacy_fallback_keeps_text_inference(self) -> None:
+    def test_support_conditions_derive_capabilities_without_declared_list(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with CaseDB(Case.init(tmpdir)) as db:
-                self._insert_hypothesis(db, "H-LEGACY-CAPS", spec=None)
+                self._insert_hypothesis(db, "H-SUPPORT-CAPS")
                 _result, _verdict, _reason, caps = assess_and_persist_sufficiency(
                     db,
-                    hypothesis_id="H-LEGACY-CAPS",
-                    investigation_text="evtx_events 4624",
+                    hypothesis_id="H-SUPPORT-CAPS",
                     evidence_requirements={},
                     llm_verdict="confirmed",
+                    verification_spec={
+                        "spec_version": "1",
+                        "support_conditions": {"keywords": ["evtx_events 4624"]},
+                    },
                 )
                 self.assertEqual(caps, ["lateral_movement", "logon"])
 
@@ -635,6 +642,14 @@ class VerdictReconciliationTests(unittest.TestCase):
 class EvidenceLinkPersistenceTests(unittest.TestCase):
     """Test hypothesis_evidence table operations."""
 
+    @staticmethod
+    def _insert_hypothesis(db: CaseDB) -> None:
+        db.execute(
+            "INSERT INTO hypotheses (hypothesis_id, description, status, "
+            "verification_spec, created_at, updated_at) VALUES "
+            "('H-001', 'test hypothesis', 'active', '{\"spec_version\":\"1\"}', now(), now())"
+        )
+
     def test_insert_and_load_evidence_link(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -668,11 +683,13 @@ class EvidenceLinkPersistenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
+                self._insert_hypothesis(db)
                 first = create_hypothesis_evidence_link(
                     db,
                     hypothesis_id="H-001",
                     evidence_id="evtx-001",
                     query_id="Q-1",
+                    assessment_id="EA-v1-deterministic-test",
                 )
                 second = create_hypothesis_evidence_link(
                     db,
@@ -688,17 +705,12 @@ class EvidenceLinkPersistenceTests(unittest.TestCase):
                     ],
                     1,
                 )
-                self.assertEqual(
-                    db.execute(
-                        "SELECT assessment_id FROM hypothesis_evidence"
-                    ).fetchone()[0],
-                    "EA-v1-deterministic-test",
-                )
 
     def test_query_links_share_assessment_derivation_group(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
+                self._insert_hypothesis(db)
                 create_evidence_links_for_query(
                     db,
                     hypothesis_id="H-001",
@@ -779,32 +791,71 @@ class EvidenceLinkPersistenceTests(unittest.TestCase):
 class CurrentLinkTests(unittest.TestCase):
     """T04: historical links must not count as currently-usable support."""
 
-    def _seed(self, db: CaseDB, *, source_file: str = "sha-a") -> None:
+    def _seed(
+        self,
+        db: CaseDB,
+        *,
+        source_file: str = "sha-a",
+        verification_spec: dict[str, Any] | None = None,
+    ) -> None:
         db.execute(
-            "INSERT INTO evtx_events (evidence_id, source_file) VALUES ('evtx-1', ?)",
+            "INSERT INTO evtx_events (evidence_id, source_file, event_id) "
+            "VALUES ('evtx-1', ?, 4624)",
             [source_file],
         )
+        spec = verification_spec or {"spec_version": "1"}
         db.execute(
-            "INSERT INTO hypotheses (hypothesis_id, status, created_at, updated_at) "
-            "VALUES ('H-CUR', 'active', now(), now())"
+            "INSERT INTO hypotheses (hypothesis_id, status, created_at, updated_at, "
+            "verification_spec) VALUES ('H-CUR', 'active', now(), now(), ?) ",
+            [json.dumps(spec)],
         )
-        create_evidence_links_for_query(
-            db,
-            hypothesis_id="H-CUR",
-            evidence_ids=["evtx-1"],
-            query_id="Q-current",
-            role="supporting",
-            assessment_id="EA-cur",
-            derivation_group="evtx-1",
-        )
+        if verification_spec is None:
+            create_evidence_links_for_query(
+                db,
+                hypothesis_id="H-CUR",
+                evidence_ids=["evtx-1"],
+                query_id="Q-current",
+                role="supporting",
+                assessment_id="EA-cur",
+                derivation_group="evtx-1",
+            )
+        else:
+            from forensia.core.verification import VerificationSpec
 
-    def _assess(self, db: CaseDB) -> SufficiencyResult:
+            hypothesis = Hypothesis(
+                id="H-CUR",
+                description="currentness fixture",
+                status="active",
+                verification_spec=VerificationSpec.model_validate(verification_spec),
+            )
+            assessment = assess_evidence_group(
+                hypothesis=hypothesis,
+                rows=[{"event_id": 4624}],
+                evidence_ids=["evtx-1"],
+                derivation_group="evtx-1",
+            )
+            create_hypothesis_evidence_link(
+                db,
+                hypothesis_id="H-CUR",
+                evidence_id="evtx-1",
+                query_id="Q-current",
+                role=assessment.role,
+                assessment_id=assessment.assessment_id,
+                derivation_group=assessment.derivation_group,
+            )
+
+    def _assess(
+        self,
+        db: CaseDB,
+        *,
+        verification_spec: dict[str, Any] | None = None,
+    ) -> SufficiencyResult:
         result, _verdict, _reason, _caps = assess_and_persist_sufficiency(
             db,
             hypothesis_id="H-CUR",
-            investigation_text="",
             evidence_requirements={},
             llm_verdict="confirmed",
+            verification_spec=verification_spec or {"spec_version": "1"},
         )
         return result
 
@@ -840,20 +891,88 @@ class CurrentLinkTests(unittest.TestCase):
                 # conservatively excluded from current support.
                 db.execute("DELETE FROM evtx_events WHERE evidence_id = 'evtx-1'")
                 db.execute(
-                    "INSERT INTO evtx_events (evidence_id, source_file) "
-                    "VALUES ('evtx-1', 'sha-new')"
+                    "INSERT INTO evtx_events (evidence_id, source_file, event_id) "
+                    "VALUES ('evtx-1', 'sha-new', 4624)"
                 )
                 self.assertEqual(self._assess(db).status, "insufficient")
 
-                # Re-created under the originally linked source again, the
-                # link counts as current without re-assessment.
+                # Re-created under the originally linked source again with
+                # identical content, the judged material is present as-is and
+                # the link counts as current without re-assessment.
                 db.execute("DELETE FROM evtx_events WHERE evidence_id = 'evtx-1'")
                 db.execute(
-                    "INSERT INTO evtx_events (evidence_id, source_file) "
-                    "VALUES ('evtx-1', 'sha-a')"
+                    "INSERT INTO evtx_events (evidence_id, source_file, event_id) "
+                    "VALUES ('evtx-1', 'sha-a', 4624)"
                 )
                 self.assertEqual(self._assess(db).status, "sufficient")
                 self.assertEqual(self._link_count(db), 1)
+
+    def test_same_id_same_source_content_change_requires_reevaluation(self) -> None:
+        """R03: a content change under the same evidence_id+source is detected.
+
+        The link keeps recording the judged material; the changed row is not
+        silently refilled as current support.  A re-evaluation creates a NEW
+        link whose fingerprint matches the live row, while the historical
+        link stays excluded and undeleted.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                self._seed(db)
+                self.assertEqual(self._assess(db).status, "sufficient")
+
+                db.execute(
+                    "UPDATE evtx_events SET message = 'rewritten content' "
+                    "WHERE evidence_id = 'evtx-1'"
+                )
+                result = self._assess(db)
+                self.assertEqual(result.status, "insufficient")
+                self.assertTrue(
+                    any("content_changed" in reason for reason in result.reasons)
+                )
+                self.assertEqual(self._link_count(db), 1)
+
+                # Re-observing through the same query produces the same
+                # deterministic assessment ID. The changed content must
+                # still create a new link and preserve the old fingerprint.
+                create_evidence_links_for_query(
+                    db,
+                    hypothesis_id="H-CUR",
+                    evidence_ids=["evtx-1"],
+                    query_id="Q-current",
+                    role="supporting",
+                    assessment_id="EA-cur",
+                )
+                current = load_evidence_links(db, "H-CUR", current_only=True)
+                historical = load_evidence_links(db, "H-CUR")
+                self.assertEqual(self._link_count(db), 2)
+                self.assertEqual(len(current), 1)
+                self.assertEqual(current[0].assessment_id, "EA-cur")
+                self.assertEqual({link.assessment_id for link in historical}, {"EA-cur"})
+                self.assertEqual(len({link.content_fingerprint for link in historical}), 2)
+                self.assertEqual(self._assess(db).status, "sufficient")
+                create_evidence_links_for_query(
+                    db, hypothesis_id="H-CUR", evidence_ids=["evtx-1"],
+                    query_id="Q-current", role="supporting", assessment_id="EA-cur",
+                )
+                self.assertEqual(self._link_count(db), 2)
+
+                # A timestamp inside raw evidence is material even though
+                # top-level ingestion timestamps are administrative metadata.
+                db.execute(
+                    "UPDATE evtx_events SET raw_json = ? WHERE evidence_id = 'evtx-1'",
+                    ['{"created_at":"2020-01-01"}'],
+                )
+                create_evidence_links_for_query(
+                    db, hypothesis_id="H-CUR", evidence_ids=["evtx-1"],
+                    query_id="Q-current", role="supporting", assessment_id="EA-cur",
+                )
+                self.assertEqual(self._assess(db).status, "sufficient")
+                db.execute(
+                    "UPDATE evtx_events SET raw_json = ? WHERE evidence_id = 'evtx-1'",
+                    ['{"created_at":"2026-01-01"}'],
+                )
+                self.assertEqual(self._assess(db).status, "insufficient")
 
     def test_unresolvable_currentness_requires_reassessment(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -871,6 +990,68 @@ class CurrentLinkTests(unittest.TestCase):
                         for reason in result.reasons
                     )
                 )
+
+    def test_spec_change_makes_old_assessment_historical(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                original_spec = {
+                    "spec_version": "1",
+                    "support_conditions": {"co_observed_event_ids": [4624]},
+                }
+                self._seed(db, verification_spec=original_spec)
+                before = load_evidence_links(db, "H-CUR", current_only=True)
+                self.assertEqual(len(before), 1)
+
+                changed_spec = {
+                    "spec_version": "1",
+                    "support_conditions": {"co_observed_event_ids": [4624]},
+                    "refute_conditions": {"zero_rows": True},
+                }
+                db.execute(
+                    "UPDATE hypotheses SET verification_spec = ? "
+                    "WHERE hypothesis_id = 'H-CUR'",
+                    [json.dumps(changed_spec)],
+                )
+
+                self.assertEqual(load_evidence_links(db, "H-CUR", current_only=True), [])
+                historical = load_evidence_links(db, "H-CUR")
+                self.assertEqual(len(historical), 1)
+                self.assertEqual(
+                    evidence_link_currentness(db, historical[0])[1],
+                    "verification_spec_changed",
+                )
+
+                # Reassess the same row under the new Spec with the same query.
+                from forensia.core.verification import VerificationSpec
+
+                hypothesis = Hypothesis(
+                    id="H-CUR",
+                    description="currentness fixture",
+                    status="active",
+                    verification_spec=VerificationSpec.model_validate(changed_spec),
+                )
+                assessment = assess_evidence_group(
+                    hypothesis=hypothesis,
+                    rows=[{"event_id": 4624}],
+                    evidence_ids=["evtx-1"],
+                    derivation_group="evtx-1",
+                )
+                self.assertEqual(assessment.role, "supporting")
+                create_hypothesis_evidence_link(
+                    db,
+                    hypothesis_id="H-CUR",
+                    evidence_id="evtx-1",
+                    query_id="Q-current",
+                    role=assessment.role,
+                    assessment_id=assessment.assessment_id,
+                    derivation_group=assessment.derivation_group,
+                )
+                history_after = load_evidence_links(db, "H-CUR")
+                current_after = load_evidence_links(db, "H-CUR", current_only=True)
+                self.assertEqual(len(history_after), 2)
+                self.assertEqual(len(current_after), 1)
+                self.assertNotEqual(history_after[0].link_id, history_after[1].link_id)
+                self.assertEqual(self._assess(db, verification_spec=changed_spec).status, "sufficient")
 
     def test_new_assessment_captures_source_without_rewriting_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -904,3 +1085,148 @@ class CurrentLinkTests(unittest.TestCase):
                 db.execute("UPDATE hypothesis_evidence SET source_file = ''")
                 self.assertEqual(self._assess(db).status, "insufficient")
                 self.assertEqual(load_evidence_links(db, "H-CUR")[0].source_file, "")
+
+
+class CrossQueryIndependenceTests(unittest.TestCase):
+    """R02: attempt identity is acquisition history; the evidence row is the root.
+
+    Reproduction boundary (previously observed with a temporary database): the
+    same evidence fetched via two query IDs became two derivation groups, so
+    independent support counted 1 -> 2.  Suppression is deterministic from the
+    existing evidence references: the same evidence_id under the same source
+    identity is one derivation root regardless of which query observed it.
+    """
+
+    def _seed(self, db: CaseDB) -> None:
+        db.execute(
+            "INSERT INTO hypotheses (hypothesis_id, status, created_at, "
+            "updated_at, verification_spec) VALUES ('H-XQ', 'active', now(), "
+            "now(), '{\"spec_version\": \"1\", \"support_conditions\": "
+            "{\"co_observed_event_ids\": [4624]}}')"
+        )
+
+    def _observed_rows(self, source: str, evidence_id: str) -> list[dict]:
+        return [
+            {
+                "evidence_id": evidence_id,
+                "event_id": 4624,
+                "channel": "Security",
+                "source_file": source,
+            }
+        ]
+
+    def _link_observation(
+        self,
+        db: CaseDB,
+        *,
+        query_id: str,
+        rows: list[dict],
+        evidence_id: str,
+    ) -> None:
+        hypothesis = Hypothesis(
+            id="H-XQ",
+            description="logon was observed",
+            confirm_when={"co_observed_event_ids": [4624]},
+        )
+        for row in rows:
+            db.execute(
+                "DELETE FROM evtx_events WHERE evidence_id = ?",
+                [row["evidence_id"]],
+            )
+            db.execute(
+                "INSERT INTO evtx_events (evidence_id, source_file, "
+                "channel, event_id) VALUES (?, ?, ?, ?)",
+                [
+                    row["evidence_id"],
+                    row["source_file"],
+                    row["channel"],
+                    row["event_id"],
+                ],
+            )
+        assessment = assess_evidence_group(
+            hypothesis=hypothesis,
+            rows=rows,
+            evidence_ids=[evidence_id],
+        )
+        create_evidence_links_for_query(
+            db,
+            hypothesis_id="H-XQ",
+            evidence_ids=[evidence_id],
+            query_id=query_id,
+            role=assessment.role,
+            assessment_id=assessment.assessment_id,
+        )
+
+    def _assess(
+        self,
+        db: CaseDB,
+        *,
+        evidence_requirements: dict | None = None,
+    ) -> SufficiencyResult:
+        result, _verdict, _reason, _caps = assess_and_persist_sufficiency(
+            db,
+            hypothesis_id="H-XQ",
+            evidence_requirements=evidence_requirements or {},
+            llm_verdict="confirmed",
+            verification_spec={
+                "spec_version": "1",
+                "support_conditions": {"co_observed_event_ids": [4624]},
+            },
+        )
+        return result
+
+    def _settle(self, db: CaseDB, rows: list[dict], result: SufficiencyResult) -> str:
+        hypothesis = Hypothesis(
+            id="H-XQ",
+            description="logon was observed",
+            confirm_when={"co_observed_event_ids": [4624]},
+        )
+        si = build_settlement_input_from_confirm_when(
+            hypothesis=hypothesis,
+            checker_verdict="confirmed",
+            check_summary="proposed confirmation",
+            sample_rows=rows,
+            sufficiency_result=result,
+        )
+        return decide_settlement(
+            si, links=load_evidence_links(db, "H-XQ", current_only=True), coverage={}
+        )
+
+    def test_refetch_via_different_query_is_one_group_for_both_gates(self) -> None:
+        """Same evidence via two query IDs: one independent group end to end.
+
+        A two-group requirement fails while only the duplicated attempt
+        exists (LLM 'confirmed' is reconciled down), settlement is blocked,
+        and a genuinely independent row (different source identity)
+        restores two independent groups and confirms settlement.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                self._seed(db)
+                requirements = {"min_independent_groups": 2}
+                rows = self._observed_rows("sha-a", "evtx-1")
+                self._link_observation(db, query_id="Q-one", rows=rows, evidence_id="evtx-1")
+                self._link_observation(db, query_id="Q-two", rows=rows, evidence_id="evtx-1")
+                self.assertEqual(len(load_evidence_links(db, "H-XQ")), 2)
+
+                result = self._assess(db, evidence_requirements=requirements)
+                self.assertEqual(result.independent_groups, 1)
+                self.assertNotEqual(result.status, "sufficient")
+
+                decision = self._settle(db, rows, result)
+                self.assertFalse(decision.allowed)
+                self.assertIn(
+                    "machine_sufficiency=", "; ".join(decision.gates_failed)
+                )
+
+                # A genuinely independent derivation root is not lost.
+                independent_rows = self._observed_rows("sha-b", "evtx-2")
+                self._link_observation(
+                    db, query_id="Q-three", rows=independent_rows, evidence_id="evtx-2"
+                )
+                result = self._assess(db, evidence_requirements=requirements)
+                self.assertEqual(result.independent_groups, 2)
+                self.assertEqual(result.status, "sufficient")
+                decision = self._settle(db, [*rows, *independent_rows], result)
+                self.assertTrue(decision.allowed)
+                self.assertEqual(decision.verdict, "confirmed")

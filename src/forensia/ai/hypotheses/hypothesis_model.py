@@ -8,7 +8,6 @@ import re
 from typing import Any
 
 from forensia.core.session import Hypothesis
-from forensia.db.database import CaseDB
 
 # ---------------------------------------------------------------------------
 # Entity validation (moved here from investigator.py so the admission gate
@@ -209,48 +208,6 @@ def _propose_confirm_when(entities: list[str]) -> dict[str, Any]:
     return {"co_observed_entity_names": entities, "same_host": False, "heuristic": True}
 
 
-def _clean_confirm_when(
-    confirm_when: dict[str, Any] | None, db: CaseDB | None = None
-) -> dict[str, Any] | None:
-    """Remove non-finding_id entries from confirm_when.co_observed_event_ids.
-
-    Validates that each entry is either a valid finding_id (matching DB pattern)
-    or a valid event_id (integer). Drops keypoint names, free text, etc.
-    """
-    if not confirm_when or not isinstance(confirm_when, dict):
-        return confirm_when
-
-    co_observed = confirm_when.get("co_observed_event_ids")
-    if not co_observed or not isinstance(co_observed, list):
-        return confirm_when
-
-    cleaned: list[str] = []
-    for entry in co_observed:
-        entry_str = str(entry).strip()
-        if not entry_str:
-            continue
-        # Keep valid finding_ids (pattern: windows-xxx-yyyy-xxxx-xxxx)
-        if re.match(r"^[a-z]+-[a-z0-9]+-[0-9]+-[a-z0-9-]+$", entry_str):
-            cleaned.append(entry_str)
-            continue
-        # Keep valid event_ids (pure integers)
-        try:
-            int(entry_str)
-            cleaned.append(entry_str)
-            continue
-        except ValueError:
-            pass
-        # Skip everything else (keypoint names, free text, etc.)
-        continue
-
-    if not cleaned:
-        confirm_when.pop("co_observed_event_ids", None)
-    else:
-        confirm_when["co_observed_event_ids"] = cleaned
-
-    return confirm_when if any(confirm_when.values()) else None
-
-
 def _normalize_hypothesis_description(description: str) -> str:
     return " ".join(str(description or "").lower().split())
 
@@ -269,18 +226,25 @@ def _merge_string_lists(*values: list[str]) -> list[str]:
 
 
 def _merge_hypothesis_fields(existing: Hypothesis, incoming: Hypothesis) -> Hypothesis:
-    """Merge fields from an incoming hypothesis into an existing one, preserving existing status and verdict."""
+    """Merge fields from an incoming hypothesis into an existing one, preserving existing status and verdict.
+
+    Verification semantics come from the existing canonical spec; the
+    incoming declaration only fills condition fields the existing spec
+    leaves empty, so merged hypotheses keep their declared capabilities.
+    """
     source_rule_ids = _merge_string_lists(
         existing.source_rule_ids, incoming.source_rule_ids
     )
     required_entities = _merge_string_lists(
         existing.required_entities, incoming.required_entities
     )
-    confirm_when = existing.confirm_when or incoming.confirm_when
-    if confirm_when:
-        confirm_when = _clean_confirm_when(
-            dict(confirm_when) if isinstance(confirm_when, dict) else confirm_when
-        )
+    spec = existing.verification_spec.model_copy(deep=True)
+    if not spec.support_conditions and incoming.confirm_when:
+        spec.support_conditions = dict(incoming.confirm_when)
+    if not spec.refute_conditions and incoming.refute_when:
+        spec.refute_conditions = dict(incoming.refute_when)
+    if not spec.evidence_requirements and incoming.evidence_requirements:
+        spec.evidence_requirements = dict(incoming.evidence_requirements)
     return Hypothesis(
         id=existing.id,
         description=existing.description or incoming.description,
@@ -291,11 +255,7 @@ def _merge_hypothesis_fields(existing: Hypothesis, incoming: Hypothesis) -> Hypo
         source_decl_id=existing.source_decl_id or incoming.source_decl_id,
         source_gap_id=existing.source_gap_id or incoming.source_gap_id,
         required_entities=required_entities,
-        confirm_when=confirm_when if isinstance(confirm_when, dict) else None,
-        refute_when=existing.refute_when or incoming.refute_when,
-        evidence_requirements=(
-            existing.evidence_requirements or incoming.evidence_requirements
-        ),
+        verification_spec=spec,
         fallback_phase=existing.fallback_phase or incoming.fallback_phase,
         fallback_source_rule_id=existing.fallback_source_rule_id
         or incoming.fallback_source_rule_id,

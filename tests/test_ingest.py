@@ -36,15 +36,13 @@ class IngestTests(unittest.TestCase):
             def fake_ingest(
                 case_obj: Case,
                 source_path: str | Path,
-                source_sha: str | None = None,
+                source_sha: str,
                 progress_callback=None,
             ):
                 suffix = Path(source_path).suffix.lower()
-                output = (
-                    case_obj.raw_dir / f"{(source_sha or 'x')[:12]}{suffix or '.jsonl'}"
-                )
+                output = case_obj.raw_dir / f"{source_sha[:12]}{suffix or '.jsonl'}"
                 output.write_text("{}", encoding="utf-8")
-                return output, None
+                return output
 
             with (
                 patch(
@@ -86,12 +84,12 @@ class IngestTests(unittest.TestCase):
             def fake_ingest(
                 case_obj: Case,
                 source_path: str | Path,
-                source_sha: str | None = None,
+                source_sha: str,
                 progress_callback=None,
             ):
                 output = (
                     case_obj.raw_dir
-                    / f"prefetch-entries-{(source_sha or 'x')[:12]}.jsonl"
+                    / f"prefetch-entries-{source_sha[:12]}.jsonl"
                 )
                 output.write_text("{}", encoding="utf-8")
                 return output, None

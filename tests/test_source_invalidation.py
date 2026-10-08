@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from forensia.ai.investigation.selection import select_focus_hypotheses
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.evidence.artifacts import NormalizeResult
@@ -23,8 +24,11 @@ class SourceInvalidationTests(unittest.TestCase):
             """
             INSERT INTO hypotheses (
                 hypothesis_id, status, verdict, sufficiency_status,
-                human_review_required, updated_at
-            ) VALUES ('H-1', 'confirmed', 'confirmed', 'sufficient', false, now())
+                human_review_required, verification_spec, selection_count,
+                blocked_reason, next_eligible_at, updated_at
+            ) VALUES ('H-1', 'confirmed', 'confirmed', 'sufficient', false,
+                      '{"spec_version":"1"}', 8, 'old attempt blocked',
+                      now() + INTERVAL 1 DAY, now())
             """
         )
         db.execute(
@@ -122,7 +126,12 @@ class SourceInvalidationTests(unittest.TestCase):
                     "SELECT evidence_id, role FROM hypothesis_evidence WHERE link_id = 'L-1'"
                 ).fetchone()
 
-            self.assertEqual(("needs_review", None, "needs_review", True), hypothesis)
+            self.assertEqual(("active", None, "needs_review", True), hypothesis)
+            with CaseDB(case) as db:
+                self.assertEqual(
+                    [row.hypothesis_id for row in select_focus_hypotheses(db, limit=1)],
+                    ["H-1"],
+                )
             self.assertEqual(("needs_review",), claim)
             self.assertEqual((True,), section)
             self.assertEqual(("evtx-old", "supporting"), links)
@@ -212,6 +221,94 @@ class SourceInvalidationTests(unittest.TestCase):
                         "WHERE evidence_id = 'evtx-old'"
                     ).fetchone(),
                 )
+
+
+    def test_content_change_under_same_source_invalidates_dependents(self) -> None:
+        """R03: same evidence_id under the same source with changed content.
+
+        The dependent survey fingerprints the referenced rows; an in-place
+        content change moves dependents to review without deleting link
+        history, exactly like the removal path.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(Path(tmpdir) / "case")
+            with CaseDB(case) as db:
+                self._seed_dependents(db)
+
+                class ContentChangeAdapter:
+                    name = "evtx"
+
+                    def normalize(self, case, db, source_keys=None):
+                        del case, source_keys
+                        db.execute(
+                            "UPDATE evtx_events SET message = 'rewritten by re-ingest' "
+                            "WHERE evidence_id = 'evtx-old'"
+                        )
+                        return NormalizeResult(source_kind="evtx", rows=1)
+
+                with patch(
+                    "forensia.evidence.normalize.get_artifact_adapters",
+                    return_value=(ContentChangeAdapter(),),
+                ):
+                    normalize_all(case, db)
+
+                hypothesis = db.execute(
+                    "SELECT status, verdict, sufficiency_status, "
+                    "human_review_required, sufficiency_reason "
+                    "FROM hypotheses WHERE hypothesis_id = 'H-1'"
+                ).fetchone()
+                claim = db.execute(
+                    "SELECT support_status FROM claims WHERE claim_id = 'C-1'"
+                ).fetchone()
+                links = db.execute(
+                    "SELECT evidence_id FROM hypothesis_evidence WHERE link_id = 'L-1'"
+                ).fetchone()
+
+            self.assertEqual(
+                ("active", None, "needs_review", True), hypothesis[:4]
+            )
+            self.assertIn("content changed under the same source", hypothesis[4])
+            self.assertEqual(("needs_review",), claim)
+            # Link history is kept, not re-pointed.
+            self.assertEqual(("evtx-old",), links)
+
+    def test_unchanged_content_keeps_dependents_current(self) -> None:
+        """Re-running normalization without content change invalidates nothing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(Path(tmpdir) / "case")
+            with CaseDB(case) as db:
+                self._seed_dependents(db)
+
+                class UnchangedAdapter:
+                    name = "evtx"
+
+                    def normalize(self, case, db, source_keys=None):
+                        del case, source_keys
+                        db.execute(
+                            "DELETE FROM evtx_events WHERE evidence_id = 'evtx-old'"
+                        )
+                        db.execute(
+                            "INSERT INTO evtx_events (evidence_id, source_file) "
+                            "VALUES ('evtx-old', 'source')"
+                        )
+                        return NormalizeResult(source_kind="evtx", rows=1)
+
+                with patch(
+                    "forensia.evidence.normalize.get_artifact_adapters",
+                    return_value=(UnchangedAdapter(),),
+                ):
+                    normalize_all(case, db)
+
+                hypothesis = db.execute(
+                    "SELECT status, sufficiency_status FROM hypotheses "
+                    "WHERE hypothesis_id = 'H-1'"
+                ).fetchone()
+                claim = db.execute(
+                    "SELECT support_status FROM claims WHERE claim_id = 'C-1'"
+                ).fetchone()
+
+            self.assertEqual(("confirmed", "sufficient"), hypothesis)
+            self.assertEqual(("supported",), claim)
 
 
 if __name__ == "__main__":

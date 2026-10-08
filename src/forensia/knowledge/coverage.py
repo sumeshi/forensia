@@ -29,20 +29,6 @@ _TIMESTAMP_TABLES = {
 }
 
 
-def _source_file_values(db: CaseDB, source_ids: list[str]) -> list[str]:
-    """Return current stable IDs plus paths used by legacy normalized rows."""
-    if not source_ids:
-        return []
-    placeholders = ", ".join("?" for _ in source_ids)
-    legacy_paths = db.execute(
-        f"SELECT path FROM ingested_files WHERE sha256 IN ({placeholders})",
-        source_ids,
-    ).fetchall()
-    return list(
-        dict.fromkeys([*source_ids, *(str(row[0]) for row in legacy_paths if row[0])])
-    )
-
-
 def _case_evidence_window(
     sources_by_family: dict[str, list[dict[str, Any]]],
     reference_families: list[str],
@@ -80,8 +66,7 @@ def _timestamp_stats(
     if table_spec is None or not source_ids:
         return None, None, {}
     table, column = table_spec
-    source_values = _source_file_values(db, source_ids)
-    placeholders = ", ".join("?" for _ in source_values)
+    placeholders = ", ".join("?" for _ in source_ids)
 
     absolute = (
         f"EXTRACT(year FROM {column}) BETWEEN "
@@ -123,7 +108,7 @@ def _timestamp_stats(
         FROM {table}
         WHERE source_file IN ({placeholders})
         """,
-        [*select_params, *source_values],
+        [*select_params, *source_ids],
     ).fetchone()
     if row is None:
         return None, None, {}
@@ -188,13 +173,12 @@ def _check_row_count_invariant(
         for source in sources:
             if source["ingest_status"] not in {"normalized", "empty", "parsed"}:
                 continue
-            # New normalized rows carry the stable SHA source identity.  The
-            # path subquery is retained for legacy case databases.
+            # Normalized rows carry the ingested SHA-256 as their durable
+            # source identity, matching the source_id recorded here.
             try:
                 actual = db.execute(
-                    f"SELECT COUNT(*) FROM {table} WHERE source_file = ? OR source_file IN "
-                    "(SELECT path FROM ingested_files WHERE sha256 = ?)",
-                    [source["source_id"], source["source_id"]],
+                    f"SELECT COUNT(*) FROM {table} WHERE source_file = ?",
+                    [source["source_id"]],
                 ).fetchone()
                 actual_count = int(actual[0] or 0) if actual else 0
                 expected_count = int(source["row_count"] or 0)
@@ -354,16 +338,14 @@ def compute_evidence_coverage(db: CaseDB) -> list[dict[str, Any]]:
             event_ids = [int(item) for item in cap_config.get("event_ids", [])]
             if family == "evtx" and normalized and event_ids and not channel_reason:
                 event_placeholders = ", ".join("?" for _ in event_ids)
-                source_values = _source_file_values(
-                    db, [str(source["source_id"]) for source in normalized]
-                )
-                source_placeholders = ", ".join("?" for _ in source_values)
+                source_ids = [str(source["source_id"]) for source in normalized]
+                source_placeholders = ", ".join("?" for _ in source_ids)
                 event_count = int(
                     db.execute(
                         f"SELECT COUNT(*) FROM evtx_events WHERE lower(channel) = lower(?) "
                         f"AND event_id IN ({event_placeholders}) "
                         f"AND source_file IN ({source_placeholders})",
-                        [required_channel, *event_ids, *source_values],
+                        [required_channel, *event_ids, *source_ids],
                     ).fetchone()[0]
                 )
                 if event_count == 0:
@@ -521,21 +503,19 @@ def relevant_coverage_states(
 def derive_required_capabilities(
     required_capabilities: list[str] | None = None,
     support_conditions: dict[str, Any] | None = None,
-    confirm_when: dict[str, Any] | None = None,
-    description: str = "",
 ) -> list[str]:
     """Derive the capabilities a hypothesis needs, with one shared priority.
 
     This is the single derivation owner for the direct ``hypotheses`` row
-    readers (candidate selection, work state) and the legacy sufficiency
-    fallback, so the required capability list cannot diverge between call
-    sites that re-derive it with different inputs.
+    readers (candidate selection, work state) and sufficiency, so the
+    required capability list cannot diverge between call sites that
+    re-derive it with different inputs.
 
     Priority: a non-empty declared ``required_capabilities`` list from the
     canonical VerificationSpec wins outright.  Otherwise the declared support
-    event IDs map through the existing artifact capability catalog. Legacy
-    text inference supplements the supplied conditions/description; callers
-    with a canonical Spec use its conditions and do not reinterpret prose.
+    event IDs map through the existing artifact capability catalog.  Only the
+    spec's structured conditions are interpreted; there is no prose
+    fallback that would re-derive different requirements from a description.
     """
     declared = sorted(
         {
@@ -547,7 +527,7 @@ def derive_required_capabilities(
     if declared:
         return declared
     inferred: set[str] = set()
-    conditions = support_conditions if support_conditions is not None else confirm_when
+    conditions = support_conditions or {}
     if conditions:
         # Structured event requirements do not need a table-name keyword in
         # their JSON to identify the capabilities declared for those events.
@@ -570,8 +550,6 @@ def derive_required_capabilities(
         inferred.update(
             infer_capabilities(json.dumps(conditions, ensure_ascii=False).lower())
         )
-    if support_conditions is None and description:
-        inferred.update(infer_capabilities(description))
     return sorted(inferred)
 
 

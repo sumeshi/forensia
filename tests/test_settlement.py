@@ -10,6 +10,7 @@ These tests verify that:
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 
@@ -54,12 +55,23 @@ def _make_hypothesis(
 def _make_evidence_link(
     db: CaseDB,
     *,
+    hypothesis: Hypothesis,
     hypothesis_id: str = "H-001",
     evidence_id: str = "evtx-001",
     role: str = "supporting",
     source_family: str = "evtx",
     strength: str = "moderate",
 ) -> str:
+    db.execute(
+        "INSERT INTO hypotheses (hypothesis_id, description, status, verification_spec, "
+        "created_at, updated_at) VALUES (?, ?, 'active', ?, now(), now()) "
+        "ON CONFLICT (hypothesis_id) DO UPDATE SET verification_spec = excluded.verification_spec",
+        [
+            hypothesis_id,
+            hypothesis.description,
+            json.dumps(hypothesis.verification_spec.model_dump(mode="json")),
+        ],
+    )
     _backing_evidence_row(db, evidence_id, source_family)
     return create_hypothesis_evidence_link(
         db,
@@ -151,7 +163,7 @@ class SettlementGateTests(unittest.TestCase):
                     confirm_when={"co_observed_event_ids": [21, 4624]},
                 )
                 # Create a single weak evidence link
-                _make_evidence_link(db, strength="weak", source_family="mft")
+                _make_evidence_link(db, hypothesis=hyp, strength="weak", source_family="mft")
                 si = SettlementInput(
                     hypothesis=hyp,
                     checker_verdict="confirmed",
@@ -176,8 +188,8 @@ class SettlementGateTests(unittest.TestCase):
                     required_entities=["target_user", "src_ip"],
                     confirm_when={"co_observed_event_ids": [21, 4624]},
                 )
-                _make_evidence_link(db)
-                _make_evidence_link(db, evidence_id="evtx-002", source_family="evtx")
+                _make_evidence_link(db, hypothesis=hyp)
+                _make_evidence_link(db, hypothesis=hyp, evidence_id="evtx-002", source_family="evtx")
                 si = SettlementInput(
                     hypothesis=hyp,
                     checker_verdict="confirmed",
@@ -220,8 +232,8 @@ class SettlementGateTests(unittest.TestCase):
                     required_entities=["target_user", "src_ip"],
                     confirm_when={"co_observed_event_ids": [21, 4624]},
                 )
-                _make_evidence_link(db)
-                _make_evidence_link(db, evidence_id="evtx-002")
+                _make_evidence_link(db, hypothesis=hyp)
+                _make_evidence_link(db, hypothesis=hyp, evidence_id="evtx-002")
                 si = SettlementInput(
                     hypothesis=hyp,
                     checker_verdict="confirmed",
@@ -269,8 +281,8 @@ class SettlementGateTests(unittest.TestCase):
                     required_entities=["target_user"],
                     confirm_when={"co_observed_event_ids": [21, 4624]},
                 )
-                _make_evidence_link(db)
-                _make_evidence_link(db, evidence_id="evtx-002")
+                _make_evidence_link(db, hypothesis=hyp)
+                _make_evidence_link(db, hypothesis=hyp, evidence_id="evtx-002")
                 si = SettlementInput(
                     hypothesis=hyp,
                     checker_verdict="inconclusive",
@@ -308,9 +320,9 @@ class SettlementGateTests(unittest.TestCase):
                         "same_host": True,
                     },
                 )
-                _make_evidence_link(db)
-                _make_evidence_link(db, evidence_id="evtx-002")
-                _make_evidence_link(db, evidence_id="evtx-003")
+                _make_evidence_link(db, hypothesis=hyp)
+                _make_evidence_link(db, hypothesis=hyp, evidence_id="evtx-002")
+                _make_evidence_link(db, hypothesis=hyp, evidence_id="evtx-003")
                 # 4720 target is "newuser", 4732/4624 are for unrelated "admin"
                 si = SettlementInput(
                     hypothesis=hyp,
@@ -371,10 +383,10 @@ class PositiveSettlementTests(unittest.TestCase):
                     },
                 )
                 # Create multiple supporting evidence links from different families
-                _make_evidence_link(db, evidence_id="evtx-001", source_family="evtx")
-                _make_evidence_link(db, evidence_id="evtx-002", source_family="evtx")
+                _make_evidence_link(db, hypothesis=hyp, evidence_id="evtx-001", source_family="evtx")
+                _make_evidence_link(db, hypothesis=hyp, evidence_id="evtx-002", source_family="evtx")
                 _make_evidence_link(
-                    db, evidence_id="prefetch-001", source_family="prefetch"
+                    db, hypothesis=hyp, evidence_id="prefetch-001", source_family="prefetch"
                 )
 
                 # Insert sufficiency metadata
@@ -442,7 +454,7 @@ class PositiveSettlementTests(unittest.TestCase):
                     required_entities=["target_user"],
                     confirm_when={"co_observed_event_ids": [4738]},
                 )
-                _make_evidence_link(db, evidence_id="evtx-4738")
+                _make_evidence_link(db, hypothesis=hyp, evidence_id="evtx-4738")
                 si = SettlementInput(
                     hypothesis=hyp,
                     checker_verdict="inconclusive",
@@ -480,8 +492,8 @@ class PositiveSettlementTests(unittest.TestCase):
                     source_rule_ids=["rule-1"],
                     required_entities=["target_user"],
                 )
-                _make_evidence_link(db)
-                _make_evidence_link(db, evidence_id="evtx-002")
+                _make_evidence_link(db, hypothesis=hyp)
+                _make_evidence_link(db, hypothesis=hyp, evidence_id="evtx-002")
                 db.execute(
                     "UPDATE hypotheses SET sufficiency_status = 'sufficient', "
                     "sufficiency_score = 0.8 WHERE hypothesis_id = 'H-001'"
@@ -504,8 +516,8 @@ class PositiveSettlementTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 hyp = _make_hypothesis(source_rule_ids=["rule-1"])
-                _make_evidence_link(db)
-                _make_evidence_link(db, evidence_id="evtx-002")
+                _make_evidence_link(db, hypothesis=hyp)
+                _make_evidence_link(db, hypothesis=hyp, evidence_id="evtx-002")
                 si = SettlementInput(
                     hypothesis=hyp,
                     checker_verdict="confirmed",
@@ -544,8 +556,8 @@ class PositiveSettlementTests(unittest.TestCase):
                         "event_constraints": {4624: {"logon_type": ["10"]}},
                     },
                 )
-                _make_evidence_link(db, hypothesis_id="H-rdp", evidence_id="evtx-21")
-                _make_evidence_link(db, hypothesis_id="H-rdp", evidence_id="evtx-4624")
+                _make_evidence_link(db, hypothesis=hyp, hypothesis_id="H-rdp", evidence_id="evtx-21")
+                _make_evidence_link(db, hypothesis=hyp, hypothesis_id="H-rdp", evidence_id="evtx-4624")
                 decision = settle_hypothesis(
                     db,
                     SettlementInput(
@@ -599,8 +611,8 @@ class AutoConfirmOverrideTests(unittest.TestCase):
                     source_rule_ids=["rule-1"],
                     confirm_when={"co_observed_event_ids": [21, 4624]},
                 )
-                _make_evidence_link(db)
-                _make_evidence_link(db, evidence_id="evtx-002")
+                _make_evidence_link(db, hypothesis=hyp)
+                _make_evidence_link(db, hypothesis=hyp, evidence_id="evtx-002")
                 db.execute(
                     "UPDATE hypotheses SET sufficiency_status = 'sufficient', "
                     "sufficiency_score = 0.8 WHERE hypothesis_id = 'H-001'"
@@ -911,8 +923,8 @@ class BenignAuthTests(unittest.TestCase):
                     required_entities=["target_user"],
                     confirm_when={"co_observed_event_ids": [4624]},
                 )
-                _make_evidence_link(db)
-                _make_evidence_link(db, evidence_id="evtx-002")
+                _make_evidence_link(db, hypothesis=hyp)
+                _make_evidence_link(db, hypothesis=hyp, evidence_id="evtx-002")
                 db.execute(
                     "UPDATE hypotheses SET sufficiency_status = 'sufficient', "
                     "sufficiency_score = 0.8 WHERE hypothesis_id = 'H-001'"

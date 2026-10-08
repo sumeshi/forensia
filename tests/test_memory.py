@@ -766,12 +766,12 @@ class LoadInvestigationContextRelevanceTests(unittest.TestCase):
 
 
 def test_ctx_refresh_caches_forwards_relevance_terms() -> None:
-    """The investigator's preloaded contexts must carry relevance filtering.
+    """The investigator's preloaded planner context must carry relevance filtering.
 
-    Why: ctx.memory_plan / ctx.memory_check are handed to the planner and
-    checker as their default context, which SKIPS the lazy-load fallbacks
-    where relevance filtering also lives. If the preload does not filter,
-    relevance filtering is inert for the whole main investigation loop.
+    Why: ctx.memory_plan is handed to the planner as its default context,
+    which SKIPS the lazy-load fallbacks where relevance filtering also lives.
+    If the preload does not filter, relevance filtering is inert for the whole
+    main investigation loop.
     """
     from unittest.mock import MagicMock
 
@@ -798,12 +798,12 @@ def test_ctx_refresh_caches_forwards_relevance_terms() -> None:
     ctx_refresh_caches(Ctx(), memory, "http://localhost", "m", hypothesis=hypothesis)
 
     calls = memory.load_investigation_context.call_args_list
-    assert len(calls) == 2  # memory_plan and memory_check
-    for call in calls:
-        terms = call.kwargs.get("relevance_terms")
-        assert terms, "preloaded context must be relevance-filtered"
-        assert "informant" in terms
-        assert call.args[0] == "H-001" or call.kwargs.get("hypothesis_id") == "H-001"
+    assert len(calls) == 1  # memory_plan (the planner's default context)
+    call = calls[0]
+    terms = call.kwargs.get("relevance_terms")
+    assert terms, "preloaded context must be relevance-filtered"
+    assert "informant" in terms
+    assert call.args[0] == "H-001" or call.kwargs.get("hypothesis_id") == "H-001"
 
 
 class FuzzyDedupTests(unittest.TestCase):

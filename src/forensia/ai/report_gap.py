@@ -20,7 +20,6 @@ from forensia.ai.hypotheses.hypothesis_store import _upsert_hypothesis
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, SessionState
 from forensia.core.textutil import normalize_text as _normalize_text
-from forensia.core.verification import normalize_verification_spec
 from forensia.db.database import CaseDB
 from forensia.report.sections.section_store import fetch_report_sections
 
@@ -552,10 +551,6 @@ def inject_gap_hypotheses(
             llm_output or {}, gap
         )
         try:
-            spec = normalize_verification_spec(
-                confirm_when=confirm_when,
-                required_entities=required_entities,
-            )
             candidate = Hypothesis(
                 id=gap_hypothesis_id(gap),
                 description=gap,
@@ -563,7 +558,6 @@ def inject_gap_hypotheses(
                 required_entities=required_entities,
                 confirm_when=confirm_when,
                 source_gap_id=gap_id,
-                verification_spec=spec,
             )
         except Exception as exc:
             _persist_admission_outcome(

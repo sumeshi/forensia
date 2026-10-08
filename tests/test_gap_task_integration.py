@@ -37,8 +37,9 @@ def _insert_hypothesis(
 ) -> Hypothesis:
     db.execute(
         "INSERT INTO hypotheses (hypothesis_id, description, status, "
-        "sufficiency_status, blocked_reason, created_at, updated_at) "
-        "VALUES (?, ?, 'active', ?, ?, now(), now())",
+        "sufficiency_status, blocked_reason, created_at, updated_at, "
+        "verification_spec) "
+        "VALUES (?, ?, 'active', ?, ?, now(), now(), '{\"spec_version\": \"1\"}')",
         [hypothesis_id, f"Description {hypothesis_id}", sufficiency, blocked_reason],
     )
     return Hypothesis(id=hypothesis_id, description=f"Description {hypothesis_id}")
@@ -361,7 +362,9 @@ class RetryAndProjectionTests(unittest.TestCase):
                 ):
                     db.execute(
                         "INSERT INTO hypotheses (hypothesis_id, description, status, "
-                        "created_at, updated_at) VALUES (?, ?, 'blocked', now(), now())",
+                        "created_at, updated_at, verification_spec) "
+                        "VALUES (?, ?, 'blocked', now(), now(), "
+                        "'{\"spec_version\": \"1\"}')",
                         [hypothesis_id, hypothesis_id],
                     )
                     db.execute(
@@ -393,12 +396,11 @@ class RetryAndProjectionTests(unittest.TestCase):
             with CaseDB(Case.init(tmpdir)) as db:
                 db.execute(
                     "INSERT INTO hypotheses (hypothesis_id, description, status, "
-                    "confirm_when, verification_spec, created_at, updated_at) "
-                    "VALUES (?, ?, 'active', ?, ?, now(), now())",
+                    "verification_spec, created_at, updated_at) "
+                    "VALUES (?, ?, 'active', ?, now(), now())",
                     [
                         "H-SPEC-CAPS",
                         "registry persistence hypothesis",
-                        json.dumps({"keywords": ["evtx_events 4624"]}),
                         json.dumps(
                             {
                                 "spec_version": "1",

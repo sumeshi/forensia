@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import time
 from collections.abc import Callable
@@ -411,8 +410,8 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
 
 async def _phase_check(rs: _HypothesisRunState) -> str:
     """Check call and verdict recording (persistence, log, emit, history)."""
-    hypothesis, state, ctx = rs.hypothesis, rs.state, rs.ctx
-    memory, db, case = rs.memory, rs.db, rs.case
+    hypothesis, state = rs.hypothesis, rs.state
+    db, case = rs.db, rs.case
     base_url, model, plan_cycle = rs.base_url, rs.model, rs.plan_cycle
     llm_logger, session_id = rs.llm_logger, rs.session_id
     query_index, llm_status_fn = rs.query_index, rs.llm_status_fn
@@ -429,11 +428,8 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
             hypothesis=hypothesis,
             finding_candidates=candidates,
             result_summary=result_summary,
-            memory=memory,
             base_url=base_url,
             model=model,
-            overview_md=ctx.memory_overview,
-            memory_context_md=ctx.memory_check,
             status_callback=llm_status_fn or (lambda msg: _log("LLM", msg)),
             fallback_info=fallback_info,
             audit_callback=lambda phase, msgs, out, parsed: llm_logger.write(
@@ -534,7 +530,6 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
                 hypothesis=hypothesis,
                 rows=rows or [],
                 evidence_ids=evidence_ids,
-                query_id=planned_query.query_id if planned_query else "",
             )
             role = assessment.role
             create_evidence_links_for_query(
@@ -545,9 +540,11 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
                 role=role,
                 created_session=session_id,
                 assessment_id=assessment.assessment_id,
-                # Every row from this query is one conservative observation
-                # group; do not let evidence IDs manufacture independence.
-                derivation_group=assessment.derivation_group,
+                # Each link's derivation root is its own evidence row;
+                # explicit derivation groups are not derived from the query.
+                # The query id remains acquisition history: the same evidence
+                # re-fetched by a different query cannot become multiple
+                # independent sufficiency groups.
                 finding_ids_by_evidence=finding_ids_by_evidence,
             )
         elif rows:
@@ -576,17 +573,10 @@ def _apply_sufficiency_guard(rs: _HypothesisRunState) -> None:
     """Persist machine sufficiency and reconcile it before state settlement."""
     check_result = rs.check_result
     original_verdict = check_result.verdict
-    investigation_text = " ".join(
-        [
-            rs.planned_query.sql if rs.planned_query else "",
-            json.dumps(rs.hypothesis.confirm_when or {}, ensure_ascii=False),
-        ]
-    )
     suff_result, final_verdict, reason, required_capabilities = (
         assess_and_persist_sufficiency(
             rs.db,
             hypothesis_id=rs.hypothesis.id,
-            investigation_text=investigation_text,
             evidence_requirements=rs.hypothesis.evidence_requirements,
             llm_verdict=original_verdict,
             verification_spec=rs.hypothesis.verification_spec,
@@ -787,9 +777,6 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
                 source_decl_id=hypothesis.source_decl_id,
                 source_gap_id=hypothesis.source_gap_id,
                 required_entities=hypothesis.required_entities,
-                confirm_when=hypothesis.confirm_when,
-                refute_when=hypothesis.refute_when,
-                evidence_requirements=hypothesis.evidence_requirements,
                 verification_spec=hypothesis.verification_spec,
                 target_keypoint_id=hypothesis.target_keypoint_id,
             ),

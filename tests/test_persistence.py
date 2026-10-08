@@ -180,8 +180,9 @@ class PersistenceTests(unittest.TestCase):
                     """
                     INSERT INTO hypotheses (
                         hypothesis_id, description, status, verdict, summary, origin,
-                        created_session, resolved_session, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        created_session, resolved_session, created_at, updated_at,
+                        verification_spec
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         "H-1",
@@ -194,6 +195,7 @@ class PersistenceTests(unittest.TestCase):
                         "session-old",
                         now,
                         now,
+                        '{"spec_version": "1"}',
                     ),
                 )
                 active, resolved = load_persisted_hypotheses(db)
@@ -203,8 +205,8 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual("H-1", resolved[0].id)
             self.assertEqual("confirmed", resolved[0].status)
 
-    def test_verification_spec_round_trips_legacy_conditions(self) -> None:
-        """The canonical spec and all three legacy projections survive reload."""
+    def test_verification_spec_round_trips_canonical_conditions(self) -> None:
+        """The canonical spec is the only stored condition representation."""
         from forensia.ai.hypotheses.hypothesis_store import _upsert_hypothesis
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -214,18 +216,14 @@ class PersistenceTests(unittest.TestCase):
                 description="registry persistence hypothesis",
                 required_entities=["host", "user"],
                 confirm_when={"co_observed_event_ids": [4624], "same_host": True},
-                refute_when={"zero_rows": True, "scope": {"host": "WS-01"}},
+                refute_when={"zero_rows": True},
                 evidence_requirements={"minimum_independent_groups": 2},
                 verification_spec=VerificationSpec(
                     support_conditions={
                         "co_observed_event_ids": [4624],
                         "same_host": True,
                     },
-                    refute_conditions={
-                        "zero_rows": True,
-                        "scope": {"host": "WS-01"},
-                    },
-                    required_entities=["host", "user"],
+                    refute_conditions={"zero_rows": True},
                     evidence_requirements={"minimum_independent_groups": 2},
                     required_capabilities=["windows.security.logon"],
                     scope={"host": "WS-01"},
@@ -234,9 +232,13 @@ class PersistenceTests(unittest.TestCase):
             with CaseDB(case) as db:
                 _upsert_hypothesis(db, original, origin="test", session_id="S-1")
                 active, resolved = load_persisted_hypotheses(db)
-                row = db.execute(
-                    "SELECT verification_spec, refute_when FROM hypotheses WHERE hypothesis_id = 'H-SPEC'"
-                ).fetchone()
+                columns = {
+                    row[0]
+                    for row in db.execute(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name = 'hypotheses'"
+                    ).fetchall()
+                }
 
             self.assertEqual([], resolved)
             self.assertEqual(1, len(active))
@@ -252,12 +254,74 @@ class PersistenceTests(unittest.TestCase):
                 restored.verification_spec.required_capabilities,
             )
             self.assertEqual({"host": "WS-01"}, restored.verification_spec.scope)
+            # Declaration-shaped columns no longer exist: the canonical spec
+            # column is the only stored condition representation.
+            self.assertFalse(
+                columns & {"confirm_when", "refute_when", "evidence_requirements"}
+            )
+            self.assertIn("verification_spec", columns)
             with self.assertRaises(ValueError):
                 VerificationSpec.model_validate({"spec_version": "2"})
             with self.assertRaises(ValueError):
                 VerificationSpec.model_validate({"unknown_policy": True})
-            self.assertIsNotNone(row[0])
-            self.assertIn('"zero_rows": true', str(row[1]))
+
+    def test_upsert_persists_canonical_spec_not_declaration_projection(self) -> None:
+        """Changing canonical support conditions survives upsert (4624→4688)."""
+        from forensia.ai.hypotheses.hypothesis_store import _upsert_hypothesis
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            hypothesis = Hypothesis(
+                id="H-CANON",
+                description="successful logon hypothesis",
+                confirm_when={"co_observed_event_ids": [4624]},
+            )
+            with CaseDB(case) as db:
+                _upsert_hypothesis(db, hypothesis, origin="test", session_id="S-1")
+                hypothesis.verification_spec.support_conditions = {
+                    "co_observed_event_ids": [4688]
+                }
+                _upsert_hypothesis(db, hypothesis, origin="test", session_id="S-1")
+                active, _resolved = load_persisted_hypotheses(db)
+                row = db.execute(
+                    "SELECT verification_spec FROM hypotheses "
+                    "WHERE hypothesis_id = 'H-CANON'"
+                ).fetchone()
+
+            restored = active[0]
+            self.assertEqual(
+                {"co_observed_event_ids": [4688]}, restored.confirm_when
+            )
+            self.assertIn("4688", row[0])
+            self.assertNotIn("4624", row[0])
+
+    def test_broken_or_missing_spec_is_an_explicit_load_failure(self) -> None:
+        """A stored spec that fails validation is rejected, never reinterpreted."""
+        from forensia.ai.hypotheses.hypothesis_store import load_persisted_hypotheses
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                # No canonical spec at all.
+                db.execute(
+                    """
+                    INSERT INTO hypotheses (
+                        hypothesis_id, description, status, origin,
+                        created_session, resolved_session, created_at, updated_at
+                    ) VALUES ('H-BAD', 'missing spec', 'confirmed', 'test',
+                              'S-1', 'S-1', now(), now())
+                    """
+                )
+                with self.assertRaises(ValueError):
+                    load_persisted_hypotheses(db)
+                # Valid JSON in an unsupported spec format.
+                db.execute(
+                    "UPDATE hypotheses SET verification_spec = ? "
+                    "WHERE hypothesis_id = 'H-BAD'",
+                    ('{"spec_version": "2"}',),
+                )
+                with self.assertRaises(ValueError):
+                    load_persisted_hypotheses(db)
 
     def test_merge_active_hypotheses_assigns_sequential_ids_and_dedupes_description(
         self,
@@ -270,10 +334,10 @@ class PersistenceTests(unittest.TestCase):
                     INSERT INTO hypotheses (
                         hypothesis_id, description, status, verdict, summary, origin,
                         created_session, resolved_session, created_at, updated_at,
-                        source_rule_ids, required_entities, confirm_when
+                        source_rule_ids, required_entities
                     ) VALUES
-                        ('H-001', 'existing active hypothesis', 'active', NULL, '', 'broad_plan', 'S-1', NULL, now(), now(), '["rule-1"]', '["host"]', NULL),
-                        ('H-002', 'resolved reference hypothesis', 'confirmed', 'confirmed', 'done', 'broad_plan', 'S-1', 'S-2', now(), now(), '["rule-2"]', '["user"]', NULL)
+                        ('H-001', 'existing active hypothesis', 'active', NULL, '', 'broad_plan', 'S-1', NULL, now(), now(), '["rule-1"]', '["host"]'),
+                        ('H-002', 'resolved reference hypothesis', 'confirmed', 'confirmed', 'done', 'broad_plan', 'S-1', 'S-2', now(), now(), '["rule-2"]', '["user"]')
                     """
                 )
                 current = [
@@ -349,9 +413,9 @@ class PersistenceTests(unittest.TestCase):
                     INSERT INTO hypotheses (
                         hypothesis_id, description, status, verdict, summary, origin,
                         created_session, resolved_session, created_at, updated_at,
-                        source_rule_ids, required_entities, confirm_when
+                        source_rule_ids, required_entities
                     ) VALUES
-                        ('H-010', 'RDP lateral movement to deploy service', 'active', NULL, '', 'broad_plan', 'S-1', NULL, now(), now(), '["rule-1"]', '["host"]', NULL)
+                        ('H-010', 'RDP lateral movement to deploy service', 'active', NULL, '', 'broad_plan', 'S-1', NULL, now(), now(), '["rule-1"]', '["host"]')
                     """
                 )
                 merged = merge_active_hypotheses(

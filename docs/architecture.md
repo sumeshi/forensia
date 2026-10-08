@@ -84,7 +84,7 @@ Output: DuckDB normalized evidence and timeline tables
 | Input | Parser | Output table |
 |---|---|---|
 | `*.evtx` | `evtx2es` → JSONL | `evtx_events` |
-| `$MFT` | `mft2es` → entries JSONL | `mft_entries` + derived `mft_timeline` |
+| `$MFT` | `mft2es` → entries JSONL | `mft_entries` + derived `mft_timeline` (single path: timeline rows are expanded in DuckDB; standalone `mft-timeline-*.jsonl` inputs are no longer read and leftover files are left untouched) |
 | `*.pf` | `prefetch2es` → JSONL | `prefetch_executions` + `prefetch_timeline` |
 | REGF primary hive (+ matching `.LOG1`/`.LOG2`) | `reg2es` → JSONL | `registry_artifacts` + `registry_timeline` |
 
@@ -97,10 +97,20 @@ Artifact replacement uses set-based `INSERT ... SELECT` inside a transaction.
 MFT timeline rows are expanded from the eight normalized entry timestamps in
 DuckDB, avoiding a second parser pass and duplicate timeline JSONL.
 
+Normalized rows carry the ingest SHA-256 as their durable `source_file`
+identity: the adapter parsers take it as a required argument, and source
+status, Coverage, and link currentness all read the same value. Source-status
+lookup no longer probes path variants; sources whose normalized rows were
+written under an older path identity report `failed`/`empty` instead of being
+silently re-matched, and re-ingest is the supported correction.
+
 Around each successful adapter replacement, `normalize_all` compares only
 evidence IDs already referenced by Hypotheses, Claims, or report sections. If a
-referenced ID disappears, its assessed EvidenceLink remains as history while
-the Hypothesis and Claim move to review and the affected section becomes stale.
+referenced ID disappears or its content changes, its assessed EvidenceLink
+remains as history while the Hypothesis reopens as active with sufficiency
+marked `needs_review`, the Claim moves to review, and the affected section
+becomes stale. A reopened Hypothesis is eligible for a new investigation
+attempt rather than stranded outside candidate selection.
 Unchanged IDs do not trigger invalidation; large evidence tables are not copied
 into an in-memory snapshot.
 
@@ -195,7 +205,7 @@ Main stages:
 2. **select**: `selection.py` filters blocked/unobservable/exhausted candidates and ranks eligible hypotheses from deterministic priority components. Required capabilities come from the shared derivation owner `derive_required_capabilities` (`knowledge/coverage.py`): a declared `required_capabilities` list on the canonical VerificationSpec wins, otherwise structured event IDs in its support conditions map through the existing artifact capability catalog. A canonical condition payload takes priority over legacy fields and prose; callers without it retain legacy inference. The full score breakdown is stored in Trace. CaseDB initializes the required schema; selection errors propagate to the investigation's failed terminal receipt instead of invoking a second selector that bypasses eligibility.
 3. **plan**: The query-intent kernel validates a small typed action menu: the initial phase permits `memory.read_more` or `sql.query`, while the post-expansion phase permits only `sql.query`. One LLM decision selects a parameterized recipe or bounded fallback SQL. The host then checks schema/table eligibility, SELECT-only policy, limits and dry-run deterministically; there is no LLM schema-readiness or second SQL-composer call. The normalized nested action is the sole query source; the original wrapper is retained for audit. A host-rejected action records a planner-validation reason and gets one bounded repair opportunity through the next planner prompt before the hypothesis is stopped.
 4. **execute/check**: Issues a safe SELECT, applies fallback behavior and obtains the Checker's proposed verdict. The existing hypothesis SQL execution records a versioned `ToolReceipt` and one-attempt `RetrievalEvaluation` inside the same `trace.investigation_steps.output_json`; the receipt records query/provenance/result observations only and does not assign Evidence roles or consume checker verdicts. Planner-only validation failures are not execution progress and cannot substitute for `do`/`check` receipts.
-5. **assessment/sufficiency/settlement**: `assess_evidence_group` classifies each adequate observation group from `VerificationSpec`, observation fields and provenance; it never reads the checker verdict. Links from the same query share a conservative derivation group. Sufficiency ignores legacy links without an assessment ID, and Settlement does not pass through checker `refuted` / `untestable` proposals without an assessed contradiction or an explicit observable/unavailable auto condition. Support counting further distinguishes historical from currently-usable links through the shared read-time predicate `evidence_link_currentness`: a link whose evidence row was removed, whose source identity is unverifiable, or whose recorded `source_file` no longer matches the materialized row is excluded from sufficiency scoring, settlement gates, and the confirmed invariant, while the `hypothesis_evidence` row itself is kept (never deleted) as history.
+5. **assessment/sufficiency/settlement**: `assess_evidence_group` classifies each adequate observation group from `VerificationSpec`, observation fields and provenance; it never reads the checker verdict, and the query ID is acquisition history only — the derivation root is the observed content (a declared derivation group, or the evidence row itself). Sufficiency groups assessed links by that root (`derivation_root_key`), so the same evidence re-fetched under a different query is one group and cannot inflate independent support; declared groups still keep their same-root conservatism. Sufficiency ignores legacy links without an assessment ID, and Settlement does not pass through checker `refuted` / `untestable` proposals without an assessed contradiction or an explicit observable/unavailable auto condition. Support counting further distinguishes historical from currently-usable links through the shared read-time predicate `evidence_link_currentness`: a link whose evidence row was removed, whose source identity is unverifiable, or whose recorded `content_fingerprint` no longer matches the materialized row is excluded from sufficiency scoring, settlement gates, and the confirmed invariant, while the `hypothesis_evidence` row itself is kept (never deleted) as history.
 For absence-based refutation, `sql_absence_scope` certifies only a direct,
 case-wide EVTX lookup of exactly the Spec's event IDs, with column projections,
 no narrowing predicates, sampling, joins, derived rows or offset. Ordinary
@@ -340,7 +350,7 @@ is processed as a structured answer.
 |---|---|
 | Question template definition | `src/forensia/knowledge/rulepacks/_schema/question_routing.yaml` |
 | answer_spec → builder routing | `questions.resolve_question_spec` |
-| SQL execution / extractor call | `ai/sections/section_answers.py` (`_format_structured_answer` / `_format_question_answer`) |
+| SQL execution / extractor call | `ai/sections/section_answers.py` (`_format_structured_answer`) |
 | Markdown rendering | `report/answers/answer_store.py` (`_render_structured_answer_markdown`) |
 | JSON / CSV export | `report/answers/answer_store.py` (`_persist_structured_answer` → `reports/structured/`) |
 

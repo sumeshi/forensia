@@ -15,10 +15,8 @@ describe("formatAttackMappings", () => {
     ).toBe("T1543.003 Windows Service");
   });
 
-  it("supports legacy strings and incomplete mappings", () => {
-    expect(formatAttackMappings(["T1078", { tactic: "execution" }])).toBe(
-      "T1078, execution"
-    );
+  it("renders incomplete mappings and empty lists", () => {
+    expect(formatAttackMappings([{ tactic: "execution" }])).toBe("execution");
     expect(formatAttackMappings([])).toBe("-");
   });
 });

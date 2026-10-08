@@ -30,7 +30,6 @@ from forensia.ai.prompts.prompt_investigation import (
     build_verdict_review_messages,
 )
 from forensia.core.case import Case
-from forensia.core.memory import MemoryManager
 from forensia.core.session import (
     Hypothesis,
     PlannedQuery,
@@ -38,27 +37,6 @@ from forensia.core.session import (
 from forensia.db.database import CaseDB
 
 CheckAuditCallback = Callable[[str, list[dict[str, str]], str, dict[str, Any]], None]
-
-
-def _load_check_context(
-    memory: MemoryManager,
-    hypothesis: Hypothesis | None,
-    overview_md: str | None,
-    memory_context_md: str | None,
-) -> tuple[str, str]:
-    overview = overview_md if overview_md is not None else memory.load_overview()
-    if memory_context_md is not None:
-        return overview, memory_context_md
-    relevance = memory.build_relevance_terms_from_hypothesis(hypothesis)
-    context = memory.load_compact_context(
-        memory.investigation_context_files(
-            hypothesis.id if hypothesis else None,
-            relevance_terms=relevance or None,
-            include_overview=False,
-        ),
-        max_bytes=max(1024, memory.max_bytes // 2),
-    )
-    return overview, context
 
 
 def _phase_audit_callback(
@@ -265,11 +243,8 @@ def check_query_result(
     hypothesis: Hypothesis | None,
     finding_candidates: list[dict[str, Any]],
     result_summary: dict[str, Any],
-    memory: MemoryManager,
     base_url: str,
     model: str,
-    overview_md: str | None = None,
-    memory_context_md: str | None = None,
     status_callback: Callable[[str], None] | None = None,
     time_range: dict[str, str] | None = None,
     fallback_info: dict | None = None,
@@ -281,9 +256,6 @@ def check_query_result(
     suspicious evidence). Applies guardrails via guardrail_check_payload
     and persists results via apply_check_result.
     """
-    overview_md, memory_context_md = _load_check_context(
-        memory, hypothesis, overview_md, memory_context_md
-    )
     benign_rules = _load_benign_context_rules()
     benign_annotations = (
         annotate_benign_context(result_summary.get("sample_rows") or [], benign_rules)

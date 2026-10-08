@@ -186,9 +186,7 @@ class Ctx:
 
     interrupted: bool = False
     report_status: dict = field(default_factory=dict)
-    memory_overview: str = ""
     memory_plan: str = ""
-    memory_check: str = ""
     current_hypothesis_id: str | None = None
     owner_id: str | None = None
     progress_callback: Callable[[dict[str, Any]], None] | None = None
@@ -259,14 +257,11 @@ def ctx_refresh_caches(
     """Reload memory context caches and compact overview if needed.
 
     When *hypothesis* is provided, entity/keypoint files are filtered by
-    relevance to it (G-3) — these caches are handed to the planner and
-    checker as their default context, so the filtering must happen here,
-    not only in the lazy-load fallbacks inside planner/checker.
+    relevance to it (G-3) — this cache is handed to the planner as its
+    default context, so the filtering must happen here, not only in the
+    lazy-load fallbacks inside the planner.
     """
     memory.compact_overview_if_needed(base_url=base_url, model=model)
-    ctx.memory_overview = memory.load_compact_context(
-        ["overview.md"], max_bytes=memory.max_bytes
-    )
     if hypothesis is not None and current_hypothesis_id is None:
         current_hypothesis_id = hypothesis.id
     relevance_terms = (
@@ -291,13 +286,6 @@ def ctx_refresh_caches(
     )
     if memory_index:
         ctx.memory_plan = f"{ctx.memory_plan.rstrip()}\n\n{memory_index}".strip()
-    ctx.memory_check = memory.load_investigation_context(
-        current_hypothesis_id,
-        relevance_terms=relevance_terms or None,
-        max_bytes=max(1024, memory.max_bytes // 2),
-        include_overview=False,
-        include_archive=current_hypothesis_id is None,
-    )
     if db is not None:
         from forensia.ai.retrieval_telemetry import record_retrieval_event
 

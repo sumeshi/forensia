@@ -8,8 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from forensia.ai.sections.section_answers import (
+    _format_structured_answer,
     extract_answer_by_shape,
-    format_question_answer,
     is_effectively_empty_body,
 )
 from forensia.ai.sections.section_block_narrative import (
@@ -85,7 +85,7 @@ structured_answer:
                 collected_results=[
                     {
                         "kind": "rows",
-                        "keypoint": "raw_sql",
+                        "keypoint": "evidence_query",
                         "row_count": 2,
                         "evidence_ids": ["evtx-security-000000000122"],
                         "sample_rows": [
@@ -545,9 +545,9 @@ class AnswerFormattingTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result.keypoint, "benchmark_hosts, benchmark_recent_lnk")
 
-    def test_format_question_answer_uses_classifier_status(self):
+    def test_format_structured_answer_uses_classifier_status(self):
         case = SimpleNamespace(reports_dir=Path(tempfile.mkdtemp()))
-        body = format_question_answer(
+        body = _format_structured_answer(
             {"status": "answered", "picked_row_indices": [], "rationale": "ok"},
             [{"host_id": "INFORMANT-PC"}],
             {"fields": ["host_id"]},
@@ -560,9 +560,9 @@ class AnswerFormattingTests(unittest.TestCase):
         self.assertIn("**Status:** answered", body)
         self.assertIn("INFORMANT-PC", body)
 
-    def test_format_question_answer_missing_reason_string_not_split(self):
+    def test_format_structured_answer_missing_reason_string_not_split(self):
         case = SimpleNamespace(reports_dir=Path(tempfile.mkdtemp()))
-        body = format_question_answer(
+        body = _format_structured_answer(
             {
                 "status": "answered",
                 "picked_row_indices": [],

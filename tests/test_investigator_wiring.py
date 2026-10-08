@@ -173,8 +173,11 @@ class InvestigateWiringTests(unittest.TestCase):
             state = SessionState(session_id="S-WIRING", active_hypotheses=[hypothesis])
             with CaseDB(case) as db:
                 db.execute(
-                    "INSERT INTO hypotheses (hypothesis_id, description, status, blocked_reason) "
-                    "VALUES (?, ?, 'active', ''), ('H-BLOCKED', 'Wait for prerequisite', 'active', 'prerequisite')",
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                    "blocked_reason, verification_spec) VALUES "
+                    "(?, ?, 'active', '', '{\"spec_version\": \"1\"}'), "
+                    "('H-BLOCKED', 'Wait for prerequisite', 'active', "
+                    "'prerequisite', '{\"spec_version\": \"1\"}')",
                     (hypothesis.id, hypothesis.description),
                 )
                 state.active_hypotheses.append(
@@ -240,8 +243,10 @@ class InvestigateWiringTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 db.execute(
-                    "INSERT INTO hypotheses (hypothesis_id, description, status) "
-                    "VALUES ('H-1', 'Wait for prerequisite', 'active')"
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                    "verification_spec) "
+                    "VALUES ('H-1', 'Wait for prerequisite', 'active', "
+                    "'{\"spec_version\": \"1\"}')"
                 )
                 with (
                     mock.patch.object(
@@ -342,9 +347,10 @@ class InvestigateWiringTests(unittest.TestCase):
             with CaseDB(case) as db:
                 db.execute(
                     "INSERT INTO hypotheses "
-                    "(hypothesis_id, description, status, created_at, updated_at) "
-                    "VALUES ('H-001', 'Acquire missing telemetry', 'untestable', "
-                    "now(), now())"
+                    "(hypothesis_id, description, status, created_at, updated_at, "
+                    "verification_spec) VALUES ('H-001', "
+                    "'Acquire missing telemetry', 'untestable', now(), now(), "
+                    "'{\"spec_version\": \"1\"}')"
                 )
                 investigator_module._classify_active_hypotheses_on_stop(
                     db,

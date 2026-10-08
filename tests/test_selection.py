@@ -38,6 +38,7 @@ class PriorityScoreTests(unittest.TestCase):
             "selection_count": 0,
             "last_selected_at": None,
             "origin": "rule",
+            "verification_spec": {"spec_version": "1"},
         }
         ctx = SelectionContext(
             active_hypotheses=[hyp],
@@ -63,6 +64,7 @@ class PriorityScoreTests(unittest.TestCase):
             "selection_count": 0,
             "last_selected_at": None,
             "origin": "rule",
+            "verification_spec": {"spec_version": "1"},
         }
         ctx = SelectionContext(
             active_hypotheses=[hyp],
@@ -85,6 +87,7 @@ class PriorityScoreTests(unittest.TestCase):
             "selection_count": 0,
             "last_selected_at": None,
             "origin": "rule",
+            "verification_spec": {"spec_version": "1"},
         }
         hyp_old = {
             "hypothesis_id": "H-002",
@@ -94,6 +97,7 @@ class PriorityScoreTests(unittest.TestCase):
             "selection_count": 5,
             "last_selected_at": None,
             "origin": "rule",
+            "verification_spec": {"spec_version": "1"},
         }
         ctx = SelectionContext(
             active_hypotheses=[hyp_new, hyp_old],
@@ -115,7 +119,6 @@ class RequiredCapabilityTests(unittest.TestCase):
 
     def test_declared_spec_capabilities_short_circuit_inference(self) -> None:
         hyp = {
-            "confirm_when": {"keywords": ["evtx_events 4624"]},
             "verification_spec": {
                 "spec_version": "1",
                 "required_capabilities": ["declared_cap"],
@@ -126,18 +129,11 @@ class RequiredCapabilityTests(unittest.TestCase):
 
     def test_spec_support_conditions_infer_when_no_declared_list(self) -> None:
         hyp = {
-            "confirm_when": {},
             "verification_spec": {
                 "spec_version": "1",
                 "support_conditions": {"keywords": ["evtx_events 4624"]},
             },
         }
-        self.assertEqual(
-            _capabilities_for_hypothesis(hyp), {"lateral_movement", "logon"}
-        )
-
-    def test_null_spec_legacy_row_infers_from_confirm_when(self) -> None:
-        hyp = {"confirm_when": {"keywords": ["evtx_events 4624"]}}
         self.assertEqual(
             _capabilities_for_hypothesis(hyp), {"lateral_movement", "logon"}
         )
@@ -157,18 +153,21 @@ class RequiredCapabilityTests(unittest.TestCase):
             open_gaps=[],
             objective="",
         )
-        legacy = {
-            "hypothesis_id": "H-LEGACY",
+        spec = {
+            "hypothesis_id": "H-SPEC",
             "status": "active",
             "blocked_reason": "",
             "next_eligible_at": None,
-            "confirm_when": {"keywords": ["evtx_events 4624"]},
+            "verification_spec": {
+                "spec_version": "1",
+                "support_conditions": {"keywords": ["evtx_events 4624"]},
+            },
         }
-        eligible, reason = check_eligibility(legacy, ctx=ctx)
+        eligible, reason = check_eligibility(spec, ctx=ctx)
         self.assertFalse(eligible)
         self.assertIn("capability unavailable", reason)
         declared = {
-            **legacy,
+            **spec,
             "verification_spec": {
                 "spec_version": "1",
                 "required_capabilities": ["declared_cap"],
@@ -195,8 +194,9 @@ class SelectionIntegrationTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 db.execute(
-                    "INSERT INTO hypotheses (hypothesis_id, description, status) "
-                    "VALUES ('H-001', 'suspicious logon', 'active')"
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                    "verification_spec) VALUES "
+                    "('H-001', 'suspicious logon', 'active', '{\"spec_version\": \"1\"}')"
                 )
                 results = select_focus_hypotheses(db, limit=2)
                 self.assertEqual(len(results), 1)
@@ -208,12 +208,15 @@ class SelectionIntegrationTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 db.execute(
-                    "INSERT INTO hypotheses (hypothesis_id, description, status, blocked_reason) "
-                    "VALUES ('H-001', 'blocked hypothesis', 'active', 'waiting for data')"
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                    "blocked_reason, verification_spec) VALUES "
+                    "('H-001', 'blocked hypothesis', 'active', 'waiting for data', "
+                    "'{\"spec_version\": \"1\"}')"
                 )
                 db.execute(
-                    "INSERT INTO hypotheses (hypothesis_id, description, status) "
-                    "VALUES ('H-002', 'active hypothesis', 'active')"
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                    "verification_spec) VALUES "
+                    "('H-002', 'active hypothesis', 'active', '{\"spec_version\": \"1\"}')"
                 )
                 results = select_focus_hypotheses(db, limit=2)
                 eligible = [r for r in results if r.eligible]
@@ -225,8 +228,9 @@ class SelectionIntegrationTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 db.execute(
-                    "INSERT INTO hypotheses (hypothesis_id, description, status, selection_count) "
-                    "VALUES ('H-001', 'test', 'active', 0)"
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                    "selection_count, verification_spec) VALUES "
+                    "('H-001', 'test', 'active', 0, '{\"spec_version\": \"1\"}')"
                 )
                 select_focus_hypotheses(db, limit=1)
                 row = db.execute(
@@ -239,8 +243,10 @@ class SelectionIntegrationTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 db.execute(
-                    "INSERT INTO hypotheses (hypothesis_id, description, status) "
-                    "VALUES ('H-001', 'one', 'active'), ('H-002', 'two', 'active')"
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                    "verification_spec) VALUES "
+                    "('H-001', 'one', 'active', '{\"spec_version\": \"1\"}'), "
+                    "('H-002', 'two', 'active', '{\"spec_version\": \"1\"}')"
                 )
                 results = [
                     result

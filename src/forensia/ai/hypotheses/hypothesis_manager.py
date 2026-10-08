@@ -6,13 +6,13 @@ names from forensia.ai.hypotheses.hypothesis_manager.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any
 
 from forensia.ai.hypotheses.hypothesis_model import (
     _best_hypothesis_match,
-    _clean_confirm_when,
     _description_has_material_unknown,
     _extract_entities_from_text,
     _extract_refuted_tokens,
@@ -76,12 +76,21 @@ def merge_active_hypotheses(
         _normalize_hypothesis_description(item.description): item for item in resolved
     }
     for item in updates:
-        if item.id in resolved_ids or item.status in {"confirmed", "refuted"}:
+        if item.status in {"confirmed", "refuted"}:
             continue
+        same_id_resolved = next(
+            (candidate for candidate in resolved if candidate.id == item.id), None
+        )
+        if item.id in resolved_ids:
+            if same_id_resolved is None or (
+                _merge_hypothesis_fields(same_id_resolved, item).verification_spec
+                == same_id_resolved.verification_spec
+            ):
+                continue
         incoming_id = alias_map.get(item.id, item.id)
         # FIRST: Check against resolved hypotheses — prevents the same claim
         # from existing as both confirmed AND refuted.
-        resolved_existing = resolved_by_description.get(
+        resolved_existing = same_id_resolved or resolved_by_description.get(
             _normalize_hypothesis_description(item.description)
         )
         resolved_score: float | None = None
@@ -95,9 +104,33 @@ def merge_active_hypotheses(
         if resolved_existing is not None:
             resolved_strength = hypothesis_evidence_strength(resolved_existing)
 
+            merged = _merge_hypothesis_fields(resolved_existing, item)
+            if merged.verification_spec != resolved_existing.verification_spec:
+                # Keep the claim identity and old EvidenceLinks, but reopen
+                # the hypothesis: its prior verdict did not assess this Spec.
+                with db.transaction():
+                    _reopen_hypothesis_after_spec_change(
+                        db, merged, origin=origin, session_id=session_id
+                    )
+                resolved[:] = [entry for entry in resolved if entry.id != merged.id]
+                resolved_ids.discard(merged.id)
+                by_id[merged.id] = merged
+                active_by_description[
+                    _normalize_hypothesis_description(merged.description)
+                ] = merged
+                resolved_by_description.pop(
+                    _normalize_hypothesis_description(resolved_existing.description),
+                    None,
+                )
+                _log(
+                    "HYPOTHESIS",
+                    f"reopened {merged.id}: VerificationSpec changed after "
+                    f"{resolved_existing.verdict}; reassessment required",
+                )
+                continue
+
             # Default: bind to resolved. The resolved hypothesis's verdict
             # stands — do NOT create a duplicate active hypothesis.
-            merged = _merge_hypothesis_fields(resolved_existing, item)
             alias_map[item.id] = merged.id
             resolved_by_description[
                 _normalize_hypothesis_description(merged.description)
@@ -140,6 +173,22 @@ def merge_active_hypotheses(
                 existing = best_active
         if existing is not None:
             merged = _merge_hypothesis_fields(existing, item)
+            reopened = False
+            if merged.verification_spec != existing.verification_spec:
+                has_prior_assessment = db.execute(
+                    "SELECT 1 FROM hypothesis_evidence WHERE hypothesis_id = ? "
+                    "AND COALESCE(assessment_id, '') <> '' LIMIT 1",
+                    [existing.id],
+                ).fetchone() is not None
+                if has_prior_assessment:
+                    # The link currentness check compares its captured Spec
+                    # fingerprint with this new canonical Spec. Keep history;
+                    # force a fresh assessment under the updated contract.
+                    with db.transaction():
+                        _reopen_hypothesis_after_spec_change(
+                            db, merged, origin=origin, session_id=session_id
+                        )
+                    reopened = True
             alias_map[item.id] = merged.id
             by_id[merged.id] = merged
             if existing.id != merged.id:
@@ -147,7 +196,8 @@ def merge_active_hypotheses(
             active_by_description[
                 _normalize_hypothesis_description(merged.description)
             ] = merged
-            _upsert_hypothesis(db, merged, origin=origin, session_id=session_id)
+            if not reopened:
+                _upsert_hypothesis(db, merged, origin=origin, session_id=session_id)
             continue
         # Cap the active set. Updates to existing hypotheses already happened
         # above (in the merge branches); only NEW additions are subject to the
@@ -172,7 +222,7 @@ def merge_active_hypotheses(
             source_decl_id=item.source_decl_id,
             source_gap_id=item.source_gap_id,
             required_entities=_merge_string_lists(item.required_entities),
-            confirm_when=_clean_confirm_when(item.confirm_when),
+            confirm_when=item.confirm_when,
             refute_when=item.refute_when,
             evidence_requirements=item.evidence_requirements,
             target_keypoint_id=item.target_keypoint_id,
@@ -290,6 +340,74 @@ def mark_section_stale(db: CaseDB, section_key: str) -> None:
     )
 
 
+def _reopen_hypothesis_after_spec_change(
+    db: CaseDB, hypothesis: Hypothesis, *, origin: str, session_id: str
+) -> None:
+    """Invalidate projections owned by a Hypothesis whose contract changed."""
+    hypothesis.status = "active"
+    hypothesis.verdict = None
+    hypothesis.summary = "Verification requirements changed; reassessment required."
+    db.execute(
+        "UPDATE hypotheses SET selection_count = 0, last_selected_at = NULL, "
+        "next_eligible_at = NULL, blocked_reason = NULL, "
+        "sufficiency_status = 'needs_review', sufficiency_score = NULL, "
+        "sufficiency_reason = 'Verification requirements changed; reassessment required.', "
+        "human_review_required = TRUE WHERE hypothesis_id = ?",
+        [hypothesis.id],
+    )
+    claim_sections: set[str] = set()
+    for claim_id, raw_ids, section_key in db.execute(
+        "SELECT claim_id, hypothesis_ids, section_key FROM claims"
+    ).fetchall():
+        try:
+            hypothesis_ids = json.loads(raw_ids) if isinstance(raw_ids, str) else raw_ids
+        except (TypeError, ValueError):
+            hypothesis_ids = []
+        if hypothesis.id in (hypothesis_ids if isinstance(hypothesis_ids, list) else []):
+            if section_key:
+                claim_sections.add(str(section_key))
+            db.execute(
+                "UPDATE claims SET support_status = 'needs_review', updated_at = now() "
+                "WHERE claim_id = ?",
+                [claim_id],
+            )
+
+    stale_sections = claim_sections | set(
+        _sections_for_keypoint(hypothesis.target_keypoint_id)
+        if hypothesis.target_keypoint_id
+        else []
+    )
+    stale_sections.update(_guess_related_sections(hypothesis.description))
+    for rule_id in hypothesis.source_rule_ids:
+        rule = load_rule_by_id(rule_id)
+        if rule:
+            declaration_id = hypothesis.source_decl_id or hypothesis.id
+            declaration = next(
+                (item for item in rule.hypotheses if item.id == declaration_id), None
+            )
+            if declaration and declaration.report_sections:
+                stale_sections.update(declaration.report_sections)
+    for section_key in stale_sections:
+        # This is invalidation of an old judgment, not a generated refresh;
+        # the update-count cap must not leave that judgment looking current.
+        db.execute(
+            "UPDATE report_sections SET stale = TRUE WHERE section_key = ?",
+            [section_key],
+        )
+
+    db.execute(
+        "UPDATE investigation_tasks SET status = 'in_progress', blocked_reason = NULL, "
+        "updated_at = now() WHERE hypothesis_id = ? AND status = 'resolved'",
+        [hypothesis.id],
+    )
+    db.execute(
+        "UPDATE report_gaps SET status = 'in_progress', updated_at = now() "
+        "WHERE hypothesis_id = ? AND status = 'resolved'",
+        [hypothesis.id],
+    )
+    _upsert_hypothesis(db, hypothesis, origin=origin, session_id=session_id)
+
+
 def resolve_hypothesis(
     db: CaseDB,
     state: SessionState,
@@ -386,9 +504,7 @@ def resolve_hypothesis(
                 source_decl_id=item.source_decl_id,
                 source_gap_id=item.source_gap_id,
                 required_entities=item.required_entities,
-                confirm_when=item.confirm_when,
-                refute_when=item.refute_when,
-                evidence_requirements=item.evidence_requirements,
+                verification_spec=item.verification_spec,
                 target_keypoint_id=item.target_keypoint_id,
             )
             state.resolved_hypotheses.append(resolved)
@@ -502,8 +618,7 @@ def _claim_spec_conformance_error(candidate: Hypothesis) -> str | None:
     """Validate the small claim vocabulary the deterministic checker supports."""
 
     description = candidate.description or ""
-    spec = candidate.verification_spec
-    support = spec.support_conditions if spec is not None else {}
+    support = candidate.verification_spec.support_conditions
     if not support:
         return "empty-verification-spec"
     event_ids = support.get("co_observed_event_ids")
@@ -702,9 +817,7 @@ def qualify_event_contexts(candidate: Hypothesis, db: CaseDB) -> Hypothesis:
             )
     if contexts:
         support["event_contexts"] = contexts
-        candidate.confirm_when = support
-        if candidate.verification_spec is not None:
-            candidate.verification_spec.support_conditions = dict(support)
+        candidate.verification_spec.support_conditions = support
     return candidate
 
 

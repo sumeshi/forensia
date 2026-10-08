@@ -435,7 +435,9 @@ def _summarize_sql_result(sql: str, rows: list[dict[str, Any]]) -> dict[str, Any
     """
     summary = summarize_query_result(rows, sample_size=10)
     return {
-        "keypoint": "raw_sql",
+        # Display source label decided at the producer: raw-SQL results surface
+        # this token in prompts (as `_source_keypoint`) and report prose.
+        "keypoint": "evidence_query",
         "description": sql,
         "kind": "rows",
         "source_kind": "sql",

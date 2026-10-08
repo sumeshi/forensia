@@ -25,40 +25,29 @@ class RequiredCapabilityDerivationTests(unittest.TestCase):
             derive_required_capabilities(
                 ["logon"],
                 support_conditions={"keywords": ["evtx_events 4624"]},
-                confirm_when={"keywords": ["evtx_events 4624"]},
-                description="evtx_events 4624",
             ),
             ["logon"],
         )
 
-    def test_spec_conditions_win_over_legacy_inference(self) -> None:
+    def test_support_conditions_derive_capabilities(self) -> None:
         self.assertEqual(
             derive_required_capabilities(
-                [],
                 support_conditions={"keywords": ["registry_artifacts"]},
-                confirm_when={"keywords": ["evtx_events 4624"]},
-                description="evtx_events 4624",
             ),
             ["registry_observation"],
         )
         self.assertEqual(
             derive_required_capabilities(
                 support_conditions={"co_observed_event_ids": [4688]},
-                description="registry_artifacts",
             ),
             ["process_execution"],
         )
+        # Structured conditions are the only inference input; without them
+        # nothing is inferred (and no prose inference exists).
         self.assertEqual(
-            derive_required_capabilities(
-                confirm_when={"keywords": ["evtx_events 4624"]}
-            ),
-            ["lateral_movement", "logon"],
+            derive_required_capabilities(required_capabilities=[]),
+            [],
         )
-        self.assertEqual(
-            derive_required_capabilities(description="registry_artifacts"),
-            ["registry_observation"],
-        )
-        self.assertEqual(derive_required_capabilities(), [])
 
 
 class EvidenceSourceTests(unittest.TestCase):

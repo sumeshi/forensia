@@ -244,9 +244,9 @@ class TestReportQualityContract(unittest.TestCase):
                 result, verdict, _reason, _caps = assess_and_persist_sufficiency(
                     db,
                     hypothesis_id="H-NOLINK",
-                    investigation_text="",
                     evidence_requirements={},
                     llm_verdict="confirmed",
+                    verification_spec={"spec_version": "1"},
                 )
                 self.assertNotEqual("sufficient", result.status)
                 self.assertEqual("inconclusive", verdict)

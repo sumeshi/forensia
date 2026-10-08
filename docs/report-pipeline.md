@@ -62,7 +62,7 @@ customize without reading Python. Keep only deterministic routing and rendering
 contracts in HTML comment hints. The section title is extracted from the body
 heading, and per-block requirements are expressed via `##` headings and hints
 (`evidence_keypoints` / `mode` / `builder` / `answer_id` / `answer_spec` /
-`question`, plus `benchmark_id` for legacy evaluation template compatibility).
+`question`).
 
 ### 2.3 Report wording and format policy
 
@@ -100,7 +100,7 @@ Template authoring is kept in English. Scaffold headings, table headers, comment
 - Filled section bodies are UPSERTed into `report_sections`
 - confidence is determined from the body's initial score, quality gates, evidence_id validation, claim support, and extra gaps
 - claims are extracted from the body and written to `claims`
-- claim provenance is computed from finding_id / hypothesis_id / evidence_id in the body and verification results; support status reflects currently-usable evidence only — historical or non-current `hypothesis_evidence` links (evidence row removed, or source identity no longer matching) are excluded from sufficiency support counting while remaining stored as history
+- claim provenance is computed from finding_id / hypothesis_id / evidence_id in the body and verification results; support status reflects currently-usable evidence only — historical or non-current `hypothesis_evidence` links (evidence row removed, source identity no longer matching, or the row's content fingerprint changed — see `evidence/content_identity.py`) are excluded from sufficiency support counting while remaining stored as history
 - gaps are aggregated from explicit insufficient-evidence markers, section agent extra gaps, quality gates, and claim/evidence validation, and become hypothesis candidates for the next cycle
 - If a block has `question` / `answer_spec` / `mode: structured`, `questions.py` resolves it to a QuestionSpec in `question_routing.yaml` and saves the result to `section_questions`. Case-wide probes are saved with `section_key='__case_probe__'`
 - Structured answers are persisted to `reports/structured/answers.json` and CSV, and per-section resolution results are dumped to `reports/debug/<section>_questions.json`
@@ -279,6 +279,13 @@ loop falls through to the no-progress machinery and stops with a reason
 instead of completing.
 
 `query_fingerprint` canonicalizes the sqlglot AST and hashes it together with event_id / computer markers. It absorbs whitespace and alias differences. When sqlglot is unavailable, it falls back to string normalization.
+
+After each adequate check, the deterministic assessment/sufficiency/settlement boundary applies independently of the checker verdict:
+
+- `assess_evidence_group` classifies the observation group against the canonical `VerificationSpec` conditions only. Its identity hashes the hypothesis, the spec conditions, the observed evidence IDs, the role, and the derivation root — the query ID is acquisition history only, so re-observing the same evidence is the same assessment.
+- Evidence links record the observation (`query_id`), the assessment, the source SHA, and a content fingerprint (`evidence/content_identity.py`). Without an explicit derivation group, a link's derivation root is its own evidence row within its source; the same evidence re-fetched by a different query is one root, never multiple independent groups.
+- Sufficiency groups assessed, current links by that derivation root (`derivation_root_key`) and counts roots — not query attempts — as independent support. Links whose backing row no longer exists, whose source identity no longer matches, or whose content fingerprint changed are excluded as historical records.
+- Settlement re-reads the current links (`load_evidence_links(current_only=True)`) and re-applies the same grouping, so a blocked confirmation cannot be resurrected by acquisition history, stale rows, or refilled content.
 
 `_merge_active_hypotheses` enforces `MAX_ACTIVE_HYPOTHESES = 8`. Updates to existing hypotheses do not count toward the limit; only new entries beyond the cap are dropped (`[CAP]` log).
 

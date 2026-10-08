@@ -18,7 +18,7 @@ from forensia.evidence.timeline_sql import duckdb_path_literal
 def ingest_evtx_file(
     case: Case,
     evtx_path: str | Path,
-    source_sha: str | None = None,
+    source_sha: str,
     progress_callback: Callable[[str], None] | None = None,
 ) -> Path:
     """Parse an EVTX file with evtx2es, enrich records with metadata, and write as JSONL.
@@ -50,7 +50,7 @@ def ingest_evtx_file(
     safe_name = (
         first_channel.lower().replace("/", "_").replace(" ", "_").replace("\\", "_")
     )
-    sha_prefix = (source_sha or "unknown")[:12]
+    sha_prefix = source_sha[:12]
     output_path = case.raw_dir / f"evtx-{sha_prefix}-{safe_name}.jsonl"
 
     with output_path.open("w", encoding="utf-8") as handle:
@@ -62,7 +62,7 @@ def ingest_evtx_file(
                 **record,
                 "source_type": "evtx",
                 # Stable source identity; display paths live in evidence_sources.
-                "source_file": source_sha or str(evtx_path),
+                "source_file": source_sha,
                 "channel": channel,
                 "parser": "evtx2es",
                 "ingested_at": ingested_at,

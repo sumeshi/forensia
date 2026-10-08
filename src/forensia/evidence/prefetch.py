@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Callable, Collection
 from datetime import UTC, datetime
 from itertools import chain
@@ -24,11 +23,11 @@ from forensia.evidence.timeline_sql import (
 def ingest_prefetch_file(
     case: Case,
     prefetch_path: str | Path,
-    source_sha: str | None = None,
+    source_sha: str,
     progress_callback: Callable[[str], None] | None = None,
 ) -> tuple[Path, Path | None]:
     prefetch_path = Path(prefetch_path)
-    sha_prefix = (source_sha or "unknown")[:12]
+    sha_prefix = source_sha[:12]
     entries_path = case.raw_dir / f"prefetch-entries-{sha_prefix}.jsonl"
     timeline_path = case.raw_dir / f"prefetch-timeline-{sha_prefix}.jsonl"
     ingested_at = datetime.now(UTC).isoformat()
@@ -52,7 +51,7 @@ def ingest_prefetch_file(
                 **record,
                 "source_type": "prefetch",
                 # Stable source identity; avoids basename collisions.
-                "source_file": source_sha or os.path.basename(str(prefetch_path)),
+                "source_file": source_sha,
                 "ingested_at": ingested_at,
                 "evidence_id": make_prefetch_evidence_id(
                     executable_name, prefetch_hash
@@ -81,7 +80,7 @@ def ingest_prefetch_file(
             enriched = {
                 **record,
                 "source_type": "prefetch",
-                "source_file": source_sha or os.path.basename(str(prefetch_path)),
+                "source_file": source_sha,
                 "ingested_at": ingested_at,
                 # Forensia-flat fields consumed by normalize/prefetch.py
                 "timeline_id": f"{evidence_id}-{idx:02d}",

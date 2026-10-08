@@ -48,13 +48,33 @@ is introduced.
 
 ## Hypothesis verification policy
 
-Each row in `hypotheses` has one canonical `verification_spec` JSON object
-(currently version `"1"`). It owns the normalized support/refute conditions,
-required entities, scope/correlation policy, and evidence requirements used by
-the investigation kernel. The legacy `confirm_when`, `refute_when`, and
-`evidence_requirements` columns remain lossless compatibility projections while
-current rule declarations and planner/checker callers use those fields. These
-active producer adapters remain; case opening never backfills older databases.
+Each row in `hypotheses` carries one canonical `verification_spec` JSON object
+(currently version `"1"`). It is the only stored condition representation: the
+normalized support/refute conditions, declared capabilities, scope/correlation
+policy, and evidence requirements all live in it. Rule and LLM declarations
+(`confirm_when` / `refute_when` / `evidence_requirements`) are the planning
+vocabulary of rulepacks, the drafter/checker schemas, and report-gap drafts;
+`Hypothesis` converts them into a spec exactly once at construction
+(mode="before" validator in `core/session.py` calling
+`VerificationSpec.from_legacy` in `core/verification.py`, which also sanitizes
+`co_observed_event_ids` entries to finding/event IDs). After admission the
+model, storage, and evaluators read only the spec: `Hypothesis.confirm_when`,
+`.refute_when`, and `.evidence_requirements` are derived read-only properties
+over it, and there are no declaration-shaped storage columns.
+
+The `hypotheses` table (schema version 2) stores `verification_spec` JSON plus
+the projection columns hypothesis metadata needs directly (`required_entities`
+among them). The former `confirm_when`, `refute_when`, and
+`evidence_requirements` columns were removed together with every read/write
+path. Schema version 4 added `hypothesis_evidence.verification_spec_fingerprint`
+and version 3 added `hypothesis_evidence.content_fingerprint`
+(evidence/content_identity.py). Case databases with a different
+`forensia_schema` version (including all earlier shapes) are rejected before any
+persistent DDL/DML
+(`db/database._check_schema_version`); existing cases are preserved on disk and
+their artifacts are re-ingested into new cases. A stored spec that fails
+validation is likewise an explicit load failure (`hypothesis_store` /
+`work_state` / `selection` raise), never reinterpreted from other stored data.
 
 `VerificationSpec` field status (evidence: readers/producers searched across
 `src/`, `tests/`, and `scripts/`):
@@ -64,23 +84,22 @@ active producer adapters remain; case opening never backfills older databases.
 | `spec_version` | wired | Validation (`Literal["1"]`) |
 | `support_conditions` | wired | Admission pre-screen + Assessment co-observation adapter (`EVALUABLE_CONDITION_KEYS` in `core/verification.py`); primary inference input of the shared capability derivation |
 | `refute_conditions` | wired | Settlement gates (e.g. `zero_rows`) |
-| `required_capabilities` | read-wired, no pipeline producer | Readers: `hypothesis_runner.py`, `sufficiency.py`, `settlement.py`, and the shared derivation owner `derive_required_capabilities` in `knowledge/coverage.py` (used by `selection.py`, `work_state.py`, and the sufficiency legacy fallback). Nothing in the pipeline writes a declared list yet; canonical support event IDs are mapped through the existing artifact capability catalog. Canonical conditions take priority over legacy fields/prose, which are inferred only when no canonical conditions are supplied. |
-| `required_entities` | wired | Admission/claim conformance (`hypothesis_manager.py`) |
+| `required_capabilities` | read-wired, no pipeline producer | Readers: `hypothesis_runner.py`, `sufficiency.py`, `settlement.py`, and the shared derivation owner `derive_required_capabilities` in `knowledge/coverage.py` (used by `selection.py` and `work_state.py`). Nothing in the pipeline writes a declared list yet; canonical support event IDs are mapped through the existing artifact capability catalog. |
 | `evidence_requirements` | wired | Sufficiency policy (`evidence_sufficiency.yaml`, e.g. `minimum_independent_groups`) |
-| `required_source_families` | declared-but-unwired | No reader and no producer anywhere |
-| `scope` | preserved, unsupported for absence certification | Nonempty values prevent `sql_absence_scope` certification; no semantic scope evaluator or pipeline producer. Persistence round-trip values continue to load |
-| `correlation` | preserved, unsupported for absence certification | Nonempty values prevent `sql_absence_scope` certification. Evaluated correlation lives in `support_conditions`; no pipeline producer for the dedicated field |
-| `derivation_dedup_policy` | declared-but-unwired | No reader and no producer anywhere; deduplication currently happens via derivation groups on evidence links |
-| `allowed_settlement_states` | declared-but-unwired | No reader and no producer anywhere; settlement states come from the existing settlement gates |
-| `untestable_conditions` | declared-but-unwired | No reader and no producer anywhere; untestable classification currently comes from stop/sufficiency states |
+| `scope` | unsupported for absence certification by design | Nonempty values make `sql_absence_scope` return "unknown", so the settlement gate refuses to certify an absence it cannot observe. Evaluated correlation lives in `support_conditions`; no pipeline producer for the dedicated field. |
+| `correlation` | unsupported for absence certification by design | Same single consumer as `scope` (`sql_absence_scope`); evaluated correlation constraints live in `support_conditions`. |
 
-The declared-but-unwired fields are kept rather than removed: the persistence
-round-trip test proves the store accepts and preserves `scope`, and because the
-model uses `extra="forbid"`, removing a field would make any persisted
-`verification_spec` containing it fail validation on load (old databases would
-break). Their intended meanings are recorded above so the semantics are not
-silently discarded; whether they get wired or removed is a deliberate decision
-for later milestones (M1/M2 agenda), not a side effect of this change.
+The earlier declared-but-unwired policy fields — `required_entities`,
+`required_source_families`, `derivation_dedup_policy`,
+`allowed_settlement_states`, and `untestable_conditions` — were removed.
+`required_entities` stays on the `Hypothesis` model and its own
+`hypotheses.required_entities` column (its only previous spec-side use was the
+persistence round-trip itself); the other four had no reader or producer
+anywhere and last-only storage no longer tolerates their presence in a stored
+spec (`extra="forbid"` rejects them explicitly). Deduplication happens via
+derivation groups on evidence links, settlement states come from the existing
+settlement gates, and untestable classification comes from stop/sufficiency
+states.
 
 ## Working and API projections
 
@@ -91,10 +110,10 @@ generation time, authoritative update time, and current/in-progress state. The
 the projection stale when they differ. Case statistics count terminal hypotheses from the
 durable `confirmed`, `refuted`, and `untestable` status taxonomy.
 
-`refute_when` is persisted explicitly; it is never inferred from a checker or
-final verdict. A hypothesis loaded from Case State always receives a validated
-`VerificationSpec`, including hypotheses created by rule seeding, broad
-planning, report gaps, follow-ups, and resume.
+`refute_conditions` are persisted explicitly; they are never inferred from a
+checker or final verdict. A hypothesis loaded from Case State always receives a
+validated `VerificationSpec`, including hypotheses created by rule seeding,
+broad planning, report gaps, follow-ups, and resume.
 
 ---
 
@@ -114,7 +133,7 @@ Schema initialization is performed in `CaseDB.__init__` in [src/forensia/db/data
 | `registry_datasets` | Conservative Registry dataset admission and parser run state | `dataset_id`, trusted `identity`, `member_source_ids`, grouping reason, parser version/config, raw path, status/error, `row_count` |
 | `registry_artifacts` | Lossless reg2es ECS records with query projections | `artifact_id`, `dataset_id`, contributor `source_ids`, plugin, hive, key/value, timestamp, `raw_json` |
 | `registry_timeline` | Valid parser-provided Registry timestamps | `timeline_id`, `artifact_id`, `dataset_id`, contributor `source_ids`, timestamp/kind, summary |
-| `ingested_files` | Hash table for ingest deduplication | `path`, `hash`, `source_kind`, `ingested_at` |
+| `ingested_files` | Hash table for ingest deduplication | `sha256`, `path`, `source_kind`, `size`, `ingested_at` |
 | `evidence_sources` | Authoritative per-source ingest/normalize state and scope | `source_id`, `artifact_family`, `ingest_status`, `channel`, `hosts`, analysis-eligible `min_time`/`max_time`, `row_count`, error fields |
 | `evidence_coverage` | Deterministic capability observability projection | `capability`, `host`, `channel`, `source_family`, `state`, `reason_code`, `source_ids`, analysis time range, `excluded_timestamps`, `confidence` |
 | `case_timeline` | Deterministic timeline | `entry_id`, `timestamp`, `source` (`finding`/`verdict`/`structured`/`keypoint`/`registry`), `ref_id`, `host`, `summary`, `evidence_id` |
@@ -140,14 +159,29 @@ Host identification:
 - Only `evtx_events` has `computer` / `user_name` columns
 - `mft_*` / `prefetch_*` assume a single volume, so they have no host column
 
+Source identity:
+- Every artifact ingest computes the file's SHA-256 (`ingest_all`) and the
+  adapter parsers require it: the `source_file` column in `evtx_events`,
+  `mft_entries`, `mft_timeline`, `prefetch_executions`, and `prefetch_timeline`
+  stores that SHA verbatim. No parser falls back to the file path or basename.
+- `evidence_sources.source_id`, the Coverage source_values lookups, and
+  `evidence_link_currentness` all read the same SHA identity; a mismatch is
+  surfaced as a failed/empty source status instead of being silently re-matched
+  against an old path value.
+- Legacy case data whose normalized rows were keyed by a path keeps its rows on
+  disk but is no longer re-matched; re-ingesting the same artifact into a new or
+  refreshed case is the supported path.
+- Registry dataset/contributor identity (`registry_datasets`, `source_ids`) is a
+  separate content-ID responsibility and is unaffected.
+
 ### 1.2 Rule detections and hypotheses
 
 | Table | Role | Main columns |
 |---|---|---|
 | `findings` | Rule detection results | `finding_id`, `rule_id`, `title`, `summary`, `severity`, `confidence`, `status` (`new`/`accepted`/`suppressed`), `tags`, `attack`, `evidence`, `ai_summary`, `missing_checks`, `created_at` |
-| `hypotheses` | Hypotheses under investigation | Existing hypothesis fields plus `evidence_requirements`, selection/retry state, blocking state, sufficiency status/score/reason and human-review flag |
+| `hypotheses` | Hypotheses under investigation | Hypothesis fields plus canonical `verification_spec` (`required_entities` column), selection/retry state, blocking state, sufficiency status/score/reason and human-review flag |
 | `hypothesis_relations` | Validated hypothesis graph | endpoint IDs, `relation_type`, `origin`, `confidence`, `rationale`, creation session/time |
-| `hypothesis_evidence` | Typed, deduplicated assessed evidence-to-hypothesis provenance (historical records; current support is derived at read time) | hypothesis/evidence/query IDs, `assessment_id` (`EA-v1-*` for deterministic assessments), `role`, `source_family`, `derivation_group`, `strength` |
+| `hypothesis_evidence` | Typed, deduplicated assessed evidence-to-hypothesis provenance (historical records; current support is derived at read time) | hypothesis/evidence/query IDs, `assessment_id` (`EA-v1-*` for deterministic assessments), `role`, `source_family`, `derivation_group`, `content_fingerprint`, `strength` |
 | `hypothesis_reasoning` | Reasoning history of hypothesis verification | `entry_id`, `hypothesis_id`, `session_id`, `iteration`, `phase` (including `sufficiency`), `verdict`, `query_id`, `body`, `created_at` |
 
 `findings.attack` is a JSON string in `[{tactic, technique_id, technique_name}]` form. It is aggregated into a tactic × technique matrix by `list_attack_coverage_dto` ([src/forensia/api/service.py](../src/forensia/api/service.py)).
@@ -222,9 +256,11 @@ incomplete retrieval downgrade the repeated zero-row/same-missing paths to
 | `claims` | Claims extracted from report paragraphs | `claim_id`, `section_key`, `claim_text`, `support_status`, `finding_ids`, `hypothesis_ids`, `evidence_ids` |
 | `report_gaps` | Authoritative normalized work gaps | section/block, description, kind, lifecycle `status`, `origin`, linked Claim/Hypothesis/Task, Coverage reason |
 
-When source replacement removes a referenced evidence ID, assessed
-`hypothesis_evidence` links are retained for history, but linked Hypotheses and
-Claims move to review and affected `report_sections` become stale — including
+When source replacement removes or changes a referenced evidence ID, assessed
+`hypothesis_evidence` links are retained for history. Linked Hypotheses reopen
+as active with sufficiency `needs_review` and their prior selection cooldown
+cleared, so they can be investigated again. Claims move to review and affected
+`report_sections` become stale — including
 sections holding reusable `section_facts` that cite the removed ID. The removal
 survey covers `hypothesis_evidence`, `section_evidence`, `claims.evidence_ids`,
 `section_facts.evidence_ids`, and `case_timeline.evidence_id`; `case_timeline`
@@ -235,14 +271,42 @@ evidence tables; provenance alone does not keep a removed artifact supported.
 Whether a `hypothesis_evidence` link still counts as usable support is not
 stored on the link. Sufficiency, settlement, and the confirmed-verdict
 invariant share a read-time currentness predicate (`evidence_link_currentness`):
-the referenced evidence row must still exist under the same `source_file`
-identity (existence alone for content-derived registry `artifact_id`s).
-Unverifiable identities are excluded and require reassessment. New admission
-captures the source from normalized Evidence; read-time checks never fill a
-historical blank source using today's row. Reassessment after a source change
-adds a source-bound link while retaining the old one. Excluded links remain
-historical records in `hypothesis_evidence`. Same-ID/same-source content or
-Spec/policy changes are not detected by this predicate (T04 remains partial).
+1. the referenced evidence row must still exist under the same `source_file`
+   identity (registry rows are content-derived `artifact_id`s and skip the
+   source-file match);
+2. the link's `content_fingerprint` (schema version 3) must match a fresh
+   fingerprint of the row ([evidence/content_identity.py](../src/forensia/evidence/content_identity.py)).
+   The fingerprint canonically hashes the full record (including the parsed
+   `raw_json`) minus top-level administrative insert/ingest timestamps, so an idempotent
+   re-normalization of unchanged material does not invalidate judgments while
+   an in-place content change of the same ID under the same source is
+   detected (`content_changed`).
+3. the link's `verification_spec_fingerprint` must match the Hypothesis's
+   current canonical `VerificationSpec`; otherwise it is historical and
+   excluded as `verification_spec_changed`.
+Unverifiable identities (row missing, unknown source, empty fingerprint) are
+excluded and require reassessment; the judgment input is never silently
+refilled. New admission captures the source and the content fingerprint from
+normalized Evidence. A new source, content fingerprint, assessment ID, or
+derivation root creates a new link even if the query ID is reused; identical
+observations are deduplicated. Read-time checks never fill a historical blank
+source using today's row. Excluded links remain
+historical records in `hypothesis_evidence`.
+
+Two grouped sources also move dependents to review at ingest time
+(`evidence/invalidation.py`): removal of a referenced ID, and a content
+fingerprint change of an ID that remains materialized under the same source
+identity.
+
+When `_merge_hypothesis_fields` adds verification conditions after an
+Assessment, the Hypothesis is reopened as active with its verdict cleared.
+Each EvidenceLink keeps the fingerprint of the Spec used for its judgment, so
+old links remain historical and cannot satisfy current support or Settlement.
+The evidence and Spec fingerprints identify the backing row and declared
+verification contract; they do not reconstruct the complete Assessment
+reasoning or retrieval context.
+Sufficiency policy is re-derived when it runs; historical links are never
+retroactively re-assessed under changed policy.
 
 There is no separate Investigation Requirement table. A report request is a
 `report_gaps` row; an associated `investigation_tasks` row stores ownership and

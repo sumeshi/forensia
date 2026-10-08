@@ -23,11 +23,14 @@ HTTP layer characteristics:
 
 ### Hypothesis verification policy
 
-Hypothesis drafting proposes the current declaration fields `confirm_when`, `refute_when`, and
-`evidence_requirements` fields. Admission normalizes these into the versioned
-`VerificationSpec` on the `Hypothesis` model before persistence. The kernel,
-rather than the LLM verdict, owns the resulting verification policy; in
-particular `refute_when` is retained through rule seeding, reload, and resume.
+Hypothesis drafting proposes the declaration fields `confirm_when`, `refute_when`, and
+`evidence_requirements`. Admission converts these into the versioned
+`VerificationSpec` on the `Hypothesis` model once, at construction, before
+persistence; the spec is the only condition state that is stored or evaluated
+afterwards. The kernel, rather than the LLM verdict, owns the resulting
+verification policy; in particular `refute_conditions` is retained through rule
+seeding, reload, and resume. Hypothesis accessors named after the declaration
+fields are derived properties over the spec.
 
 The support-condition key vocabulary has one owner:
 `EVALUABLE_CONDITION_KEYS` in [core/verification.py](../src/forensia/core/verification.py)

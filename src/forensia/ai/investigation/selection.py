@@ -88,20 +88,23 @@ def _capabilities_for_hypothesis(hyp: dict[str, Any]) -> set[str]:
     """Derive the capabilities a hypothesis can actually consume.
 
     Declared ``required_capabilities`` on the canonical spec take priority;
-    otherwise structured event IDs map through the artifact catalog. The
-    legacy ``confirm_when`` projection is the fallback
-    for rows that predate the canonical spec.
+    otherwise structured event IDs map through the artifact catalog.  The
+    canonical ``verification_spec`` is the only stored condition
+    representation; a row without a parsable spec is an explicit failure.
     """
     spec = hyp.get("verification_spec")
     if isinstance(spec, str):
         spec = _json_value(spec, None)
-    if not isinstance(spec, dict):
-        spec = {}
+    if not isinstance(spec, dict) or not spec:
+        raise ValueError(
+            f"hypothesis {hyp.get('hypothesis_id')} has no canonical "
+            "verification_spec; the case database does not match the current "
+            "format (preserve the case and ingest into a new case directory)"
+        )
     return set(
         derive_required_capabilities(
             spec.get("required_capabilities") or [],
             spec.get("support_conditions"),
-            confirm_when=hyp.get("confirm_when") or None,
         )
     )
 
@@ -172,7 +175,7 @@ def gather_selection_context(db: CaseDB) -> SelectionContext:
     """Gather all context needed for priority scoring."""
     active = db.execute(
         "SELECT hypothesis_id, description, status, verdict, summary, origin, "
-        "source_rule_ids, source_decl_id, required_entities, confirm_when, "
+        "source_rule_ids, source_decl_id, required_entities, "
         "source_gap_id, selection_count, last_selected_at, next_eligible_at, "
         "blocked_reason, sufficiency_status, sufficiency_score, verification_spec "
         "FROM hypotheses WHERE status = 'active'"
@@ -191,15 +194,14 @@ def gather_selection_context(db: CaseDB) -> SelectionContext:
                 "source_rule_ids": _json_value(r[6], []) if r[6] else [],
                 "source_decl_id": r[7] or "",
                 "required_entities": _json_value(r[8], []) if r[8] else [],
-                "confirm_when": _json_value(r[9], {}) if r[9] else {},
-                "source_gap_id": r[10] or "",
-                "selection_count": r[11] or 0,
-                "last_selected_at": r[12],
-                "next_eligible_at": r[13],
-                "blocked_reason": r[14] or "",
-                "sufficiency_status": r[15] or "",
-                "sufficiency_score": r[16] or 0.0,
-                "verification_spec": _json_value(r[17], None) if r[17] else None,
+                "source_gap_id": r[9] or "",
+                "selection_count": r[10] or 0,
+                "last_selected_at": r[11],
+                "next_eligible_at": r[12],
+                "blocked_reason": r[13] or "",
+                "sufficiency_status": r[14] or "",
+                "sufficiency_score": r[15] or 0.0,
+                "verification_spec": _json_value(r[16], None) if r[16] else None,
             }
         )
 
@@ -568,25 +570,11 @@ def compute_priority_score(
         )
     )
 
-    # execution_cost: based on confirm_when complexity
-    confirm = hyp.get("confirm_when") or {}
-    if confirm:
-        query_count = len(confirm.get("queries", []))
-        has_fallback = confirm.get("fallback") is not None
-        if query_count > 2 or has_fallback:
-            raw = 6.0
-            reason = (
-                f"complex confirm_when ({query_count} queries, fallback={has_fallback})"
-            )
-        elif query_count > 0:
-            raw = 3.0
-            reason = f"multi-table confirm_when ({query_count} queries)"
-        else:
-            raw = 1.0
-            reason = "simple confirm_when"
-    else:
-        raw = 1.0
-        reason = "no confirm_when (default low cost)"
+    # execution_cost: the condition vocabulary declares bounded single
+    # lookups (co-observed IDs/constraints); there is no per-condition
+    # query/fallback count on the canonical spec, so the cost is flat today.
+    raw = 1.0
+    reason = "declared support conditions are a bounded lookup"
     clamped = _clamp(raw, *COMPONENT_RANGES["execution_cost"])
     components.append(
         PriorityComponent(
