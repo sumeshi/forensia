@@ -107,17 +107,25 @@ class TestCanonicalReportMetrics(unittest.TestCase):
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, computer) VALUES ('evtx-4624', 4624, 'informant-PC')"
                 )
-                db.execute("INSERT INTO mft_entries (evidence_id) VALUES ('mft-1'), ('mft-2')")
-                db.execute("INSERT INTO prefetch_executions (evidence_id) VALUES ('pf-1')")
+                db.execute(
+                    "INSERT INTO mft_entries (evidence_id) VALUES ('mft-1'), ('mft-2')"
+                )
+                db.execute(
+                    "INSERT INTO prefetch_executions (evidence_id) VALUES ('pf-1')"
+                )
 
                 metrics = query_case_metrics(db)
                 count_rows = _count_table(db)
 
         self.assertEqual(15, metrics["semantic_event_counts"]["4648"])
         self.assertEqual(2, metrics["normalized_host_count"])
-        self.assertEqual({"evtx": 16, "mft": 2, "prefetch": 1}, metrics["artifact_row_counts"])
+        self.assertEqual(
+            {"evtx": 16, "mft": 2, "prefetch": 1}, metrics["artifact_row_counts"]
+        )
         self.assertEqual(15, metrics["event_counts"]["4648"])
-        self.assertEqual(2, next(row["value"] for row in count_rows if row["metric"] == "Hosts"))
+        self.assertEqual(
+            2, next(row["value"] for row in count_rows if row["metric"] == "Hosts")
+        )
         informant = next(
             row for row in metrics["hosts"] if row["canonical"] == "INFORMANT-PC"
         )
@@ -129,11 +137,15 @@ class TestCanonicalReportMetrics(unittest.TestCase):
             with CaseDB(case) as db:
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, channel, raw_json) VALUES ('security-4648', 4648, 'Security', ?)",
-                    ('{"winlog":{"channel":"Security","provider":{"name":"Microsoft-Windows-Security-Auditing"}}}',),
+                    (
+                        '{"winlog":{"channel":"Security","provider":{"name":"Microsoft-Windows-Security-Auditing"}}}',
+                    ),
                 )
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, channel, raw_json) VALUES ('other-4648', 4648, 'Application', ?)",
-                    ('{"winlog":{"channel":"Application","provider":{"name":"Other-Provider"}}}',),
+                    (
+                        '{"winlog":{"channel":"Application","provider":{"name":"Other-Provider"}}}',
+                    ),
                 )
                 metrics = query_case_metrics(db)
 

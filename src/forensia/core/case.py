@@ -378,3 +378,16 @@ class Case:
         except Exception:
             case.source_timezone = "UTC"
         return case
+
+
+def case_timezone(case: Case | None) -> str:
+    """Return the case manifest timezone, falling back to UTC (e.g. pre-init)."""
+    val = getattr(case, "source_timezone", "UTC") if case is not None else "UTC"
+    return str(val or "UTC")
+
+
+def resolve_timezone(tz: object, case: Case | None) -> str:
+    """Prefer an explicitly provided timezone string over the manifest value."""
+    if isinstance(tz, str):
+        return tz if tz else case_timezone(case)
+    return case_timezone(case)

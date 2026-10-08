@@ -289,9 +289,7 @@ class PersistenceTests(unittest.TestCase):
                 ).fetchone()
 
             restored = active[0]
-            self.assertEqual(
-                {"co_observed_event_ids": [4688]}, restored.confirm_when
-            )
+            self.assertEqual({"co_observed_event_ids": [4688]}, restored.confirm_when)
             self.assertIn("4688", row[0])
             self.assertNotIn("4624", row[0])
 

@@ -319,11 +319,7 @@ def structured_compact(
     if is_structured_projection(text):
         # Refuse to summarize a summary: keep the existing projection intact.
         return text
-    turns = (
-        text.split(_TURN_DELIMITER)
-        if _TURN_DELIMITER in text
-        else [text]
-    )
+    turns = text.split(_TURN_DELIMITER) if _TURN_DELIMITER in text else [text]
     if len(turns) <= preserve_recent_turns + 1:
         # Too few turns to benefit from a structured projection.
         return mechanical_compact(text, budget)

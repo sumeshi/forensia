@@ -129,9 +129,7 @@ def register_report_keypoint(
     REPORT_KEYPOINTS[normalized] = (str(description).strip(), resolver)
     prior_metadata = REPORT_KEYPOINT_METADATA.get(normalized)
     REPORT_KEYPOINT_METADATA[normalized] = (
-        metadata
-        or prior_metadata
-        or ReportKeypointMetadata(purpose="evidence")
+        metadata or prior_metadata or ReportKeypointMetadata(purpose="evidence")
     )
     for alias in aliases:
         alias_name = str(alias).strip()

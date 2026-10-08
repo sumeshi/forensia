@@ -20,9 +20,6 @@ Three principles drive the design:
 
 ## Screenshots
 
-![cockpit](https://github.com/user-attachments/assets/36225144-70ea-4ecd-96f9-b9f84ce9e30d)
-Investigation cockpit showing case progress, hypotheses, findings, and report sections.
-
 ![report](https://github.com/user-attachments/assets/c6d61b5e-16e2-4e73-82e2-bde4b29fac99)
 Generated forensic report with evidence-backed findings and investigation context.
 
@@ -86,11 +83,10 @@ Other common operations:
 ```bash
 forensia investigate case001 --max-iter 50    # continue an existing case with more cycles
 forensia add case001 ./new-input              # ingest additional evidence
-forensia report case001 --write               # regenerate report sections with the LLM (reports are also visible in the web UI)
+forensia report case001 --write               # regenerate report sections with the LLM
 forensia templates-export ./my-templates      # export the packaged templates
 forensia investigate case001 ./input --template-dir ./my-templates   # use custom report templates
 forensia investigate case001 ./input --knowledge ./knowledge.sample  # inject organization-specific knowledge
-forensia serve case001 --port 8000            # open the local web UI (cockpit)
 ```
 
 ### What gets generated
@@ -105,7 +101,7 @@ case001/
 ├─ memory/              · Regenerable Markdown projection used to build LLM context
 ├─ ai_logs/             · Raw LLM input/output logs (per-phase JSON)
 ├─ report_template/     · Case-local copy of editable report templates and formats
-├─ reports/             · report.md / report.html / structured CSV / UI snapshots
+├─ reports/             · report.md / report.html / structured CSV
 ├─ findings/            · Per-rule finding details
 ├─ allowlist.yaml       · Per-case suppression rules for known-benign findings
 └─ manifest.yaml        · Case metadata
@@ -127,7 +123,7 @@ What works today:
 * Lightweight hypothesis relationships (`parent_of`, `prerequisite_for`, `derived_from`, `contradicts`, `alternative_to`, and `supersedes`) stored in DuckDB and validated in Python, without a graph database.
 * Evidence coverage and observability tracking that distinguishes a negative query result from unavailable, incomplete, failed, or unsupported evidence sources. Raw artifact timestamps remain available while sentinel, overflow, parser-invalid, and case-window outliers are excluded from analysis ranges with reason counts.
 * Incremental report generation from templates, refreshed as findings are confirmed, exported as Markdown and HTML.
-* A local web UI (`forensia serve`) showing investigation progress, findings, hypotheses, report sections, timeline data, and evidence references.
+* A display-agnostic run entry (`forensia.pipeline`) shared by the headless CLI and a future TUI, with structured progress persisted in the trace database.
 * Knowledge injection from a local folder of Markdown files (`--knowledge`), used to bring organization- or case-specific context into prompts.
 
 In the configurations tested during development — small local models such as `google/gemma-4-e4b` and `qwen/qwen3.5-9b` served through an OpenAI-compatible local server — the models are not reliable enough to drive a long, unstructured investigation on their own. forensia's architecture exists to compensate for exactly that. Larger or newer models may behave differently; the harness does not assume any specific model.

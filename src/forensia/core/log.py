@@ -3,9 +3,6 @@ from __future__ import annotations
 import re
 from typing import Literal, TypedDict
 
-from rich import print as _rich_print
-from rich.markup import escape
-
 LogLevel = Literal["debug", "info", "success", "warning", "error"]
 
 
@@ -15,14 +12,6 @@ class StructuredLog(TypedDict):
     message: str
 
 
-# Colors encode outcome/severity, not arbitrary pipeline phases.
-_LEVEL_STYLES: dict[LogLevel, str] = {
-    "debug": "dim white",
-    "info": "bold blue",
-    "success": "bold green",
-    "warning": "bold yellow",
-    "error": "bold red",
-}
 _DEFAULT_TAG_LEVELS: dict[str, LogLevel] = {
     "RESOLVE": "success",
     "FALLBACK": "warning",
@@ -68,14 +57,17 @@ def format_progress_log(record: StructuredLog) -> str:
 
 
 def log(tag: str, message: str, *, level: LogLevel | None = None) -> None:
-    """Print a consistently labelled, severity-colored log message."""
-    normalized_tag = normalize_log_tag(tag)
-    resolved_level = level or infer_log_level(normalized_tag, str(message))
-    style = _LEVEL_STYLES[resolved_level]
-    label = escape(f"[{normalized_tag}]")
+    """Print a label-prefixed log line.
+
+    Kernel output is plain text so importing the kernel never requires a
+    terminal library; producers keep classifying severity explicitly via
+    ``level`` and that classification reaches durable projections through
+    ``structure_progress_log``/DB progress records. Terminal rendering is an
+    adapter concern.
+    """
     normalized_message = re.sub(
         r"^\[([a-z][a-z0-9_-]*)\]",
         lambda match: f"[{match.group(1).upper()}]",
         str(message),
     )
-    _rich_print(f"[{style}]{label}[/{style}] {escape(normalized_message)}")
+    print(f"[{normalize_log_tag(tag)}] {normalized_message}")

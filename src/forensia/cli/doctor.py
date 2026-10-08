@@ -292,7 +292,6 @@ def _doctor_test_suite_check() -> tuple[str, bool]:
                 "--ignore=tests/test_memory.py",
                 "--ignore=tests/test_ingest.py",
                 "--ignore=tests/test_persistence.py",
-                "--ignore=tests/test_web_api.py",
             ],
             capture_output=True,
             text=True,

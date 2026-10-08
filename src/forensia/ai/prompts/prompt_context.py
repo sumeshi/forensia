@@ -193,8 +193,10 @@ def _build_schema_index(
     )
     return index, selected_full
 
+
 def _build_recipe_index(
-    selected_recipes: list[str] | None = None, db: CaseDB | None = None,
+    selected_recipes: list[str] | None = None,
+    db: CaseDB | None = None,
     session_id: str | None = None,
 ) -> tuple[str, str]:
     recipes = _parse_sql_recipes(sql_cookbook())
@@ -213,9 +215,8 @@ def _build_recipe_index(
     index = (
         "<COOKBOOK_EXAMPLE_POLICY>RECIPE_INDEX IDs are retrieval-only, never "
         "executable template_id values. Adapt loaded examples into sql with "
-        "template_id=null.</COOKBOOK_EXAMPLE_POLICY>\n" + render_context_index(
-            "RECIPE_INDEX", entries
-        )
+        "template_id=null.</COOKBOOK_EXAMPLE_POLICY>\n"
+        + render_context_index("RECIPE_INDEX", entries)
     )
     full = "\n".join(
         body for rid, (_, body) in recipes.items() if rid in (selected_recipes or [])
@@ -899,9 +900,7 @@ def _build_event_id_guidance(
     ids and continuation hints; full claim guidance is expanded only for the
     event IDs actually observed in *evidence_results*.
     """
-    index, full = _build_event_id_index(
-        evidence_results, db=db, session_id=session_id
-    )
+    index, full = _build_event_id_index(evidence_results, db=db, session_id=session_id)
     if not full:
         return ""
     return index + "\n" + full + "\n"

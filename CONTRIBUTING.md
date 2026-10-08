@@ -21,11 +21,10 @@ The following is the package-level map contributors usually need. See
 
 | Package / directory | What belongs there |
 |---|---|
-| `src/forensia/cli/` | Typer commands, pipeline stage runners, CLI-only validation and diagnostics |
-| `src/forensia/web/` | FastAPI routes and packaged static assets |
+| `src/forensia/pipeline.py` | Display-agnostic run entry (`run_investigation`): stage assembly shared by CLI and future TUI, `UsageError` for adapter-translatable inputs |
+| `src/forensia/cli/` | Typer commands (thin display adapter), CLI-only validation and diagnostics |
 | `src/forensia/core/` | Case, session, memory, verdict, time, and progress primitives without workflow policy |
 | `src/forensia/db/` | DuckDB schema, migrations, connections, and generic query/evidence access |
-| `src/forensia/api/` | UI-facing DTOs, DB projections, progress records, and API snapshot cache |
 | `src/forensia/evidence/` | Artifact discovery, parser adapters, raw JSONL production, and normalization into DuckDB |
 | `src/forensia/knowledge/rules/` | Rule models, YAML loading, rule execution, and finding generation |
 | `src/forensia/knowledge/` | Readers for shared declarative catalogs and structured questions |
@@ -37,7 +36,6 @@ The following is the package-level map contributors usually need. See
 | `src/forensia/report/render/` | Final Markdown/HTML rendering, formats, evidence maps, and Jinja templates |
 | `src/forensia/report/` | Cross-cutting report projections, ranking, validation, and template export |
 | `src/forensia/report/templates/` | Packaged default report-section templates and format policy |
-| `web_ui/` | Svelte frontend source |
 | `tests/` | Deterministic unit, integration, regression, and extension-point tests |
 | `scripts/` | Repository audits and maintenance commands used by `forensia doctor` |
 | `docs/` | Architecture, development, extension, and operation documentation |
@@ -64,8 +62,6 @@ flowchart LR
     SECTIONS --> REPORT["report<br/>answers + sections"]
     REPORT --> RENDER["report/render<br/>Markdown + HTML"]
     RENDER --> OUT["reports/"]
-    DB --> API["api<br/>DTOs + snapshots"]
-    API --> WEB["web<br/>FastAPI + UI"]
 ```
 
 Within one hypothesis, control moves through a small PDCA loop:

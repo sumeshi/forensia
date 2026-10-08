@@ -69,6 +69,7 @@ def _needed_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
         "needed_evidence": _extract_needed_evidence(row.get("latest_reasoning")),
     }
 
+
 REPORT_META_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
     "gaps_event_coverage": (
         "Overall event coverage and time span.",

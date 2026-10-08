@@ -87,10 +87,7 @@ class IngestTests(unittest.TestCase):
                 source_sha: str,
                 progress_callback=None,
             ):
-                output = (
-                    case_obj.raw_dir
-                    / f"prefetch-entries-{source_sha[:12]}.jsonl"
-                )
+                output = case_obj.raw_dir / f"prefetch-entries-{source_sha[:12]}.jsonl"
                 output.write_text("{}", encoding="utf-8")
                 return output, None
 
@@ -280,7 +277,7 @@ class IngestTests(unittest.TestCase):
             output_dir = Path(tmpdir) / "case-run"
             with (
                 patch(
-                    "forensia.cli.stages.ingest_all",
+                    "forensia.pipeline.ingest_all",
                     return_value={
                         "new_files": 1,
                         "skipped_files": 0,
@@ -290,7 +287,7 @@ class IngestTests(unittest.TestCase):
                     },
                 ),
                 patch(
-                    "forensia.cli.stages.normalize_all",
+                    "forensia.pipeline.normalize_all",
                     return_value={
                         "evtx_rows": 0,
                         "mft_entries": 0,
@@ -300,18 +297,16 @@ class IngestTests(unittest.TestCase):
                 ),
                 patch("forensia.cli.app.resolve_llm_config", return_value=(None, None)),
                 patch(
-                    "forensia.cli.stages.load_rules_from_dir",
+                    "forensia.pipeline.load_rules_from_dir",
                     return_value=[],
                 ),
                 patch(
-                    "forensia.cli.stages.render_written_report",
+                    "forensia.pipeline.render_written_report",
                     return_value=(
                         output_dir / "reports" / "report.md",
                         output_dir / "reports" / "report.html",
                     ),
                 ),
-                patch("forensia.cli.stages.write_all_snapshots"),
-                patch("forensia.cli.support.write_all_snapshots"),
             ):
                 run_result = runner.invoke(
                     cli_module.app, ["investigate", str(output_dir), str(input_dir)]

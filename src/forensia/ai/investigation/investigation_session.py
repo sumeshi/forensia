@@ -87,7 +87,14 @@ def persist_session_terminal_receipt(
             "UPDATE investigation_sessions SET finished_at = ?, status = ?, "
             "terminal_reason = ?, phase = 'terminal', status_reason = ? "
             "WHERE session_id = ? AND owner_id = ?",
-            (finished.replace(tzinfo=None), status, reason, reason, session_id, owner_id),
+            (
+                finished.replace(tzinfo=None),
+                status,
+                reason,
+                reason,
+                session_id,
+                owner_id,
+            ),
         )
     else:
         db.execute(
@@ -413,8 +420,14 @@ def append_settlement_feedback(
     if failed_gates:
         body += f"; failed_gates={failed_gates}"
     return append_hypothesis_reasoning(
-        db, hypothesis_id, session_id, iteration, "settlement", body[:1000],
-        verdict=final_verdict, query_id=query_id,
+        db,
+        hypothesis_id,
+        session_id,
+        iteration,
+        "settlement",
+        body[:1000],
+        verdict=final_verdict,
+        query_id=query_id,
     )
 
 

@@ -511,8 +511,7 @@ def sub_requirement_coverage(
                 "label": label,
                 "required_fields": list(req_fields),
                 "require_value": {
-                    str(k): [str(v) for v in vs]
-                    for k, vs in require_value.items()
+                    str(k): [str(v) for v in vs] for k, vs in require_value.items()
                 },
                 "min_rows": min_rows,
                 "matched_rows": matched,
@@ -577,9 +576,7 @@ def evaluate_question_spec_status(
         base_status = "partial"
 
     required_fields = tuple(
-        rules.get("required_fields") or spec.required_fields
-        if spec is not None
-        else ()
+        rules.get("required_fields") or spec.required_fields if spec is not None else ()
     )
     # Spec-level required_fields only gate the answer when there are no
     # declarative sub-requirements; sub-requirements own composite coverage.
@@ -621,9 +618,7 @@ def evaluate_question_spec_status(
         satisfied = [item for item in coverage if item["satisfied"]]
         if satisfied and len(satisfied) < len(coverage):
             base_status = "partial"
-            missing = [
-                item["label"] for item in coverage if not item["satisfied"]
-            ]
+            missing = [item["label"] for item in coverage if not item["satisfied"]]
             reasons.append(
                 "Composite answer partially met; unmet sub-requirements: "
                 + ", ".join(missing)

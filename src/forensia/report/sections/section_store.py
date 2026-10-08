@@ -153,6 +153,7 @@ def _project_claim_provenance(
     therefore receives only identifiers that are both available to the section
     and present in that claim's own text.
     """
+
     def is_explicitly_cited(identifier: str) -> bool:
         identifier_chars = r"A-Za-z0-9_.-"
         return bool(

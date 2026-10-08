@@ -104,9 +104,7 @@ class Hypothesis(BaseModel):
                 if data.get(key) is not None
             }
             if declarations:
-                data["verification_spec"] = VerificationSpec.from_legacy(
-                    **declarations
-                )
+                data["verification_spec"] = VerificationSpec.from_legacy(**declarations)
             else:
                 # An explicit None means "no declared conditions"; the default
                 # empty spec applies.

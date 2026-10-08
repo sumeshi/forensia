@@ -180,5 +180,6 @@ class BenchmarkTraceabilityTest(unittest.TestCase):
             any("lacks a machine-detectable" in f.message for f in findings)
         )
 
+
 if __name__ == "__main__":
     unittest.main()

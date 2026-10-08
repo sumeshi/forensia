@@ -160,8 +160,10 @@ def _project_registry_source_state(
     every member would make source-level aggregation multiply the result.
     """
     ordered_ids = list(dict.fromkeys(str(item) for item in source_ids if item))
-    member_status = ingest_status if row_count > 0 else (
-        "empty" if ingest_status == "normalized" else ingest_status
+    member_status = (
+        ingest_status
+        if row_count > 0
+        else ("empty" if ingest_status == "normalized" else ingest_status)
     )
     for index, source_id in enumerate(ordered_ids):
         register_evidence_source(

@@ -211,7 +211,7 @@ class SelectionIntegrationTests(unittest.TestCase):
                     "INSERT INTO hypotheses (hypothesis_id, description, status, "
                     "blocked_reason, verification_spec) VALUES "
                     "('H-001', 'blocked hypothesis', 'active', 'waiting for data', "
-                    "'{\"spec_version\": \"1\"}')"
+                    '\'{"spec_version": "1"}\')'
                 )
                 db.execute(
                     "INSERT INTO hypotheses (hypothesis_id, description, status, "

@@ -948,12 +948,20 @@ class CurrentLinkTests(unittest.TestCase):
                 self.assertEqual(self._link_count(db), 2)
                 self.assertEqual(len(current), 1)
                 self.assertEqual(current[0].assessment_id, "EA-cur")
-                self.assertEqual({link.assessment_id for link in historical}, {"EA-cur"})
-                self.assertEqual(len({link.content_fingerprint for link in historical}), 2)
+                self.assertEqual(
+                    {link.assessment_id for link in historical}, {"EA-cur"}
+                )
+                self.assertEqual(
+                    len({link.content_fingerprint for link in historical}), 2
+                )
                 self.assertEqual(self._assess(db).status, "sufficient")
                 create_evidence_links_for_query(
-                    db, hypothesis_id="H-CUR", evidence_ids=["evtx-1"],
-                    query_id="Q-current", role="supporting", assessment_id="EA-cur",
+                    db,
+                    hypothesis_id="H-CUR",
+                    evidence_ids=["evtx-1"],
+                    query_id="Q-current",
+                    role="supporting",
+                    assessment_id="EA-cur",
                 )
                 self.assertEqual(self._link_count(db), 2)
 
@@ -964,8 +972,12 @@ class CurrentLinkTests(unittest.TestCase):
                     ['{"created_at":"2020-01-01"}'],
                 )
                 create_evidence_links_for_query(
-                    db, hypothesis_id="H-CUR", evidence_ids=["evtx-1"],
-                    query_id="Q-current", role="supporting", assessment_id="EA-cur",
+                    db,
+                    hypothesis_id="H-CUR",
+                    evidence_ids=["evtx-1"],
+                    query_id="Q-current",
+                    role="supporting",
+                    assessment_id="EA-cur",
                 )
                 self.assertEqual(self._assess(db).status, "sufficient")
                 db.execute(
@@ -1013,7 +1025,9 @@ class CurrentLinkTests(unittest.TestCase):
                     [json.dumps(changed_spec)],
                 )
 
-                self.assertEqual(load_evidence_links(db, "H-CUR", current_only=True), [])
+                self.assertEqual(
+                    load_evidence_links(db, "H-CUR", current_only=True), []
+                )
                 historical = load_evidence_links(db, "H-CUR")
                 self.assertEqual(len(historical), 1)
                 self.assertEqual(
@@ -1051,7 +1065,10 @@ class CurrentLinkTests(unittest.TestCase):
                 self.assertEqual(len(history_after), 2)
                 self.assertEqual(len(current_after), 1)
                 self.assertNotEqual(history_after[0].link_id, history_after[1].link_id)
-                self.assertEqual(self._assess(db, verification_spec=changed_spec).status, "sufficient")
+                self.assertEqual(
+                    self._assess(db, verification_spec=changed_spec).status,
+                    "sufficient",
+                )
 
     def test_new_assessment_captures_source_without_rewriting_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1101,8 +1118,8 @@ class CrossQueryIndependenceTests(unittest.TestCase):
         db.execute(
             "INSERT INTO hypotheses (hypothesis_id, status, created_at, "
             "updated_at, verification_spec) VALUES ('H-XQ', 'active', now(), "
-            "now(), '{\"spec_version\": \"1\", \"support_conditions\": "
-            "{\"co_observed_event_ids\": [4624]}}')"
+            'now(), \'{"spec_version": "1", "support_conditions": '
+            '{"co_observed_event_ids": [4624]}}\')'
         )
 
     def _observed_rows(self, source: str, evidence_id: str) -> list[dict]:
@@ -1205,8 +1222,12 @@ class CrossQueryIndependenceTests(unittest.TestCase):
                 self._seed(db)
                 requirements = {"min_independent_groups": 2}
                 rows = self._observed_rows("sha-a", "evtx-1")
-                self._link_observation(db, query_id="Q-one", rows=rows, evidence_id="evtx-1")
-                self._link_observation(db, query_id="Q-two", rows=rows, evidence_id="evtx-1")
+                self._link_observation(
+                    db, query_id="Q-one", rows=rows, evidence_id="evtx-1"
+                )
+                self._link_observation(
+                    db, query_id="Q-two", rows=rows, evidence_id="evtx-1"
+                )
                 self.assertEqual(len(load_evidence_links(db, "H-XQ")), 2)
 
                 result = self._assess(db, evidence_requirements=requirements)
@@ -1215,9 +1236,7 @@ class CrossQueryIndependenceTests(unittest.TestCase):
 
                 decision = self._settle(db, rows, result)
                 self.assertFalse(decision.allowed)
-                self.assertIn(
-                    "machine_sufficiency=", "; ".join(decision.gates_failed)
-                )
+                self.assertIn("machine_sufficiency=", "; ".join(decision.gates_failed))
 
                 # A genuinely independent derivation root is not lost.
                 independent_rows = self._observed_rows("sha-b", "evtx-2")

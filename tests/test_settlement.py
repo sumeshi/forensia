@@ -163,7 +163,9 @@ class SettlementGateTests(unittest.TestCase):
                     confirm_when={"co_observed_event_ids": [21, 4624]},
                 )
                 # Create a single weak evidence link
-                _make_evidence_link(db, hypothesis=hyp, strength="weak", source_family="mft")
+                _make_evidence_link(
+                    db, hypothesis=hyp, strength="weak", source_family="mft"
+                )
                 si = SettlementInput(
                     hypothesis=hyp,
                     checker_verdict="confirmed",
@@ -189,7 +191,9 @@ class SettlementGateTests(unittest.TestCase):
                     confirm_when={"co_observed_event_ids": [21, 4624]},
                 )
                 _make_evidence_link(db, hypothesis=hyp)
-                _make_evidence_link(db, hypothesis=hyp, evidence_id="evtx-002", source_family="evtx")
+                _make_evidence_link(
+                    db, hypothesis=hyp, evidence_id="evtx-002", source_family="evtx"
+                )
                 si = SettlementInput(
                     hypothesis=hyp,
                     checker_verdict="confirmed",
@@ -383,10 +387,17 @@ class PositiveSettlementTests(unittest.TestCase):
                     },
                 )
                 # Create multiple supporting evidence links from different families
-                _make_evidence_link(db, hypothesis=hyp, evidence_id="evtx-001", source_family="evtx")
-                _make_evidence_link(db, hypothesis=hyp, evidence_id="evtx-002", source_family="evtx")
                 _make_evidence_link(
-                    db, hypothesis=hyp, evidence_id="prefetch-001", source_family="prefetch"
+                    db, hypothesis=hyp, evidence_id="evtx-001", source_family="evtx"
+                )
+                _make_evidence_link(
+                    db, hypothesis=hyp, evidence_id="evtx-002", source_family="evtx"
+                )
+                _make_evidence_link(
+                    db,
+                    hypothesis=hyp,
+                    evidence_id="prefetch-001",
+                    source_family="prefetch",
                 )
 
                 # Insert sufficiency metadata
@@ -556,8 +567,12 @@ class PositiveSettlementTests(unittest.TestCase):
                         "event_constraints": {4624: {"logon_type": ["10"]}},
                     },
                 )
-                _make_evidence_link(db, hypothesis=hyp, hypothesis_id="H-rdp", evidence_id="evtx-21")
-                _make_evidence_link(db, hypothesis=hyp, hypothesis_id="H-rdp", evidence_id="evtx-4624")
+                _make_evidence_link(
+                    db, hypothesis=hyp, hypothesis_id="H-rdp", evidence_id="evtx-21"
+                )
+                _make_evidence_link(
+                    db, hypothesis=hyp, hypothesis_id="H-rdp", evidence_id="evtx-4624"
+                )
                 decision = settle_hypothesis(
                     db,
                     SettlementInput(

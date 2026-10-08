@@ -8,13 +8,15 @@ from pathlib import Path
 
 # Larger numbers are closer to users. Code may depend on the same or a lower
 # layer; dependencies pointing upward require an exact, documented exception.
+# "pipeline" is the display-agnostic run entry (V2-02): it sits with cli in the
+# interface layer so adapters may call it, but kernel layers may not import it.
 LAYERS: tuple[tuple[str, frozenset[str]], ...] = (
-    ("platform", frozenset({"core", "db", "api", "config"})),
+    ("platform", frozenset({"core", "db", "config"})),
     ("evidence", frozenset({"evidence"})),
     ("knowledge", frozenset({"knowledge"})),
     ("reporting", frozenset({"report"})),
     ("workflow", frozenset({"ai"})),
-    ("interface", frozenset({"cli", "web"})),
+    ("interface", frozenset({"cli", "pipeline"})),
 )
 
 PACKAGE_LAYER = {

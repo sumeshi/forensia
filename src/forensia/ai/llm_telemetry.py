@@ -40,9 +40,7 @@ from forensia.db.database import CaseDB
 _ACTIVE_TELEMETRY: ContextVar[LLMTelemetry | None] = ContextVar(
     "active_llm_telemetry", default=None
 )
-_ACTIVE_SCOPE: ContextVar[dict[str, Any]] = ContextVar(
-    "active_llm_scope", default={}
-)
+_ACTIVE_SCOPE: ContextVar[dict[str, Any]] = ContextVar("active_llm_scope", default={})
 
 
 def set_active_telemetry(
@@ -69,6 +67,7 @@ def telemetry_scope(**scope: Any) -> Iterator[None]:
         yield
     finally:
         _ACTIVE_SCOPE.reset(token)
+
 
 RecordStatus = Literal["open", "success", "failed", "discarded"]
 AttemptStatus = Literal[
@@ -107,14 +106,18 @@ def compute_effective_output_limit(
 
     settings = get_llm_settings()
     configured = int(
-        configured_max_tokens if configured_max_tokens is not None else settings["max_tokens"]
+        configured_max_tokens
+        if configured_max_tokens is not None
+        else settings["max_tokens"]
     )
     reserve = int(
         reasoning_reserve_tokens
         if reasoning_reserve_tokens is not None
         else settings.get("reasoning_reserve_tokens", 0)
     )
-    requested = int(requested_override if requested_override is not None else configured)
+    requested = int(
+        requested_override if requested_override is not None else configured
+    )
     effective = requested + reserve
     if known_context_limit and effective > known_context_limit:
         available = known_context_limit - max(0, estimated_input_tokens or 0)

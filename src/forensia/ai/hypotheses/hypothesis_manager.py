@@ -175,11 +175,14 @@ def merge_active_hypotheses(
             merged = _merge_hypothesis_fields(existing, item)
             reopened = False
             if merged.verification_spec != existing.verification_spec:
-                has_prior_assessment = db.execute(
-                    "SELECT 1 FROM hypothesis_evidence WHERE hypothesis_id = ? "
-                    "AND COALESCE(assessment_id, '') <> '' LIMIT 1",
-                    [existing.id],
-                ).fetchone() is not None
+                has_prior_assessment = (
+                    db.execute(
+                        "SELECT 1 FROM hypothesis_evidence WHERE hypothesis_id = ? "
+                        "AND COALESCE(assessment_id, '') <> '' LIMIT 1",
+                        [existing.id],
+                    ).fetchone()
+                    is not None
+                )
                 if has_prior_assessment:
                     # The link currentness check compares its captured Spec
                     # fingerprint with this new canonical Spec. Keep history;
@@ -360,10 +363,14 @@ def _reopen_hypothesis_after_spec_change(
         "SELECT claim_id, hypothesis_ids, section_key FROM claims"
     ).fetchall():
         try:
-            hypothesis_ids = json.loads(raw_ids) if isinstance(raw_ids, str) else raw_ids
-        except (TypeError, ValueError):
+            hypothesis_ids = (
+                json.loads(raw_ids) if isinstance(raw_ids, str) else raw_ids
+            )
+        except TypeError, ValueError:
             hypothesis_ids = []
-        if hypothesis.id in (hypothesis_ids if isinstance(hypothesis_ids, list) else []):
+        if hypothesis.id in (
+            hypothesis_ids if isinstance(hypothesis_ids, list) else []
+        ):
             if section_key:
                 claim_sections.add(str(section_key))
             db.execute(
@@ -640,13 +647,13 @@ def _claim_spec_conformance_error(candidate: Hypothesis) -> str | None:
                 return "invalid-event-context"
             try:
                 context_event_id = int(context.get("event_id"))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 return "invalid-event-context-event-id"
             context_by_id.setdefault(context_event_id, []).append(context)
         for raw_event_id in event_ids:
             try:
                 event_id = int(raw_event_id)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
             contexts = context_by_id.get(event_id)
             hint = load_event_id_hints().get(event_id) or {}
@@ -669,7 +676,7 @@ def _claim_spec_conformance_error(candidate: Hypothesis) -> str | None:
         for raw_event_id in event_ids:
             try:
                 event_id = int(raw_event_id)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
             hint = load_event_id_hints().get(event_id) or {}
             if hint.get("channels") or hint.get("providers"):
@@ -682,7 +689,7 @@ def _claim_spec_conformance_error(candidate: Hypothesis) -> str | None:
     for raw_event_id in event_ids:
         try:
             event_id = int(raw_event_id)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         hint = load_event_id_hints().get(event_id) or {}
         claim_terms = [
@@ -728,9 +735,12 @@ def _claim_spec_conformance_error(candidate: Hypothesis) -> str | None:
     }
     for entity in candidate.required_entities:
         normalized = str(entity).strip().lower()
-        if re.search(
-            rf"\b(?:same|single)\s+{re.escape(normalized)}\b", description, re.I
-        ) and normalized not in same_entities:
+        if (
+            re.search(
+                rf"\b(?:same|single)\s+{re.escape(normalized)}\b", description, re.I
+            )
+            and normalized not in same_entities
+        ):
             return "claim-spec-entity-correlation-missing"
 
     if re.search(
@@ -739,7 +749,11 @@ def _claim_spec_conformance_error(candidate: Hypothesis) -> str | None:
         re.I,
     ):
         min_count = support.get("min_count")
-        if not isinstance(min_count, int) or isinstance(min_count, bool) or min_count < 2:
+        if (
+            not isinstance(min_count, int)
+            or isinstance(min_count, bool)
+            or min_count < 2
+        ):
             return "claim-spec-min-count-missing"
     return None
 
@@ -776,7 +790,7 @@ def qualify_event_contexts(candidate: Hypothesis, db: CaseDB) -> Hypothesis:
         if isinstance(item, dict):
             try:
                 declared_by_id.setdefault(int(item.get("event_id")), []).append(item)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
     contexts: list[dict[str, Any]] = [
         item for values in declared_by_id.values() for item in values
@@ -784,7 +798,7 @@ def qualify_event_contexts(candidate: Hypothesis, db: CaseDB) -> Hypothesis:
     for raw_event_id in event_ids:
         try:
             event_id = int(raw_event_id)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         hint = load_event_id_hints().get(event_id) or {}
         if not hint.get("channels") and not hint.get("providers"):
@@ -907,7 +921,9 @@ def admit_new_hypothesis(
     if candidate.required_entities:
         valid_entities = _filter_valid_entities(candidate.required_entities)
         requested_entities = {
-            str(value).strip() for value in candidate.required_entities if str(value).strip()
+            str(value).strip()
+            for value in candidate.required_entities
+            if str(value).strip()
         }
         if requested_entities - set(valid_entities):
             _log(

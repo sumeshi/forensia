@@ -573,9 +573,7 @@ def plan_hypothesis_query(
     default_context_md = _resolve_planner_context(
         memory, hypothesis, default_context_md
     )
-    hypothesis_history = _build_hypothesis_history(
-        state, hypothesis, db, limit=10
-    )
+    hypothesis_history = _build_hypothesis_history(state, hypothesis, db, limit=10)
     schema_card = _build_schema_guidance("evtx_events", db=db)
     prior_check_feedback = _load_prior_check_feedback(db, hypothesis)
     execution_error_block = _consume_execution_error_block(state)

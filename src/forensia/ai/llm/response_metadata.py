@@ -77,7 +77,7 @@ def is_complete_json_object(content: str) -> bool:
         return False
     try:
         return isinstance(json.loads(text[first : last + 1]), dict)
-    except (json.JSONDecodeError, TypeError):
+    except json.JSONDecodeError, TypeError:
         return False
 
 

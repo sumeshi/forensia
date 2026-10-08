@@ -378,9 +378,7 @@ def _structured_answer_interpretation(
         )
     spec = question_spec_for_answer_spec(str(answer_spec))
     if spec is not None and spec.version_aware:
-        has_version = any(
-            str(row.get("version") or "").strip() for row in rows
-        )
+        has_version = any(str(row.get("version") or "").strip() for row in rows)
         if not has_version:
             rendered += " Version availability was not observed in the evidence (no version implied)."
     return rendered + tz_basis

@@ -493,7 +493,12 @@ class SectionFinalizeTests(unittest.TestCase):
         """The artifact-scope guard applies across supported report languages."""
         cases = (
             ("english", "All artifacts are EVTX.", "mft_entries", "mft-1"),
-            ("japanese", "アーティファクトはすべてEVTX形式です。", "prefetch_executions", "pf-1"),
+            (
+                "japanese",
+                "アーティファクトはすべてEVTX形式です。",
+                "prefetch_executions",
+                "pf-1",
+            ),
         )
         for language, body, artifact_table, artifact_id in cases:
             with self.subTest(language=language):
@@ -795,77 +800,7 @@ class SectionFinalizeTests(unittest.TestCase):
             )
             self.assertIn("raw evidence rows were moved", str(gaps).lower())
 
-    def test_finding_and_report_section_dtos_include_evidence_counts(self) -> None:
-        from forensia.api.service import list_findings_dto
-        from forensia.report.section_views import list_report_sections_dto
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                db.execute(
-                    """
-                    INSERT INTO findings (
-                        finding_id, rule_id, title, summary, severity, confidence, status,
-                        tags, attack, evidence, ai_summary, missing_checks, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())
-                    """,
-                    (
-                        "finding-test",
-                        "rule-test",
-                        "Test finding",
-                        "A finding with concrete evidence.",
-                        "high",
-                        0.9,
-                        "accepted",
-                        "[]",
-                        "[]",
-                        json.dumps(
-                            [
-                                {"evidence_id": "evtx-security-000000000001"},
-                                {"evidence_ids": ["prefetch-execution-000000000002"]},
-                                {"evidence_id": "evtx-security-000000000001"},
-                            ]
-                        ),
-                        "AI summary",
-                        "[]",
-                    ),
-                )
-                db.execute(
-                    """
-                    INSERT INTO report_sections (
-                        section_key, title, body, confidence, status, update_count,
-                        gaps, last_filled_session, last_filled_at, stale
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, now(), false)
-                    """,
-                    ("1_overview", "Overview", "Body", 0.9, "draft", 1, "[]", "S-1"),
-                )
-                db.execute(
-                    """
-                    INSERT INTO section_evidence (section_key, block_heading, evidence_id, role, source_query, created_at)
-                    VALUES
-                        ('1_overview', 'A', 'evtx-security-000000000001', 'support', 'q1', now()),
-                        ('1_overview', 'A', 'evtx-security-000000000001', 'support', 'q2', now()),
-                        ('1_overview', 'A', 'prefetch-execution-000000000002', 'support', 'q3', now())
-                    """
-                )
-
-                finding = list_findings_dto(db)[0]
-                section = list_report_sections_dto(db)[0]
-
-            self.assertEqual(
-                ["evtx-security-000000000001", "prefetch-execution-000000000002"],
-                finding.evidence_ids,
-            )
-            self.assertEqual(2, finding.evidence_count)
-            self.assertEqual(
-                ["evtx-security-000000000001", "prefetch-execution-000000000002"],
-                section.evidence_ids,
-            )
-            self.assertEqual(2, section.evidence_count)
-
-    def test_finalize_section_upserts_section_and_returns_gaps(self) -> None:
-        from forensia.report.section_views import list_report_sections_dto
-
+    def test_finalize_section_upserts_section(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -876,10 +811,18 @@ class SectionFinalizeTests(unittest.TestCase):
                     body="## Overview\n\nOverview content here.",
                     evidence_results=[],
                 )
-                section = list_report_sections_dto(db)[0]
+                row = db.execute(
+                    """
+                    SELECT section_key, title, body, status
+                    FROM report_sections
+                    WHERE section_key = ?
+                    """,
+                    ("1_overview",),
+                ).fetchone()
 
-            self.assertEqual("1_overview", section.section_key)
-            self.assertEqual("Overview", section.title)
+            self.assertEqual("1_overview", str(row[0]))
+            self.assertEqual("Overview", str(row[1]))
+            self.assertIn("Overview content here", str(row[2]))
             self.assertIsInstance(result, dict)
             self.assertIn("gaps", result)
             self.assertIn("confidence", result)

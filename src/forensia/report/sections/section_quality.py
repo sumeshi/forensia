@@ -159,7 +159,7 @@ def _collect_event_contexts_from_results(
                 continue
             try:
                 event_id = int(row.get("event_id"))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
             context = event_context_from_row(row)
             if context not in contexts.setdefault(event_id, []):

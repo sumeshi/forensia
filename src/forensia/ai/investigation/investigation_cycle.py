@@ -7,8 +7,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-import httpx
-
 from forensia.ai.audit import LLMCallLogger
 from forensia.ai.case_profile import (
     CaseEvidenceProfile,
@@ -435,6 +433,8 @@ async def _run_broad_plan_step(
     case_profile: CaseEvidenceProfile | None = None,
 ) -> bool:
     """Execute broad planning step (2-stage: gap_identifier → hypothesis_drafter). Returns stop flag."""
+    import httpx
+
     observed_keypoint_labels = _broad_plan_observed_labels(observed_keypoints)
     plan_input = state.model_dump()
     ctx = _BroadPlanContext(

@@ -127,6 +127,7 @@ def _rank_rows_first(
 
     return sorted(rows, key=rank_key)
 
+
 _STRUCTURED_ANSWER_BUILDERS: dict[str, StructuredAnswerBuilder] = {
     "host_identity": _build_host_identity,
     "last_human_logon": _build_last_human_logon,

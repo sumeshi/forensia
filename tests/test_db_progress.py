@@ -28,7 +28,9 @@ def test_progress_events_are_capped() -> None:
                         "summary": f"event-{index}",
                     },
                 )
-            count = db.execute("SELECT COUNT(*) FROM trace.progress_events").fetchone()[0]
+            count = db.execute("SELECT COUNT(*) FROM trace.progress_events").fetchone()[
+                0
+            ]
             assert count == MAX_PROGRESS_EVENTS
             events = list_progress_events(db, after_index=0, limit=100)
             # Oldest events are pruned; listing starts at the surviving tail.

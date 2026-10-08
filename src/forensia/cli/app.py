@@ -1,4 +1,10 @@
-"""Typer command declarations for the forensia CLI."""
+"""Typer command declarations for the forensia CLI.
+
+Thin display adapter: commands map CLI options onto the display-agnostic
+pipeline entry (``forensia.pipeline.run_investigation``) and render plain text
+results. Argument validation lives in the kernel entry as ``UsageError`` and
+is translated here into ``typer.BadParameter``.
+"""
 
 import asyncio
 import logging
@@ -6,49 +12,28 @@ from collections.abc import Callable
 from pathlib import Path
 
 import typer
-import uvicorn
 from rich import print
+from rich.markup import escape
 
 from forensia.ai.case_profile import profile_advisor
 from forensia.ai.investigation.investigator import investigate as investigate_loop
-from forensia.api.cache import (
-    clear_api_snapshots,
-)
-from forensia.api.progress import clear_progress_events
+from forensia.ai.llm.llm_client import LLMServerUnavailableError
 from forensia.cli.doctor import run_doctor
-from forensia.cli.stages import (
-    _make_initial_progress_state,
-    _run_analyze_stage,
-    _run_ingest_stage,
-    _run_investigate_stage,
-    _run_normalize_stage,
-    _run_report_stage,
-)
-from forensia.cli.support import (
-    _open_case_or_die,
-    _resolve_knowledge_dir,
-    _resolve_llm_or_die,
-    _resolve_profile_path,
-    _resolve_template_dir,
-    _resolve_timezone,
-    _seed_api_snapshots_if_possible,
-    _status,
-    progress_pusher,
-    reset_case_tables,
-)
+from forensia.cli.support import _open_case_or_die, _resolve_llm_or_die, _status
 from forensia.config import get_llm_settings, resolve_llm_config
 from forensia.core.case import Case
 from forensia.core.case_tasks import CaseTasks
 from forensia.db.database import CaseDB
 from forensia.evidence.ingest import ingest_all
-from forensia.report.api_snapshot import write_all_snapshots
+from forensia.pipeline import (
+    UsageError,
+    resolve_knowledge_dir,
+    resolve_template_dir,
+    run_investigation,
+)
 from forensia.report.render.html import render_html_report
 from forensia.report.render.writer import render_written_report
-from forensia.report.template_export import (
-    export_packaged_report_templates,
-    seed_case_report_templates,
-)
-from forensia.web.app import create_app
+from forensia.report.template_export import export_packaged_report_templates
 
 logger = logging.getLogger(__name__)
 
@@ -124,8 +109,11 @@ def report(
         help="Max iterative agent queries per report block. 0 = use FORENSIA_REPORT_MAX_QUERIES_PER_SECTION env (default 3)",
     ),
 ) -> None:
-    case = _open_case_or_die(case_dir)
-    knowledge_path = _resolve_knowledge_dir(knowledge)
+    try:
+        case = _open_case_or_die(case_dir)
+        knowledge_path = resolve_knowledge_dir(knowledge)
+    except UsageError as exc:
+        raise typer.BadParameter(str(exc)) from None
     from forensia.knowledge.external import scan_knowledge_dir, set_knowledge_docs
 
     # CLI commands can be invoked repeatedly in one Python process (embedding,
@@ -138,125 +126,43 @@ def report(
         _status(f"knowledge: {len(docs)} files indexed from {knowledge_path}")
         if not docs:
             _status("WARNING: knowledge directory contains no valid knowledge files")
-    with CaseDB(case) as db:
-        if write:
-            llm_base_url, model = _resolve_llm_or_die(llm_base_url, model)
-            template_root = _resolve_template_dir(case, template_dir)
-            max_queries = (
-                report_max_queries_per_section
-                or get_llm_settings()["report_max_queries_per_section"]
-            )
-            _status(
-                f"Writing report from templates: {template_root} (max_queries={max_queries})"
-            )
-            asyncio.run(
-                investigate_loop(
-                    case=case,
-                    db=db,
-                    base_url=llm_base_url,
-                    model=model,
-                    max_iter=1,
-                    no_progress_limit=1,
-                    profile="windows-basic",
-                    max_queries_per_hypothesis=0,
-                    report_only=True,
-                    template_root=template_root,
-                    report_max_queries_per_section=max_queries,
+    try:
+        with CaseDB(case) as db:
+            if write:
+                llm_base_url, model = _resolve_llm_or_die(llm_base_url, model)
+                template_root = resolve_template_dir(case, template_dir)
+                max_queries = (
+                    report_max_queries_per_section
+                    or get_llm_settings()["report_max_queries_per_section"]
                 )
+                _status(
+                    f"Writing report from templates: {template_root} (max_queries={max_queries})"
+                )
+                asyncio.run(
+                    investigate_loop(
+                        case=case,
+                        db=db,
+                        base_url=llm_base_url,
+                        model=model,
+                        max_iter=1,
+                        no_progress_limit=1,
+                        profile="windows-basic",
+                        max_queries_per_hypothesis=0,
+                        report_only=True,
+                        template_root=template_root,
+                        report_max_queries_per_section=max_queries,
+                    )
+                )
+            report_md, report_path = render_written_report(case, db)
+            path = (
+                render_html_report(case, db, output_path=output)
+                if output
+                else report_path
             )
-        report_md, report_path = render_written_report(case, db)
-        path = (
-            render_html_report(case, db, output_path=output) if output else report_path
-        )
-        write_all_snapshots(case, db)
+    except UsageError as exc:
+        raise typer.BadParameter(str(exc)) from None
     print(f"Markdown report written to {report_md}")
     print(f"HTML report written to {path}")
-
-
-def _open_or_init_case(case_dir: str, input_dir: str | None, timezone: str) -> Case:
-    """Open an existing case or initialize a new one (requires input_dir)."""
-    case_path = Path(case_dir)
-    if (case_path / "manifest.yaml").exists():
-        return _open_case_or_die(case_dir, timezone=timezone)
-    if input_dir is None:
-        raise typer.BadParameter("New case requires an input_dir argument")
-    tz_val = _resolve_timezone(timezone, None)
-    case = Case.init(case_dir, source_timezone=tz_val)
-    seed_case_report_templates(case)
-    clear_api_snapshots(case)
-    _status(f"Initialized case at {case.path}")
-    return case
-
-
-def _rerun_reset(case: Case, case_dir: str, timezone: str) -> Case:
-    """Reset case tables and runtime outputs for --rerun, preserving raw/ and memory."""
-    _status("Resetting case tables for rerun (preserving raw/ for re-normalize)")
-    with CaseDB(case) as db:
-        reset_case_tables(db)
-    case.clear_runtime_outputs(
-        preserve_memory=True,
-        preserve_ai_logs=True,
-        drop_database=False,
-        preserve_raw=True,
-    )
-    # Preserve the manifest timezone across rerun unless --timezone overrides it.
-    tz_val = _resolve_timezone(timezone, case)
-    case = Case.init(case_dir, source_timezone=tz_val)
-    seed_case_report_templates(case)
-    clear_api_snapshots(case)
-    _status(f"Re-initialized case at {case.path}")
-    return case
-
-
-def _run_evidence_stages(
-    case: Case,
-    db: CaseDB,
-    tasks: CaseTasks,
-    profile: str,
-    input_dir: str | None,
-    rerun: bool,
-    push_progress: Callable[..., None],
-) -> None:
-    """(Re)build evidence tables: ingest from input_dir, or re-normalize from raw/.
-
-    - `input_dir` given: full ingest from input_dir, then normalize + analyze
-    - `rerun` with raw/ already populated: skip ingest, just re-run normalize + analyze
-    """
-    raw_has_files = any(case.raw_dir.iterdir()) if case.raw_dir.exists() else False
-    needs_normalize_from_raw = rerun and input_dir is None and raw_has_files
-
-    if input_dir is not None:
-        profile_path = _resolve_profile_path(profile)
-        ingest_counts = _run_ingest_stage(case, db, tasks, input_dir, push_progress)
-        normalized_this_run = _run_normalize_stage(
-            case, db, tasks, rerun, ingest_counts, push_progress
-        )
-        _run_analyze_stage(
-            case,
-            db,
-            tasks,
-            profile,
-            profile_path,
-            rerun,
-            normalized_this_run,
-            push_progress,
-        )
-    elif needs_normalize_from_raw:
-        profile_path = _resolve_profile_path(profile)
-        _status("Re-normalizing from existing raw/ (no input_dir provided)")
-        normalized_this_run = _run_normalize_stage(
-            case, db, tasks, True, {}, push_progress
-        )
-        _run_analyze_stage(
-            case,
-            db,
-            tasks,
-            profile,
-            profile_path,
-            True,
-            normalized_this_run,
-            push_progress,
-        )
 
 
 def _print_pre_investigation_hints(case: Case, profile: str, db: CaseDB) -> None:
@@ -264,8 +170,6 @@ def _print_pre_investigation_hints(case: Case, profile: str, db: CaseDB) -> None
     advice = profile_advisor(profile, db)
     if advice:
         # rich's print would swallow [bracketed] pack names as markup tags.
-        from rich.markup import escape
-
         print(escape(advice))
     if case.source_timezone == "UTC":
         # R2-14: surface a conservative timezone hint when no explicit
@@ -285,6 +189,15 @@ def _print_pre_investigation_hints(case: Case, profile: str, db: CaseDB) -> None
                 )
         except Exception:
             logger.debug("Failed to infer timezone hint from evidence", exc_info=True)
+
+
+def _missing_case_message(case_dir: str) -> str:
+    target = Path(case_dir).resolve()
+    return (
+        "case_dir must point to an initialized case directory.\n"
+        f"missing: {target / 'manifest.yaml'}\n"
+        f"initialize with: forensia investigate {target} <input_dir>"
+    )
 
 
 @app.command()
@@ -331,77 +244,48 @@ def investigate(
         help="IANA timezone name (e.g. America/New_York). Overrides manifest value.",
     ),
 ) -> None:
-    """Run full investigation pipeline: ingest, normalize, analyze, investigate, and report."""
+    """Run the full investigation pipeline through the kernel entry."""
     llm_base_url, model = resolve_llm_config(llm_base_url, model)
-    case = _open_or_init_case(case_dir, input_dir, timezone)
-    if rerun:
-        case = _rerun_reset(case, case_dir, timezone)
-
-    knowledge_path = _resolve_knowledge_dir(knowledge)
-    from forensia.knowledge.external import scan_knowledge_dir, set_knowledge_docs
-
-    set_knowledge_docs([])
-    if knowledge_path:
-        docs = scan_knowledge_dir(knowledge_path)
-        set_knowledge_docs(docs)
-        _status(f"knowledge: {len(docs)} files indexed from {knowledge_path}")
-        if not docs:
-            _status("WARNING: knowledge directory contains no valid knowledge files")
-
-    with CaseDB(case) as db:
-        clear_progress_events(db)
-        push_progress = progress_pusher(
-            db,
-            _make_initial_progress_state(model, llm_base_url),
+    try:
+        report_path = run_investigation(
+            case_dir,
+            input_dir=input_dir,
+            profile=profile,
+            llm_base_url=llm_base_url,
+            model=model,
+            template_dir=template_dir,
+            knowledge_dir=knowledge,
+            rerun=rerun,
+            report_only=report_only,
+            max_iter=max_iter,
+            max_queries_per_hypothesis=max_queries_per_hypothesis,
+            no_progress_limit=no_progress_limit,
+            report_every_n_cycles=report_every_n_cycles,
+            report_max_queries_per_section=report_max_queries_per_section,
+            max_llm_calls=max_llm_calls,
+            auto_rulepacks=auto_rulepacks,
+            timezone=timezone,
+            status=_status,
+            pre_investigation=_print_pre_investigation_hints_with(profile),
         )
-        push_progress("Case ready", stage="init", summary=f"Case: {case.path}")
-
-        tasks = CaseTasks.for_case(case)
-        template_root = (
-            _resolve_template_dir(case, template_dir)
-            if (llm_base_url and model)
-            else None
-        )
-
-        if not report_only:
-            _run_evidence_stages(
-                case, db, tasks, profile, input_dir, rerun, push_progress
-            )
-            _print_pre_investigation_hints(case, profile, db)
-            _run_investigate_stage(
-                case,
-                db,
-                tasks,
-                llm_base_url,
-                model,
-                template_root,
-                profile,
-                push_progress,
-                max_iter=max_iter,
-                max_queries_per_hypothesis=max_queries_per_hypothesis,
-                no_progress_limit=no_progress_limit,
-                report_every_n_cycles=report_every_n_cycles,
-                report_max_queries_per_section=report_max_queries_per_section,
-                max_llm_calls=max_llm_calls,
-                auto_rulepacks=auto_rulepacks,
-            )
-
-        report_path = _run_report_stage(case, db, tasks, push_progress)
-
+    except UsageError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    except FileNotFoundError as exc:
+        raise typer.BadParameter(_missing_case_message(case_dir)) from exc
+    except LLMServerUnavailableError:
+        # The pipeline already emitted the abort line through the status seam;
+        # only the process exit policy is the adapter's concern here.
+        raise typer.Exit(2) from None
     print(f"Investigation complete. Report: {report_path}")
 
 
-@app.command()
-def serve(
-    case_dir: str,
-    host: str = typer.Option("127.0.0.1", "--host"),
-    port: int = typer.Option(8000, "--port"),
-) -> None:
-    case = _open_case_or_die(case_dir)
-    _seed_api_snapshots_if_possible(case)
-    _status(f"Serving case UI on http://{host}:{port}")
-    app_instance = create_app(case)
-    uvicorn.run(app_instance, host=host, port=port, log_level="warning")
+def _print_pre_investigation_hints_with(
+    profile: str,
+) -> Callable[[Case, CaseDB], None]:
+    def render(case: Case, db: CaseDB) -> None:
+        _print_pre_investigation_hints(case, profile, db)
+
+    return render
 
 
 if __name__ == "__main__":

@@ -138,8 +138,9 @@ def derive_publication_state(db: Any) -> dict[str, Any]:
 
     try:
         state["confirmed_without_evidence_count"] = int(
-            len(db.execute(
-                """
+            len(
+                db.execute(
+                    """
                 SELECT COUNT(*)
                 FROM hypotheses h
                 LEFT JOIN hypothesis_evidence he ON he.hypothesis_id = h.hypothesis_id
@@ -147,7 +148,8 @@ def derive_publication_state(db: Any) -> dict[str, Any]:
                 GROUP BY h.hypothesis_id
                 HAVING COUNT(he.link_id) = 0
                 """
-            ).fetchall())
+                ).fetchall()
+            )
         )
     except Exception:
         state["reasons"].append("hypothesis_evidence_unavailable")
@@ -412,9 +414,7 @@ def _extract_claim_paragraphs(content: str) -> list[str]:
 
 
 def _has_machine_ref(text: str) -> bool:
-    return bool(
-        EVIDENCE_ID_PATTERN.search(text) or _FINDING_ID_PATTERN.search(text)
-    )
+    return bool(EVIDENCE_ID_PATTERN.search(text) or _FINDING_ID_PATTERN.search(text))
 
 
 # Tokens that indicate a paragraph is making a forensic/evidence claim (rather
@@ -448,10 +448,7 @@ def check_claim_traceability(content: str) -> list[ValidationFinding]:
     for paragraph in paragraphs:
         is_evidence_claim = _is_evidence_claim(paragraph)
         # Bare hypothesis reference without a machine-detectable ref.
-        if (
-            _HYPOTHESIS_ID_PATTERN.search(paragraph)
-            and not _has_machine_ref(paragraph)
-        ):
+        if _HYPOTHESIS_ID_PATTERN.search(paragraph) and not _has_machine_ref(paragraph):
             findings.append(
                 ValidationFinding(
                     "claim_traceability",
@@ -917,12 +914,15 @@ def validation_check_names(
     db: Any | None = None,
 ) -> list[str]:
     """Names of the checks validate_report would execute with these inputs."""
-    return [name for name, _ in _validation_plan(
-        report_brief,
-        report_body=report_body,
-        expected_language=expected_language,
-        db=db,
-    )]
+    return [
+        name
+        for name, _ in _validation_plan(
+            report_brief,
+            report_body=report_body,
+            expected_language=expected_language,
+            db=db,
+        )
+    ]
 
 
 def validate_report(

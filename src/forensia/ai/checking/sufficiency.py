@@ -749,7 +749,11 @@ def create_hypothesis_evidence_link(
     spec_fingerprint = verification_spec_fingerprint(
         VerificationSpec.model_validate(raw_spec)
     )
-    if record is not None and not source_file and routed_family(evidence_id) != "registry":
+    if (
+        record is not None
+        and not source_file
+        and routed_family(evidence_id) != "registry"
+    ):
         source_file = str(record.get("source_file") or "").strip()
     # A link records one judgment of one materialized content version. Keep
     # previous judgments intact even when the same query is retried.
@@ -765,8 +769,15 @@ def create_hypothesis_evidence_link(
         "AND COALESCE(assessment_id, '') = ? "
         "AND COALESCE(derivation_group, '') = ? LIMIT 1",
         [
-            hypothesis_id, evidence_id, role, query_id, source_file,
-            content_fingerprint, spec_fingerprint, assessment_id, derivation_group,
+            hypothesis_id,
+            evidence_id,
+            role,
+            query_id,
+            source_file,
+            content_fingerprint,
+            spec_fingerprint,
+            assessment_id,
+            derivation_group,
         ],
     ).fetchone()
     if existing:

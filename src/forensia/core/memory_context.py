@@ -255,7 +255,7 @@ class MemoryContextMixin:
                 if episodes:
                     return "\n".join(
                         [
-                            f"<MEMORY_INDEX scope=\"{scope_key}\" "
+                            f'<MEMORY_INDEX scope="{scope_key}" '
                             if scope_key
                             else '<MEMORY_INDEX scope="global">',
                             "Use read_more with an exact relative path when a card is needed.",
@@ -356,7 +356,11 @@ class MemoryContextMixin:
             line = line.strip()
             if not line.startswith("- "):
                 continue
-            date_key = line[2:12] if len(line) >= 12 and line[2:12].count("-") == 2 else "unknown"
+            date_key = (
+                line[2:12]
+                if len(line) >= 12 and line[2:12].count("-") == 2
+                else "unknown"
+            )
             groups[date_key] = groups.get(date_key, 0) + 1
         if not groups:
             return []

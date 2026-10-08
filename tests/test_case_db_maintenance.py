@@ -9,10 +9,6 @@ from unittest.mock import patch
 import duckdb
 
 from forensia.cli import app as cli_module
-from forensia.cli.support import (
-    progress_pusher,
-    reset_case_tables,
-)
 from forensia.config import (
     reload_settings,
     resolve_llm_config,
@@ -20,6 +16,10 @@ from forensia.config import (
 from forensia.core.case import Case
 from forensia.core.log import format_progress_log, structure_progress_log
 from forensia.db.database import CaseDB
+from forensia.pipeline import (
+    progress_pusher,
+    reset_case_tables,
+)
 
 
 class CaseDbMaintenanceTests(unittest.TestCase):
@@ -154,14 +154,12 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                 names,
             )
 
-    def test_progress_pusher_writes_progress_snapshot_only(self) -> None:
+    def test_progress_pusher_records_structured_log_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with (
                 CaseDB(case) as db,
-                patch("forensia.cli.support.write_progress_snapshot") as mock_progress,
-                patch("forensia.cli.support.write_volatile_snapshots"),
-                patch("forensia.cli.support.record_progress_event") as record_progress,
+                patch("forensia.pipeline.record_progress_event") as record_progress,
             ):
                 push = progress_pusher(
                     db,
@@ -180,7 +178,6 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                     log_level="info",
                 )
 
-            self.assertEqual(2, mock_progress.call_count)
             payload = record_progress.call_args_list[0].args[1]
             self.assertEqual(
                 {"tag": "REVIEW", "level": "warning", "message": "unresolved rewrite"},
@@ -316,7 +313,7 @@ class CaseDbMaintenanceTests(unittest.TestCase):
 
             with (
                 patch(
-                    "forensia.cli.stages.ingest_all",
+                    "forensia.pipeline.ingest_all",
                     return_value={
                         "new_files": 1,
                         "skipped_files": 0,
@@ -326,7 +323,7 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                     },
                 ),
                 patch(
-                    "forensia.cli.stages.normalize_all",
+                    "forensia.pipeline.normalize_all",
                     return_value={
                         "evtx_rows": 1,
                         "mft_entries": 0,
@@ -335,17 +332,15 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                     },
                 ),
                 patch("forensia.cli.app.resolve_llm_config", return_value=(None, None)),
-                patch("forensia.cli.stages.load_rules_from_dir", return_value=[]),
+                patch("forensia.pipeline.load_rules_from_dir", return_value=[]),
                 patch(
-                    "forensia.cli.stages.render_written_report",
+                    "forensia.pipeline.render_written_report",
                     return_value=(
                         output_dir / "reports" / "report.md",
                         output_dir / "reports" / "report.html",
                     ),
                 ) as mock_render_written,
                 patch("forensia.cli.app.render_html_report") as mock_render_html,
-                patch("forensia.cli.stages.write_all_snapshots"),
-                patch("forensia.cli.support.write_all_snapshots"),
             ):
                 cli_module.investigate(
                     case_dir=str(output_dir),

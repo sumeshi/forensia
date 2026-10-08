@@ -10,8 +10,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from rich import print
-
 from forensia.ai.audit import LLMCallLogger
 from forensia.ai.llm.llm_client import LLMServerUnavailableError, chat_completion
 from forensia.ai.report_gap import _build_report_status
@@ -20,6 +18,7 @@ from forensia.ai.sections.section_agent import (
 )
 from forensia.ai.sections.section_exec import SectionBlockResult
 from forensia.core.case import Case
+from forensia.core.log import log as _log
 from forensia.core.memory import MemoryManager, memory_for_section
 from forensia.core.progress_event import progress_event
 from forensia.db.database import CaseDB
@@ -28,7 +27,6 @@ from forensia.report.answers.table_registry import (
     _collect_flat_evidence_rows,
     render_table_block,
 )
-from forensia.report.api_snapshot import write_all_snapshots
 from forensia.report.report_brief import write_report_brief
 from forensia.report.sections.section_assembly import (
     assemble_section_body,
@@ -46,7 +44,7 @@ from forensia.report.sections.section_store import (
 
 
 def _log_report(message: str) -> None:
-    print(f"[bold white][REPORT][/bold white] {message}")
+    _log("REPORT", message)
 
 
 def collect_section_requests(
@@ -412,7 +410,6 @@ def _persist_section_result(
         session_id=session_id,
         extra_gaps=request.get("block_gaps") or [],
     )
-    write_all_snapshots(case, db)
     if progress_callback:
         status = _build_report_status(db, focus_sections=focus_sections)
         progress_callback(

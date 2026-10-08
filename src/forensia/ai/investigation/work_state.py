@@ -440,8 +440,6 @@ _SESSION_TERMINAL_REASONS = {
 
 def format_terminal_reason(status: str, *, cause: str = "") -> str:
     """Return a structured, human-readable terminal reason for a session."""
-    base = _SESSION_TERMINAL_REASONS.get(
-        status, f"unknown: terminal status '{status}'"
-    )
+    base = _SESSION_TERMINAL_REASONS.get(status, f"unknown: terminal status '{status}'")
     cause = (cause or "").strip()
     return f"{base} ({cause})" if cause else base

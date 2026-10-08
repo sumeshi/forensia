@@ -107,10 +107,7 @@ def assess_evidence_group(
     support = getattr(spec, "support_conditions", None) or {}
     refute = getattr(spec, "refute_conditions", None) or {}
     version = str(getattr(spec, "spec_version", "legacy") or "legacy")
-    group = (
-        derivation_group
-        or (normalized_ids[0] if normalized_ids else "empty")
-    )
+    group = derivation_group or (normalized_ids[0] if normalized_ids else "empty")
 
     role: AssessmentRole = "unrelated"
     reason = "observation has no matching VerificationSpec condition"

@@ -352,7 +352,9 @@ class EVTXSourceMetadataTests(unittest.TestCase):
                     "WHERE source_id = 'abc123'"
                 ).fetchone()
 
-            self.assertEqual(("failed", "normalized_rows_missing"), (status, error_code))
+            self.assertEqual(
+                ("failed", "normalized_rows_missing"), (status, error_code)
+            )
             self.assertTrue(
                 any("abc123" in message for message in logs.output),
                 logs.output,

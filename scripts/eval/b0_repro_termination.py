@@ -65,7 +65,9 @@ def main() -> None:
                     sort_keys=True,
                 )
             )
-            db.execute("UPDATE report_gaps SET status = 'resolved' WHERE gap_id = 'G-001'")
+            db.execute(
+                "UPDATE report_gaps SET status = 'resolved' WHERE gap_id = 'G-001'"
+            )
             drained_gaps, drained_tasks = _durable_open_work_counts(db)
             drained_status, _, drained_reason = _check_termination(
                 report_only=False,

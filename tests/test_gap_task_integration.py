@@ -17,10 +17,6 @@ from forensia.ai.investigation.work_state import (
     stop_summary,
 )
 from forensia.ai.report_gap import inject_gap_hypotheses
-from forensia.api.service_investigation import (
-    list_investigation_tasks_dto,
-    list_report_gaps_dto,
-)
 from forensia.core.case import Case
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
@@ -175,7 +171,7 @@ class ObjectiveAndGapStoreTests(unittest.TestCase):
                     "resolved",
                 )
 
-    def test_three_section_gaps_reach_store_and_api(self) -> None:
+    def test_three_section_gaps_reach_persisted_store(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with CaseDB(Case.init(tmpdir)) as db:
                 state = SessionState(session_id="S-1")
@@ -185,9 +181,11 @@ class ObjectiveAndGapStoreTests(unittest.TestCase):
                     "Acquire perimeter network telemetry",
                 ]
                 inject_gap_hypotheses(db, state, gaps, "S-1")
-                api_gaps = list_report_gaps_dto(db, status="needs_review")
-                self.assertEqual(len(api_gaps), 3)
-                self.assertEqual({gap.origin for gap in api_gaps}, {"section"})
+                rows = db.execute(
+                    "SELECT origin FROM report_gaps WHERE status = 'needs_review'"
+                ).fetchall()
+                self.assertEqual(len(rows), 3)
+                self.assertEqual({row[0] for row in rows}, {"section"})
 
     def test_section_refresh_does_not_resolve_termination_gap(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -364,7 +362,7 @@ class RetryAndProjectionTests(unittest.TestCase):
                         "INSERT INTO hypotheses (hypothesis_id, description, status, "
                         "created_at, updated_at, verification_spec) "
                         "VALUES (?, ?, 'blocked', now(), now(), "
-                        "'{\"spec_version\": \"1\"}')",
+                        '\'{"spec_version": "1"}\')',
                         [hypothesis_id, hypothesis_id],
                     )
                     db.execute(
@@ -459,7 +457,7 @@ class RetryAndProjectionTests(unittest.TestCase):
                     "resolved",
                 )
 
-    def test_report_and_api_share_task_gap_ids(self) -> None:
+    def test_report_and_persisted_rows_share_task_gap_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with CaseDB(Case.init(tmpdir)) as db:
                 hypothesis = _insert_hypothesis(db, "H-001")
@@ -467,12 +465,17 @@ class RetryAndProjectionTests(unittest.TestCase):
                     db, [hypothesis], "no_progress_limit"
                 )
                 report_row = _build_gaps_unresolved_table(db)[0]
-                api_task = list_investigation_tasks_dto(db, status="open")[0]
-                api_gap = list_report_gaps_dto(db, status="open")[0]
-                self.assertEqual(report_row["task_id"], api_task.task_id)
-                self.assertEqual(report_row["gap_id"], api_gap.gap_id)
-                self.assertEqual(api_task.gap_id, api_gap.gap_id)
-                self.assertEqual(api_task.hypothesis_id, report_row["hypothesis_id"])
+                task_row = db.execute(
+                    "SELECT task_id, gap_id, hypothesis_id FROM investigation_tasks "
+                    "WHERE status = 'open'"
+                ).fetchone()
+                gap_row = db.execute(
+                    "SELECT gap_id, hypothesis_id FROM report_gaps WHERE status = 'open'"
+                ).fetchone()
+                self.assertEqual(report_row["task_id"], task_row[0])
+                self.assertEqual(report_row["gap_id"], gap_row[0])
+                self.assertEqual(task_row[1], gap_row[0])
+                self.assertEqual(task_row[2], report_row["hypothesis_id"])
 
 
 class StopSummaryTests(unittest.TestCase):

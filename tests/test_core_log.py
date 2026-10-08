@@ -14,19 +14,15 @@ def test_progress_log_is_structured_by_shared_policy() -> None:
     assert structure_progress_log("[report] written: report.md")["level"] == "success"
 
 
-def test_log_uppercases_tag_and_uses_severity_color() -> None:
-    with patch("forensia.core.log._rich_print") as output:
+def test_log_uppercases_tag_and_keeps_message_plain() -> None:
+    with patch("builtins.print") as output:
         log("review", "[rewrite] needs attention", level="warning")
     rendered = output.call_args.args[0]
-    assert "REVIEW" in rendered
-    assert "bold yellow" in rendered
-    assert "REWRITE" in rendered
-    assert "needs attention" in rendered
+    assert rendered == "[REVIEW] [REWRITE] needs attention"
 
 
 def test_log_normalizes_embedded_status_label() -> None:
-    with patch("forensia.core.log._rich_print") as output:
+    with patch("builtins.print") as output:
         log("validation", "[error] unsafe markup", level="error")
     rendered = output.call_args.args[0]
-    assert "bold red" in rendered
-    assert "[ERROR] unsafe markup" in rendered
+    assert rendered == "[VALIDATION] [ERROR] unsafe markup"

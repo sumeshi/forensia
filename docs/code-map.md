@@ -6,11 +6,10 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 
 | Path | Responsibilities |
 |---|---|
-| [src/forensia/cli/app.py](../src/forensia/cli/app.py) | Typer command declarations (`investigate` / `add` / `report` / `serve`) |
-| [src/forensia/cli/stages.py](../src/forensia/cli/stages.py) | Pipeline stage runners used by `investigate` |
-| [src/forensia/cli/support.py](../src/forensia/cli/support.py) | Case open/reset, progress, profile/template/timezone resolution |
+| [src/forensia/pipeline.py](../src/forensia/pipeline.py) | Display-agnostic run entry (`run_investigation`): case open/init, `--rerun` reset, knowledge indexing, ingest/normalize/analyze/investigate/report stage assembly, `CaseTasks` wiring, `UsageError` for adapter-translatable input errors, and the trace-DB progress pusher. Imports no typer/rich; terminal text goes through the injected `status` callback |
+| [src/forensia/cli/app.py](../src/forensia/cli/app.py) | Typer command declarations (`investigate` / `add` / `report`): thin adapter over the kernel entry; maps `UsageError` to `typer.BadParameter`, renders status/advise output, owns the LLM outage exit code |
+| [src/forensia/cli/support.py](../src/forensia/cli/support.py) | CLI-facing status printing, case open (`_open_case_or_die`), LLM flag resolution |
 | [src/forensia/cli/doctor.py](../src/forensia/cli/doctor.py) | Repository and installation health checks |
-| [src/forensia/web/app.py](../src/forensia/web/app.py) | FastAPI routes and snapshot/DB fallback |
 | [src/forensia/config.py](../src/forensia/config.py) | `.env`-based settings retrieval (`get_llm_settings`) |
 | [src/forensia/knowledge/questions.py](../src/forensia/knowledge/questions.py) | Structured question specs and semantic routing |
 | [src/forensia/knowledge/catalog.py](../src/forensia/knowledge/catalog.py) | Declarative DFIR catalog readers and SQL expansion |
@@ -21,8 +20,8 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 
 | Path | Responsibilities |
 |---|---|
-| [src/forensia/core/case.py](../src/forensia/core/case.py) | `Case` dataclass. Directory structure definition + `extract_time_range` |
-| [src/forensia/core/case_tasks.py](../src/forensia/core/case_tasks.py) | `CaseTasks`: per-stage task bookkeeping |
+| [src/forensia/core/case.py](../src/forensia/core/case.py) | `Case` dataclass. Directory structure definition + `extract_time_range`; module-level `resolve_timezone`/`case_timezone` (explicit flag wins over manifest) |
+| [src/forensia/core/case_tasks.py](../src/forensia/core/case_tasks.py) | `CaseTasks`: per-stage task bookkeeping (case_dir/tasks.md) |
 | [src/forensia/core/memory.py](../src/forensia/core/memory.py) | `MemoryManager`. Read/write abstraction for `memory/*.md`, `EvidenceOnlyMemory` / `memory_for_section` |
 | [src/forensia/core/memory_compaction.py](../src/forensia/core/memory_compaction.py) | LLM-based compaction of oversized memory files |
 | [src/forensia/core/memory_context.py](../src/forensia/core/memory_context.py) | Scope-safe context assembly, hierarchical memory index, and `read_more` path allow-list |
@@ -33,7 +32,7 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 | [src/forensia/core/verdicts.py](../src/forensia/core/verdicts.py) | Verdict allow-list from `verdict_taxonomy.yaml`, `assert_valid_verdict` |
 | [src/forensia/core/evidence.py](../src/forensia/core/evidence.py) | evidence_id formatting helpers |
 | [src/forensia/core/progress_event.py](../src/forensia/core/progress_event.py) | Typed progress event payloads |
-| [src/forensia/core/log.py](../src/forensia/core/log.py) / [textutil.py](../src/forensia/core/textutil.py) / [timeutil.py](../src/forensia/core/timeutil.py) | Logging / text / time utilities |
+| [src/forensia/core/log.py](../src/forensia/core/log.py) / [textutil.py](../src/forensia/core/textutil.py) / [timeutil.py](../src/forensia/core/timeutil.py) | Plain-text kernel log (`log`), structured-log parsing/normalization / text / time utilities |
 
 ## DB
 
@@ -42,6 +41,7 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 | [src/forensia/db/database.py](../src/forensia/db/database.py) | `CaseDB` class. DuckDB connection (case + attached trace DB) + current schema initialization and latest-only version admission |
 | [src/forensia/db/query.py](../src/forensia/db/query.py) | Query helpers (`fetch_records`, `normalize_value`) |
 | [src/forensia/db/schema.py](../src/forensia/db/schema.py) | Table DDL definitions (case tables + `trace.*` tables) |
+| [src/forensia/db/progress.py](../src/forensia/db/progress.py) | Durable progress-event recording/reading in the trace DB (`record_progress_event`, `list_progress_events`, cap of 1000 rows = bounded recent view) |
 
 ## Evidence (ingest + normalize)
 
@@ -73,11 +73,11 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 
 | Path | Responsibilities |
 |---|---|
-| [src/forensia/ai/investigation/investigator.py](../src/forensia/ai/investigation/investigator.py) | `investigate(...)` entry point: plan-cycle loop, report phase, termination, LLM budget |
-| [src/forensia/ai/investigation/investigation_cycle.py](../src/forensia/ai/investigation/investigation_cycle.py) | One plan cycle: broad plan (gap identify → hypothesis draft) + hypothesis loop body; delegates eligibility/ranking to the single selector in `selection.py` |
+| [src/forensia/ai/investigation/investigator.py](../src/forensia/ai/investigation/investigator.py) | `investigate(...)` entry point: plan-cycle loop, report phase, termination, LLM budget. Installs the SIGINT owner (signal → `ctx.interrupted` flag) and persists the session terminal receipt before fallible projections in its `finally` |
+| [src/forensia/ai/investigation/investigation_cycle.py](../src/forensia/ai/investigation/investigation_cycle.py) | One plan cycle: broad plan (gap identify → hypothesis draft) + hypothesis loop body; delegates eligibility/ranking to the single selector in `selection.py`. Imports the HTTP transport lazily inside the broad-plan function |
 | [src/forensia/ai/investigation/selection.py](../src/forensia/ai/investigation/selection.py) | Next-best hypothesis selection: deterministic priority scoring, eligibility gating (incl. required-capability coverage, derived via the shared derivation owner), focus selection |
 | [src/forensia/ai/investigation/work_state.py](../src/forensia/ai/investigation/work_state.py) | Stop-time classification into Gap/Task work with persisted `required_capability`/`required_source` (from the shared derivation owner) and retry/reopen re-evaluation |
-| [src/forensia/ai/investigation/investigation_session.py](../src/forensia/ai/investigation/investigation_session.py) | Session setup, memory-context caches, step logging, keypoint-card sync |
+| [src/forensia/ai/investigation/investigation_session.py](../src/forensia/ai/investigation/investigation_session.py) | Session setup, memory-context caches, step logging, keypoint-card sync, `persist_session_terminal_receipt` |
 | [src/forensia/ai/investigation/planner.py](../src/forensia/ai/investigation/planner.py) | `plan_hypothesis_query`: bounded action eligibility (`memory.read_more` → `sql.query`) → one LLM recipe/fallback-SQL decision → deterministic host validation |
 | [src/forensia/ai/investigation/memory_sync.py](../src/forensia/ai/investigation/memory_sync.py) | `_apply_memory_updates`: checker output → facts / timeline / tasks / entities / hypothesis cards |
 | [src/forensia/ai/report_gap.py](../src/forensia/ai/report_gap.py) | Report status building + gap → hypothesis injection |
@@ -92,7 +92,7 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 
 | Path | Responsibilities |
 |---|---|
-| [src/forensia/ai/llm/](../src/forensia/ai/llm/) | LLM transport: `llm_client.py` (HTTP/retry/context handling), `request_metadata.py` (bounded fingerprints/section metadata), `llm_gateway.py` (`request_llm_json`), `json_response.py` (JSON parse/repair), `schemas.py` (output JSON schemas) |
+| [src/forensia/ai/llm/](../src/forensia/ai/llm/) | LLM transport: `llm_client.py` (chat-completion client with retry/outage recovery/context handling; imports httpx lazily so kernel imports stay display-free), `attempt.py` (one HTTP attempt as a durable provider-attempt receipt), `request_metadata.py` (bounded fingerprints/section metadata), `llm_gateway.py` (`request_llm_json`), `json_response.py` (JSON parse/repair), `schemas.py` (output JSON schemas) |
 | [src/forensia/ai/prompts/](../src/forensia/ai/prompts/) | Prompt builders: `prompt_investigation.py` (planner/checker), `prompt_sections.py` (section agent), `report_evidence_projection.py` (report-only semantic projection of large evidence sets; persisted IDs remain authoritative), `prompt_context.py` (context slimming, budget guard), `prompt_playbook.py` (`_dfir_playbook`), `sql_schema.py` (schema cards, allowed tables), `sql_templates.py` (query template catalog from `_schema/query_templates.yaml` + `validate_select_sql`) |
 | [src/forensia/ai/hypotheses/](../src/forensia/ai/hypotheses/) | Hypothesis lifecycle: `hypothesis_model.py` (parsing), `hypothesis_manager.py` (merge/dedup/resolve), `hypothesis_store.py` (DB persistence), `hypothesis_runner.py` (per-hypothesis orchestration), `execution.py` (existing SQL fallback and receipt assembly), `seeding.py` (rule-seeded findings/hypotheses) |
 | [src/forensia/core/verification.py](../src/forensia/core/verification.py) | Versioned `VerificationSpec` model, the one-time declaration→spec conversion seam (`from_legacy`, incl. `co_observed_event_ids` sanitization), and the shared evaluable support-condition vocabulary (`EVALUABLE_CONDITION_KEYS`) that admission and Assessment both use. Hypothesis state and storage carry the spec only; `confirm_when`/`refute_when`/`evidence_requirements` on `Hypothesis` are derived properties. |
@@ -125,27 +125,5 @@ A list of responsibilities for each file in `src/forensia/**`. A directory to us
 | [src/forensia/report/report_validation.py](../src/forensia/report/report_validation.py) | Final report output validation (doctor self-check) |
 | [src/forensia/report/benign_auth.py](../src/forensia/report/benign_auth.py) / [narrative_review.py](../src/forensia/report/sections/narrative_review.py) / [section_taxonomy.py](../src/forensia/report/sections/section_taxonomy.py) | Benign-auth scoping (policy in `_schema/benign_auth.yaml`) / narrative review / section family taxonomy |
 
-## API / Web
-
-| Path | Responsibilities |
-|---|---|
-| [src/forensia/api/dto.py](../src/forensia/api/dto.py) | Pydantic DTO definitions |
-| [src/forensia/api/service.py](../src/forensia/api/service.py) | DB → DTO conversion. Aggregation queries for UI / report_brief |
-| [src/forensia/api/cache.py](../src/forensia/api/cache.py) | API snapshot writes (`write_volatile_api_snapshots` / `write_full_api_snapshots` / `write_progress_snapshot`) and durable revision metadata |
-| [src/forensia/api/progress.py](../src/forensia/api/progress.py) | Persist and list progress events |
-| [src/forensia/report/section_views.py](../src/forensia/report/section_views.py) | Report-section DTO projection and server-side Markdown/HTML body rendering |
-| [src/forensia/web/app.py](../src/forensia/web/app.py) | FastAPI router. Returns `/api/*` from snapshot or DB fallback and exposes live snapshot staleness metadata |
-| [web_ui/](../web_ui/) | Svelte + Vite + Tailwind frontend. UI updates via snapshot polling |
-
 Report admission is implemented in `ai/report_gap.py` using the existing Gap/Task
 rows; `report_cycle_progress` compares semantic Case State snapshots.
-
-## Related: root documents / templates
-
-| Path | Contents |
-|---|---|
-| [scripts/](../scripts/) | Auxiliary scripts (`audit_schema_coverage.py`, `regenerate_playbook.py`, `check_imports.py`, etc.) |
-| [tests/](../tests/) | pytest tests (split per module under test) |
-| [src/forensia/knowledge/rulepacks/_schema/](../src/forensia/knowledge/rulepacks/_schema/) | Schema definition YAML (`evtx_events.yaml`, `question_routing.yaml`, `verdict_taxonomy.yaml`, `playbook/`, etc.) |
-| [src/forensia/report/templates/](../src/forensia/report/templates/) | Default report template Markdown (copied into each case) |
-| [src/forensia/report/render/templates/](../src/forensia/report/render/templates/) | jinja2 templates for the HTML report page (`report.html.j2` + `report.css.j2`) |

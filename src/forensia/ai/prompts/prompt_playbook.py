@@ -635,7 +635,9 @@ def _truncate_events_to_priority(
     # omit repeated query-column/keyword prose so interpretation sections such
     # as FP and Application Catalog survive the same prompt budget.
     compact_parts: list[str] = []
-    for eid, info in sorted(trimmed.items(), key=lambda item: _playbook_eid_sort_key(item[0])):
+    for eid, info in sorted(
+        trimmed.items(), key=lambda item: _playbook_eid_sort_key(item[0])
+    ):
         if not isinstance(info, dict):
             continue
         line = f" - Event {eid} ({info.get('title', '')})"

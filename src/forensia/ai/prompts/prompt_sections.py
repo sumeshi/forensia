@@ -61,6 +61,7 @@ from forensia.ai.prompts.report_evidence_projection import (
 
 logger = logging.getLogger(__name__)
 
+
 def _section_verification_block(verification_notes: list[str] | None) -> str:
     return f"verification_notes_from_prior_subsections: {verification_notes or []}\n\n"
 
@@ -80,13 +81,12 @@ def _section_coverage_block(report_brief: dict) -> str:
     return _format_evidence_coverage(report_brief)
 
 
-def _publication_guidance(
-    section_key: str, publication_state: Any
-) -> str:
+def _publication_guidance(section_key: str, publication_state: Any) -> str:
     """Return pre-generation claim constraints for narrative report roles."""
-    if not isinstance(publication_state, dict) or publication_state.get(
-        "publication_status"
-    ) != "needs_review":
+    if (
+        not isinstance(publication_state, dict)
+        or publication_state.get("publication_status") != "needs_review"
+    ):
         return ""
     claim_scope = str(
         publication_state.get("claim_scope") or "deterministic_signals_only"
@@ -100,14 +100,12 @@ def _publication_guidance(
     )
     if section_key == "1_overview":
         return (
-            common
-            + " The Executive Summary and Investigation Conclusion must state "
+            common + " The Executive Summary and Investigation Conclusion must state "
             "that no confirmed hypothesis is available."
         )
     if section_key == "5_recommendations":
         return (
-            common
-            + " Recommendations must be verification-first and must not assume "
+            common + " Recommendations must be verification-first and must not assume "
             "unauthorized access, account tampering, persistence, or lateral movement."
         )
     return common
@@ -169,9 +167,7 @@ def build_report_section_messages(
     prompt_evidence_results = project_report_results(evidence_results, db=db)
     prompt_raw_evidence_rows = project_report_evidence_rows(raw_evidence_rows, db=db)
     evidence = [
-        r
-        for r in prompt_evidence_results
-        if str(r.get("kind") or "rows") != "rows"
+        r for r in prompt_evidence_results if str(r.get("kind") or "rows") != "rows"
     ] or prompt_evidence_results
     sv = _collect_source_verdicts(evidence_results)
     strength = ""
@@ -710,9 +706,7 @@ def build_section_outline_messages(
         "Output JSON only. "
     )
     prompt_evidence = project_report_evidence_rows(relevant_evidence, db=db)
-    evidence_summary = "\n".join(
-        _format_evidence_row(e) for e in prompt_evidence[:30]
-    )
+    evidence_summary = "\n".join(_format_evidence_row(e) for e in prompt_evidence[:30])
     user = (
         f"section_meta: {json.dumps(section_meta, ensure_ascii=False, default=str)}\n"
         f"available_evidence:\n{evidence_summary or 'No evidence available.'}\n"

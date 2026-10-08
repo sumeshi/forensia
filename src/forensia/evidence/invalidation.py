@@ -51,17 +51,14 @@ def _referenced_dependent_ids(db: CaseDB) -> set[str]:
     referenced.update(
         str(row[0])
         for row in db.execute(
-            "SELECT evidence_id FROM case_timeline "
-            "WHERE evidence_id IS NOT NULL"
+            "SELECT evidence_id FROM case_timeline WHERE evidence_id IS NOT NULL"
         ).fetchall()
         if row[0]
     )
     return referenced
 
 
-def _materialized_ids(
-    db: CaseDB, source_kind: str, referenced: set[str]
-) -> set[str]:
+def _materialized_ids(db: CaseDB, source_kind: str, referenced: set[str]) -> set[str]:
     tables = _SOURCE_TABLES.get(source_kind, ())
     if not tables or not referenced:
         return set()

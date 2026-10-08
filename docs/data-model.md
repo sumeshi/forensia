@@ -4,7 +4,7 @@ Definition of the persistent data handled by forensia. It is split into three la
 
 - **DuckDB tables**: Structured data inside `db/case.duckdb`
 - **Memory files**: LLM persistent memory in `memory/*.md`
-- **API DTO**: Pydantic models the API exposes for the UI / reports
+- **Trace tables**: Operational receipts/log history inside `db/trace.duckdb`
 
 ## Registry evidence boundary
 
@@ -101,13 +101,12 @@ derivation groups on evidence links, settlement states come from the existing
 settlement gates, and untestable classification comes from stop/sufficiency
 states.
 
-## Working and API projections
+## Working Memory and report projections
 
 Memory keypoint cards include a generation revision/time/state and keep finding/evidence
-drill-down IDs. `reports/api/snapshot_metadata.json` records the durable-state fingerprint,
-generation time, authoritative update time, and current/in-progress state. The
-`/api/snapshot-metadata` endpoint compares that fingerprint with live Case State and marks
-the projection stale when they differ. Case statistics count terminal hypotheses from the
+drill-down IDs. Memory and the rendered report are projections of the durable DuckDB
+state: the report builder reads the current tables, and stale sections are re-filled
+through the existing section pipeline. Case statistics count terminal hypotheses from the
 durable `confirmed`, `refuted`, and `untestable` status taxonomy.
 
 `refute_conditions` are persisted explicitly; they are never inferred from a
@@ -184,9 +183,9 @@ Source identity:
 | `hypothesis_evidence` | Typed, deduplicated assessed evidence-to-hypothesis provenance (historical records; current support is derived at read time) | hypothesis/evidence/query IDs, `assessment_id` (`EA-v1-*` for deterministic assessments), `role`, `source_family`, `derivation_group`, `content_fingerprint`, `strength` |
 | `hypothesis_reasoning` | Reasoning history of hypothesis verification | `entry_id`, `hypothesis_id`, `session_id`, `iteration`, `phase` (including `sufficiency`), `verdict`, `query_id`, `body`, `created_at` |
 
-`findings.attack` is a JSON string in `[{tactic, technique_id, technique_name}]` form. It is aggregated into a tactic × technique matrix by `list_attack_coverage_dto` ([src/forensia/api/service.py](../src/forensia/api/service.py)).
+`findings.attack` is a JSON string in `[{tactic, technique_id, technique_name}]` form, persisted on the finding row. The Web-only matrix aggregation that consumed it (`list_attack_coverage_dto`) was removed together with the Web layer; no Case/Trace producer writes attack coverage beyond the declared rule metadata.
 
-`findings.evidence` is a list of dicts containing the original evidence_id. Recursive extraction is performed by [`_evidence_ids_from_payload`](../src/forensia/api/service.py).
+`findings.evidence` is a list of dicts containing the original evidence_id; recursive extraction for finding evidence lives in the checker/apply path ([src/forensia/ai/checking/check_normalize.py](../src/forensia/ai/checking/check_normalize.py)) and in the report keypoint/evidence selection downstream consumers.
 Investigation/checker Findings are persisted as `accepted` only when the current
 query result contains an observed evidence ID. If sampled rows are omitted, a
 minimal `{evidence_id}` reference is retained; an evidence-less new lead remains
@@ -202,7 +201,7 @@ in the investigation/check trace and does not create a Finding row.
 | `llm_logical_calls` (trace DB) | One application-level model decision, independent of retry count | `logical_call_id`, session/phase/scope IDs, request fingerprint, status |
 | `llm_provider_attempts` (trace DB) | One actual provider request, including failed attempts and retry lineage | attempt/parent/logical IDs, exact API `request_body`, raw `response_body`, effective limits, usage source, prompt metadata, HTTP/provider error, finish/parse/truncation state, timing |
 | `llm_deterministic_ops` (trace DB) | Non-LLM render/validate/query/wait work; never contributes LLM tokens or call latency | `op_id`, session/phase/scope, operation type, target, duration |
-| `progress_events` | Progress event stream for the UI | `event_index`, `stage`, `status`, `iteration`, `current_query`, `summary`, `payload` |
+| `progress_events` | Bounded recent progress view for display and debugging | `event_index`, `stage`, `status`, `iteration`, `current_query`, `summary`, `payload` |
 | `query_cache` | Result cache for SQL emitted by the LLM | `sql_hash`, `sql_text`, `result_json`, `executed_at` |
 | `investigation_state` | Singleton case objective/lifecycle | `objective`, `status`, `termination_policy`, stable `stop_reason_code`, human-readable `stop_reason`, machine-readable `stop_summary` |
 | `investigation_tasks` | Non-SQL evidence acquisition, external lookup and human work | `kind`, `status`, linked Gap/Hypothesis, `owner_phase`, `retry_condition`, required capability/source, blocked reason |
@@ -400,55 +399,9 @@ The structure of `memory_updates` is defined in `MEMORY_UPDATER_SCHEMA` ([src/fo
 
 ---
 
-## 3. API DTO
-
-Defined as Pydantic models in `src/forensia/api/dto.py`. The `extra="ignore"` setting means old DTOs can still read snapshot JSON even if new keys are added.
-
-### 3.1 Case overview
-
-| DTO | Content | Origin tables |
-|---|---|---|
-| `CaseDTO` | Case name / paths / manifest | `manifest.yaml` |
-| `CaseStatsDTO` | Aggregated counts (evtx_rows, mft_entries, findings_accepted, active_hypotheses, ...) | Multiple `COUNT(*)` |
-
-### 3.2 Detections and hypotheses
-
-| DTO | Content | Origin tables |
-|---|---|---|
-| `FindingDTO` | One finding | `findings` |
-| `HypothesisDTO` | One hypothesis + recent reasoning, selection/block and sufficiency state | `hypotheses` + `hypothesis_reasoning` |
-| `HypothesisRelationDTO` / `HypothesisEvidenceLinkDTO` | Graph edges and evidence provenance | `hypothesis_relations` / `hypothesis_evidence` |
-| `HypothesesResponseDTO` | `{active: [...], resolved: [...]}` | Partition of the above |
-| `HypothesisReasoningEntryDTO` | One row of reasoning history | `hypothesis_reasoning` |
-
-`FindingDTO` extracts `evidence_ids` / `evidence_count` from the `findings.evidence` JSON.
-
-### 3.3 Sessions
-
-| DTO | Content | Origin tables |
-|---|---|---|
-| `SessionDTO` | One session | `sessions` |
-| `InvestigationStepDTO` | One step | `investigation_steps` |
-| `ProgressEventDTO` | Progress event | `progress_events` |
-
-### 3.4 Reports
-
-| DTO | Content | Origin tables |
-|---|---|---|
-| `ReportSectionDTO` | One section + `section_evidence` aggregate | `report_sections` + `section_evidence` |
-| `SectionQuestionDTO` | Resolution state of a structured question | (structured question table) |
-| `ClaimDTO` | Claim extracted from a report paragraph | `claims` |
-
-`ReportSectionDTO` carries per-section `evidence_ids` / `evidence_count` aggregated from the `section_evidence` table.
-
-### 3.5 Peripheral information
-
-| DTO | Content | Origin |
-|---|---|---|
-| `EntityCardDTO` | One entity card (kind, name, mention_count, summary) | `memory/entities/<kind>/<name>.md` |
-| `AttackCoverageRowDTO` | tactic × technique aggregate | aggregated from `findings.attack` JSON |
-| `EventVolumePointDTO` | One point in the event time series (bucket, series, count) | `evtx_events` + `mft_entries` |
-| `MftTimelineDTO` | One MFT timeline row | `mft_timeline` |
-| `AIReviewDTO` | LLM review result | `ai_reviews` |
-
-For which API endpoint uses which DTO, see [src/forensia/web/app.py](../src/forensia/web/app.py). For the snapshot-based serving mechanism, see the "API snapshots and UI" section of [architecture.md](architecture.md).
+There is no separate API/DTO projection store: consumers (the CLI today, the
+TUI later) read the same authoritative DuckDB case/trace owners, and
+deterministic read helpers live with their owners (for example
+[db/progress.py](../src/forensia/db/progress.py) for the bounded progress view
+and [report/metrics.py](../src/forensia/report/metrics.py) for DuckDB-authoritative
+report metrics).

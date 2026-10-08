@@ -54,7 +54,7 @@ def _env_float(
     raw_value = os.getenv(name)
     try:
         value = default if raw_value is None else float(raw_value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         value = default
     if minimum is not None:
         value = max(minimum, value)
@@ -76,9 +76,7 @@ def _build_settings() -> Settings:
         llm_model=os.getenv("LLM_MODEL"),
         llm_api_key=os.getenv("LLM_API_KEY") or None,
         llm_max_tokens=_env_int("LLM_MAX_TOKENS", 4096, minimum=1),
-        llm_temperature=_env_float(
-            "LLM_TEMPERATURE", 0.0, minimum=0.0, maximum=2.0
-        ),
+        llm_temperature=_env_float("LLM_TEMPERATURE", 0.0, minimum=0.0, maximum=2.0),
         llm_output_language=_env_choice("FORENSIA_OUTPUT_LANGUAGE", "ja", {"ja", "en"}),
         llm_memory_max_bytes=_env_int("FORENSIA_MEMORY_MAX_BYTES", 0, minimum=0),
         llm_report_max_queries_per_section=_env_int(
@@ -87,9 +85,7 @@ def _build_settings() -> Settings:
         llm_reasoning_reserve_tokens=_env_int(
             "LLM_REASONING_RESERVE_TOKENS", 0, minimum=0
         ),
-        llm_context_window_tokens=_env_int(
-            "LLM_CONTEXT_WINDOW_TOKENS", 0, minimum=0
-        ),
+        llm_context_window_tokens=_env_int("LLM_CONTEXT_WINDOW_TOKENS", 0, minimum=0),
         forensia_system_prompt_budget_chars=_env_int(
             "FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS", 0, minimum=0
         ),

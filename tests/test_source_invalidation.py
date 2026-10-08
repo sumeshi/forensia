@@ -152,7 +152,6 @@ class SourceInvalidationTests(unittest.TestCase):
                     _claim_support_status(db, ["registry-artifact-1"], [], []),
                 )
 
-
     def test_removed_evidence_stales_section_facts_dependents(self) -> None:
         """section_facts and case_timeline references are part of the invalidation survey."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -222,7 +221,6 @@ class SourceInvalidationTests(unittest.TestCase):
                     ).fetchone(),
                 )
 
-
     def test_content_change_under_same_source_invalidates_dependents(self) -> None:
         """R03: same evidence_id under the same source with changed content.
 
@@ -264,9 +262,7 @@ class SourceInvalidationTests(unittest.TestCase):
                     "SELECT evidence_id FROM hypothesis_evidence WHERE link_id = 'L-1'"
                 ).fetchone()
 
-            self.assertEqual(
-                ("active", None, "needs_review", True), hypothesis[:4]
-            )
+            self.assertEqual(("active", None, "needs_review", True), hypothesis[:4])
             self.assertIn("content changed under the same source", hypothesis[4])
             self.assertEqual(("needs_review",), claim)
             # Link history is kept, not re-pointed.

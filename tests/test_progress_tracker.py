@@ -129,8 +129,11 @@ class TestHeuristicConfirmWhenNeverAutoConfirms:
             }
         ]
         assert tracker.should_auto_confirm(None, rows, hypothesis) is True
-        assert tracker.should_auto_confirm(
-            None,
-            [{**rows[0], "channel": "Application"}],
-            hypothesis,
-        ) is False
+        assert (
+            tracker.should_auto_confirm(
+                None,
+                [{**rows[0], "channel": "Application"}],
+                hypothesis,
+            )
+            is False
+        )

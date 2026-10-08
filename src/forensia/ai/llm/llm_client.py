@@ -8,10 +8,12 @@ import logging
 import threading
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import httpx
+if TYPE_CHECKING:
+    import httpx
 
+from forensia.ai.llm.attempt import _a_post_attempt, _post_attempt
 from forensia.ai.llm.request_metadata import (
     is_context_window_error as _is_context_window_error,
 )
@@ -63,6 +65,16 @@ __all__ = [
     "get_active_telemetry",
 ]
 
+_TIMEOUT_KWARGS = {"connect": 5.0, "read": 300.0, "write": 30.0, "pool": 30.0}
+
+
+def _httpx():
+    """HTTP transport, imported lazily: kernel imports must not load httpx
+    (whose import chain transitively pulls click/rich terminal machinery)."""
+    import httpx
+
+    return httpx
+
 
 class LLMServerUnavailableError(RuntimeError):
     """Raised when LLM server is unresponsive after call-level retries. Caller should enter outage_wait."""
@@ -96,10 +108,10 @@ class LLMContextWindowError(RuntimeError):
 _LLM_HTTP_RETRY_MAX = 3
 _LLM_HTTP_RETRY_BACKOFF = [2.0, 4.0, 8.0]
 
-_HTTP_TIMEOUT = httpx.Timeout(connect=5.0, read=300.0, write=30.0, pool=30.0)
-_ASYNC_CLIENTS: dict[int, httpx.AsyncClient] = {}
 _SYNC_CLIENTS: dict[int, httpx.Client] = {}
+_ASYNC_CLIENTS: dict[int, httpx.AsyncClient] = {}
 _HTTP_CLIENTS_LOCK = threading.Lock()
+
 
 def _close_http_clients() -> None:
     """Close all cached HTTP clients (sync and async) at interpreter exit."""
@@ -124,11 +136,13 @@ atexit.register(_close_http_clients)
 
 def _get_http_client() -> httpx.Client:
     """Get or create a per-thread synchronous HTTP client."""
+    import httpx
+
     thread_id = threading.get_ident()
     with _HTTP_CLIENTS_LOCK:
         client = _SYNC_CLIENTS.get(thread_id)
         if client is None:
-            client = httpx.Client(timeout=_HTTP_TIMEOUT)
+            client = httpx.Client(timeout=httpx.Timeout(**_TIMEOUT_KWARGS))
             _SYNC_CLIENTS[thread_id] = client
         return client
 
@@ -171,185 +185,15 @@ def _record_wait(
         logger.debug("unable to record LLM wait interval", exc_info=True)
 
 
-def _post_attempt(
-    client: httpx.Client,
-    *,
-    url: str,
-    body: dict[str, Any],
-    headers: dict[str, str],
-    telemetry: LLMTelemetry | None,
-    logical_call_id: str | None,
-    ordinal: int,
-    model: str,
-    schema_mode: str,
-    request_fingerprint: str | None,
-    configured: int,
-    reserve: int,
-    known_limit: int | None,
-    effective: int,
-    requested: int,
-    input_chars: int,
-    phase: str | None,
-    retry_class: str | None = None,
-    retry_reason: str | None = None,
-    policy_decision: str | None = None,
-    request_changed_fields: dict[str, Any] | None = None,
-    prompt_metadata: dict[str, Any] | None = None,
-) -> tuple[Any, str | None, int, float]:
-    """One HTTP attempt, durable as a provider-attempt receipt."""
-
-    att_id: str | None = None
-    if telemetry is not None and logical_call_id is not None:
-        att_id = telemetry.begin_attempt(
-            logical_call_id=logical_call_id,
-            endpoint=url,
-            provider="openai-compatible",
-            model=model,
-            schema_mode=schema_mode,
-            request_fingerprint=request_fingerprint,
-            configured_output_limit=configured,
-            reasoning_reserve_tokens=reserve,
-            known_context_limit=known_limit,
-            effective_output_limit=effective,
-            requested_output_limit=requested,
-            input_chars=input_chars,
-            connect_timeout_ms=5000,
-            read_timeout_ms=300000,
-            phase=phase,
-            retry_ordinal=ordinal,
-            retry_class=retry_class,
-            retry_reason=retry_reason,
-            policy_decision=policy_decision,
-            request_changed_fields=request_changed_fields,
-            prompt_metadata=prompt_metadata,
-            request_body=body,
-        )
-    started = time.monotonic()
-    try:
-        response = client.post(url, json=body, headers=headers)
-        if telemetry:
-            telemetry.record_attempt_response(attempt_id=att_id, response_body=response.text)
-    except httpx.TimeoutException:
-        if att_id:
-            telemetry.finalize_attempt(  # type: ignore[union-attr]
-                attempt_id=att_id,
-                status="timeout",
-                exception_class="httpx.TimeoutException",
-                error_type="timeout",
-                deadline_fired="read",
-                duration_ms=int((time.monotonic() - started) * 1000),
-            )
-        raise
-    except httpx.RequestError as exc:
-        if att_id:
-            telemetry.finalize_attempt(  # type: ignore[union-attr]
-                attempt_id=att_id,
-                status="transport_error",
-                exception_class=type(exc).__name__,
-                error_type="connect"
-                if isinstance(exc, httpx.ConnectError)
-                else "transport",
-                deadline_fired="connect"
-                if isinstance(exc, httpx.ConnectError)
-                else None,
-                duration_ms=int((time.monotonic() - started) * 1000),
-            )
-        raise
-    return response, att_id, int((time.monotonic() - started) * 1000), started
-
-
-async def _a_post_attempt(
-    client: httpx.AsyncClient,
-    *,
-    url: str,
-    body: dict[str, Any],
-    headers: dict[str, str],
-    telemetry: LLMTelemetry | None,
-    logical_call_id: str | None,
-    ordinal: int,
-    model: str,
-    schema_mode: str,
-    request_fingerprint: str | None,
-    configured: int,
-    reserve: int,
-    known_limit: int | None,
-    effective: int,
-    requested: int,
-    input_chars: int,
-    phase: str | None,
-    retry_class: str | None = None,
-    retry_reason: str | None = None,
-    policy_decision: str | None = None,
-    request_changed_fields: dict[str, Any] | None = None,
-    prompt_metadata: dict[str, Any] | None = None,
-) -> tuple[Any, str | None, int, float]:
-    att_id: str | None = None
-    if telemetry is not None and logical_call_id is not None:
-        att_id = telemetry.begin_attempt(
-            logical_call_id=logical_call_id,
-            endpoint=url,
-            provider="openai-compatible",
-            model=model,
-            schema_mode=schema_mode,
-            request_fingerprint=request_fingerprint,
-            configured_output_limit=configured,
-            reasoning_reserve_tokens=reserve,
-            known_context_limit=known_limit,
-            effective_output_limit=effective,
-            requested_output_limit=requested,
-            input_chars=input_chars,
-            connect_timeout_ms=5000,
-            read_timeout_ms=300000,
-            phase=phase,
-            retry_ordinal=ordinal,
-            retry_class=retry_class,
-            retry_reason=retry_reason,
-            policy_decision=policy_decision,
-            request_changed_fields=request_changed_fields,
-            prompt_metadata=prompt_metadata,
-            request_body=body,
-        )
-    started = time.monotonic()
-    try:
-        response = await client.post(url, json=body, headers=headers)
-        if telemetry:
-            telemetry.record_attempt_response(attempt_id=att_id, response_body=response.text)
-    except httpx.TimeoutException:
-        if att_id:
-            telemetry.finalize_attempt(  # type: ignore[union-attr]
-                attempt_id=att_id,
-                status="timeout",
-                exception_class="httpx.TimeoutException",
-                error_type="timeout",
-                deadline_fired="read",
-                duration_ms=int((time.monotonic() - started) * 1000),
-            )
-        raise
-    except httpx.RequestError as exc:
-        if att_id:
-            telemetry.finalize_attempt(  # type: ignore[union-attr]
-                attempt_id=att_id,
-                status="transport_error",
-                exception_class=type(exc).__name__,
-                error_type="connect"
-                if isinstance(exc, httpx.ConnectError)
-                else "transport",
-                deadline_fired="connect"
-                if isinstance(exc, httpx.ConnectError)
-                else None,
-                duration_ms=int((time.monotonic() - started) * 1000),
-            )
-        raise
-    return response, att_id, int((time.monotonic() - started) * 1000), started
-
-
 async def _get_async_client() -> httpx.AsyncClient:
     """Get or create a per-event-loop async HTTP client."""
+    import httpx
+
     loop_id = id(asyncio.get_running_loop())
     with _HTTP_CLIENTS_LOCK:
         client = _ASYNC_CLIENTS.get(loop_id)
         if client is None:
-            client = httpx.AsyncClient(timeout=_HTTP_TIMEOUT)
+            client = httpx.AsyncClient(timeout=httpx.Timeout(**_TIMEOUT_KWARGS))
             _ASYNC_CLIENTS[loop_id] = client
         return client
 
@@ -371,6 +215,8 @@ async def async_chat_completion(
     request_changed_fields: dict[str, Any] | None = None,
 ) -> str:
     """Send a chat completion request to the LLM server (async). Returns the response text."""
+    import httpx
+
     llm_settings = get_llm_settings()
     configured, reserve, requested, effective = compute_effective_output_limit(
         requested_override=max_tokens,
@@ -671,6 +517,8 @@ def chat_completion(
     request_changed_fields: dict[str, Any] | None = None,
 ) -> str:
     """Send a chat completion request to the LLM server (sync). Returns the response text."""
+    import httpx
+
     llm_settings = get_llm_settings()
     configured, reserve, requested, effective = compute_effective_output_limit(
         requested_override=max_tokens,
@@ -959,6 +807,8 @@ async def outage_wait_until_recovered(
     model: str,
     progress_callback: Callable[[dict], None] | None = None,
 ) -> None:
+    import httpx
+
     budget_s = settings.llm_outage_wall_clock_budget_s
     interval_s = settings.llm_outage_probe_interval_s
     started = time.monotonic()

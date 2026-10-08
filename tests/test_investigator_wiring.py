@@ -246,7 +246,7 @@ class InvestigateWiringTests(unittest.TestCase):
                     "INSERT INTO hypotheses (hypothesis_id, description, status, "
                     "verification_spec) "
                     "VALUES ('H-1', 'Wait for prerequisite', 'active', "
-                    "'{\"spec_version\": \"1\"}')"
+                    '\'{"spec_version": "1"}\')'
                 )
                 with (
                     mock.patch.object(
@@ -350,7 +350,7 @@ class InvestigateWiringTests(unittest.TestCase):
                     "(hypothesis_id, description, status, created_at, updated_at, "
                     "verification_spec) VALUES ('H-001', "
                     "'Acquire missing telemetry', 'untestable', now(), now(), "
-                    "'{\"spec_version\": \"1\"}')"
+                    '\'{"spec_version": "1"}\')'
                 )
                 investigator_module._classify_active_hypotheses_on_stop(
                     db,

@@ -61,7 +61,6 @@ class Rule(BaseModel):
     applies_when: dict | None = None
 
 
-
 class Finding(BaseModel):
     finding_id: str
     rule_id: str

@@ -349,9 +349,7 @@ class MemoryCompactionMixin:
 
         problems: list[str] = []
         current_revision = self.timeline_projection_revision()
-        if expected_revision is not None and current_revision != int(
-            expected_revision
-        ):
+        if expected_revision is not None and current_revision != int(expected_revision):
             problems.append(
                 f"timeline revision mismatch: have v{current_revision}, "
                 f"expected v{expected_revision}"
@@ -361,9 +359,7 @@ class MemoryCompactionMixin:
             "SELECT DISTINCT evidence_id FROM case_timeline "
             "WHERE evidence_id IS NOT NULL AND evidence_id <> ''",
         )
-        required_ids = [
-            str(r.get("evidence_id")) for r in rows if r.get("evidence_id")
-        ]
+        required_ids = [str(r.get("evidence_id")) for r in rows if r.get("evidence_id")]
         if required_ids:
             projection_text = (
                 self.timeline_path.read_text(encoding="utf-8")
@@ -371,9 +367,7 @@ class MemoryCompactionMixin:
                 else ""
             )
             haystack = projection_text.lower()
-            missing = [
-                rid for rid in required_ids if str(rid).lower() not in haystack
-            ]
+            missing = [rid for rid in required_ids if str(rid).lower() not in haystack]
             if missing:
                 problems.append(
                     f"{len(missing)} referenced evidence id(s) missing from "

@@ -35,6 +35,7 @@ def failure_markers() -> tuple[str, ...]:
         raise ValueError(f"failure_markers contains no usable values: {path}")
     return markers
 
+
 # ====================================================================
 # Patterns used by quality gates
 # ====================================================================

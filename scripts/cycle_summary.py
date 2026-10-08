@@ -13,15 +13,15 @@ import json
 import sys
 from pathlib import Path
 
+import duckdb
 
-def _load_json(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else []
-    except Exception:
-        return []
+
+def _load_events(path: Path) -> list[dict]:
+    with duckdb.connect(str(path), read_only=True) as conn:
+        rows = conn.execute(
+            "SELECT payload FROM progress_events ORDER BY event_index"
+        ).fetchall()
+    return [json.loads(row[0]) for row in rows]
 
 
 def _count_by_field(events: list[dict], field: str, pattern: str) -> int:
@@ -36,14 +36,14 @@ def main() -> None:
     args = parser.parse_args()
 
     case_path = Path(args.case_dir).resolve()
-    progress_path = case_path / "progress_events.json"
+    progress_path = case_path / "db" / "trace.duckdb"
     db_path = case_path / "db" / "case.duckdb"
 
     if not progress_path.exists():
-        print(f"progress_events.json not found at {progress_path}")
+        print(f"Trace database not found at {progress_path}")
         sys.exit(1)
 
-    events = _load_json(progress_path)
+    events = _load_events(progress_path)
     if not events:
         print("No progress events found.")
         sys.exit(0)
@@ -98,8 +98,6 @@ def main() -> None:
                 queries_run += 1
 
         if db_path.exists():
-            import duckdb
-
             try:
                 conn = duckdb.connect(str(db_path), read_only=True)
                 row = conn.execute(

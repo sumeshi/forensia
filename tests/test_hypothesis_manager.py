@@ -324,7 +324,7 @@ def _setup_confirmed_invariant(db: CaseDB, hypothesis_id: str) -> None:
     db.execute(
         "INSERT INTO hypotheses (hypothesis_id, description, status, sufficiency_status, "
         "verification_spec) VALUES (?, 'test', 'active', 'unknown', "
-        "'{\"spec_version\":\"1\"}') ON CONFLICT (hypothesis_id) DO NOTHING",
+        '\'{"spec_version":"1"}\') ON CONFLICT (hypothesis_id) DO NOTHING',
         (hypothesis_id,),
     )
     db.execute(
@@ -528,12 +528,18 @@ class TestResolvedHypothesisDedup:
                     "'supported', now(), now())"
                 )
                 assert len(load_evidence_links(db, "H-001", current_only=True)) == 1
-                assert db.execute(
-                    "SELECT support_status FROM claims WHERE claim_id = 'C-H-001'"
-                ).fetchone()[0] == "supported"
-                assert db.execute(
-                    "SELECT stale FROM report_sections WHERE section_key = '3_technical'"
-                ).fetchone()[0] is False
+                assert (
+                    db.execute(
+                        "SELECT support_status FROM claims WHERE claim_id = 'C-H-001'"
+                    ).fetchone()[0]
+                    == "supported"
+                )
+                assert (
+                    db.execute(
+                        "SELECT stale FROM report_sections WHERE section_key = '3_technical'"
+                    ).fetchone()[0]
+                    is False
+                )
                 resolved_projection = [resolved]
                 reopened = merge_active_hypotheses(
                     db=db,
@@ -564,7 +570,16 @@ class TestResolvedHypothesisDedup:
                     "last_selected_at, next_eligible_at, blocked_reason, "
                     "sufficiency_status FROM hypotheses WHERE hypothesis_id = 'H-001'"
                 ).fetchone()
-                assert row == ("active", None, None, 0, None, None, None, "needs_review")
+                assert row == (
+                    "active",
+                    None,
+                    None,
+                    0,
+                    None,
+                    None,
+                    None,
+                    "needs_review",
+                )
                 active, terminal = load_persisted_hypotheses(db)
                 assert [item.id for item in active] == ["H-001"]
                 assert terminal == []
@@ -574,19 +589,28 @@ class TestResolvedHypothesisDedup:
                     session_id="session-spec-change",
                     iteration=1,
                 )
-                assert [result.hypothesis_id for result in selected if result.eligible] == [
-                    "H-001"
-                ]
+                assert [
+                    result.hypothesis_id for result in selected if result.eligible
+                ] == ["H-001"]
                 history = load_evidence_links(db, "H-001")
                 current = load_evidence_links(db, "H-001", current_only=True)
                 assert len(history) == 1 and current == []
-                assert evidence_link_currentness(db, history[0])[1] == "verification_spec_changed"
-                assert db.execute(
-                    "SELECT support_status FROM claims WHERE claim_id = 'C-H-001'"
-                ).fetchone()[0] == "needs_review"
-                assert db.execute(
-                    "SELECT stale FROM report_sections WHERE section_key = '3_technical'"
-                ).fetchone()[0] is True
+                assert (
+                    evidence_link_currentness(db, history[0])[1]
+                    == "verification_spec_changed"
+                )
+                assert (
+                    db.execute(
+                        "SELECT support_status FROM claims WHERE claim_id = 'C-H-001'"
+                    ).fetchone()[0]
+                    == "needs_review"
+                )
+                assert (
+                    db.execute(
+                        "SELECT stale FROM report_sections WHERE section_key = '3_technical'"
+                    ).fetchone()[0]
+                    is True
+                )
 
     def test_same_id_spec_update_with_different_description_reopens_once(self) -> None:
         from forensia.ai.hypotheses.hypothesis_store import _upsert_hypothesis
@@ -629,9 +653,12 @@ class TestResolvedHypothesisDedup:
                 assert reopened[0].status == "active"
                 assert reopened[0].verdict is None
                 assert resolved_projection == []
-                assert db.execute(
-                    "SELECT COUNT(*) FROM hypotheses WHERE hypothesis_id = 'H-009'"
-                ).fetchone()[0] == 1
+                assert (
+                    db.execute(
+                        "SELECT COUNT(*) FROM hypotheses WHERE hypothesis_id = 'H-009'"
+                    ).fetchone()[0]
+                    == 1
+                )
 
 
 class TestHypothesisEvidenceStrength:

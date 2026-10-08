@@ -89,7 +89,7 @@ def event_context_eligible(
 
     try:
         hint = load_event_id_hints().get(int(event_id))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return False
     if not hint:
         return False
@@ -124,7 +124,7 @@ def event_context_from_row(row: dict[str, Any]) -> tuple[str | None, str | None]
                     elif provider_obj:
                         provider = provider_obj
                     channel = channel or winlog.get("channel")
-        except (TypeError, ValueError, json.JSONDecodeError):
+        except TypeError, ValueError, json.JSONDecodeError:
             pass
     return (
         str(channel).strip() if channel not in (None, "") else None,

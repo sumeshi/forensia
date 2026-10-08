@@ -15,7 +15,6 @@ from forensia.report.resources import (
     report_formats_path,
     report_templates_dir,
 )
-from forensia.web.resources import static_dir
 
 
 def test_runtime_resources_are_readable() -> None:
@@ -26,7 +25,6 @@ def test_runtime_resources_are_readable() -> None:
         report_templates_dir() / "1_overview.md",
         report_formats_path(),
         render_templates_dir() / "report.html.j2",
-        static_dir(),
     )
     for resource in resources:
         assert resource.exists(), resource
@@ -68,5 +66,4 @@ def test_wheel_packages_runtime_resources(wheel_paths: set[str]) -> None:
     assert any(
         path.startswith("forensia/knowledge/rulepacks/windows/") for path in wheel_paths
     )
-    assert any(path.startswith("forensia/web/static/") for path in wheel_paths)
     assert "forensia/report/templates/6_appendix.md" not in wheel_paths

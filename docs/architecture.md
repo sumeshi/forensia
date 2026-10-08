@@ -9,6 +9,44 @@ Details are split into separate documents:
 
 ---
 
+## 0. Kernel entry (V2-02)
+
+One display-agnostic run entry ([src/forensia/pipeline.py](../src/forensia/pipeline.py))
+owns the stage assembly that used to live in `cli/`: case open/init, `--rerun`
+reset, knowledge indexing, ingest → normalize → analyze → `investigator.investigate`
+→ report render, plus `CaseTasks` bookkeeping and the trace-DB progress pusher.
+It introduces no planner, no service layer, and no stage state of its own: the
+engines below own their stages, and `run_investigation` only wires them.
+
+Contract for adapters (the headless CLI today, the TUI later — GOAL §6.3):
+
+- typed signature: `run_investigation(case_dir, *, input_dir, profile,
+  llm_base_url, model, template_dir, knowledge_dir, rerun, report_only,
+  max_iter, max_queries_per_hypothesis, no_progress_limit, report_every_n_cycles,
+  report_max_queries_per_section, max_llm_calls, auto_rulepacks, timezone,
+  status, pre_investigation) -> Path` (the rendered report path);
+- imports of the entry and the kernel pull no typer/rich (and no httpx until an
+  LLM call is actually attempted); `core/log.log` prints plain text, so terminal
+  rendering belongs to the adapter;
+- user-facing argument problems raise `UsageError` (a `ValueError`); adapters
+  translate it into their own parameter-error rendering; dataset errors such as
+  `LLMServerUnavailableError` propagate (the CLI prints the abort line followed
+  by exit code 2);
+- plain status lines flow through the injected `status` callback;
+  `pre_investigation` is the adapter hook that renders profile/timezone advice
+  between the evidence stages and the loop (CLI renders them; a TUI can decide
+  later);
+- structured progress is recorded in the trace DB through `db/progress.py`
+  (one row per emit, capped at 1000 rows — a bounded recent view); audit
+  receipts stay in the trace tables and are not replaced by that view;
+- SIGINT capture and stop application stay in `investigator.investigate`
+  (signal → `ctx.interrupted` flag → `stopped` classification), and the session
+  terminal receipt is persisted before fallible projections (`investigator.py`
+  `finally` block): a run interrupted or stopped without any UI still finalizes
+  its session, stop reason, and report.
+
+---
+
 ## 1. Pipeline overview
 
 ```mermaid
@@ -28,8 +66,7 @@ flowchart LR
     H -->|completed section| R[Section Agent]
     R -->|finalize_section| B
     R -->|report.md| O["reports/report.md"]
-    B -->|snapshots| S["reports/api/*.json"]
-    S --> W["Web UI"]
+    H -->|progress events| T[("trace.duckdb<br/>progress_events")]
 ```
 
 Registry hives enter through the same artifact adapter dispatch as EVTX, MFT,
@@ -57,8 +94,8 @@ individual finding/evidence IDs plus theme drill-down IDs. Scope cards rank all 
 host/time candidates and never delete or hide authoritative evidence.
 
 Entry points:
-- User perspective: `forensia investigate <case> <input_dir>` ([src/forensia/cli/app.py](../src/forensia/cli/app.py))
-- Internal implementation: `await investigate(...)` ([src/forensia/ai/investigation/investigator.py](../src/forensia/ai/investigation/investigator.py))
+- User perspective: `forensia investigate <case> <input_dir>` ([src/forensia/cli/app.py](../src/forensia/cli/app.py)), a thin adapter over
+- Internal implementation: `run_investigation(...)` ([src/forensia/pipeline.py](../src/forensia/pipeline.py)), which calls `await investigate(...)` ([src/forensia/ai/investigation/investigator.py](../src/forensia/ai/investigation/investigator.py))
 
 ---
 
@@ -123,28 +160,29 @@ higher layer:
 
 ```mermaid
 flowchart TD
-    interface["interface: cli, web"] --> workflow["workflow: ai"]
+    interface["interface: cli, pipeline"] --> workflow["workflow: ai"]
     workflow --> reporting["reporting: report"]
     reporting --> knowledge["knowledge: knowledge (rules, rulepacks, profiles)"]
     knowledge --> evidence["evidence: evidence (ingest + normalize)"]
-    evidence --> platform["platform: core, db, api, config"]
+    evidence --> platform["platform: core, db, config"]
 ```
 
 `scripts/check_imports.py` enforces this direction and rejects stale exception
-entries. The only current exception is `api/cache.py → report`, where API
-snapshots assemble report-owned projections. Do not add an exception without
+entries. It currently has no exception. Do not add an exception without
 documenting why the responsibility cannot move to the higher layer.
 
 Placement decision:
 
-1. HTTP or command handling goes in `web/` or `cli/`.
-2. Investigation orchestration and LLM loops go in `ai/`.
-3. Report evidence selection, section lifecycle, or rendering goes in the
+1. Command handling and the display adapter go in `cli/`.
+2. The display-agnostic run entry (`pipeline.py`) sits beside `cli/` in the
+   interface layer so adapters may call it and kernel layers may not import it.
+3. Investigation orchestration and LLM loops go in `ai/`.
+4. Report evidence selection, section lifecycle, or rendering goes in the
    corresponding `report/answers`, `report/sections`, or `report/render` family.
-4. Declarative forensic vocabulary and readers go in `knowledge/rulepacks/`, `knowledge/rules/`, or
+5. Declarative forensic vocabulary and readers go in `knowledge/rulepacks/`, `knowledge/rules/`, or
    `knowledge/`.
-5. Artifact parsing/loading goes in `evidence/` (per-artifact module with ingest + normalize halves).
-6. Reusable storage, DTO, configuration, and case primitives go in the platform
+6. Artifact parsing/loading goes in `evidence/` (per-artifact module with ingest + normalize halves).
+7. Reusable storage, DTO, configuration, and case primitives go in the platform
    packages only when they do not depend on workflow behavior.
 
 ### 2.3 Rule Engine
@@ -166,7 +204,7 @@ query: |
   WHERE event_id = 4624 AND logon_type IN ('2','10')
 ```
 
-The engine runs the SQL, fills the `finding` template with the rows, and INSERTs into `findings`. The `attack` field is kept as a JSON string and later aggregated into a tactic × technique matrix by `list_attack_coverage_dto` in downstream stages.
+The engine runs the SQL, fills the `finding` template with the rows, and INSERTs into `findings`. The `attack` field is kept as a JSON string on the finding row; the Web-only tactic × technique matrix aggregation consumed it and was removed together with the Web layer.
 
 ### 2.4 Investigation Loop
 
@@ -245,7 +283,7 @@ For the input/output schema of each LLM role, see [llm-roles.md](llm-roles.md).
 
 - **auto-rulepacks**: `resolve_active_packs` ([rules/loader.py](../src/forensia/knowledge/rules/loader.py)) automatically enables rulepacks whose `applies_when.artifact_families` match the case's evidence families. Use `--no-auto-rulepacks` for the legacy behavior. Controlled by the `auto_rulepacks` argument of `investigator.investigate`.
 - **playbook budget control**: `_dfir_playbook` ([ai/prompts/prompt_playbook.py](../src/forensia/ai/prompts/prompt_playbook.py)) narrows Event ID narratives to IDs that exist in the case so they stay under the user-configurable `FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS`, and drops sections in priority order when the budget is exceeded. The combined plan/check budget is independently configurable with `FORENSIA_PROMPT_BUDGET_TOKENS`; when unset it scales with the system-character budget.
-- **LLM trajectory and context control**: a session-scoped telemetry sink records logical decisions, every provider attempt, its exact API request and raw provider response, deterministic work, effective token limits, prompt-section sizes and retry/error lineage in `trace.duckdb`. Request transcripts exclude transport headers/API keys but contain case evidence sent in prompts, so they remain case-local operational data. Logical calls inherit the active hypothesis/iteration scope; the Web trajectory projects reasoning, host steps and provider attempts as one hypothesis chain, with full transcripts collapsed by default. Prompt builders send compact indexes and selected schema/recipe/event detail. Before a known context limit is crossed—or after an explicit provider context rejection—older turns are projected into a versioned regeneratable summary while recent turns and stable evidence/action references remain available for drill-down.
+- **LLM trajectory and context control**: a session-scoped telemetry sink records logical decisions, every provider attempt, its exact API request and raw provider response, deterministic work, effective token limits, prompt-section sizes and retry/error lineage in `trace.duckdb`. Request transcripts exclude transport headers/API keys but contain case evidence sent in prompts, so they remain case-local operational data. Logical calls inherit the active hypothesis/iteration scope. Prompt builders send compact indexes and selected schema/recipe/event detail. Before a known context limit is crossed—or after an explicit provider context rejection—older turns are projected into a versioned regeneratable summary while recent turns and stable evidence/action references remain available for drill-down.
 - **automatic timeline assembly**: The `case_timeline` table ([db/schema.py](../src/forensia/db/schema.py)) is deterministically fed with the first-evidence timestamp of findings (severity ≥ medium) and the decisive query row of resolved hypotheses (`feed_findings_to_timeline` in [rules/engine.py](../src/forensia/knowledge/rules/engine.py)). `memory/timeline.md` is a projection regenerated from this table.
 - **timezone support**: `infer_timezone` ([normalize/timezone.py](../src/forensia/evidence/timezone.py)) infers the offset from events such as 4616 system time changes. It is stored in `case.source_timezone` ([core/case.py](../src/forensia/core/case.py)), and `_render_timestamp_with_timezone` ([report/render/markdown.py](../src/forensia/report/render/markdown.py)) renders a dual UTC + local display.
 
@@ -358,20 +396,18 @@ Status is one of `answered` / `partial` / `not_found` / `not_searched` / `wrong_
 
 ---
 
-## 4. API snapshots and UI
+## 4. Progress persistence and runtime visibility
 
-To keep the Web UI up to date during an investigation, `reports/api/*.json` is written out in two tiers.
+There is no server or UI projection store. Structured progress emitted during
+an investigation is persisted durably in the trace database: the DB-layer
+progress module ([src/forensia/db/progress.py](../src/forensia/db/progress.py))
+appends one row per emit to `trace.progress_events`, keeping the most recent
+1000 events (oldest rows are pruned). Each row carries the stage/status/state,
+iteration, current query, a short summary, and the raw payload; the CLI surfaces recent progress lines directly from this table.
 
-| Write function | Timing | Files included |
-|---|---|---|
-| `write_volatile_api_snapshots` | every 5 seconds during an investigation | `hypotheses.json`, `stats.json`, `findings.json`, `attack_coverage.json`, `report_sections.json`, `hypothesis_reasoning.json`, `hypotheses_reasoning_latest.json`, `entities.json` |
-| `write_full_api_snapshots` | full platform refresh | Above plus evidence source/Coverage, investigation state, normalized Gaps/Tasks, hypothesis relations and evidence links |
-| `write_progress_snapshot` | on every progress emit | `progress_events.json` |
-| `write_full_api_snapshots` | at CLI exit + when section_refresher completes | above + `case.json`, `sessions.json`, `claims.json`, `mft_timeline.json`, `session_steps.json`, `ai_reviews.json`, `report_brief.json`, `event_volume_*.json` |
-
-FastAPI handlers ([src/forensia/web/app.py](../src/forensia/web/app.py)) read snapshots first and fall back to direct live DB reads only when a snapshot is absent.
-
-The UI ([web_ui/](../web_ui/)) polls snapshots through Svelte stores and updates the display reactively.
+`reports/` contains only report artifacts: `report.md`, `report.html`,
+`report_brief.json`, per-section debug/evidence dumps, and the structured
+CSV/JSON export. There are no `reports/api/*.json` snapshot files.
 
 ---
 
@@ -387,7 +423,6 @@ dist/<case>/
 │  ├─ report.md         · Final report Markdown
 │  ├─ report.html       · Same content as HTML
 │  ├─ report_brief.json · Structured summary for LLM context
-│  ├─ api/*.json        · UI snapshots
 │  ├─ debug/            · Per-section trace dumps
 │  ├─ evidence/*.json   · Raw evidence per section
 │  └─ structured/*.csv  · CSV export of structured answers

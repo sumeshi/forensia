@@ -48,7 +48,11 @@ def fingerprint_from_record(record: dict[str, Any] | None) -> str:
     if record is None:
         return ""
     canonical = json.dumps(
-        {key: value for key, value in record.items() if key not in _VOLATILE_CONTENT_KEYS},
+        {
+            key: value
+            for key, value in record.items()
+            if key not in _VOLATILE_CONTENT_KEYS
+        },
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -66,6 +70,4 @@ def bulk_evidence_content_fingerprints(
     if not ids:
         return {}
     records = fetch_evidence_records(db, ids)
-    return {
-        eid: fingerprint_from_record(record) for eid, record in records.items()
-    }
+    return {eid: fingerprint_from_record(record) for eid, record in records.items()}

@@ -58,7 +58,10 @@ def main() -> None:
             historical_links = load_evidence_links(db, "H-001")
             current_links = load_evidence_links(db, "H-001", current_only=True)
             result = evaluate_sufficiency(
-                {"required_capabilities": ["logon_events"], "evidence_requirements": {}},
+                {
+                    "required_capabilities": ["logon_events"],
+                    "evidence_requirements": {},
+                },
                 current_links,
                 {"evtx:logon_events": {"state": "full"}},
             )

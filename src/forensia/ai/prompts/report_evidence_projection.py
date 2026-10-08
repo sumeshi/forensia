@@ -21,9 +21,21 @@ _MAX_REPRESENTATIVES = 10
 _MAX_DISTRIBUTION_VALUES = 6
 _PLAN_EVENT_ID_TOKEN = re.compile(r"(?<!\d)(\d{3,5})(?!\d)")
 _PLAN_EVENT_TERMS = (
-    "event", "logon", "authentication", "credential", "account", "service",
-    "task", "powershell", "script", "process", "execution", "wmi", "rdp",
-    "network", "lateral",
+    "event",
+    "logon",
+    "authentication",
+    "credential",
+    "account",
+    "service",
+    "task",
+    "powershell",
+    "script",
+    "process",
+    "execution",
+    "wmi",
+    "rdp",
+    "network",
+    "lateral",
 )
 
 
@@ -63,10 +75,16 @@ def project_section_plan_catalog(
         return compact_section_plan_items(source, fields=fields, limit=len(source))
     explicit_text = " ".join(str(item) for item in evidence_keypoints or [])
     if question_spec:
-        explicit_text += " " + json.dumps(question_spec, ensure_ascii=False, default=str)
-    contract = " ".join((section_key, block_heading, template_body, explicit_text)).lower()
+        explicit_text += " " + json.dumps(
+            question_spec, ensure_ascii=False, default=str
+        )
+    contract = " ".join(
+        (section_key, block_heading, template_body, explicit_text)
+    ).lower()
     stop = {"the", "and", "for", "with", "from", "this", "that"}
-    contract_tokens = {token for token in re.findall(r"[a-z0-9_]{3,}", contract) if token not in stop}
+    contract_tokens = {
+        token for token in re.findall(r"[a-z0-9_]{3,}", contract) if token not in stop
+    }
     ranked: list[tuple[int, int, dict[str, Any]]] = []
     for index, item in enumerate(source):
         name = str(item.get("name") or item.get("template_id") or "")
@@ -99,49 +117,79 @@ def section_plan_scope(
     contract_parts.extend(str(item) for item in evidence_keypoints or [])
     catalog_parts = [
         str(item.get("name", "")) + " " + str(item.get("description", ""))
-        for item in keypoint_catalog if isinstance(item, dict)
+        for item in keypoint_catalog
+        if isinstance(item, dict)
     ]
     catalog_parts.extend(
         str(item.get("template_id", "")) + " " + str(item.get("description", ""))
-        for item in query_template_catalog if isinstance(item, dict)
+        for item in query_template_catalog
+        if isinstance(item, dict)
     )
     if question_spec:
-        contract_parts.append(json.dumps(question_spec, ensure_ascii=False, default=str))
+        contract_parts.append(
+            json.dumps(question_spec, ensure_ascii=False, default=str)
+        )
     contract = " ".join(contract_parts)
     lowered = (contract + " " + " ".join(catalog_parts)).lower()
     neutral = section_key in {"4_gaps", "5_recommendations"} or any(
         marker in lowered
         for marker in (
-            "scope and methodology", "methodology", "recommendation basis",
-            "immediate containment", "action plan", "eradication, recovery",
-            "longer-term risk", "residual risk", "gap assessment", "required follow-up",
+            "scope and methodology",
+            "methodology",
+            "recommendation basis",
+            "immediate containment",
+            "action plan",
+            "eradication, recovery",
+            "longer-term risk",
+            "residual risk",
+            "gap assessment",
+            "required follow-up",
         )
     )
     event_ids: set[int] = set()
     if not neutral:
         try:
             from forensia.knowledge.catalog import load_dfir_yamls
+
             data = load_dfir_yamls().get("event_ids", {})
-            known = {int(key) for key in (data.get("events", {}) if isinstance(data, dict) else {}) if str(key).isdigit()}
+            known = {
+                int(key)
+                for key in (data.get("events", {}) if isinstance(data, dict) else {})
+                if str(key).isdigit()
+            }
         except Exception:
             known = set()
         event_ids = {
-            int(token) for token in _PLAN_EVENT_ID_TOKEN.findall(contract)
+            int(token)
+            for token in _PLAN_EVENT_ID_TOKEN.findall(contract)
             if not known or int(token) in known
         }
     sections: set[str] = {"schema"}
-    if not neutral and (event_ids or any(term in lowered for term in _PLAN_EVENT_TERMS)):
+    if not neutral and (
+        event_ids or any(term in lowered for term in _PLAN_EVENT_TERMS)
+    ):
         sections.add("event_ids")
     if not neutral:
-        if any(term in lowered for term in ("logon", "authentication", "credential", "rdp")):
+        if any(
+            term in lowered for term in ("logon", "authentication", "credential", "rdp")
+        ):
             sections.add("logon_types")
-        if any(term in lowered for term in ("process", "execution", "powershell", "script", "application")):
+        if any(
+            term in lowered
+            for term in ("process", "execution", "powershell", "script", "application")
+        ):
             sections.add("app_catalog")
-        if any(term in lowered for term in ("mft", "prefetch", "registry", "artifact", "file")):
+        if any(
+            term in lowered
+            for term in ("mft", "prefetch", "registry", "artifact", "file")
+        ):
             sections.add("artifact_inference")
-        if any(term in lowered for term in ("ioc", "indicator", "ip", "hash", "domain")):
+        if any(
+            term in lowered for term in ("ioc", "indicator", "ip", "hash", "domain")
+        ):
             sections.add("ioc_catalog")
     return event_ids, sections
+
 
 _METADATA_QUERIES: tuple[tuple[str, str, str], ...] = (
     (
@@ -197,7 +245,9 @@ def _fetch_prompt_metadata(
             continue
         placeholders = ", ".join("?" for _ in ids)
         try:
-            rows = fetch_records(db, query.format(placeholders=placeholders), tuple(ids))
+            rows = fetch_records(
+                db, query.format(placeholders=placeholders), tuple(ids)
+            )
         except Exception:
             # Older/incomplete cases may not contain every routed table. Other
             # families can still be projected without weakening ID validation.
@@ -231,9 +281,7 @@ def _timestamp_key(record: dict[str, Any]) -> tuple[int, float, str]:
     )
 
 
-def _distribution(
-    records: list[dict[str, Any]], field: str
-) -> dict[str, Any] | None:
+def _distribution(records: list[dict[str, Any]], field: str) -> dict[str, Any] | None:
     counts = Counter(
         _value_key(record.get(field))
         for record in records
@@ -266,7 +314,9 @@ def _select_representatives(
             selected.append(evidence_id)
 
     timestamped = [
-        record for record in records if parse_epoch_seconds(record.get("timestamp")) is not None
+        record
+        for record in records
+        if parse_epoch_seconds(record.get("timestamp")) is not None
     ]
     if timestamped:
         ordered = sorted(timestamped, key=_timestamp_key)
@@ -303,7 +353,9 @@ def project_report_evidence_row(
     raw_ids = row.get("evidence_ids")
     if not isinstance(raw_ids, list):
         return projected
-    evidence_ids = list(dict.fromkeys(str(item).strip() for item in raw_ids if str(item).strip()))
+    evidence_ids = list(
+        dict.fromkeys(str(item).strip() for item in raw_ids if str(item).strip())
+    )
     if len(evidence_ids) <= _LARGE_EVIDENCE_SET:
         return projected
 
@@ -422,9 +474,7 @@ def project_report_prior_runs(
             projected_payload = dict(payload)
             result = payload.get("result")
             if isinstance(result, dict):
-                projected_payload["result"] = project_report_results(
-                    [result], db=db
-                )[0]
+                projected_payload["result"] = project_report_results([result], db=db)[0]
             projected_run["payload"] = projected_payload
         projected_runs.append(projected_run)
     return projected_runs

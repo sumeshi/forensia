@@ -126,11 +126,11 @@ class CaseSetupTests(unittest.TestCase):
 
             with (
                 patch(
-                    "forensia.cli.stages.investigate_loop",
+                    "forensia.pipeline.investigate_loop",
                     side_effect=fake_investigate_loop,
                 ),
                 patch(
-                    "forensia.cli.stages.render_written_report",
+                    "forensia.pipeline.render_written_report",
                     return_value=(
                         case.path / "reports" / "report.md",
                         case.path / "reports" / "report.html",
@@ -200,7 +200,7 @@ class CaseSetupTests(unittest.TestCase):
 
             with (
                 patch(
-                    "forensia.cli.stages.ingest_all",
+                    "forensia.pipeline.ingest_all",
                     return_value={
                         "new_files": 0,
                         "skipped_files": 0,
@@ -210,7 +210,7 @@ class CaseSetupTests(unittest.TestCase):
                     },
                 ),
                 patch(
-                    "forensia.cli.stages.normalize_all",
+                    "forensia.pipeline.normalize_all",
                     return_value={
                         "evtx_rows": 0,
                         "mft_entries": 0,
@@ -218,13 +218,13 @@ class CaseSetupTests(unittest.TestCase):
                         "prefetch_executions": 0,
                     },
                 ),
-                patch("forensia.cli.stages.load_rules_from_dir", return_value=[]),
+                patch("forensia.pipeline.load_rules_from_dir", return_value=[]),
                 patch(
-                    "forensia.cli.stages.investigate_loop",
+                    "forensia.pipeline.investigate_loop",
                     side_effect=fake_investigate_loop,
                 ),
                 patch(
-                    "forensia.cli.stages.render_written_report",
+                    "forensia.pipeline.render_written_report",
                     return_value=(
                         output_dir / "reports" / "report.md",
                         output_dir / "reports" / "report.html",

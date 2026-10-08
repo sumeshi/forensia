@@ -15,8 +15,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from rich import print
-
 from forensia.ai.audit import LLMCallLogger
 from forensia.ai.case_profile import (
     CaseEvidenceProfile,

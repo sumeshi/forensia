@@ -100,7 +100,9 @@ class LLMCallLogger:
         """Serialize an LLM call transcript to a JSON file on disk."""
         completion = get_last_completion_metadata()
         input_chars = sum(len(item.get("content", "")) for item in input_messages)
-        output_text = json.dumps(output, ensure_ascii=False, default=str, sort_keys=True)
+        output_text = json.dumps(
+            output, ensure_ascii=False, default=str, sort_keys=True
+        )
         if input_tokens is None:
             input_tokens = (
                 completion.input_tokens
@@ -157,9 +159,13 @@ class LLMCallLogger:
                         "output_tokens": output_tokens,
                         "usage_source": usage_source,
                         "finish_reason": (
-                            completion.finish_reason if completion is not None else "unknown"
+                            completion.finish_reason
+                            if completion is not None
+                            else "unknown"
                         ),
-                        "latency_ms": completion.latency_ms if completion is not None else None,
+                        "latency_ms": completion.latency_ms
+                        if completion is not None
+                        else None,
                         "input_chars": input_chars,
                         "message_chars_by_role": {
                             role: sum(
@@ -167,7 +173,9 @@ class LLMCallLogger:
                                 for item in input_messages
                                 if item.get("role") == role
                             )
-                            for role in {item.get("role", "unknown") for item in input_messages}
+                            for role in {
+                                item.get("role", "unknown") for item in input_messages
+                            }
                         },
                         "request_fingerprint": request_fingerprint,
                         "action_fingerprint": action_fingerprint,
