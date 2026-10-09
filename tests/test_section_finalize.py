@@ -23,6 +23,12 @@ from forensia.report.render.markdown import sort_markdown_table_by_first_column
 from forensia.report.render.writer import build_report_markdown_from_db
 from forensia.report.report_brief import build_report_brief
 from forensia.report.sections.quality_gates import quality_gate_section
+from forensia.report.sections.report_input import (
+    ReportSpecError,
+    resolve_report_sources,
+    section_source_from_path,
+    sections_from_report_spec,
+)
 from forensia.report.sections.section_assembly import prepare_section_request
 from forensia.report.sections.section_finalize import finalize_section
 from forensia.report.sections.section_store import _project_claim_provenance
@@ -122,7 +128,11 @@ class SectionFinalizeTests(unittest.TestCase):
                     ),
                 )
                 request = prepare_section_request(
-                    case, db, template_path, {}, report_brief={}
+                    case,
+                    db,
+                    section_source_from_path(template_path),
+                    {},
+                    report_brief={},
                 )
                 # Evidence resolution moved into section_agent; verify the default
                 # keypoint selection + resolver directly.
@@ -158,7 +168,13 @@ class SectionFinalizeTests(unittest.TestCase):
                         ('ev-3', 'a.evtx', 'Security', 4624, 3, now(), 'host1', 'user2', NULL, NULL, '10.0.0.2', 'info')
                     """
                 )
-                prepare_section_request(case, db, template_path, {}, report_brief={})
+                prepare_section_request(
+                    case,
+                    db,
+                    section_source_from_path(template_path),
+                    {},
+                    report_brief={},
+                )
                 default_keypoints = default_keypoints_for_section("3_technical")
                 resolved = resolve_evidence_results(
                     case, db, keypoints=default_keypoints
@@ -194,7 +210,11 @@ class SectionFinalizeTests(unittest.TestCase):
             )
             with CaseDB(case) as db:
                 request = prepare_section_request(
-                    case, db, template_path, {}, report_brief={}
+                    case,
+                    db,
+                    section_source_from_path(template_path),
+                    {},
+                    report_brief={},
                 )
 
             block = request["block_requests"][0]
@@ -206,6 +226,79 @@ class SectionFinalizeTests(unittest.TestCase):
                 ["ioc_email_ost_files", "timeline_prefetch_history"],
                 block["evidence_keypoints"],
             )
+
+    def test_report_md_normalizes_onto_the_template_section_contract(self) -> None:
+        """V2-06: a case REPORT.md is the report input entry; ``#`` headings become
+        sections (stable ``NN_<slug>`` keys from heading text + document order),
+        ``##`` blocks keep the existing hint contract, and file frontmatter
+        instructions apply to every section derived from the file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            report_spec = case.path / "REPORT.md"
+            report_spec.write_text(
+                "---\ninstructions: |\n  Write for incident responders.\n---\n"
+                "# Investigation Overview\n\n"
+                "## Executive Summary\n<!-- mode: narrative; summarize the case -->\n"
+                "# Timeline\n\n"
+                "## Chronology\n<!-- question: When did lateral movement happen? -->\n"
+                "<!-- mode: structured -->\n",
+                encoding="utf-8",
+            )
+            # Default entry resolution (no explicit path): the case REPORT.md
+            # beats the seeded template directory.
+            sources = resolve_report_sources(case, None)
+            self.assertEqual(
+                ["01_investigation_overview", "02_timeline"],
+                [source.section_key for source in sources],
+            )
+            # Section keys are stable across re-runs of the same input.
+            self.assertEqual(
+                [source.section_key for source in sources],
+                [
+                    source.section_key
+                    for source in sections_from_report_spec(report_spec)
+                ],
+            )
+            self.assertEqual(
+                "Write for incident responders.", sources[1].meta.instructions
+            )
+            with CaseDB(case) as db:
+                requests = [
+                    prepare_section_request(case, db, source, {}, report_brief={})
+                    for source in sources
+                ]
+            self.assertEqual("Investigation Overview", requests[0]["title"])
+            first_block = requests[0]["block_requests"][0]
+            self.assertEqual("Executive Summary", first_block["heading"])
+            self.assertEqual("narrative", first_block["mode"])
+            timeline_block = requests[1]["block_requests"][0]
+            self.assertEqual("structured", timeline_block["mode"])
+            self.assertEqual(
+                "When did lateral movement happen?", timeline_block["question"]
+            )
+
+    def test_report_md_rejects_duplicate_section_headings_explicitly(self) -> None:
+        """V2-06: duplicate headings never merge ambiguously into one section key."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            report_spec = case.path / "REPORT.md"
+            report_spec.write_text(
+                "# Raw Evidence\n\n## Disk A\n\n# Raw Evidence\n\n## Disk B\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(ReportSpecError) as caught:
+                sections_from_report_spec(report_spec)
+            message = str(caught.exception)
+            self.assertIn("duplicate section headings", message)
+            self.assertIn("'raw_evidence'", message)
+            self.assertIn("#1 and #2", message)
+            # The explicit flag beats the duplicate default without side effects.
+            explicit = Path(tmpdir) / "spec.md"
+            explicit.write_text("# Overview\n\n## Summary\n", encoding="utf-8")
+            sources = resolve_report_sources(
+                case, case.report_template_dir, report_spec=explicit
+            )
+            self.assertEqual(["01_overview"], [s.section_key for s in sources])
 
     def test_universal_question_probes_are_explicit_and_store_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -227,7 +320,13 @@ class SectionFinalizeTests(unittest.TestCase):
                         "2",
                     ),
                 )
-                prepare_section_request(case, db, template_path, {}, report_brief={})
+                prepare_section_request(
+                    case,
+                    db,
+                    section_source_from_path(template_path),
+                    {},
+                    report_brief={},
+                )
                 initial_probe_count = db.execute(
                     "SELECT COUNT(*) FROM section_questions WHERE section_key = '__case_probe__'"
                 ).fetchone()[0]
@@ -263,7 +362,11 @@ class SectionFinalizeTests(unittest.TestCase):
             )
             with CaseDB(case) as db:
                 request = prepare_section_request(
-                    case, db, template_path, {}, report_brief={}
+                    case,
+                    db,
+                    section_source_from_path(template_path),
+                    {},
+                    report_brief={},
                 )
 
             block = request["block_requests"][0]

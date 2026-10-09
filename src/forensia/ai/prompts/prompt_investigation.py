@@ -9,6 +9,7 @@ from collections.abc import Callable
 from typing import Any
 
 from forensia.ai.case_profile import CaseEvidenceProfile
+from forensia.ai.investigation.case_policy import case_policy_block
 from forensia.ai.llm.schemas import (
     FINDING_EXTRACTOR_SCHEMA,
     MEMORY_UPDATER_SCHEMA,
@@ -25,10 +26,12 @@ from forensia.ai.prompts.prompt_playbook import (
     _dfir_playbook,
     _sections_for_hypothesis,
 )
+from forensia.ai.prompts.sql_templates import query_template_catalog_for_tables
 from forensia.core.session import Hypothesis
 from forensia.knowledge.catalog import (
     load_benign_context_rules,
 )
+from forensia.knowledge.coverage import disclosure_tables_for_spec
 from forensia.knowledge.retrieval import knowledge_terms_for_hypothesis, select_snippets
 
 
@@ -38,6 +41,53 @@ def _profile_tags(case_profile: CaseEvidenceProfile | None) -> list[str]:
     return [name.split("-", 1)[0]] if name else []
 
 
+def _work_disclosure_tables(
+    hypothesis: Any, spec_payload: Any = None
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """One spec → disclosure correspondence read for prompt assembly (V2-08).
+
+    Uses ``knowledge.coverage.disclosure_tables_for_spec`` — the artifact
+    capability catalog that Coverage and the work judgment already share — so
+    schema cards, playbook artifact gating, and template disclosure all derive
+    from one correspondence.  The caller may pass the canonical Case State
+    spec payload (the planner's authoritative read); without it the
+    in-session hypothesis spec is used.  Draft-phase hypotheses without a
+    canonical spec disclose nothing family-specific (never a widened default).
+    """
+    spec = (
+        spec_payload
+        if spec_payload is not None
+        else getattr(hypothesis, "verification_spec", None)
+    )
+    return disclosure_tables_for_spec(spec)
+
+
+def _template_catalog_block(entries: list[dict[str, Any]]) -> str:
+    """Render the executable-template entries disclosed for this work (V2-08).
+
+    The bounded subset from the spec/capability correspondence; the host still
+    re-renders each chosen template and validates the SQL independently of
+    this prompt content.
+    """
+    if not entries:
+        return ""
+    lines = [
+        "<TEMPLATE_CATALOG>",
+        "Executable query templates selected for this work's artifact tables. "
+        "Use template_id + params (the host re-renders and validates the SQL); "
+        "unknown cases still adapt a bounded SELECT with template_id=null.",
+        "<INDEX>",
+    ]
+    for entry in entries:
+        lines.append(
+            f"- id={entry['template_id']} | params={entry['required_params']} | "
+            f"{entry['description']}"
+        )
+    lines.append("</INDEX>")
+    lines.append("</TEMPLATE_CATALOG>")
+    return "\n".join(lines) + "\n"
+
+
 def _org_knowledge_block(
     *,
     title: str = "",
@@ -45,10 +95,15 @@ def _org_knowledge_block(
     tables: list[str] | None = None,
     extra_words: list[str] | None = None,
     tags: list[str] | None = None,
+    db: Any | None = None,
+    session_id: str | None = None,
+    phase: str = "hypothesis_plan",
 ) -> str:
     """Build an ``<ORG_KNOWLEDGE>`` block from the global knowledge index.
 
-    Returns empty string if no knowledge docs are loaded.
+    Returns empty string if no knowledge docs are loaded.  When a ``db`` is
+    supplied the adopted sections and their size are recorded once in the
+    existing Trace retrieval events (V2-08).
     """
     from forensia.knowledge.external import get_knowledge_docs
 
@@ -68,7 +123,7 @@ def _org_knowledge_block(
         query_terms=terms,
         tags=tags or [],
     )
-    return _org_knowledge_guidance(snippets)
+    return _org_knowledge_guidance(snippets, db, session_id, phase=phase)
 
 
 def render_prior_attempts(recent_history: list[dict[str, Any]], limit: int = 5) -> str:
@@ -117,6 +172,59 @@ def render_prior_attempts(recent_history: list[dict[str, Any]], limit: int = 5) 
     if tried_query_ids:
         block += "\ndo_not_repeat_query_ids: " + ", ".join(tried_query_ids)
     return block + "\n</PRIOR_ATTEMPTS>\n"
+
+
+def render_work_context(snapshot: Any | None) -> str:
+    """Render the deterministic per-attempt case context (V2-07, GOAL §10.1).
+
+    Returns one ``<WORK_CONTEXT source="case_db">`` block built from a
+    ``work_judgment.WorkContextSnapshot`` — current work/spec with readiness,
+    unmet Spec conditions, assessed support/contradiction grouped by
+    derivation root with original refs, and open requirements.  Each entry
+    carries the DB original (root/evidence/assessment/query refs), so the
+    block is a projection that can be re-derived from the same original, not
+    a re-summarized Memory digest.  Returns "" when no snapshot exists
+    (e.g. no DB in pure prompt-builder calls).
+    """
+    if snapshot is None:
+        return ""
+    lines = ['<WORK_CONTEXT source="case_db">']
+    lines.append(f"current work: {snapshot.hypothesis_id} (status={snapshot.status})")
+    ready = [c for c in snapshot.capabilities if c not in snapshot.unready_capabilities]
+    cap_parts: list[str] = []
+    if ready:
+        cap_parts.append("ready: " + ", ".join(ready))
+    if snapshot.unready_capabilities:
+        cap_parts.append("not ready: " + ", ".join(snapshot.unready_capabilities))
+    if cap_parts:
+        lines.append("required capabilities: " + "; ".join(cap_parts))
+    if snapshot.unmet_conditions:
+        lines.append(
+            "unmet spec conditions (no current assessment matched): "
+            + "; ".join(snapshot.unmet_conditions)
+        )
+    if snapshot.support_roots:
+        lines.append("current support (derivation roots, case_db originals):")
+        lines.extend("  - " + unit for unit in snapshot.support_roots)
+    else:
+        lines.append("current support: (none)")
+    if snapshot.contradiction_roots:
+        lines.append("unresolved contradiction (derivation roots):")
+        lines.extend("  - " + unit for unit in snapshot.contradiction_roots)
+    if snapshot.reevaluation_required:
+        lines.append(
+            "requires re-evaluation (identity no longer verifies; historical "
+            "only, never current support):"
+        )
+        lines.extend("  - " + unit for unit in snapshot.reevaluation_required)
+    if snapshot.requirements:
+        lines.append("open requirements: " + "; ".join(snapshot.requirements))
+    lines.append(
+        "Expand refs via Case State and Trace "
+        "(investigation_steps receipts, hypothesis_reasoning), not by describing them."
+    )
+    lines.append("</WORK_CONTEXT>")
+    return "\n".join(lines) + "\n"
 
 
 _load_benign_context_rules = load_benign_context_rules
@@ -234,13 +342,37 @@ def build_query_intent_messages(
     extra_context_md: str = "",
     prior_check_feedback: str = "",
     case_profile: CaseEvidenceProfile | None = None,
+    case_policy: Any | None = None,
     findings_snapshot: list[dict[str, Any]] | None = None,
+    work_context_md: str = "",
+    db: Any | None = None,
+    session_id: str | None = None,
+    spec_payload: Any = None,
 ) -> list[dict[str, str]]:
     """Build messages for the query_intent_planner phase.
 
     Decides WHAT data to fetch for this hypothesis, not HOW.
     Uses read_more expansion for memory context.
+    ``work_context_md`` is the deterministic per-attempt case projection
+    (``render_work_context``); it is DB-derived and renders before the
+    Memory ``extra_context_md`` so DB originals are never masked by
+    re-summarized Markdown memory (V2-07).
+
+    Disclosure (V2-08): one spec/phase/artifact pathway selects everything
+    that appears here — ``schema_tables`` cards (spec capability families'
+    primary tables), the bounded executable ``<TEMPLATE_CATALOG>`` subset,
+    the playbook's artifact catalogs (gated to the same families), and the
+    ``<ORG_KNOWLEDGE>`` snippets (instrumented into Trace when a ``db`` is
+    supplied). Disclosure is reference only: the typed action menu, host
+    validation and phasing are never extended by any of it.
     """
+    disclosure_tables, _primary_tables = _work_disclosure_tables(
+        hypothesis, spec_payload
+    )
+    template_catalog_md = _template_catalog_block(
+        query_template_catalog_for_tables(disclosure_tables or ())
+    )
+    playbook_tables = set(disclosure_tables) or None
     profile_event_ids = (
         set(case_profile.event_ids)
         if case_profile and case_profile.event_ids is not None
@@ -306,15 +438,17 @@ def build_query_intent_messages(
         if isinstance(item, dict)
     )
     system = (
-        f"{_dfir_playbook('hypothesis_plan', event_ids=_pb_ids, sections=_sections_for_hypothesis(hypothesis))}\n"
+        (f"{case_policy_block(case_policy)}" if case_policy is not None else "")
+        + f"{_dfir_playbook('hypothesis_plan', event_ids=_pb_ids, tables=playbook_tables, sections=_sections_for_hypothesis(hypothesis), db=db, session_id=session_id)}\n"
         f"{_time_range_guidance(time_range)}"
         f"{_case_profile_guidance(case_profile.summary if case_profile else None)}"
-        f"{_org_knowledge_block(description=getattr(hypothesis, 'description', ''), extra_words=knowledge_extra, tags=_profile_tags(case_profile))}"
+        f"{_org_knowledge_block(description=getattr(hypothesis, 'description', ''), extra_words=knowledge_extra, tags=_profile_tags(case_profile), db=db, session_id=session_id, phase='hypothesis_plan')}"
         "<TASK>You are the bounded query action planner. Choose one action and, for sql.query, provide either an exact executable template_catalog ID with params or a bounded SELECT fallback. Cookbook/RECIPE_INDEX IDs are reference-only and must be adapted into raw SQL with template_id=null. The host validates and executes it; do not delegate SQL composition to another model.</TASK>\n"
         "<INPUT_SCHEMA>\n"
         f"hypothesis: {json.dumps(_hypothesis_prompt_projection(hypothesis), ensure_ascii=False, default=str)}\n"
         f"{render_prior_attempts(recent_history)}"
         f"time_range: {json.dumps(time_range, ensure_ascii=False, default=str)}\n"
+        f"{template_catalog_md}"
         f"schema: {schema_context}\n"
         "</INPUT_SCHEMA>\n"
         "<OUTPUT_SCHEMA>\n"
@@ -337,6 +471,7 @@ def build_query_intent_messages(
         if str(getattr(item, "id", "") or "") != current_id
     ]
     user = (
+        f"{work_context_md}"
         f"peer_active_hypotheses: {json.dumps(peer_hypotheses, ensure_ascii=False, default=str)}\n"
         f"extra_context:\n{_planner_context_projection(extra_context_md)}\n"
         f"prior_check_feedback:\n{prior_check_feedback or '(no prior checks)'}\n"
@@ -354,6 +489,8 @@ def build_verdict_review_messages(
     strictness_note: str = "",
     fallback_info: dict | None = None,
     benign_annotations: dict[int, list[str]] | None = None,
+    db: Any | None = None,
+    session_id: str | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
     """role: verdict_reviewer.
     Goal: classify the SQL result vs hypothesis as confirmed/refuted/inconclusive.
@@ -412,8 +549,15 @@ def build_verdict_review_messages(
             pass
     prompt_result_summary = _result_summary_prompt_projection(result_summary)
 
+    # V2-08: the check prompt is disclosed from the same spec/capability
+    # correspondence as the plan prompt: artifact catalogs gate to the work's
+    # families, and the playbook build is recorded in Trace when a db/session
+    # is supplied. Disclosure grants no permission; the checker proposes a
+    # semantic verdict that the deterministic gates still verify.
+    disclosure_tables, _ = _work_disclosure_tables(hypothesis)
+    playbook_tables = set(disclosure_tables) or None
     system = (
-        f"{_dfir_playbook('check', event_ids=_pb_ids, sections=_sections_for_hypothesis(hypothesis, (result_summary or {}).get('sample_rows')))}\n"
+        f"{_dfir_playbook('check', event_ids=_pb_ids, tables=playbook_tables, sections=_sections_for_hypothesis(hypothesis, (result_summary or {}).get('sample_rows')), db=db, session_id=session_id)}\n"
         f"{_time_range_guidance(time_range)}"
         "<TASK>You are a verdict_reviewer. Classify the SQL result against the hypothesis as confirmed, refuted, or inconclusive.</TASK>\n"
         "<OUTPUT_SCHEMA>\n"
@@ -547,6 +691,9 @@ def build_gap_identifier_messages(
     time_range: dict[str, str] | None = None,
     status_callback: Callable[[str], None] | None = None,
     case_profile: CaseEvidenceProfile | None = None,
+    case_policy: Any | None = None,
+    db: Any | None = None,
+    session_id: str | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
     """role: gap_identifier.
     Goal: identify which uncovered_keypoints lack active hypothesis coverage.
@@ -574,9 +721,10 @@ def build_gap_identifier_messages(
         if kp.get("name") or kp.get("keypoint")
     ]
     system = (
-        "<TASK>You are a gap_identifier. From available_keypoints, pick the ones that lack active hypothesis coverage.</TASK>\n"
+        (f"{case_policy_block(case_policy)}" if case_policy is not None else "")
+        + "<TASK>You are a gap_identifier. From available_keypoints, pick the ones that lack active hypothesis coverage.</TASK>\n"
         f"{_case_profile_guidance(case_profile.summary if case_profile else None)}"
-        f"{_org_knowledge_block(extra_words=_gap_extra, tags=_profile_tags(case_profile))}"
+        f"{_org_knowledge_block(extra_words=_gap_extra, tags=_profile_tags(case_profile), db=db, session_id=session_id, phase='plan_broad_gap')}"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
         '  "gap_areas": [{"keypoint_id": "EXACT name from available_keypoints", "why_uncovered": "str", "required_entities": ["snake_case column names"]}]\n'
@@ -616,6 +764,9 @@ def build_hypothesis_drafter_messages(
     time_range: dict[str, str] | None = None,
     status_callback: Callable[[str], None] | None = None,
     case_profile: CaseEvidenceProfile | None = None,
+    case_policy: Any | None = None,
+    db: Any | None = None,
+    session_id: str | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
     """role: hypothesis_drafter.
     Goal: draft ONE hypothesis targeting the given gap_area.
@@ -623,9 +774,10 @@ def build_hypothesis_drafter_messages(
     schema = hypothesis_drafter_schema()
     _gap_words = [gap_area.get("keypoint_id", "")]
     system = (
-        "<TASK>You are a hypothesis_drafter. Draft ONE falsifiable hypothesis targeting the given gap_area.</TASK>\n"
+        (f"{case_policy_block(case_policy)}" if case_policy is not None else "")
+        + "<TASK>You are a hypothesis_drafter. Draft ONE falsifiable hypothesis targeting the given gap_area.</TASK>\n"
         f"{_case_profile_guidance(case_profile.summary if case_profile else None)}"
-        f"{_org_knowledge_block(extra_words=_gap_words, tags=_profile_tags(case_profile))}"
+        f"{_org_knowledge_block(extra_words=_gap_words, tags=_profile_tags(case_profile), db=db, session_id=session_id, phase='plan_broad_draft')}"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
         '  "hypothesis": {\n'

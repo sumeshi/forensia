@@ -223,6 +223,7 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
             query_index=query_index,
             time_range=case.time_range,
             case_profile=case_profile,
+            case_policy=rs.ctx.forensia_policy,
         )
     except Exception as exc:
         err_msg = f"LLM failed for {hypothesis.id}: {exc}"

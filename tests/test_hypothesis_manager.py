@@ -985,6 +985,7 @@ class CollectSectionRequestsTests(unittest.TestCase):
         from pathlib import Path
 
         from forensia.ai.sections.section_refresher import collect_section_requests
+        from forensia.report.sections.report_input import sections_from_template_dir
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -1016,7 +1017,7 @@ class CollectSectionRequestsTests(unittest.TestCase):
                 requests = collect_section_requests(
                     case,
                     db,
-                    sorted(template_dir.glob("[0-9]*_*.md")),
+                    sections_from_template_dir(template_dir),
                     prior_filled,
                     report_brief={},
                 )
@@ -1031,6 +1032,7 @@ class CollectSectionRequestsTests(unittest.TestCase):
         from pathlib import Path
 
         from forensia.ai.sections.section_refresher import collect_section_requests
+        from forensia.report.sections.report_input import section_source_from_path
 
         marker = "_Section could not be generated due to an internal error._"
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1052,7 +1054,7 @@ class CollectSectionRequestsTests(unittest.TestCase):
                 requests = collect_section_requests(
                     case,
                     db,
-                    [template_path],
+                    [section_source_from_path(template_path)],
                     {"1_overview": marker},
                     report_brief={},
                 )
@@ -1064,6 +1066,7 @@ class CollectSectionRequestsTests(unittest.TestCase):
         from pathlib import Path
 
         from forensia.ai.sections.section_refresher import collect_section_requests
+        from forensia.report.sections.report_input import sections_from_template_dir
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -1093,7 +1096,7 @@ class CollectSectionRequestsTests(unittest.TestCase):
                 requests = collect_section_requests(
                     case,
                     db,
-                    sorted(template_dir.glob("[0-9]*_*.md")),
+                    sections_from_template_dir(template_dir),
                     prior_filled,
                     report_brief={},
                     force_all=True,

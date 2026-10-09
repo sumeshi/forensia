@@ -82,6 +82,8 @@ def _review_verdict(
     base_url: str,
     status_callback: Callable[[str], None] | None,
     audit_callback: CheckAuditCallback | None,
+    db: CaseDB | None = None,
+    session_id: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     verdict_messages, verdict_schema = build_verdict_review_messages(
         hypothesis=hypothesis,
@@ -90,6 +92,8 @@ def _review_verdict(
         time_range=time_range or {},
         fallback_info=fallback_info,
         benign_annotations=benign_annotations,
+        db=db,
+        session_id=session_id,
     )
     verdict_parsed = _request_check_json(
         phase="check-verdict",
@@ -274,6 +278,8 @@ def check_query_result(
         base_url=base_url,
         status_callback=status_callback,
         audit_callback=audit_callback,
+        db=db,
+        session_id=session_id,
     )
     extracted_findings = _extract_confirmed_findings(
         verdict=verdict,

@@ -476,9 +476,10 @@ def inject_gap_hypotheses(
     }
     gap_sections: dict[str, str] = {}
     prose_gap_ids: set[str] = set()
-    for section_key, raw_gaps in db.execute(
-        "SELECT section_key, gaps FROM report_sections WHERE gaps IS NOT NULL"
-    ).fetchall():
+    for row in fetch_report_sections(db):
+        section_key, raw_gaps = row["section_key"], row["gaps"]
+        if raw_gaps is None:
+            continue
         section_gaps = raw_gaps
         if isinstance(section_gaps, str):
             try:

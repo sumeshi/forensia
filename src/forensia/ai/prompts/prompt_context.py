@@ -139,59 +139,60 @@ def _parse_sql_recipes(raw: str) -> dict[str, tuple[str, str]]:
 
 
 def _build_schema_index(
-    table_name: str = "evtx_events",
+    table_name: str | list[str] = "evtx_events",
     db: CaseDB | None = None,
     session_id: str | None = None,
 ) -> tuple[str, str]:
-    """Index every schema table; expand only the selected table's card.
-
-    Returns ``(index_text, selected_full_text)``. The index advertises all
-    tables with stable ids and continuation hints; the full card is shipped
-    only for *table_name*.
+    """Index every schema table; expand only the selected tables' full cards
+    — *table_name* is one name or several (V2-08 spec capability selection).
     """
+    selected_tables = [table_name] if isinstance(table_name, str) else list(table_name)
     schema_hints = _load_schema_hints()
     if not schema_hints:
         return "", ""
     entries: list[ContextIndexEntry] = []
-    selected_full = ""
+    selected_full: list[str] = []
     for tname, thints in sorted(schema_hints.items()):
         card = _format_schema_card(thints)
         purpose = str(
             thints.get("description") or thints.get("purpose") or "schema card"
         )[:120]
+        selected = tname in selected_tables
         entries.append(
             ContextIndexEntry(
                 stable_id=tname,
                 title=tname,
                 purpose=purpose,
                 size_chars=len(card),
-                relevance_hint="primary_table" if tname == table_name else "reference",
+                relevance_hint="primary_table" if selected else "reference",
                 continuation=f"load schema card for `{tname}`",
             )
         )
-        if tname == table_name:
+        if selected:
             extractors = thints.get("json_field_extractors", {})
             if extractors:
                 card += "\nJSON extractors: " + ", ".join(
                     f"{k} → {v}" for k, v in extractors.items()
                 )
-            selected_full = card
-    index = render_context_index("SCHEMA_INDEX", entries, {table_name})
+            selected_full.append(card)
+    index = render_context_index("SCHEMA_INDEX", entries, set(selected_tables))
     _instrument_retrieval(
         db,
         session_id=session_id,
         scope_kind="schema",
-        scope_id=table_name,
+        scope_id=",".join(selected_tables),
         phase="schema_guidance",
         source_kind="schema_hints",
         query_terms=sorted(schema_hints.keys()),
         candidate_count=len(entries),
-        selected_refs=[table_name],
-        selected_chars=len(selected_full),
+        selected_refs=selected_tables,
+        selected_chars=sum(len(card) for card in selected_full),
         budget=0,
-        rejected_refs=[e.stable_id for e in entries if e.stable_id != table_name],
+        rejected_refs=[
+            e.stable_id for e in entries if e.stable_id not in selected_tables
+        ],
     )
-    return index, selected_full
+    return index, "\n\n".join(selected_full)
 
 
 def _build_recipe_index(
@@ -514,21 +515,18 @@ def _org_knowledge_guidance(
     snippets: list,
     db: CaseDB | None = None,
     session_id: str | None = None,
+    *,
+    phase: str = "section_block",
 ) -> str:
     """Format selected knowledge snippets as an ``<ORG_KNOWLEDGE>`` block.
 
     Each snippet becomes a self-contained ``<KNOWLEDGE>`` fragment carrying
     the parent document's title (Topic) and description (Summary) plus the
     section heading and body.  Tags, scores, and file paths are search-time
-    inputs and are never shown to the LLM.  Common usage cautions are stated
-    once here instead of being repeated inside every knowledge file.
-
-    A compact ``<ORG_KNOWLEDGE_INDEX>`` advertises the selected fragments so
-    the consumer knows what reference material is in scope; full detail for
-    each fragment is shipped inline (selected). The build is instrumented
-    through retrieval telemetry when a ``db`` is supplied.
-
-    Returns an empty string when *snippets* is empty.
+    inputs and are never shown to the LLM; usage cautions are stated once
+    here instead of being repeated inside every knowledge file, and the
+    build is instrumented through retrieval telemetry (refs ``doc#heading``,
+    size) when a ``db`` is supplied.  Returns "" when *snippets* is empty.
     """
     if not snippets:
         return ""
@@ -564,16 +562,20 @@ def _org_knowledge_guidance(
         )
     parts.append("</ORG_KNOWLEDGE>")
     index = render_context_index("ORG_KNOWLEDGE_INDEX", entries)
+    selected_refs = [
+        f"{sec.doc_name}#{sec.heading}" if sec.heading else sec.doc_name
+        for sec in snippets
+    ]
     _instrument_retrieval(
         db,
         session_id=session_id,
         scope_kind="org_knowledge",
         scope_id="org_knowledge",
-        phase="section_block",
+        phase=phase,
         source_kind="org_knowledge",
         query_terms=[str(sec.doc_name) for sec in snippets],
         candidate_count=len(entries),
-        selected_refs=[e.stable_id for e in entries],
+        selected_refs=selected_refs,
         selected_chars=sum(e.size_chars for e in entries),
         budget=4000,
     )
@@ -836,25 +838,25 @@ def _format_schema_card(table_hints: dict[str, Any]) -> str:
 
 
 def _build_schema_guidance(
-    table_name: str = "evtx_events",
+    table_name: str | list[str] = "evtx_events",
     db: CaseDB | None = None,
     session_id: str | None = None,
 ) -> str:
-    """Build indexed schema guidance: compact index + selected table card.
+    """Build indexed schema guidance: compact index + selected table cards.
 
-    Ships an ``<SCHEMA_INDEX>`` over every known table (stable ids +
-    continuation hints) and inlines the full card only for *table_name*.
-    Appends live schema guidance and the SQL recipe index. Instrumented.
+    Ships an ``<SCHEMA_INDEX>`` over every known table and inlines the full
+    card only for *table_name* (one name or several, V2-08 spec selection).
+    Appends live schema guidance and the SQL recipe index.
     """
     blocks = ["<SCHEMA_GUIDANCE>"]
-    schema_index, selected_card = _build_schema_index(
+    schema_index, selected_cards = _build_schema_index(
         table_name, db=db, session_id=session_id
     )
     if schema_index:
         blocks.append(schema_index)
-    if selected_card:
+    if selected_cards:
         blocks.append("<SELECTED_SCHEMA_CARDS>")
-        blocks.append(selected_card)
+        blocks.append(selected_cards)
         blocks.append("</SELECTED_SCHEMA_CARDS>")
     live = schema_column_guidance(db)
     if live:

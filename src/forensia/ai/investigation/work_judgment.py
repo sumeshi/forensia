@@ -26,6 +26,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from forensia.ai.checking.sufficiency import (
+    EvidenceLink,
+    derivation_root_key,
+    evidence_link_currentness,
+    load_evidence_links,
+)
+from forensia.core.verification import EVALUABLE_CONDITION_KEYS
 from forensia.db.database import CaseDB
 from forensia.knowledge.coverage import derive_required_capabilities
 
@@ -437,3 +444,181 @@ def open_work_refs(db: CaseDB) -> list[WorkRef]:
         for cluster in clusters.values()
     ]
     return sorted(refs, key=lambda ref: ref.ref_id)
+
+
+@dataclass(frozen=True)
+class WorkContextSnapshot:
+    """The deterministic Case/Trace context of the current attempt (V2-07).
+
+    Built on demand from the existing owners — the canonical Spec/hypothesis
+    row (current work), the shared work judgment (unmet requirements with
+    owners), and ``hypothesis_evidence`` with the read-time currentness
+    predicate (assessed support/contradiction grouped by derivation root) —
+    so the same originals and work yield the same context, without a Memory,
+    LLM digest, or cache layer in between. Units carry original refs
+    (derivation root, evidence id, assessment id, query id), never
+    re-summarized prose.
+    """
+
+    hypothesis_id: str
+    status: str
+    capabilities: tuple[str, ...]
+    unready_capabilities: tuple[str, ...]
+    #: Declared evaluable Spec support conditions that no currently-current
+    #: assessed link has matched (``key=condition-json``, sorted).
+    unmet_conditions: tuple[str, ...]
+    support_roots: tuple[str, ...]
+    contradiction_roots: tuple[str, ...]
+    #: Current judged material whose identity no longer verifies; presented
+    #: as historical only — never counted as current support.
+    reevaluation_required: tuple[str, ...]
+    #: Linked open Gap/Task ids plus work-judgment blockers with owners.
+    requirements: tuple[str, ...]
+
+
+def _condition_unit(key: str, condition: Any) -> str:
+    """Render one declared Spec condition as sorted, bounded JSON."""
+    if isinstance(condition, (int, float, str, bool)) or condition is None:
+        rendered = json.dumps(condition, ensure_ascii=False)
+    else:
+        rendered = json.dumps(condition, ensure_ascii=False, sort_keys=True)
+    if len(rendered) > 200:
+        rendered = rendered[:197] + "..."
+    return f"{key}={rendered}"
+
+
+def _root_unit(label: str, links: list[EvidenceLink], max_ids: int = 5) -> str:
+    """Render one derivation-root unit with its original refs (V2-07)."""
+    evidence_ids = sorted({str(link.evidence_id or "") for link in links} - {""})
+    shown = evidence_ids[:max_ids]
+    parts = ["evidence=" + (",".join(shown) or "-")]
+    # An undeclared root defaults to the evidence id itself; repeating the
+    # same id as "root=" would state one fact twice, so name the root only
+    # when it differs from the listed material.
+    declared = label.startswith("declared:")
+    root_id = label[len("declared:") :] if declared else label
+    if not (root_id and root_id in evidence_ids):
+        parts.insert(0, f"root={label}")
+    if len(evidence_ids) > max_ids:
+        parts.append(f"(+{len(evidence_ids) - max_ids} more evidence ids)")
+    assessment_ids = sorted({str(link.assessment_id or "") for link in links} - {""})
+    if assessment_ids:
+        parts.append(f"assessment={assessment_ids[0]}")
+    query_ids = sorted({str(link.query_id or "") for link in links} - {""})
+    if query_ids:
+        parts.append(f"query={query_ids[0]}")
+    return " ".join(parts)
+
+
+def work_context_snapshot(
+    db: CaseDB,
+    hypothesis_id: str,
+    *,
+    max_units: int = 6,
+) -> WorkContextSnapshot | None:
+    """Select the per-attempt work context from Case/Trace on demand (V2-07).
+
+    One deterministic read over the existing owners:
+
+    - current work: the canonical Spec and status of the hypothesis row;
+    - assessed material: ``hypothesis_evidence`` links grouped by
+      ``derivation_root_key`` and annotated with the read-time currentness
+      predicate; material whose identity no longer verifies is reported
+      separately and never as current support;
+    - unmet conditions: declared evaluable support-condition keys that no
+      currently-current assessed link has matched;
+    - unmet requirements: the shared work judgment (blockers with owners,
+      capability readiness) plus the linked open Gap/Task rows of the work
+      ref that contains this hypothesis.
+
+    Returns None when the hypothesis has no Case State row. A missing or
+    unparsable canonical spec fails explicitly, matching ``spec_capabilities``.
+    """
+    hid = str(hypothesis_id or "").strip()
+    if not hid:
+        return None
+    row = db.execute(
+        "SELECT status, verification_spec FROM hypotheses WHERE hypothesis_id = ?",
+        [hid],
+    ).fetchone()
+    if row is None:
+        return None
+    capabilities = spec_capabilities(row[1], hypothesis_id=hid)
+    raw_spec = json.loads(row[1]) if isinstance(row[1], str) else row[1]
+    declared = sorted(
+        set(raw_spec.get("support_conditions") or {}) & EVALUABLE_CONDITION_KEYS
+    )
+
+    links = load_evidence_links(db, hid)
+    support: dict[str, list[EvidenceLink]] = {}
+    contradiction: dict[str, list[EvidenceLink]] = {}
+    reevaluation: list[str] = []
+    matched_conditions: set[str] = set()
+    for link in links:
+        is_current, stale_reason = evidence_link_currentness(db, link)
+        if not is_current:
+            if stale_reason:
+                reevaluation.append(
+                    f"evidence={link.evidence_id} reason={stale_reason}"
+                )
+            continue
+        matched = {str(k) for k in (getattr(link, "matched_conditions", ()) or ())}
+        if matched and str(link.assessment_id or "").strip():
+            matched_conditions.update(matched)
+        # A present evidence row is not by itself an Assessment. Match the
+        # sufficiency gate's assessed-link boundary before projecting support
+        # or contradiction into model-visible context.
+        if not str(link.assessment_id or "").strip():
+            continue
+        unit_roots = (
+            support
+            if link.role in ("supporting", "corroborating")
+            else (contradiction if link.role == "contradictory" else None)
+        )
+        if unit_roots is not None:
+            unit_roots.setdefault(derivation_root_key(link), []).append(link)
+
+    unmet_conditions = [
+        _condition_unit(key, raw_spec["support_conditions"][key])
+        for key in declared
+        if key not in matched_conditions
+    ]
+
+    judgment = judge_work(db, [hid]).get(hid)
+    requirements: list[str] = []
+    if judgment is not None:
+        if not judgment.runnable:
+            message = blocker_message(judgment)
+            if message:
+                requirements.append(f"blocked: {message}")
+        for task_id in judgment.external_task_ids:
+            requirements.append(f"external task={task_id}")
+    work_ref = next(
+        (ref for ref in open_work_refs(db) if hid in ref.hypothesis_ids), None
+    )
+    if work_ref is not None:
+        requirements.extend(f"gap={gid}" for gid in work_ref.gap_ids)
+        requirements.extend(f"task={tid}" for tid in work_ref.task_ids)
+
+    # Deterministic ordering with a hard cap so a long history cannot flood
+    # the per-attempt prompt; truncation is only ever arithmetic (sorted).
+    deduped_requirements = list(dict.fromkeys(requirements))
+    return WorkContextSnapshot(
+        hypothesis_id=hid,
+        status=str(row[0] or "active"),
+        capabilities=tuple(capabilities),
+        unready_capabilities=tuple(
+            judgment.unavailable_capabilities if judgment else ()
+        ),
+        unmet_conditions=tuple(sorted(unmet_conditions)),
+        support_roots=tuple(
+            _root_unit(label, group)
+            for label, group in sorted(support.items())[:max_units]
+        ),
+        contradiction_roots=tuple(
+            _root_unit(label, group)
+            for label, group in sorted(contradiction.items())[:max_units]
+        ),
+        reevaluation_required=tuple(sorted(reevaluation)[:max_units]),
+        requirements=tuple(deduped_requirements[: max_units * 4]),
+    )

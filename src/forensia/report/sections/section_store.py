@@ -16,6 +16,7 @@ from forensia.report.evidence_refs import (
     _extract_evidence_ids_from_value,
 )
 from forensia.report.sections.quality_gates import failure_markers
+from forensia.report.sections.report_input import active_report_section_keys
 from forensia.report.sections.section_quality import GAP_PATTERN
 
 _SCAFFOLD_PATTERNS = [
@@ -295,6 +296,10 @@ def _upsert_claims(
         ORDER BY claim_text, section_key, claim_id
         """,
     )
+    active_keys = active_report_section_keys(db)
+    if active_keys is not None:
+        active = set(active_keys)
+        text_groups = [row for row in text_groups if str(row["section_key"]) in active]
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in text_groups:
         grouped.setdefault(
@@ -421,12 +426,22 @@ def _upsert_report_section(
 
 def mark_report_sections_ai_exhausted(db: CaseDB) -> None:
     """Mark all report sections that have body content as ai_exhausted."""
+    keys = active_report_section_keys(db)
+    if keys is not None and not keys:
+        return
+    clause = (
+        "AND section_key IN (" + ", ".join("?" for _ in keys) + ")"
+        if keys is not None
+        else ""
+    )
     db.execute(
-        """
+        f"""
         UPDATE report_sections
         SET status = 'ai_exhausted'
         WHERE COALESCE(body, '') != ''
-        """
+        {clause}
+        """,
+        tuple(keys) if keys is not None else (),
     )
 
 
@@ -444,8 +459,8 @@ def set_report_section_status(db: CaseDB, section_key: str, status: str) -> None
 
 
 def fetch_report_sections(db: CaseDB) -> list[dict[str, Any]]:
-    """Fetch all report section rows ordered by section_key."""
-    return fetch_records(
+    """Fetch sections from the adopted report input, retaining older rows as history."""
+    rows = fetch_records(
         db,
         """
         SELECT section_key, title, body, confidence, status, update_count, gaps, last_filled_session, last_filled_at
@@ -453,6 +468,11 @@ def fetch_report_sections(db: CaseDB) -> list[dict[str, Any]]:
         ORDER BY section_key
         """,
     )
+    keys = active_report_section_keys(db)
+    if keys is None:
+        return rows
+    active = set(keys)
+    return [row for row in rows if str(row["section_key"]) in active]
 
 
 def load_report_sections_map(db: CaseDB) -> dict[str, str]:

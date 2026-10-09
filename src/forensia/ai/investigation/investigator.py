@@ -22,6 +22,10 @@ from forensia.ai.case_profile import (
     build_case_profile,
 )
 from forensia.ai.hypotheses.hypothesis_store import _all_hypotheses
+from forensia.ai.investigation.case_policy import (
+    CasePolicyInput,
+    collect_policy_progress_event,
+)
 from forensia.ai.investigation.investigation_cycle import (
     _run_cycle_body,
 )
@@ -67,6 +71,11 @@ from forensia.knowledge.coverage import refresh_evidence_coverage
 from forensia.knowledge.resources import profile_path
 from forensia.knowledge.rules.loader import resolve_active_packs
 from forensia.report.render.writer import render_written_report
+from forensia.report.sections.report_input import (
+    SectionSource,
+    decide_report_sources,
+    ensure_report_output_paths,
+)
 from forensia.report.sections.section_store import mark_report_sections_ai_exhausted
 
 
@@ -92,7 +101,7 @@ async def _run_report_phase(
     session_id: str,
     plan_cycle: int,
     report_every_n_cycles: int,
-    template_root: Path,
+    report_sections: list[SectionSource],
     base_url: str,
     model: str,
     llm_logger: LLMCallLogger,
@@ -114,7 +123,6 @@ async def _run_report_phase(
         return _build_report_status(db), "skipped"
     report_result: dict[str, Any] | None = None
     try:
-        template_paths = sorted(template_root.glob("[0-9]*_*.md"))
         # LLM-server outages get the same wait-for-recovery treatment as the
         # investigation loop (unattended multi-day runs must survive them);
         # only an exhausted outage budget propagates and stops the session.
@@ -127,7 +135,7 @@ async def _run_report_phase(
             db=db,
             session_id=session_id,
             iteration=plan_cycle,
-            template_paths=template_paths,
+            sections=report_sections,
             llm_logger=llm_logger,
             progress_callback=progress_callback,
             focus_sections=focus_sections,
@@ -293,7 +301,7 @@ class _InvestigateEnv:
     memory: MemoryManager
     llm_logger: LLMCallLogger
     session_id: str
-    template_root: Path
+    report_sections: list[SectionSource]
     case_profile: CaseEvidenceProfile
     progress_callback: Callable[[dict[str, Any]], None] | None
     max_iter: int
@@ -412,7 +420,7 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
             session_id=env.session_id,
             plan_cycle=plan_cycle,
             report_every_n_cycles=env.report_every_n_cycles,
-            template_root=env.template_root,
+            report_sections=env.report_sections,
             base_url=env.base_url,
             model=env.model,
             llm_logger=env.llm_logger,
@@ -484,7 +492,6 @@ async def _final_report_refresh(env: _InvestigateEnv) -> int:
     update_count cap (it guards per-cycle loops, not the closing render).
     """
     try:
-        template_paths = sorted(env.template_root.glob("[0-9]*_*.md"))
         await async_refresh_report_sections(
             case=env.case,
             db=env.db,
@@ -492,7 +499,7 @@ async def _final_report_refresh(env: _InvestigateEnv) -> int:
             iteration=env.max_iter + 1,
             base_url=env.base_url,
             model=env.model,
-            template_paths=template_paths,
+            sections=env.report_sections,
             llm_logger=env.llm_logger,
             progress_callback=env.progress_callback,
             focus_sections=[],
@@ -550,12 +557,25 @@ async def investigate(
     report_every_n_cycles: int = 1,
     report_only: bool = False,
     template_root: Path | None = None,
+    report_spec: str | Path | None = None,
     report_max_queries_per_section: int = 3,
     max_llm_calls: int = 200,
     auto_rulepacks: bool = True,
+    forensia_policy: CasePolicyInput | None = None,
 ) -> dict[str, Any]:
     """Run the full investigation loop: broad plan → hypothesis loop → report refresh, with termination checks and LLM budget enforcement."""
     active_pack_ids = _resolve_rulepacks(profile, db, auto_rulepacks)
+    ensure_report_output_paths(
+        case,
+        (case.reports_dir / "report.md", case.reports_dir / "report.html"),
+        report_spec=report_spec,
+    )
+    # Report inputs are validated and fixed at run start (GOAL 10.7), before
+    # the session lease exists: an invalid REPORT.md fails without leaving a
+    # dangling running session. The chosen text is parsed once here and reused
+    # by every report phase and the final refresh within this session.
+    report_decision = decide_report_sources(case, db, template_root, report_spec)
+    report_sections = report_decision.sections
     state, ctx, memory, llm_logger, session_id, started_at, template_root = (
         _init_session(
             case,
@@ -566,8 +586,12 @@ async def investigate(
             template_root,
             active_pack_ids=active_pack_ids if auto_rulepacks else None,
             report_only=report_only,
+            forensia_policy=forensia_policy,
+            report_input_record=report_decision.record,
         )
     )
+    if report_decision.notice:
+        _log("REPORT", report_decision.notice)
     owner_id = ctx.owner_id
     if not owner_id:
         raise RuntimeError("investigation session has no durable owner lease")
@@ -598,6 +622,10 @@ async def investigate(
             progress_callback(payload)
 
     ctx.progress_callback = session_progress
+    notice_event = collect_policy_progress_event(ctx.forensia_policy)
+    if notice_event is not None:
+        _log("FORENSIA", str(ctx.forensia_policy.notice))
+        session_progress(notice_event)
     env = _InvestigateEnv(
         case=case,
         db=db,
@@ -608,7 +636,7 @@ async def investigate(
         memory=memory,
         llm_logger=llm_logger,
         session_id=session_id,
-        template_root=template_root,
+        report_sections=report_sections,
         case_profile=_prepare_case_profile(case, db, profile),
         progress_callback=session_progress,
         max_iter=max_iter,

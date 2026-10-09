@@ -16,6 +16,7 @@ from forensia.report.answers.keypoint_catalog import (
     resolve_evidence_results,
 )
 from forensia.report.evidence_refs import extract_needed_evidence
+from forensia.report.sections.report_input import section_source_from_path
 from forensia.report.sections.template_parsing import parse_block_hints
 
 
@@ -62,7 +63,9 @@ class TableRenderingTests(unittest.TestCase):
                 encoding="utf-8",
             )
             with CaseDB(case) as db:
-                request = prepare_section_request(case, db, template, {})
+                request = prepare_section_request(
+                    case, db, section_source_from_path(template), {}
+                )
 
         self.assertEqual(
             "Separate facts from assessments.",

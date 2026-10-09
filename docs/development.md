@@ -114,6 +114,7 @@ and `test_persistence.py`. Round completion still requires the separate full
 
 | Flag | Default | When to care |
 |---|---|---|
+| `--forensia-md` | unset — `case_root/FORENSIA.md` is adopted when present | Explicit path to ONE investigation-policy file. Giving the path explicitly is an explicit reload: it adopts the current content at this session start. Without the flag a differing `case_root/FORENSIA.md` only surfaces a difference (the recorded revision stays in force); see section 6 |
 | `--max-iter` | `20` | Increase only when you want to run longer |
 | `--max-llm-calls` | `0` (unlimited) | Opt-in hard cap on total LLM calls per `investigate`. Specify explicitly when using a cloud API to prevent cost runaway |
 | `--max-queries-per-hypothesis` | `5` | Search depth per hypothesis |
@@ -130,7 +131,7 @@ and `test_persistence.py`. Round completion still requires the separate full
 - Running `forensia investigate <case_dir>` on an existing case continues the hypothesis loop, inheriting the previous state
 - To reset the output directory and start over, use `--rerun`. `raw/` is preserved, and when `input_dir` is omitted it re-normalizes from the existing raw
 - `report` is render only
-- `report --write` re-fills sections and then renders
+- `report --write` re-fills the adopted sections and then renders; use `--report-spec <path>` or `--template-dir <dir>` with `--write` to adopt edited input explicitly. A plain render uses the recorded section set.
 
 `reset_case_tables()` invoked by `--rerun` must clear not only the evidence-derived normalized tables but also the derived workflow state. At minimum include `findings` / `hypotheses` / `report_sections` / `claims` / `section_facts` / `section_evidence` / `section_runs` / `section_questions` / `query_cache` / trace tables (including `retrieval_events`) / `ingested_files` / `prefetch_timeline`. When you add a new mutable table, update `reset_case_tables()` and the reset test in `tests/test_case_db_maintenance.py` at the same time.
 
@@ -158,6 +159,11 @@ ingest → normalize → analyze → `investigator.investigate` → report. The 
 (`cli/app.py`) is a thin adapter over it; a future TUI calls the same entry
 (GOAL §6.3). Adapter contract:
 
+- the knowledge index is a run input: every entry (pipeline entry and the CLI
+  `investigate`/`report` commands) resets `set_knowledge_docs([])` first, so
+  repeated invocations in one process cannot inherit another case's
+  `--knowledge` documents (V2-08);
+
 - importing `forensia.pipeline` (and the kernel) pulls no typer/rich and no
   HTTP transport; `core/log.log` prints plain text, so terminal styling is the
   adapter's concern;
@@ -184,6 +190,29 @@ ingest → normalize → analyze → `investigator.investigate` → report. The 
 `reports/` contains only report artifacts (`report.md`, `report.html`,
 `report_brief.json`, debug/evidence dumps, structured CSV/JSON). There are no
 `reports/api/*.json` snapshot files.
+
+## 6. Investigation-policy input (FORENSIA.md)
+
+`forensia investigate <case_dir>` adopts `case_root/FORENSIA.md` — or one
+explicit `--forensia-md <path>` — as the investigation policy
+(objective/scope/priorities/constraints/guidance in normal Markdown; V2-05,
+GOAL §10.5):
+
+- the policy is fixed for the whole run and recorded per session as the
+  `forensia-md` step in the trace DB (body, SHA-256, source, target roles);
+- re-running without an explicit path keeps the *recorded* revision in force
+  when the file changed or disappeared and prints the difference
+  (`[FORENSIA] … recorded revision remains …`); it never silently rewrites
+  accepted objective/work/verdict state;
+- adopting an edit is an explicit reload: `--forensia-md <path>` at the next
+  session start (or a later TUI reload action, V2-10);
+- the policy only reaches the investigation roles (`gap_identifier`,
+  `hypothesis_drafter`, `query_intent_planner`) as a framed
+  `<CASE_INSTRUCTIONS>` block; output schemas, typed actions and the
+  Evidence/Assessment/Sufficiency/Settlement gates are not instructable;
+- a first adoption or explicit reload larger than half of
+  `FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS` refuses with an explicit reason; an
+  implicit edit cannot block the recorded revision from resuming.
 
 Wherever the report writer receives a timestamp from raw evidence, apply the
 sanity range 1980 ≤ year ≤ today + 5. The report writer's quality gate also

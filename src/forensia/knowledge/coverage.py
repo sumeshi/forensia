@@ -578,3 +578,56 @@ def infer_capabilities(text: str) -> list[str]:
         }
         inferred.update(event_matches or capabilities.keys())
     return sorted(inferred)
+
+
+def capability_disclosure_tables(
+    capabilities: list[str] | None,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """VerificationSpec/Coverage ↔ schema/recipe correspondence (V2-08, §10.2).
+
+    The artifact capability catalog (``artifact_capabilities.yaml``) — the same
+    declaration file the Coverage projection and the work judgment read — is
+    the correspondence owner: every capability belongs to one family and each
+    family declares its artifact tables in order.  Selection, stop, and
+    disclosure therefore cannot diverge.
+
+    Returns ``(tables, primary_tables)`` where ``tables`` lists every declared
+    table of the families owning *capabilities*, and ``primary_tables`` keeps
+    the first declared table per involved family (the schema-card selection
+    order).  A capability no family owns contributes nothing — its absence of
+    correspondence stays observable in the disclosure telemetry instead of
+    being silently widened.
+    """
+    declarations = load_artifact_capabilities().get("families", {})
+    tables: dict[str, None] = {}
+    primary_tables: dict[str, None] = {}
+    for capability in capabilities or []:
+        for family_config in declarations.values():
+            if capability not in (family_config.get("capabilities") or {}):
+                continue
+            family_tables = [str(table) for table in family_config.get("tables") or []]
+            for table in family_tables:
+                tables.setdefault(table, None)
+            if family_tables:
+                primary_tables.setdefault(family_tables[0], None)
+    return tuple(tables), tuple(primary_tables)
+
+
+def disclosure_tables_for_spec(spec: Any) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """One Spec (JSON row or ``VerificationSpec`` object) → disclosure tables.
+
+    Unifies the two callers that hold Specs in different shapes (Case State
+    rows and in-session hypothesis objects) through the shared derivation
+    owner, so plan and check prompts disclose from the same correspondence.
+    """
+    if isinstance(spec, dict):
+        conditions = spec.get("support_conditions") or {}
+        declared = spec.get("required_capabilities") or []
+    elif spec is not None and hasattr(spec, "support_conditions"):
+        conditions = spec.support_conditions
+        declared = spec.required_capabilities
+    else:
+        return (), ()
+    return capability_disclosure_tables(
+        derive_required_capabilities(list(declared), conditions)
+    )

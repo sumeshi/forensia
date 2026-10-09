@@ -23,6 +23,7 @@ from forensia.report.sections.quality_gates import (
     _detect_body_language,
     failure_markers,
 )
+from forensia.report.sections.section_store import fetch_report_sections
 
 _SCHEMA_DIR = schema_dir()
 _VOCAB_PATH = _SCHEMA_DIR / "report_validation_vocab.yaml"
@@ -174,10 +175,10 @@ def derive_publication_state(db: Any) -> dict[str, Any]:
         state["reasons"].append("hypothesis_execution_receipts_unavailable")
 
     try:
-        rows = db.execute(
-            "SELECT section_key, status FROM report_sections ORDER BY section_key"
-        ).fetchall()
-        statuses = {str(row[0]): str(row[1] or "draft") for row in rows}
+        rows = fetch_report_sections(db)
+        statuses = {
+            str(row["section_key"]): str(row["status"] or "draft") for row in rows
+        }
         state["section_statuses"] = statuses
         state["draft_sections"] = sorted(
             key for key, status in statuses.items() if status == "draft"
@@ -486,10 +487,8 @@ def check_persisted_section_failures(db: Any) -> list[ValidationFinding]:
     """Report invalid persisted sections even when writer omits their prose."""
     findings: list[ValidationFinding] = []
     try:
-        rows = db.execute(
-            "SELECT section_key, body FROM report_sections ORDER BY section_key"
-        ).fetchall()
-        for section_key, body in rows:
+        for row in fetch_report_sections(db):
+            section_key, body = row["section_key"], row["body"]
             if has_failure_marker(str(body or "")):
                 findings.append(
                     ValidationFinding(

@@ -93,6 +93,7 @@ class _BroadPlanContext:
     llm_status_fn: Callable[[str], None]
     progress_callback: Callable[[dict[str, Any]], None] | None
     case_profile: CaseEvidenceProfile | None
+    case_policy: Any | None = None
 
 
 def _normalize_hypothesis_tokens(text: str) -> set[str]:
@@ -235,6 +236,9 @@ async def _identify_broad_plan_gaps(ctx: _BroadPlanContext) -> list[dict[str, An
         uncovered_keypoints=uncovered_keypoints,
         active_hypotheses_slim=active_hypotheses_slim,
         case_profile=ctx.case_profile,
+        case_policy=ctx.case_policy,
+        db=ctx.db,
+        session_id=ctx.session_id,
     )
     gap_parsed = await _call_with_outage_recovery(
         llm_gateway.request_llm_json,
@@ -317,7 +321,12 @@ async def _draft_broad_plan_hypotheses(
     drafted_hypotheses: list[Hypothesis] = []
     for gap in gap_areas:
         h_msgs, h_schema = build_hypothesis_drafter_messages(
-            gap, available_rules, case_profile=ctx.case_profile
+            gap,
+            available_rules,
+            case_profile=ctx.case_profile,
+            case_policy=ctx.case_policy,
+            db=ctx.db,
+            session_id=ctx.session_id,
         )
         h_parsed = await _call_with_outage_recovery(
             llm_gateway.request_llm_json,
@@ -431,6 +440,7 @@ async def _run_broad_plan_step(
     llm_status_fn: Callable[[str], None],
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     case_profile: CaseEvidenceProfile | None = None,
+    case_policy: Any | None = None,
 ) -> bool:
     """Execute broad planning step (2-stage: gap_identifier → hypothesis_drafter). Returns stop flag."""
     import httpx
@@ -451,6 +461,7 @@ async def _run_broad_plan_step(
         llm_status_fn=llm_status_fn,
         progress_callback=progress_callback,
         case_profile=case_profile,
+        case_policy=case_policy,
     )
     try:
         gap_areas = await _identify_broad_plan_gaps(ctx)
@@ -579,6 +590,7 @@ async def _run_cycle_body(
                 emit_fn=_emit,
                 llm_status_fn=llm_status,
                 case_profile=case_profile,
+                case_policy=ctx.forensia_policy,
             )
         remaining_cycles = max(1, max_iter - plan_cycle + 1)
         focus_max = max(

@@ -44,6 +44,11 @@ class EvidenceLink:
     # counted as current support.
     content_fingerprint: str = ""
     verification_spec_fingerprint: str = ""
+    # Judgment grounds of the one deterministic Assessment (V2-04):
+    # ``assessment_reason`` is the stored reason; ``matched_conditions`` are
+    # the declared condition keys that assessment matched.
+    assessment_reason: str = ""
+    matched_conditions: tuple[str, ...] = ()
 
 
 def verification_spec_fingerprint(spec: Any) -> str:
@@ -260,28 +265,40 @@ def load_evidence_links(
     rows = db.execute(
         "SELECT link_id, hypothesis_id, evidence_id, finding_id, query_id, "
         "assessment_id, role, source_family, source_file, derivation_group, "
-        "strength, content_fingerprint, verification_spec_fingerprint "
+        "strength, content_fingerprint, verification_spec_fingerprint, "
+        "assessment_reason, matched_conditions "
         "FROM hypothesis_evidence WHERE hypothesis_id = ?",
         [hypothesis_id],
     ).fetchall()
-    links = [
-        EvidenceLink(
-            link_id=r[0],
-            hypothesis_id=r[1],
-            evidence_id=r[2],
-            finding_id=r[3] or "",
-            query_id=r[4] or "",
-            assessment_id=r[5] or "",
-            role=r[6] or "supporting",
-            source_family=r[7] or "",
-            source_file=r[8] or "",
-            derivation_group=r[9] or "",
-            strength=r[10] or "moderate",
-            content_fingerprint=r[11] or "",
-            verification_spec_fingerprint=r[12] or "",
+    links: list[EvidenceLink] = []
+    for r in rows:
+        matched: tuple[str, ...] = ()
+        if isinstance(r[14], str) and r[14].strip():
+            try:
+                parsed = json.loads(r[14])
+                if isinstance(parsed, list):
+                    matched = tuple(str(key) for key in parsed if key)
+            except json.JSONDecodeError:
+                pass
+        links.append(
+            EvidenceLink(
+                link_id=r[0],
+                hypothesis_id=r[1],
+                evidence_id=r[2],
+                finding_id=r[3] or "",
+                query_id=r[4] or "",
+                assessment_id=r[5] or "",
+                role=r[6] or "supporting",
+                source_family=r[7] or "",
+                source_file=r[8] or "",
+                derivation_group=r[9] or "",
+                strength=r[10] or "moderate",
+                content_fingerprint=r[11] or "",
+                verification_spec_fingerprint=r[12] or "",
+                assessment_reason=r[13] or "",
+                matched_conditions=matched,
+            )
         )
-        for r in rows
-    ]
     if current_only:
         links = [link for link in links if evidence_link_currentness(db, link)[0]]
     return links

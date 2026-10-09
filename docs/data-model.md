@@ -112,6 +112,17 @@ state: the report builder reads the current tables, and stale sections are re-fi
 through the existing section pipeline. Case statistics count terminal hypotheses from the
 durable `confirmed`, `refuted`, and `untestable` status taxonomy.
 
+The planner's per-attempt case facts come from Case/Trace directly
+(`work_judgment.work_context_snapshot` → `<WORK_CONTEXT source="case_db">`, V2-07),
+so assessed support/contradiction, Spec conditions, and open requirements are not
+carried through an LLM-condensed Memory card. The Markdown Memory stays the
+authored/scratch display layer; LLM-condensed Memory files that prompts may still
+re-read carry a `> condensed:` label naming their source and an honest
+currentness statement (regeneratable only when a deterministic DB re-derivation
+path exists, otherwise explicitly "not retained"). Context overflow reductions are
+one-way: they keep latest sections and essential refs verbatim and never label
+what they reduce as regeneratable (R10).
+
 `refute_conditions` are persisted explicitly; they are never inferred from a
 checker or final verdict. A hypothesis loaded from Case State always receives a
 validated `VerificationSpec`, including hypotheses created by rule seeding,
@@ -200,6 +211,11 @@ in the investigation/check trace and does not create a Finding row.
 |---|---|---|
 | `investigation_sessions` (trace DB) | Execution unit and durable worker lease for hypothesis investigation / report generation | `session_id`, `started_at`, `finished_at`, `iterations`, `status`, structured `terminal_reason`, `owner_id`, `heartbeat_at`, `phase`, `status_reason` |
 | `investigation_steps` (trace DB) | Each step within a session (plan / do / check) | `step_id`, `session_id`, `hypothesis_id`, `iteration`, `phase`, `input_json`, `output_json` |
+
+At session start, `phase='forensia-md'` records the adopted investigation policy and
+`phase='report-input'` records the adopted report section bodies, metadata, order,
+and content hash. The latter identifies the active report projection; prior
+`report_sections` rows remain stored after a report-input reload.
 | `retrieval_events` (trace DB) | Observability for memory and external-knowledge retrieval; not used as ranking feedback | `event_id`, `session_id`, `scope_kind`, `scope_id`, `phase`, `source_kind`, `query_terms`, `candidate_count`, `selected_refs`, `rejected_refs`, `selected_chars`, `budget`, `created_at` |
 | `llm_logical_calls` (trace DB) | One application-level model decision, independent of retry count | `logical_call_id`, session/phase/scope IDs, request fingerprint, status |
 | `llm_provider_attempts` (trace DB) | One actual provider request, including failed attempts and retry lineage | attempt/parent/logical IDs, exact API `request_body`, raw `response_body`, effective limits, usage source, prompt metadata, HTTP/provider error, finish/parse/truncation state, timing |

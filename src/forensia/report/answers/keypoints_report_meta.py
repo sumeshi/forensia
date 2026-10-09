@@ -13,6 +13,52 @@ from forensia.report.evidence_refs import (
     _extract_needed_evidence,
     _report_keypoint_rows,
 )
+from forensia.report.sections.report_input import active_report_section_keys
+
+
+def _report_sections_with_gaps(db: CaseDB) -> list[dict[str, Any]]:
+    active = active_report_section_keys(db)
+    if active is not None and not active:
+        return []
+    clause = (
+        "AND section_key IN (" + ", ".join("?" for _ in active) + ")"
+        if active is not None
+        else ""
+    )
+    return fetch_records(
+        db,
+        f"""
+        SELECT section_key, title, confidence, gaps, status
+        FROM report_sections
+        WHERE (confidence < 0.7 OR gaps IS NOT NULL) {clause}
+        ORDER BY confidence
+        LIMIT 20
+        """,
+        tuple(active) if active is not None else (),
+    )
+
+
+def _appendix_claims_needing_review(db: CaseDB) -> list[dict[str, Any]]:
+    active = active_report_section_keys(db)
+    if active is not None and not active:
+        return []
+    clause = (
+        "AND section_key IN (" + ", ".join("?" for _ in active) + ")"
+        if active is not None
+        else ""
+    )
+    return fetch_records(
+        db,
+        f"""
+        SELECT section_key, claim_text, support_status
+        FROM claims
+        WHERE support_status IN ('unsupported', 'orphaned_reference', 'needs_review')
+        {clause}
+        ORDER BY section_key, updated_at DESC
+        LIMIT 40
+        """,
+        tuple(active) if active is not None else (),
+    )
 
 
 def hypothesis_latest_reasoning_cte(exclude_error_phase: bool = True) -> str:
@@ -161,16 +207,7 @@ REPORT_META_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
     ),
     "appendix_claims_needing_review": (
         "Claims whose support status needs review.",
-        lambda db: _report_keypoint_rows(
-            db,
-            """
-            SELECT section_key, claim_text, support_status
-            FROM claims
-            WHERE support_status IN ('unsupported', 'orphaned_reference', 'needs_review')
-            ORDER BY section_key, updated_at DESC
-            LIMIT 40
-            """,
-        ),
+        _appendix_claims_needing_review,
     ),
     "unresolved_hypotheses_summary": (
         "Open or unresolved hypotheses from the investigation.",
@@ -218,15 +255,6 @@ REPORT_META_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
     ),
     "report_sections_with_gaps": (
         "Report sections that have outstanding gaps or low confidence.",
-        lambda db: _report_keypoint_rows(
-            db,
-            """
-            SELECT section_key, title, confidence, gaps, status
-            FROM report_sections
-            WHERE confidence < 0.7 OR gaps IS NOT NULL
-            ORDER BY confidence
-            LIMIT 20
-        """,
-        ),
+        _report_sections_with_gaps,
     ),
 }

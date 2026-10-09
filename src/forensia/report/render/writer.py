@@ -39,8 +39,11 @@ def _section_publication_constraint(section_key: str, state: dict[str, object]) 
     """Constrain narrative sections when publication requirements are incomplete."""
     if state.get("publication_status") != "needs_review":
         return ""
+    from forensia.report.sections.section_taxonomy import report_slug_family
+
+    family = report_slug_family(section_key)
     confirmed = int(state.get("confirmed_hypothesis_count") or 0)
-    if section_key == "1_overview":
+    if family == "overview":
         if confirmed:
             return (
                 f"> **Scope constraint:** {confirmed} confirmed hypothesis is available, "
@@ -53,7 +56,7 @@ def _section_publication_constraint(section_key: str, state: dict[str, object]) 
             "findings as deterministic signals/review candidates; the overview and "
             "investigation conclusion must state this limitation explicitly."
         )
-    if section_key == "5_recommendations":
+    if family == "recommendations":
         return (
             "> **Scope constraint:** Recommendations are verification-first only. Do "
             "not assume unauthorized access, account tampering, persistence, or lateral "
@@ -98,7 +101,18 @@ def render_written_report(
 ) -> tuple[Path, Path]:
     """Write report Markdown (from sections or DB) and generate the corresponding HTML report."""
     from forensia.report.report_validation import derive_publication_state
+    from forensia.report.sections.report_input import ensure_report_output_paths
 
+    # Same-file guard: never overwrite a case REPORT.md input with report
+    # output (resolved paths, case-insensitive compare). Raises before
+    # anything is written when an output target would collide with the input.
+    ensure_report_output_paths(
+        case,
+        (
+            case.reports_dir / "report.md",
+            case.reports_dir / "report.html",
+        ),
+    )
     publication_state = derive_publication_state(db)
     if filled_sections is not None:
         ordered = []

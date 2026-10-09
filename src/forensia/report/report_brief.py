@@ -21,8 +21,12 @@ from forensia.report.render.markdown import (
     _tz_offset_str,
 )
 from forensia.report.report_validation import derive_publication_state
+from forensia.report.sections.report_input import active_report_section_keys
 from forensia.report.sections.section_quality import _collect_section_coverage
-from forensia.report.sections.section_store import _claim_text_key
+from forensia.report.sections.section_store import (
+    _claim_text_key,
+    fetch_report_sections,
+)
 
 
 def _query_top_findings(
@@ -203,27 +207,38 @@ def _query_hypotheses_by_status(
 
 
 def _query_prior_sections(db: CaseDB) -> list[dict[str, Any]]:
-    return fetch_records(
-        db,
-        """
-        SELECT section_key, title, LEFT(body, 400) AS body_excerpt, confidence, status
-        FROM report_sections
-        WHERE COALESCE(body, '') != ''
-        ORDER BY section_key
-        """,
-    )
+    return [
+        {
+            "section_key": row["section_key"],
+            "title": row["title"],
+            "body_excerpt": str(row["body"] or "")[:400],
+            "confidence": row["confidence"],
+            "status": row["status"],
+        }
+        for row in fetch_report_sections(db)
+        if str(row["body"] or "")
+    ]
 
 
 def _query_existing_claims(db: CaseDB, limit: int = 20) -> list[dict[str, Any]]:
+    active = active_report_section_keys(db)
+    if active is not None and not active:
+        return []
+    clause = (
+        "WHERE section_key IN (" + ", ".join("?" for _ in active) + ")"
+        if active is not None
+        else ""
+    )
     return fetch_records(
         db,
-        """
+        f"""
         SELECT section_key, claim_text, support_status
         FROM claims
+        {clause}
         ORDER BY updated_at DESC, claim_id DESC
         LIMIT ?
         """,
-        (limit,),
+        (*active, limit) if active is not None else (limit,),
     )
 
 

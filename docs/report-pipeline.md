@@ -24,16 +24,18 @@ Templates are a contract for sections defined by contributors, not durable repor
 
 ### 2.1 Ownership boundary
 
-- Template files live under `src/forensia/report/templates/`
-- When a new case is created, a case-local `report_template/` is copied from the package default
-- CLI report generation prefers the case-local templates when they exist
-- `report --write --template-dir` can specify external templates explicitly
+- The standard report input entry is the case root `REPORT.md` (or an explicit `--report-spec <path>` on `forensia report`). When it exists it drives section parsing; the generated reports live under `case/reports/` and must never overwrite the input (`render_written_report` and the `report` command compare resolved output targets against the input path case-insensitively and fail before any write)
+- Bundled template files live under `src/forensia/report/templates/`; when a new case is created, a case-local `report_template/` is copied from the package default and used as the default report when no `REPORT.md` exists
+- `report --write --template-dir` can specify external templates explicitly; an explicitly passed `--template-dir` keeps priority over the case `REPORT.md` (evaluation/benchmark runs keep their declared template policy), while `--report-spec` and `--template-dir` are mutually exclusive
+- All three inputs are normalized by one adapter (`report/sections/report_input.py`) into the same `SectionSource` list at run start; there are no two competing template formats
+- `report` without `--write` renders the adopted sections from persisted `report_sections`; input flags require `--write`. At the next session, an implicit case-root edit is reported but the recorded revision remains in force. Use `report --write --report-spec <path>` (or an explicit `--template-dir`) to adopt a new revision. A changed report input never alters admitted work, hypothesis verdicts, or Case completion by itself
 
 Templates are inputs; the generated section bodies are persisted in `report_sections`.
 
 ### 2.2 Frontmatter fields
 
-Each template is a Markdown file with optional YAML frontmatter.
+The frontmatter contract is shared by template files and `REPORT.md`: one Markdown
+file with optional YAML frontmatter.
 
 | Field | Role |
 |---|---|
@@ -43,6 +45,11 @@ Each template is a Markdown file with optional YAML frontmatter.
 | `tags` | Searchable topic labels for catalogs and external knowledge tools |
 | `timestamp` | Last intentional template revision date (`YYYY-MM-DD`) |
 | `instructions` | Natural-language, section-wide writing guidance. It is supplied to the LLM for every block in the section and is not rendered into the report |
+
+For `REPORT.md`, which is one file containing several sections, the top-level
+frontmatter applies to every section derived from that file (each section's
+title is taken from its own `#` heading). A template directory keeps one
+frontmatter block per file/section.
 
 ```yaml
 ---
@@ -72,12 +79,13 @@ Keep data selection, escaping, evidence validation, and Markdown table construct
 
 ### 2.4 Section identity and ordering
 
-- Templates are discovered via the filename pattern `[0-9]*_*.md`
-- Refill order is the lexical order of filenames
-- The durable `section_key` is the file stem
-- Report output is sorted by `section_key`
+- Template-directory sections are discovered via the filename pattern `[0-9]*_*.md`; refill order is the lexical order of filenames and the durable `section_key` is the file stem
+- `REPORT.md` sections are bounded by `# ` headings (line-anchored; `##` and deeper headings inside a section stay in that section as its blocks). The section key is `NN_<slug>`: `NN` is the 1-based order in the file (zero-padded, at most 99 sections) and `<slug>` is derived stably from the heading text (casefold, runs of non-word characters → `_`, trimmed, 60-char cap). Keys are deterministic across re-runs for unchanged heading text/order. Duplicate headings that resolve to the same slug fail with an explicit error naming both occurrences (no ambiguous merging); prose before the first `#` heading (frontmatter is the only allowed prologue) and zero-section files also fail explicitly
+- Refill order is the key's numeric prefix; report output is sorted by `section_key`
 
-Treat the section key as a **stable identifier**. Renaming a file is less impactful than changing a key.
+Treat the section key as a **revision-local identifier**. Reordering or renaming top-level `REPORT.md` headings produces different keys. The selected section bodies and metadata are recorded in the existing `report-input` investigation step; implicit resume reuses that revision. Older `report_sections` and `claims` rows remain stored but are excluded from the active Markdown/HTML, brief, publication validation, status, and report-gap projection after an explicit reload.
+
+Family-aware report behavior (`overview_*` keypoint seeding via `report_slug_family`, and the publication scope constraints that previously matched only `1_overview` / `5_recommendations`) now resolves the family word from the slug part, so a `REPORT.md` section whose slug ends with a canonical family word (e.g. `02_overview`, `05_recommendations`) gets the same family defaults. Prompt thinning and the exact-key hint behaviors in `ai/prompts/` still match only the exact canonical keys, so `REPORT.md` sections receive the conservative default prompt treatment.
 
 ### 2.5 What templates declare / do not declare
 
@@ -109,8 +117,9 @@ Template authoring is kept in English. Scaffold headings, table headers, comment
 
 | Location | Purpose |
 |---|---|
+| `REPORT.md` (case root) / `--report-spec <path>` | The user-facing report input specification. Ordinary Markdown: audience/language/structure prose, `#` sections, `##` blocks with the same hint contract |
 | `src/forensia/report/templates/` | The generic incident report bundled with the package. Copied into each case's `report_template/` on new case creation |
-| External template directory (`--template-dir`) | A working copy for local evaluation and case-specific reports. Run `forensia templates-export <dir>` to copy the default templates, then edit them |
+| External template directory (`--template-dir`) | A working copy for local evaluation and case-specific reports (keeps priority over a case `REPORT.md`). Run `forensia templates-export <dir>` to copy the default templates, then edit them |
 
 Benchmark evaluation also uses the normal `--template-dir` path. Its optional
 `6_appendix.md` contains scored structured questions and is deliberately not part

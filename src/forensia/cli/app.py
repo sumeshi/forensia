@@ -33,6 +33,10 @@ from forensia.pipeline import (
 )
 from forensia.report.render.html import render_html_report
 from forensia.report.render.writer import render_written_report
+from forensia.report.sections.report_input import (
+    ReportSpecError,
+    ensure_report_output_paths,
+)
 from forensia.report.template_export import export_packaged_report_templates
 
 logger = logging.getLogger(__name__)
@@ -95,6 +99,14 @@ def report(
         "--write",
         help="Regenerate report sections using LLM-driven agentic writing",
     ),
+    report_spec: str | None = typer.Option(
+        None,
+        "--report-spec",
+        help=(
+            "Explicit REPORT.md path (report input specification). Default: "
+            "the case root REPORT.md when present, else the packaged templates"
+        ),
+    ),
     template_dir: str | None = typer.Option(None, "--template-dir"),
     knowledge: str | None = typer.Option(
         None,
@@ -112,6 +124,12 @@ def report(
     try:
         case = _open_case_or_die(case_dir)
         knowledge_path = resolve_knowledge_dir(knowledge)
+        if report_spec and template_dir:
+            raise UsageError(
+                "--report-spec and --template-dir are alternative report inputs; pass one"
+            )
+        if not write and (report_spec or template_dir):
+            raise UsageError("--report-spec and --template-dir require --write")
     except UsageError as exc:
         raise typer.BadParameter(str(exc)) from None
     from forensia.knowledge.external import scan_knowledge_dir, set_knowledge_docs
@@ -128,6 +146,13 @@ def report(
             _status("WARNING: knowledge directory contains no valid knowledge files")
     try:
         with CaseDB(case) as db:
+            # Fail before any write when an output target would replace the
+            # report input (explicit path, case-insensitive compare included).
+            markdown_path = case.reports_dir / "report.md"
+            html_path = Path(output) if output else case.reports_dir / "report.html"
+            ensure_report_output_paths(
+                case, (markdown_path, html_path), report_spec=report_spec
+            )
             if write:
                 llm_base_url, model = _resolve_llm_or_die(llm_base_url, model)
                 template_root = resolve_template_dir(case, template_dir)
@@ -135,9 +160,7 @@ def report(
                     report_max_queries_per_section
                     or get_llm_settings()["report_max_queries_per_section"]
                 )
-                _status(
-                    f"Writing report from templates: {template_root} (max_queries={max_queries})"
-                )
+                _status(f"Writing report sections (max_queries={max_queries})")
                 asyncio.run(
                     investigate_loop(
                         case=case,
@@ -150,6 +173,7 @@ def report(
                         max_queries_per_hypothesis=0,
                         report_only=True,
                         template_root=template_root,
+                        report_spec=report_spec,
                         report_max_queries_per_section=max_queries,
                     )
                 )
@@ -159,7 +183,7 @@ def report(
                 if output
                 else report_path
             )
-    except UsageError as exc:
+    except (UsageError, ReportSpecError) as exc:
         raise typer.BadParameter(str(exc)) from None
     print(f"Markdown report written to {report_md}")
     print(f"HTML report written to {path}")
@@ -210,10 +234,27 @@ def investigate(
     llm_base_url: str | None = typer.Option(None, "--llm-base-url"),
     model: str | None = typer.Option(None, "--model"),
     template_dir: str | None = typer.Option(None, "--template-dir"),
+    report_spec: str | None = typer.Option(
+        None,
+        "--report-spec",
+        help=(
+            "Explicit REPORT.md path (report input specification). Default: "
+            "the case root REPORT.md when present, else the packaged templates"
+        ),
+    ),
     knowledge: str | None = typer.Option(
         None,
         "--knowledge",
         help="Path to a directory of knowledge files (*.md with YAML frontmatter)",
+    ),
+    forensia_md: str | None = typer.Option(
+        None,
+        "--forensia-md",
+        help=(
+            "Explicit path to one investigation-policy file. Default: case root "
+            "FORENSIA.md. Giving the path explicitly marks it as an explicit "
+            "reload, which adopts the current content at this session start."
+        ),
     ),
     rerun: bool = typer.Option(False, "--rerun", help="Reset case tables before rerun"),
     report_only: bool = typer.Option(
@@ -254,7 +295,9 @@ def investigate(
             llm_base_url=llm_base_url,
             model=model,
             template_dir=template_dir,
+            report_spec=report_spec,
             knowledge_dir=knowledge,
+            forensia_md=forensia_md,
             rerun=rerun,
             report_only=report_only,
             max_iter=max_iter,
@@ -268,7 +311,7 @@ def investigate(
             status=_status,
             pre_investigation=_print_pre_investigation_hints_with(profile),
         )
-    except UsageError as exc:
+    except (UsageError, ReportSpecError) as exc:
         raise typer.BadParameter(str(exc)) from None
     except FileNotFoundError as exc:
         raise typer.BadParameter(_missing_case_message(case_dir)) from exc

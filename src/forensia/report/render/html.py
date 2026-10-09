@@ -24,6 +24,8 @@ from forensia.report.finding_themes import (
     classify_finding_theme,
 )
 from forensia.report.resources import render_templates_dir
+from forensia.report.sections.report_input import active_report_section_keys
+from forensia.report.sections.section_store import fetch_report_sections
 
 
 def _fetch_records(
@@ -86,16 +88,7 @@ def _group_findings_for_display(
 
 def _load_report_sections(db: CaseDB) -> tuple[list[dict[str, Any]], str]:
     """Load report sections from the database into an ordered list, returning both list and concatenated markdown."""
-    sections = _normalize_rows(
-        _fetch_records(
-            db,
-            """
-            SELECT section_key, title, body, confidence, status, gaps, last_filled_session, last_filled_at
-            FROM report_sections
-            ORDER BY section_key
-            """,
-        )
-    )
+    sections = _normalize_rows(fetch_report_sections(db))
     report_path = db.case.reports_dir / "report.md"
     if report_path.exists():
         report_markdown = report_path.read_text(encoding="utf-8").strip()
@@ -500,6 +493,10 @@ def render_html_report(
             """,
         )
     )
+    active_keys = active_report_section_keys(db)
+    if active_keys is not None:
+        active = set(active_keys)
+        claims = [row for row in claims if str(row["section_key"]) in active]
     report_sections, report_markdown = _load_report_sections(db)
     interactive_html = _inject_evidence_interactivity(
         str(render_markdown_fragment(report_markdown)), _load_evidence_map(case)

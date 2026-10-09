@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -23,8 +24,10 @@ from forensia.ai.prompts.prompt_context import (
 )
 from forensia.ai.prompts.prompt_investigation import (
     build_query_intent_messages,
+    render_work_context,
 )
 from forensia.ai.prompts.sql_templates import (
+    query_template_catalog_for_tables,
     render_query_template,
     validate_select_sql,
     validate_select_sql_with_dryrun,
@@ -33,6 +36,7 @@ from forensia.ai.retrieval_telemetry import ToolReceipt, evaluate_retrieval
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.db.database import CaseDB
+from forensia.knowledge.coverage import disclosure_tables_for_spec
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +108,11 @@ class HypothesisPlanResult:
     query: PlannedQuery | None
     stop_reason: str | None
     raw_response: dict[str, Any]
+    #: Deterministic disclosure this planner attempt adopted (V2-08): selected
+    #: schema cards, playbook artifact tables, and executable template ids.
+    #: Knowledge sections are recorded per prompt in the Trace retrieval
+    #: events; this rides the existing plan step payload.
+    disclosure: dict[str, Any] | None = None
 
 
 def persist_hypothesis_plan_result(
@@ -128,6 +137,8 @@ def persist_hypothesis_plan_result(
         "query_materialized": plan.query is not None,
         "stop_reason": plan.stop_reason,
     }
+    if plan.disclosure is not None:
+        output["_disclosure"] = plan.disclosure
     _save_step(
         db=db,
         session_id=session_id,
@@ -425,11 +436,29 @@ def _build_hypothesis_history(
     return hypothesis_history
 
 
+def _load_work_context(db: CaseDB | None, hypothesis_id: str) -> str:
+    """Build the deterministic per-attempt case/trace projection (V2-07).
+
+    Reads the current work/spec, unmet conditions, assessed supporting and
+    contradicting material from Case State and its Trace (via the shared
+    work-judgment owners) — never via Memory/Digest.  Returns ""
+    deterministically when no DB row exists.
+    """
+    if db is None or not hypothesis_id:
+        return ""
+    from forensia.ai.investigation.work_judgment import work_context_snapshot
+
+    return render_work_context(work_context_snapshot(db, hypothesis_id))
+
+
 def _load_prior_check_feedback(db: CaseDB | None, hypothesis: Hypothesis) -> str:
-    """Summarize recent checker and host-gate feedback for this hypothesis.
+    """Summarize recent sufficiency/settlement gate feedback for this hypothesis.
 
     Free text is a supplement only — the structured attempt history
-    (<PRIOR_ATTEMPTS> in the intent prompt) carries the signal.
+    (``<PRIOR_ATTEMPTS>`` in the intent prompt) carries the signal, including
+    the per-check reasoning bodies.  This feedback therefore reads only the
+    gate phases that ``<PRIOR_ATTEMPTS>`` does not already show, so the same
+    Trace reasoning row is not delivered through two prompt layers (V2-07).
     """
     if db is None or not hypothesis.id:
         return ""
@@ -442,9 +471,9 @@ def _load_prior_check_feedback(db: CaseDB | None, hypothesis: Hypothesis) -> str
                    ) AS phase_rank
             FROM hypothesis_reasoning
             WHERE hypothesis_id = ?
-              AND phase IN ('check', 'sufficiency', 'settlement')
+              AND phase IN ('sufficiency', 'settlement')
         ) recent
-        WHERE phase_rank <= CASE WHEN phase = 'check' THEN 2 ELSE 1 END
+        WHERE phase_rank = 1
         ORDER BY created_at DESC, entry_id DESC
     """,
         (hypothesis.id,),
@@ -561,6 +590,7 @@ def plan_hypothesis_query(
     query_index: int = 1,
     time_range: dict[str, str] | None = None,
     case_profile: CaseEvidenceProfile | None = None,
+    case_policy: Any | None = None,
 ) -> HypothesisPlanResult:
     """Plan the next query for a single hypothesis.
 
@@ -574,8 +604,42 @@ def plan_hypothesis_query(
         memory, hypothesis, default_context_md
     )
     hypothesis_history = _build_hypothesis_history(state, hypothesis, db, limit=10)
-    schema_card = _build_schema_guidance("evtx_events", db=db)
+    # V2-08 single disclosure pathway: one spec/capability correspondence
+    # (the artifact capability catalog shared with Coverage and the work
+    # judgment) selects the schema cards, playbook artifact gating, and the
+    # executable template subset disclosed in the intent prompt. The db
+    # canonical spec is authoritative when a row exists; otherwise the
+    # in-session hypothesis spec is used (same contract, admission seam).
+    if db is not None and hypothesis.id:
+        row = db.execute(
+            "SELECT verification_spec FROM hypotheses WHERE hypothesis_id = ?",
+            [hypothesis.id],
+        ).fetchone()
+    else:
+        row = None
+    if row is not None and row[0]:
+        spec_payload = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+    else:
+        spec_obj = getattr(hypothesis, "verification_spec", None)
+        spec_payload = (
+            spec_obj.model_dump(mode="json") if spec_obj is not None else None
+        )
+    _disclosure_tables, _primary_tables = disclosure_tables_for_spec(spec_payload)
+    schema_card = _build_schema_guidance(
+        list(_primary_tables) or "evtx_events",
+        db=db,
+        session_id=state.session_id,
+    )
     prior_check_feedback = _load_prior_check_feedback(db, hypothesis)
+    work_context_md = _load_work_context(db, hypothesis.id)
+    disclosure_record = {
+        "schema_cards": list(_primary_tables) or ["evtx_events"],
+        "playbook_tables": sorted(_disclosure_tables) or None,
+        "template_ids": [
+            entry["template_id"]
+            for entry in query_template_catalog_for_tables(_disclosure_tables or ())
+        ],
+    }
     execution_error_block = _consume_execution_error_block(state)
     planner_error_block = _consume_planner_error_block(state, hypothesis.id)
 
@@ -591,7 +655,12 @@ def plan_hypothesis_query(
             + planner_error_block,
             prior_check_feedback=prior_check_feedback,
             case_profile=case_profile,
+            case_policy=case_policy,
             findings_snapshot=state.findings_snapshot,
+            work_context_md=work_context_md,
+            db=db,
+            session_id=state.session_id,
+            spec_payload=spec_payload,
         )
 
     intent_response = _plan_query_intent(
@@ -632,4 +701,5 @@ def plan_hypothesis_query(
         query=planned_query,
         stop_reason=f"invalid_action: {error}" if error else None,
         raw_response=intent_response.raw_response,
+        disclosure=disclosure_record,
     )

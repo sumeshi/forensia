@@ -50,6 +50,16 @@ Contract for adapters (the headless CLI today, the TUI later — GOAL §6.3):
   state is written only by real investigation stops, before the final report
   render; a report-only run is a report job, so it never rewrites the Case stop
   state and an unresolved Case with open Gaps/Tasks stays resumable afterwards.
+- `forensia_md` designates the one investigation-policy input (V2-05, GOAL
+  §10.5): an explicit path, else `case_root/FORENSIA.md`. Resolution and the
+  size check against the system-prompt budget (half-weight, see §2.5) happen
+  in the entry; adoption, recording and resume pinning happen at the
+  session-start boundary inside `_init_session` — never mid-run.
+- Report section inputs are normalized once at session start and recorded in
+  the existing `report-input` Trace step. Implicit resume uses that revision;
+  an explicit `--report-spec` or `--template-dir` adopts a new one. Render and
+  report status select only the adopted section keys from `report_sections`;
+  old rows remain stored without leaking into the current report.
 
 ---
 
@@ -247,7 +257,7 @@ Main stages:
 
 1. **broad_plan**: `gap_identifier` extracts uncovered observation points, and `hypothesis_drafter` drafts a hypothesis per gap
 2. **select**: `selection.py` filters blocked/unobservable/exhausted candidates and ranks eligible hypotheses from deterministic priority components. Eligibility is read from the shared work judgment (`work_judgment.judge_work` with the candidate-flow gates): the same read backs stop classification and reopen. Required capabilities come from the shared derivation owner `derive_required_capabilities` / `spec_capabilities` (`knowledge/coverage.py`, `ai/investigation/work_judgment.py`): a declared `required_capabilities` list on the canonical VerificationSpec wins, otherwise structured event IDs in its support conditions map through the existing artifact capability catalog. The score keeps admitted-work references, evidence severity/availability, objective token relevance, relation structure, aging, execution cost, and the repetition penalties; report-prose, section-confidence, and staleness terms were removed so a report reword cannot change the investigation order. The full score breakdown is stored in Trace. CaseDB initializes the required schema; selection errors propagate to the investigation's failed terminal receipt instead of invoking a second selector that bypasses eligibility.
-3. **plan**: The query-intent kernel validates a small typed action menu: the initial phase permits `memory.read_more` or `sql.query`, while the post-expansion phase permits only `sql.query`. One LLM decision selects a parameterized recipe or bounded fallback SQL. The host then checks schema/table eligibility, SELECT-only policy, limits and dry-run deterministically; there is no LLM schema-readiness or second SQL-composer call. The normalized nested action is the sole query source; the original wrapper is retained for audit. A host-rejected action records a planner-validation reason and gets one bounded repair opportunity through the next planner prompt before the hypothesis is stopped.
+3. **plan**: The query-intent kernel validates a small typed action menu: the initial phase permits `memory.read_more` or `sql.query`, while the post-expansion phase permits only `sql.query`. One LLM decision selects a parameterized recipe or bounded fallback SQL. The host then checks schema/table eligibility, SELECT-only policy, limits and dry-run deterministically; there is no LLM schema-readiness or second SQL-composer call. The normalized nested action is the sole query source; the original wrapper is retained for audit. A host-rejected action records a planner-validation reason and gets one bounded repair opportunity through the next planner prompt before the hypothesis is stopped. The prompt's per-attempt case context is the deterministic `<WORK_CONTEXT source="case_db">` projection (V2-07): current work/spec, capability readiness, unmet Spec conditions, assessed support/contradiction with derivation roots and original refs, open requirements, plus `<PRIOR_ATTEMPTS>` from Trace — DB originals first, Memory Markdown only as the authored/scratch layer.
 4. **execute/check**: Issues a safe SELECT, applies fallback behavior and obtains the Checker's proposed verdict. The existing hypothesis SQL execution records a versioned `ToolReceipt` and one-attempt `RetrievalEvaluation` inside the same `trace.investigation_steps.output_json`; the receipt records query/provenance/result observations only and does not assign Evidence roles or consume checker verdicts. Planner-only validation failures are not execution progress and cannot substitute for `do`/`check` receipts.
 5. **assessment/sufficiency/settlement**: `assess_evidence_group` classifies each adequate observation group from `VerificationSpec`, observation fields and provenance; it never reads the checker verdict, and the query ID is acquisition history only — the derivation root is the observed content (a declared derivation group, or the evidence row itself). Sufficiency groups assessed links by that root (`derivation_root_key`), so the same evidence re-fetched under a different query is one group and cannot inflate independent support; declared groups still keep their same-root conservatism. Sufficiency ignores legacy links without an assessment ID, and Settlement does not pass through checker `refuted` / `untestable` proposals without an assessed contradiction or an explicit observable/unavailable auto condition. Support counting further distinguishes historical from currently-usable links through the shared read-time predicate `evidence_link_currentness`: a link whose evidence row was removed, whose source identity is unverifiable, or whose recorded `content_fingerprint` no longer matches the materialized row is excluded from sufficiency scoring, settlement gates, and the confirmed invariant, while the `hypothesis_evidence` row itself is kept (never deleted) as history. Each link also carries the judgment grounds of its one deterministic Assessment (`assessment_reason`, `matched_conditions`), so a past judgment stays explainable via existing IDs even after the observed rows are re-normalized away; re-evaluation adds a new link with a new assessment ID instead of overwriting the old one (V2-04/R08).
 For absence-based refutation, `sql_absence_scope` certifies only a direct,
@@ -301,11 +311,91 @@ its own ref. Write owners (stop transition, reopen writes) remain in
 
 For the input/output schema of each LLM role, see [llm-roles.md](llm-roles.md).
 
+### 2.5 Investigation-policy input: FORENSIA.md (V2-05)
+
+[ai/investigation/case_policy.py](../src/forensia/ai/investigation/case_policy.py)
+owns the one operator-authored policy input, and the run entry resolves it
+(`resolve_forensia_policy_input` in [pipeline.py](../src/forensia/pipeline.py)):
+
+- **One source**: an explicit `--forensia-md <path>`, else
+  `case_root/FORENSIA.md`. Same-name files in parent directories, `input_dir`
+  or raw evidence directories are never searched, so no instruction file can
+  be adopted implicitly. No designated input on a new case uses the existing
+  profile/default policy. Typed model/endpoint/budget/timezone settings keep their existing
+  configuration owners.
+- **Adoption is fixed at the session-start boundary** (`_init_session`): the
+  window decides against the latest recorded receipt (`decide_policy`),
+  never merely against the current file. Resume re-applies the *recorded*
+  body when the file changed and surfaces the difference on the progress
+  stream (`[FORENSIA] …` status line) — the file edit never silently takes
+  over, and no accepted work, verdict or gate is touched by re-reading.
+  Adopting an edited body is an explicit reload (`--forensia-md <path>`)
+  applied at the next safe boundary (a session start). If the file disappears,
+  the recorded revision stays in force and the missing input is surfaced.
+- **Recording**: the applied body, its SHA-256, the source
+  (`case_root`/`explicit_path`) and the target roles are persisted as the
+  session's `forensia-md` `investigation_steps` payload — an existing durable
+  home, no new table/columns. Reproduction needs the recorded body, not just
+  the hash (GOAL §10.5).
+- **Routing inside the host-fixed structure**: the policy reaches only the
+  investigation roles (`gap_identifier`, `hypothesis_drafter`,
+  `query_intent_planner`) as one `<CASE_INSTRUCTIONS>` block headed by the
+  fixed precedence statement. Host contracts (role/output schemas, typed
+  action menu, SQL and execution validation, Evidence/Assessment/Sufficiency
+  /Settlement gates) are declared non-overridable; the block sits at the head
+  of the system prompt so the deterministic budget compaction (head/tail
+  preserving in `prompt_context._enforce_system_budget`) cannot silently chop
+  interior policy lines. Checker/report builders take no policy parameter.
+- **Work admission**: the extracted `## Objective` (or `## Scope`) first
+  paragraph feeds the existing objective seam (`ensure_investigation_state`
+  fill-if-empty → configuration gap → scope candidates → Memory overview).
+  Case State stays the authority for accepted work: later reloads only
+  change the *proposals*, never existing Objective/Gap/Task/Spec rows.
+- **Budget**: an oversized first adoption or explicit reload refuses the run
+  with a reason (`UsageError`; half of
+  `FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS`). An oversized implicit edit does not
+  block a resume pinned to the recorded revision. Constraints are never
+  silently truncated.
+
 **Additional behavior:**
 
 - **auto-rulepacks**: `resolve_active_packs` ([rules/loader.py](../src/forensia/knowledge/rules/loader.py)) automatically enables rulepacks whose `applies_when.artifact_families` match the case's evidence families. Use `--no-auto-rulepacks` for the legacy behavior. Controlled by the `auto_rulepacks` argument of `investigator.investigate`.
 - **playbook budget control**: `_dfir_playbook` ([ai/prompts/prompt_playbook.py](../src/forensia/ai/prompts/prompt_playbook.py)) narrows Event ID narratives to IDs that exist in the case so they stay under the user-configurable `FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS`, and drops sections in priority order when the budget is exceeded. The combined plan/check budget is independently configurable with `FORENSIA_PROMPT_BUDGET_TOKENS`; when unset it scales with the system-character budget.
-- **LLM trajectory and context control**: a session-scoped telemetry sink records logical decisions, every provider attempt, its exact API request and raw provider response, deterministic work, effective token limits, prompt-section sizes and retry/error lineage in `trace.duckdb`. Request transcripts exclude transport headers/API keys but contain case evidence sent in prompts, so they remain case-local operational data. Logical calls inherit the active hypothesis/iteration scope. Prompt builders send compact indexes and selected schema/recipe/event detail. Before a known context limit is crossed—or after an explicit provider context rejection—older turns are projected into a versioned regeneratable summary while recent turns and stable evidence/action references remain available for drill-down.
+- **Single disclosure pathway (V2-08)**: the plan, check, and broad-plan prompts
+  are assembled from one spec/capability correspondence —
+  `coverage.disclosure_tables_for_spec` reads the artifact capability catalog
+  (`artifact_capabilities.yaml`, the same declaration file Coverage and the work
+  judgment read) and maps the canonical VerificationSpec's capabilities to the
+  involved artifact families. That one mapping selects: the primary schema cards
+  disclosed in `<SCHEMA_GUIDANCE>` (`prompt_context._build_schema_guidance`, the
+  evtx card remains the default only when no family is derived), the bounded
+  executable `<TEMPLATE_CATALOG>` subset (`sql_templates.query_template_catalog_for_tables`),
+  and the playbook's artifact-catalog gating (`tables=` param). The playbook
+  budget and section filter still apply on top; no additional discovery,
+  ranking, registry, or LLM routing pass exists (GOAL §10.2: the current graded
+  menu measured sufficient — plan/check prompts move by −6.2k…+0.75k chars
+  across capability families in the seeded probe, with zero added LLM calls).
+- **Disclosure boundary (V2-08)**: knowledge/manual text is reference only —
+  `<ORG_KNOWLEDGE>` and `<CASE_INSTRUCTIONS>` declare their non-authoritative
+  status, a seeded directive cannot extend the typed action menu
+  (`normalize_query_intent_action`) or the SQL contract (`validate_select_sql`
+  allowlist/SELECT-only/limit), and broad-plan/check template disclosure never
+  widens the host permission checks. Disclosure absence is cosmetic in
+  telemetry (an empty `selected_refs` list, never a coverage row —
+  `evidence_coverage` is written only from artifact sources) and is never
+  recorded as "unavailable telemetry"; unavailable vs undisclosable stays
+  separate in WorkJudgment blockers (Coverage states) versus Trace
+  retrieval events (disclosure observations). Adopted sections and their size
+  are observable per phase in `trace.retrieval_events` (`doc#heading` refs,
+  source kinds `schema_hints`/`sql_recipes`/`org_knowledge`/`dfir_playbook`)
+  and in the `prompt_metadata` of each LLM attempt, plus the `_disclosure`
+  record in the existing `plan-hypothesis` step payload. The process-global
+  `set_knowledge_docs([])` reset at every pipeline/CLI run entry keeps the
+  knowledge index a run input; two investigations in one process cannot leak
+  each other's knowledge.
+- **LLM trajectory and context control**: a session-scoped telemetry sink records logical decisions, every provider attempt, its exact API request and raw provider response, deterministic work, effective token limits, prompt-section sizes and retry/error lineage in `trace.duckdb`. Request transcripts exclude transport headers/API keys but contain case evidence sent in prompts, so they remain case-local operational data. Logical calls inherit the active hypothesis/iteration scope. Prompt builders send compact indexes and selected schema/recipe/event detail. When a request still exceeds the context window, the reduction is applied in place and is one-way (R10): the latest sections are kept verbatim, event/evidence IDs, paths and table names are preserved, and the reduction block states that nothing is re-generated — the preserved refs addressing Case/Trace originals are the expansion path, and no "regeneratable" label is claimed for a reduction that cannot reconstruct its input.
+- **Per-attempt case context (V2-07)**: the query-intent prompt carries one `<WORK_CONTEXT source="case_db">` block derived deterministically from Case/Trace (`work_judgment.work_context_snapshot`): current work/status, required capabilities with Coverage readiness, declared Spec conditions without a matching currently-current assessment, assessed supporting/contradicting material grouped by derivation root with original refs (`evidence`/`assessment`/`query`), stale links named with their currentness reason (historical only, never support), and open requirements (linked open Gap/Task rows plus work-judgment blockers). Prior attempts of the same hypothesis remain the `<PRIOR_ATTEMPTS>` block read from Trace; sufficiency/settlement gate feedback no longer re-lists the Trace reasoning rows that `<PRIOR_ATTEMPTS>` already shows. The Memory Markdown (overview, facts, timeline, entities, scratch) is preserved as the authored/scratch display layer and no longer carries assessed case facts into the planner prompt; the checker-generated and DB-derived
+reused summaries that are written by the LLM condensation (`memory_compaction`) carry a `> condensed:` source/currentness label — regeneratable ones name their DB re-derivation path, non-regeneratable ones say the condensed-away prose is not retained (R10). The digest-free comparison (LLM condensation vs. direct DB composition) still needs the local-LLM measurement (GOAL §15.2) and remains deferred.
 - **automatic timeline assembly**: The `case_timeline` table ([db/schema.py](../src/forensia/db/schema.py)) is deterministically fed with the first-evidence timestamp of findings (severity ≥ medium) and the decisive query row of resolved hypotheses (`feed_findings_to_timeline` in [rules/engine.py](../src/forensia/knowledge/rules/engine.py)). `memory/timeline.md` is a projection regenerated from this table.
 - **timezone support**: `infer_timezone` ([normalize/timezone.py](../src/forensia/evidence/timezone.py)) infers the offset from events such as 4616 system time changes. It is stored in `case.source_timezone` ([core/case.py](../src/forensia/core/case.py)), and `_render_timestamp_with_timezone` ([report/render/markdown.py](../src/forensia/report/render/markdown.py)) renders a dual UTC + local display.
 

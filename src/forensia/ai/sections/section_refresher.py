@@ -7,7 +7,6 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from forensia.ai.audit import LLMCallLogger
@@ -28,6 +27,7 @@ from forensia.report.answers.table_registry import (
     render_table_block,
 )
 from forensia.report.report_brief import write_report_brief
+from forensia.report.sections.report_input import SectionSource
 from forensia.report.sections.section_assembly import (
     assemble_section_body,
     body_starts_with_heading,
@@ -50,7 +50,7 @@ def _log_report(message: str) -> None:
 def collect_section_requests(
     case: Case,
     db: CaseDB,
-    template_paths: list[Path],
+    sections: list[SectionSource],
     prior_filled: dict[str, str],
     report_brief: dict[str, Any],
     *,
@@ -61,11 +61,11 @@ def collect_section_requests(
         # update_count cap. Each template section gets is_stale=True and
         # needs_refresh=True regardless of DB state.
         result: list[dict[str, Any]] = []
-        for template_path in template_paths:
+        for source in sections:
             request = prepare_section_request(
-                case, db, template_path, prior_filled, report_brief=report_brief
+                case, db, source, prior_filled, report_brief=report_brief
             )
-            request["template_path"] = str(template_path)
+            request["template_path"] = source.source
             request["is_stale"] = True
             request["needs_refresh"] = True
             result.append(request)
@@ -82,11 +82,11 @@ def collect_section_requests(
     from forensia.report.report_validation import has_failure_marker
 
     requests: list[dict[str, Any]] = []
-    for template_path in template_paths:
+    for source in sections:
         request = prepare_section_request(
-            case, db, template_path, prior_filled, report_brief=report_brief
+            case, db, source, prior_filled, report_brief=report_brief
         )
-        request["template_path"] = str(template_path)
+        request["template_path"] = source.source
         prior_body = str(prior_filled.get(request["section_key"]) or "")
         persisted_failure = has_failure_marker(prior_body)
         request["is_stale"] = (
@@ -111,7 +111,8 @@ def _sort_section_requests(requests: list[dict[str, Any]]) -> list[dict[str, Any
         else:
             logging.warning(
                 "section_key %r does not match '<int>_*' convention; sorting to end. "
-                "Rename the template file to [0-9]+_<slug>.md or set 'section' frontmatter.",
+                "Rename the template file to [0-9]+_<slug>.md or use a numbered "
+                "'# ' heading in REPORT.md.",
                 section_key,
             )
             order = 9999
@@ -432,7 +433,7 @@ async def async_refresh_report_sections(
     iteration: int,
     base_url: str,
     model: str,
-    template_paths: list[Path],
+    sections: list[SectionSource],
     llm_logger: LLMCallLogger,
     progress_callback: Callable[[dict[str, Any]], None] | None,
     focus_sections: list[str] | None,
@@ -444,6 +445,9 @@ async def async_refresh_report_sections(
     Processes sections sequentially (not parallel), prioritising stale sections
     over empty ones. Each section runs the agentic block loop via
     async_run_section_block_agent, then finalizes (stores body, evidence, gaps).
+
+    ``sections`` are the normalized section inputs for one run (resolved once at
+    session start, from the packaged templates or a REPORT.md).
 
     When *force_all* is True, every template section is treated as stale regardless
     of DB state (bypasses update_count cap). Used only by the final-refresh pass.
@@ -458,7 +462,7 @@ async def async_refresh_report_sections(
         ),
     )
     requests = collect_section_requests(
-        case, db, template_paths, prior_filled, report_brief, force_all=force_all
+        case, db, sections, prior_filled, report_brief, force_all=force_all
     )
     requests = _sort_section_requests(requests)
     filled_sections: dict[str, str] = {}

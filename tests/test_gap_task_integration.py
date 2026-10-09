@@ -7,9 +7,14 @@ import json
 import tempfile
 import unittest
 
+from forensia.ai.checking.sufficiency import create_hypothesis_evidence_link
 from forensia.ai.hypotheses.hypothesis_store import load_persisted_hypotheses
 from forensia.ai.investigation.investigator import _durable_open_work_counts
-from forensia.ai.investigation.work_judgment import judge_work, open_work_refs
+from forensia.ai.investigation.work_judgment import (
+    judge_work,
+    open_work_refs,
+    work_context_snapshot,
+)
 from forensia.ai.investigation.work_state import (
     classify_active_hypotheses_on_stop,
     ensure_objective_gap,
@@ -45,6 +50,128 @@ def _insert_hypothesis(
         [hypothesis_id, f"Description {hypothesis_id}", sufficiency, blocked_reason],
     )
     return Hypothesis(id=hypothesis_id, description=f"Description {hypothesis_id}")
+
+
+class WorkContextSnapshotTests(unittest.TestCase):
+    """V2-07: the per-attempt context is selected deterministically from Case/Trace."""
+
+    _SPEC = {
+        "spec_version": "1",
+        "support_conditions": {
+            "co_observed_event_ids": [4624, 4104],
+            "same_entities": ["src_ip"],
+        },
+        "required_capabilities": ["logon"],
+    }
+
+    def _seed(self, db: CaseDB) -> None:
+        db.execute(
+            "INSERT INTO evtx_events (evidence_id, source_file, event_id) "
+            "VALUES ('evtx-w1', 'sha-w1', 4624)"
+        )
+        db.execute(
+            "INSERT INTO evtx_events (evidence_id, source_file, event_id) "
+            "VALUES ('evtx-w2', 'sha-w2', 4104)"
+        )
+        db.execute(
+            "INSERT INTO evtx_events (evidence_id, source_file, event_id) "
+            "VALUES ('evtx-w3', 'sha-w3', 4624)"
+        )
+        db.execute(
+            "INSERT INTO evtx_events (evidence_id, source_file, event_id) "
+            "VALUES ('evtx-w4', 'sha-w4', 4624)"
+        )
+        db.execute(
+            "INSERT INTO hypotheses (hypothesis_id, description, status, "
+            "created_at, updated_at, verification_spec) VALUES "
+            "('H-WC', 'co-observed logon', 'active', now(), now(), ?)",
+            [json.dumps(self._SPEC)],
+        )
+        db.execute(
+            "INSERT INTO evidence_coverage (capability, source_family, state) "
+            "VALUES ('logon', 'evtx', 'available')"
+        )
+        create_hypothesis_evidence_link(
+            db,
+            hypothesis_id="H-WC",
+            evidence_id="evtx-w1",
+            role="supporting",
+            query_id="Q-1",
+            assessment_id="EA-1",
+            matched_conditions=("co_observed_event_ids",),
+        )
+        create_hypothesis_evidence_link(
+            db,
+            hypothesis_id="H-WC",
+            evidence_id="evtx-w2",
+            role="contradictory",
+            query_id="Q-2",
+            assessment_id="EA-2",
+            matched_conditions=("co_observed_event_ids",),
+        )
+        create_hypothesis_evidence_link(
+            db,
+            hypothesis_id="H-WC",
+            evidence_id="evtx-w3",
+            role="supporting",
+            query_id="Q-3",
+            assessment_id="EA-3",
+            matched_conditions=("co_observed_event_ids",),
+        )
+        create_hypothesis_evidence_link(
+            db,
+            hypothesis_id="H-WC",
+            evidence_id="evtx-w4",
+            role="supporting",
+        )
+        # The third link's backing row disappears: the recorded judgment is
+        # kept as history but is no longer current support.
+        db.execute("DELETE FROM evtx_events WHERE evidence_id = 'evtx-w3'")
+
+    def test_same_originals_and_work_resolve_the_same_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                self._seed(db)
+                db.execute(
+                    "INSERT INTO investigation_tasks (task_id, kind, status, "
+                    "hypothesis_id, created_at, updated_at) "
+                    "VALUES ('TASK-WC', 'human_decision', 'open', 'H-WC', now(), now())"
+                )
+                snapshot = work_context_snapshot(db, "H-WC")
+                self.assertIsNotNone(snapshot)
+                # Same originals + work → same context (deterministic).
+                self.assertEqual(snapshot, work_context_snapshot(db, "H-WC"))
+                self.assertEqual(snapshot.status, "active")
+                self.assertEqual(snapshot.capabilities, ("logon",))
+                self.assertEqual(snapshot.unready_capabilities, ())
+                # Consumption checks currentness first: matched conditions only
+                # count on currently-current assessed links.
+                self.assertEqual(
+                    snapshot.unmet_conditions,
+                    ('same_entities=["src_ip"]',),
+                )
+                self.assertEqual(
+                    snapshot.support_roots[0],
+                    "evidence=evtx-w1 assessment=EA-1 query=Q-1",
+                )
+                self.assertEqual(
+                    snapshot.contradiction_roots,
+                    ("evidence=evtx-w2 assessment=EA-2 query=Q-2",),
+                )
+                # Stale material is named with its currentness reason and is
+                # never presented as current support.
+                self.assertEqual(
+                    snapshot.reevaluation_required,
+                    ("evidence=evtx-w3 reason=evidence_row_missing",),
+                )
+                self.assertEqual(
+                    snapshot.requirements,
+                    (
+                        "blocked: waiting for external investigation task",
+                        "external task=TASK-WC",
+                        "task=TASK-WC",
+                    ),
+                )
 
 
 class StopClassificationTests(unittest.TestCase):

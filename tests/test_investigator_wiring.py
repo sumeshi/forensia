@@ -420,7 +420,6 @@ class ReportRefreshFailureTests(unittest.TestCase):
     def test_run_report_phase_returns_failed_status_with_traceback(self) -> None:
         import io
         from contextlib import redirect_stdout
-        from pathlib import Path
         from unittest import mock
 
         from forensia.ai.investigation import investigator as investigator_module
@@ -447,7 +446,7 @@ class ReportRefreshFailureTests(unittest.TestCase):
                                 session_id="S-1",
                                 plan_cycle=1,
                                 report_every_n_cycles=1,
-                                template_root=Path(tmpdir),
+                                report_sections=[],
                                 base_url="http://127.0.0.1:1",
                                 model="none",
                                 llm_logger=None,
@@ -470,8 +469,6 @@ class ReportRefreshFailureTests(unittest.TestCase):
         )
 
     def test_run_report_phase_skipped_off_cycle(self) -> None:
-        from pathlib import Path
-
         from forensia.ai.investigation import investigator as investigator_module
         from forensia.core.memory import MemoryManager
         from forensia.core.session import SessionState
@@ -487,7 +484,7 @@ class ReportRefreshFailureTests(unittest.TestCase):
                         session_id="S-1",
                         plan_cycle=1,
                         report_every_n_cycles=3,
-                        template_root=Path(tmpdir),
+                        report_sections=[],
                         base_url="http://127.0.0.1:1",
                         model="none",
                         llm_logger=None,
@@ -552,7 +549,6 @@ class ReportRefreshFailureTests(unittest.TestCase):
         """An LLM-server outage is not a per-cycle failure: the phase waits for
         recovery (same policy as the investigation loop) and only an exhausted
         outage budget propagates and stops the session."""
-        from pathlib import Path
         from unittest import mock
 
         from forensia.ai.investigation import investigation_session
@@ -598,7 +594,7 @@ class ReportRefreshFailureTests(unittest.TestCase):
                                 session_id="S-1",
                                 plan_cycle=1,
                                 report_every_n_cycles=1,
-                                template_root=Path(tmpdir),
+                                report_sections=[],
                                 base_url="http://127.0.0.1:1",
                                 model="none",
                                 llm_logger=None,

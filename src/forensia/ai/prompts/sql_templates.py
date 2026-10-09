@@ -363,6 +363,53 @@ def query_template_catalog() -> list[dict[str, Any]]:
     ]
 
 
+@lru_cache(maxsize=1)
+def _query_template_tables() -> dict[str, frozenset[str]]:
+    """Map each declared template to the allowed tables its SQL references.
+
+    Host validation already restricts rendered SQL to the allowed tables; this
+    mapping only makes the same allow-list readable for prompt disclosure.
+    A table name is counted only on a word boundary (``FROM``/``JOIN`` style
+    references, never a column-name substring).
+    """
+    mapping: dict[str, frozenset[str]] = {}
+    for template_id, spec in _load_query_templates().items():
+        lowered = spec.sql.lower()
+        referenced = frozenset(
+            table
+            for table in QUERY_TABLES
+            if re.search(rf"(?<![a-z0-9]){re.escape(table)}(?![a-z0-9])", lowered)
+        )
+        mapping[template_id] = referenced
+    return mapping
+
+
+def query_template_catalog_for_tables(
+    tables: tuple[str, ...] | None,
+) -> list[dict[str, Any]]:
+    """Bounded executable-template disclosure for one work's artifact tables (V2-08).
+
+    Same projection entries as :func:`query_template_catalog`, narrowed to the
+    templates whose referenced tables are all inside *tables* — the
+    spec/coverage ↔ recipe correspondence from ``coverage.disclosure_tables_for_spec``.
+    ``None`` (no spec-derived tables, e.g. before admission) discloses nothing
+    beyond the cookbook index; an empty tuple means "no matching artifact
+    family" and likewise discloses nothing (explicitly, not by widening).
+    Deterministic: catalog declaration order, no ranking.
+    """
+    if tables is None:
+        return []
+    wanted = {str(table) for table in tables}
+    if not wanted:
+        return []
+    return [
+        entry
+        for entry in query_template_catalog()
+        if _query_template_tables().get(entry["template_id"], frozenset())
+        and _query_template_tables()[entry["template_id"]] <= frozenset(wanted)
+    ]
+
+
 def render_query_template(template_id: str, params: dict[str, Any]) -> str:
     """Render a named query template with validated params, returning validated SQL."""
     spec = _load_query_templates().get(template_id)

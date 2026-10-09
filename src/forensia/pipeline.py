@@ -34,9 +34,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from forensia.ai.investigation.case_policy import CasePolicyInput, load_recorded_policy
 from forensia.ai.investigation.investigator import investigate as investigate_loop
 from forensia.ai.llm.llm_client import LLMServerUnavailableError
-from forensia.config import get_llm_settings
+from forensia.config import get_llm_settings, get_system_prompt_budget_chars
 from forensia.core.case import Case, resolve_timezone
 from forensia.core.case_tasks import CaseTasks
 from forensia.core.log import structure_progress_log
@@ -210,6 +211,62 @@ def resolve_knowledge_dir(knowledge_dir: str | Path | None) -> Path | None:
     if not path.is_dir():
         raise UsageError(f"knowledge path is not a directory: {path}")
     return path
+
+
+# Investigation policy must coexist with the playbook inside the fixed system
+# budget, so the adopt-time cap is half of it: a valid FORENSIA.md is either
+# adopted whole or the run refuses with the reason — constraints are never
+# silently truncated.
+POLICY_BUDGET_SHARE = 2
+
+
+def resolve_forensia_policy_input(
+    case: Case,
+    forensia_md: str | Path | None,
+    *,
+    recorded_policy_exists: bool = False,
+) -> CasePolicyInput | None:
+    """Resolve the one designated investigation-policy input (V2-05).
+
+    An explicit ``--forensia-md`` path must exist and is the designated
+    reload. Without it, only ``case_root/FORENSIA.md`` is adopted — same-name
+    files in parent directories, ``input_dir`` or raw evidence are never
+    searched. An oversized file refuses the run with the reason instead of
+    silently dropping constraints.
+    """
+    if forensia_md is not None and not isinstance(forensia_md, str | Path):
+        # Direct command invocation passes typer's OptionInfo defaults; only
+        # a real string/path can designate an explicit policy input (the same
+        # defensiveness resolve_knowledge_dir uses).
+        return None
+    if forensia_md:
+        path = Path(forensia_md).resolve()
+        if not path.exists() or not path.is_file():
+            raise UsageError(f"forensia_md policy file not found: {path}")
+        source = "explicit_path"
+    else:
+        path = (case.path / "FORENSIA.md").resolve()
+        if not path.exists() or not path.is_file():
+            return None
+        source = "case_root"
+    body = path.read_text(encoding="utf-8").strip()
+    if not body:
+        return None
+    budget_chars = get_system_prompt_budget_chars() // POLICY_BUDGET_SHARE
+    # An edited case-root file is not adopted on resume without an explicit
+    # reload. Its new size cannot prevent the recorded, bounded revision from
+    # running; explicit reload and first adoption still fail before any work.
+    if len(body) > budget_chars and (
+        source == "explicit_path" or not recorded_policy_exists
+    ):
+        raise UsageError(
+            f"FORENSIA.md investigation policy is {len(body)} chars; the "
+            f"system-prompt budget allows {budget_chars} chars "
+            "(FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS half-weight). Shorten the "
+            "policy so the full instruction fits; constraints are not "
+            "silently truncated."
+        )
+    return CasePolicyInput(body=body, source=source, source_path=str(path))
 
 
 def resolve_profile_path(profile: str) -> Path:
@@ -445,6 +502,8 @@ def _run_investigate_stage(
     report_max_queries_per_section: int,
     max_llm_calls: int,
     auto_rulepacks: bool = True,
+    forensia_policy: CasePolicyInput | None = None,
+    report_spec: str | Path | None = None,
 ) -> None:
     """Run LLM-driven investigation loop (or skip if LLM not configured)."""
     if not (llm_base_url and model):
@@ -480,6 +539,8 @@ def _run_investigate_stage(
                 or get_llm_settings()["report_max_queries_per_section"],
                 max_llm_calls=max_llm_calls,
                 auto_rulepacks=auto_rulepacks,
+                forensia_policy=forensia_policy,
+                report_spec=report_spec,
                 progress_callback=_forward_progress(push_progress),
             )
         )
@@ -617,7 +678,9 @@ def run_investigation(
     llm_base_url: str | None = None,
     model: str | None = None,
     template_dir: str | Path | None = None,
+    report_spec: str | Path | None = None,
     knowledge_dir: str | Path | None = None,
+    forensia_md: str | Path | None = None,
     rerun: bool = False,
     report_only: bool = False,
     max_iter: int = 20,
@@ -641,14 +704,36 @@ def run_investigation(
     Display contract: plain status text goes to the injected ``status``
     callback; ``pre_investigation`` is an adapter hook invoked with
     ``(case, db)`` between the evidence stages and the investigation loop
-    (the adapter owns advice/timezone hint rendering). Data reads/writes stay
-    on the existing owners — no separate stage state or service layer.
+    (the adapter owns advice/timezone hint rendering). ``forensia_md``
+    designates the one investigation-policy input (default:
+    ``case_root/FORENSIA.md``) adopted at session start and recorded there
+    (V2-05). ``report_spec`` designates the one report input (an explicit
+    REPORT.md path); with ``template_dir`` it is normally resolved from the
+    case-root REPORT.md or the packaged templates — ``--report-spec`` is the
+    designated explicit source and both together are a caller error (V2-06).
+    Data reads/writes stay on the existing owners — no separate stage state
+    or service layer.
 
     Returns the rendered report path. Raises :class:`UsageError` for invalid
     user inputs and propagates ``LLMServerUnavailableError`` (adapters decide
     the process exit policy).
     """
     case = _open_or_init_case(case_dir, input_dir, timezone, status)
+    # Direct command invocation passes typer's OptionInfo defaults; only real
+    # string/path values can declare report inputs (the same defensiveness
+    # resolve_forensia_policy_input / resolve_knowledge_dir use).
+    plain_report_spec = report_spec if isinstance(report_spec, str | Path) else None
+    plain_template_dir = template_dir if isinstance(template_dir, str | Path) else None
+    if plain_report_spec and plain_template_dir:
+        raise UsageError(
+            "report_spec and template_dir are alternative report inputs; pass one"
+        )
+    if report_only and (plain_report_spec or plain_template_dir):
+        raise UsageError(
+            "report_only renders the adopted sections; use report --write to adopt a report input"
+        )
+    if (plain_report_spec or plain_template_dir) and not (llm_base_url and model):
+        raise UsageError("a report input requires an LLM-backed writing run")
     if rerun:
         case = _rerun_reset(case, case_dir, timezone, status)
 
@@ -667,6 +752,11 @@ def run_investigation(
             )
 
     with CaseDB(case) as db:
+        forensia_policy = resolve_forensia_policy_input(
+            case,
+            forensia_md,
+            recorded_policy_exists=load_recorded_policy(db) is not None,
+        )
         clear_progress_events(db)
         push_progress = progress_pusher(
             db,
@@ -676,7 +766,7 @@ def run_investigation(
 
         tasks = CaseTasks.for_case(case)
         template_root = (
-            resolve_template_dir(case, template_dir)
+            resolve_template_dir(case, plain_template_dir)
             if (llm_base_url and model)
             else None
         )
@@ -704,6 +794,7 @@ def run_investigation(
                 report_max_queries_per_section=report_max_queries_per_section,
                 max_llm_calls=max_llm_calls,
                 auto_rulepacks=auto_rulepacks,
+                forensia_policy=forensia_policy,
+                report_spec=plain_report_spec,
             )
-
         return _run_report_stage(case, db, tasks, push_progress)

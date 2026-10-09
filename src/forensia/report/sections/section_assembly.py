@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
+from forensia.report.sections.report_input import SectionSource
 from forensia.report.sections.section_quality import _title_from_template_body
 from forensia.report.sections.template_parsing import (
-    parse_template,
     split_template_body,
 )
 
@@ -61,14 +60,20 @@ def section_family(section_key: str) -> str:
 def prepare_section_request(
     case: Case,
     db: CaseDB,
-    template_path: str | Path,
+    source: SectionSource,
     context_sections: dict[str, str],
     report_brief: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Read a section template and normalize block requests for section agents."""
+    """Normalize one section template source into block requests for section agents.
+
+    ``source`` is a :class:`~forensia.report.sections.report_input.SectionSource`
+    — the single normalized section-contract input produced for both the
+    template-directory path and a user ``REPORT.md``.
+    """
     del db
-    template_body, template_meta = parse_template(str(template_path))
-    section_key = Path(template_path).stem
+    template_body = source.body
+    template_meta = source.meta
+    section_key = source.section_key
     title = _title_from_template_body(template_body, section_key)
     template_preamble, blocks = split_template_body(template_body)
     if not blocks:
@@ -114,7 +119,7 @@ def prepare_section_request(
         "case": case,
         "section_key": section_key,
         "title": title,
-        "template_path": str(template_path),
+        "template_path": source.template_path,
         "template_preamble": template_preamble,
         "block_requests": block_requests,
         "context_sections": dict(context_sections),

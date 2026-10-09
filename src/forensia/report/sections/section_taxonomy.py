@@ -7,6 +7,8 @@ lazy imports (e.g. from keypoints) are done inside functions.
 
 from __future__ import annotations
 
+import re
+
 # ---------------------------------------------------------------------------
 # Canonical section key list (template order)
 # ---------------------------------------------------------------------------
@@ -37,6 +39,28 @@ _SECTION_FAMILY_MAP: dict[str, str] = {
 def section_family(section_key: str) -> str:
     """Return the family name for a section key (e.g. '3_technical' → 'technical')."""
     return _SECTION_FAMILY_MAP.get(section_key, section_key)
+
+
+def report_slug_family(key: str) -> str | None:
+    """Known canonical family for a positional report key (``NN_<slug>``).
+
+    Matches a canonical family word (``overview``/``timeline``/``technical``/
+    ``gaps``/``recommendations``/``appendix``) when the slug part equals it or
+    ends with ``_`` + word. Also resolves canonical keys themselves
+    (``1_overview`` → ``overview``). Purely derived from the key string;
+    returns None for anything else.
+    """
+    match = re.match(r"^\d+_(.+)$", str(key or "").strip())
+    slug = match.group(1) if match else str(key or "").strip()
+    if not slug:
+        return None
+    words = set(_SECTION_FAMILY_MAP.values())
+    if slug in words:
+        return slug
+    for word in sorted(words):
+        if slug.endswith("_" + word):
+            return word
+    return None
 
 
 # ---------------------------------------------------------------------------

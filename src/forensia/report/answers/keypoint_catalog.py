@@ -301,7 +301,28 @@ def _default_keypoints_for_section(
         "5": ("recommendations_findings", "recommendations_recent_reviews"),
         "6": ("appendix_findings_catalog", "appendix_claims_needing_review"),
     }
-    return mapping.get(family, ("overview_top_findings",))
+    keypoints = mapping.get(family)
+    if keypoints is None:
+        # Positional REPORT.md keys (e.g. '02_overview') carry no canonical
+        # family digit; resolve the family word from the section key slug.
+        from forensia.report.sections.section_taxonomy import report_slug_family
+
+        family_word = report_slug_family(section_key)
+        if family_word is not None:
+            keypoints = mapping[_FAMILY_WORD_DIGITS[family_word]]
+    if keypoints is None:
+        keypoints = ("overview_top_findings",)
+    return keypoints
+
+
+_FAMILY_WORD_DIGITS: dict[str, str] = {
+    "overview": "1",
+    "timeline": "2",
+    "technical": "3",
+    "gaps": "4",
+    "recommendations": "5",
+    "appendix": "6",
+}
 
 
 # ── Keypoint cards ──

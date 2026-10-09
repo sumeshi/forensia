@@ -375,50 +375,61 @@ class TestTrimDynamicContentMarker:
 
 
 class TestStructuredCompact:
-    """T-22: versioned structured projection for context-overflow compaction."""
+    """R10: bounded context-overflow reduction with an honest contract.
+
+    The reduction is one-way: it keeps the most recent sections verbatim,
+    preserves essential tokens, and labels what is preserved — it never
+    claims a revision/source origin it cannot verify or that the original is
+    reconstructible.
+    """
 
     def setup_method(self) -> None:
         clear_compaction_cache()
 
-    def _many_turns(self) -> str:
-        # Two older turns (large enough to exceed the LLM threshold) plus three
-        # recent turns: needs >= preserve_recent_turns+2 turns to project.
+    def _many_sections(self) -> str:
+        # Two older sections (large enough to exceed the LLM threshold) plus
+        # three recent ones: needs >= preserve_recent_sections+2 sections.
         older = "Event 4624 from evtx_events table. " * 30
         return "\n\n".join(
             [
                 older,
                 older,
-                "recent alpha turn",
-                "recent beta turn",
-                "recent gamma turn",
+                "recent alpha section",
+                "recent beta section",
+                "recent gamma section",
             ]
         )
 
-    def test_preserves_recent_verbatim_and_summarizes_older(self) -> None:
-        text = self._many_turns()
+    def test_preserves_recent_section_and_condenses_older(self) -> None:
+        text = self._many_sections()
         llm_response = "Summary: Event 4624 from evtx_events."
         with patch(
             "forensia.ai.compaction._call_llm", return_value=llm_response
         ) as mock_llm:
             out = structured_compact(text, 2000, base_url="http://x", model="m")
         mock_llm.assert_called_once()
-        assert "<STRUCTURED_PROJECTION" in out
-        assert 'revision="1"' in out
-        assert 'regeneratable="true"' in out
-        # Recent turns preserved verbatim.
-        assert "recent alpha turn" in out
-        assert "recent beta turn" in out
-        assert "recent gamma turn" in out
-        # Older turns folded into the summary.
+        # One-way reduction statement, no fabricated revision/regeneratable
+        # labels: nothing guarantees reconstruction of the original.
+        assert "<COMPACTED_CONTEXT" in out
+        assert "nothing is re-generated" in out
+        assert "regeneratable" not in out.lower()
+        assert 'revision="' not in out
+        assert 'source_revision="' not in out
+        assert "<STRUCTURED_PROJECTION" not in out
+        assert "RECENT_VERBATIM" not in out
+        # The latest sections kept verbatim; older ones condensed.
+        assert "recent alpha section" in out
+        assert "recent beta section" in out
+        assert "recent gamma section" in out
         assert "Summary: Event 4624 from evtx_events." in out
 
-    def test_refuses_to_summarize_an_existing_projection(self) -> None:
-        projection = (
-            '<STRUCTURED_PROJECTION revision="2" source_revision="1" '
-            'regeneratable="true"><RECENT_VERBATIM>x</RECENT_VERBATIM>'
-            "<SUMMARY>y</SUMMARY></STRUCTURED_PROJECTION>"
+    def test_reducing_a_reduction_changes_nothing(self) -> None:
+        first = structured_compact(
+            self._many_sections(), 2000, base_url="http://x", model="m"
         )
+        # Content already produced by this reduction is never reduced again
+        # (no recursive degradation).
         with patch("forensia.ai.compaction._call_llm") as mock_llm:
-            out = structured_compact(projection, 2000, base_url="http://x", model="m")
-        mock_llm.assert_not_called()  # recursive degradation prevented
-        assert out == projection
+            out = structured_compact(first, 2000, base_url="http://x", model="m")
+        mock_llm.assert_not_called()
+        assert out == first

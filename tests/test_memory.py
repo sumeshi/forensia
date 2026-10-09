@@ -324,10 +324,19 @@ class MemoryTests(unittest.TestCase):
             )
 
             self.assertTrue(changed)
-            self.assertEqual(
-                "compressed overview\n",
-                memory.overview_path.read_text(encoding="utf-8"),
+            condensed = memory.overview_path.read_text(encoding="utf-8")
+            self.assertIn("compressed overview", condensed)
+            # The reused summary carries its source and an honest statement
+            # that the condensed-away prose is not retained (R10).
+            self.assertIn(
+                "> condensed: ",
+                condensed,
             )
+            self.assertIn(
+                "source=overview.md; not regeneratable - reduced overview prose is not retained",
+                condensed,
+            )
+            self.assertNotIn("regeneratable=true", condensed)
             messages = mock_chat.call_args[0][0]
             self.assertIn(
                 "Compress the following investigation overview", messages[0]["content"]
@@ -460,10 +469,14 @@ class MemoryTests(unittest.TestCase):
                 "# Overview\n\n" + ("x" * 512),
                 memory.overview_path.read_text(encoding="utf-8"),
             )
-            self.assertEqual(
-                "# Hypothesis H-1\n\n- compacted\n",
-                (memory.hypotheses_dir / "H-1.md").read_text(encoding="utf-8"),
-            )
+            card = (memory.hypotheses_dir / "H-1.md").read_text(encoding="utf-8")
+            self.assertIn("# Hypothesis H-1", card)
+            self.assertIn("- compacted", card)
+            # The reused summary carries source/currentness: the DB-derived
+            # hypothesis card is labelled regeneratable against its DB row (R10).
+            self.assertIn("> condensed: ", card)
+            self.assertIn("source=hypotheses DB row (H-1); regeneratable=true", card)
+            self.assertIn("the DuckDB row is the original", card)
             mock_chat.assert_called_once()
 
     def test_entity_memory_is_llm_compacted_when_oversized(self) -> None:
@@ -482,10 +495,16 @@ class MemoryTests(unittest.TestCase):
             )
 
             self.assertEqual([str(memory.entities_ip_dir / "10.0.0.5.md")], changed)
-            self.assertEqual(
-                "# ip: 10.0.0.5\n\n- compacted entity\n",
-                (memory.entities_ip_dir / "10.0.0.5.md").read_text(encoding="utf-8"),
-            )
+            card = (memory.entities_ip_dir / "10.0.0.5.md").read_text(encoding="utf-8")
+            self.assertIn("# ip: 10.0.0.5", card)
+            self.assertIn("- compacted entity", card)
+            # The reused summary carries source/currentness: an authored
+            # entity card is labelled as NOT regeneratable (its condensed-away
+            # prose is not retained anywhere) (R10).
+            self.assertIn("> condensed: ", card)
+            self.assertIn("source=entities/ip/10.0.0.5.md; not regeneratable", card)
+            self.assertIn("not retained", card)
+            self.assertNotIn("regeneratable=true", card)
             mock_chat.assert_called_once()
 
     def test_hypothesis_memory_path_depends_only_on_id(self) -> None:

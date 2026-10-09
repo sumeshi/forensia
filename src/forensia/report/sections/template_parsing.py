@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -35,22 +34,14 @@ QUESTION_HINT_PATTERN = re.compile(
 RAW_EVIDENCE_HEADING_PATTERN = re.compile(r"^#{2,6}\s*Raw Evidence\s*$", re.IGNORECASE)
 
 
-@cache
-def parse_template(template_path: str) -> tuple[str, TemplateMeta]:
-    """Parse YAML front matter from a template file, returning (body, meta)."""
-    text = Path(template_path).read_text(encoding="utf-8")
-    meta = parse_frontmatter(text)
-    if text.startswith("---\n"):
-        parts = text.split("---\n", 2)
-        body = parts[2].strip() if len(parts) == 3 else text.strip()
-    else:
-        body = text.strip()
+def build_template_meta(meta: dict[str, Any]) -> TemplateMeta:
+    """Build :class:`TemplateMeta` from a parsed frontmatter dict."""
     instructions = str(meta.get("instructions") or "").strip()
     raw_tags = meta.get("tags") or []
     if isinstance(raw_tags, str):
         raw_tags = [raw_tags]
     tags = tuple(str(tag).strip() for tag in raw_tags if str(tag).strip())
-    return body, TemplateMeta(
+    return TemplateMeta(
         type=str(meta.get("type") or "").strip(),
         title=str(meta.get("title") or "").strip(),
         description=str(meta.get("description") or "").strip(),
@@ -58,6 +49,22 @@ def parse_template(template_path: str) -> tuple[str, TemplateMeta]:
         timestamp=str(meta.get("timestamp") or "").strip(),
         instructions=instructions,
     )
+
+
+def parse_template_text(text: str) -> tuple[str, TemplateMeta]:
+    """Parse frontmatter from template text, returning (body, meta)."""
+    meta = parse_frontmatter(text)
+    if text.startswith("---\n"):
+        parts = text.split("---\n", 2)
+        body = parts[2].strip() if len(parts) == 3 else text.strip()
+    else:
+        body = text.strip()
+    return body, build_template_meta(meta)
+
+
+def parse_template(template_path: str) -> tuple[str, TemplateMeta]:
+    """Parse YAML front matter from a template file, returning (body, meta)."""
+    return parse_template_text(Path(template_path).read_text(encoding="utf-8"))
 
 
 def parse_block_hints(block_body: str) -> dict[str, Any]:
@@ -165,5 +172,6 @@ def split_template_body(template_body: str) -> tuple[str, list[dict[str, Any]]]:
 
 _parse_frontmatter = parse_frontmatter
 _parse_template = parse_template
+_parse_template_text = parse_template_text
 _parse_block_hints = parse_block_hints
 _split_template_body = split_template_body

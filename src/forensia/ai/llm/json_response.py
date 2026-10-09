@@ -57,7 +57,15 @@ def _messages_for_truncation_retry(
 def _compact_messages_after_context_rejection(
     messages: list[dict[str, str]], *, base_url: str, model: str
 ) -> list[dict[str, str]] | None:
-    """Create one bounded structured projection for an oversized request."""
+    """Create one bounded per-message reduction for an oversized request.
+
+    Contract (R10): this reduces request content to put it back inside the
+    context window; it does not claim to re-generate anything.  The block
+    produced by ``structured_compact`` keeps the most recent sections
+    verbatim, preserves event/evidence ids, paths and table names verbatim
+    inside the condensed part, and states that the reduction is one-way with
+    the surviving refs addressing the Case/Trace originals.
+    """
     from forensia.ai.compaction import structured_compact
 
     total_chars = sum(len(str(item.get("content") or "")) for item in messages)
@@ -79,7 +87,7 @@ def _compact_messages_after_context_rejection(
             per_message,
             base_url=base_url,
             model=model,
-            preserve_recent_turns=3,
+            preserve_recent_sections=3,
         )
         if shortened != content:
             compacted[index]["content"] = shortened

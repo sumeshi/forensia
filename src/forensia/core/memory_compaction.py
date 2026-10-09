@@ -2,12 +2,48 @@
 
 import logging
 import re
+from datetime import UTC, datetime
 from math import ceil
 from pathlib import Path
 
 from forensia.config import get_llm_settings
 
 logger = logging.getLogger(__name__)
+
+# Labels written by ``_with_condensation_label`` (R10).  A reused summary
+# must carry its source, generation time, and an honest currentness/
+# restorability statement — never a regeneration promise it cannot keep.
+# Timeline's deterministic ``regeneratable=true`` stays there; LLM-written
+# condensations carry these labels instead.
+_CONDENSATION_LABEL_RE = re.compile(r"(?m)^> condensed: .*\n")
+
+#: Upper bound of one label line's encoded size, reserved from the byte
+#: budget so truncation cannot clip the label and the whole body out.
+_CONDENSATION_LABEL_MAX_BYTES = 240
+
+
+def _strip_condensation_labels(text: str) -> str:
+    """Remove previous condensation labels so they are not re-condensed."""
+    return _CONDENSATION_LABEL_RE.sub("", text)
+
+
+def _condensation_stamp() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _label_line(source: str, regeneratable: str, preserved: str) -> str:
+    """Build the single ``> condensed:`` annotation line (R10)."""
+    regeneratable = regeneratable or ""
+    if regeneratable:
+        currentness = (
+            f"regeneratable=true ({regeneratable}); the DuckDB row is the "
+            "original - query or re-derive it for currentness"
+        )
+    else:
+        currentness = "not regeneratable - " + (
+            preserved or "the condensed-away prose is not retained"
+        )
+    return f"> condensed: {_condensation_stamp()} source={source}; {currentness}"
 
 
 class MemoryCompactionMixin:
@@ -40,7 +76,13 @@ class MemoryCompactionMixin:
         self.timeline_path.write_text(rebuilt.rstrip() + "\n", encoding="utf-8")
 
     def compact_overview_if_needed(self, base_url: str, model: str) -> bool:
-        """Compress the overview via LLM if it exceeds the byte budget."""
+        """Compress the overview via LLM if it exceeds the byte budget.
+
+        The overview is authored/generated Markdown whose earlier prose is not
+        kept anywhere, so the condensed result is labelled: source file,
+        generation time, and the explicit fact that the earlier text is not
+        retained (R10 — a restoration that cannot happen is never claimed).
+        """
         if (
             not self.overview_path.exists()
             or self.overview_path.stat().st_size <= self.max_bytes
@@ -49,6 +91,7 @@ class MemoryCompactionMixin:
         current = self.overview_path.read_text(encoding="utf-8").strip()
         if not current:
             return False
+        current = _strip_condensation_labels(current)
         output_language = str(get_llm_settings()["output_language"]).lower()
         language_instruction = f"Write the compressed overview in {output_language}."
         body = self._call_llm_compact(
@@ -65,11 +108,24 @@ class MemoryCompactionMixin:
         )
         if not body:
             return False
+        body = self._with_condensation_label(
+            body,
+            source="overview.md",
+            regeneratable="",
+            preserved="reduced overview prose is not retained",
+        )
         self.overview_path.write_text(body + "\n", encoding="utf-8")
         return True
 
     def compact_oversized_with_llm(self, base_url: str, model: str) -> list[str]:
-        """Compress oversized hypothesis and entity markdown files via LLM."""
+        """Compress oversized hypothesis and entity markdown files via LLM.
+
+        Hypothesis cards are DB-derived projections (regenerated on every
+        memory sync), so their condensation label names the DB original and
+        the re-derivation path. Entity/overview cards are authored or
+        checker-generated Markdown whose earlier prose is not retained, so
+        their label says exactly that (R10).
+        """
         changed_paths: list[str] = []
         for path in self._llm_compaction_targets():
             if not path.exists() or path.stat().st_size <= self.max_bytes:
@@ -77,6 +133,7 @@ class MemoryCompactionMixin:
             current = path.read_text(encoding="utf-8").strip()
             if not current:
                 continue
+            current = _strip_condensation_labels(current)
             output_language = str(get_llm_settings()["output_language"]).lower()
             language_instruction = (
                 f"Write the compressed markdown in {output_language}."
@@ -96,14 +153,38 @@ class MemoryCompactionMixin:
             )
             if not body:
                 continue
-            compacted = self._ensure_markdown_heading(body, current)
+            # Reserve room for the label so truncation never clips the whole
+            # condensation block back out of existence.
+            is_db_card = path.parent == self.hypotheses_dir
+            source = (
+                f"hypotheses DB row ({path.stem})"
+                if is_db_card
+                else f"{path.relative_to(self.base_dir)}"
+            )
+            regeneratable = (
+                "re-renders from the DuckDB row at the next memory sync"
+                if is_db_card
+                else ""
+            )
+            preserved = (
+                "reduced prose not retained; the DuckDB hypothesis row is the original"
+                if is_db_card
+                else "reduced prose not retained"
+            )
+            reserve_bytes = max(self.max_bytes - _CONDENSATION_LABEL_MAX_BYTES, 64)
+            compacted = body.strip()
             encoded = compacted.encode("utf-8")
-            if len(encoded) > self.max_bytes:
+            if len(encoded) > reserve_bytes:
                 compacted = (
-                    encoded[: self.max_bytes].decode("utf-8", errors="ignore").rstrip()
-                    + "\n"
+                    encoded[:reserve_bytes].decode("utf-8", errors="ignore").rstrip()
                 )
-                compacted = self._ensure_markdown_heading(compacted, current)
+            compacted = self._ensure_markdown_heading(compacted, current)
+            compacted = self._with_condensation_label(
+                compacted,
+                source=source,
+                regeneratable=regeneratable,
+                preserved=preserved,
+            )
             path.write_text(compacted, encoding="utf-8")
             changed_paths.append(str(path))
         return changed_paths
@@ -137,6 +218,23 @@ class MemoryCompactionMixin:
             else:
                 compacted = f"# Compacted Memory\n\n{compacted}".strip()
         return compacted.rstrip() + "\n"
+
+    def _with_condensation_label(
+        self, body: str, *, source: str, regeneratable: str, preserved: str
+    ) -> str:
+        """Label a condensed Markdown body with source/currentness (R10).
+
+        Replaces any prior condensation label and records the generation
+        time.  A ``regeneratable`` statement is only ever true when there is
+        a deterministic re-derivation path; otherwise the label says the
+        condensed-away prose is not retained.
+        """
+        stripped = _strip_condensation_labels(body).rstrip()
+        label = _label_line(source, regeneratable, preserved)
+        lines = stripped.split("\n")
+        if lines and lines[0].startswith("# "):
+            return "\n".join([lines[0], "", label, *lines[1:]]).rstrip() + "\n"
+        return f"{label}\n\n{stripped}\n"
 
     def _call_llm_compact(
         self,
@@ -228,11 +326,12 @@ class MemoryCompactionMixin:
         Reads all rows ordered by timestamp ASC, groups into per-day sections,
         and writes the result to timeline.md. Returns True when content changed.
 
-        The written file is an explicitly *versioned, regeneratable projection*
-        (T-22): a ``projection:vN`` header marks the revision and declares the
-        file is derived from ``case_timeline`` (never Case State authority). On
-        resume, ``validate_timeline_projection`` re-derives it and checks the
-        revision/IDs, so a stale or hand-edited projection is detected.
+        The written file is a deterministic, regeneratable projection: a
+        ``projection:vN source=case_timeline regeneratable=true`` header marks
+        the revision and declares it derived from ``case_timeline`` (never
+        Case State authority).  Regenerating equal DB state is idempotent,
+        so the file can always be re-derived — never trusted for anything
+        not present in the DB.
         """
         from forensia.db.query import fetch_records
 
@@ -330,50 +429,6 @@ class MemoryCompactionMixin:
             return int(match.group(1))
         except ValueError:
             return None
-
-    def validate_timeline_projection(
-        self, db, expected_revision: int | None = None
-    ) -> tuple[bool, list[str]]:
-        """Validate the timeline projection on resume (T-22).
-
-        Re-derives the projection from ``case_timeline`` and confirms:
-        1. the embedded ``projection:vN`` revision matches *expected_revision*
-           (when supplied), and
-        2. every evidence_id referenced by the durable DB is still present in
-           the projection (no referenced ID was dropped).
-
-        Returns ``(ok, problems)``. The projection is treated as regeneratable,
-        so a failure means "regenerate", never "trust the projection".
-        """
-        from forensia.db.query import fetch_records
-
-        problems: list[str] = []
-        current_revision = self.timeline_projection_revision()
-        if expected_revision is not None and current_revision != int(expected_revision):
-            problems.append(
-                f"timeline revision mismatch: have v{current_revision}, "
-                f"expected v{expected_revision}"
-            )
-        rows = fetch_records(
-            db,
-            "SELECT DISTINCT evidence_id FROM case_timeline "
-            "WHERE evidence_id IS NOT NULL AND evidence_id <> ''",
-        )
-        required_ids = [str(r.get("evidence_id")) for r in rows if r.get("evidence_id")]
-        if required_ids:
-            projection_text = (
-                self.timeline_path.read_text(encoding="utf-8")
-                if self.timeline_path.exists()
-                else ""
-            )
-            haystack = projection_text.lower()
-            missing = [rid for rid in required_ids if str(rid).lower() not in haystack]
-            if missing:
-                problems.append(
-                    f"{len(missing)} referenced evidence id(s) missing from "
-                    f"timeline projection (e.g. {missing[:3]})"
-                )
-        return (not problems), problems
 
     def compact_if_oversized(self, path: Path) -> bool:
         """Dispatch compaction for a path if it exceeds the byte budget, returning True if trimmed."""
