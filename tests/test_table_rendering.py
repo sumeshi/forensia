@@ -124,7 +124,6 @@ class TableRenderingTests(unittest.TestCase):
                         base_url="http://127.0.0.1:1",
                         model="none",
                         max_queries_per_section=1,
-                        llm_logger=None,
                         iteration=1,
                         progress_callback=None,
                         focus_sections=None,
@@ -303,7 +302,6 @@ class TableRenderingTests(unittest.TestCase):
                             base_url="http://127.0.0.1:1",
                             model="none",
                             max_queries_per_section=1,
-                            llm_logger=None,
                             iteration=1,
                             progress_callback=None,
                             focus_sections=None,
@@ -332,7 +330,7 @@ class TableRenderingTests(unittest.TestCase):
                     VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        "evtx-diagnosis-000000000004",
+                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-diagnosis-000000000004",
                         104,
                         datetime(2015, 3, 24, 15, 21, 37),
                         "informant-PC",
@@ -346,7 +344,7 @@ class TableRenderingTests(unittest.TestCase):
                     VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        "evtx-eventlog-000000000104",
+                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-eventlog-000000000104",
                         104,
                         datetime(2015, 3, 24, 15, 22, 37),
                         "informant-PC",
@@ -370,7 +368,12 @@ class TableRenderingTests(unittest.TestCase):
                 for result in results
                 if result["keypoint"] == "gaps_log_integrity_events"
             )
-            self.assertEqual(["evtx-eventlog-000000000104"], timeline["evidence_ids"])
+            self.assertEqual(
+                [
+                    "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-eventlog-000000000104"
+                ],
+                timeline["evidence_ids"],
+            )
             self.assertEqual(1, timeline["row_count"])
             self.assertEqual(
                 [{"event_id": 104, "count": 1, "citable": False}], gaps["sample_rows"]
@@ -686,7 +689,6 @@ class TableRenderingTests(unittest.TestCase):
                     max_queries=3,
                     evidence_keypoints=None,
                     question_mode=False,
-                    audit_callback=None,
                     report_brief={},
                 )
                 ctx_appendix = prepare_block_context(
@@ -702,7 +704,6 @@ class TableRenderingTests(unittest.TestCase):
                     max_queries=3,
                     evidence_keypoints=None,
                     question_mode=False,
-                    audit_callback=None,
                     report_brief={},
                 )
                 self.assertIn("host_identity", ctx_overview.structured_digest)
@@ -713,11 +714,19 @@ class HtmlEvidenceIdAnchorTests(unittest.TestCase):
     def test_html_evidence_id_anchor_rendering(self):
         from forensia.report.render.html import render_inline_markdown
 
-        html = render_inline_markdown("See evtx-security-000000000001.")
-        self.assertIn('href="#ev-evtx-security-000000000001"', html)
+        html = render_inline_markdown(
+            "See evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001."
+        )
+        self.assertIn(
+            'href="#ev-evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001"',
+            html,
+        )
         # Placeholder title (bare id); _inject_evidence_interactivity swaps in the
         # record summary when the evidence map is available.
-        self.assertIn('title="evtx-security-000000000001"', html)
+        self.assertIn(
+            'title="evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001"',
+            html,
+        )
         self.assertIn('class="evidence-ref"', html)
 
     def test_markdown_table_max_rows_zero_is_unlimited(self) -> None:

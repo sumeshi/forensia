@@ -49,6 +49,82 @@ def test_pipeline_import_requires_no_terminal_or_http_server_dependencies() -> N
     assert result.returncode == 0, result.stderr
 
 
+def test_mft_only_resume_uses_normalization_receipt_and_parser_revision() -> None:
+    from forensia.core.case import Case
+    from forensia.db.database import CaseDB
+    from forensia.pipeline import _run_normalize_stage, _sources_normalized
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        case = Case.init(tmpdir)
+        calls: list[object] = []
+        normalized = {
+            "evtx_rows": 0,
+            "mft_entries": 4,
+            "mft_timeline_rows": 2,
+            "prefetch_executions": 0,
+            "prefetch_timeline": 0,
+            "registry_artifacts": 0,
+        }
+        with CaseDB(case) as db:
+            db.execute(
+                "INSERT INTO evidence_sources "
+                "(source_id, artifact_family, display_path, ingest_status, "
+                "parser_name, parser_version, row_count) "
+                "VALUES ('mft-source', 'mft', 'disk.mft', 'normalized', 'mft', '1', 4)"
+            )
+            db.execute(
+                "INSERT INTO ingested_files(sha256, path, source_kind, size, ingested_at) "
+                "VALUES ('mft-source', 'disk.mft', 'mft', 128, current_timestamp)"
+            )
+            push = mock.Mock()
+
+            def normalize(*args, **kwargs):
+                calls.append(kwargs.get("source_keys"))
+                return normalized
+
+            with mock.patch("forensia.pipeline.normalize_all", side_effect=normalize):
+                _run_normalize_stage(case, db, False, {"new_files": 1}, push, None)
+                _run_normalize_stage(case, db, False, {"new_files": 0}, push, None)
+                assert len(calls) == 1, calls
+                db.execute(
+                    "DELETE FROM evidence_sources WHERE source_id = 'mft-source'"
+                )
+                assert not _sources_normalized(db), (
+                    "An ingested source without status cannot be current"
+                )
+                db.execute(
+                    "INSERT INTO evidence_sources (source_id, artifact_family, ingest_status) VALUES ('mft-source', 'mft', 'normalized')"
+                )
+
+                with mock.patch(
+                    "forensia.pipeline._parser_revision", return_value="new-parser"
+                ):
+                    _run_normalize_stage(case, db, False, {"new_files": 0}, push, None)
+                assert len(calls) == 2, calls
+                db.execute(
+                    "INSERT INTO evidence_sources "
+                    "(source_id, artifact_family, display_path, ingest_status, "
+                    "parser_name, parser_version, row_count) "
+                    "VALUES ('new-mft-source', 'mft', 'other.mft', 'ingested', 'mft', '1', 0)"
+                )
+                db.execute(
+                    "INSERT INTO ingested_files(sha256, path, source_kind, size, ingested_at) "
+                    "VALUES ('new-mft-source', 'other.mft', 'mft', 64, current_timestamp)"
+                )
+                with mock.patch(
+                    "forensia.pipeline._parser_revision", return_value="newer-parser"
+                ):
+                    _run_normalize_stage(
+                        case,
+                        db,
+                        False,
+                        {"new_files": 1, "new_source_keys": ["new-mft-source"]},
+                        push,
+                        None,
+                    )
+                assert len(calls) == 3 and calls[-1] is None, calls
+
+
 def _stub_llm(captured: list[tuple[str, str]]):
     """Deterministic offline LLM boundary that records every prompt it sees.
 
@@ -79,10 +155,8 @@ def _stub_llm(captured: list[tuple[str, str]]):
         return {"action": "write", "enough_to_write": True}
 
     return (
-        mock.patch("forensia.ai.llm.llm_gateway.request_llm_json", side_effect=router),
         mock.patch(
-            "forensia.ai.llm.llm_gateway.async_request_llm_json",
-            side_effect=router,
+            "forensia.ai.llm.json_response.request_llm_json", side_effect=router
         ),
     )
 
@@ -133,8 +207,8 @@ def test_case_root_forensia_md_is_adopted_recorded_and_routed_to_investigation_r
                     "http://127.0.0.1:1",
                     "--model",
                     "offline-stub",
-                    "--max-llm-calls",
-                    "10",
+                    "--max-iter",
+                    "1",
                 ],
             )
         if result.exception is not None:
@@ -217,11 +291,7 @@ def test_resume_keeps_recorded_policy_and_explicit_path_adopts_edited_body() -> 
     def stubs():
         return (
             mock.patch(
-                "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=router
-            ),
-            mock.patch(
-                "forensia.ai.llm.llm_gateway.async_request_llm_json",
-                side_effect=router,
+                "forensia.ai.llm.json_response.request_llm_json", side_effect=router
             ),
             mock.patch.object(
                 investigator_module,
@@ -364,7 +434,7 @@ def test_oversized_forensia_md_policy_refuses_with_reason() -> None:
                 return_value=2 * _POLICY_BUDGET_SMALL,
             ),
             mock.patch(
-                "forensia.ai.llm.llm_gateway.request_llm_json",
+                "forensia.ai.llm.json_response.request_llm_json",
                 side_effect=AssertionError("LLM must not be called"),
             ),
         ):

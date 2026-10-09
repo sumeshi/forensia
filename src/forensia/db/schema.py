@@ -1,3 +1,4 @@
+# Version 6: primary Evidence IDs include full source-content identity.
 # Version 5: hypothesis_evidence gained assessment_reason/matched_conditions —
 # the judgment grounds of the deterministic Assessment that admitted the link.
 # Re-evaluation writes a new link with a new assessment id; grounds stay
@@ -14,7 +15,7 @@
 # Case databases with a different version are rejected before any
 # persistent DDL/DML (see db/database._check_schema_version); existing
 # cases are preserved and their artifacts are re-ingested into new cases.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 CORE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS evtx_events (

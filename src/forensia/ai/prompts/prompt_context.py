@@ -7,7 +7,6 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from forensia.ai.prompts.prompt_catalog import sql_cookbook
 from forensia.ai.prompts.sql_schema import schema_column_guidance
 from forensia.config import get_llm_settings
 from forensia.core.compaction import TRUNCATION_MARKER, mechanical_compact
@@ -23,12 +22,10 @@ logger = logging.getLogger(__name__)
 # Indexed / lazy context primitives (T-21)
 # ---------------------------------------------------------------------------
 #
-# Every repeated global prompt (schema cards, SQL recipes, event-ID rules, org
-# knowledge, case profile, report requirements, evidence groups) is replaced by
-# a compact *index* of stable entries. Full detail is shipped only for the
-# selected entries; everything else is reachable through a continuation hint.
-# Each prompt build is instrumented through ``record_retrieval_event`` with the
-# named section's chars/tokens/selected IDs and retrieval source.
+# Large shared context is kept bounded by selecting relevant entries before
+# prompt assembly. Report requirements retain a compact index where it helps
+# summarize their scope; schema and event guidance are given directly for the
+# host-selected tables and observed event IDs.
 
 
 @dataclass
@@ -116,128 +113,6 @@ def _instrument_retrieval(
         logger.debug("prompt instrumentation skipped", exc_info=True)
 
 
-def _parse_sql_recipes(raw: str) -> dict[str, tuple[str, str]]:
-    """Split the SQL cookbook into {stable_id: (title, body)} recipe units."""
-    recipes: dict[str, tuple[str, str]] = {}
-    current_id: str | None = None
-    current_title = ""
-    buf: list[str] = []
-    for line in raw.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("-- "):
-            if current_id is not None:
-                recipes[current_id] = (current_title, "\n".join(buf).strip())
-            current_title = stripped[3:].strip().rstrip("-").strip()
-            slug = re.sub(r"[^a-z0-9]+", "_", current_title.lower()).strip("_")
-            current_id = slug or f"recipe_{len(recipes)}"
-            buf = []
-        else:
-            buf.append(line)
-    if current_id is not None:
-        recipes[current_id] = (current_title, "\n".join(buf).strip())
-    return recipes
-
-
-def _build_schema_index(
-    table_name: str | list[str] = "evtx_events",
-    db: CaseDB | None = None,
-    session_id: str | None = None,
-) -> tuple[str, str]:
-    """Index every schema table; expand only the selected tables' full cards
-    — *table_name* is one name or several (V2-08 spec capability selection).
-    """
-    selected_tables = [table_name] if isinstance(table_name, str) else list(table_name)
-    schema_hints = _load_schema_hints()
-    if not schema_hints:
-        return "", ""
-    entries: list[ContextIndexEntry] = []
-    selected_full: list[str] = []
-    for tname, thints in sorted(schema_hints.items()):
-        card = _format_schema_card(thints)
-        purpose = str(
-            thints.get("description") or thints.get("purpose") or "schema card"
-        )[:120]
-        selected = tname in selected_tables
-        entries.append(
-            ContextIndexEntry(
-                stable_id=tname,
-                title=tname,
-                purpose=purpose,
-                size_chars=len(card),
-                relevance_hint="primary_table" if selected else "reference",
-                continuation=f"load schema card for `{tname}`",
-            )
-        )
-        if selected:
-            extractors = thints.get("json_field_extractors", {})
-            if extractors:
-                card += "\nJSON extractors: " + ", ".join(
-                    f"{k} → {v}" for k, v in extractors.items()
-                )
-            selected_full.append(card)
-    index = render_context_index("SCHEMA_INDEX", entries, set(selected_tables))
-    _instrument_retrieval(
-        db,
-        session_id=session_id,
-        scope_kind="schema",
-        scope_id=",".join(selected_tables),
-        phase="schema_guidance",
-        source_kind="schema_hints",
-        query_terms=sorted(schema_hints.keys()),
-        candidate_count=len(entries),
-        selected_refs=selected_tables,
-        selected_chars=sum(len(card) for card in selected_full),
-        budget=0,
-        rejected_refs=[
-            e.stable_id for e in entries if e.stable_id not in selected_tables
-        ],
-    )
-    return index, "\n\n".join(selected_full)
-
-
-def _build_recipe_index(
-    selected_recipes: list[str] | None = None,
-    db: CaseDB | None = None,
-    session_id: str | None = None,
-) -> tuple[str, str]:
-    recipes = _parse_sql_recipes(sql_cookbook())
-    entries: list[ContextIndexEntry] = []
-    for rid, (title, body) in recipes.items():
-        entries.append(
-            ContextIndexEntry(
-                stable_id=rid,
-                title=title,
-                purpose="cookbook SQL example; never a template_id",
-                size_chars=len(body),
-                relevance_hint="reference",
-                continuation=f"load cookbook example `{rid}` and adapt it as raw SQL",
-            )
-        )
-    index = (
-        "<COOKBOOK_EXAMPLE_POLICY>RECIPE_INDEX IDs are retrieval-only, never "
-        "executable template_id values. Adapt loaded examples into sql with "
-        "template_id=null.</COOKBOOK_EXAMPLE_POLICY>\n"
-        + render_context_index("RECIPE_INDEX", entries)
-    )
-    full = "\n".join(
-        body for rid, (_, body) in recipes.items() if rid in (selected_recipes or [])
-    )
-    _instrument_retrieval(
-        db,
-        session_id=session_id,
-        scope_kind="recipes",
-        scope_id="sql_cookbook",
-        phase="schema_guidance",
-        source_kind="sql_recipes",
-        query_terms=list(recipes.keys()),
-        candidate_count=len(entries),
-        selected_refs=list(selected_recipes or []),
-        selected_chars=len(full),
-        budget=0,
-    )
-    return index, full
-
-
 def _format_event_id_claim(hint: dict[str, Any], event_id: int) -> str:
     allowed = hint.get("allowed_claims") or []
     disallowed = hint.get("disallowed_without_extra") or []
@@ -247,53 +122,6 @@ def _format_event_id_claim(hint: dict[str, Any], event_id: int) -> str:
         f"required_fields={required}, allowed_claims={allowed}, "
         f"disallowed_without_extra={disallowed}. "
     )
-
-
-def _build_event_id_index(
-    evidence_results: list[dict[str, Any]],
-    db: CaseDB | None = None,
-    session_id: str | None = None,
-) -> tuple[str, str]:
-    """Index every known event-ID rule; expand only observed event IDs."""
-    event_hints = _load_event_id_hints()
-    if not event_hints:
-        return "", ""
-    collected = set(collect_event_ids(evidence_results))
-    entries: list[ContextIndexEntry] = []
-    selected_full: list[str] = []
-    for eid in sorted(event_hints.keys()):
-        hint = event_hints[eid]
-        body = _format_event_id_claim(hint, eid)
-        sid = f"E{eid}"
-        entries.append(
-            ContextIndexEntry(
-                stable_id=sid,
-                title=f"Event ID {eid} ({hint.get('title', 'unknown')})",
-                purpose="event claim guidance",
-                size_chars=len(body),
-                relevance_hint="observed" if eid in collected else "reference",
-                continuation=f"load event rule {sid}",
-            )
-        )
-        if eid in collected:
-            selected_full.append(body)
-    index = render_context_index(
-        "EVENT_ID_INDEX", entries, {f"E{e}" for e in collected}
-    )
-    _instrument_retrieval(
-        db,
-        session_id=session_id,
-        scope_kind="event_rules",
-        scope_id="report_writer",
-        phase="schema_guidance",
-        source_kind="event_id_hints",
-        query_terms=[f"E{e}" for e in sorted(event_hints.keys())],
-        candidate_count=len(entries),
-        selected_refs=[f"E{e}" for e in collected],
-        selected_chars=sum(len(s) for s in selected_full),
-        budget=0,
-    )
-    return index, "\n".join(selected_full)
 
 
 def _build_report_requirement_index(
@@ -842,28 +670,43 @@ def _build_schema_guidance(
     db: CaseDB | None = None,
     session_id: str | None = None,
 ) -> str:
-    """Build indexed schema guidance: compact index + selected table cards.
-
-    Ships an ``<SCHEMA_INDEX>`` over every known table and inlines the full
-    card only for *table_name* (one name or several, V2-08 spec selection).
-    Appends live schema guidance and the SQL recipe index.
-    """
+    """Build guidance from host-selected table cards and the live DB schema."""
     blocks = ["<SCHEMA_GUIDANCE>"]
-    schema_index, selected_cards = _build_schema_index(
-        table_name, db=db, session_id=session_id
+    selected_tables = [table_name] if isinstance(table_name, str) else list(table_name)
+    schema_hints = _load_schema_hints()
+    selected_cards = []
+    for table in selected_tables:
+        hints = schema_hints.get(table)
+        if not isinstance(hints, dict):
+            continue
+        card = _format_schema_card(hints)
+        extractors = hints.get("json_field_extractors", {})
+        if isinstance(extractors, dict) and extractors:
+            card += "\nJSON extractors: " + ", ".join(
+                f"{key} → {value}" for key, value in extractors.items()
+            )
+        selected_cards.append(card)
+    _instrument_retrieval(
+        db,
+        session_id=session_id,
+        scope_kind="schema",
+        scope_id=",".join(selected_tables),
+        phase="schema_guidance",
+        source_kind="schema_hints",
+        query_terms=selected_tables,
+        candidate_count=len(schema_hints),
+        selected_refs=[name for name in selected_tables if name in schema_hints],
+        selected_chars=sum(map(len, selected_cards)),
+        budget=0,
+        rejected_refs=[name for name in schema_hints if name not in selected_tables],
     )
-    if schema_index:
-        blocks.append(schema_index)
     if selected_cards:
         blocks.append("<SELECTED_SCHEMA_CARDS>")
-        blocks.append(selected_cards)
+        blocks.append("\n\n".join(selected_cards))
         blocks.append("</SELECTED_SCHEMA_CARDS>")
     live = schema_column_guidance(db)
     if live:
         blocks.append(live)
-    recipe_index, recipe_full = _build_recipe_index(db=db, session_id=session_id)
-    blocks.append(recipe_index)
-    blocks.append(recipe_full)
     blocks.append("</SCHEMA_GUIDANCE>")
     return "\n".join(blocks) + "\n"
 
@@ -896,16 +739,34 @@ def _build_event_id_guidance(
     db: CaseDB | None = None,
     session_id: str | None = None,
 ) -> str:
-    """Build indexed per-event-ID claim guidance for the report writer.
-
-    An ``<EVENT_ID_INDEX>`` advertises every known event-ID rule with stable
-    ids and continuation hints; full claim guidance is expanded only for the
-    event IDs actually observed in *evidence_results*.
-    """
-    index, full = _build_event_id_index(evidence_results, db=db, session_id=session_id)
-    if not full:
+    """Disclose the host-selected event rules for IDs present in evidence."""
+    event_hints = _load_event_id_hints()
+    selected_ids = sorted(set(collect_event_ids(evidence_results)) & set(event_hints))
+    if not selected_ids:
         return ""
-    return index + "\n" + full + "\n"
+    selected = [
+        _format_event_id_claim(event_hints[event_id], event_id)
+        for event_id in selected_ids
+    ]
+    _instrument_retrieval(
+        db,
+        session_id=session_id,
+        scope_kind="event_rules",
+        scope_id="report_writer",
+        phase="schema_guidance",
+        source_kind="event_id_hints",
+        query_terms=[f"E{event_id}" for event_id in selected_ids],
+        candidate_count=len(event_hints),
+        selected_refs=[f"E{event_id}" for event_id in selected_ids],
+        selected_chars=sum(map(len, selected)),
+        budget=0,
+        rejected_refs=[
+            f"E{event_id}"
+            for event_id in sorted(event_hints)
+            if event_id not in selected_ids
+        ],
+    )
+    return "\n".join(selected) + "\n"
 
 
 def _collect_source_verdicts(evidence_results: list[dict[str, Any]]) -> list[str]:

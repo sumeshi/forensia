@@ -100,11 +100,6 @@ def _question_routing_keypoints(block_heading: str, template_body: str) -> list[
     return []
 
 
-def question_routing_answer_spec(block_heading: str, template_body: str) -> str:
-    rule = _question_routing_rule(block_heading, template_body)
-    return rule.answer_spec if rule is not None else ""
-
-
 def _classify_block_status(
     *,
     verdict: str,

@@ -53,10 +53,6 @@ def _agent_plan_router(*_args, **kwargs):
     return {"action": "write", "enough_to_write": True}
 
 
-async def _async_agent_plan_router(*args, **kwargs):
-    return _agent_plan_router(*args, **kwargs)
-
-
 class PersistenceTests(unittest.TestCase):
     """Investigation-state persistence: reasoning rows, hypothesis merge/gap injection."""
 
@@ -93,21 +89,13 @@ class PersistenceTests(unittest.TestCase):
                 self.assertTrue(second_open.is_set())
 
     def setUp(self) -> None:
-        # llm_gateway is the single seam for LLM JSON calls; patch here.
+        # Patch the owning JSON request implementation.
         llm_json_patch = patch(
-            "forensia.ai.llm.llm_gateway.request_llm_json",
+            "forensia.ai.llm.json_response.request_llm_json",
             side_effect=_agent_plan_router,
         )
         llm_json_patch.start()
         self.addCleanup(llm_json_patch.stop)
-        # The async report-refresh path uses async_request_llm_json; mock it too
-        # so async tests don't hit the real LLM.
-        self._async_llm_json_patch = patch(
-            "forensia.ai.llm.llm_gateway.async_request_llm_json",
-            side_effect=_async_agent_plan_router,
-        )
-        self._async_llm_json_patch.start()
-        self.addCleanup(self._async_llm_json_patch.stop)
 
     def test_collect_gaps_supports_english_and_japanese_placeholders(self) -> None:
         self.assertEqual(
@@ -322,6 +310,23 @@ class PersistenceTests(unittest.TestCase):
                 )
                 with self.assertRaises(ValueError):
                     load_persisted_hypotheses(db)
+
+                # Valid Spec does not excuse corruption of other durable fields.
+                db.execute(
+                    "UPDATE hypotheses SET verification_spec = ? WHERE hypothesis_id = 'H-BAD'",
+                    ('{"spec_version": "1"}',),
+                )
+                for column in ("required_entities", "source_rule_ids"):
+                    for broken in ("{}", "[1]", '[""]'):
+                        db.execute(
+                            f"UPDATE hypotheses SET {column} = ? WHERE hypothesis_id = 'H-BAD'",
+                            (broken,),
+                        )
+                        with self.assertRaisesRegex(ValueError, column):
+                            load_persisted_hypotheses(db)
+                    db.execute(
+                        f"UPDATE hypotheses SET {column} = '[]' WHERE hypothesis_id = 'H-BAD'"
+                    )
                 # Valid JSON in an unsupported spec format.
                 db.execute(
                     "UPDATE hypotheses SET verification_spec = ? "

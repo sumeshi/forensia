@@ -16,7 +16,6 @@ from uuid import uuid4
 
 import yaml
 
-from forensia.ai.audit import LLMCallLogger
 from forensia.ai.case_profile import propose_scope_candidates
 from forensia.ai.hypotheses.hypothesis_store import load_persisted_hypotheses
 from forensia.ai.hypotheses.seeding import (
@@ -39,7 +38,6 @@ from forensia.ai.investigation.work_state import (
 from forensia.ai.llm.llm_client import (
     LLMRequestTimeoutError,
     LLMServerUnavailableError,
-    chat_completion,
     outage_wait_until_recovered,
 )
 from forensia.ai.report_gap import (
@@ -261,21 +259,18 @@ def _ctx_get_report_status(
 def ctx_refresh_caches(
     ctx: Ctx,
     memory: MemoryManager,
-    base_url: str,
-    model: str,
     current_hypothesis_id: str | None = None,
     hypothesis: Hypothesis | None = None,
     db: CaseDB | None = None,
     session_id: str | None = None,
 ) -> None:
-    """Reload memory context caches and compact overview if needed.
+    """Rebuild the scoped model-visible memory context.
 
     When *hypothesis* is provided, entity/keypoint files are filtered by
     relevance to it (G-3) — this cache is handed to the planner as its
     default context, so the filtering must happen here, not only in the
     lazy-load fallbacks inside the planner.
     """
-    memory.compact_overview_if_needed(base_url=base_url, model=model)
     if hypothesis is not None and current_hypothesis_id is None:
         current_hypothesis_id = hypothesis.id
     relevance_terms = (
@@ -667,16 +662,14 @@ def _init_session(
     case: Case,
     db: CaseDB,
     profile: str,
-    base_url: str,
-    model: str,
     template_root: Path | None,
     active_pack_ids: set[str] | None = None,
     *,
     report_only: bool = False,
     forensia_policy: CasePolicyInput | None = None,
     report_input_record: dict[str, Any],
-) -> tuple[SessionState, Ctx, MemoryManager, LLMCallLogger, str, datetime, Path]:
-    """Initialize a new investigation session. Returns (state, ctx, memory, llm_logger, session_id, started_at, template_root).
+) -> tuple[SessionState, Ctx, MemoryManager, str]:
+    """Initialize a new investigation session and its durable state.
 
     With ``report_only=True`` the resume writes are skipped (R07): a report
     job does not reopen retryable work and does not mark the investigation
@@ -709,80 +702,89 @@ def _init_session(
                 "session lease acquired",
             ),
         )
-    memory = MemoryManager(
-        case,
-        summarize=lambda messages, m: chat_completion(
-            messages=messages, model=m, base_url=base_url
-        ),
-    )
-    profile_config = _load_profile_config(profile)
-    if template_root is None:
-        seed_case_report_templates(case)
-        template_root = case.report_template_dir
-    policy = decide_policy(forensia_policy, load_recorded_policy(db))
-    ctx = Ctx(owner_id=owner_id)
-    if policy.record is not None:
+    try:
+        memory = MemoryManager(case)
+        profile_config = _load_profile_config(profile)
+        if template_root is None:
+            seed_case_report_templates(case)
+            template_root = case.report_template_dir
+        policy = decide_policy(forensia_policy, load_recorded_policy(db))
+        ctx = Ctx(owner_id=owner_id)
+        if policy.record is not None:
+            _save_step(
+                db=db,
+                session_id=session_id,
+                iteration=0,
+                phase=CASE_POLICY_STEP_PHASE,
+                hypothesis_id=None,
+                input_json={
+                    "designated": bool(forensia_policy),
+                    "source": forensia_policy.source if forensia_policy else None,
+                    "source_path": (
+                        forensia_policy.source_path if forensia_policy else None
+                    ),
+                    "current_file_sha256": (
+                        sha256_hex(forensia_policy.body) if forensia_policy else None
+                    ),
+                },
+                output_json=policy.record,
+            )
         _save_step(
             db=db,
             session_id=session_id,
             iteration=0,
-            phase=CASE_POLICY_STEP_PHASE,
+            phase=REPORT_INPUT_PHASE,
             hypothesis_id=None,
-            input_json={
-                "designated": bool(forensia_policy),
-                "source": forensia_policy.source if forensia_policy else None,
-                "source_path": (
-                    forensia_policy.source_path if forensia_policy else None
-                ),
-                "current_file_sha256": (
-                    sha256_hex(forensia_policy.body) if forensia_policy else None
-                ),
-            },
-            output_json=policy.record,
+            input_json={"source_path": report_input_record.get("source_path")},
+            output_json=report_input_record,
         )
-    _save_step(
-        db=db,
-        session_id=session_id,
-        iteration=0,
-        phase=REPORT_INPUT_PHASE,
-        hypothesis_id=None,
-        input_json={"source_path": report_input_record.get("source_path")},
-        output_json=report_input_record,
-    )
-    ctx.forensia_policy = policy.applied
-    policy_objective_line = policy_objective(policy.applied) if policy.applied else ""
-    seed_findings(case, db, profile, active_pack_ids=active_pack_ids)
-    refresh_evidence_coverage(db)
-    profile_objective = str((profile_config or {}).get("objective") or "").strip()
-    effective_objective = policy_objective_line or profile_objective
-    _initialize_overview(memory, case, effective_objective)
-    # The explicit case instruction replaces the same-purpose profile default
-    # (GOAL §10.5): a second objective line would stack even as contradictory
-    # policy in Memory, so the profile objective is superseded when adopted.
-    _ensure_profile_objective(memory, effective_objective)
-    ensure_investigation_state(db, objective=effective_objective)
-    persisted_investigation = load_investigation_state(db) or {}
-    ensure_objective_gap(db, str(persisted_investigation.get("objective") or ""))
-    if not report_only:
-        reopen_retryable_work(db)
-        mark_investigation_started(db)
-    sync_scope_candidates(
-        memory,
-        db,
-        str(persisted_investigation.get("objective") or effective_objective),
-    )
-    llm_logger = LLMCallLogger(case, session_id)
-    active_hypotheses, resolved_hypotheses = load_persisted_hypotheses(db)
-    state = SessionState(
-        session_id=session_id,
-        iteration=0,
-        findings_snapshot=_finding_snapshot(db),
-        active_hypotheses=active_hypotheses,
-        resolved_hypotheses=resolved_hypotheses,
-    )
-    _seed_rule_hypotheses(db, state, session_id, active_pack_ids=active_pack_ids)
-    sync_keypoint_cards(memory, state.findings_snapshot)
-    _sync_hypothesis_cards(memory, state.active_hypotheses, state.resolved_hypotheses)
-    ctx.report_status = _build_report_status(db)
-    ctx_refresh_caches(ctx, memory, base_url, model, db=db, session_id=session_id)
-    return state, ctx, memory, llm_logger, session_id, started_at, template_root
+        ctx.forensia_policy = policy.applied
+        policy_objective_line = (
+            policy_objective(policy.applied) if policy.applied else ""
+        )
+        seed_findings(case, db, profile, active_pack_ids=active_pack_ids)
+        refresh_evidence_coverage(db)
+        profile_objective = str((profile_config or {}).get("objective") or "").strip()
+        effective_objective = policy_objective_line or profile_objective
+        _initialize_overview(memory, case, effective_objective)
+        # The explicit case instruction replaces the same-purpose profile default
+        # (GOAL §10.5): a second objective line would stack even as contradictory
+        # policy in Memory, so the profile objective is superseded when adopted.
+        _ensure_profile_objective(memory, effective_objective)
+        ensure_investigation_state(db, objective=effective_objective)
+        persisted_investigation = load_investigation_state(db) or {}
+        ensure_objective_gap(db, str(persisted_investigation.get("objective") or ""))
+        if not report_only:
+            reopen_retryable_work(db)
+            mark_investigation_started(db)
+        sync_scope_candidates(
+            memory,
+            db,
+            str(persisted_investigation.get("objective") or effective_objective),
+        )
+        active_hypotheses, resolved_hypotheses = load_persisted_hypotheses(db)
+        state = SessionState(
+            session_id=session_id,
+            iteration=0,
+            findings_snapshot=_finding_snapshot(db),
+            active_hypotheses=active_hypotheses,
+            resolved_hypotheses=resolved_hypotheses,
+        )
+        _seed_rule_hypotheses(db, state, session_id, active_pack_ids=active_pack_ids)
+        sync_keypoint_cards(memory, state.findings_snapshot)
+        _sync_hypothesis_cards(
+            memory, state.active_hypotheses, state.resolved_hypotheses
+        )
+        ctx.report_status = _build_report_status(db)
+        ctx_refresh_caches(ctx, memory, db=db, session_id=session_id)
+        return state, ctx, memory, session_id
+    except Exception:
+        persist_session_terminal_receipt(
+            db,
+            session_id,
+            "failed",
+            terminal_reason="exception: session initialization failed",
+            finished_at=datetime.now(UTC).replace(tzinfo=None),
+            owner_id=owner_id,
+        )
+        raise

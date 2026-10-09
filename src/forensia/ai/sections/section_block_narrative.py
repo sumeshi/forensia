@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from forensia.ai.llm import llm_gateway
+from forensia.ai.llm import json_response
 from forensia.ai.prompts.prompt_sections import (
     build_paragraph_narrate_messages,
     build_section_outline_messages,
@@ -34,6 +34,7 @@ from forensia.ai.sections.section_block_plan import (
 from forensia.ai.sections.section_exec import _classify_block_status
 from forensia.ai.sections.section_run_store import _store_section_run
 from forensia.core.log import log as _log
+from forensia.core.session import LLMBudgetExceededError
 from forensia.core.textutil import normalize_localized_dates
 from forensia.report.answers.answer_registry import build_structured_answer
 from forensia.report.answers.answer_store import _render_structured_answer_markdown
@@ -88,7 +89,6 @@ def narrate_paragraph_with_retry(
     narrate_schema: dict,
     model: str,
     base_url: str,
-    audit_callback,
     target_language: str = "",
 ) -> str:
     """Call paragraph_narrate once; retry with language/empty-body coaching as needed.
@@ -105,13 +105,12 @@ def narrate_paragraph_with_retry(
     )
 
     def _call(messages: list[dict[str, str]]) -> str:
-        parsed = llm_gateway.request_llm_json(
+        parsed = json_response.request_llm_json(
             messages=messages,
             model=model,
             base_url=base_url,
             json_schema=narrate_schema,
             telemetry_phase="section-narrative",
-            audit_callback=audit_callback,
         )
         return str(parsed.get("body", parsed.get("content", ""))).strip()
 
@@ -375,13 +374,11 @@ def _review_and_rewrite_narrative(
                 ),
             },
         ]
-        review_audit = ctx.review_audit or ctx.audit
         rewritten = narrate_paragraph_with_retry(
             narrate_messages=rewrite_msgs,
             narrate_schema=narrate_schema,
             model=ctx.model,
             base_url=ctx.base_url,
-            audit_callback=review_audit,
             target_language=_report_language(),
         )
         rewritten_problems = review_narrative_body(rewritten)
@@ -394,6 +391,8 @@ def _review_and_rewrite_narrative(
                 f"{ctx.section_key}/{ctx.block_heading} — unresolved after rewrite: {remaining}",
                 level="warning",
             )
+    except LLMBudgetExceededError:
+        raise
     except Exception as exc:
         _log(
             "REVIEW",
@@ -425,7 +424,6 @@ def _write_block_body(
     missing_questions: list[Any],
     actual_query_count: int,
     actual_query_row_counts: list[int],
-    audit_callback=None,
 ) -> tuple[str, str]:
     if status == "insufficient_evidence":
         reusable_rows_present = any(
@@ -472,8 +470,6 @@ def _write_block_body(
             actual_query_row_counts,
         )
 
-    if audit_callback:
-        audit_callback(messages, body)
     _store_section_run(
         ctx.db,
         section_key=ctx.section_key,
@@ -545,13 +541,12 @@ def _write_question_block(
                 time_range=ctx.case.time_range,
                 db=ctx.db,
             )
-            classification = llm_gateway.request_llm_json(
+            classification = json_response.request_llm_json(
                 messages=classify_messages,
                 model=ctx.model,
                 base_url=ctx.base_url,
                 json_schema=classify_schema,
                 telemetry_phase="section-structured-classify",
-                audit_callback=ctx.audit,
             )
             # Handle picked_row_indices (int array) instead of picked_row_ids
             picked_row_indices = classification.get("picked_row_indices") or []
@@ -647,13 +642,12 @@ def _write_narrative_block(
                 prior_section_keypoints=prior_section_keypoints,
                 db=ctx.db,
             )
-            outline = llm_gateway.request_llm_json(
+            outline = json_response.request_llm_json(
                 messages=outline_messages,
                 model=ctx.model,
                 base_url=ctx.base_url,
                 json_schema=outline_schema,
                 telemetry_phase="section-outline",
-                audit_callback=ctx.audit,
             )
             outline_items: list[dict[str, Any]] = outline.get("outline") or []
             all_key_points: list[str] = _label_key_points_with_verdicts(
@@ -688,7 +682,6 @@ def _write_narrative_block(
             narrate_schema=narrate_schema,
             model=ctx.model,
             base_url=ctx.base_url,
-            audit_callback=ctx.audit,
             target_language=_report_language(),
         )
         if is_effectively_empty_body(body):

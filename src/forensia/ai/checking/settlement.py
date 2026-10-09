@@ -614,48 +614,6 @@ def decide_settlement(
     )
 
 
-def build_settlement_input(
-    *,
-    hypothesis: Hypothesis,
-    checker_verdict: str,
-    check_summary: str,
-    sample_rows: list[dict[str, Any]] | None = None,
-    co_observed_event_ids: list[int] | None = None,
-    co_observation_satisfied: bool = False,
-    co_observation_reason: str = "",
-    same_host: bool = False,
-    within_minutes: int | None = None,
-    is_benign_auth: bool = False,
-    has_rule_refute_when_zero_rows: bool = False,
-    consecutive_zero_row_inconclusive: int = 0,
-    consecutive_same_missing: int = 0,
-    unavailable_missing_event_ids: list[int] | None = None,
-    absence_scope: Literal["observable", "unknown", "unavailable"] = "unknown",
-    absence_note: str = "",
-    sufficiency_result: SufficiencyResult | None = None,
-) -> SettlementInput:
-    """Convenience constructor for SettlementInput."""
-    return SettlementInput(
-        hypothesis=hypothesis,
-        checker_verdict=checker_verdict,
-        check_summary=check_summary,
-        sample_rows=sample_rows,
-        co_observed_event_ids=co_observed_event_ids,
-        co_observation_satisfied=co_observation_satisfied,
-        co_observation_reason=co_observation_reason,
-        same_host=same_host,
-        within_minutes=within_minutes,
-        is_benign_auth=is_benign_auth,
-        has_rule_refute_when_zero_rows=has_rule_refute_when_zero_rows,
-        consecutive_zero_row_inconclusive=consecutive_zero_row_inconclusive,
-        consecutive_same_missing=consecutive_same_missing,
-        unavailable_missing_event_ids=unavailable_missing_event_ids,
-        absence_scope=absence_scope,
-        absence_note=absence_note,
-        sufficiency_result=sufficiency_result,
-    )
-
-
 def build_settlement_input_from_confirm_when(
     *,
     hypothesis: Hypothesis,

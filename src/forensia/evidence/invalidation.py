@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Collection
 
 from forensia.db.database import CaseDB
 from forensia.evidence.content_identity import (
@@ -21,6 +22,143 @@ _SOURCE_TABLES: dict[str, tuple[tuple[str, str], ...]] = {
     ),
     "registry": (("registry_artifacts", "artifact_id"),),
 }
+
+_SOURCE_FILE_TABLES: dict[str, tuple[str, ...]] = {
+    "evtx": ("evtx_events",),
+    "mft": ("mft_timeline", "mft_entries"),
+    "prefetch": ("prefetch_timeline", "prefetch_executions"),
+}
+
+
+def find_replaced_source_ids(
+    db: CaseDB, source_keys: Collection[str] | None
+) -> dict[str, dict[str, str]]:
+    """Map each superseded source hash to its exact current replacement hash."""
+    keys = tuple(dict.fromkeys(str(key) for key in (source_keys or ()) if key))
+    if source_keys is None:
+        new_sources = db.execute(
+            "SELECT sha256, path, source_kind FROM ("
+            "SELECT sha256, path, source_kind, "
+            "row_number() OVER (PARTITION BY path, source_kind "
+            "ORDER BY ingested_at DESC NULLS LAST, sha256 DESC) AS current_rank "
+            "FROM ingested_files) WHERE current_rank = 1"
+        ).fetchall()
+    elif keys:
+        placeholders = ", ".join("?" for _ in keys)
+        new_sources = db.execute(
+            f"SELECT sha256, path, source_kind FROM ingested_files "
+            f"WHERE sha256 IN ({placeholders})",
+            keys,
+        ).fetchall()
+    else:
+        return {}
+    grouped: dict[tuple[str, str], list[str]] = {}
+    for source_id, path, family in new_sources:
+        if not source_id or not path or family not in _SOURCE_FILE_TABLES:
+            continue
+        grouped.setdefault((str(family), str(path)), []).append(str(source_id))
+    if not grouped:
+        return {}
+
+    replacements: dict[str, dict[str, str]] = {}
+    for (family, path), selected_sources in grouped.items():
+        if source_keys is None:
+            # The normalizer is rebuilding all registered inputs. The latest
+            # ingested hash is the active version; older same-path hashes are
+            # replacement candidates, never peers that can replace one another.
+            current = db.execute(
+                "SELECT sha256 FROM ingested_files WHERE path = ? AND source_kind = ? "
+                "ORDER BY ingested_at DESC NULLS LAST, sha256 DESC LIMIT 1",
+                (path, family),
+            ).fetchone()
+            current_id = str(current[0]) if current else ""
+        else:
+            selected_placeholders = ", ".join("?" for _ in selected_sources)
+            current = db.execute(
+                f"SELECT sha256 FROM ingested_files WHERE path = ? "
+                f"AND source_kind = ? AND sha256 IN ({selected_placeholders}) "
+                "ORDER BY ingested_at DESC NULLS LAST, sha256 DESC LIMIT 1",
+                (path, family, *selected_sources),
+            ).fetchone()
+            current_id = str(current[0]) if current else ""
+        if not current_id:
+            continue
+        old_rows = db.execute(
+            "SELECT sha256 FROM ingested_files "
+            "WHERE path = ? AND source_kind = ? AND sha256 != ?",
+            (path, family, current_id),
+        ).fetchall()
+        for (old_id,) in old_rows:
+            if old_id:
+                replacements.setdefault(family, {})[str(old_id)] = current_id
+    return replacements
+
+
+def retire_replaced_sources(
+    db: CaseDB, replacements: dict[str, dict[str, str]]
+) -> None:
+    """Invalidate and remove superseded source rows after replacement normalized."""
+    for family, old_to_new in replacements.items():
+        tables = _SOURCE_FILE_TABLES.get(family)
+        if not tables or not old_to_new:
+            continue
+        eligible_sources: set[str] = set()
+        for old_id, new_id in old_to_new.items():
+            old_row = db.execute(
+                "SELECT path FROM ingested_files WHERE sha256 = ? AND source_kind = ?",
+                (old_id, family),
+            ).fetchone()
+            if not old_row or not old_row[0]:
+                continue
+            replacement = db.execute(
+                "SELECT 1 FROM ingested_files AS current "
+                "JOIN evidence_sources AS status ON status.source_id = current.sha256 "
+                "WHERE current.path = ? AND current.source_kind = ? "
+                "AND current.sha256 = ? AND status.artifact_family = ? "
+                "AND status.ingest_status IN ('normalized', 'empty') LIMIT 1",
+                (old_row[0], family, new_id, family),
+            ).fetchone()
+            if replacement:
+                eligible_sources.add(old_id)
+        if not eligible_sources:
+            continue
+        ordered_sources = tuple(sorted(eligible_sources))
+        source_placeholders = ", ".join("?" for _ in ordered_sources)
+        evidence_ids: set[str] = set()
+        for table in tables:
+            evidence_ids.update(
+                str(row[0])
+                for row in db.execute(
+                    f"SELECT DISTINCT evidence_id FROM {table} "
+                    f"WHERE source_file IN ({source_placeholders}) "
+                    "AND evidence_id IS NOT NULL",
+                    ordered_sources,
+                ).fetchall()
+                if row[0]
+            )
+        referenced = fetch_referenced_evidence_ids(db, family) & evidence_ids
+        if referenced:
+            invalidate_removed_evidence(db, referenced)
+        with db.transaction():
+            for table in tables:
+                db.execute(
+                    f"DELETE FROM {table} WHERE source_file IN ({source_placeholders})",
+                    ordered_sources,
+                )
+            if evidence_ids:
+                evidence_placeholders = ", ".join("?" for _ in evidence_ids)
+                db.execute(
+                    f"DELETE FROM case_timeline WHERE evidence_id IN ({evidence_placeholders})",
+                    tuple(sorted(evidence_ids)),
+                )
+            db.execute(
+                f"DELETE FROM evidence_sources WHERE source_id IN ({source_placeholders})",
+                ordered_sources,
+            )
+            db.execute(
+                f"DELETE FROM ingested_files WHERE sha256 IN ({source_placeholders})",
+                ordered_sources,
+            )
 
 
 def _json_string_list(value: object) -> list[str]:

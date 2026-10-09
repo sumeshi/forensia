@@ -2,15 +2,12 @@ from __future__ import annotations
 
 import logging
 import shutil
-from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import yaml
-
-from forensia.core.timeutil import parse_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -32,126 +29,50 @@ rules: []
 EPOCH_GAP_DAYS = 90
 
 
-def _parse_dt(ts_str: str) -> datetime:
-    """Parse an ISO-8601 timestamp string to a datetime object."""
-    result = parse_timestamp(ts_str)
-    if result is None:
-        raise ValueError(f"Cannot parse timestamp: {ts_str}")
-    return result
-
-
-def _days_between(ts1: str, ts2: str) -> float:
-    """Return absolute number of days between two ISO timestamp strings."""
-    try:
-        dt1 = _parse_dt(ts1)
-        dt2 = _parse_dt(ts2)
-        return abs((dt1 - dt2).total_seconds()) / 86400.0
-    except ValueError, TypeError:
-        return 0.0
-
-
 def detect_epochs(
     conn, epoch_gap_days: int = EPOCH_GAP_DAYS
 ) -> dict[str, list[dict[str, Any]]]:
-    """Cluster each host's event timestamps and label pre-deployment epochs.
+    """Aggregate an ordered stream into host epochs without retaining evidence rows.
 
-    Returns a dict keyed by canonical host name (UPPER(TRIM(computer))) with
-    per-host epoch clusters sorted by first_seen::
-
-        {
-          "HOST-A": [
-            {
-              "label": "pre-deployment" | "active" | "inactive",
-              "display_name": str,
-              "first_seen": str,
-              "last_seen": str,
-              "event_count": int,
-            }
-          ]
-        }
-
-    Clusters are formed by sorting each host's event timestamps and splitting
-    on gaps > epoch_gap_days. The latest cluster (by last_seen) is labeled
-    'active'; clusters entirely before it (separated by > epoch_gap_days)
-    are 'pre-deployment'; others are 'active'.
+    The first observed host spelling is the display name. A gap strictly
+    greater than ``epoch_gap_days`` closes a pre-deployment epoch; the final
+    epoch for each canonical host remains active.
     """
-    rows = conn.execute("""
-        SELECT UPPER(TRIM(computer)) AS host_canonical,
-               computer AS display_name,
-               timestamp
+    cursor = conn.execute("""
+        SELECT UPPER(TRIM(computer)) AS host_canonical, computer, timestamp
         FROM evtx_events
         WHERE computer IS NOT NULL AND TRIM(computer) != ''
           AND timestamp IS NOT NULL
         ORDER BY host_canonical, timestamp
-    """).fetchall()
-
-    if not rows:
-        return {}
-
-    # Group timestamps by host
-    host_timestamps: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
-    for host_canon, disp, ts in rows:
-        host_timestamps[str(host_canon)].append((str(host_canon), str(disp), str(ts)))
-
+    """)
     result: dict[str, list[dict[str, Any]]] = {}
-
-    for host_canon, entries in host_timestamps.items():
-        # Sort by timestamp
-        entries.sort(key=lambda x: x[2])
-        display_name = entries[0][1]
-
-        # Cluster: split on gaps > epoch_gap_days
-        clusters: list[list[tuple[str, str, str]]] = []
-        current_cluster: list[tuple[str, str, str]] = [entries[0]]
-
-        for i in range(1, len(entries)):
-            gap = _days_between(entries[i - 1][2], entries[i][2])
-            if gap > epoch_gap_days:
-                clusters.append(current_cluster)
-                current_cluster = [entries[i]]
-            else:
-                current_cluster.append(entries[i])
-        if current_cluster:
-            clusters.append(current_cluster)
-
-        # Label each cluster
-        host_clusters: list[dict[str, Any]] = []
-        for cl in clusters:
-            first = cl[0][2]
-            last = cl[-1][2]
-            count = len(cl)
-            host_clusters.append(
-                {
+    previous_host = None
+    previous_time = None
+    cluster = None
+    display_name = ""
+    while batch := cursor.fetchmany(1024):
+        for host, display, timestamp in batch:
+            new_host = host != previous_host
+            new_epoch = new_host or (
+                (timestamp - previous_time).total_seconds() / 86400 > epoch_gap_days
+            )
+            if new_host:
+                result[host] = []
+                display_name = str(display)
+            if new_epoch:
+                if not new_host:
+                    cluster["label"] = "pre-deployment"
+                cluster = {
                     "label": "active",
                     "display_name": display_name,
-                    "first_seen": first,
-                    "last_seen": last,
-                    "event_count": count,
+                    "first_seen": str(timestamp),
+                    "last_seen": str(timestamp),
+                    "event_count": 0,
                 }
-            )
-
-        # The latest cluster (by last_seen) is the active anchor
-        if host_clusters:
-            latest = max(host_clusters, key=lambda c: c["last_seen"])
-            latest["label"] = "active"
-            for cluster in host_clusters:
-                if cluster is latest:
-                    continue
-                # If this cluster ends before the latest cluster begins
-                # (with gap > epoch_gap_days), it's pre-deployment
-                if cluster["last_seen"] < latest["first_seen"]:
-                    if (
-                        _days_between(cluster["last_seen"], latest["first_seen"])
-                        > epoch_gap_days
-                    ):
-                        cluster["label"] = "pre-deployment"
-                    else:
-                        cluster["label"] = "active"
-                else:
-                    cluster["label"] = "active"
-
-        result[host_canon] = host_clusters
-
+                result[host].append(cluster)
+            cluster["last_seen"] = str(timestamp)
+            cluster["event_count"] += 1
+            previous_host, previous_time = host, timestamp
     return result
 
 
@@ -248,10 +169,6 @@ class Case:
         return self.path / "findings"
 
     @property
-    def ai_logs_dir(self) -> Path:
-        return self.path / "ai_logs"
-
-    @property
     def reports_dir(self) -> Path:
         return self.path / "reports"
 
@@ -288,12 +205,11 @@ class Case:
     def clear_runtime_outputs(
         self,
         preserve_memory: bool = True,
-        preserve_ai_logs: bool = True,
         drop_database: bool = True,
         preserve_raw: bool = False,
     ) -> None:
-        """Remove runtime outputs (raw, findings, reports, DB, memory, AI logs)
-        while optionally preserving memory, AI logs, raw evidence, and/or the database.
+        """Remove runtime outputs (raw, findings, reports, DB, memory)
+        while optionally preserving memory, raw evidence, and/or the database.
 
         ``preserve_raw=True`` keeps the ingested JSONL under ``raw/``. This is the
         right choice for ``--rerun`` (re-run AI investigation without losing the
@@ -313,11 +229,6 @@ class Case:
                 if database_path.exists():
                     database_path.unlink()
 
-        if not preserve_ai_logs:
-            if self.ai_logs_dir.exists():
-                shutil.rmtree(self.ai_logs_dir)
-            self.ai_logs_dir.mkdir(parents=True, exist_ok=True)
-
         if not preserve_memory:
             if self.memory_dir.exists():
                 shutil.rmtree(self.memory_dir)
@@ -332,7 +243,6 @@ class Case:
             case.raw_dir,
             case.db_dir,
             case.findings_dir,
-            case.ai_logs_dir,
             case.reports_dir,
             case.memory_dir,
             case.report_template_dir,
@@ -348,7 +258,6 @@ class Case:
                     "raw": str(case.raw_dir.relative_to(case.path)),
                     "db": str(case.db_dir.relative_to(case.path)),
                     "findings": str(case.findings_dir.relative_to(case.path)),
-                    "ai_logs": str(case.ai_logs_dir.relative_to(case.path)),
                     "reports": str(case.reports_dir.relative_to(case.path)),
                     "memory": str(case.memory_dir.relative_to(case.path)),
                     "report_template": str(
@@ -370,13 +279,15 @@ class Case:
         case = cls(Path(path).resolve())
         if not case.manifest_path.exists():
             raise FileNotFoundError(f"Case manifest not found: {case.manifest_path}")
-        try:
-            manifest = (
-                yaml.safe_load(case.manifest_path.read_text(encoding="utf-8")) or {}
+        manifest = yaml.safe_load(case.manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict):
+            raise ValueError(f"Case manifest must be a mapping: {case.manifest_path}")
+        timezone = manifest.get("source_timezone")
+        if not isinstance(timezone, str) or not timezone.strip():
+            raise ValueError(
+                f"Case manifest has no source_timezone: {case.manifest_path}"
             )
-            case.source_timezone = str(manifest.get("source_timezone") or "UTC")
-        except Exception:
-            case.source_timezone = "UTC"
+        case.source_timezone = timezone
         return case
 
 

@@ -17,7 +17,7 @@ class NormalizeMftTests(unittest.TestCase):
             case = Case.init(Path(tmpdir) / "case")
             mft_path = case.raw_dir / "mft-entries-001.jsonl"
             source_file = "disk-image-1/$MFT"
-            evidence_id = "mft-000000000001-01"
+            evidence_id = "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000000001-01"
 
             mft_path.write_text(
                 "\n".join(
@@ -139,7 +139,7 @@ class NormalizeMftTests(unittest.TestCase):
                 entries, timeline = normalize_mft(case, db)
             self.assertEqual((0, 0), (entries, timeline))
 
-    def test_malformed_json_line_skipped_gracefully(self) -> None:
+    def test_malformed_json_line_rejects_source_without_partial_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
             mft_path = case.raw_dir / "mft-entries-001.jsonl"
@@ -164,14 +164,14 @@ class NormalizeMftTests(unittest.TestCase):
                 + "\n",
                 encoding="utf-8",
             )
-            try:
-                with CaseDB(case) as db:
-                    entries, timeline = normalize_mft(case, db)
-                self.assertEqual(1, entries)
-                self.assertEqual(1, timeline)
-            except Exception:
-                self.skipTest(
-                    "DuckDB read_ndjson_objects does not skip malformed lines without ignore_errors"
+            with CaseDB(case) as db:
+                with self.assertRaises(Exception):
+                    normalize_mft(case, db)
+                self.assertEqual(
+                    (0,), db.execute("SELECT COUNT(*) FROM mft_entries").fetchone()
+                )
+                self.assertEqual(
+                    (0,), db.execute("SELECT COUNT(*) FROM mft_timeline").fetchone()
                 )
 
     def test_mft_record_missing_optional_fields(self) -> None:

@@ -55,7 +55,7 @@ uv run forensia investigate ./case001 ./input --profile windows-basic
 
 After installing the command globally, omit `uv run`. Without both an endpoint and model, `investigate` runs the deterministic evidence stages and skips the LLM investigation. A configured but unavailable server enters bounded outage recovery; it is not treated as an unconfigured model.
 
-With a local server and dependencies/model files already installed, investigation and report generation can run offline. A remote endpoint receives case-derived prompt content. Treat input artifacts, case directories, reports, memory, and AI logs as sensitive; use copies of acquired evidence and review conclusions against their sources. See [SECURITY.md](SECURITY.md) for vulnerability reporting.
+With a local server and dependencies/model files already installed, investigation and report generation can run offline. A remote endpoint receives case-derived prompt content. Treat input artifacts, case databases, reports, and memory as sensitive; Trace includes model requests and responses. Use copies of acquired evidence and review conclusions against their sources. See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
 ### Runtime budgets
 
@@ -112,7 +112,7 @@ forensia report --help
 | `--no-progress-limit` | `3` cycles without semantic progress |
 | `--report-every-n-cycles` | `3`; periodic section refresh |
 | `--report-max-queries-per-section` | `0` uses the environment setting |
-| `--max-llm-calls` | `0` disables the session call cap; set a positive cap when wanted |
+| `--max-llm-calls` | `0` disables the session cap; a positive cap is checked before each logical call, including compaction and failed calls |
 | `--auto-rulepacks / --no-auto-rulepacks` | Enabled; add packs eligible for observed artifact families |
 | `--timezone` | An IANA name, such as `America/New_York`; overrides the case manifest |
 | `--forensia-md`, `--report-spec`, `--knowledge` | Explicit Markdown inputs described below |
@@ -121,7 +121,9 @@ forensia report --help
 
 Ordinary resume preserves case state. Ctrl-C during the investigation requests a stop at the engine's next handling boundary; it may wait for the current operation. The session records its terminal reason, and later `investigate` resumes from durable work.
 
-`--rerun` is a fresh investigation within a compatible case: it clears investigation/report state and input-adoption receipts, while retaining raw records, memory, and AI logs. Use a new case directory for an isolated experiment. Unsupported schema versions are rejected, not migrated; `--rerun` cannot upgrade them.
+Resume uses Trace stage receipts and the active sources' normalization status. Changes to parser implementation/dependencies rerun normalization; rule/profile or case suppression changes rerun analysis. A missing or failed source status cannot satisfy the normalization gate.
+
+`--rerun` is a fresh investigation within a compatible case: it clears normalized and investigation/report state and input-adoption receipts, while retaining active source registrations, raw records, and memory. Use a new case directory for an isolated experiment. The current schema version is **6**. Unsupported schema versions are rejected, not migrated; `--rerun` cannot upgrade them.
 
 ## Markdown inputs
 
@@ -244,7 +246,7 @@ Three boundaries support this loop:
 | Interpretation | Explain observations and propose a verdict | Assess declared conditions, aggregate eligible support and contradictions, gate the state transition |
 | Reporting | Write explanatory passages and identify unanswered questions | Generate structured answers/tables, retain evidence references, validate publication, admit follow-up work |
 
-The CLI calls [pipeline.run_investigation](src/forensia/pipeline.py) for case creation/resume, ingest, normalization, rules, investigation, and report rendering. One process owns writes to each case. The [investigation loop](src/forensia/ai/investigation/investigator.py) coordinates work selection and individual bounded attempts; session handling records execution status and budgets. Report writing uses the same Case/Trace and verification owners.
+The CLI calls [pipeline.run_investigation](src/forensia/pipeline.py) for case creation/resume, ingest, normalization, rules, investigation, and report rendering. `pipeline.run_report` assembles report input adoption, optional writing, and rendering without adopting investigation instructions. One process owns writes to each case. The [investigation loop](src/forensia/ai/investigation/investigator.py) coordinates work selection and individual bounded attempts; session handling records execution status and budgets. Report writing uses the same Case/Trace and verification owners.
 
 ```mermaid
 flowchart TD
@@ -275,14 +277,13 @@ Case and Trace are stored in DuckDB. Working State combines a selected projectio
 | State | What it owns |
 |---|---|
 | `db/case.duckdb` | Normalized evidence, sources/Coverage, Findings, Hypotheses and VerificationSpec, assessed evidence links, relations, objective, Gaps/Tasks, report sections and Claims |
-| `db/trace.duckdb` | Session lifecycle, investigation steps, hypothesis reasoning, retrieval/LLM telemetry, input-adoption receipts, and bounded recent progress |
+| `db/trace.duckdb` | Session lifecycle, stage/investigation steps, hypothesis reasoning, retrieval/LLM request and response records, input-adoption receipts, and bounded recent progress |
 | `memory/` | Scoped working Markdown and context cards; not the authority for evidence, verdicts, or completion |
-| `ai_logs/` | Inspectable LLM inputs/outputs; previous reasoning is a lead or explanation, never proof |
 | `reports/` | Generated Markdown/HTML, briefs, structured answers, and diagnostic exports |
 
 CaseDB attaches Trace to the Case connection and exposes its tables through connection-local views. Preserve both databases together. Trace includes updated lifecycle rows and idempotent step writes, and progress is bounded; it is not a fully append-only event store or a complete historical replay engine. The authoritative DDL and table placement are in [schema.py](src/forensia/db/schema.py), with opening/version checks in [database.py](src/forensia/db/database.py).
 
-Evidence is an observed normalized record. A Finding is a derived signal; a Hypothesis is an interpretation to test; a Claim is an assertion in the report; a Gap describes unresolved information and a Task the associated work. Persisting these objects does not give them equal evidentiary weight. Entity memory cards organize observed names and references; they do not establish a case-wide multi-host identity graph.
+Evidence is an observed normalized record. EVTX, MFT, and Prefetch identifiers combine the full source-content SHA-256 with the record's identity within that source; Registry identifiers retain dataset contributors. Records with the same local number in different sources therefore remain distinct. A Finding is a derived signal; a Hypothesis is an interpretation to test; a Claim is an assertion in the report; a Gap describes unresolved information and a Task the associated work. Persisting these objects does not give them equal evidentiary weight. Entity memory cards organize observed names and references; they do not establish a case-wide multi-host identity graph.
 
 ### Verification and lifecycle
 
@@ -299,17 +300,19 @@ The model uses role-specific structured responses through an OpenAI-compatible c
 
 Coverage separates absent, partial, failed, unsupported, and available telemetry. Parser success or zero rows alone does not prove completeness. Empty-result refutation needs an explicit refute condition and a certified observable scope; the present certification is conservative and centered on direct case-wide EVTX event-ID lookups. Registry observations remain partial when parser/plugin completeness is unproven. Registry hives and companion logs retain dataset-level contributors rather than assigning uncertain observations to an invented host or single source.
 
-Evidence links retain source/content/Spec fingerprints and assessment grounds. Source replacement, content changes, or a changed Spec can make historical support ineligible and reopen dependent work. Old links remain traceable. See [invalidation.py](src/forensia/evidence/invalidation.py) and [content_identity.py](src/forensia/evidence/content_identity.py).
+Evidence links retain source/content/Spec fingerprints and assessment grounds. Source replacement, content changes, or a changed Spec can make historical support ineligible and reopen dependent work. A replacement retires the old source only after the selected new revision normalizes successfully or is explicitly empty; a failed latest revision cannot authorize retirement through an earlier revision. Trace records the source transition, and retained superseded raw files are excluded from ordinary normalization. See [invalidation.py](src/forensia/evidence/invalidation.py) and [content_identity.py](src/forensia/evidence/content_identity.py).
 
 Selection, stop classification, and reopening share the read-side judgment in [work_judgment.py](src/forensia/ai/investigation/work_judgment.py); [work_state.py](src/forensia/ai/investigation/work_state.py) owns the durable transitions. The investigation agenda is derived from existing Hypothesis/Gap/Task state. Unresolved work with no runnable action needs a blocker and retry condition, not a successful completion label. Semantic progress is a change in work, observations, contradictions, or source/Coverage state, not growth in report prose.
 
 Session lifecycle records a terminal reason before fallible final projections and retains ownership through the closing report pass. Expired leases are reconciled at startup. Execution status and budgets govern whether the session continues; evidence and unresolved work govern what the investigation can conclude.
 
+Trace distinguishes logical LLM calls, provider attempts, and deterministic operations. JSON repair and transport retries are attempts under their parent request; a recovered operation that is invoked again starts new requests. The session cap applies at the logical-call entry, and exhaustion records a resumable stop without another model-dependent final report pass. Usage aggregates keep provider-reported tokens, local estimates, and unknown usage separate. HTTP clients are scoped to the investigation and closed at its end. See [llm_telemetry.py](src/forensia/ai/llm_telemetry.py).
+
 ### Working context
 
 Each attempt gets a deterministic work projection from Case/Trace: current Spec, assessed support, contradictions, unmet requirements, and prior attempts. Memory visibility is scoped to shared material and the current hypothesis; `read_more` enforces the same boundary. Schema/recipe/playbook disclosure is a projection of eligibility, not a new permission system.
 
-Some Markdown can be regenerated from the DB; authored notes and condensed overview prose cannot all be reconstructed. Current compaction includes in-place reduction with explicit loss labels. Preserve the case's memory when retaining authored context. A compact summary never replaces authoritative Case/Trace state. Knowledge selection uses the files available to the invocation, with the revision limitations described in [Markdown inputs](#knowledge-local-investigation-guidance).
+Some Markdown can be regenerated from the DB; authored notes and overview prose cannot all be reconstructed. Request-time context reductions leave overview and entity files intact. File size limits trim task and suspicious-evidence indexes, while older timeline entries can be archived. Preserve the case's memory when retaining authored context. A compact summary never replaces authoritative Case/Trace state. Knowledge selection uses the files available to the invocation, with the revision limitations described in [Markdown inputs](#knowledge-local-investigation-guidance).
 
 ### Reports and audit trail
 
@@ -330,7 +333,6 @@ case001/
 │   ├── case.duckdb         # current evidence and case state
 │   └── trace.duckdb        # sessions, receipts, reasoning, telemetry
 ├── memory/                # scoped working Markdown, including authored material
-├── ai_logs/               # LLM input/output diagnostics
 ├── findings/              # finding detail exports
 ├── report_template/       # seeded templates and format settings
 └── reports/               # report.md, report.html, structured/debug outputs
@@ -382,10 +384,12 @@ uv run pytest tests/ -q
 uv run ruff check src tests scripts
 uv run ruff format --check src tests scripts
 uv run python scripts/check_imports.py
+uv run python scripts/audit_schema_coverage.py --strict
+uv run python scripts/regenerate_playbook.py --check
 uv run forensia doctor
 ```
 
-`doctor` and `templates-export` are callable maintenance commands hidden from the top-level help. Doctor runs schema coverage, generated-playbook drift, import boundaries, verdict taxonomy, template contracts, report-validation checks, lint, and a test subset. It does **not** replace the full pytest run. Repository scripts and tests are needed for its complete development checks.
+`doctor` and `templates-export` are callable maintenance commands hidden from the top-level help. Doctor checks installed declarations, bundled report templates, and disposable Case/Trace persistence. It needs no source checkout, tests, or development tools. CI runs the development checks above explicitly; doctor does not replace them.
 
 Keep pytest offline and use disposable cases. Mock the model/provider boundary, then exercise real storage, CLI behavior, and generated outputs. Retain tests for Evidence/provenance, Assessment/Sufficiency/Settlement, bounded execution, admitted work, termination, and resume. Give each invariant a primary test owner. Remove tests for retired APIs and avoid copying constants, SQL strings, internal counters, or prose into assertions merely to freeze implementation details. Live-model quality/performance experiments belong outside pytest.
 

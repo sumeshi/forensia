@@ -8,7 +8,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any
 
-from forensia.ai.audit import LLMCallLogger
 from forensia.ai.case_profile import CaseEvidenceProfile, observed_event_ids
 from forensia.ai.checking.assessment import assess_evidence_group
 from forensia.ai.checking.check_normalize import summarize_query_result
@@ -61,7 +60,12 @@ from forensia.ai.retrieval_telemetry import evaluate_retrieval
 from forensia.core.case import Case
 from forensia.core.log import log as _log
 from forensia.core.memory import MemoryManager
-from forensia.core.session import HistoryEntry, Hypothesis, SessionState
+from forensia.core.session import (
+    HistoryEntry,
+    Hypothesis,
+    LLMBudgetExceededError,
+    SessionState,
+)
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
 from forensia.knowledge.coverage import derive_required_capabilities
@@ -148,7 +152,6 @@ class _HypothesisRunState:
     base_url: str
     model: str
     plan_cycle: int
-    llm_logger: LLMCallLogger
     session_id: str
     case: Case
     emit_fn: Callable[..., None] | None
@@ -175,7 +178,7 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
     hypothesis, state, ctx = rs.hypothesis, rs.state, rs.ctx
     memory, db, case = rs.memory, rs.db, rs.case
     base_url, model, plan_cycle = rs.base_url, rs.model, rs.plan_cycle
-    llm_logger, session_id = rs.llm_logger, rs.session_id
+    session_id = rs.session_id
     query_index, llm_status_fn = rs.query_index, rs.llm_status_fn
     case_profile = rs.case_profile
     try:
@@ -190,22 +193,13 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
             db=db,
             default_context_md=ctx.memory_plan,
             status_callback=llm_status_fn or (lambda msg: _log("LLM", msg)),
-            audit_callback=lambda msgs, out, parsed, hid=hypothesis.id, qi=query_index: (
-                llm_logger.write(
-                    iteration=plan_cycle,
-                    phase="plan-hypothesis",
-                    input_messages=msgs,
-                    output=parsed,
-                    model=model,
-                    base_url=base_url,
-                    suffix=f"{hid}-{qi:02d}",
-                )
-            ),
             query_index=query_index,
             time_range=case.time_range,
             case_profile=case_profile,
             case_policy=rs.ctx.forensia_policy,
         )
+    except LLMBudgetExceededError:
+        raise
     except Exception as exc:
         err_msg = f"LLM failed for {hypothesis.id}: {exc}"
         _log("PLAN_HYPOTHESIS", err_msg, level="error")
@@ -395,7 +389,7 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
     hypothesis, state = rs.hypothesis, rs.state
     db, case = rs.db, rs.case
     base_url, model, plan_cycle = rs.base_url, rs.model, rs.plan_cycle
-    llm_logger, session_id = rs.llm_logger, rs.session_id
+    session_id = rs.session_id
     query_index, llm_status_fn = rs.query_index, rs.llm_status_fn
     candidates, planned_query = rs.candidates, rs.planned_query
     result_summary, fallback_info = rs.result_summary, rs.fallback_info
@@ -414,15 +408,9 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
             model=model,
             status_callback=llm_status_fn or (lambda msg: _log("LLM", msg)),
             fallback_info=fallback_info,
-            audit_callback=lambda phase, msgs, out, parsed: llm_logger.write(
-                iteration=plan_cycle,
-                phase=phase,
-                input_messages=msgs,
-                output=parsed,
-                model=model,
-                base_url=base_url,
-            ),
         )
+    except LLMBudgetExceededError:
+        raise
     except Exception as exc:
         err_msg = f"LLM failed for {hypothesis.id}/{planned_query.query_id}: {exc}"
         _log("CHECK", err_msg, level="error")
@@ -656,7 +644,7 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
     check_result, state, db = rs.check_result, rs.state, rs.db
     session_id, hypothesis, memory = rs.session_id, rs.hypothesis, rs.memory
     planned_query, rows = rs.planned_query, rs.rows
-    base_url, model, ctx = rs.base_url, rs.model, rs.ctx
+    ctx = rs.ctx
     plan_cycle, query_index = rs.plan_cycle, rs.query_index
     emit_fn, focus_sections = rs.emit_fn, rs.focus_sections
     state.history = state.history[-50:]
@@ -788,11 +776,6 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
     )
     # R3-09: Collapse refuted-template overview lines into counter
     memory.collapse_refuted_overview_lines()
-    try:
-        memory.compact_overview_if_needed(base_url=base_url, model=model)
-        memory.compact_oversized_with_llm(base_url=base_url, model=model)
-    except Exception as exc:
-        _log("MEMORY", f"compaction failed: {exc}", level="warning")
     if final_verdict == "confirmed":
         memory.promote_hypothesis_scratch(hypothesis.id)
     elif final_verdict == "refuted":
@@ -802,8 +785,6 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
     ctx_refresh_caches(
         ctx,
         memory,
-        base_url,
-        model,
         hypothesis=hypothesis,
         db=db,
         session_id=session_id,
@@ -912,7 +893,6 @@ async def _investigate_one_hypothesis(
     base_url: str,
     model: str,
     plan_cycle: int,
-    llm_logger: LLMCallLogger,
     session_id: str,
     max_queries_per_hypothesis: int,
     case: Case,
@@ -931,7 +911,6 @@ async def _investigate_one_hypothesis(
         base_url=base_url,
         model=model,
         plan_cycle=plan_cycle,
-        llm_logger=llm_logger,
         session_id=session_id,
         case=case,
         emit_fn=emit_fn,

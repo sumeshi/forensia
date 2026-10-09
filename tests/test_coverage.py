@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from pathlib import Path
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.db.evidence_sources import register_evidence_source
 from forensia.knowledge.coverage import (
+    _load_yaml,
     derive_required_capabilities,
     get_coverage_summary,
     load_artifact_capabilities,
@@ -258,6 +260,15 @@ class CapabilityDeclarationTests(unittest.TestCase):
         self.assertIn("common_rules", policy)
         self.assertTrue(policy["common_rules"]["zero_rows_is_not_support"])
         self.assertIn("default_sufficiency", policy)
+
+    def test_required_yaml_loader_reports_missing_and_non_mapping_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "required.yaml"
+            with self.assertRaisesRegex(FileNotFoundError, str(path)):
+                _load_yaml(path)
+            path.write_text("- item\n", encoding="utf-8")
+            with self.assertRaisesRegex(TypeError, str(path)):
+                _load_yaml(path)
 
     def test_cross_artifact_corroboration(self) -> None:
         caps = load_artifact_capabilities()

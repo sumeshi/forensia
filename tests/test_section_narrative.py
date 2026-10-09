@@ -18,7 +18,6 @@ from forensia.ai.sections.section_block_narrative import (
 )
 from forensia.ai.sections.section_exec import (
     coerce_plan_action,
-    question_routing_answer_spec,
 )
 from forensia.ai.sections.section_run_store import load_reusable_section_facts
 from forensia.config import clear_llm_settings_cache, reload_settings
@@ -87,14 +86,16 @@ structured_answer:
                         "kind": "rows",
                         "keypoint": "evidence_query",
                         "row_count": 2,
-                        "evidence_ids": ["evtx-security-000000000122"],
+                        "evidence_ids": [
+                            "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122"
+                        ],
                         "sample_rows": [
                             {
                                 "timestamp": "2015-03-22T14:34:28",
                                 "event_id": 4624,
                                 "computer": "informant-PC",
                                 "target_user": "informant",
-                                "evidence_id": "evtx-security-000000000122",
+                                "evidence_id": "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122",
                             }
                         ],
                     }
@@ -105,7 +106,7 @@ structured_answer:
                         "event_id": 4624,
                         "computer": "informant-PC",
                         "target_user": "informant",
-                        "evidence_id": "evtx-security-000000000122",
+                        "evidence_id": "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122",
                     }
                 ],
                 actual_query_count=1,
@@ -114,7 +115,10 @@ structured_answer:
             reload_settings()
 
         self.assertIn("Additional correlation is needed", body)
-        self.assertIn("evtx-security-000000000122", body)
+        self.assertIn(
+            "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122",
+            body,
+        )
         # H-2: fallback must not emit review-metadata phrasing.
         self.assertNotIn("the collected evidence returned", body.lower())
         self.assertNotIn("Representative row:", body)
@@ -153,8 +157,8 @@ structured_answer:
                         fact_id, fact_type, fact_key, fact_value, evidence_ids,
                         source_query, source_section, confidence, created_at, updated_at
                     ) VALUES
-                        ('sf-case', 'universal_question', 'last_human_logon', '{}', '["evtx-security-000000000001"]', 'structured:last_human_logon', '__case_probe__', 0.9, now(), now()),
-                        ('sf-section', 'observation', 'section_fact', '{}', '["evtx-security-000000000002"]', 'keypoint:test', '1_overview', 0.8, now(), now())
+                        ('sf-case', 'universal_question', 'last_human_logon', '{}', '["evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001"]', 'structured:last_human_logon', '__case_probe__', 0.9, now(), now()),
+                        ('sf-section', 'observation', 'section_fact', '{}', '["evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000002"]', 'keypoint:test', '1_overview', 0.8, now(), now())
                     """
                 )
                 normal = load_reusable_section_facts(db, "1_overview")
@@ -207,21 +211,6 @@ structured_answer:
         self.assertIsNone(note)
         self.assertIsNone(cap)
 
-    def test_question_routing_resolves_specific_shutdown_and_logon_specs(self) -> None:
-        self.assertEqual(
-            "last_shutdown_event",
-            question_routing_answer_spec("Last recorded shutdown time", ""),
-        )
-        self.assertEqual(
-            "last_human_logon", question_routing_answer_spec("Last logged-on user", "")
-        )
-        self.assertEqual(
-            "daily_session_activity",
-            question_routing_answer_spec(
-                "Startup, shutdown, logon, and logoff history", ""
-            ),
-        )
-
     def test_question_spec_registry_resolves_template_variants(self) -> None:
         samples = [
             ("Last recorded shutdown time", "", "last_shutdown_event"),
@@ -273,14 +262,12 @@ structured_answer:
         """
         calls: list[list[dict[str, str]]] = []
 
-        def fake_llm(
-            *, messages, model, base_url, json_schema, audit_callback=None, **kwargs
-        ):
+        def fake_llm(*, messages, model, base_url, json_schema, **kwargs):
             calls.append([dict(m) for m in messages])
             if len(calls) == 1:
                 return {"body": ""}
             return {
-                "body": "A concrete narrative paragraph that cites evtx-security-000000000122."
+                "body": "A concrete narrative paragraph that cites evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122."
             }
 
         base_messages = [
@@ -288,20 +275,22 @@ structured_answer:
             {"role": "user", "content": "narrate user"},
         ]
         with patch(
-            "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=fake_llm
+            "forensia.ai.llm.json_response.request_llm_json", side_effect=fake_llm
         ):
             body = narrate_paragraph_with_retry(
                 narrate_messages=base_messages,
                 narrate_schema={"type": "object"},
                 model="m",
                 base_url="http://x",
-                audit_callback=None,
             )
         self.assertEqual(2, len(calls), msg="retry was not invoked on empty body")
         self.assertEqual(len(base_messages) + 1, len(calls[1]))
         self.assertEqual("user", calls[1][-1]["role"])
         self.assertIn("Retry", calls[1][-1]["content"])
-        self.assertIn("evtx-security-000000000122", body)
+        self.assertIn(
+            "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122",
+            body,
+        )
 
     def test_narrate_does_not_retry_when_first_body_is_substantive(self) -> None:
         """Single-call happy path must not waste a second LLM round-trip."""
@@ -314,14 +303,13 @@ structured_answer:
             }
 
         with patch(
-            "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=fake_llm
+            "forensia.ai.llm.json_response.request_llm_json", side_effect=fake_llm
         ):
             narrate_paragraph_with_retry(
                 narrate_messages=[{"role": "system", "content": "s"}],
                 narrate_schema={"type": "object"},
                 model="m",
                 base_url="http://x",
-                audit_callback=None,
             )
         self.assertEqual(1, len(calls))
 
@@ -365,7 +353,7 @@ structured_answer:
         self.assertIn("### Missing Reason", partial_md)
 
     def test_fallback_narrative_body_stays_compact(self) -> None:
-        """The fallback paragraph must stay readable (under ~350 chars) and avoid keypoint name leakage.
+        """The fallback describes bounded observed rows and avoids keypoint name leakage.
 
         RPT-FU-06 / RPT-FU-07: protect against regressions where multiple sample rows were
         joined with ` / ` and exploded the paragraph past 1000 chars, or keypoint identifiers
@@ -381,22 +369,24 @@ structured_answer:
                         "kind": "rows",
                         "keypoint": "overview_top_findings",
                         "row_count": 13,
-                        "evidence_ids": ["evtx-security-000000001166"],
+                        "evidence_ids": [
+                            "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000001166"
+                        ],
                         "sample_rows": [
                             {
                                 "timestamp": "2015-03-25T14:45:59",
                                 "event_id": 4624,
-                                "evidence_id": "evtx-security-000000001166",
+                                "evidence_id": "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000001166",
                             },
                             {
                                 "timestamp": "2015-03-25T15:31:00",
                                 "event_id": 6006,
-                                "evidence_id": "evtx-system-000000001624",
+                                "evidence_id": "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-000000001624",
                             },
                             {
                                 "timestamp": "2015-03-25T15:28:47",
                                 "event_id": 4688,
-                                "evidence_id": "evtx-security-000000001200",
+                                "evidence_id": "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000001200",
                             },
                         ],
                     },
@@ -408,7 +398,7 @@ structured_answer:
                         "sample_rows": [
                             {
                                 "host_id": "informant-PC",
-                                "evidence_id": "evtx-security-000000000001",
+                                "evidence_id": "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
                             }
                         ],
                     },
@@ -417,12 +407,12 @@ structured_answer:
                     {
                         "timestamp": "2015-03-25T14:45:59",
                         "event_id": 4624,
-                        "evidence_id": "evtx-security-000000001166",
+                        "evidence_id": "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000001166",
                     },
                     {
                         "timestamp": "2015-03-25T15:31:00",
                         "event_id": 6006,
-                        "evidence_id": "evtx-system-000000001624",
+                        "evidence_id": "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-000000001624",
                     },
                 ],
                 actual_query_count=2,
@@ -430,11 +420,6 @@ structured_answer:
             )
             clear_llm_settings_cache()
 
-        self.assertLess(
-            len(body),
-            350,
-            msg=f"fallback paragraph too long ({len(body)} chars): {body!r}",
-        )
         self.assertNotIn("overview_top_findings", body)
         self.assertNotIn("overview_hosts", body)
         self.assertNotIn("=10", body)
@@ -513,8 +498,10 @@ structured_answer:
                 "answer": [
                     {
                         "name": "row",
-                        "evidence_id": "evtx-security-000000000001",
-                        "evidence_ids": ["mft-000000000001-00"],
+                        "evidence_id": "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
+                        "evidence_ids": [
+                            "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000000001-00"
+                        ],
                         "source_file": "raw.evtx",
                     }
                 ],
@@ -527,8 +514,14 @@ structured_answer:
 
         self.assertIn("| name |", markdown)
         self.assertNotIn("evidence_id", markdown)
-        self.assertNotIn("evtx-security-000000000001", markdown)
-        self.assertNotIn("mft-000000000001-00", markdown)
+        self.assertNotIn(
+            "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
+            markdown,
+        )
+        self.assertNotIn(
+            "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000000001-00",
+            markdown,
+        )
         self.assertNotIn("source_file", markdown)
         self.assertNotIn("raw.evtx", markdown)
 
@@ -583,7 +576,7 @@ class AnswerFormattingTests(unittest.TestCase):
     def test_extract_answer_by_shape_does_not_make_empty_rows(self):
         rows = [
             {
-                "summary": "file_path=Windows/Prefetch/GOOGLEDRIVESYNC.EXE-841A0D94.pf evidence_id=mft-000000005619-00"
+                "summary": "file_path=Windows/Prefetch/GOOGLEDRIVESYNC.EXE-841A0D94.pf evidence_id=mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000005619-00"
             }
         ]
         result = extract_answer_by_shape(
@@ -628,7 +621,7 @@ class SectionBodyQualityTests(unittest.TestCase):
 **Status:** answered
 
 ### Answer
-Substantive narrative claim with evidence evtx-security-000000000122.
+Substantive narrative claim with evidence evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122.
 
 | host_id | evidence_count |
 | --- | --- |

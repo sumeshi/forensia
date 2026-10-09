@@ -9,8 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from forensia.ai.audit import LLMCallLogger
-from forensia.ai.llm.llm_client import LLMServerUnavailableError, chat_completion
+from forensia.ai.llm.llm_client import LLMServerUnavailableError
 from forensia.ai.report_gap import _build_report_status
 from forensia.ai.sections.section_agent import (
     async_run_section_block_agent,
@@ -20,6 +19,7 @@ from forensia.core.case import Case
 from forensia.core.log import log as _log
 from forensia.core.memory import MemoryManager, memory_for_section
 from forensia.core.progress_event import progress_event
+from forensia.core.session import LLMBudgetExceededError
 from forensia.db.database import CaseDB
 from forensia.report.answers.answer_registry import ensure_universal_question_probes
 from forensia.report.answers.table_registry import (
@@ -211,7 +211,6 @@ class _SectionRenderCtx:
     base_url: str
     model: str
     max_queries_per_section: int
-    llm_logger: LLMCallLogger
     iteration: int
     table_digest_parts: list[str] = field(default_factory=list)
     block_outline: list[dict] = field(default_factory=list)
@@ -240,25 +239,6 @@ async def _render_single_block(
                 status="answered",
             )
 
-    def _audit(phase: str):
-        def _callback(
-            messages,
-            body,
-            section=request["section_key"],
-            heading=block.get("heading", ""),
-        ):
-            ctx.llm_logger.write(
-                iteration=ctx.iteration,
-                phase=phase,
-                input_messages=messages,
-                output=body,
-                model=ctx.model,
-                base_url=ctx.base_url,
-                suffix=f"{request['section_key']}-{heading}",
-            )
-
-        return _callback
-
     return await async_run_section_block_agent(
         case=request["case"],
         db=ctx.db,
@@ -285,8 +265,6 @@ async def _render_single_block(
         if is_structured_mode
         else _section_table_digest(ctx.table_digest_parts),
         template_tags=tuple(getattr(request.get("template_meta"), "tags", ()) or ()),
-        audit_callback=_audit("report-section-block"),
-        review_audit_callback=_audit("report-section-review"),
     )
 
 
@@ -322,7 +300,6 @@ async def render_section_blocks(
     base_url: str,
     model: str,
     max_queries_per_section: int,
-    llm_logger: LLMCallLogger,
     iteration: int,
     progress_callback: Callable[[dict[str, Any]], None] | None,
     focus_sections: list[str] | None,
@@ -357,7 +334,6 @@ async def render_section_blocks(
         base_url=base_url,
         model=model,
         max_queries_per_section=max_queries_per_section,
-        llm_logger=llm_logger,
         iteration=iteration,
     )
     rendered_bodies: dict[int, str] = {}
@@ -434,7 +410,6 @@ async def async_refresh_report_sections(
     base_url: str,
     model: str,
     sections: list[SectionSource],
-    llm_logger: LLMCallLogger,
     progress_callback: Callable[[dict[str, Any]], None] | None,
     focus_sections: list[str] | None,
     max_queries_per_section: int,
@@ -457,9 +432,6 @@ async def async_refresh_report_sections(
     report_brief = write_report_brief(case, db)
     memory = MemoryManager(
         case,
-        summarize=lambda messages, m: chat_completion(
-            messages=messages, model=m, base_url=base_url
-        ),
     )
     requests = collect_section_requests(
         case, db, sections, prior_filled, report_brief, force_all=force_all
@@ -476,14 +448,13 @@ async def async_refresh_report_sections(
                 base_url,
                 model,
                 max_queries_per_section,
-                llm_logger,
                 iteration,
                 progress_callback,
                 focus_sections,
             )
         except asyncio.CancelledError:
             raise
-        except LLMServerUnavailableError:
+        except LLMServerUnavailableError, LLMBudgetExceededError:
             # Don't downgrade an outage to a per-section failure: propagate so
             # the caller's wait-for-recovery logic can pause and retry.
             raise

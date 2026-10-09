@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -14,7 +13,6 @@ from forensia.ai.sections.section_exec import (
     structured_digest_from_answers,
 )
 from forensia.ai.sections.section_run_store import (
-    _audit_bridge,
     _findings_snapshot,
     _load_reusable_section_evidence,
     _store_section_question,
@@ -39,7 +37,6 @@ class _BlockContext:
     template_body: str
     base_url: str
     model: str
-    audit: Callable | None
     keypoint_catalog: list[dict]
     template_catalog: list[dict]
     reusable_facts: list[dict[str, Any]]
@@ -57,7 +54,6 @@ class _BlockContext:
     answer_spec: str = ""
     question: str = ""
     structured_digest: str = ""
-    review_audit: Callable | None = None
     template_tags: tuple[str, ...] = ()
 
 
@@ -80,8 +76,6 @@ def prepare_block_context(
     answer_spec: str = "",
     question: str = "",
     section_table_digest: str = "",
-    audit_callback=None,
-    review_audit_callback=None,
     report_brief: dict[str, Any] | None = None,
     template_tags: tuple[str, ...] = (),
 ) -> _BlockContext:
@@ -130,8 +124,6 @@ def prepare_block_context(
     if question_mode:
         reusable_facts = []
         reusable_evidence = []
-    audit = _audit_bridge(audit_callback)
-    review_audit = _audit_bridge(review_audit_callback)
     prompt_report_brief = (
         _structured_report_brief(report_brief)
         if question_mode
@@ -155,7 +147,6 @@ def prepare_block_context(
         template_body=template_body,
         base_url=base_url,
         model=model,
-        audit=audit,
         keypoint_catalog=keypoint_catalog,
         template_catalog=template_catalog,
         reusable_facts=reusable_facts,
@@ -173,6 +164,5 @@ def prepare_block_context(
         answer_spec=resolved_answer_spec,
         question=question,
         structured_digest=structured_digest,
-        review_audit=review_audit,
         template_tags=tuple(template_tags),
     )

@@ -38,7 +38,8 @@ class CaseTimezoneTests(unittest.TestCase):
                 yaml.safe_dump({"case_name": "legacy", "created_at": "now"}),
                 encoding="utf-8",
             )
-            self.assertEqual("UTC", Case.open(legacy_path).source_timezone)
+            with self.assertRaisesRegex(ValueError, "source_timezone"):
+                Case.open(legacy_path)
 
 
 class TimestampRenderingTests(unittest.TestCase):

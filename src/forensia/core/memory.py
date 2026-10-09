@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
 from pathlib import Path
 
 from forensia.config import get_llm_settings
@@ -14,34 +13,8 @@ from forensia.core.textutil import slugify
 logger = logging.getLogger(__name__)
 
 
-class MemoryPaths:
-    """Central registry of memory path conventions used across prompts and MemoryManager."""
-
-    OVERVIEW = "memory/overview.md"
-    FACTS = "memory/facts.md"
-    TASKS = "memory/tasks.md"
-    TIMELINE = "memory/timeline.md"
-    SUSPICIOUS_EVIDENCE = "memory/evidence/suspicious.md"
-
-    @staticmethod
-    def hypothesis(hypothesis_id: str) -> str:
-        return f"memory/hypotheses/{hypothesis_id}.md"
-
-    @staticmethod
-    def entity(entity_type: str, name: str) -> str:
-        return f"memory/entities/{entity_type}/{name}.md"
-
-    @staticmethod
-    def keypoint(keypoint_id: str) -> str:
-        return f"memory/keypoints/{keypoint_id}.md"
-
-
 class MemoryManager(MemoryContextMixin, MemoryWriterMixin, MemoryCompactionMixin):
-    def __init__(
-        self,
-        case: Case,
-        summarize: Callable[[list[dict[str, str]], str], str] | None = None,
-    ):
+    def __init__(self, case: Case):
         self.case = case
         self.base_dir = case.memory_dir
         self.archive_dir = self.base_dir / "archive"
@@ -87,7 +60,6 @@ class MemoryManager(MemoryContextMixin, MemoryWriterMixin, MemoryCompactionMixin
         self._fact_hashes: set[str] = set()
         self._next_fact_id = 1
         self._load_existing_fact_hashes()
-        self._summarize = summarize
 
     @property
     def overview_path(self) -> Path:

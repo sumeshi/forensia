@@ -8,7 +8,6 @@ import unittest
 from forensia.ai.hypotheses.relations import (
     VALID_RELATION_TYPES,
     check_cycle,
-    get_adjacent_hypotheses,
     get_relations_for_hypothesis,
     propagate_verdict,
     validate_relation,
@@ -252,45 +251,6 @@ class RelationQueryTests(unittest.TestCase):
                 )
                 rels = get_relations_for_hypothesis(db, "H-001")
                 self.assertEqual(len(rels), 2)
-
-    def test_get_adjacent_hypotheses(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                insert_relation(
-                    db,
-                    from_id="H-001",
-                    to_id="H-002",
-                    relation_type="parent_of",
-                )
-                insert_relation(
-                    db,
-                    from_id="H-003",
-                    to_id="H-001",
-                    relation_type="prerequisite_for",
-                )
-                adj = get_adjacent_hypotheses(db, "H-001")
-                self.assertIn("H-002", adj)
-                self.assertIn("H-003", adj)
-
-    def test_get_adjacent_with_type_filter(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                insert_relation(
-                    db,
-                    from_id="H-001",
-                    to_id="H-002",
-                    relation_type="parent_of",
-                )
-                insert_relation(
-                    db,
-                    from_id="H-001",
-                    to_id="H-003",
-                    relation_type="derived_from",
-                )
-                adj = get_adjacent_hypotheses(db, "H-001", "parent_of")
-                self.assertEqual(adj, ["H-002"])
 
 
 class VerdictPropagationTests(unittest.TestCase):

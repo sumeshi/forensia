@@ -51,6 +51,15 @@ ENTITY_ROLES = {
 }
 
 
+class LLMBudgetExceededError(RuntimeError):
+    """Investigation stopped before starting a logical LLM call at its cap."""
+
+    def __init__(self, used: int, limit: int) -> None:
+        self.used = used
+        self.limit = limit
+        super().__init__(f"LLM logical-call budget exhausted ({used}/{limit})")
+
+
 class Hypothesis(BaseModel):
     id: str
     description: str

@@ -37,7 +37,7 @@ class QuestionAnswerTests(unittest.TestCase):
                     ) VALUES (?, ?, ?, ?, ?)
                     """,
                     (
-                        "mft-000000000001-01",
+                        "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000000001-01",
                         r"C:\Users\Alice\AppData\Local\Google\Drive\sync_config.db",
                         "sync_config.db",
                         False,
@@ -51,7 +51,7 @@ class QuestionAnswerTests(unittest.TestCase):
                     ) VALUES (?, ?, ?, ?, ?)
                     """,
                     (
-                        "mft-000000000002-01",
+                        "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000000002-01",
                         r"C:\Users\Alice\Desktop\resignation_letter.docx",
                         "resignation_letter.docx",
                         False,
@@ -96,7 +96,7 @@ class QuestionAnswerTests(unittest.TestCase):
                     ) VALUES (?, ?, ?, ?, ?)
                     """,
                     (
-                        "mft-000000000003-01",
+                        "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000000003-01",
                         r"C:\Users\Alice\Desktop\resignation_letter.docx",
                         "resignation_letter.docx",
                         "docx",
@@ -136,7 +136,7 @@ class QuestionAnswerTests(unittest.TestCase):
                     ) VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        "mft-000000000004-01",
+                        "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000000004-01",
                         r"C:\Users\Alice\AppData\Local\Microsoft\Outlook\mailbox.ost",
                         "mailbox.ost",
                         "ost",
@@ -172,7 +172,7 @@ class QuestionAnswerTests(unittest.TestCase):
                     ) VALUES (?, ?, ?, ?, ?)
                     """,
                     (
-                        "mft-000000000005-01",
+                        "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000000005-01",
                         r"C:\Users\Alice\AppData\Local\Microsoft\Outlook\mailbox.ost",
                         "mailbox.ost",
                         "ost",
@@ -252,7 +252,7 @@ class QuestionAnswerTests(unittest.TestCase):
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        "evtx-security-000000000001",
+                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
                         4624,
                         datetime(2015, 3, 22, 14, 34, 28),
                         "informant-PC",
@@ -304,7 +304,7 @@ class QuestionAnswerTests(unittest.TestCase):
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer) VALUES (?, ?, ?, ?)",
                     (
-                        "evtx-system-000000000001",
+                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-000000000001",
                         6006,
                         datetime(2015, 3, 22, 14, 38, 16),
                         "informant-PC",
@@ -313,7 +313,7 @@ class QuestionAnswerTests(unittest.TestCase):
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer) VALUES (?, ?, ?, ?)",
                     (
-                        "evtx-security-000000000002",
+                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000002",
                         4624,
                         datetime(2015, 3, 25, 15, 31, 0),
                         "informant-PC",
@@ -339,7 +339,7 @@ class QuestionAnswerTests(unittest.TestCase):
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer) VALUES (?, ?, ?, ?)",
                     (
-                        "evtx-system-000000000001",
+                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-000000000001",
                         6006,
                         datetime(2015, 3, 22, 14, 38, 16),
                         "informant-PC",
@@ -372,7 +372,7 @@ class QuestionAnswerTests(unittest.TestCase):
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer) VALUES (?, ?, ?, ?)",
                     (
-                        "evtx-system-000000000001",
+                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-000000000001",
                         6006,
                         datetime(2015, 3, 22, 14, 38, 16),
                         "informant-PC",
@@ -419,7 +419,7 @@ class QuestionAnswerTests(unittest.TestCase):
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer) VALUES (?, ?, ?, ?)",
                     (
-                        "evtx-security-000000000001",
+                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
                         4624,
                         datetime(2015, 3, 22, 14, 34, 28),
                         "informant-PC",
@@ -450,7 +450,7 @@ class QuestionAnswerTests(unittest.TestCase):
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, channel, event_id, timestamp, computer) VALUES (?, ?, ?, ?, ?)",
                     (
-                        "evtx-system-000000000001",
+                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-000000000001",
                         "System",
                         1100,
                         datetime(2015, 3, 25, 15, 31, 0),
@@ -460,7 +460,7 @@ class QuestionAnswerTests(unittest.TestCase):
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, channel, event_id, timestamp, computer) VALUES (?, ?, ?, ?, ?)",
                     (
-                        "evtx-security-000000000002",
+                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000002",
                         "Security",
                         1102,
                         datetime(2015, 3, 25, 15, 32, 0),
@@ -470,7 +470,7 @@ class QuestionAnswerTests(unittest.TestCase):
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, channel, event_id, timestamp, computer) VALUES (?, ?, ?, ?, ?)",
                     (
-                        "evtx-security-000000000003",
+                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000003",
                         "Security",
                         1100,
                         datetime(2015, 3, 25, 15, 33, 0),
@@ -490,8 +490,14 @@ class QuestionAnswerTests(unittest.TestCase):
             event_ids = {row.get("event_id") for row in answer["answer"]}
             self.assertEqual({1102}, event_ids)
             evidence_ids = {row.get("evidence_id") for row in answer["answer"]}
-            self.assertNotIn("evtx-system-000000000001", evidence_ids)
-            self.assertNotIn("evtx-security-000000000003", evidence_ids)
+            self.assertNotIn(
+                "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-000000000001",
+                evidence_ids,
+            )
+            self.assertNotIn(
+                "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000003",
+                evidence_ids,
+            )
 
     def test_structured_benchmark_antiforensics_filters_installed_noise_files(
         self,
@@ -502,7 +508,7 @@ class QuestionAnswerTests(unittest.TestCase):
                 db.execute(
                     "INSERT INTO mft_entries (evidence_id, file_path, file_name, si_modified) VALUES (?, ?, ?, ?)",
                     (
-                        "mft-000000000001-00",
+                        "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000000001-00",
                         "Program Files/CCleaner/Lang/lang-1041.dll",
                         "lang-1041.dll",
                         datetime(2015, 3, 13, 13, 54, 32),
@@ -511,7 +517,7 @@ class QuestionAnswerTests(unittest.TestCase):
                 db.execute(
                     "INSERT INTO mft_entries (evidence_id, file_path, file_name, si_modified) VALUES (?, ?, ?, ?)",
                     (
-                        "mft-000000000002-00",
+                        "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000000002-00",
                         "Windows/Prefetch/CCLEANER64.EXE-779BD542.pf",
                         "CCLEANER64.EXE-779BD542.pf",
                         datetime(2015, 3, 25, 15, 15, 50),
@@ -520,7 +526,7 @@ class QuestionAnswerTests(unittest.TestCase):
                 db.execute(
                     "INSERT INTO mft_entries (evidence_id, file_path, file_name, si_modified) VALUES (?, ?, ?, ?)",
                     (
-                        "mft-000000000003-00",
+                        "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000000003-00",
                         "Windows/System32/cipher.exe",
                         "cipher.exe",
                         datetime(2009, 7, 14, 1, 38, 59),
@@ -529,7 +535,7 @@ class QuestionAnswerTests(unittest.TestCase):
                 db.execute(
                     "INSERT INTO mft_entries (evidence_id, file_path, file_name, si_modified) VALUES (?, ?, ?, ?)",
                     (
-                        "mft-000000000004-00",
+                        "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000000004-00",
                         "Program Files/CCleaner/CCleaner64.exe",
                         "CCleaner64.exe",
                         datetime(2015, 3, 13, 11, 10, 26),
@@ -545,7 +551,12 @@ class QuestionAnswerTests(unittest.TestCase):
                 )
 
             evidence_ids = {row.get("evidence_id") for row in answer["answer"]}
-            self.assertEqual({"mft-000000000002-00"}, evidence_ids)
+            self.assertEqual(
+                {
+                    "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000000002-00"
+                },
+                evidence_ids,
+            )
 
     def test_structured_antiforensics_uses_ioc_catalog_tool_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -581,7 +592,7 @@ class QuestionAnswerTests(unittest.TestCase):
                 db.execute(
                     "INSERT INTO mft_entries (evidence_id, file_path, file_name, extension, si_modified) VALUES (?, ?, ?, ?, ?)",
                     (
-                        "mft-000000000001-00",
+                        "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000000001-00",
                         "Windows/Prefetch/PfSvPerfStats.bin",
                         "PfSvPerfStats.bin",
                         "bin",
@@ -591,7 +602,7 @@ class QuestionAnswerTests(unittest.TestCase):
                 db.execute(
                     "INSERT INTO mft_entries (evidence_id, file_path, file_name, extension, si_modified) VALUES (?, ?, ?, ?, ?)",
                     (
-                        "mft-000000000002-00",
+                        "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000000002-00",
                         "Windows/Prefetch/WINWORD.EXE-CECBA770.pf",
                         "WINWORD.EXE-CECBA770.pf",
                         "pf",
@@ -620,7 +631,7 @@ class QuestionAnswerTests(unittest.TestCase):
                 db.execute(
                     "INSERT INTO mft_entries (evidence_id, file_path, file_name, si_created, fn_created) VALUES (?, ?, ?, ?, ?)",
                     (
-                        "mft-000000000001-00",
+                        "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000000001-00",
                         "Users/informant/AppData/Roaming/Microsoft/Windows/Recent/pricing decision.lnk",
                         "pricing decision.lnk",
                         datetime(2015, 3, 23, 20, 26, 54),
@@ -630,7 +641,7 @@ class QuestionAnswerTests(unittest.TestCase):
                 db.execute(
                     "INSERT INTO mft_entries (evidence_id, file_path, file_name, si_created, fn_created) VALUES (?, ?, ?, ?, ?)",
                     (
-                        "mft-000000000002-00",
+                        "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000000002-00",
                         "Users/informant/AppData/Roaming/Microsoft/Windows/Recent/(secret_project)_pricing_decision.xlsx.lnk",
                         "(secret_project)_pricing_decision.xlsx.lnk",
                         datetime(2015, 3, 23, 20, 26, 53),
@@ -659,7 +670,7 @@ class QuestionAnswerTests(unittest.TestCase):
         )
         body = (
             "This may indicate suspicious activity supported by "
-            "evtx-security-000000000001 and mft-000000000002-01."
+            "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001 and mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000000002-01."
         )
         msg, score = check_hedge_no_citation(body, ctx)
         self.assertIsNone(msg)
@@ -680,11 +691,14 @@ class QuestionAnswerTests(unittest.TestCase):
             with CaseDB(case) as db:
                 db.execute(
                     "INSERT INTO prefetch_executions (evidence_id, executable_name) VALUES (?, ?)",
-                    ("prefetch-winword-exe-cecba770", "WINWORD.EXE"),
+                    (
+                        "prefetch-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-winword-exe-cecba770",
+                        "WINWORD.EXE",
+                    ),
                 )
                 missing = validate_body_evidence_ids(
                     db,
-                    "WINWORD execution is supported by prefetch-winword-exe-cecba770.",
+                    "WINWORD execution is supported by prefetch-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-winword-exe-cecba770.",
                 )
 
             self.assertEqual([], missing)
@@ -697,36 +711,57 @@ class QuestionAnswerTests(unittest.TestCase):
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer) VALUES (?, ?, ?, ?)",
                     (
-                        "evtx-security-000000000001",
+                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
                         4624,
                         datetime(2015, 3, 22, 14, 34, 28),
                         "informant-PC",
                     ),
                 )
                 body = (
-                    "The real event evtx-security-000000000001 supported by evidence. "
-                    "The fabricated event （evtx-security-999999999999） not in DB. "
-                    "Another fabricated one (mft-999999999999-99) also not present."
+                    "The real event evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001 supported by evidence. "
+                    "The fabricated event （evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-999999999999） not in DB. "
+                    "Another fabricated one (mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-999999999999-99) also not present."
                 )
                 cleaned, gaps = validate_section_evidence_ids(db, body)
 
-                self.assertIn("evtx-security-000000000001", cleaned)
-                self.assertNotIn("evtx-security-999999999999", cleaned)
+                self.assertIn(
+                    "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
+                    cleaned,
+                )
+                self.assertNotIn(
+                    "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-999999999999",
+                    cleaned,
+                )
                 self.assertNotIn("security-999999999999", cleaned)
-                self.assertNotIn("mft-999999999999-99", cleaned)
+                self.assertNotIn(
+                    "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-999999999999-99",
+                    cleaned,
+                )
                 self.assertNotIn("（）", cleaned)
                 self.assertNotIn("()", cleaned)
                 self.assertNotIn("（,", cleaned)
                 self.assertTrue(
-                    any("evtx-security-999999999999" in g for g in gaps),
+                    any(
+                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-999999999999"
+                        in g
+                        for g in gaps
+                    ),
                     msg=f"gap missing fabricated ID: {gaps}",
                 )
                 self.assertTrue(
-                    any("mft-999999999999-99" in g for g in gaps),
+                    any(
+                        "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-999999999999-99"
+                        in g
+                        for g in gaps
+                    ),
                     msg=f"gap missing fabricated ID: {gaps}",
                 )
                 self.assertFalse(
-                    any("evtx-security-000000000001" in g for g in gaps),
+                    any(
+                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001"
+                        in g
+                        for g in gaps
+                    ),
                     msg=f"real ID in gaps: {gaps}",
                 )
 
@@ -740,22 +775,34 @@ class QuestionAnswerTests(unittest.TestCase):
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer) VALUES (?, ?, ?, ?)",
                     (
-                        "evtx-security-000000000122",
+                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122",
                         4648,
                         datetime(2015, 3, 22, 15, 57, 54),
                         "informant-PC",
                     ),
                 )
                 body = (
-                    "Invalid first （evtx-security-999999999999, evtx-security-000000000122） here. "
-                    "Invalid last (evtx-security-000000000122, evtx-bogus-999999999999) there."
+                    "Invalid first （evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-999999999999, evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122） here. "
+                    "Invalid last (evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122, evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bogus-999999999999) there."
                 )
                 cleaned, _gaps = validate_section_evidence_ids(db, body)
 
-                self.assertIn("（evtx-security-000000000122）", cleaned)
-                self.assertIn("(evtx-security-000000000122)", cleaned)
-                self.assertNotIn("evtx-security-999999999999", cleaned)
-                self.assertNotIn("evtx-bogus-999999999999", cleaned)
+                self.assertIn(
+                    "（evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122）",
+                    cleaned,
+                )
+                self.assertIn(
+                    "(evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122)",
+                    cleaned,
+                )
+                self.assertNotIn(
+                    "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-999999999999",
+                    cleaned,
+                )
+                self.assertNotIn(
+                    "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bogus-999999999999",
+                    cleaned,
+                )
 
 
 class DailySessionTimelineBuilderTests(unittest.TestCase):

@@ -1,12 +1,4 @@
-"""Tests for R8-03: Coverage timestamp boundary and source lineage normalization.
-
-Tests verify:
-- 1601 sentinel, 3320 overflow, normal 2015 timestamp → analysis window is 2015 only
-- Raw artifact API can show excluded timestamps
-- Available capability traces back to at least 1 source_id
-- EVTX source hosts/channel/min/max match normalized rows
-- add/backfill multiple times doesn't double-count metadata
-"""
+"""Database-level tests for timestamp coverage and source lineage."""
 
 from __future__ import annotations
 
@@ -18,145 +10,11 @@ from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.db.evidence_lookup import lookup_evidence_record
 from forensia.evidence.normalize import _update_source_status
-from forensia.evidence.timestamp_policy import (
-    TimestampPolicy,
-    classify_timestamp,
-    compute_plausible_bounds,
-    filter_plausible_timestamps,
-    is_plausible_timestamp,
-)
 from forensia.knowledge.coverage import (
     compute_evidence_coverage,
     get_coverage_summary,
     refresh_evidence_coverage,
 )
-
-
-class TimestampClassificationTests(unittest.TestCase):
-    """Test timestamp classification logic."""
-
-    def test_1601_sentinel_is_not_plausible(self) -> None:
-        ts = datetime(1601, 1, 1)
-        cls = classify_timestamp(ts)
-        self.assertFalse(cls.is_plausible)
-        self.assertEqual(cls.reason, "sentinel_1601")
-
-    def test_3320_overflow_is_not_plausible(self) -> None:
-        ts = datetime(3320, 11, 16)
-        cls = classify_timestamp(ts)
-        self.assertFalse(cls.is_plausible)
-        self.assertEqual(cls.reason, "overflow")
-
-    def test_1979_is_not_plausible(self) -> None:
-        ts = datetime(1979, 12, 31)
-        cls = classify_timestamp(ts)
-        self.assertFalse(cls.is_plausible)
-        self.assertEqual(cls.reason, "pre_dos_epoch")
-
-    def test_2015_is_plausible(self) -> None:
-        ts = datetime(2015, 6, 15, 10, 30, 0)
-        cls = classify_timestamp(ts)
-        self.assertTrue(cls.is_plausible)
-        self.assertEqual(cls.reason, "valid")
-
-    def test_2024_is_plausible(self) -> None:
-        ts = datetime(2024, 1, 15)
-        cls = classify_timestamp(ts)
-        self.assertTrue(cls.is_plausible)
-        self.assertEqual(cls.reason, "valid")
-
-    def test_none_is_not_plausible(self) -> None:
-        cls = classify_timestamp(None)
-        self.assertFalse(cls.is_plausible)
-        self.assertEqual(cls.reason, "null")
-
-    def test_far_future_is_not_plausible(self) -> None:
-        ts = datetime(2201, 1, 1)
-        cls = classify_timestamp(ts)
-        self.assertFalse(cls.is_plausible)
-        self.assertEqual(cls.reason, "overflow")
-
-    def test_case_window_is_declarative_not_wall_clock_based(self) -> None:
-        policy = TimestampPolicy(case_window_margin_days=30)
-        cls = classify_timestamp(
-            datetime(2014, 1, 1),
-            policy,
-            (datetime(2015, 1, 1), datetime(2015, 1, 31)),
-        )
-        self.assertFalse(cls.is_plausible)
-        self.assertEqual(cls.reason, "outside-analysis-window")
-
-
-class PlausibleBoundsTests(unittest.TestCase):
-    """Test plausible bounds computation."""
-
-    def test_mixed_timestamps_filter_sentinel(self) -> None:
-        """1601 sentinel + 3320 overflow + normal 2015 → bounds are 2015 only."""
-        timestamps = [
-            datetime(1601, 1, 1),  # sentinel
-            datetime(3320, 11, 16),  # overflow
-            datetime(2015, 6, 15, 10, 30, 0),  # normal
-            datetime(2015, 12, 25, 18, 0, 0),  # normal
-        ]
-        bounds = compute_plausible_bounds(timestamps)
-        self.assertIsNotNone(bounds.min_time)
-        self.assertIsNotNone(bounds.max_time)
-        self.assertEqual(bounds.min_time.year, 2015)
-        self.assertEqual(bounds.max_time.year, 2015)
-        self.assertEqual(bounds.excluded_count, 2)
-        self.assertIn("sentinel_1601", bounds.excluded_reasons)
-        self.assertIn("overflow", bounds.excluded_reasons)
-
-    def test_all_sentinel_returns_none_bounds(self) -> None:
-        """All sentinel timestamps → None bounds."""
-        timestamps = [
-            datetime(1601, 1, 1),
-            datetime(1601, 1, 1),
-        ]
-        bounds = compute_plausible_bounds(timestamps)
-        self.assertIsNone(bounds.min_time)
-        self.assertIsNone(bounds.max_time)
-        self.assertEqual(bounds.excluded_count, 2)
-
-    def test_empty_list_returns_none_bounds(self) -> None:
-        bounds = compute_plausible_bounds([])
-        self.assertIsNone(bounds.min_time)
-        self.assertIsNone(bounds.max_time)
-        self.assertEqual(bounds.excluded_count, 0)
-
-    def test_normal_timestamps_return_correct_bounds(self) -> None:
-        timestamps = [
-            datetime(2015, 1, 1),
-            datetime(2015, 6, 15),
-            datetime(2015, 12, 31),
-        ]
-        bounds = compute_plausible_bounds(timestamps)
-        self.assertEqual(bounds.min_time, datetime(2015, 1, 1))
-        self.assertEqual(bounds.max_time, datetime(2015, 12, 31))
-        self.assertEqual(bounds.excluded_count, 0)
-
-
-class FilterTimestampsTests(unittest.TestCase):
-    """Test timestamp filtering."""
-
-    def test_filter_separates_plausible_from_sentinel(self) -> None:
-        timestamps = [
-            datetime(1601, 1, 1),
-            datetime(2015, 6, 15),
-            datetime(3320, 11, 16),
-            datetime(2020, 1, 1),
-        ]
-        plausible, excluded = filter_plausible_timestamps(timestamps)
-        self.assertEqual(len(plausible), 2)
-        self.assertEqual(plausible[0], datetime(2015, 6, 15))
-        self.assertEqual(plausible[1], datetime(2020, 1, 1))
-        self.assertEqual(excluded["sentinel_1601"], 1)
-        self.assertEqual(excluded["overflow"], 1)
-
-    def test_quick_check(self) -> None:
-        self.assertTrue(is_plausible_timestamp(datetime(2015, 1, 1)))
-        self.assertFalse(is_plausible_timestamp(datetime(1601, 1, 1)))
-        self.assertFalse(is_plausible_timestamp(None))
 
 
 class CoverageLineageTests(unittest.TestCase):
@@ -210,6 +68,41 @@ class CoverageLineageTests(unittest.TestCase):
                 self.assertEqual(entry["end_time"], datetime(2015, 6, 15))
                 self.assertEqual(entry["excluded_timestamps"]["sentinel"], 1)
                 self.assertEqual(entry["excluded_timestamps"]["overflow"], 1)
+
+    def test_analysis_window_exclusion_uses_reference_source_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO evidence_sources (source_id, artifact_family, "
+                    "ingest_status, row_count, min_time, max_time, created_at, updated_at) "
+                    "VALUES ('evtx-source', 'evtx', 'normalized', 1, '2015-06-15', "
+                    "'2015-06-15', now(), now()), ('mft-source', 'mft', 'normalized', "
+                    "2, '2015-06-15', '2080-06-15', now(), now())"
+                )
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, source_file, timestamp, channel) "
+                    "VALUES ('evtx-id', 'evtx-source', '2015-06-15', 'Security')"
+                )
+                db.execute(
+                    "INSERT INTO mft_timeline (timeline_id, evidence_id, source_file, "
+                    "timestamp, timestamp_type) VALUES "
+                    "('mft-in', 'mft-id', 'mft-source', '2015-06-15', 'si_created'), "
+                    "('mft-out', 'mft-id', 'mft-source', '2080-06-15', 'si_modified')"
+                )
+
+                entry = next(
+                    item
+                    for item in compute_evidence_coverage(db)
+                    if item["source_family"] == "mft"
+                    and item["capability"] == "file_activity"
+                )
+
+                self.assertEqual(datetime(2015, 6, 15), entry["start_time"])
+                self.assertEqual(datetime(2015, 6, 15), entry["end_time"])
+                self.assertEqual(
+                    1, entry["excluded_timestamps"]["outside-analysis-window"]
+                )
 
     def test_overflow_excluded_from_coverage_window(self) -> None:
         """Excluded values remain available through the raw artifact lookup."""
@@ -292,29 +185,34 @@ class EVTXSourceMetadataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
+                source_id = "1" * 64
                 db.execute(
                     "INSERT INTO ingested_files (sha256, path, source_kind) "
-                    "VALUES ('src-001', '/evidence/Security.evtx', 'evtx')"
+                    "VALUES (?, '/evidence/Security.evtx', 'evtx')",
+                    [source_id],
                 )
                 db.execute(
                     "INSERT INTO evidence_sources "
                     "(source_id, artifact_family, ingest_status, row_count, hosts, "
                     "created_at, updated_at) VALUES "
-                    "('src-001', 'evtx', 'parsed', 0, [], now(), now())"
+                    "(?, 'evtx', 'parsed', 0, [], now(), now())",
+                    [source_id],
                 )
                 db.execute(
                     "INSERT INTO evtx_events "
                     "(evidence_id, source_file, channel, computer, timestamp) VALUES "
-                    "('evtx-1', 'src-001', 'Security', 'HOST-PC', '2015-06-15 10:00:00'), "
-                    "('evtx-2', 'src-001', 'Security', 'HOST-PC', '2015-06-15 10:01:00')"
+                    "('evtx-1', ?, 'Security', 'HOST-PC', '2015-06-15 10:00:00'), "
+                    "('evtx-2', ?, 'Security', 'HOST-PC', '2015-06-15 10:01:00')",
+                    [source_id, source_id],
                 )
                 counts = {"evtx_rows": 2}
-                _update_source_status(db, ["src-001"], counts)
-                _update_source_status(db, ["src-001"], counts)
+                _update_source_status(db, [source_id], counts)
+                _update_source_status(db, [source_id], counts)
                 row = db.execute(
                     "SELECT row_count, hosts, channel, min_time, max_time "
                     "FROM evidence_sources "
-                    "WHERE source_id = 'src-001'"
+                    "WHERE source_id = ?",
+                    [source_id],
                 ).fetchone()
                 self.assertEqual(row[0], 2)
                 hosts = row[1]
@@ -331,11 +229,13 @@ class EVTXSourceMetadataTests(unittest.TestCase):
         """Normalized rows keyed by the old path identity are not silently re-read."""
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
-            (case.raw_dir / "evtx-abc123-security.jsonl").write_text("{}\n")
+            source_id = "2" * 64
+            (case.raw_dir / f"evtx-{source_id}-security.jsonl").write_text("{}\n")
             with CaseDB(case) as db:
                 db.execute(
                     "INSERT INTO ingested_files (sha256, path, source_kind) "
-                    "VALUES ('abc123', '/evidence/Security.evtx', 'evtx')"
+                    "VALUES (?, '/evidence/Security.evtx', 'evtx')",
+                    [source_id],
                 )
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, source_file) "
@@ -345,18 +245,19 @@ class EVTXSourceMetadataTests(unittest.TestCase):
                     "forensia.evidence.normalize", level="ERROR"
                 ) as logs:
                     _update_source_status(
-                        db, ["abc123"], {"evtx_rows": 1}, raw_dir=case.raw_dir
+                        db, [source_id], {"evtx_rows": 1}, raw_dir=case.raw_dir
                     )
                 status, error_code = db.execute(
                     "SELECT ingest_status, error_code FROM evidence_sources "
-                    "WHERE source_id = 'abc123'"
+                    "WHERE source_id = ?",
+                    [source_id],
                 ).fetchone()
 
             self.assertEqual(
                 ("failed", "normalized_rows_missing"), (status, error_code)
             )
             self.assertTrue(
-                any("abc123" in message for message in logs.output),
+                any(source_id in message for message in logs.output),
                 logs.output,
             )
 

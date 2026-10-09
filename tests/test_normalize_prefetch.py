@@ -93,7 +93,7 @@ class NormalizePrefetchTests(unittest.TestCase):
                 inserted, _ = normalize_prefetch(case, db)
             self.assertEqual(0, inserted)
 
-    def test_malformed_json_line_skipped_gracefully(self) -> None:
+    def test_malformed_json_line_rejects_source_without_partial_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
             prefetch_path = case.raw_dir / "prefetch-entries-001.jsonl"
@@ -113,17 +113,16 @@ class NormalizePrefetchTests(unittest.TestCase):
                 + "\n",
                 encoding="utf-8",
             )
-            try:
-                with CaseDB(case) as db:
-                    inserted, _ = normalize_prefetch(case, db)
-                self.assertEqual(1, inserted)
-                rows = db.execute(
-                    "SELECT evidence_id FROM prefetch_executions"
-                ).fetchall()
-                self.assertEqual([("pf-0001",)], rows)
-            except Exception:
-                self.skipTest(
-                    "DuckDB read_ndjson_objects does not skip malformed lines without ignore_errors"
+            with CaseDB(case) as db:
+                with self.assertRaises(Exception):
+                    normalize_prefetch(case, db)
+                self.assertEqual(
+                    (0,),
+                    db.execute("SELECT COUNT(*) FROM prefetch_executions").fetchone(),
+                )
+                self.assertEqual(
+                    (0,),
+                    db.execute("SELECT COUNT(*) FROM prefetch_timeline").fetchone(),
                 )
 
     def test_multiple_prefetch_jsonl_files(self) -> None:

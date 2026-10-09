@@ -12,7 +12,6 @@ from forensia.ai.investigation.memory_sync import apply_memory_updates
 from forensia.config import (
     get_llm_settings,
     reload_settings,
-    resolve_llm_config,
 )
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
@@ -24,10 +23,6 @@ class MemoryTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         reload_settings()
-
-    @staticmethod
-    def _llm_base_url() -> str:
-        return resolve_llm_config()[0] or "http://test-llm.invalid"
 
     def test_summarize_query_result_includes_head_tail_and_distinct_counts(
         self,
@@ -256,29 +251,6 @@ class MemoryTests(unittest.TestCase):
             self.assertIn("anchor-0", archive_text)
             self.assertNotIn("anchor-0", timeline_text)
 
-    def test_llm_compaction_targets_include_hypotheses_and_entities_only(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            memory = MemoryManager(case)
-
-            memory.upsert_hypothesis("H-1", "# Hypothesis H-1\n")
-            memory.upsert_entity("user", "alice", "# Entity alice\n")
-            memory.upsert_entity("host", "srv-1", "# Entity srv-1\n")
-            memory.upsert_entity("ip", "10.0.0.5", "# Entity 10.0.0.5\n")
-
-            targets = memory._llm_compaction_targets()
-
-            self.assertEqual(
-                [
-                    memory.hypotheses_dir / "H-1.md",
-                    memory.entities_user_dir / "alice.md",
-                    memory.entities_host_dir / "srv-1.md",
-                    memory.entities_ip_dir / "10.0.0.5.md",
-                ],
-                targets,
-            )
-            self.assertNotIn(memory.suspicious_path, targets)
-
     def test_suspicious_table_is_compacted_without_breaking_header(self) -> None:
         with (
             tempfile.TemporaryDirectory() as tmpdir,
@@ -302,91 +274,6 @@ class MemoryTests(unittest.TestCase):
             self.assertLessEqual(
                 memory.suspicious_path.stat().st_size, memory.max_bytes
             )
-
-    def test_overview_is_compacted_via_llm_summary(self) -> None:
-        with (
-            tempfile.TemporaryDirectory() as tmpdir,
-            patch.dict(
-                os.environ,
-                {"FORENSIA_MEMORY_MAX_BYTES": "64", "FORENSIA_OUTPUT_LANGUAGE": "ja"},
-            ),
-        ):
-            reload_settings()
-            case = Case.init(tmpdir)
-            mock_chat = Mock(return_value="compressed overview")
-            memory = MemoryManager(case, summarize=mock_chat)
-            memory.overview_path.write_text(
-                "# Overview\n\n" + ("x" * 512), encoding="utf-8"
-            )
-
-            changed = memory.compact_overview_if_needed(
-                self._llm_base_url(), "test-model"
-            )
-
-            self.assertTrue(changed)
-            condensed = memory.overview_path.read_text(encoding="utf-8")
-            self.assertIn("compressed overview", condensed)
-            # The reused summary carries its source and an honest statement
-            # that the condensed-away prose is not retained (R10).
-            self.assertIn(
-                "> condensed: ",
-                condensed,
-            )
-            self.assertIn(
-                "source=overview.md; not regeneratable - reduced overview prose is not retained",
-                condensed,
-            )
-            self.assertNotIn("regeneratable=true", condensed)
-            messages = mock_chat.call_args[0][0]
-            self.assertIn(
-                "Compress the following investigation overview", messages[0]["content"]
-            )
-            self.assertIn(
-                "Write the compressed overview in ja.", messages[0]["content"]
-            )
-
-    def test_overview_compaction_prompt_stays_english_for_english_output(self) -> None:
-        with (
-            tempfile.TemporaryDirectory() as tmpdir,
-            patch.dict(
-                os.environ,
-                {"FORENSIA_MEMORY_MAX_BYTES": "64", "FORENSIA_OUTPUT_LANGUAGE": "en"},
-            ),
-        ):
-            reload_settings()
-            case = Case.init(tmpdir)
-            mock_chat = Mock(return_value="compressed overview")
-            memory = MemoryManager(case, summarize=mock_chat)
-            memory.overview_path.write_text(
-                "# Overview\n\n" + ("x" * 512), encoding="utf-8"
-            )
-
-            memory.compact_overview_if_needed(self._llm_base_url(), "test-model")
-
-            messages = mock_chat.call_args[0][0]
-            self.assertIn(
-                "Write the compressed overview in en.", messages[0]["content"]
-            )
-
-    def test_overview_compaction_failure_keeps_existing_file(self) -> None:
-        with (
-            tempfile.TemporaryDirectory() as tmpdir,
-            patch.dict(os.environ, {"FORENSIA_MEMORY_MAX_BYTES": "64"}),
-        ):
-            reload_settings()
-            case = Case.init(tmpdir)
-            memory = MemoryManager(
-                case, summarize=Mock(side_effect=RuntimeError("timeout"))
-            )
-            original = "# Overview\n\n" + ("x" * 512)
-            memory.overview_path.write_text(original, encoding="utf-8")
-
-            changed = memory.compact_overview_if_needed(
-                self._llm_base_url(), "test-model"
-            )
-
-            self.assertFalse(changed)
-            self.assertEqual(original, memory.overview_path.read_text(encoding="utf-8"))
 
     def test_stale_keypoint_cards_are_deleted_when_snapshot_shrinks(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -448,65 +335,6 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(3, snapshot[0]["theme_count"])
         self.assertEqual(["A-1", "A-2", "A-3"], snapshot[0]["theme_finding_ids"])
 
-    def test_hypothesis_memory_is_llm_compacted_when_oversized(self) -> None:
-        with (
-            tempfile.TemporaryDirectory() as tmpdir,
-            patch.dict(os.environ, {"FORENSIA_MEMORY_MAX_BYTES": "96"}),
-        ):
-            reload_settings()
-            case = Case.init(tmpdir)
-            mock_chat = Mock(return_value="# Hypothesis H-1\n\n- compacted")
-            memory = MemoryManager(case, summarize=mock_chat)
-            memory.update_overview("# Overview\n\n" + ("x" * 512))
-            memory.upsert_hypothesis("H-1", "# Hypothesis H-1\n\n" + ("y" * 512))
-
-            changed = memory.compact_oversized_with_llm(
-                self._llm_base_url(), "test-model"
-            )
-
-            self.assertEqual([str(memory.hypotheses_dir / "H-1.md")], changed)
-            self.assertEqual(
-                "# Overview\n\n" + ("x" * 512),
-                memory.overview_path.read_text(encoding="utf-8"),
-            )
-            card = (memory.hypotheses_dir / "H-1.md").read_text(encoding="utf-8")
-            self.assertIn("# Hypothesis H-1", card)
-            self.assertIn("- compacted", card)
-            # The reused summary carries source/currentness: the DB-derived
-            # hypothesis card is labelled regeneratable against its DB row (R10).
-            self.assertIn("> condensed: ", card)
-            self.assertIn("source=hypotheses DB row (H-1); regeneratable=true", card)
-            self.assertIn("the DuckDB row is the original", card)
-            mock_chat.assert_called_once()
-
-    def test_entity_memory_is_llm_compacted_when_oversized(self) -> None:
-        with (
-            tempfile.TemporaryDirectory() as tmpdir,
-            patch.dict(os.environ, {"FORENSIA_MEMORY_MAX_BYTES": "96"}),
-        ):
-            reload_settings()
-            case = Case.init(tmpdir)
-            mock_chat = Mock(return_value="- compacted entity")
-            memory = MemoryManager(case, summarize=mock_chat)
-            memory.upsert_entity("ip", "10.0.0.5", "# ip: 10.0.0.5\n\n" + ("z" * 512))
-
-            changed = memory.compact_oversized_with_llm(
-                self._llm_base_url(), "test-model"
-            )
-
-            self.assertEqual([str(memory.entities_ip_dir / "10.0.0.5.md")], changed)
-            card = (memory.entities_ip_dir / "10.0.0.5.md").read_text(encoding="utf-8")
-            self.assertIn("# ip: 10.0.0.5", card)
-            self.assertIn("- compacted entity", card)
-            # The reused summary carries source/currentness: an authored
-            # entity card is labelled as NOT regeneratable (its condensed-away
-            # prose is not retained anywhere) (R10).
-            self.assertIn("> condensed: ", card)
-            self.assertIn("source=entities/ip/10.0.0.5.md; not regeneratable", card)
-            self.assertIn("not retained", card)
-            self.assertNotIn("regeneratable=true", card)
-            mock_chat.assert_called_once()
-
     def test_hypothesis_memory_path_depends_only_on_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -521,26 +349,6 @@ class MemoryTests(unittest.TestCase):
                 "# Hypothesis H-1\n\nsecond\n", hyp_path.read_text(encoding="utf-8")
             )
             self.assertEqual([hyp_path], sorted(memory.hypotheses_dir.glob("*.md")))
-
-    def test_oversized_memory_llm_compaction_failure_keeps_existing_file(self) -> None:
-        with (
-            tempfile.TemporaryDirectory() as tmpdir,
-            patch.dict(os.environ, {"FORENSIA_MEMORY_MAX_BYTES": "64"}),
-        ):
-            reload_settings()
-            case = Case.init(tmpdir)
-            memory = MemoryManager(
-                case, summarize=Mock(side_effect=RuntimeError("timeout"))
-            )
-            original = "# Overview\n\n" + ("x" * 512)
-            memory.update_overview(original)
-
-            changed = memory.compact_oversized_with_llm(
-                self._llm_base_url(), "test-model"
-            )
-
-            self.assertEqual([], changed)
-            self.assertEqual(original, memory.overview_path.read_text(encoding="utf-8"))
 
     def test_get_llm_settings_cache_can_be_cleared(self) -> None:
         with patch.dict(os.environ, {"FORENSIA_OUTPUT_LANGUAGE": "ja"}):
@@ -799,7 +607,6 @@ def test_ctx_refresh_caches_forwards_relevance_terms() -> None:
         ctx_refresh_caches,
     )
     from forensia.core.memory import MemoryManager
-    from forensia.core.session import Hypothesis
 
     memory = MagicMock()
     memory.max_bytes = 16384
@@ -814,7 +621,7 @@ def test_ctx_refresh_caches_forwards_relevance_terms() -> None:
         description="credential reuse by informant",
         required_entities=["target_user"],
     )
-    ctx_refresh_caches(Ctx(), memory, "http://localhost", "m", hypothesis=hypothesis)
+    ctx_refresh_caches(Ctx(), memory, hypothesis=hypothesis)
 
     calls = memory.load_investigation_context.call_args_list
     assert len(calls) == 1  # memory_plan (the planner's default context)

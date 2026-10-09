@@ -151,15 +151,19 @@ class HostEpochDetectionTests(unittest.TestCase):
         epochs = detect_epochs(conn)
         self.assertEqual(epochs, {})
 
-    def test_single_host_is_active(self) -> None:
-        """A single host with events is always active."""
+    def test_epoch_boundary_is_strictly_greater_than_ninety_days(self) -> None:
         conn = _create_db_with_events(
             [
                 ("evtx-001", 4624, "2026-03-01 10:00:00", "HOST-A", "Security"),
+                ("evtx-002", 4624, "2026-05-30 10:00:00", "HOST-A", "Security"),
+                ("evtx-003", 4624, "2026-08-29 10:00:00", "HOST-A", "Security"),
             ]
         )
         epochs = detect_epochs(conn)
-        self.assertEqual(epochs["HOST-A"][0]["label"], "active")
+        self.assertEqual([2, 1], [epoch["event_count"] for epoch in epochs["HOST-A"]])
+        self.assertEqual(
+            ["pre-deployment", "active"], [epoch["label"] for epoch in epochs["HOST-A"]]
+        )
 
     def test_multi_cluster_host(self) -> None:
         """Host with pre-2010 bulk and 2015 trickle gets two clusters, bulk pre-deployment."""

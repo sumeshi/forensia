@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 from forensia.core.case import Case
+from forensia.core.evidence import make_evtx_evidence_id
 from forensia.db.database import CaseDB
 from forensia.db.evidence_lookup import (
     fetch_evidence_records,
@@ -33,7 +34,7 @@ class EvidenceLookupTest(unittest.TestCase):
             "INSERT INTO evtx_events (evidence_id, event_id, timestamp, channel, computer, raw_json) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (
-                "evtx-security-000000000001",
+                "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
                 4624,
                 "2015-03-22T14:34:28",
                 "Security",
@@ -44,7 +45,7 @@ class EvidenceLookupTest(unittest.TestCase):
         self.db.execute(
             "INSERT INTO mft_entries (evidence_id, file_name, file_path, si_modified) VALUES (?, ?, ?, ?)",
             (
-                "mft-000000078080-01",
+                "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000078080-01",
                 "Task List.ersy",
                 "Users/informant/AppData/Local/Eraser 6/Task List.ersy",
                 "2015-03-25 15:29:37",
@@ -54,7 +55,7 @@ class EvidenceLookupTest(unittest.TestCase):
             "INSERT INTO prefetch_executions (evidence_id, executable_name, exec_count, last_exec_time) "
             "VALUES (?, ?, ?, ?)",
             (
-                "prefetch-ccleaner64.exe-779bd542",
+                "prefetch-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-ccleaner64.exe-779bd542",
                 "CCLEANER64.EXE",
                 2,
                 "2015-03-25 15:15:50",
@@ -62,7 +63,11 @@ class EvidenceLookupTest(unittest.TestCase):
         )
         self.db.execute(
             "INSERT INTO prefetch_timeline (evidence_id, executable_name, exec_time) VALUES (?, ?, ?)",
-            ("prefetch-eraser.exe-abc123", "ERASER.EXE", "2015-03-25 14:00:00"),
+            (
+                "prefetch-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-eraser.exe-abc123",
+                "ERASER.EXE",
+                "2015-03-25 14:00:00",
+            ),
         )
         self.db.execute(
             "INSERT INTO registry_artifacts (artifact_id, plugin, hive, key_path) "
@@ -76,41 +81,101 @@ class EvidenceLookupTest(unittest.TestCase):
         )
 
     def test_unknown_id_returns_none(self):
-        result = lookup_evidence_record(self.db, "evtx-security-999999999999")
+        result = lookup_evidence_record(
+            self.db,
+            "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-999999999999",
+        )
         self.assertIsNone(result)
+
+    def test_same_local_evtx_record_from_two_sources_resolves_independently(self):
+        source_a = "c" * 64
+        source_b = "d" * 64
+        first_id = make_evtx_evidence_id(source_a, "Security", 1)
+        second_id = make_evtx_evidence_id(source_b, "Security", 1)
+        self.db.execute(
+            "INSERT INTO evtx_events (evidence_id, source_file, channel, record_id, computer) "
+            "VALUES (?, ?, 'Security', 1, ?), (?, ?, 'Security', 1, ?)",
+            (first_id, source_a, "HOST-A", second_id, source_b, "HOST-B"),
+        )
+
+        found = fetch_evidence_records(self.db, [first_id, second_id])
+
+        self.assertEqual({first_id, second_id}, set(found))
+        self.assertEqual("HOST-A", found[first_id]["computer"])
+        self.assertEqual("HOST-B", found[second_id]["computer"])
+        self.assertEqual([], find_missing_evidence_ids(self.db, [first_id, second_id]))
+
+    def test_conflicting_duplicate_rows_for_one_identity_are_rejected(self):
+        source = "c" * 64
+        evidence_id = make_evtx_evidence_id(source, "Security", 2)
+        self.db.execute(
+            "INSERT INTO evtx_events (evidence_id, source_file, record_id, computer) "
+            "VALUES (?, ?, 2, 'HOST-A'), (?, ?, 2, 'HOST-B')",
+            (evidence_id, source, evidence_id, source),
+        )
+
+        with self.assertRaisesRegex(ValueError, "conflicting rows share evidence ID"):
+            lookup_evidence_record(self.db, evidence_id)
 
     # ---- bulk fetch dedupes ----
 
     def test_bulk_fetch_dedupes(self):
         ids = [
-            "evtx-security-000000000001",
-            "evtx-security-000000000001",
-            "mft-000000078080-01",
-            "prefetch-ccleaner64.exe-779bd542",
-            "prefetch-eraser.exe-abc123",
+            "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
+            "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
+            "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000078080-01",
+            "prefetch-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-ccleaner64.exe-779bd542",
+            "prefetch-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-eraser.exe-abc123",
             "registry-system-services-0001",
-            "evtx-security-999999999999",
+            "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-999999999999",
         ]
         result = fetch_evidence_records(self.db, ids)
         self.assertEqual(len(result), 5)
-        self.assertIn("evtx-security-000000000001", result)
-        self.assertIn("mft-000000078080-01", result)
-        self.assertIn("prefetch-ccleaner64.exe-779bd542", result)
-        self.assertIn("prefetch-eraser.exe-abc123", result)
+        self.assertIn(
+            "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
+            result,
+        )
+        self.assertIn(
+            "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000078080-01",
+            result,
+        )
+        self.assertIn(
+            "prefetch-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-ccleaner64.exe-779bd542",
+            result,
+        )
+        self.assertIn(
+            "prefetch-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-eraser.exe-abc123",
+            result,
+        )
         self.assertIn("registry-system-services-0001", result)
-        self.assertNotIn("evtx-security-999999999999", result)
-        evtx = result["evtx-security-000000000001"]
+        self.assertNotIn(
+            "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-999999999999",
+            result,
+        )
+        evtx = result[
+            "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001"
+        ]
         self.assertEqual(evtx["event_id"], 4624)
         self.assertEqual(evtx["channel"], "Security")
         self.assertEqual(evtx["raw"]["target_user"], "informant")
         self.assertNotIn("raw_json", evtx)
-        self.assertEqual(result["mft-000000078080-01"]["file_name"], "Task List.ersy")
         self.assertEqual(
-            result["prefetch-ccleaner64.exe-779bd542"]["executable_name"],
+            result[
+                "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000078080-01"
+            ]["file_name"],
+            "Task List.ersy",
+        )
+        self.assertEqual(
+            result[
+                "prefetch-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-ccleaner64.exe-779bd542"
+            ]["executable_name"],
             "CCLEANER64.EXE",
         )
         self.assertEqual(
-            result["prefetch-eraser.exe-abc123"]["executable_name"], "ERASER.EXE"
+            result[
+                "prefetch-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-eraser.exe-abc123"
+            ]["executable_name"],
+            "ERASER.EXE",
         )
         expected_sources = [
             "evtx_events",
@@ -124,10 +189,17 @@ class EvidenceLookupTest(unittest.TestCase):
         ):
             self.assertEqual(result[evidence_id]["_source"], source)
         self.assertEqual(
-            lookup_evidence_record(self.db, "mft-000000078080-01"),
-            result["mft-000000078080-01"],
+            lookup_evidence_record(
+                self.db,
+                "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000078080-01",
+            ),
+            result[
+                "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000078080-01"
+            ],
         )
         self.assertEqual(
             find_missing_evidence_ids(self.db, ids),
-            ["evtx-security-999999999999"],
+            [
+                "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-999999999999"
+            ],
         )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Collection, Iterable
 from pathlib import Path
 
@@ -11,6 +12,10 @@ from forensia.evidence.artifacts import get_artifact_adapters
 from forensia.evidence.invalidation import (
     fetch_referenced_evidence_fingerprints,
     invalidate_removed_evidence,
+)
+from forensia.evidence.timestamp_policy import (
+    configured_timestamp_policy,
+    timestamp_year_range_sql,
 )
 
 logger = logging.getLogger(__name__)
@@ -24,6 +29,9 @@ def select_source_paths(
     if source_keys is None:
         return ordered
     keys = {str(key) for key in source_keys if key}
+    invalid = [key for key in keys if re.fullmatch(r"[0-9a-f]{64}", key) is None]
+    if invalid:
+        raise ValueError("source_keys must contain full lowercase SHA-256 identities")
     return [path for path in ordered if any(key in path.name for key in keys)]
 
 
@@ -32,6 +40,18 @@ def normalize_all(
     db: CaseDB,
     source_keys: Collection[str] | None = None,
 ) -> dict[str, int]:
+    if source_keys is None:
+        active_source_keys = tuple(
+            str(row[0])
+            for row in db.execute(
+                "SELECT sha256 FROM ingested_files ORDER BY sha256"
+            ).fetchall()
+            if row[0]
+        )
+    else:
+        active_source_keys = tuple(
+            dict.fromkeys(str(key) for key in source_keys if key)
+        )
     counts = {
         "evtx_rows": 0,
         "mft_entries": 0,
@@ -45,14 +65,14 @@ def normalize_all(
             db, adapter.name
         )
         try:
-            result = adapter.normalize(case, db, source_keys=source_keys)
+            result = adapter.normalize(case, db, source_keys=active_source_keys)
         except Exception as exc:
-            if source_keys:
-                for key in source_keys:
+            if active_source_keys:
+                for key in active_source_keys:
                     rows = db.execute(
                         "SELECT sha256, path FROM ingested_files "
-                        "WHERE sha256 LIKE ? AND source_kind = ?",
-                        [f"{key}%", adapter.name],
+                        "WHERE sha256 = ? AND source_kind = ?",
+                        [key, adapter.name],
                     ).fetchall()
                     for source_id, path in rows:
                         register_evidence_source(
@@ -99,7 +119,7 @@ def normalize_all(
         elif result.source_kind == "registry":
             counts["registry_artifacts"] = result.rows
 
-    _update_source_status(db, source_keys, counts, raw_dir=case.raw_dir)
+    _update_source_status(db, active_source_keys, counts, raw_dir=case.raw_dir)
 
     return counts
 
@@ -131,19 +151,18 @@ def _update_source_status(
 
     When source_keys is None, updates all sources that have ingested_files entries.
     """
-    if source_keys:
+    if source_keys is not None:
         keys = [k for k in source_keys if k]
     else:
-        rows = db.execute(
-            "SELECT DISTINCT SUBSTR(sha256, 1, 12) FROM ingested_files"
-        ).fetchall()
+        rows = db.execute("SELECT DISTINCT sha256 FROM ingested_files").fetchall()
         keys = [str(row[0]) for row in rows if row[0]]
 
+    timestamp_policy = configured_timestamp_policy()
     for key in keys:
         try:
             rows = db.execute(
-                "SELECT sha256, source_kind FROM ingested_files WHERE sha256 LIKE ?",
-                (f"{key}%",),
+                "SELECT sha256, source_kind FROM ingested_files WHERE sha256 = ?",
+                (key,),
             ).fetchall()
             for row in rows:
                 sha256: str = row[0]
@@ -155,12 +174,13 @@ def _update_source_status(
                 }.get(source_kind)
                 if table is None:
                     continue
+                evtx_eligible = timestamp_year_range_sql("timestamp", timestamp_policy)
                 # Normalized rows carry the ingested SHA-256 as their durable
                 # source identity; the raw JSONL writers store it verbatim.
                 metadata = db.execute(
                     "SELECT COUNT(*), "
-                    "MIN(timestamp) FILTER (WHERE EXTRACT(year FROM timestamp) BETWEEN 1980 AND 2200), "
-                    "MAX(timestamp) FILTER (WHERE EXTRACT(year FROM timestamp) BETWEEN 1980 AND 2200), "
+                    f"MIN(timestamp) FILTER (WHERE {evtx_eligible}), "
+                    f"MAX(timestamp) FILTER (WHERE {evtx_eligible}), "
                     "list(DISTINCT computer), list(DISTINCT channel) "
                     "FROM evtx_events WHERE source_file = ?"
                     if source_kind == "evtx"
@@ -182,10 +202,13 @@ def _update_source_status(
                     timestamp_column = (
                         "timestamp" if source_kind == "mft" else "exec_time"
                     )
+                    eligible_time = timestamp_year_range_sql(
+                        timestamp_column, timestamp_policy
+                    )
                     time_row = db.execute(
                         f"SELECT "
-                        f"MIN({timestamp_column}) FILTER (WHERE EXTRACT(year FROM {timestamp_column}) BETWEEN 1980 AND 2200), "
-                        f"MAX({timestamp_column}) FILTER (WHERE EXTRACT(year FROM {timestamp_column}) BETWEEN 1980 AND 2200) "
+                        f"MIN({timestamp_column}) FILTER (WHERE {eligible_time}), "
+                        f"MAX({timestamp_column}) FILTER (WHERE {eligible_time}) "
                         f"FROM {timeline_table} WHERE source_file = ?",
                         [sha256],
                     ).fetchone()
@@ -194,7 +217,7 @@ def _update_source_status(
                 error_code = ""
                 error_summary = ""
                 if row_count == 0 and raw_dir is not None:
-                    raw_state = _raw_source_state(raw_dir, source_kind, sha256[:12])
+                    raw_state = _raw_source_state(raw_dir, source_kind, sha256)
                     if raw_state != "empty":
                         status = "failed"
                         error_code = "normalized_rows_missing"

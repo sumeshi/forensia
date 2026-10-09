@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 from unittest.mock import patch
 
@@ -10,8 +11,9 @@ from forensia.ai.llm import llm_client, schema_compat
 
 
 @pytest.fixture(autouse=True)
-def _reset_schema_mode_cache() -> None:
+def _reset_schema_mode_cache(monkeypatch) -> None:
     schema_compat._SCHEMA_MODE_CACHE.clear()
+    monkeypatch.setattr(llm_client.time, "sleep", lambda _seconds: None)
 
 
 class _FakeClient:
@@ -47,6 +49,32 @@ def _response(
             payload["usage"] = usage
         return httpx.Response(status_code, json=payload, request=request)
     return httpx.Response(status_code, text=text, request=request)
+
+
+def test_investigation_scope_closes_sync_and_outage_probe_clients() -> None:
+    class _SyncClient:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _AsyncClient:
+        closed = False
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    sync_client = _SyncClient()
+    async_client = _AsyncClient()
+    llm_client._SYNC_CLIENTS[("scope-test", 11)] = sync_client
+    llm_client._ASYNC_CLIENTS[("scope-test", 22)] = async_client
+
+    asyncio.run(llm_client.close_llm_clients("scope-test"))
+
+    assert sync_client.closed
+    assert async_client.closed
+    assert not any(key[0] == "scope-test" for key in llm_client._SYNC_CLIENTS)
+    assert not any(key[0] == "scope-test" for key in llm_client._ASYNC_CLIENTS)
 
 
 def test_chat_completion_retries_llama_strict_schema_failure_with_compatible_schema() -> (
@@ -157,3 +185,28 @@ def test_chat_completion_removes_schema_only_after_compatible_schema_is_rejected
     assert client.requests[0]["response_format"]["json_schema"]["strict"] is True
     assert "strict" not in client.requests[1]["response_format"]["json_schema"]
     assert "response_format" not in client.requests[2]
+
+
+def test_outage_recovery_uses_health_endpoint_without_inference_request() -> None:
+    class _HealthClient:
+        def __init__(self) -> None:
+            self.get_urls: list[str] = []
+            self.post_calls = 0
+
+        async def get(self, url, **kwargs):
+            self.get_urls.append(url)
+            return httpx.Response(200, request=httpx.Request("GET", url))
+
+        async def post(self, *args, **kwargs):
+            self.post_calls += 1
+            raise AssertionError("health probe must not issue an inference request")
+
+    client = _HealthClient()
+
+    async def run() -> None:
+        with patch.object(llm_client, "_get_async_client", return_value=client):
+            await llm_client.outage_wait_until_recovered("http://llama.test", "m")
+
+    asyncio.run(run())
+    assert client.get_urls == ["http://llama.test/v1/models"]
+    assert client.post_calls == 0

@@ -36,6 +36,7 @@ from forensia.ai.sections.section_run_store import (
 )
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
+from forensia.core.session import LLMBudgetExceededError
 from forensia.db.database import CaseDB
 
 
@@ -191,7 +192,6 @@ from forensia.report.answers.keypoint_catalog import (
 
 def _try_question_structured_answer(
     ctx: _BlockContext,
-    audit_callback=None,
 ) -> SectionBlockResult | None:
     """Return a SectionBlockResult when a structured answer already covers this block.
 
@@ -220,8 +220,6 @@ def _try_question_structured_answer(
         section_key=ctx.section_key,
         block_heading=ctx.block_heading,
     )
-    if audit_callback:
-        audit_callback([], body)
     _store_section_run(
         ctx.db,
         section_key=ctx.section_key,
@@ -254,7 +252,6 @@ def _try_fast_path_write(
     collected_results: list[dict[str, Any]],
     actual_query_count: int,
     actual_query_row_counts: list[int],
-    audit_callback=None,
 ) -> SectionBlockResult | None:
     """R3-07: fast-path return when seed evidence rows already suffice.
 
@@ -274,7 +271,6 @@ def _try_fast_path_write(
         [],
         actual_query_count,
         actual_query_row_counts,
-        audit_callback=audit_callback,
     )
     return SectionBlockResult(
         body=body,
@@ -288,11 +284,10 @@ def _run_block_pipeline(
     ctx: _BlockContext,
     context_sections: dict[str, str],
     current_section_outline: list[dict],
-    audit_callback=None,
 ) -> SectionBlockResult:
     """Benchmark early-return, seed prep, plan loop, and final write for one block."""
     # --- Benchmark early-return: structured answer available ---
-    bench_result = _try_question_structured_answer(ctx, audit_callback)
+    bench_result = _try_question_structured_answer(ctx)
     if bench_result is not None:
         return bench_result
 
@@ -310,7 +305,6 @@ def _run_block_pipeline(
         collected_results,
         actual_query_count,
         actual_query_row_counts,
-        audit_callback=audit_callback,
     )
     if fast_result is not None:
         return fast_result
@@ -351,7 +345,6 @@ def _run_block_pipeline(
         missing_questions,
         actual_query_count,
         actual_query_row_counts,
-        audit_callback=audit_callback,
     )
     return SectionBlockResult(
         body=body,
@@ -384,8 +377,6 @@ def run_section_block_agent(
     question: str = "",
     section_table_digest: str = "",
     template_tags: tuple[str, ...] = (),
-    audit_callback=None,
-    review_audit_callback=None,
 ) -> SectionBlockResult:
     """Run the complete plan->query->check->write loop for one report section block.
 
@@ -414,14 +405,12 @@ def run_section_block_agent(
         question=question,
         section_table_digest=section_table_digest,
         template_tags=template_tags,
-        audit_callback=audit_callback,
-        review_audit_callback=review_audit_callback,
         report_brief=report_brief,
     )
     try:
-        return _run_block_pipeline(
-            ctx, context_sections, current_section_outline, audit_callback
-        )
+        return _run_block_pipeline(ctx, context_sections, current_section_outline)
+    except LLMBudgetExceededError:
+        raise
     except Exception as exc:
         import logging
 
@@ -475,8 +464,6 @@ async def async_run_section_block_agent(
     question: str = "",
     section_table_digest: str = "",
     template_tags: tuple[str, ...] = (),
-    audit_callback=None,
-    review_audit_callback=None,
 ) -> SectionBlockResult:
     """Async wrapper around run_section_block_agent using asyncio.to_thread."""
     return await asyncio.to_thread(
@@ -502,6 +489,4 @@ async def async_run_section_block_agent(
         question=question,
         section_table_digest=section_table_digest,
         template_tags=template_tags,
-        audit_callback=audit_callback,
-        review_audit_callback=review_audit_callback,
     )

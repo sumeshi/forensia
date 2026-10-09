@@ -687,7 +687,7 @@ def build_section_outline_messages(
         '  "outline": [{\n'
         '    "heading": "exact heading from template (verbatim)",\n'
         "    \"key_points\": [\"concrete claims, each grounded in 1-3 specific evidence rows. Each claim should name an actor/action/target/timestamp where possible. NO meta-statements like 'Summary of findings' or 'List of activity'\"],\n"
-        '    "evidence_ids": ["actual evidence_id strings copied from the evidence_rows above (e.g. evtx-security-000000000122). NOT keypoint names. NOT finding_ids."]\n'
+        '    "evidence_ids": ["actual evidence_id strings copied from the evidence_rows above (e.g. evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122). NOT keypoint names. NOT finding_ids."]\n'
         "  }]\n"
         "}\n"
         "</OUTPUT_SCHEMA>\n"
@@ -700,8 +700,8 @@ def build_section_outline_messages(
         "Do not use raw internal IDs (gap-*, H-*, KP-*) in prose. Use human-readable descriptions instead.\n"
         "</RULES>\n"
         "<EXAMPLE>\n"
-        'Input evidence rows: [{"evidence_id": "evtx-security-000000000122", "summary": "4648 logon WS-SALES-03->jdoe 2024-05-14 14:33:54"}, {"evidence_id": "evtx-security-000000000152", "summary": "4648 logon WS-SALES-03->jdoe 2024-05-14 14:34:28"}]\n'
-        'Output: {"outline": [{"heading": "Executive Summary", "key_points": ["Two explicit-credential logon attempts (4648) from WS-SALES-03$ targeting jdoe were observed within 60 seconds on 2024-05-14"], "evidence_ids": ["evtx-security-000000000122"]}]}\n'
+        'Input evidence rows: [{"evidence_id": "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122", "summary": "4648 logon WS-SALES-03->jdoe 2024-05-14 14:33:54"}, {"evidence_id": "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000152", "summary": "4648 logon WS-SALES-03->jdoe 2024-05-14 14:34:28"}]\n'
+        'Output: {"outline": [{"heading": "Executive Summary", "key_points": ["Two explicit-credential logon attempts (4648) from WS-SALES-03$ targeting jdoe were observed within 60 seconds on 2024-05-14"], "evidence_ids": ["evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122"]}]}\n'
         "</EXAMPLE>\n"
         "Output JSON only. "
     )
@@ -778,7 +778,7 @@ def build_paragraph_narrate_messages(
         "<RULES>\n"
         "The response MUST be valid JSON and MUST contain the key `body`. Do not return a bare string.\n"
         "Citation count: cite AT MOST 2-3 representative evidence_ids per paragraph. If many similar findings exist (same event_id pattern), state the count and cite 1-2 examples.\n"
-        "Citation format: cite raw `evidence_id` strings only (e.g. evtx-security-000000000122). Do NOT cite `finding_id` (e.g. windows-security-4648-logon-explicit-creds-0001) — those are finding labels, not evidence references. If the input shows a finding_id without an evidence_id, OMIT the citation entirely instead of using the finding_id.\n"
+        "Citation format: cite raw `evidence_id` strings only (e.g. evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122). Do NOT cite `finding_id` (e.g. windows-security-4648-logon-explicit-creds-0001) — those are finding labels, not evidence references. If the input shows a finding_id without an evidence_id, OMIT the citation entirely instead of using the finding_id.\n"
         "No KP-NNNN identifiers. Do not use raw internal IDs (gap-*, H-*, KP-*) in prose. Use human-readable descriptions instead.\n"
         "DATE FORMAT: Always use ISO 8601 date format (YYYY-MM-DD) for all dates and timestamps. "
         "Never use localized date formats (e.g., '2015年3月22日' or 'March 22, 2015'). "
@@ -793,13 +793,13 @@ def build_paragraph_narrate_messages(
         "</RULES>\n"
         f"{digest_block}"
         "<EXAMPLE_GOOD>\n"
-        "Eight explicit-credential logon attempts (4648) targeting jdoe, admin02, and tempuser were observed from WS-SALES-03$ between 14:33 and 15:55 on 2024-05-14 (evtx-security-000000000122, evtx-security-000000000152). All attempts succeeded and produced no subsequent 4624 from the same src_ip, suggesting localhost credential injection rather than network-reused access.\n"
+        "Eight explicit-credential logon attempts (4648) targeting jdoe, admin02, and tempuser were observed from WS-SALES-03$ between 14:33 and 15:55 on 2024-05-14 (evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122, evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000152). All attempts succeeded and produced no subsequent 4624 from the same src_ip, suggesting localhost credential injection rather than network-reused access.\n"
         "</EXAMPLE_GOOD>\n"
         "<EXAMPLE_BAD>\n"
         "The investigation revealed multiple high-severity findings related to logon attempts using explicit credentials (windows-security-4648-logon-explicit-creds-0001, ..., 0011).\n"
         "</EXAMPLE_BAD>\n"
         "<EXAMPLE_JSON>\n"
-        '{"body":"Eight explicit-credential logon attempts targeting jdoe and admin02 were observed from WS-SALES-03$ on 2024-05-14 (evtx-security-000000000122, evtx-security-000000000152)."}\n'
+        '{"body":"Eight explicit-credential logon attempts targeting jdoe and admin02 were observed from WS-SALES-03$ on 2024-05-14 (evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122, evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000152)."}\n'
         "</EXAMPLE_JSON>"
     )
     user = (

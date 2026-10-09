@@ -113,7 +113,7 @@ class TestReportQualityContract(unittest.TestCase):
         source_id = "c" * 64
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
-            (case.raw_dir / f"evtx-{source_id[:12]}-empty.jsonl").write_text("")
+            (case.raw_dir / f"evtx-{source_id}-empty.jsonl").write_text("")
             with CaseDB(case) as db:
                 db.execute(
                     "INSERT INTO ingested_files "
@@ -332,7 +332,7 @@ class TestReportQualityContract(unittest.TestCase):
                     INSERT INTO hypothesis_evidence (
                         link_id, hypothesis_id, evidence_id, role, source_family,
                         strength, created_session, created_at
-                    ) VALUES ('EL-1', 'H-001', 'evtx-security-000000000001',
+                    ) VALUES ('EL-1', 'H-001', 'evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001',
                               'supporting', 'evtx', 'moderate', 'S-1', now())
                     """
                 )

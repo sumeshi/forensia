@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from forensia.ai.llm import llm_gateway
+from forensia.ai.llm import json_response
 from forensia.ai.prompts.prompt_context import (
     _enforce_system_budget,
     _org_knowledge_guidance,
@@ -34,6 +34,7 @@ from forensia.ai.sections.section_run_store import (
     _store_section_run,
 )
 from forensia.config import get_prompt_budget_tokens
+from forensia.core.session import LLMBudgetExceededError
 from forensia.knowledge.external import KnowledgeSection
 from forensia.knowledge.retrieval import knowledge_terms_for_hypothesis, select_snippets
 from forensia.report.answers.keypoint_catalog import (
@@ -206,14 +207,15 @@ def _run_block_plan(
         plan_messages, max_total_tokens=get_prompt_budget_tokens()
     )
     try:
-        plan = llm_gateway.request_llm_json(
+        plan = json_response.request_llm_json(
             messages=plan_messages,
             model=ctx.model,
             base_url=ctx.base_url,
             json_schema=plan_schema,
             telemetry_phase="section-plan",
-            audit_callback=ctx.audit,
         )
+    except LLMBudgetExceededError:
+        raise
     except Exception as exc:
         _store_section_run(
             ctx.db,
@@ -411,14 +413,15 @@ def _run_block_check(
         check_messages, max_total_tokens=get_prompt_budget_tokens()
     )
     try:
-        check = llm_gateway.request_llm_json(
+        check = json_response.request_llm_json(
             messages=check_messages,
             model=ctx.model,
             base_url=ctx.base_url,
             json_schema=check_schema,
             telemetry_phase="section-check",
-            audit_callback=ctx.audit,
         )
+    except LLMBudgetExceededError:
+        raise
     except Exception as exc:
         _store_section_run(
             ctx.db,

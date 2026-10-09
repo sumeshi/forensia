@@ -17,17 +17,22 @@ def test_progress_events_are_capped() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         case = Case.init(tmpdir)
         with CaseDB(case) as db:
-            total = MAX_PROGRESS_EVENTS + 105
-            for index in range(total):
-                record_progress_event(
-                    db,
-                    {
-                        "stage": "investigate/check",
-                        "status": "running",
-                        "iteration": index,
-                        "summary": f"event-{index}",
-                    },
-                )
+            # Seed the retained tail efficiently, then cross the boundary through
+            # the actual writer. Pruning must also work after reopening a store.
+            db.execute(
+                "INSERT INTO trace.progress_events (event_index, stage, status, payload) "
+                "SELECT i, 'investigate/check', 'running', '{}' FROM range(1, ?) AS r(i)",
+                (MAX_PROGRESS_EVENTS + 1,),
+            )
+            total = MAX_PROGRESS_EVENTS + 1
+            record_progress_event(
+                db,
+                {
+                    "stage": "investigate/check",
+                    "status": "running",
+                    "summary": "new event",
+                },
+            )
             count = db.execute("SELECT COUNT(*) FROM trace.progress_events").fetchone()[
                 0
             ]

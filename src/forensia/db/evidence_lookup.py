@@ -94,9 +94,20 @@ def _lookup_table(
     rows = fetch_records(
         db, f"SELECT * FROM {table} WHERE {id_column} IN ({placeholders})", tuple(ids)
     )
+    rows_by_id: dict[str, dict[str, Any]] = {}
     for row in rows:
         eid = str(row.get(id_column) or "")
-        if not eid or eid in result:
+        if not eid:
+            continue
+        previous = rows_by_id.get(eid)
+        if previous is not None:
+            if previous != row:
+                raise ValueError(
+                    f"conflicting rows share evidence ID {eid!r} in {table}"
+                )
+            continue
+        rows_by_id[eid] = dict(row)
+        if eid in result:
             continue
         row["_source"] = table
         if id_column != "evidence_id":

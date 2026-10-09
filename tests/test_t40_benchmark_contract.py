@@ -173,7 +173,7 @@ class BenchmarkTraceabilityTest(unittest.TestCase):
 
     def test_each_evidence_claim_requires_its_own_ref(self) -> None:
         findings = check_claim_traceability(
-            "4624 logon events were observed (evtx-security-000000000001).\n\n"
+            "4624 logon events were observed (evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001).\n\n"
             "4672 special privilege events were observed."
         )
         self.assertTrue(

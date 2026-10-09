@@ -542,7 +542,7 @@ class RuleExecutionTests(unittest.TestCase):
             with CaseDB(case) as db:
                 self._insert_evtx_event(
                     db,
-                    evidence_id="evtx-security-000000000001",
+                    evidence_id="evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
                     event_id=4624,
                     timestamp="2026-05-16 01:00:00",
                     computer="host1",
@@ -553,7 +553,7 @@ class RuleExecutionTests(unittest.TestCase):
                 )
                 self._insert_evtx_event(
                     db,
-                    evidence_id="evtx-security-000000000002",
+                    evidence_id="evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000002",
                     event_id=4697,
                     timestamp="2026-05-16 01:05:00",
                     computer="host1",
@@ -613,8 +613,14 @@ class RuleExecutionTests(unittest.TestCase):
             self.assertIn(
                 "evidence_ids", ev, "correlation finding must carry evidence_ids list"
             )
-            self.assertIn("evtx-security-000000000001", str(ev.get("evidence_ids")))
-            self.assertIn("evtx-security-000000000002", str(ev.get("evidence_ids")))
+            self.assertIn(
+                "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
+                str(ev.get("evidence_ids")),
+            )
+            self.assertIn(
+                "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000002",
+                str(ev.get("evidence_ids")),
+            )
 
     def test_generate_findings_degrades_confidence_when_key_fields_are_missing(
         self,

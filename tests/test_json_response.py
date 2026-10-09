@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
+
+import pytest
 
 from forensia.ai.llm.json_response import parse_llm_json
 
@@ -46,3 +49,48 @@ class ParseLlmJsonTests(unittest.TestCase):
             parse_llm_json(
                 "[1, 2, 3]", base_url="http://llm-repair.invalid", model="test"
             )
+
+
+def test_repeated_invalid_response_closes_owned_logical_call(tmp_path) -> None:
+    from forensia.ai.llm import json_response
+    from forensia.ai.llm_telemetry import (
+        LLMTelemetry,
+        reset_active_telemetry,
+        set_active_telemetry,
+    )
+    from forensia.core.case import Case
+    from forensia.db.database import CaseDB
+
+    case = Case.init(tmp_path / "case")
+    with CaseDB(case) as db:
+        telemetry = LLMTelemetry(db, session_id="invalid-json")
+        token = set_active_telemetry(telemetry)
+        outputs = iter(("not-json", "not-json"))
+        try:
+            with (
+                patch.object(
+                    json_response,
+                    "chat_completion",
+                    side_effect=lambda **_: next(outputs),
+                ),
+                patch.object(
+                    json_response,
+                    "parse_llm_json",
+                    side_effect=ValueError("invalid object"),
+                ),
+            ):
+                with pytest.raises(
+                    RuntimeError, match="repeated identical invalid JSON"
+                ):
+                    json_response.request_llm_json(
+                        [{"role": "user", "content": "return JSON"}],
+                        base_url="http://llm-repair.invalid",
+                        model="test",
+                    )
+        finally:
+            reset_active_telemetry(token)
+
+        assert db.execute(
+            "SELECT status FROM llm_logical_calls WHERE session_id = ?",
+            ("invalid-json",),
+        ).fetchall() == [("failed",)]

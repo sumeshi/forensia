@@ -98,6 +98,8 @@ def render_written_report(
     case: Case,
     db: CaseDB,
     filled_sections: dict[str, str] | None = None,
+    *,
+    html_output: str | Path | None = None,
 ) -> tuple[Path, Path]:
     """Write report Markdown (from sections or DB) and generate the corresponding HTML report."""
     from forensia.report.report_validation import derive_publication_state
@@ -110,7 +112,9 @@ def render_written_report(
         case,
         (
             case.reports_dir / "report.md",
-            case.reports_dir / "report.html",
+            html_output
+            if html_output is not None
+            else case.reports_dir / "report.html",
         ),
     )
     publication_state = derive_publication_state(db)
@@ -181,5 +185,5 @@ def render_written_report(
             f"{issue.check_name}: {issue.message}",
             level="error" if issue.severity == "error" else "warning",
         )
-    report_html = render_html_report(case, db)
+    report_html = render_html_report(case, db, output_path=html_output)
     return report_path, report_html

@@ -21,7 +21,7 @@ def ingest_mft_file(
     progress_callback: Callable[[str], None] | None = None,
 ) -> Path:
     mft_path = Path(mft_path)
-    entries_path = case.raw_dir / f"mft-entries-{source_sha[:12]}.jsonl"
+    entries_path = case.raw_dir / f"mft-entries-{source_sha}.jsonl"
     ingested_at = datetime.now(UTC).isoformat()
 
     if progress_callback:
@@ -43,7 +43,9 @@ def ingest_mft_file(
                     "source_file": source_sha,
                     "parser": "mft2es",
                     "ingested_at": ingested_at,
-                    "evidence_id": make_mft_evidence_id(record_number, sequence_number),
+                    "evidence_id": make_mft_evidence_id(
+                        source_sha, record_number, sequence_number
+                    ),
                 }
                 handle.write(json.dumps(enriched, ensure_ascii=False) + "\n")
                 record_count += 1

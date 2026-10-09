@@ -1,8 +1,6 @@
 """One HTTP attempt of the LLM transport, durable as a provider-attempt receipt.
 
-These runners were extracted verbatim from ``llm_client`` so that module stays
-inside the kernel 1000-line contract (``scripts/check_imports.py``); no
-behavior change. The HTTP transport import stays lazy at the call site: kernel
+The HTTP transport import stays lazy at the call site: kernel
 imports must not load httpx (its import chain pulls click/rich machinery).
 """
 
@@ -163,70 +161,7 @@ def _post_attempt(
     except httpx.RequestError as exc:
         _record_attempt_failure(telemetry, att_id, started, exc, timed_out=False)
         raise
-    if telemetry:
-        telemetry.record_attempt_response(
-            attempt_id=att_id, response_body=response.text
-        )
-    return response, att_id, int((time.monotonic() - started) * 1000), started
-
-
-async def _a_post_attempt(
-    client: httpx.AsyncClient,
-    *,
-    url: str,
-    body: dict[str, Any],
-    headers: dict[str, str],
-    telemetry: LLMTelemetry | None,
-    logical_call_id: str | None,
-    ordinal: int,
-    model: str,
-    schema_mode: str,
-    request_fingerprint: str | None,
-    configured: int,
-    reserve: int,
-    known_limit: int | None,
-    effective: int,
-    requested: int,
-    input_chars: int,
-    phase: str | None,
-    retry_class: str | None = None,
-    retry_reason: str | None = None,
-    policy_decision: str | None = None,
-    request_changed_fields: dict[str, Any] | None = None,
-    prompt_metadata: dict[str, Any] | None = None,
-) -> tuple[Any, str | None, int, float]:
-    """One awaited HTTP attempt, durable as a provider-attempt receipt."""
-    import httpx
-
-    started = time.monotonic()
-    att_id = _begin_attempt(
-        telemetry,
-        logical_call_id,
-        url=url,
-        body=body,
-        ordinal=ordinal,
-        model=model,
-        schema_mode=schema_mode,
-        request_fingerprint=request_fingerprint,
-        configured=configured,
-        reserve=reserve,
-        known_limit=known_limit,
-        effective=effective,
-        requested=requested,
-        input_chars=input_chars,
-        phase=phase,
-        retry_class=retry_class,
-        retry_reason=retry_reason,
-        policy_decision=policy_decision,
-        request_changed_fields=request_changed_fields,
-        prompt_metadata=prompt_metadata,
-    )
-    try:
-        response = await client.post(url, json=body, headers=headers)
-    except httpx.TimeoutException as exc:
-        _record_attempt_failure(telemetry, att_id, started, exc, timed_out=True)
-        raise
-    except httpx.RequestError as exc:
+    except Exception as exc:
         _record_attempt_failure(telemetry, att_id, started, exc, timed_out=False)
         raise
     if telemetry:

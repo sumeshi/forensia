@@ -265,7 +265,7 @@ def test_unattributed_source_replacement_supersedes_same_member_path(
             [new_source, str(primary.resolve())],
         )
 
-        assert normalize_registry(case, db, source_keys=[new_source[:12]]) == 1
+        assert normalize_registry(case, db, source_keys=[new_source]) == 1
         assert db.execute("SELECT COUNT(*) FROM registry_datasets").fetchone()[0] == 1
         assert (
             db.execute("SELECT dataset_id FROM registry_datasets").fetchone()[0]

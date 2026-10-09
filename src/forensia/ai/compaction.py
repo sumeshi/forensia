@@ -2,14 +2,13 @@
 
 Wraps ``core.compaction.mechanical_compact`` (Stage 1) and adds an optional
 LLM summarisation step.  Falls back to the mechanical stage on any failure,
-when essential tokens are lost, or when the LLM output still exceeds budget.
+when the LLM call fails. If the requested budget cannot retain required
+references, it raises ``CompactionPreservationError``.
 
 Design rules
 ------------
 - Lives in ``ai/`` (may import from ``core/`` and ``ai.llm``).
-- Never raises to the caller — always degrades to mechanical compaction.
-- Process-level cache keyed on ``(sha256(text), budget)`` to avoid redundant
-  LLM calls for identical inputs within a single forensia run.
+- Never silently claims that references survived when they did not.
 - Only called from sites that **already** have an LLM client (base_url/model),
   never from pure prompt-builder functions.
 - (R10) Every reduction here is one-way: nothing claims to re-generate the
@@ -19,12 +18,11 @@ Design rules
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import re
-import threading
 
 from forensia.core.compaction import mechanical_compact
+from forensia.core.session import LLMBudgetExceededError
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +35,7 @@ _EVENT_ID_RE = re.compile(r"\b\d{3,5}\b")
 
 # Table names that appear in SQL / schema references
 _TABLE_NAME_RE = re.compile(
-    r"\b(?:evtx_events|mft_entries|mft_timeline|prefetch_executions|prefetch_timeline|findings)\b",
+    r"\b(?:evtx_events|mft_entries|mft_timeline|prefetch_executions|prefetch_timeline|registry_artifacts|registry_timeline|findings)\b",
     re.IGNORECASE,
 )
 
@@ -46,7 +44,15 @@ _WIN_PATH_RE = re.compile(r"[A-Za-z]:\\[^\s,;\"']+")
 _UNIX_PATH_RE = re.compile(r"(?<!\w)/[^\s,;\"']+")
 
 # Evidence IDs: evtx-security-NNNNNNNNNN, mft-..., etc.
-_EVIDENCE_ID_RE = re.compile(r"\b(?:evtx|mft|prefetch)-[\w-]+\b", re.IGNORECASE)
+_EVIDENCE_ID_RE = re.compile(
+    r"\b(?:evtx|mft|prefetch)-[0-9a-f]{64}-[\w-]+\b"
+    r"|\bregistry-[0-9a-f]{64}\b",
+    re.IGNORECASE,
+)
+
+
+class CompactionPreservationError(ValueError):
+    """Raised when a reduction cannot retain every required reference."""
 
 
 def _extract_essential_tokens(text: str) -> set[str]:
@@ -111,36 +117,8 @@ def _call_llm(text: str, budget: int, *, base_url: str, model: str) -> str:
         model=model,
         base_url=base_url,
         max_tokens=max_tokens,
+        phase="compaction",
     )
-
-
-# ---------------------------------------------------------------------------
-# Cache
-# ---------------------------------------------------------------------------
-
-_CACHE_SIZE = 256
-
-# Bounded FIFO cache: oldest entry evicted once _CACHE_SIZE is reached.
-_cache: dict[tuple[str, int], str] = {}
-_cache_lock = threading.Lock()
-
-
-def _cache_key(text: str, budget: int) -> tuple[str, int]:
-    """SHA-256 hash of text + budget for cache lookup."""
-    h = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    return (h, budget)
-
-
-def _cache_get(text: str, budget: int) -> str | None:
-    with _cache_lock:
-        return _cache.get(_cache_key(text, budget))
-
-
-def _cache_store(key: tuple[str, int], value: str) -> None:
-    with _cache_lock:
-        if key not in _cache and len(_cache) >= _CACHE_SIZE:
-            _cache.pop(next(iter(_cache)))
-        _cache[key] = value
 
 
 # ---------------------------------------------------------------------------
@@ -183,15 +161,6 @@ def llm_compact(
     if len(text) <= budget:
         return text
 
-    # Fast path: mechanical is likely good enough
-    if len(text) < budget * _MECHANICAL_SUFFICIENCY_RATIO:
-        return mechanical_compact(text, budget)
-
-    # Cache check
-    cached = _cache_get(text, budget)
-    if cached is not None:
-        return cached
-
     # Extract essential tokens from the original
     essential = _extract_essential_tokens(text)
     if preserve_patterns:
@@ -204,16 +173,27 @@ def llm_compact(
             except re.error:
                 pass
 
+    def mechanical_fallback() -> str:
+        result = mechanical_compact(text, budget)
+        if not _essential_tokens_present(essential, result):
+            raise CompactionPreservationError(
+                "The character budget is too small to preserve all required references"
+            )
+        return result
+
+    if len(text) < budget * _MECHANICAL_SUFFICIENCY_RATIO:
+        return mechanical_fallback()
+
     # Try LLM summarisation
     try:
         llm_output = _call_llm(text, budget, base_url=base_url, model=model)
+    except LLMBudgetExceededError:
+        raise
     except Exception as exc:
         logger.debug(
             "llm_compact: LLM call failed (%s), falling back to mechanical", exc
         )
-        result = mechanical_compact(text, budget)
-        _cache_store(_cache_key(text, budget), result)
-        return result
+        return mechanical_fallback()
 
     # Guard: essential tokens must be present
     if not _essential_tokens_present(essential, llm_output):
@@ -224,32 +204,19 @@ def llm_compact(
             len(missing),
             list(missing)[:5],
         )
-        result = mechanical_compact(text, budget)
-        _cache_store(_cache_key(text, budget), result)
-        return result
+        return mechanical_fallback()
 
     # Guard: output must be within budget
     if len(llm_output) > budget:
         llm_output = mechanical_compact(llm_output, budget)
         if not _essential_tokens_present(essential, llm_output):
-            result = mechanical_compact(text, budget)
-            _cache_store(_cache_key(text, budget), result)
-            return result
+            return mechanical_fallback()
 
     # Guard: empty output
     if not llm_output.strip():
-        result = mechanical_compact(text, budget)
-        _cache_store(_cache_key(text, budget), result)
-        return result
+        return mechanical_fallback()
 
-    _cache_store(_cache_key(text, budget), llm_output)
     return llm_output
-
-
-def clear_compaction_cache() -> None:
-    """Reset the process-level compaction cache (for testing)."""
-    with _cache_lock:
-        _cache.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -306,9 +273,19 @@ def structured_compact(
         # Never reduce a reduction: keep the existing block intact.
         return text
     sections = text.split(_TURN_DELIMITER) if _TURN_DELIMITER in text else [text]
+    essential = _extract_essential_tokens(text)
+
+    def bounded_projection(value: str) -> str:
+        result = value if len(value) <= budget else mechanical_compact(value, budget)
+        if not _essential_tokens_present(essential, result):
+            raise CompactionPreservationError(
+                "The context budget is too small to preserve all required references"
+            )
+        return result
+
     if len(sections) <= preserve_recent_sections + 1:
         # Too few sections to split; one bounded mechanical reduction.
-        return mechanical_compact(text, budget)
+        return bounded_projection(text)
 
     recent = sections[-preserve_recent_sections:]
     older = sections[:-preserve_recent_sections]
@@ -330,6 +307,4 @@ def structured_compact(
         f"{summary}\n"
         "</COMPACTED_CONTEXT>"
     )
-    if len(projection) > budget:
-        projection = mechanical_compact(projection, budget)
-    return projection
+    return bounded_projection(projection)

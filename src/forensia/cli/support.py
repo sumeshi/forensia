@@ -10,23 +10,12 @@ from pathlib import Path
 import typer
 from rich import print
 
-from forensia.config import resolve_llm_config
 from forensia.core.case import Case, resolve_timezone
 
 
 def _status(message: str) -> None:
     """Print a colored status message to stdout."""
     print(f"[bold cyan]==>[/bold cyan] {message}")
-
-
-def _resolve_llm_or_die(base_url: str | None, model: str | None) -> tuple[str, str]:
-    """Resolve LLM endpoint and model, raising an error if either is missing."""
-    resolved_base_url, resolved_model = resolve_llm_config(base_url, model)
-    if not resolved_base_url or not resolved_model:
-        raise typer.BadParameter(
-            "Set LLM_BASE_URL and LLM_MODEL via .env file or CLI flags."
-        )
-    return resolved_base_url, resolved_model
 
 
 def _open_case_or_die(case_dir: str, timezone: str | None = None) -> Case:

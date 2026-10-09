@@ -36,10 +36,6 @@ def normalize_structured_status(status: str) -> str:
     return value
 
 
-def is_valid_structured_status(status: str) -> bool:
-    return normalize_structured_status(status) in _valid_structured_statuses()
-
-
 def _schema_dir() -> Path:
     # knowledge/ is a sibling of the packaged rulepacks/ data directory.
     return schema_dir()

@@ -8,7 +8,6 @@ from unittest.mock import patch
 
 import duckdb
 
-from forensia.cli import app as cli_module
 from forensia.config import (
     reload_settings,
     resolve_llm_config,
@@ -19,6 +18,7 @@ from forensia.db.database import CaseDB
 from forensia.pipeline import (
     progress_pusher,
     reset_case_tables,
+    run_investigation,
 )
 
 
@@ -206,7 +206,9 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                 payloads[2]["recent_log_entries"][-1],
             )
 
-    def test_reset_case_tables_clears_derived_report_and_ingest_tables(self) -> None:
+    def test_reset_clears_derived_state_and_preserves_source_registrations(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -228,7 +230,7 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                     """
                     INSERT INTO prefetch_timeline (
                         timeline_id, evidence_id, executable_name, prefetch_hash, exec_time, exec_index, source_file, tags
-                    ) VALUES ('PT-1', 'prefetch-tool-abc123', 'tool.exe', 'abc123', now(), 0, 'TOOL.EXE.pf', '[]')
+                    ) VALUES ('PT-1', 'prefetch-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-tool-abc123', 'tool.exe', 'abc123', now(), 0, 'TOOL.EXE.pf', '[]')
                     """
                 )
                 db.execute(
@@ -243,7 +245,7 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                     """
                     INSERT INTO section_evidence (
                         section_key, block_heading, evidence_id, role, source_query, created_at
-                    ) VALUES ('1_overview', 'Scope', 'evtx-security-000000000001', 'supporting', 'overview_hosts', now())
+                    ) VALUES ('1_overview', 'Scope', 'evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001', 'supporting', 'overview_hosts', now())
                     """
                 )
                 db.execute(
@@ -286,10 +288,28 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                     """
                 )
 
+                rebuild_tables = (
+                    ("registry_artifacts", "artifact_id"),
+                    ("registry_timeline", "timeline_id"),
+                    ("case_timeline", "entry_id"),
+                    ("llm_logical_calls", "logical_call_id"),
+                    ("llm_provider_attempts", "attempt_id"),
+                    ("llm_deterministic_ops", "op_id"),
+                )
+                for table, key in rebuild_tables:
+                    db.execute(f"INSERT INTO {table} ({key}) VALUES ('reset-target')")
+
                 reset_case_tables(db)
 
+                for table, _key in rebuild_tables:
+                    self.assertEqual(
+                        0,
+                        db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0],
+                        table,
+                    )
+
                 self.assertEqual(
-                    0, db.execute("SELECT COUNT(*) FROM ingested_files").fetchone()[0]
+                    1, db.execute("SELECT COUNT(*) FROM ingested_files").fetchone()[0]
                 )
                 self.assertEqual(
                     0, db.execute("SELECT COUNT(*) FROM claims").fetchone()[0]
@@ -360,10 +380,9 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                         output_dir / "reports" / "report.html",
                     ),
                 ) as mock_render_written,
-                patch("forensia.cli.app.render_html_report") as mock_render_html,
             ):
-                cli_module.investigate(
-                    case_dir=str(output_dir),
+                run_investigation(
+                    str(output_dir),
                     input_dir=str(input_dir),
                     profile="windows-basic",
                     llm_base_url=None,
@@ -371,7 +390,6 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                 )
 
             mock_render_written.assert_called_once()
-            mock_render_html.assert_not_called()
 
 
 if __name__ == "__main__":

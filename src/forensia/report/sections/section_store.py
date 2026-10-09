@@ -9,7 +9,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from forensia.core.case import Case
-from forensia.core.verdicts import assert_valid_verdict
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records, normalize_value
 from forensia.report.evidence_refs import (
@@ -442,19 +441,6 @@ def mark_report_sections_ai_exhausted(db: CaseDB) -> None:
         {clause}
         """,
         tuple(keys) if keys is not None else (),
-    )
-
-
-def set_report_section_status(db: CaseDB, section_key: str, status: str) -> None:
-    """Set a report section's status after validating it against the taxonomy."""
-    assert_valid_verdict(status, "report_section_status")
-    db.execute(
-        """
-        UPDATE report_sections
-        SET status = ?
-        WHERE section_key = ?
-        """,
-        (status, section_key),
     )
 
 

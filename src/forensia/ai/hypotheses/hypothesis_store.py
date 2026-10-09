@@ -82,22 +82,27 @@ def _row_to_hypothesis(row: dict[str, Any]) -> Hypothesis:
     row is never reinterpreted from other stored data.
     """
     verdict = row.get("verdict")
-    source_rule_ids = row.get("source_rule_ids")
-    required_entities = row.get("required_entities")
-    if isinstance(source_rule_ids, str):
+
+    def string_list(column: str) -> list[str]:
+        value = row.get(column)
+        # These columns are nullable: SQL NULL denotes no declared entries.
+        if value is None:
+            return []
         try:
-            source_rule_ids = json.loads(source_rule_ids)
-        except Exception:
-            source_rule_ids = []
-    if not isinstance(source_rule_ids, list):
-        source_rule_ids = []
-    if isinstance(required_entities, str):
-        try:
-            required_entities = json.loads(required_entities)
-        except Exception:
-            required_entities = []
-    if not isinstance(required_entities, list):
-        required_entities = []
+            if isinstance(value, str):
+                value = json.loads(value)
+            if not isinstance(value, list) or any(
+                not isinstance(item, str) or not item.strip() for item in value
+            ):
+                raise ValueError("expected a list of nonempty strings")
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                f"hypothesis {row.get('hypothesis_id')} has invalid {column}: {exc}"
+            ) from exc
+        return value
+
+    source_rule_ids = string_list("source_rule_ids")
+    required_entities = string_list("required_entities")
     raw_spec = row.get("verification_spec")
     if isinstance(raw_spec, str):
         try:

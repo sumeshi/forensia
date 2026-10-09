@@ -8,27 +8,18 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
-from forensia.core.session import Hypothesis
 from forensia.knowledge.catalog import (
     load_dfir_yamls,
     load_event_class_definitions,
     load_question_routing_raw,
 )
-from forensia.knowledge.resources import rulepacks_dir, schema_dir
+from forensia.knowledge.resources import schema_dir
 from forensia.report.sections.section_taxonomy import (
     SECTION_KEY_PLAYBOOK_MAP as _SECTION_KEY_MAP,
 )
 
 if TYPE_CHECKING:
     pass
-
-
-@dataclass(frozen=True, slots=True)
-class RuleContext:
-    rule_id: str
-    correlate_event_ids: list[int]
-    confirm_when: dict[str, Any]
-    refute_when: dict[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,58 +41,6 @@ class _PlaybookBudgetResult:
     base_playbook: str
     pre_budget_chars: int
     dropped: list[str]
-
-
-@lru_cache(maxsize=1)
-def _get_cached_rules() -> list[Any]:
-    """Load and cache all rules at module level to avoid repeated file I/O."""
-
-    from forensia.knowledge.rules.loader import load_rules_from_dir
-
-    rules_path = rulepacks_dir()
-    return load_rules_from_dir(rules_path)
-
-
-def resolve_rule_context(hypothesis: Hypothesis | None) -> RuleContext | None:
-    """Resolve rule context for a hypothesis by looking up source rule declarations.
-
-    If the hypothesis was generated from a rule finding, return the rule's
-    correlate_with, confirm_when, and refute_when declarations.
-    Merges multiple source_rule_ids into a single RuleContext.
-    """
-    if hypothesis is None or not hasattr(hypothesis, "source_rule_ids"):
-        return None
-    source_rule_ids = getattr(hypothesis, "source_rule_ids", [])
-    if not source_rule_ids:
-        return None
-
-    rules = _get_cached_rules()
-    merged_correlate_ids: set[int] = set()
-    merged_confirm_when: dict[str, Any] = {}
-    merged_refute_when: dict[str, Any] = {}
-    found_rule_id = source_rule_ids[0]
-
-    for rule_id in source_rule_ids:
-        for rule in rules:
-            if rule.id == rule_id:
-                for corr in rule.correlate_with:
-                    merged_correlate_ids.update(corr.event_ids)
-                if rule.hypotheses:
-                    confirm = rule.hypotheses[0].confirm_when or {}
-                    refute = rule.hypotheses[0].refute_when or {}
-                    # Merge shallow dicts, first rule takes precedence for conflicts
-                    if confirm and not merged_confirm_when:
-                        merged_confirm_when = dict(confirm)
-                    if refute and not merged_refute_when:
-                        merged_refute_when = dict(refute)
-                break
-
-    return RuleContext(
-        rule_id=found_rule_id,
-        correlate_event_ids=sorted(merged_correlate_ids),
-        confirm_when=merged_confirm_when,
-        refute_when=merged_refute_when,
-    )
 
 
 @lru_cache(maxsize=1)
@@ -787,46 +726,6 @@ def _log_playbook_telemetry(
             logging.debug("playbook instrumentation skipped", exc_info=True)
 
 
-def _build_event_id_playbook_index(event_ids: set[int] | None, *, phase: str) -> str:
-    """Advertise selected IDs and the bounded catalog continuation contract.
-
-    Targeted planning/check phases list only selected IDs. Broader phases keep
-    the catalog index for discovery; all phases advertise continuation.
-    """
-    if event_ids is None:
-        return ""
-    yamls = _load_dfir_yamls()
-    events_data = (
-        yamls["event_ids"].get("events", {})
-        if isinstance(yamls.get("event_ids"), dict)
-        else {}
-    )
-    if not isinstance(events_data, dict):
-        return ""
-    selected = {int(k) for k in events_data if str(k).isdigit()} & (event_ids or set())
-    if not selected:
-        return ""
-    selected_only = phase in {"hypothesis_plan", "check", "section_agent_plan"}
-    lines = [
-        "<EVENT_ID_INDEX>",
-        "Selected event IDs are fully described in the Event ID Reference below. "
-        f"The catalog contains {len(events_data)} event IDs; other entries are available on demand "
-        "(continuation: 'load event rule <id>').",
-        "<INDEX>",
-    ]
-    for eid_key in sorted(events_data, key=_playbook_eid_sort_key):
-        eid_val = int(eid_key) if isinstance(eid_key, str) else int(eid_key)
-        if selected_only and eid_val not in selected:
-            continue
-        info = events_data[eid_key]
-        title = info.get("title", "") if isinstance(info, dict) else ""
-        mark = " [SELECTED]" if eid_val in selected else ""
-        lines.append(f"- id=E{eid_val} | {title}{mark}")
-    lines.append("</INDEX>")
-    lines.append("</EVENT_ID_INDEX>")
-    return "\n".join(lines)
-
-
 def _dfir_playbook(
     phase: str,
     *,
@@ -874,10 +773,6 @@ def _dfir_playbook(
         budget=get_system_prompt_budget_chars(),
     )
     result = budget_result.base_playbook + _load_phase_playbook(phase)
-    if event_ids is not None:
-        eid_index = _build_event_id_playbook_index(event_ids, phase=phase)
-        if eid_index:
-            result = result + "\n" + eid_index + "\n"
     _log_playbook_telemetry(
         phase=phase,
         sections=sections,

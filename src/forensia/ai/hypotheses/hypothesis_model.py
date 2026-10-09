@@ -23,10 +23,10 @@ def _known_db_columns() -> frozenset[str]:
     'user_identity', 'computer_name') that pass the snake_case regex but
     are not real columns.
     """
-    from forensia.ai.prompts.prompt_context import _load_schema_hints
+    from forensia.knowledge.catalog import load_schema_hints
 
     cols: set[str] = set()
-    for hint in _load_schema_hints().values():
+    for hint in load_schema_hints().values():
         for col in (hint.get("columns") or []) + (hint.get("core_columns") or []):
             cols.add(str(col).strip())
     # Augment with synonyms that drafter commonly emits and we accept as aliases

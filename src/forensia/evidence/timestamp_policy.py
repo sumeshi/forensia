@@ -1,20 +1,18 @@
-"""Timestamp plausibility policy for evidence coverage and timeline.
-
-R8-03: Separates raw timestamps from analysis-eligible timestamps.
-Raw values are preserved for forensic integrity, but coverage/timeline
-aggregation only uses timestamps that pass plausibility checks.
-"""
+"""Shared policy values and SQL predicate for analysis-eligible timestamps."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import timedelta
+from importlib.resources import files
 from typing import Any
+
+import yaml
 
 
 @dataclass(frozen=True, slots=True)
 class TimestampPolicy:
-    """Declarative bounds used to decide whether a timestamp is analysable."""
+    """Declarative bounds used by normalization and coverage SQL."""
 
     minimum_year: int = 1980
     maximum_year: int = 2200
@@ -36,120 +34,37 @@ class TimestampPolicy:
             ),
         )
 
-
-@dataclass(frozen=True, slots=True)
-class TimestampClassification:
-    """Classification of a timestamp value."""
-
-    is_plausible: bool
-    reason: str
+    @property
+    def case_window_margin(self) -> timedelta:
+        return timedelta(days=self.case_window_margin_days)
 
 
-@dataclass(frozen=True, slots=True)
-class TimestampBounds:
-    """Plausible timestamp bounds for a set of timestamps."""
-
-    min_time: datetime | None
-    max_time: datetime | None
-    excluded_count: int
-    excluded_reasons: dict[str, int]  # reason -> count
-
-
-def classify_timestamp(
-    ts: datetime | None,
-    policy: TimestampPolicy | None = None,
-    evidence_window: tuple[datetime, datetime] | None = None,
-) -> TimestampClassification:
-    """Classify a timestamp as plausible or sentinel/overflow.
-
-    Returns TimestampClassification with is_plausible flag and reason.
-    """
-    policy = policy or TimestampPolicy()
-    if ts is None:
-        return TimestampClassification(is_plausible=False, reason="null")
-
-    try:
-        year = ts.year
-    except AttributeError, ValueError:
-        return TimestampClassification(is_plausible=False, reason="invalid")
-
-    # Windows epoch 1601 sentinel (NTFS "never" value)
-    if year <= policy.sentinel_max_year:
-        return TimestampClassification(is_plausible=False, reason="sentinel_1601")
-
-    # Pre-DOS epoch (before 1980)
-    if year < policy.minimum_year:
-        return TimestampClassification(is_plausible=False, reason="pre_dos_epoch")
-
-    # Far-future overflow (NTFS int64-MAX misinterpretation)
-    if year > policy.maximum_year:
-        return TimestampClassification(is_plausible=False, reason="overflow")
-
-    if evidence_window is not None:
-        lower, upper = evidence_window
-        margin = timedelta(days=policy.case_window_margin_days)
-        if ts < lower - margin or ts > upper + margin:
-            return TimestampClassification(
-                is_plausible=False, reason="outside-analysis-window"
-            )
-
-    return TimestampClassification(is_plausible=True, reason="valid")
-
-
-def filter_plausible_timestamps(
-    timestamps: list[datetime | None],
-    policy: TimestampPolicy | None = None,
-    evidence_window: tuple[datetime, datetime] | None = None,
-) -> tuple[list[datetime], dict[str, int]]:
-    """Filter timestamps to only plausible ones.
-
-    Returns (plausible_timestamps, excluded_reasons).
-    """
-    plausible: list[datetime] = []
-    excluded: dict[str, int] = {}
-
-    for ts in timestamps:
-        cls = classify_timestamp(ts, policy, evidence_window)
-        if cls.is_plausible and ts is not None:
-            plausible.append(ts)
-        else:
-            excluded[cls.reason] = excluded.get(cls.reason, 0) + 1
-
-    return plausible, excluded
-
-
-def compute_plausible_bounds(
-    timestamps: list[datetime | None],
-    policy: TimestampPolicy | None = None,
-    evidence_window: tuple[datetime, datetime] | None = None,
-) -> TimestampBounds:
-    """Compute plausible min/max bounds from a list of timestamps.
-
-    Returns TimestampBounds with min/max of plausible timestamps only,
-    plus exclusion metadata.
-    """
-    plausible, excluded = filter_plausible_timestamps(
-        timestamps, policy, evidence_window
+def timestamp_year_range_sql(column: str, policy: TimestampPolicy) -> str:
+    """Return the shared SQL predicate for absolute timestamp eligibility."""
+    return (
+        f"EXTRACT(year FROM {column}) BETWEEN "
+        f"{policy.minimum_year} AND {policy.maximum_year}"
     )
 
-    if not plausible:
-        return TimestampBounds(
-            min_time=None,
-            max_time=None,
-            excluded_count=sum(excluded.values()),
-            excluded_reasons=excluded,
+
+def load_artifact_capabilities_config() -> dict[str, Any]:
+    """Load the required capability catalog as a YAML mapping."""
+    path = files("forensia").joinpath(
+        "knowledge", "rulepacks", "_schema", "artifact_capabilities.yaml"
+    )
+    if not path.is_file():
+        raise FileNotFoundError(f"required policy file is missing: {path}")
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(config, dict):
+        actual_type = "null" if config is None else type(config).__name__
+        raise TypeError(
+            f"required policy file must contain a YAML mapping: {path} "
+            f"(got {actual_type})"
         )
-
-    return TimestampBounds(
-        min_time=min(plausible),
-        max_time=max(plausible),
-        excluded_count=sum(excluded.values()),
-        excluded_reasons=excluded,
-    )
+    return config
 
 
-def is_plausible_timestamp(
-    ts: datetime | None, policy: TimestampPolicy | None = None
-) -> bool:
-    """Quick check if a timestamp is plausible for analysis."""
-    return classify_timestamp(ts, policy).is_plausible
+def configured_timestamp_policy() -> TimestampPolicy:
+    """Load shared timestamp bounds from the packaged capability catalog."""
+    config = load_artifact_capabilities_config()
+    return TimestampPolicy.from_mapping(config.get("timestamp_policy", {}))

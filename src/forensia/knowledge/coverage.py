@@ -9,14 +9,18 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from forensia.db.database import CaseDB
-from forensia.evidence.timestamp_policy import TimestampPolicy
+from forensia.evidence.timestamp_policy import (
+    TimestampPolicy,
+    load_artifact_capabilities_config,
+    timestamp_year_range_sql,
+)
 from forensia.knowledge.resources import schema_dir
 
 logger = logging.getLogger(__name__)
@@ -68,15 +72,12 @@ def _timestamp_stats(
     table, column = table_spec
     placeholders = ", ".join("?" for _ in source_ids)
 
-    absolute = (
-        f"EXTRACT(year FROM {column}) BETWEEN "
-        f"{policy.minimum_year} AND {policy.maximum_year}"
-    )
+    absolute = timestamp_year_range_sql(column, policy)
     eligible = absolute
     select_params: list[Any] = []
     outside_expression = "0"
     if evidence_window is not None:
-        margin = timedelta(days=policy.case_window_margin_days)
+        margin = policy.case_window_margin
         lower = evidence_window[0] - margin
         upper = evidence_window[1] + margin
         eligible = f"({absolute}) AND {column} BETWEEN ? AND ?"
@@ -128,18 +129,23 @@ def _timestamp_stats(
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
-    """Load a YAML file and return its contents."""
+    """Load a required YAML mapping and report its path on contract errors."""
+    if not path.is_file():
+        raise FileNotFoundError(f"required policy file is missing: {path}")
     with open(path, encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+        value = yaml.safe_load(f)
+    if not isinstance(value, dict):
+        actual_type = "null" if value is None else type(value).__name__
+        raise TypeError(
+            f"required policy file must contain a YAML mapping: {path} "
+            f"(got {actual_type})"
+        )
+    return value
 
 
 def load_artifact_capabilities() -> dict[str, Any]:
     """Load artifact capability declarations from _schema/artifact_capabilities.yaml."""
-    path = schema_dir() / "artifact_capabilities.yaml"
-    if not path.exists():
-        logger.warning("artifact_capabilities.yaml not found at %s", path)
-        return {}
-    return _load_yaml(path)
+    return load_artifact_capabilities_config()
 
 
 def load_evidence_sufficiency_policy() -> dict[str, Any]:

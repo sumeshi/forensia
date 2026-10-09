@@ -130,20 +130,3 @@ def write_evidence_map(
         encoding="utf-8",
     )
     return evidence_map
-
-
-def render_evidence_references(evidence_map: dict[str, dict[str, str]]) -> str:
-    """Render the evidence map as a `## Evidence References` markdown section."""
-    if not evidence_map:
-        return ""
-    lines = ["## Evidence References", ""]
-    for eid, info in sorted(evidence_map.items()):
-        ref_parts = [f"`{eid}`"]
-        if info.get("timestamp"):
-            ref_parts.append(str(info["timestamp"]))
-        if info.get("source") and info["source"] != "unresolved":
-            ref_parts.append(str(info["source"]))
-        if info.get("summary"):
-            ref_parts.append(f"— {info['summary']}")
-        lines.append("- " + " ".join(ref_parts))
-    return "\n".join(lines)

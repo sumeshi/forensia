@@ -18,7 +18,7 @@ from forensia.ai.checking.check_normalize import (
     _normalize_verdict,
     parse_new_hypotheses,
 )
-from forensia.ai.llm import llm_gateway
+from forensia.ai.llm import json_response
 from forensia.ai.prompts.prompt_investigation import (
     _load_benign_context_rules,
     build_finding_extractor_messages,
@@ -32,18 +32,6 @@ from forensia.core.session import (
 )
 from forensia.db.database import CaseDB
 
-CheckAuditCallback = Callable[[str, list[dict[str, str]], str, dict[str, Any]], None]
-
-
-def _phase_audit_callback(
-    phase: str,
-    audit_callback: CheckAuditCallback | None,
-) -> Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None:
-    if audit_callback is None:
-        return None
-
-    return lambda msgs, out, parsed: audit_callback(phase, msgs, out, parsed)
-
 
 def _request_check_json(
     *,
@@ -53,16 +41,14 @@ def _request_check_json(
     model: str,
     base_url: str,
     status_callback: Callable[[str], None] | None,
-    audit_callback: CheckAuditCallback | None,
 ) -> dict[str, Any]:
-    return llm_gateway.request_llm_json(
+    return json_response.request_llm_json(
         messages=messages,
         model=model,
         base_url=base_url,
         json_schema=schema,
         telemetry_phase=phase,
         status_callback=status_callback,
-        audit_callback=_phase_audit_callback(phase, audit_callback),
     )
 
 
@@ -77,7 +63,6 @@ def _review_verdict(
     model: str,
     base_url: str,
     status_callback: Callable[[str], None] | None,
-    audit_callback: CheckAuditCallback | None,
     db: CaseDB | None = None,
     session_id: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
@@ -98,7 +83,6 @@ def _review_verdict(
         model=model,
         base_url=base_url,
         status_callback=status_callback,
-        audit_callback=audit_callback,
     )
     verdict = _normalize_verdict(verdict_parsed.get("verdict"))
     return _apply_verdict_consistency_gate(
@@ -141,7 +125,6 @@ def _extract_confirmed_findings(
     model: str,
     base_url: str,
     status_callback: Callable[[str], None] | None,
-    audit_callback: CheckAuditCallback | None,
 ) -> list[dict[str, Any]]:
     if verdict != "confirmed":
         return []
@@ -158,7 +141,6 @@ def _extract_confirmed_findings(
         model=model,
         base_url=base_url,
         status_callback=status_callback,
-        audit_callback=audit_callback,
     )
     return finding_parsed.get("findings") or []
 
@@ -173,7 +155,6 @@ def _propose_memory_updates(
     model: str,
     base_url: str,
     status_callback: Callable[[str], None] | None,
-    audit_callback: CheckAuditCallback | None,
 ) -> dict[str, Any]:
     memory_messages, memory_schema = build_memory_updater_messages(
         hypothesis=hypothesis,
@@ -189,7 +170,6 @@ def _propose_memory_updates(
         model=model,
         base_url=base_url,
         status_callback=status_callback,
-        audit_callback=audit_callback,
     )
 
 
@@ -248,7 +228,6 @@ def check_query_result(
     status_callback: Callable[[str], None] | None = None,
     time_range: dict[str, str] | None = None,
     fallback_info: dict | None = None,
-    audit_callback: CheckAuditCallback | None = None,
 ) -> CheckResult:
     """Run the LLM-based query result check: verdict + memory + suspicious evidence.
 
@@ -273,7 +252,6 @@ def check_query_result(
         model=model,
         base_url=base_url,
         status_callback=status_callback,
-        audit_callback=audit_callback,
         db=db,
         session_id=session_id,
     )
@@ -285,7 +263,6 @@ def check_query_result(
         model=model,
         base_url=base_url,
         status_callback=status_callback,
-        audit_callback=audit_callback,
     )
     memory_parsed = _propose_memory_updates(
         verdict=verdict,
@@ -296,7 +273,6 @@ def check_query_result(
         model=model,
         base_url=base_url,
         status_callback=status_callback,
-        audit_callback=audit_callback,
     )
     result, _merged = _build_guarded_check_result(
         planned_query=planned_query,

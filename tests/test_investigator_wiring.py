@@ -62,10 +62,6 @@ class InvestigateWiringTests(unittest.TestCase):
                         "async_refresh_report_sections",
                         new=mock.AsyncMock(return_value={}),
                     ) as refresh_sections,
-                    mock.patch(
-                        "forensia.ai.audit.LLMCallLogger.write_summary",
-                        side_effect=OSError("audit disk full"),
-                    ),
                 ):
                     result = asyncio.run(
                         investigator_module.investigate(
@@ -202,7 +198,6 @@ class InvestigateWiringTests(unittest.TestCase):
     def test_cycle_executes_only_durably_eligible_hypotheses(self) -> None:
         """The cycle uses durable eligibility before calling the deep-dive runner."""
 
-        from forensia.ai.audit import LLMCallLogger
         from forensia.ai.investigation import investigation_cycle
         from forensia.ai.investigation.investigation_session import Ctx
         from forensia.core.memory import MemoryManager
@@ -259,7 +254,6 @@ class InvestigateWiringTests(unittest.TestCase):
                             base_url="http://127.0.0.1:9",
                             model="none",
                             memory=MemoryManager(case),
-                            llm_logger=LLMCallLogger(case, "S-WIRING"),
                             progress_callback=None,
                             max_queries_per_hypothesis=1,
                             plan_cycle=1,
@@ -330,6 +324,26 @@ class InvestigateWiringTests(unittest.TestCase):
                     db.execute(
                         "SELECT status, stop_reason_code FROM investigation_state WHERE state_id = 'case'"
                     ).fetchone(),
+                )
+
+                # Corruption encountered during initialization also closes the
+                # acquired lease, before any model or execution work starts.
+                db.execute(
+                    "UPDATE hypotheses SET required_entities = ? WHERE hypothesis_id = 'H-1'",
+                    ('"corrupt-list"',),
+                )
+                with self.assertRaisesRegex(ValueError, "required_entities"):
+                    asyncio.run(
+                        investigator_module.investigate(
+                            case, db, base_url="http://127.0.0.1:9", model="none"
+                        )
+                    )
+                self.assertEqual(
+                    [("failed", "terminal", True), ("failed", "terminal", True)],
+                    db.execute(
+                        "SELECT status, phase, finished_at IS NOT NULL "
+                        "FROM investigation_sessions ORDER BY started_at"
+                    ).fetchall(),
                 )
 
     def test_stopped_cycle_persists_state_before_final_refresh(self) -> None:
@@ -449,7 +463,6 @@ class ReportRefreshFailureTests(unittest.TestCase):
                                 report_sections=[],
                                 base_url="http://127.0.0.1:1",
                                 model="none",
-                                llm_logger=None,
                                 progress_callback=events.append,
                                 focus_sections=[],
                                 report_max_queries_per_section=1,
@@ -487,7 +500,6 @@ class ReportRefreshFailureTests(unittest.TestCase):
                         report_sections=[],
                         base_url="http://127.0.0.1:1",
                         model="none",
-                        llm_logger=None,
                         progress_callback=None,
                         focus_sections=[],
                         report_max_queries_per_section=1,
@@ -597,7 +609,6 @@ class ReportRefreshFailureTests(unittest.TestCase):
                                 report_sections=[],
                                 base_url="http://127.0.0.1:1",
                                 model="none",
-                                llm_logger=None,
                                 progress_callback=progress_events.append,
                                 focus_sections=[],
                                 report_max_queries_per_section=1,
@@ -686,6 +697,46 @@ class TerminationDurableWorkTests(unittest.TestCase):
                     "VALUES ('GAP-old', 't', 'resolved', 'section')"
                 )
                 self.assertEqual(_durable_open_work_counts(db), (1, 1))
+
+    def test_llm_budget_exhaustion_is_resumable_terminal_stop(self) -> None:
+        from forensia.ai.investigation import investigator as investigator_module
+        from forensia.core.session import LLMBudgetExceededError
+
+        async def exhausted(env):
+            raise LLMBudgetExceededError(1, 1)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with (
+                CaseDB(case) as db,
+                mock.patch.object(
+                    investigator_module, "_run_investigation_loop", exhausted
+                ),
+            ):
+                result = asyncio.run(
+                    investigator_module.investigate(
+                        case=case,
+                        db=db,
+                        base_url="http://127.0.0.1:9",
+                        model="none",
+                        max_iter=1,
+                        report_only=False,
+                    )
+                )
+                assert result["status"] == "stopped"
+                state_row = db.execute(
+                    "SELECT status, stop_reason_code FROM investigation_state "
+                    "WHERE state_id = 'case'"
+                ).fetchone()
+                assert state_row == ("stopped", "budget_exhausted")
+                row = db.execute(
+                    "SELECT status, status_reason, finished_at FROM investigation_sessions "
+                    "WHERE session_id = ?",
+                    (result["session_id"],),
+                ).fetchone()
+                assert row[0] == "stopped"
+                assert "budget_exhausted" in row[1].lower()
+                assert row[2] is not None
 
 
 class ProgressBudgetTests(unittest.TestCase):

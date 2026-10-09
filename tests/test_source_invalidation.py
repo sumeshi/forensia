@@ -8,8 +8,14 @@ from unittest.mock import patch
 
 from forensia.ai.investigation.selection import select_focus_hypotheses
 from forensia.core.case import Case
+from forensia.core.evidence import make_evtx_evidence_id
 from forensia.db.database import CaseDB
+from forensia.db.evidence_lookup import lookup_evidence_record
 from forensia.evidence.artifacts import NormalizeResult
+from forensia.evidence.invalidation import (
+    find_replaced_source_ids,
+    retire_replaced_sources,
+)
 from forensia.evidence.normalize import normalize_all
 from forensia.report.sections.section_store import _claim_support_status
 
@@ -305,6 +311,86 @@ class SourceInvalidationTests(unittest.TestCase):
 
             self.assertEqual(("confirmed", "sufficient"), hypothesis)
             self.assertEqual(("supported",), claim)
+
+    def test_same_path_source_replacement_retires_old_identity(self) -> None:
+        source_a = "a" * 64
+        source_b = "b" * 64
+        source_c = "c" * 64
+        old_id = make_evtx_evidence_id(source_a, "Security", 1)
+        new_id = make_evtx_evidence_id(source_c, "Security", 1)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(Path(tmpdir) / "case")
+            with CaseDB(case) as db:
+                self._seed_dependents(db, old_id)
+                db.execute(
+                    "UPDATE evtx_events SET source_file = ? WHERE evidence_id = ?",
+                    [source_a, old_id],
+                )
+                db.execute(
+                    "INSERT INTO ingested_files (sha256, path, source_kind, ingested_at) "
+                    "VALUES (?, '/evidence/Security.evtx', 'evtx', now() - INTERVAL 2 DAY)",
+                    [source_a],
+                )
+                self.assertEqual({}, find_replaced_source_ids(db, [source_a]))
+                db.execute(
+                    "INSERT INTO ingested_files (sha256, path, source_kind, ingested_at) "
+                    "VALUES (?, '/evidence/Security.evtx', 'evtx', now() - INTERVAL 1 DAY)",
+                    [source_b],
+                )
+                self.assertEqual({}, find_replaced_source_ids(db, [source_b[:12]]))
+                db.execute(
+                    "INSERT INTO ingested_files (sha256, path, source_kind, ingested_at) "
+                    "VALUES (?, '/evidence/Security.evtx', 'evtx', now())",
+                    [source_c],
+                )
+                db.execute(
+                    "INSERT INTO evidence_sources (source_id, artifact_family, "
+                    "ingest_status, row_count, created_at, updated_at) "
+                    "VALUES (?, 'evtx', 'normalized', 1, now(), now()), "
+                    "(?, 'evtx', 'normalized', 1, now(), now()), "
+                    "(?, 'evtx', 'failed', 1, now(), now())",
+                    [source_a, source_b, source_c],
+                )
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, source_file, channel, record_id) "
+                    "VALUES (?, ?, 'Security', 1)",
+                    [new_id, source_c],
+                )
+
+                replaced = find_replaced_source_ids(db, [source_c])
+                self.assertEqual(
+                    {"evtx": {source_a: source_c, source_b: source_c}}, replaced
+                )
+                self.assertEqual(
+                    {"evtx": {source_a: source_c, source_b: source_c}},
+                    find_replaced_source_ids(db, None),
+                )
+                retire_replaced_sources(db, replaced)
+                self.assertIsNotNone(lookup_evidence_record(db, old_id))
+                db.execute(
+                    "UPDATE evidence_sources SET ingest_status = 'normalized' "
+                    "WHERE source_id = ?",
+                    [source_c],
+                )
+                retire_replaced_sources(db, replaced)
+
+                self.assertIsNone(lookup_evidence_record(db, old_id))
+                self.assertEqual(
+                    new_id, lookup_evidence_record(db, new_id)["evidence_id"]
+                )
+                self.assertEqual(
+                    ("active", "needs_review", True),
+                    db.execute(
+                        "SELECT status, sufficiency_status, human_review_required "
+                        "FROM hypotheses WHERE hypothesis_id = 'H-1'"
+                    ).fetchone(),
+                )
+                self.assertEqual(
+                    [(source_c,)],
+                    db.execute(
+                        "SELECT sha256 FROM ingested_files ORDER BY sha256"
+                    ).fetchall(),
+                )
 
 
 if __name__ == "__main__":

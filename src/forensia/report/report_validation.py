@@ -17,6 +17,10 @@ from typing import Any
 
 import yaml
 
+from forensia.evidence.timestamp_policy import (
+    configured_timestamp_policy,
+    timestamp_year_range_sql,
+)
 from forensia.knowledge.resources import schema_dir
 from forensia.report.evidence_refs import EVIDENCE_ID_PATTERN
 from forensia.report.sections.quality_gates import (
@@ -654,16 +658,17 @@ def check_coverage_lineage(
             )
 
         # Check for sentinel timestamps in coverage
+        time_policy = configured_timestamp_policy()
+        start_eligible = timestamp_year_range_sql("start_time", time_policy)
+        end_eligible = timestamp_year_range_sql("end_time", time_policy)
         rows = db.execute(
-            """
+            f"""
             SELECT capability, source_family, start_time, end_time
             FROM evidence_coverage
             WHERE state IN ('available', 'partial')
               AND (
-                EXTRACT(year FROM start_time) < 1980
-                OR EXTRACT(year FROM start_time) > 2200
-                OR EXTRACT(year FROM end_time) < 1980
-                OR EXTRACT(year FROM end_time) > 2200
+                NOT ({start_eligible})
+                OR NOT ({end_eligible})
               )
             """
         ).fetchall()

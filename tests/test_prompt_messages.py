@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 import re
 import tempfile
 import unittest
@@ -12,7 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from forensia.ai.prompts.prompt_context import (
-    _build_recipe_index,
+    _build_event_id_guidance,
     _build_schema_guidance,
     _trim_dynamic_content,
     slim_report_brief_for_section,
@@ -20,8 +19,6 @@ from forensia.ai.prompts.prompt_context import (
 )
 from forensia.ai.prompts.prompt_sections import (
     build_paragraph_narrate_messages,
-    build_question_classify_messages,
-    build_report_section_messages,
     build_section_outline_messages,
     build_structured_classify_messages,
 )
@@ -30,7 +27,6 @@ from forensia.ai.prompts.report_evidence_projection import (
 )
 from forensia.ai.sections.section_exec import question_report_brief
 from forensia.config import (
-    clear_llm_settings_cache,
     reload_settings,
 )
 from forensia.core.case import Case
@@ -53,64 +49,6 @@ class PromptMessageTests(unittest.TestCase):
         self.assertEqual("x" * 1500, trimmed["2_timeline"])
         self.assertLessEqual(len(trimmed["3_technical"]), 1500)
         self.assertIn("…[truncated]", trimmed["3_technical"])
-
-    def test_report_section_messages_truncate_previous_sections(self) -> None:
-        messages = build_report_section_messages(
-            section_meta={"section": "1_overview"},
-            evidence_results=[],
-            context_sections={"1_overview": "x" * 1600},
-            template_body="# Section",
-            report_brief={},
-        )
-        payload = messages[1]["content"]
-        self.assertIn("x" * 120, payload)
-        self.assertNotIn("x" * 200, payload)
-
-    def test_report_section_messages_placeholder_follows_output_language(self) -> None:
-        with patch.dict(os.environ, {"FORENSIA_OUTPUT_LANGUAGE": "en"}):
-            clear_llm_settings_cache()
-            messages = build_report_section_messages(
-                section_meta={"section": "1_overview"},
-                evidence_results=[],
-                context_sections={},
-                template_body="# Section",
-                report_brief={},
-            )
-        system = messages[0]["content"]
-        self.assertIn("[INSUFFICIENT EVIDENCE: reason]", system)
-
-    def test_report_section_prompt_includes_ioc_catalog(self) -> None:
-        messages = build_report_section_messages(
-            section_meta={"section": "3_technical"},
-            evidence_results=[],
-            context_sections={},
-            template_body="# Section",
-            report_brief={},
-        )
-        system = messages[0]["content"]
-        self.assertIn("## IOC Catalog", system)
-        self.assertIn("Eraser", system)
-        self.assertIn("LOLBins", system)
-
-    def test_publication_gate_is_passed_to_overview_and_recommendations(self) -> None:
-        state = {
-            "publication_status": "needs_review",
-            "evidence_confidence": "not_established",
-            "claim_scope": "deterministic_signals_only",
-        }
-        for section, expected in (
-            ("1_overview", "Investigation Conclusion"),
-            ("5_recommendations", "verification-first"),
-        ):
-            messages = build_report_section_messages(
-                section_meta={"section": section},
-                evidence_results=[],
-                context_sections={},
-                template_body="# Section",
-                report_brief={"publication_state": state},
-            )
-            self.assertIn("needs_review/incomplete", messages[0]["content"])
-            self.assertIn(expected, messages[0]["content"])
 
     def test_benchmark_report_brief_strips_narrative_keys(self) -> None:
         brief = question_report_brief(
@@ -137,65 +75,6 @@ class PromptMessageTests(unittest.TestCase):
             },
             brief,
         )
-
-    def test_report_section_messages_include_event_id_guidance(self) -> None:
-        messages = build_report_section_messages(
-            section_meta={"section": "3_technical"},
-            evidence_results=[
-                {
-                    "kind": "rows",
-                    "sample_rows": [{"event_id": 4720, "evidence_id": "ev-1"}],
-                    "head_rows": [],
-                    "tail_rows": [],
-                }
-            ],
-            context_sections={},
-            template_body="# Section",
-            report_brief={},
-        )
-        system = messages[0]["content"]
-        self.assertIn("Event ID 4720", system)
-        self.assertIn("allowed_claims", system)
-
-    def test_report_section_messages_include_strength_guidance_for_non_confirmed_sources(
-        self,
-    ) -> None:
-        messages = build_report_section_messages(
-            section_meta={"section": "3_technical"},
-            evidence_results=[
-                {
-                    "kind": "rows",
-                    "source_verdict": "newlead",
-                    "sample_rows": [{"event_id": 4720, "evidence_id": "ev-1"}],
-                }
-            ],
-            context_sections={},
-            template_body="# Section",
-            report_brief={},
-        )
-        system = messages[0]["content"]
-        self.assertIn("source_verdict guidance", system)
-        self.assertIn("avoid 'confirmed'", system)
-
-    def test_benchmark_classify_messages_request_picked_row_indices_only(self) -> None:
-        messages, _ = build_question_classify_messages(
-            question="## 8. Mail data files",
-            block_heading="8. Mail data files",
-            evidence_rows=[
-                {"evidence_id": "ev-1", "file_path": "C:/Users/Alice/file.ost"}
-            ],
-            expected_shape={
-                "format": "name_with_version",
-                "fields": ["application_name", "version", "data_files"],
-            },
-        )
-        system = messages[0]["content"]
-        user = messages[1]["content"]
-        self.assertIn("question_classifier", system)
-        self.assertIn("picked_row_indices", system)
-        self.assertNotIn('"answer"', system)
-        self.assertIn("ev-1", user)
-        self.assertIn("application_name", user)
 
     def test_structured_classify_messages_use_neutral_role(self) -> None:
         messages, schema = build_structured_classify_messages(
@@ -424,26 +303,24 @@ class NarratePromptContractTests(unittest.TestCase):
             db = CaseDB(case)
             try:
                 evidence_ids = [
-                    f"evtx-security-{index:012d}" for index in range(1, 5200)
+                    f"evtx-{'a' * 64}-security-{index:012d}" for index in range(1, 5200)
                 ]
                 base = datetime(2015, 3, 22, 12, 0, 0)
-                db.insert_many(
+                db.execute(
                     """
                     INSERT INTO evtx_events (
                         evidence_id, timestamp, channel, computer, target_user, event_id
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    )
+                    SELECT 'evtx-' || repeat('a', 64) || '-security-' ||
+                           lpad((i + 1)::VARCHAR, 12, '0'),
+                           ?::TIMESTAMP + i * INTERVAL '1 second',
+                           ['Security', 'System', 'Application'][i % 3 + 1],
+                           ['host-a', 'host-b'][i % 2 + 1],
+                           ['alice', 'bob', 'carol'][i % 3 + 1],
+                           [4624, 4625, 4648, 4720][i % 4 + 1]
+                    FROM range(5199) AS r(i)
                     """,
-                    [
-                        (
-                            evidence_id,
-                            base + timedelta(seconds=index),
-                            ("Security", "System", "Application")[index % 3],
-                            ("host-a", "host-b")[index % 2],
-                            ("alice", "bob", "carol")[index % 3],
-                            (4624, 4625, 4648, 4720)[index % 4],
-                        )
-                        for index, evidence_id in enumerate(evidence_ids)
-                    ],
+                    (base,),
                 )
                 unordered_ids = evidence_ids[2600:] + evidence_ids[:2600]
                 aggregate = {
@@ -504,19 +381,10 @@ class NarratePromptContractTests(unittest.TestCase):
                     },
                     db=db,
                 )
-                report_messages = build_report_section_messages(
-                    section_meta={"section": "1_overview"},
-                    evidence_results=[],
-                    context_sections={},
-                    template_body="## Evidence Scope",
-                    report_brief={"top_findings": [aggregate]},
-                    db=db,
-                )
                 prompt_texts = [
                     narrative[1]["content"],
                     outline[1]["content"],
                     structured[1]["content"],
-                    report_messages[1]["content"],
                 ]
                 raw_size = len(json.dumps([aggregate]))
                 for prompt_text in prompt_texts:
@@ -526,7 +394,12 @@ class NarratePromptContractTests(unittest.TestCase):
                     self.assertIn("evidence_query", prompt_text)
                     self.assertLess(len(prompt_text), raw_size // 10)
                     self.assertLessEqual(
-                        len(re.findall(r"evtx-security-\d{12}", prompt_text)), 20
+                        len(
+                            re.findall(
+                                r"evtx-[a-f0-9]{64}-security-\d{12}", prompt_text
+                            )
+                        ),
+                        20,
                     )
                 self.assertIn('"source_timezone": "UTC"', narrative[1]["content"])
 
@@ -557,7 +430,7 @@ class NarratePromptContractTests(unittest.TestCase):
                     {
                         "event_count": 21,
                         "evidence_ids": [
-                            f"evtx-security-{index:012d}"
+                            f"evtx-{'a' * 64}-security-{index:012d}"
                             for index in range(900_000, 900_021)
                         ],
                     },
@@ -583,7 +456,9 @@ class NarratePromptContractTests(unittest.TestCase):
                     "summary": "4648 activity involving informant.",
                     "severity": "high",
                     "confidence": 0.9,
-                    "evidence_ids": ["evtx-security-000000000122"],
+                    "evidence_ids": [
+                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122"
+                    ],
                     "large_unused_field": "x" * 200,
                 }
             ],
@@ -740,10 +615,11 @@ class IndexedContextTests(unittest.TestCase):
         except Exception:
             pass
 
-    def test_schema_guidance_returns_index_and_selected_card(self) -> None:
+    def test_schema_guidance_returns_only_selected_card(self) -> None:
         text = _build_schema_guidance("evtx_events", db=self.db, session_id="S-1")
-        self.assertIn("<SCHEMA_INDEX>", text)
-        self.assertIn("evtx_events", text)
+        self.assertNotIn("<SCHEMA_INDEX>", text)
+        self.assertNotIn("load schema card", text)
+        self.assertNotIn("RECIPE_INDEX", text)
         self.assertIn("<SELECTED_SCHEMA_CARDS>", text)
         row = self.db.execute(
             "SELECT source_kind, selected_refs FROM retrieval_events"
@@ -752,12 +628,12 @@ class IndexedContextTests(unittest.TestCase):
         self.assertEqual("schema_hints", row[0])
         self.assertIn("evtx_events", row[1])
 
-    def test_cookbook_index_does_not_advertise_executable_template_ids(self) -> None:
-        index, _selected = _build_recipe_index()
-
-        self.assertIn("never a template_id", index)
-        self.assertIn("template_id=null", index)
-        self.assertNotIn("load recipe `", index)
+    def test_event_guidance_inlines_selected_rules_without_continuation(self) -> None:
+        guidance = _build_event_id_guidance([{"sample_rows": [{"event_id": 4624}]}])
+        self.assertIn("Event ID 4624", guidance)
+        self.assertIn("allowed_claims", guidance)
+        self.assertNotIn("EVENT_ID_INDEX", guidance)
+        self.assertNotIn("load event rule", guidance)
 
 
 if __name__ == "__main__":

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import fnmatch
 import json
-import logging
 import re
 from functools import lru_cache
 from typing import Any
@@ -11,9 +10,19 @@ import yaml
 
 from forensia.knowledge.resources import schema_dir
 
-logger = logging.getLogger(__name__)
-
 _SCHEMA_DIR = schema_dir()
+
+
+def _load_yaml(name: str) -> dict[str, Any]:
+    """Required packaged declarations must never masquerade as empty evidence."""
+    path = _SCHEMA_DIR / name
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        raise ValueError(f"Cannot load required declaration {path}: {exc}") from exc
+    if not isinstance(data, dict) or not data:
+        raise ValueError(f"Required declaration {path} must be a nonempty mapping")
+    return data
 
 
 # ── DFIR YAML bulk loader ──────────────────────────────────────────────────
@@ -22,16 +31,6 @@ _SCHEMA_DIR = schema_dir()
 @lru_cache(maxsize=1)
 def load_dfir_yamls() -> dict[str, Any]:
     """Load all DFIR YAML schemas from _schema/ directory with caching."""
-
-    def _load_yaml(name: str) -> dict:
-        path = _SCHEMA_DIR / name
-        if not path.exists():
-            return {}
-        try:
-            data = yaml.safe_load(path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-        except Exception:
-            return {}
 
     return {
         "evtx_events": _load_yaml("evtx_events.yaml"),
@@ -50,24 +49,19 @@ def load_dfir_yamls() -> dict[str, Any]:
 @lru_cache(maxsize=1)
 def load_event_id_hints() -> dict[int, dict[str, Any]]:
     """Load event ID hints from _schema/event_ids.yaml keyed by integer event ID."""
-    path = _SCHEMA_DIR / "event_ids.yaml"
-    if not path.exists():
-        return {}
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except Exception:
-        return {}
+    data = load_dfir_yamls()["event_ids"]
     events: dict[int, dict[str, Any]] = {}
-    raw_events = data.get("events") if isinstance(data, dict) else {}
+    raw_events = data.get("events")
     if not isinstance(raw_events, dict):
-        return {}
+        raise ValueError("event_ids.yaml: events must be a mapping")
     for key, value in raw_events.items():
         try:
             event_id = int(key)
-        except TypeError, ValueError:
-            continue
-        if isinstance(value, dict):
-            events[event_id] = value
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"event_ids.yaml: invalid event ID {key!r}") from exc
+        if not isinstance(value, dict):
+            raise ValueError(f"event_ids.yaml: event {key} must be a mapping")
+        events[event_id] = value
     return events
 
 
@@ -140,23 +134,23 @@ def load_benign_context_rules() -> list[dict[str, Any]]:
     """Load benign-context rules from false_positive_rules.yaml."""
     yamls = load_dfir_yamls()
     fp_rules = yamls.get("fp_rules", {})
-    if isinstance(fp_rules, dict):
-        rules = fp_rules.get("benign_context_rules") or []
-        return list(rules) if isinstance(rules, list) else []
-    return []
+    rules = fp_rules.get("benign_context_rules", [])
+    if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
+        raise ValueError(
+            "false_positive_rules.yaml: benign_context_rules must be a list of mappings"
+        )
+    return rules
 
 
 @lru_cache(maxsize=1)
 def load_finding_benign_context_rules() -> list[dict[str, Any]]:
     """Load finding-level benign context rules from false_positive_rules.yaml."""
-    fp_path = _SCHEMA_DIR / "false_positive_rules.yaml"
-    if not fp_path.exists():
-        return []
-    try:
-        data = yaml.safe_load(fp_path.read_text(encoding="utf-8")) or {}
-    except Exception:
-        return []
-    return data.get("finding_benign_context") or []
+    rules = load_dfir_yamls()["fp_rules"].get("finding_benign_context", [])
+    if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
+        raise ValueError(
+            "false_positive_rules.yaml: finding_benign_context must be a list of mappings"
+        )
+    return rules
 
 
 # ── Schema hints (table-aware) ─────────────────────────────────────────────
@@ -166,17 +160,13 @@ def load_finding_benign_context_rules() -> list[dict[str, Any]]:
 def load_schema_hints() -> dict[str, dict[str, Any]]:
     """Load schema hints from rulepacks/_schema/*.yaml for planner guidance."""
     hints: dict[str, dict[str, Any]] = {}
-    if not _SCHEMA_DIR.exists():
-        return hints
+    if not _SCHEMA_DIR.is_dir():
+        raise ValueError(f"Required declaration directory is missing: {_SCHEMA_DIR}")
     for path in _SCHEMA_DIR.glob("*.yaml"):
-        try:
-            data = yaml.safe_load(path.read_text(encoding="utf-8"))
-            if data and isinstance(data, dict):
-                table_name = data.get("table")
-                if table_name:
-                    hints[str(table_name)] = data
-        except Exception:
-            continue
+        data = _load_yaml(path.name)
+        table_name = data.get("table")
+        if table_name:
+            hints[str(table_name)] = data
     return hints
 
 
@@ -186,17 +176,7 @@ def load_schema_hints() -> dict[str, dict[str, Any]]:
 @lru_cache(maxsize=1)
 def load_question_routing_raw() -> dict[str, Any]:
     """Load raw question-routing schema from _schema/question_routing.yaml."""
-    routing_path = _SCHEMA_DIR / "question_routing.yaml"
-    try:
-        raw = yaml.safe_load(routing_path.read_text(encoding="utf-8"))
-        if isinstance(raw, dict):
-            return raw
-    except Exception:
-        logger.warning(
-            "Failed to load question_routing.yaml; falling back to empty routing schema",
-            exc_info=True,
-        )
-    return {}
+    return _load_yaml("question_routing.yaml")
 
 
 # ── IOC catalog ────────────────────────────────────────────────────────────
@@ -222,12 +202,7 @@ def _sql_literal(value: str) -> str:
 @lru_cache(maxsize=1)
 def ioc_catalog() -> dict[str, Any]:
     """Load IOC catalog from dfir_ioc_catalog.yaml."""
-    path = _SCHEMA_DIR / "dfir_ioc_catalog.yaml"
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
+    return load_dfir_yamls()["dfir_ioc_catalog"]
 
 
 def _catalog_entries(section: str) -> list[dict[str, Any]]:
@@ -531,28 +506,56 @@ def matches_exe_globs(name: str, globs: tuple[str, ...]) -> bool:
 @lru_cache(maxsize=1)
 def load_event_class_definitions() -> dict[str, dict[str, Any]]:
     """Load event_class groupings from event_ids.yaml."""
-    path = _SCHEMA_DIR / "event_ids.yaml"
-    if not path.exists():
-        return {}
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except Exception:
-        return {}
-    classes = data.get("event_classes") if isinstance(data, dict) else {}
+    classes = load_dfir_yamls()["event_ids"].get("event_classes")
     if not isinstance(classes, dict):
-        return {}
+        raise ValueError("event_ids.yaml: event_classes must be a mapping")
     result: dict[str, dict[str, Any]] = {}
     for class_name, class_def in classes.items():
         if not isinstance(class_def, dict):
-            continue
+            raise ValueError(f"event_ids.yaml: class {class_name} must be a mapping")
         event_ids = class_def.get("event_ids", [])
-        if isinstance(event_ids, list) and event_ids:
+        logon_types = class_def.get("logon_types", [])
+        if (
+            not isinstance(event_ids, list)
+            or not event_ids
+            or not isinstance(logon_types, list)
+        ):
+            raise ValueError(f"event_ids.yaml: invalid class {class_name}")
+        try:
             entry: dict[str, Any] = {"event_ids": [int(eid) for eid in event_ids]}
-            logon_types = class_def.get("logon_types")
-            if logon_types and isinstance(logon_types, list):
+            if logon_types:
                 entry["logon_types"] = [int(lt) for lt in logon_types]
-            result[class_name] = entry
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"event_ids.yaml: invalid class {class_name}: {exc}"
+            ) from exc
+        result[class_name] = entry
     return result
+
+
+def validate_declarations() -> None:
+    """Validate packaged contracts before an investigation changes Case State."""
+    loaders = (
+        load_dfir_yamls,
+        load_schema_hints,
+        load_event_id_hints,
+        load_event_class_definitions,
+        load_benign_context_rules,
+        load_finding_benign_context_rules,
+        load_question_routing_raw,
+        ioc_catalog,
+    )
+    # Adopt bundled declarations at each run boundary, never stale process data.
+    for loader in loaders:
+        loader.cache_clear()
+    for loader in loaders:
+        loader()
+    for name in (
+        "artifact_capabilities.yaml",
+        "evidence_sufficiency.yaml",
+        "verdict_taxonomy.yaml",
+    ):
+        _load_yaml(name)
 
 
 # ── Cache management ───────────────────────────────────────────────────────

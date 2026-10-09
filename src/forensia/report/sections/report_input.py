@@ -351,10 +351,14 @@ def ensure_report_output_paths(
     offending target.
     """
     inputs = {_normalized(path) for path in report_input_paths(case, report_spec)}
-    if not inputs:
-        return
+    seen: set[str] = set()
     for output in outputs:
         target = _normalized(Path(output))
+        if target in seen:
+            raise ReportSpecError(
+                f"report outputs share the same path: {Path(output).resolve()}"
+            )
+        seen.add(target)
         if target in inputs:
             raise ReportSpecError(
                 f"report output would overwrite the report input "

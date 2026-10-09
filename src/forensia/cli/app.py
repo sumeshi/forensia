@@ -6,7 +6,6 @@ results. Argument validation lives in the kernel entry as ``UsageError`` and
 is translated here into ``typer.BadParameter``.
 """
 
-import asyncio
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -16,27 +15,19 @@ from rich import print
 from rich.markup import escape
 
 from forensia.ai.case_profile import profile_advisor
-from forensia.ai.investigation.investigator import investigate as investigate_loop
 from forensia.ai.llm.llm_client import LLMServerUnavailableError
 from forensia.cli.doctor import run_doctor
-from forensia.cli.support import _open_case_or_die, _resolve_llm_or_die, _status
-from forensia.config import get_llm_settings, resolve_llm_config
+from forensia.cli.support import _open_case_or_die, _status
+from forensia.config import resolve_llm_config
 from forensia.core.case import Case
-from forensia.core.case_tasks import CaseTasks
 from forensia.db.database import CaseDB
 from forensia.evidence.ingest import ingest_all
 from forensia.pipeline import (
     UsageError,
-    resolve_knowledge_dir,
-    resolve_template_dir,
     run_investigation,
+    run_report,
 )
-from forensia.report.render.html import render_html_report
-from forensia.report.render.writer import render_written_report
-from forensia.report.sections.report_input import (
-    ReportSpecError,
-    ensure_report_output_paths,
-)
+from forensia.report.sections.report_input import ReportSpecError
 from forensia.report.template_export import export_packaged_report_templates
 
 logger = logging.getLogger(__name__)
@@ -71,17 +62,8 @@ def templates_export(
 def add(case_dir: str, input_dir: str) -> None:
     """Incrementally ingest new evidence into an existing case."""
     case = _open_case_or_die(case_dir)
-    tasks = CaseTasks.for_case(case)
     _status(f"Adding evidence from: {input_dir}")
     counts = ingest_all(case, input_dir, progress_callback=_status)
-    tasks.mark_done(
-        "ingest",
-        (
-            f"new_files={counts['new_files']}, skipped_files={counts['skipped_files']}, "
-            f"evtx_files={counts['evtx_files']}, mft_files={counts['mft_files']}, "
-            f"prefetch_files={counts['prefetch_files']}"
-        ),
-    )
     print(
         "Add complete: "
         f"added={counts['new_files']}, skipped={counts['skipped_files']}, "
@@ -122,71 +104,24 @@ def report(
     ),
 ) -> None:
     try:
-        case = _open_case_or_die(case_dir)
-        knowledge_path = resolve_knowledge_dir(knowledge)
-        if report_spec and template_dir:
-            raise UsageError(
-                "--report-spec and --template-dir are alternative report inputs; pass one"
-            )
-        if not write and (report_spec or template_dir):
-            raise UsageError("--report-spec and --template-dir require --write")
-    except UsageError as exc:
-        raise typer.BadParameter(str(exc)) from None
-    from forensia.knowledge.external import scan_knowledge_dir, set_knowledge_docs
-
-    # CLI commands can be invoked repeatedly in one Python process (embedding,
-    # tests). Always replace the process-local index so an omitted option cannot
-    # inherit knowledge from a previous invocation.
-    set_knowledge_docs([])
-    if knowledge_path:
-        docs = scan_knowledge_dir(knowledge_path)
-        set_knowledge_docs(docs)
-        _status(f"knowledge: {len(docs)} files indexed from {knowledge_path}")
-        if not docs:
-            _status("WARNING: knowledge directory contains no valid knowledge files")
-    try:
-        with CaseDB(case) as db:
-            # Fail before any write when an output target would replace the
-            # report input (explicit path, case-insensitive compare included).
-            markdown_path = case.reports_dir / "report.md"
-            html_path = Path(output) if output else case.reports_dir / "report.html"
-            ensure_report_output_paths(
-                case, (markdown_path, html_path), report_spec=report_spec
-            )
-            if write:
-                llm_base_url, model = _resolve_llm_or_die(llm_base_url, model)
-                template_root = resolve_template_dir(case, template_dir)
-                max_queries = (
-                    report_max_queries_per_section
-                    or get_llm_settings()["report_max_queries_per_section"]
-                )
-                _status(f"Writing report sections (max_queries={max_queries})")
-                asyncio.run(
-                    investigate_loop(
-                        case=case,
-                        db=db,
-                        base_url=llm_base_url,
-                        model=model,
-                        max_iter=1,
-                        no_progress_limit=1,
-                        profile="windows-basic",
-                        max_queries_per_hypothesis=0,
-                        report_only=True,
-                        template_root=template_root,
-                        report_spec=report_spec,
-                        report_max_queries_per_section=max_queries,
-                    )
-                )
-            report_md, report_path = render_written_report(case, db)
-            path = (
-                render_html_report(case, db, output_path=output)
-                if output
-                else report_path
-            )
+        report_md, report_path = run_report(
+            case_dir,
+            output=output,
+            write=write,
+            report_spec=report_spec,
+            template_dir=template_dir,
+            knowledge_dir=knowledge,
+            llm_base_url=llm_base_url,
+            model=model,
+            report_max_queries_per_section=report_max_queries_per_section,
+            status=_status,
+        )
     except (UsageError, ReportSpecError) as exc:
         raise typer.BadParameter(str(exc)) from None
+    except FileNotFoundError as exc:
+        raise typer.BadParameter(_missing_case_message(case_dir)) from exc
     print(f"Markdown report written to {report_md}")
-    print(f"HTML report written to {path}")
+    print(f"HTML report written to {report_path}")
 
 
 def _print_pre_investigation_hints(case: Case, profile: str, db: CaseDB) -> None:

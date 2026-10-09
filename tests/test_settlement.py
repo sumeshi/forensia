@@ -18,7 +18,6 @@ from forensia.ai.checking.settlement import (
     SettlementInput,
     _is_concrete_entity,
     _is_loopback_ip,
-    build_settlement_input,
     decide_settlement,
     judge_absence_scope,
     settle_hypothesis,
@@ -599,15 +598,6 @@ class PositiveSettlementTests(unittest.TestCase):
                 self.assertTrue(
                     any("logon_type" in item for item in decision.gates_failed)
                 )
-
-    def test_build_settlement_input_preserves_zero_row_counter(self) -> None:
-        settlement_input = build_settlement_input(
-            hypothesis=_make_hypothesis(hid="H-input"),
-            checker_verdict="inconclusive",
-            check_summary="none",
-            consecutive_zero_row_inconclusive=3,
-        )
-        self.assertEqual(settlement_input.consecutive_zero_row_inconclusive, 3)
 
 
 class AutoConfirmOverrideTests(unittest.TestCase):

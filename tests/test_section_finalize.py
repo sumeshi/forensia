@@ -53,10 +53,6 @@ def _agent_plan_router(*_args, **kwargs):
     return {"action": "write", "enough_to_write": True}
 
 
-async def _async_agent_plan_router(*args, **kwargs):
-    return _agent_plan_router(*args, **kwargs)
-
-
 class SectionFinalizeTests(unittest.TestCase):
     """Section request assembly, quality gates, finalize_section, report markdown build."""
 
@@ -65,21 +61,13 @@ class SectionFinalizeTests(unittest.TestCase):
         return resolve_llm_config()[0] or "http://test-llm.invalid"
 
     def setUp(self) -> None:
-        # llm_gateway is the single seam for LLM JSON calls; patch here.
+        # Patch the owning JSON request implementation.
         llm_json_patch = patch(
-            "forensia.ai.llm.llm_gateway.request_llm_json",
+            "forensia.ai.llm.json_response.request_llm_json",
             side_effect=_agent_plan_router,
         )
         llm_json_patch.start()
         self.addCleanup(llm_json_patch.stop)
-        # The async report-refresh path uses async_request_llm_json; mock it too
-        # so async tests don't hit the real LLM.
-        self._async_llm_json_patch = patch(
-            "forensia.ai.llm.llm_gateway.async_request_llm_json",
-            side_effect=_async_agent_plan_router,
-        )
-        self._async_llm_json_patch.start()
-        self.addCleanup(self._async_llm_json_patch.stop)
 
     def test_prepare_section_request_infers_section_evidence_without_template_keypoints(
         self,
@@ -312,7 +300,7 @@ class SectionFinalizeTests(unittest.TestCase):
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
                     (
-                        "evtx-security-000000000001",
+                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
                         4624,
                         datetime(2015, 3, 22, 14, 34, 28),
                         "informant-PC",
@@ -347,7 +335,10 @@ class SectionFinalizeTests(unittest.TestCase):
             self.assertGreaterEqual(probe_count, 5)
             self.assertIsNotNone(fact)
             self.assertIn("informant", str(fact[0]))
-            self.assertIn("evtx-security-000000000001", str(fact[1]))
+            self.assertIn(
+                "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
+                str(fact[1]),
+            )
 
     def test_question_marker_enables_structured_mode_without_explicit_mode(
         self,
@@ -546,8 +537,14 @@ class SectionFinalizeTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 for evidence_id, event_id in (
-                    ("evtx-security-000000000001", 4624),
-                    ("evtx-system-000000000002", 7045),
+                    (
+                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
+                        4624,
+                    ),
+                    (
+                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-000000000002",
+                        7045,
+                    ),
                 ):
                     db.execute(
                         """
@@ -565,16 +562,16 @@ class SectionFinalizeTests(unittest.TestCase):
                     title="Technical",
                     body=(
                         "## Authentication\n\n"
-                        "A logon was observed (evtx-security-000000000001).\n\n"
+                        "A logon was observed (evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001).\n\n"
                         "## Service\n\n"
-                        "A service was observed (evtx-system-000000000002)."
+                        "A service was observed (evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-000000000002)."
                     ),
                     evidence_results=[
                         {
                             "kind": "rows",
                             "evidence_ids": [
-                                "evtx-security-000000000001",
-                                "evtx-system-000000000002",
+                                "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
+                                "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-000000000002",
                             ],
                         }
                     ],
@@ -776,7 +773,7 @@ class SectionFinalizeTests(unittest.TestCase):
                         "### Answer\n"
                         "| host_id | evidence_count | first_seen | last_seen | evidence_id |\n"
                         "| --- | --- | --- | --- | --- |\n"
-                        "| informant-PC | 4453 | 2015-03-22 | 2015-03-25 | evtx-security-000000000001 |\n\n"
+                        "| informant-PC | 4453 | 2015-03-22 | 2015-03-25 | evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001 |\n\n"
                         "### Queries Run\n"
                         "- structured:host_identity:evtx_distinct_hosts\n\n"
                         "### Structured Data\n"
@@ -795,7 +792,10 @@ class SectionFinalizeTests(unittest.TestCase):
             self.assertIn("On EVTX", markdown)
             self.assertIn("### Answer", markdown)
             self.assertNotIn("evidence_id", markdown)
-            self.assertNotIn("evtx-security-000000000001", markdown)
+            self.assertNotIn(
+                "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
+                markdown,
+            )
 
     def test_build_report_markdown_refreshes_stale_antiforensic_appendix_block(
         self,

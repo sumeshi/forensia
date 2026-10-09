@@ -27,9 +27,8 @@ def ingest_prefetch_file(
     progress_callback: Callable[[str], None] | None = None,
 ) -> tuple[Path, Path | None]:
     prefetch_path = Path(prefetch_path)
-    sha_prefix = source_sha[:12]
-    entries_path = case.raw_dir / f"prefetch-entries-{sha_prefix}.jsonl"
-    timeline_path = case.raw_dir / f"prefetch-timeline-{sha_prefix}.jsonl"
+    entries_path = case.raw_dir / f"prefetch-entries-{source_sha}.jsonl"
+    timeline_path = case.raw_dir / f"prefetch-timeline-{source_sha}.jsonl"
     ingested_at = datetime.now(UTC).isoformat()
 
     parser = Prefetch2es(prefetch_path)
@@ -54,7 +53,7 @@ def ingest_prefetch_file(
                 "source_file": source_sha,
                 "ingested_at": ingested_at,
                 "evidence_id": make_prefetch_evidence_id(
-                    executable_name, prefetch_hash
+                    source_sha, executable_name, prefetch_hash
                 ),
             }
             handle.write(json.dumps(enriched, ensure_ascii=False) + "\n")
@@ -76,7 +75,9 @@ def ingest_prefetch_file(
             hash_obj = win_prefetch.get("hash", {}) or {}
             executable_name = str(process_obj.get("name") or "")
             prefetch_hash = str(hash_obj.get("prefetch") or "")
-            evidence_id = make_prefetch_evidence_id(executable_name, prefetch_hash)
+            evidence_id = make_prefetch_evidence_id(
+                source_sha, executable_name, prefetch_hash
+            )
             enriched = {
                 **record,
                 "source_type": "prefetch",

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from collections.abc import Callable, Collection
 from datetime import UTC, datetime
-from itertools import chain
 from pathlib import Path
 
 from evtx2es.models.Evtx2es import Evtx2es
@@ -23,9 +24,9 @@ def ingest_evtx_file(
 ) -> Path:
     """Parse an EVTX file with evtx2es, enrich records with metadata, and write as JSONL.
 
-    Each record gets a unique evidence_id derived from channel and record_id, plus
-    source tracking and ingestion timestamp. The output filename encodes the channel
-    name and source hash for traceability.
+    Each record gets an evidence_id derived from the full source hash, channel,
+    and record_id, plus source tracking and ingestion timestamp. The output filename
+    encodes the channel name and source hash for traceability.
     """
     evtx_path = Path(evtx_path)
     ingested_at = datetime.now(UTC).isoformat()
@@ -33,46 +34,86 @@ def ingest_evtx_file(
     if progress_callback:
         progress_callback(f"Parsing EVTX records from {evtx_path}")
     parser = Evtx2es(evtx_path)
-    records = list(
-        chain.from_iterable(
-            parser.gen_records(shift="0", multiprocess=False, chunk_size=500)
-        )
-    )
-    if progress_callback:
-        progress_callback(f"Parsed {len(records)} EVTX records from {evtx_path}")
+    output_path: Path | None = None
+    temporary_path: Path | None = None
+    count = 0
+    first_channel = evtx_path.stem
+    try:
+        for batch in parser.gen_records(shift="0", multiprocess=False, chunk_size=500):
+            for record in batch:
+                if output_path is None:
+                    first_channel = record.get("winlog", {}).get(
+                        "channel", evtx_path.stem
+                    )
+                    safe_name = (
+                        first_channel.lower()
+                        .replace("/", "_")
+                        .replace(" ", "_")
+                        .replace("\\", "_")
+                    )
+                    output_path = case.raw_dir / f"evtx-{source_sha}-{safe_name}.jsonl"
+                    handle = tempfile.NamedTemporaryFile(
+                        mode="w",
+                        encoding="utf-8",
+                        dir=case.raw_dir,
+                        prefix=f".{output_path.name}.",
+                        suffix=".tmp",
+                        delete=False,
+                    )
+                    temporary_path = Path(handle.name)
+                else:
+                    handle = temporary_path.open("a", encoding="utf-8")
+                with handle:
+                    _write_evtx_record(
+                        handle, record, source_sha, ingested_at, first_channel
+                    )
+                count += 1
 
-    # Use channel from first record to name the output file; fall back to stem
-    first_channel = (
-        records[0].get("winlog", {}).get("channel", evtx_path.stem)
-        if records
-        else evtx_path.stem
-    )
-    safe_name = (
-        first_channel.lower().replace("/", "_").replace(" ", "_").replace("\\", "_")
-    )
-    sha_prefix = source_sha[:12]
-    output_path = case.raw_dir / f"evtx-{sha_prefix}-{safe_name}.jsonl"
+        if output_path is None:
+            safe_name = (
+                first_channel.lower()
+                .replace("/", "_")
+                .replace(" ", "_")
+                .replace("\\", "_")
+            )
+            output_path = case.raw_dir / f"evtx-{source_sha}-{safe_name}.jsonl"
+            handle = tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=case.raw_dir,
+                prefix=f".{output_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            )
+            temporary_path = Path(handle.name)
+            handle.close()
+        os.replace(temporary_path, output_path)
+    except BaseException:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        raise
 
-    with output_path.open("w", encoding="utf-8") as handle:
-        for record in records:
-            winlog = record.get("winlog", {})
-            channel = winlog.get("channel", first_channel)
-            record_id = int(winlog.get("record_id") or 0)
-            enriched = {
-                **record,
-                "source_type": "evtx",
-                # Stable source identity; display paths live in evidence_sources.
-                "source_file": source_sha,
-                "channel": channel,
-                "parser": "evtx2es",
-                "ingested_at": ingested_at,
-                "evidence_id": make_evtx_evidence_id(channel, record_id),
-            }
-            handle.write(json.dumps(enriched, ensure_ascii=False) + "\n")
     if progress_callback:
+        progress_callback(f"Parsed {count} EVTX records from {evtx_path}")
         progress_callback(f"Wrote JSONL: {output_path}")
-
     return output_path
+
+
+def _write_evtx_record(handle, record, source_sha, ingested_at, first_channel):
+    winlog = record.get("winlog", {})
+    channel = winlog.get("channel", first_channel)
+    record_id = int(winlog.get("record_id") or 0)
+    enriched = {
+        **record,
+        "source_type": "evtx",
+        # Stable source identity; display paths live in evidence_sources.
+        "source_file": source_sha,
+        "channel": channel,
+        "parser": "evtx2es",
+        "ingested_at": ingested_at,
+        "evidence_id": make_evtx_evidence_id(source_sha, channel, record_id),
+    }
+    handle.write(json.dumps(enriched, ensure_ascii=False) + "\n")
 
 
 def normalize_evtx(
@@ -87,7 +128,7 @@ def normalize_evtx(
     """
     inserted = 0
     paths = select_source_paths(
-        {*case.raw_dir.glob("evtx.jsonl"), *case.raw_dir.glob("evtx-*.jsonl")},
+        case.raw_dir.glob("evtx-*.jsonl"),
         source_keys,
     )
     for path in paths:

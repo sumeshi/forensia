@@ -6,9 +6,8 @@ import hashlib
 import logging
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any
 
-from sqlglot import exp, parse_one
+from sqlglot import parse_one
 from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
 
 logger = logging.getLogger(__name__)
@@ -17,8 +16,8 @@ logger = logging.getLogger(__name__)
 def query_fingerprint(sql: str | None) -> str:
     """Generate a fingerprint for a query to detect duplicates.
 
-    Uses sqlglot AST normalization so semantically equivalent
-    queries produce the same fingerprint regardless of formatting or aliasing.
+    Hashes the whole normalized SQL, ignoring formatting and unquoted
+    identifier case while retaining predicates, literals, projections and aliases.
     """
     sql = (sql or "").strip()
     if not sql:
@@ -30,7 +29,7 @@ def query_fingerprint(sql: str | None) -> str:
         try:
             expression = parse_one(sql)
         except Exception:
-            return hashlib.sha1(f"raw:{sql.lower()}".encode()).hexdigest()[:8]
+            return hashlib.sha256(f"raw:{sql}".encode()).hexdigest()
 
     try:
         try:
@@ -39,73 +38,10 @@ def query_fingerprint(sql: str | None) -> str:
             logger.debug(
                 "Failed to normalize SQL identifiers for fingerprint", exc_info=True
             )
-
-        def _column_name(node: Any) -> str | None:
-            if isinstance(node, exp.Column):
-                return node.name.lower()
-            if isinstance(node, exp.Identifier):
-                return node.name.lower()
-            return None
-
-        def _literal_value(node: Any) -> str | None:
-            if isinstance(node, exp.Literal):
-                value = str(node.this)
-                if node.is_string:
-                    return value.lower()
-                try:
-                    return str(int(value))
-                except ValueError:
-                    return value.lower()
-            if isinstance(node, exp.Cast):
-                return _literal_value(node.this)
-            if isinstance(node, exp.Paren):
-                return _literal_value(node.this)
-            if isinstance(node, exp.Neg):
-                inner = _literal_value(node.this)
-                return f"-{inner}" if inner is not None else None
-            return None
-
-        def _collect_terms(predicate: Any, column_name: str) -> list[str]:
-            values: list[str] = []
-            if isinstance(predicate, exp.EQ):
-                left = _column_name(predicate.this)
-                right = _column_name(predicate.expression)
-                if left == column_name:
-                    value = _literal_value(predicate.expression)
-                    if value is not None:
-                        values.append(value)
-                elif right == column_name:
-                    value = _literal_value(predicate.this)
-                    if value is not None:
-                        values.append(value)
-            elif (
-                isinstance(predicate, exp.In)
-                and _column_name(predicate.this) == column_name
-            ):
-                for item in predicate.expressions:
-                    value = _literal_value(item)
-                    if value is not None:
-                        values.append(value)
-            return values
-
-        event_ids: set[str] = set()
-        computers: set[str] = set()
-        for predicate in expression.find_all((exp.EQ, exp.In)):
-            event_ids.update(_collect_terms(predicate, "event_id"))
-            computers.update(_collect_terms(predicate, "computer"))
-
-        parts: list[str] = []
-        if event_ids:
-            parts.append("ev:" + ",".join(sorted(event_ids)))
-        if computers:
-            parts.append("host:" + ",".join(sorted(computers)))
-        if parts:
-            return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:8]
-
         canonical_sql = expression.sql(dialect="duckdb", pretty=False)
-        return hashlib.sha1(f"sql:{canonical_sql}".encode()).hexdigest()[:8]
+        return hashlib.sha256(f"sql:{canonical_sql}".encode()).hexdigest()
     except Exception:
-        return hashlib.sha1(f"raw:{sql.lower()}".encode()).hexdigest()[:8]
+        return hashlib.sha256(f"raw:{sql}".encode()).hexdigest()
 
 
 @dataclass(slots=True)

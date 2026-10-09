@@ -23,13 +23,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 from dataclasses import dataclass
 from typing import Any
 
 from forensia.db.database import CaseDB
-
-logger = logging.getLogger(__name__)
 
 #: Existing-durable phase under ``investigation_steps`` for policy receipts.
 CASE_POLICY_STEP_PHASE = "forensia-md"
@@ -152,19 +149,25 @@ def load_recorded_policy(db: CaseDB) -> dict[str, Any] | None:
         """,
         [CASE_POLICY_STEP_PHASE],
     ).fetchone()
-    if not row or not row[0]:
+    if not row:
         return None
     try:
         payload = json.loads(str(row[0]))
-    except json.JSONDecodeError:
-        logger.warning("forensia-md step payload is not valid JSON; ignoring")
-        return None
+    except json.JSONDecodeError as exc:
+        raise ValueError("forensia-md receipt is not valid JSON") from exc
     if not isinstance(payload, dict):
+        raise ValueError("forensia-md receipt must be a mapping")
+    if payload.get("policy_state") == "unset":
         return None
     if payload.get("policy_state") not in {"adopted", "pinned"}:
-        return None
-    if not payload.get("body") or not payload.get("content_sha256"):
-        return None
+        raise ValueError("forensia-md receipt has unsupported policy_state")
+    if any(
+        not isinstance(payload.get(key), str) or not payload[key]
+        for key in ("body", "content_sha256", "source", "source_path")
+    ):
+        raise ValueError("forensia-md receipt is missing adopted policy fields")
+    if sha256_hex(payload["body"]) != payload["content_sha256"]:
+        raise ValueError("forensia-md receipt content_sha256 does not match body")
     return payload
 
 

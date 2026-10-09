@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from unittest.mock import patch
 
@@ -10,11 +9,42 @@ import pytest
 from forensia.ai.llm import llm_client
 from forensia.ai.llm_telemetry import (
     LLMTelemetry,
+    compute_effective_output_limit,
     set_active_telemetry,
     telemetry_scope,
 )
 from forensia.core.case import Case
+from forensia.core.session import LLMBudgetExceededError
 from forensia.db.database import CaseDB
+
+
+def test_context_budget_subtracts_known_input_even_when_output_alone_fits() -> None:
+    assert compute_effective_output_limit(
+        configured_max_tokens=4096,
+        reasoning_reserve_tokens=0,
+        known_context_limit=8192,
+        estimated_input_tokens=7000,
+    ) == (4096, 0, 4096, 1192)
+
+
+def test_context_budget_counts_reasoning_reserve_once() -> None:
+    assert compute_effective_output_limit(
+        configured_max_tokens=1000,
+        reasoning_reserve_tokens=200,
+        requested_override=800,
+        known_context_limit=1500,
+        estimated_input_tokens=600,
+    ) == (1000, 200, 800, 900)
+
+
+def test_context_budget_rejects_input_that_leaves_no_output_room() -> None:
+    with pytest.raises(ValueError, match="no output budget remains"):
+        compute_effective_output_limit(
+            configured_max_tokens=1000,
+            reasoning_reserve_tokens=0,
+            known_context_limit=1000,
+            estimated_input_tokens=1000,
+        )
 
 
 @pytest.fixture()
@@ -50,6 +80,187 @@ def test_logical_call_inherits_hypothesis_scope(telemetry) -> None:
         (logical_call_id,),
     ).fetchone()
     assert row == ("H-CHAIN", 3)
+
+
+def test_logical_call_cap_counts_failed_calls_and_blocks_before_transport(
+    tmp_path,
+) -> None:
+    case = Case.init(tmp_path)
+    db = CaseDB(case)
+    tel = LLMTelemetry(db, session_id="S-CAP", max_logical_calls=1)
+    set_active_telemetry(tel)
+
+    class _FailingClient:
+        calls = 0
+
+        def post(self, url, json, headers):
+            self.calls += 1
+            return httpx.Response(
+                500, text="provider failure", request=httpx.Request("POST", url)
+            )
+
+    client = _FailingClient()
+    try:
+        with (
+            patch.object(llm_client, "_get_http_client", return_value=client),
+            patch.object(llm_client.settings, "llm_api_key", "tok"),
+            patch.object(llm_client.time, "sleep"),
+        ):
+            with pytest.raises(llm_client.LLMServerUnavailableError):
+                llm_client.chat_completion(
+                    [{"role": "user", "content": "go"}],
+                    model="m",
+                    base_url="http://llama.test",
+                )
+            with pytest.raises(LLMBudgetExceededError):
+                llm_client.chat_completion(
+                    [{"role": "user", "content": "again"}],
+                    model="m",
+                    base_url="http://llama.test",
+                )
+    finally:
+        set_active_telemetry(None)
+    assert client.calls == llm_client._LLM_HTTP_RETRY_MAX
+    assert db.execute(
+        "SELECT status FROM llm_logical_calls WHERE session_id = 'S-CAP'"
+    ).fetchall() == [("failed",)]
+    assert tel.session_aggregates()["logical_call_count"] == 1
+
+
+def test_unexpected_transport_error_finalizes_attempt_and_call(tmp_path) -> None:
+    case = Case.init(tmp_path)
+    db = CaseDB(case)
+    tel = LLMTelemetry(db, session_id="S-UNEXPECTED")
+    set_active_telemetry(tel)
+
+    class _BrokenClient:
+        def post(self, url, json, headers):
+            raise ValueError("transport adapter failed")
+
+    try:
+        with (
+            patch.object(llm_client, "_get_http_client", return_value=_BrokenClient()),
+            patch.object(llm_client.settings, "llm_api_key", "tok"),
+        ):
+            with pytest.raises(ValueError, match="transport adapter failed"):
+                llm_client.chat_completion(
+                    [{"role": "user", "content": "go"}],
+                    model="m",
+                    base_url="http://llama.test",
+                )
+    finally:
+        set_active_telemetry(None)
+    assert db.execute(
+        "SELECT status, exception_class FROM llm_provider_attempts WHERE session_id = 'S-UNEXPECTED'"
+    ).fetchall() == [("transport_error", "ValueError")]
+    assert db.execute(
+        "SELECT status FROM llm_logical_calls WHERE session_id = 'S-UNEXPECTED'"
+    ).fetchall() == [("failed",)]
+
+
+def test_json_plan_and_repair_share_one_budgeted_logical_call(tmp_path) -> None:
+    from forensia.ai.llm import json_response
+
+    case = Case.init(tmp_path)
+    db = CaseDB(case)
+    tel = LLMTelemetry(db, session_id="S-REPAIR", max_logical_calls=1)
+    set_active_telemetry(tel)
+    outputs = iter(["not json", '{"ok": true}'])
+    try:
+        with patch.object(
+            json_response, "chat_completion", side_effect=lambda **_: next(outputs)
+        ):
+            assert json_response.request_llm_json(
+                [{"role": "user", "content": "return json"}],
+                base_url="http://llama.test",
+                model="m",
+            ) == {"ok": True}
+    finally:
+        set_active_telemetry(None)
+    assert db.execute(
+        "SELECT phase, status FROM llm_logical_calls WHERE session_id = 'S-REPAIR'"
+    ).fetchall() == [("request_llm_json", "success")]
+    assert tel.session_aggregates()["logical_call_count"] == 1
+
+
+def test_nested_context_compaction_budget_exhaustion_propagates(tmp_path) -> None:
+    from forensia.ai.llm import json_response
+
+    case = Case.init(tmp_path)
+    db = CaseDB(case)
+    tel = LLMTelemetry(db, session_id="S-COMPACT", max_logical_calls=1)
+    set_active_telemetry(tel)
+    try:
+        with (
+            patch.object(
+                json_response,
+                "chat_completion",
+                side_effect=llm_client.LLMContextWindowError(
+                    "context rejected", status_code=400, body="too large"
+                ),
+            ),
+            patch.object(
+                json_response,
+                "_compact_messages_after_context_rejection",
+                side_effect=LLMBudgetExceededError(1, 1),
+            ),
+        ):
+            with pytest.raises(LLMBudgetExceededError):
+                json_response.request_llm_json(
+                    [{"role": "user", "content": "x" * 5000}],
+                    base_url="http://llama.test",
+                    model="m",
+                )
+    finally:
+        set_active_telemetry(None)
+    assert db.execute(
+        "SELECT status FROM llm_logical_calls WHERE session_id = 'S-COMPACT'"
+    ).fetchall() == [("failed",)]
+
+
+def test_usage_aggregates_keep_actual_estimated_and_unknown_separate(telemetry) -> None:
+    logical_id = telemetry.begin_logical_call(phase="usage")
+    common = dict(
+        logical_call_id=logical_id,
+        endpoint="http://llama.test/v1/chat/completions",
+        provider="llama",
+        model="m",
+        schema_mode="json_object",
+        request_fingerprint=None,
+        configured_output_limit=100,
+        reasoning_reserve_tokens=0,
+        known_context_limit=None,
+        effective_output_limit=100,
+        requested_output_limit=100,
+        input_chars=20,
+    )
+    actual = telemetry.begin_attempt(**common)
+    telemetry.finalize_attempt(
+        attempt_id=actual,
+        status="success",
+        input_tokens=10,
+        output_tokens=4,
+        input_tokens_source="provider_actual",
+        output_tokens_source="provider_actual",
+    )
+    estimated = telemetry.begin_attempt(**common)
+    telemetry.finalize_attempt(
+        attempt_id=estimated,
+        status="success",
+        input_tokens=5,
+        output_tokens=2,
+        input_tokens_source="local_estimate",
+        output_tokens_source="local_estimate",
+    )
+    unknown = telemetry.begin_attempt(**common)
+    telemetry.finalize_attempt(attempt_id=unknown, status="success")
+    agg = telemetry.session_aggregates()
+    assert (agg["actual_input_tokens"], agg["actual_output_tokens"]) == (10, 4)
+    assert (agg["estimated_input_tokens"], agg["estimated_output_tokens"]) == (5, 2)
+    assert (
+        agg["unknown_input_usage_attempts"],
+        agg["unknown_output_usage_attempts"],
+    ) == (1, 1)
 
 
 def test_client_creates_attempt_receipts_for_retry_then_success(
@@ -97,6 +308,7 @@ def test_client_creates_attempt_receipts_for_retry_then_success(
     with (
         patch.object(llm_client, "_get_http_client", return_value=fake),
         patch.object(llm_client.settings, "llm_api_key", "tok"),
+        patch.object(llm_client.time, "sleep"),
     ):
         result = llm_client.chat_completion(
             [{"role": "user", "content": "go"}],
@@ -200,7 +412,7 @@ def _assert_truncation_receipt(db: CaseDB, session_id: str) -> None:
 def test_unusable_truncation_closes_owned_call_failed_and_marks_attempt(
     tmp_path,
 ) -> None:
-    """Shared sync/async invariant: unusable truncation raises LLMOutputTruncatedError,
+    """Unusable truncation raises LLMOutputTruncatedError,
     leaves the owned logical call failed, and the attempt receipt terminal and explicit."""
     case = Case.init(tmp_path)
     db = CaseDB(case)
@@ -226,34 +438,6 @@ def test_unusable_truncation_closes_owned_call_failed_and_marks_attempt(
     set_active_telemetry(None)
     _assert_truncation_receipt(db, "S-sync")
     assert tel.session_aggregates()["provider_attempt_count"] == 1
-
-    # --- async path ---
-    tel_a = LLMTelemetry(db, session_id="S-async")
-    set_active_telemetry(tel_a)
-
-    class _FakeAsyncClient:
-        async def post(self, url, json, headers):
-            return _truncated_response()
-
-    async def _fake_async_client():
-        return _FakeAsyncClient()
-
-    async def _run() -> None:
-        with (
-            patch.object(llm_client, "_get_async_client", new=_fake_async_client),
-            patch.object(llm_client.settings, "llm_api_key", "tok"),
-        ):
-            with pytest.raises(llm_client.LLMOutputTruncatedError):
-                await llm_client.async_chat_completion(
-                    [{"role": "user", "content": "go"}],
-                    model="m",
-                    base_url="http://llama.test",
-                )
-
-    asyncio.run(_run())
-    set_active_telemetry(None)
-    _assert_truncation_receipt(db, "S-async")
-    assert tel_a.session_aggregates()["provider_attempt_count"] == 1
 
     # JSON-level recovery must change the request without exceeding the configured
     # model completion cap. Keep this in the existing truncation contract test.

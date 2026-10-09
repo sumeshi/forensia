@@ -14,7 +14,6 @@ from typing import Any
 from forensia.ai.investigation.work_judgment import (
     coverage_readiness,
     judge_work,
-    load_spec_capabilities,
 )
 from forensia.core.session import Hypothesis
 from forensia.db.database import CaseDB
@@ -59,11 +58,6 @@ _CLASSIFICATION_RETRY_CONDITIONS = {
     "needs_review": "new_evidence_or_human_review",
     "deferred": "new_evidence_or_manual_resume",
 }
-
-
-def _required_capabilities(db: CaseDB, hypothesis_id: str) -> list[str]:
-    """Read the canonical VerificationSpec of one hypothesis for its capabilities."""
-    return load_spec_capabilities(db, hypothesis_id)
 
 
 def _classification_for(

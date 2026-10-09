@@ -17,7 +17,6 @@ from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.report.render.evidence_map import (
     build_evidence_map,
-    render_evidence_references,
 )
 from forensia.report.render.html import render_html_report, render_markdown_fragment
 
@@ -73,15 +72,22 @@ class RenderMarkdownFragmentTests(unittest.TestCase):
         self.assertIn("<p>para two</p>", html)
 
     def test_evidence_id_renders_as_placeholder_link_before_document_injection(self):
-        html = str(render_markdown_fragment("See evtx-security-000000000001."))
+        html = str(
+            render_markdown_fragment(
+                "See evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001."
+            )
+        )
 
         self.assertIn('class="evidence-ref"', html)
-        self.assertIn('href="#ev-evtx-security-000000000001"', html)
+        self.assertIn(
+            'href="#ev-evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001"',
+            html,
+        )
 
 
 class EvidenceMapTests(unittest.TestCase):
     def test_evidence_map_builds_from_body(self):
-        body = "See evtx-security-000000000001 for details."
+        body = "See evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001 for details."
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -89,7 +95,7 @@ class EvidenceMapTests(unittest.TestCase):
                     "INSERT INTO evtx_events (evidence_id, event_id, timestamp, raw_json) "
                     "VALUES (?, ?, ?, ?)",
                     (
-                        "evtx-security-000000000001",
+                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
                         4624,
                         "2015-03-22T14:34:28",
                         json.dumps({"event_id": 4624, "target_user": "informant"}),
@@ -97,52 +103,59 @@ class EvidenceMapTests(unittest.TestCase):
                 )
                 emap = build_evidence_map(db, body)
 
-        self.assertIn("evtx-security-000000000001", emap)
-        info = emap["evtx-security-000000000001"]
+        self.assertIn(
+            "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
+            emap,
+        )
+        info = emap[
+            "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001"
+        ]
         self.assertEqual(info["source"], "evtx_events")
         self.assertIn("4624", info["summary"])
 
-    def test_evidence_references_renders_markdown(self):
-        emap = {
-            "evtx-security-000000000001": {
-                "source": "evtx_events",
-                "timestamp": "2015-03-22T14:34:28",
-                "summary": "4624 logon",
-            },
-        }
-
-        md = render_evidence_references(emap)
-
-        self.assertIn("## Evidence References", md)
-        self.assertIn("evtx-security-000000000001", md)
-
     def test_evidence_map_summarizes_mft_and_prefetch_rows(self):
-        body = "Files mft-000000078080-01 and runs prefetch-ccleaner64.exe-779bd542."
+        body = "Files mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000078080-01 and runs prefetch-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-ccleaner64.exe-779bd542."
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 db.execute(
                     "INSERT INTO mft_entries (evidence_id, file_name, file_path, si_modified) VALUES "
-                    "('mft-000000078080-01', 'Task List.ersy', 'Users/informant/AppData/Local/Eraser 6/Task List.ersy', TIMESTAMP '2015-03-25 15:29:37')"
+                    "('mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000078080-01', 'Task List.ersy', 'Users/informant/AppData/Local/Eraser 6/Task List.ersy', TIMESTAMP '2015-03-25 15:29:37')"
                 )
                 db.execute(
                     "INSERT INTO prefetch_executions (evidence_id, executable_name, exec_count, last_exec_time) VALUES "
-                    "('prefetch-ccleaner64.exe-779bd542', 'CCLEANER64.EXE', 2, TIMESTAMP '2015-03-25 15:15:50')"
+                    "('prefetch-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-ccleaner64.exe-779bd542', 'CCLEANER64.EXE', 2, TIMESTAMP '2015-03-25 15:15:50')"
                 )
                 emap = build_evidence_map(db, body)
 
-        self.assertIn("Task List.ersy", emap["mft-000000078080-01"]["summary"])
         self.assertIn(
-            "CCLEANER64.EXE", emap["prefetch-ccleaner64.exe-779bd542"]["summary"]
+            "Task List.ersy",
+            emap[
+                "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000078080-01"
+            ]["summary"],
+        )
+        self.assertIn(
+            "CCLEANER64.EXE",
+            emap[
+                "prefetch-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-ccleaner64.exe-779bd542"
+            ]["summary"],
         )
 
     def test_evidence_map_marks_unknown_ids_unresolved(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                emap = build_evidence_map(db, "Bogus evtx-security-000000000099 cited.")
+                emap = build_evidence_map(
+                    db,
+                    "Bogus evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000099 cited.",
+                )
 
-        self.assertEqual("unresolved", emap["evtx-security-000000000099"]["source"])
+        self.assertEqual(
+            "unresolved",
+            emap[
+                "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000099"
+            ]["source"],
+        )
 
 
 class RenderHtmlReportTests(unittest.TestCase):
@@ -152,15 +165,15 @@ class RenderHtmlReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             (case.reports_dir / "report.md").write_text(
-                "Logon observed (evtx-security-000000000001).\n\n"
+                "Logon observed (evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001).\n\n"
                 "## Evidence References\n\n"
-                "- `evtx-security-000000000001` 2015-03-22T14:34:28 evtx_events - 4624 logon\n",
+                "- `evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001` 2015-03-22T14:34:28 evtx_events - 4624 logon\n",
                 encoding="utf-8",
             )
             (case.reports_dir / "evidence_map.json").write_text(
                 json.dumps(
                     {
-                        "evtx-security-000000000001": {
+                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001": {
                             "source": "evtx_events",
                             "timestamp": "2015-03-22T14:34:28",
                             "summary": "4624 Security informant@informant-PC",
@@ -173,7 +186,10 @@ class RenderHtmlReportTests(unittest.TestCase):
                 output = render_html_report(case, db)
                 html = output.read_text(encoding="utf-8")
 
-        self.assertIn('href="/evidence/evtx-security-000000000001"', html)
+        self.assertIn(
+            'href="/evidence/evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001"',
+            html,
+        )
         self.assertIn('target="_blank"', html)
         self.assertIn("4624 Security informant@informant-PC", html)
         self.assertNotIn('href="#ev-', html)

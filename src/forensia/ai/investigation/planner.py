@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from forensia.ai.case_profile import CaseEvidenceProfile
 from forensia.ai.hypotheses.hypothesis_store import _recent_reasoning_rows
-from forensia.ai.llm import llm_gateway
+from forensia.ai.llm import json_response
 from forensia.ai.llm.schemas import (
     QUERY_INTENT_SCHEMA,
     MemoryReadMoreAction,
@@ -197,8 +197,6 @@ def request_with_optional_context(
     model: str,
     initial_context: str | None = None,
     status_callback: Callable[[str], None] | None = None,
-    audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None]
-    | None = None,
     hypothesis_id: str | None = None,
     retrieval_callback: Callable[[dict[str, Any]], None] | None = None,
     json_schema: dict[str, Any] | None = None,
@@ -215,14 +213,13 @@ def request_with_optional_context(
             max_bytes=max(1024, memory.max_bytes // 3),
             include_overview=False,
         )
-    parsed = llm_gateway.request_llm_json(
+    parsed = json_response.request_llm_json(
         messages=messages_builder(default_context),
         model=model,
         base_url=base_url,
         json_schema=json_schema,
         telemetry_phase="hypothesis-plan",
         status_callback=status_callback,
-        audit_callback=audit_callback,
     )
     action, action_error = normalize_query_intent_action(parsed, phase="initial")
     if action_error:
@@ -320,14 +317,13 @@ def request_with_optional_context(
     expanded_context = default_context
     if extra_bytes:
         expanded_context += separator + selected_context
-    reparsed = llm_gateway.request_llm_json(
+    reparsed = json_response.request_llm_json(
         messages=messages_builder(expanded_context),
         model=model,
         base_url=base_url,
         json_schema=json_schema,
         telemetry_phase="hypothesis-plan-read-more",
         status_callback=status_callback,
-        audit_callback=audit_callback,
     )
     reparsed_action, reparsed_error = normalize_query_intent_action(
         reparsed, phase="after_read_more"
@@ -530,7 +526,6 @@ def _plan_query_intent(
     default_context_md: str,
     db: CaseDB | None,
     status_callback: Callable[[str], None] | None,
-    audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None] | None,
     hypothesis: Hypothesis,
     session_id: str | None,
 ) -> _QueryIntentResult:
@@ -568,7 +563,6 @@ def _plan_query_intent(
         model=model,
         initial_context=default_context_md,
         status_callback=status_callback,
-        audit_callback=audit_callback,
         hypothesis_id=hypothesis.id,
         retrieval_callback=retrieval_callback,
         json_schema=QUERY_INTENT_SCHEMA,
@@ -585,8 +579,6 @@ def plan_hypothesis_query(
     db: CaseDB | None = None,
     default_context_md: str | None = None,
     status_callback: Callable[[str], None] | None = None,
-    audit_callback: Callable[[list[dict[str, str]], str, dict[str, Any]], None]
-    | None = None,
     query_index: int = 1,
     time_range: dict[str, str] | None = None,
     case_profile: CaseEvidenceProfile | None = None,
@@ -671,7 +663,6 @@ def plan_hypothesis_query(
         default_context_md=default_context_md,
         db=db,
         status_callback=status_callback,
-        audit_callback=audit_callback,
         hypothesis=hypothesis,
         session_id=state.session_id,
     )

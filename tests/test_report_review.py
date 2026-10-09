@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from forensia.ai.case_profile import build_case_profile, observed_event_ids
 from forensia.ai.prompts.prompt_sections import (
@@ -16,14 +17,13 @@ from forensia.ai.prompts.sql_templates import validate_select_sql
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.db.database import CaseDB
-from forensia.knowledge.catalog import catalog_exe_globs, matches_exe_globs
+from forensia.knowledge.catalog import _load_yaml, catalog_exe_globs, matches_exe_globs
 from forensia.report.answers.keypoints_report_meta import _report_sections_with_gaps
 from forensia.report.evidence_refs import row_with_evidence_ids
 from forensia.report.render.html import _load_report_sections
 from forensia.report.render.markdown import build_host_note
 from forensia.report.render.writer import (
     build_report_markdown_from_db,
-    render_written_report,
 )
 from forensia.report.report_brief import _query_prior_sections
 from forensia.report.report_validation import derive_publication_state
@@ -39,8 +39,8 @@ class ReportSafetyContracts(unittest.TestCase):
     def test_narrative_review_reports_reader_hostile_output(self) -> None:
         body = (
             "Hypothesis H-010 remains open (STRUCTURED_OBSERVATIONS). "
-            "IDs evtx-security-000000000001, evtx-security-000000000002, "
-            "evtx-security-000000000003, evtx-security-000000000004 were cited."
+            "IDs evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001, evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000002, "
+            "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000003, evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000004 were cited."
         )
         problems = review_narrative_body(body)
         self.assertTrue(any("cites 4" in problem for problem in problems))
@@ -70,7 +70,11 @@ class ReportSafetyContracts(unittest.TestCase):
 class EvidencePresentationContracts(unittest.TestCase):
     def test_rows_without_evidence_are_explicitly_non_citable(self) -> None:
         without_id = row_with_evidence_ids({"computer": "host1"})
-        with_id = row_with_evidence_ids({"evidence_id": "evtx-security-000000000001"})
+        with_id = row_with_evidence_ids(
+            {
+                "evidence_id": "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001"
+            }
+        )
         self.assertIs(False, without_id["citable"])
         self.assertNotIn("citable", with_id)
 
@@ -122,8 +126,16 @@ class ReportInputGuardContracts(unittest.TestCase):
                 ),
                 report_spec=str(spec_path),
             )
+            with self.assertRaisesRegex(ReportSpecError, "same path"):
+                ensure_report_output_paths(
+                    case,
+                    (case.reports_dir / "report.md", case.reports_dir / "REPORT.md"),
+                )
 
     def test_render_written_report_keeps_report_spec_input_untouched(self) -> None:
+        from forensia.pipeline import run_report
+        from forensia.report.render.html import render_html_report
+
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             spec_path = case.path / "REPORT.md"
@@ -135,7 +147,16 @@ class ReportInputGuardContracts(unittest.TestCase):
                     "('01_overview', 'Overview', '# Overview\\n\\nRendered body text.', "
                     "0.8, 'ai_exhausted', 1, FALSE)"
                 )
-                markdown_path, _ = render_written_report(case, db)
+            custom_output = case.path / "custom.html"
+            with patch(
+                "forensia.report.render.writer.render_html_report",
+                wraps=render_html_report,
+            ) as render_html:
+                markdown_path, html_path = run_report(case.path, output=custom_output)
+            render_html.assert_called_once()
+            self.assertEqual(custom_output, html_path)
+            self.assertTrue(html_path.exists())
+            self.assertFalse((case.reports_dir / "report.html").exists())
             self.assertTrue(markdown_path.exists())
             written = markdown_path.read_text(encoding="utf-8")
             self.assertIn("Rendered body text.", written)
@@ -231,6 +252,19 @@ class SharedPolicyContracts(unittest.TestCase):
                 )
             with CaseDB(first_case) as reopened:
                 self.assertEqual({4624, 4625}, observed_event_ids(reopened))
+                reopened.execute("DROP TABLE evtx_events")
+                with self.assertRaises(Exception):
+                    build_case_profile(reopened)
+
+    def test_required_declaration_failure_is_not_an_empty_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("forensia.knowledge.catalog._SCHEMA_DIR", Path(tmpdir)):
+                for contents in (None, "[invalid", "[]", "{}"):
+                    path = Path(tmpdir) / "event_ids.yaml"
+                    if contents is not None:
+                        path.write_text(contents, encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "event_ids.yaml"):
+                        _load_yaml("event_ids.yaml")
 
     def test_antiforensic_catalog_drives_tool_matching(self) -> None:
         globs = catalog_exe_globs("antiforensic_tools")

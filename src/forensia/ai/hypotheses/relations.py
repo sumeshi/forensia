@@ -180,29 +180,6 @@ def get_relations_for_hypothesis(
     ]
 
 
-def get_adjacent_hypotheses(
-    db: CaseDB, hypothesis_id: str, relation_type: str | None = None
-) -> list[str]:
-    """Get directly adjacent hypothesis IDs."""
-    if relation_type:
-        rows = db.execute(
-            "SELECT to_hypothesis_id FROM hypothesis_relations "
-            "WHERE from_hypothesis_id = ? AND relation_type = ? "
-            "UNION "
-            "SELECT from_hypothesis_id FROM hypothesis_relations "
-            "WHERE to_hypothesis_id = ? AND relation_type = ?",
-            [hypothesis_id, relation_type, hypothesis_id, relation_type],
-        ).fetchall()
-    else:
-        rows = db.execute(
-            "SELECT to_hypothesis_id FROM hypothesis_relations WHERE from_hypothesis_id = ? "
-            "UNION "
-            "SELECT from_hypothesis_id FROM hypothesis_relations WHERE to_hypothesis_id = ?",
-            [hypothesis_id, hypothesis_id],
-        ).fetchall()
-    return [r[0] for r in rows]
-
-
 def propagate_verdict(
     db: CaseDB,
     *,

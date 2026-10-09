@@ -315,7 +315,7 @@ def normalize_registry(
         "SELECT dataset_id, raw_path, member_source_ids FROM registry_datasets "
         "WHERE raw_path IS NOT NULL AND raw_path != '' ORDER BY dataset_id"
     ).fetchall()
-    selected = {str(key) for key in (source_keys or ()) if key}
+    selected = None if source_keys is None else {str(key) for key in source_keys if key}
     total = 0
     for dataset_id, raw_path, member_source_ids in rows:
         # A newer dataset with the same trusted identity may have replaced this
@@ -333,9 +333,7 @@ def normalize_registry(
             if isinstance(member_source_ids, str)
             else member_source_ids or []
         )
-        if selected and not any(
-            str(source).startswith(tuple(selected)) for source in source_ids
-        ):
+        if selected is not None and not (set(map(str, source_ids)) & selected):
             continue
         path = Path(str(raw_path))
         if not path.exists():

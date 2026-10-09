@@ -90,7 +90,7 @@ class PlannerRetryTests(unittest.TestCase):
         ]
 
         with patch(
-            "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=responses
+            "forensia.ai.llm.json_response.request_llm_json", side_effect=responses
         ):
             result = plan_hypothesis_query(
                 state=state,
@@ -117,7 +117,7 @@ class PlannerRetryTests(unittest.TestCase):
             },
         }
         with patch(
-            "forensia.ai.llm.llm_gateway.request_llm_json", return_value=response
+            "forensia.ai.llm.json_response.request_llm_json", return_value=response
         ):
             result = plan_hypothesis_query(
                 state=state,
@@ -171,7 +171,7 @@ class PlannerRetryTests(unittest.TestCase):
                 return response
 
             with patch(
-                "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=respond
+                "forensia.ai.llm.json_response.request_llm_json", side_effect=respond
             ):
                 plan_hypothesis_query(
                     state=state,
@@ -264,7 +264,7 @@ class PlannerRetryTests(unittest.TestCase):
                 return response
 
             with patch(
-                "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=respond
+                "forensia.ai.llm.json_response.request_llm_json", side_effect=respond
             ):
                 return plan_hypothesis_query(
                     state=state,
@@ -437,7 +437,9 @@ class PlannerRetryTests(unittest.TestCase):
                 }
             }
 
-        with patch("forensia.ai.llm.llm_gateway.request_llm_json", side_effect=respond):
+        with patch(
+            "forensia.ai.llm.json_response.request_llm_json", side_effect=respond
+        ):
             result = plan_hypothesis_query(
                 state=state,
                 hypothesis=hypothesis,
@@ -471,7 +473,7 @@ class PlannerRetryTests(unittest.TestCase):
             }
 
         with patch(
-            "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=respond_other
+            "forensia.ai.llm.json_response.request_llm_json", side_effect=respond_other
         ):
             plan_hypothesis_query(
                 state=other_state,
@@ -505,7 +507,7 @@ class PlannerRetryTests(unittest.TestCase):
             with (
                 self.subTest(response=response),
                 patch(
-                    "forensia.ai.llm.llm_gateway.request_llm_json",
+                    "forensia.ai.llm.json_response.request_llm_json",
                     return_value=response,
                 ) as request,
             ):
@@ -540,7 +542,7 @@ class PlannerRetryTests(unittest.TestCase):
             },
         ]
         with patch(
-            "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=responses
+            "forensia.ai.llm.json_response.request_llm_json", side_effect=responses
         ) as request:
             result = plan_hypothesis_query(
                 state=state,
@@ -580,7 +582,9 @@ class PlannerRetryTests(unittest.TestCase):
             seen_messages.append(kwargs["messages"])
             return responses[len(seen_messages) - 1]
 
-        with patch("forensia.ai.llm.llm_gateway.request_llm_json", side_effect=respond):
+        with patch(
+            "forensia.ai.llm.json_response.request_llm_json", side_effect=respond
+        ):
             plan_hypothesis_query(
                 state=state,
                 hypothesis=current,
@@ -613,7 +617,7 @@ class PlannerRetryTests(unittest.TestCase):
         ]
 
         with patch(
-            "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=responses
+            "forensia.ai.llm.json_response.request_llm_json", side_effect=responses
         ) as mock_request:
             result = plan_hypothesis_query(
                 state=state,
@@ -651,7 +655,7 @@ class PlannerRetryTests(unittest.TestCase):
             with (
                 CaseDB(case) as db,
                 patch(
-                    "forensia.ai.llm.llm_gateway.request_llm_json",
+                    "forensia.ai.llm.json_response.request_llm_json",
                     side_effect=responses,
                 ),
                 self.assertLogs(
@@ -715,7 +719,7 @@ class PlannerRetryTests(unittest.TestCase):
                     """
                 )
                 with patch(
-                    "forensia.ai.llm.llm_gateway.request_llm_json",
+                    "forensia.ai.llm.json_response.request_llm_json",
                     side_effect=responses,
                 ) as mock_request:
                     plan_hypothesis_query(
@@ -778,7 +782,7 @@ class PlannerRetryTests(unittest.TestCase):
                     """
                 )
                 with patch(
-                    "forensia.ai.llm.llm_gateway.request_llm_json",
+                    "forensia.ai.llm.json_response.request_llm_json",
                     side_effect=responses,
                 ) as mock_request:
                     plan_hypothesis_query(
@@ -831,7 +835,7 @@ class PlannerRetryTests(unittest.TestCase):
             return [{"role": "user", "content": extra_context}]
 
         with patch(
-            "forensia.ai.llm.llm_gateway.request_llm_json",
+            "forensia.ai.llm.json_response.request_llm_json",
             return_value={
                 "action": {
                     "type": "sql.query",
@@ -859,7 +863,7 @@ class PlannerRetryTests(unittest.TestCase):
         seen: list[str] = []
         with (
             patch(
-                "forensia.ai.llm.llm_gateway.request_llm_json",
+                "forensia.ai.llm.json_response.request_llm_json",
                 side_effect=[
                     {
                         "action": {
@@ -897,7 +901,7 @@ class PlannerRetryTests(unittest.TestCase):
         memory = MemoryManager(Case.init(case_dir.name))
         events: list[dict] = []
         with patch(
-            "forensia.ai.llm.llm_gateway.request_llm_json",
+            "forensia.ai.llm.json_response.request_llm_json",
             return_value={
                 "action": {
                     "type": "memory.read_more",
@@ -925,7 +929,7 @@ class PlannerRetryTests(unittest.TestCase):
             "SELECT * FROM evtx_events WHERE event_id = 4624 AND computer = 'HOST1'"
         )
         right = query_fingerprint(
-            "select * from evtx_events as e where computer = 'host1' and event_id in (4624)"
+            " select * from evtx_events where event_id = 4624 and computer = 'HOST1' "
         )
 
         self.assertEqual(left, right)
@@ -939,6 +943,30 @@ class PlannerRetryTests(unittest.TestCase):
         )
 
         self.assertNotEqual(left, right)
+
+    def test_query_fingerprint_keeps_all_query_semantics(self) -> None:
+        base = "SELECT event_id FROM evtx_events WHERE event_id = 4624 AND computer = 'HOST1'"
+        variants = [
+            base.replace(
+                "event_id = 4624", "event_id = 4624 AND target_user = 'alice'"
+            ),
+            base.replace("evtx_events", "findings"),
+            base.replace("SELECT event_id", "SELECT computer"),
+            base.replace("'HOST1'", "'HOST2'"),
+        ]
+        for variant in variants:
+            with self.subTest(query=variant):
+                self.assertNotEqual(query_fingerprint(base), query_fingerprint(variant))
+
+    def test_query_fingerprint_raw_fallback_preserves_literal_case(self) -> None:
+        with patch(
+            "forensia.ai.investigation.progress.parse_one",
+            side_effect=ValueError("invalid SQL"),
+        ):
+            self.assertNotEqual(
+                query_fingerprint("SELECT 'Alice'"),
+                query_fingerprint("SELECT 'alice'"),
+            )
 
     def test_single_llm_decision_skips_schema_self_check_call(self) -> None:
         """T-20: the second 'schema-readiness' LLM call must be gone.
@@ -965,7 +993,7 @@ class PlannerRetryTests(unittest.TestCase):
         ]
 
         with patch(
-            "forensia.ai.llm.llm_gateway.request_llm_json", side_effect=responses
+            "forensia.ai.llm.json_response.request_llm_json", side_effect=responses
         ) as mock_request:
             result = plan_hypothesis_query(
                 state=state,

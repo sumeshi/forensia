@@ -38,29 +38,17 @@ def observed_event_ids(db) -> set[int]:
 
 def _build_profile_queries(conn) -> dict[str, Any]:
     evtx_event_ids: list[dict[str, Any]] = []
-    try:
-        rows = conn.execute(
-            "SELECT event_id, COUNT(*) AS cnt FROM evtx_events GROUP BY event_id ORDER BY cnt DESC"
-        ).fetchall()
-        evtx_event_ids = [
-            {"event_id": r[0], "count": r[1]} for r in rows if r[0] is not None
-        ]
-    except Exception:
-        logger.debug(
-            "Failed to query event_id breakdown for case profile", exc_info=True
-        )
-
+    rows = conn.execute(
+        "SELECT event_id, COUNT(*) AS cnt FROM evtx_events GROUP BY event_id ORDER BY cnt DESC"
+    ).fetchall()
+    evtx_event_ids = [
+        {"event_id": r[0], "count": r[1]} for r in rows if r[0] is not None
+    ]
     channels: list[dict[str, Any]] = []
-    try:
-        rows = conn.execute(
-            "SELECT channel, COUNT(*) AS cnt FROM evtx_events GROUP BY channel ORDER BY cnt DESC"
-        ).fetchall()
-        channels = [{"channel": r[0], "count": r[1]} for r in rows if r[0] is not None]
-    except Exception:
-        logger.debug(
-            "Failed to query channel breakdown for case profile", exc_info=True
-        )
-
+    rows = conn.execute(
+        "SELECT channel, COUNT(*) AS cnt FROM evtx_events GROUP BY channel ORDER BY cnt DESC"
+    ).fetchall()
+    channels = [{"channel": r[0], "count": r[1]} for r in rows if r[0] is not None]
     table_row_counts: dict[str, int] = {}
     for tbl in (
         "evtx_events",
@@ -68,61 +56,32 @@ def _build_profile_queries(conn) -> dict[str, Any]:
         "mft_timeline",
         "prefetch_executions",
         "prefetch_timeline",
+        "registry_artifacts",
     ):
-        try:
-            row = conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()
-            table_row_counts[tbl] = row[0] if row and row[0] is not None else 0
-        except Exception:
-            table_row_counts[tbl] = 0
-
+        row = conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()
+        table_row_counts[tbl] = row[0] if row and row[0] is not None else 0
     top_users: list[str] = []
-    try:
-        rows = conn.execute(
-            "SELECT COALESCE(target_user, user_name) AS u, COUNT(*) AS cnt "
-            "FROM evtx_events WHERE COALESCE(target_user, user_name) IS NOT NULL "
-            "GROUP BY u ORDER BY cnt DESC LIMIT 10"
-        ).fetchall()
-        top_users = [str(r[0]) for r in rows]
-    except Exception:
-        logger.debug("Failed to query top users for case profile", exc_info=True)
-
+    rows = conn.execute(
+        "SELECT COALESCE(target_user, user_name) AS u, COUNT(*) AS cnt FROM evtx_events WHERE COALESCE(target_user, user_name) IS NOT NULL GROUP BY u ORDER BY cnt DESC LIMIT 10"
+    ).fetchall()
+    top_users = [str(r[0]) for r in rows]
     top_hosts: list[str] = []
-    try:
-        rows = conn.execute(
-            "WITH raw AS ("
-            "  SELECT computer, COUNT(*) AS cnt FROM evtx_events "
-            "  WHERE computer IS NOT NULL GROUP BY computer"
-            ") "
-            "SELECT ARG_MAX(computer, cnt) AS computer, SUM(cnt) AS cnt "
-            "FROM raw GROUP BY UPPER(TRIM(computer)) "
-            "ORDER BY cnt DESC LIMIT 10"
-        ).fetchall()
-        top_hosts = [str(r[0]) for r in rows]
-    except Exception:
-        logger.debug("Failed to query top hosts for case profile", exc_info=True)
-
+    rows = conn.execute(
+        "WITH raw AS (  SELECT computer, COUNT(*) AS cnt FROM evtx_events   WHERE computer IS NOT NULL GROUP BY computer) SELECT ARG_MAX(computer, cnt) AS computer, SUM(cnt) AS cnt FROM raw GROUP BY UPPER(TRIM(computer)) ORDER BY cnt DESC LIMIT 10"
+    ).fetchall()
+    top_hosts = [str(r[0]) for r in rows]
     top_executables: list[str] = []
-    try:
-        rows = conn.execute(
-            "SELECT COALESCE(process_name, child_process) AS exe, COUNT(*) AS cnt "
-            "FROM evtx_events WHERE COALESCE(process_name, child_process) IS NOT NULL "
-            "GROUP BY exe ORDER BY cnt DESC LIMIT 10"
-        ).fetchall()
-        top_executables = [str(r[0]) for r in rows]
-    except Exception:
-        logger.debug("Failed to query top executables for case profile", exc_info=True)
-
+    rows = conn.execute(
+        "SELECT COALESCE(process_name, child_process) AS exe, COUNT(*) AS cnt FROM evtx_events WHERE COALESCE(process_name, child_process) IS NOT NULL GROUP BY exe ORDER BY cnt DESC LIMIT 10"
+    ).fetchall()
+    top_executables = [str(r[0]) for r in rows]
     time_range: dict[str, str] = {}
-    try:
-        row = conn.execute(
-            "SELECT MIN(timestamp) AS earliest, MAX(timestamp) AS latest FROM evtx_events"
-        ).fetchone()
-        if row:
-            time_range["earliest"] = str(row[0] or "") if row[0] is not None else ""
-            time_range["latest"] = str(row[1] or "") if row[1] is not None else ""
-    except Exception:
-        logger.debug("Failed to query time range for case profile", exc_info=True)
-
+    row = conn.execute(
+        "SELECT MIN(timestamp) AS earliest, MAX(timestamp) AS latest FROM evtx_events"
+    ).fetchone()
+    if row:
+        time_range["earliest"] = str(row[0] or "") if row[0] is not None else ""
+        time_range["latest"] = str(row[1] or "") if row[1] is not None else ""
     return {
         "event_ids": evtx_event_ids,
         "channels": channels,

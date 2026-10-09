@@ -7,7 +7,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from forensia.ai.audit import LLMCallLogger
 from forensia.ai.case_profile import (
     CaseEvidenceProfile,
 )
@@ -39,7 +38,7 @@ from forensia.ai.investigation.planner import _compute_uncovered_keypoints
 from forensia.ai.investigation.selection import (
     select_focus_hypotheses,
 )
-from forensia.ai.llm import llm_gateway
+from forensia.ai.llm import json_response
 from forensia.ai.llm.llm_client import (
     LLMRequestTimeoutError,
     LLMServerUnavailableError,
@@ -53,7 +52,7 @@ from forensia.core.case import Case
 from forensia.core.log import log as _log
 from forensia.core.memory import MemoryManager
 from forensia.core.progress_event import progress_event
-from forensia.core.session import Hypothesis, SessionState
+from forensia.core.session import Hypothesis, LLMBudgetExceededError, SessionState
 from forensia.db.database import CaseDB
 from forensia.knowledge.rules.loader import _get_rule_cache
 from forensia.report.answers.keypoint_catalog import (
@@ -85,7 +84,6 @@ class _BroadPlanContext:
     session_id: str
     base_url: str
     model: str
-    llm_logger: LLMCallLogger
     plan_cycle: int
     observed_keypoints: list[dict[str, Any]]
     observed_keypoint_labels: list[str]
@@ -241,7 +239,7 @@ async def _identify_broad_plan_gaps(ctx: _BroadPlanContext) -> list[dict[str, An
         session_id=ctx.session_id,
     )
     gap_parsed = await _call_with_outage_recovery(
-        llm_gateway.request_llm_json,
+        json_response.request_llm_json,
         base_url=ctx.base_url,
         model=ctx.model,
         _outage_progress_callback=ctx.progress_callback,
@@ -249,14 +247,6 @@ async def _identify_broad_plan_gaps(ctx: _BroadPlanContext) -> list[dict[str, An
         json_schema=gap_schema,
         telemetry_phase="plan-broad-gap",
         status_callback=ctx.llm_status_fn,
-        audit_callback=lambda msgs, out, parsed: ctx.llm_logger.write(
-            iteration=ctx.plan_cycle,
-            phase="plan-broad-gap",
-            input_messages=msgs,
-            output=parsed,
-            model=ctx.model,
-            base_url=ctx.base_url,
-        ),
     )
     gap_areas = gap_parsed.get("gap_areas", [])
     for gap in gap_areas:
@@ -329,7 +319,7 @@ async def _draft_broad_plan_hypotheses(
             session_id=ctx.session_id,
         )
         h_parsed = await _call_with_outage_recovery(
-            llm_gateway.request_llm_json,
+            json_response.request_llm_json,
             base_url=ctx.base_url,
             model=ctx.model,
             _outage_progress_callback=ctx.progress_callback,
@@ -338,14 +328,6 @@ async def _draft_broad_plan_hypotheses(
             telemetry_phase="plan-broad-draft",
             max_tokens=_BROAD_DRAFT_MAX_TOKENS,
             status_callback=ctx.llm_status_fn,
-            audit_callback=lambda msgs, out, parsed: ctx.llm_logger.write(
-                iteration=ctx.plan_cycle,
-                phase="plan-broad-draft",
-                input_messages=msgs,
-                output=parsed,
-                model=ctx.model,
-                base_url=ctx.base_url,
-            ),
         )
         hyp = _parse_hypothesis_from_drafter(h_parsed, ctx.case_profile)
         if hyp:
@@ -433,7 +415,6 @@ async def _run_broad_plan_step(
     session_id: str,
     base_url: str,
     model: str,
-    llm_logger: LLMCallLogger,
     plan_cycle: int,
     observed_keypoints: list[dict[str, Any]],
     emit_fn: Callable[..., None] | None,
@@ -453,7 +434,6 @@ async def _run_broad_plan_step(
         session_id=session_id,
         base_url=base_url,
         model=model,
-        llm_logger=llm_logger,
         plan_cycle=plan_cycle,
         observed_keypoints=observed_keypoints,
         observed_keypoint_labels=observed_keypoint_labels,
@@ -492,7 +472,7 @@ async def _run_broad_plan_step(
         if emit_fn:
             emit_fn("investigate/plan", err_msg, iteration=plan_cycle)
         return False
-    except LLMServerUnavailableError:
+    except LLMServerUnavailableError, LLMBudgetExceededError:
         raise
     except Exception as exc:
         err_msg = f"LLM failed: {exc}"
@@ -512,7 +492,6 @@ async def _run_cycle_body(
     base_url: str,
     model: str,
     memory: MemoryManager,
-    llm_logger: LLMCallLogger,
     progress_callback: Callable[[dict[str, Any]], None] | None,
     max_queries_per_hypothesis: int,
     plan_cycle: int,
@@ -584,7 +563,6 @@ async def _run_cycle_body(
                 state=state,
                 db=db,
                 session_id=session_id,
-                llm_logger=llm_logger,
                 plan_cycle=plan_cycle,
                 observed_keypoints=observed_keypoints,
                 emit_fn=_emit,
@@ -618,8 +596,6 @@ async def _run_cycle_body(
                 ctx_refresh_caches(
                     ctx,
                     memory,
-                    base_url,
-                    model,
                     hypothesis=hypothesis,
                     db=db,
                     session_id=session_id,
@@ -642,7 +618,6 @@ async def _run_cycle_body(
                     base_url=base_url,
                     model=model,
                     plan_cycle=plan_cycle,
-                    llm_logger=llm_logger,
                     session_id=session_id,
                     max_queries_per_hypothesis=max_queries_per_hypothesis,
                     case=case,

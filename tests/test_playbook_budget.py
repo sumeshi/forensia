@@ -225,8 +225,10 @@ def testsections_for_hypothesis_no_signal_returns_none() -> None:
     assert sections_for_hypothesis(Hypothesis(id="H-003", description="x")) is None
 
 
-def test_dfir_playbook_emits_event_id_index_and_instruments(tmp_path: Any) -> None:
-    """T-21: a subset of event IDs yields an EVENT_ID_INDEX and telemetry."""
+def test_dfir_playbook_discloses_selected_event_rules_and_instruments(
+    tmp_path: Any,
+) -> None:
+    """Selected event IDs are disclosed directly without an unreachable index."""
     from forensia.core.case import Case
     from forensia.db.database import CaseDB
 
@@ -235,16 +237,10 @@ def test_dfir_playbook_emits_event_id_index_and_instruments(tmp_path: Any) -> No
         playbook = dfir_playbook(
             "check", event_ids={4624, 4625}, db=db, session_id="S-1"
         )
-        assert "<EVENT_ID_INDEX>" in playbook
-        # Selected event IDs are fully described; the index advertises others.
+        assert "<EVENT_ID_INDEX>" not in playbook
         assert " - Event 4624" in playbook
         assert " - Event 4625" in playbook
-        # A bounded check advertises catalog continuation without listing every
-        # unrelated event or priority family in the prompt.
-        index = playbook.split("<EVENT_ID_INDEX>", 1)[1]
-        assert "id=E4624" in index
-        assert "id=E4625" in index
-        assert "id=E1102" not in index
+        assert "load event rule" not in playbook
         assert "First check events [1102, 104]" not in playbook
         row = db.execute("SELECT source_kind FROM retrieval_events").fetchone()
         assert row is not None

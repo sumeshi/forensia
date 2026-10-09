@@ -27,7 +27,6 @@ class Settings:
     forensia_system_prompt_budget_chars: int = 0
     # 0 = derive from the configured system-character budget.
     forensia_prompt_budget_tokens: int = 0
-    forensia_ui_origins: str = ""
     structured_markdown_max_rows: int = 200
     llm_outage_wall_clock_budget_s: int = 28800
     llm_outage_probe_interval_s: int = 60
@@ -92,7 +91,6 @@ def _build_settings() -> Settings:
         forensia_prompt_budget_tokens=_env_int(
             "FORENSIA_PROMPT_BUDGET_TOKENS", 0, minimum=0
         ),
-        forensia_ui_origins=os.getenv("FORENSIA_UI_ORIGINS", ""),
         structured_markdown_max_rows=_env_int(
             "FORENSIA_REPORT_MARKDOWN_MAX_ROWS", 200, minimum=1
         ),

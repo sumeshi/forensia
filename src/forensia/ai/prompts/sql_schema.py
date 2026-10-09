@@ -112,38 +112,6 @@ def _load_table_notes(table_name: str) -> dict:
     return {}
 
 
-@lru_cache(maxsize=1)
-def load_fp_reduction_guidance() -> str:
-    """Load false-positive reduction guidance from YAML schema file."""
-    schema_root = schema_dir()
-    path = schema_root / "false_positive_rules.yaml"
-    if not path.exists():
-        return ""
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    g = data.get("reduction_guidance", {})
-    lines = ["False-positive reduction — apply before raising confidence:"]
-    normals = g.get("normal_patterns", [])
-    if normals:
-        lines.append(
-            "  The following are generally NORMAL and should not be flagged as suspicious on their own:"
-        )
-        for item in normals:
-            lines.append(f"    - {item}")
-    amplifiers = g.get("risk_amplifiers", [])
-    if amplifiers:
-        lines.append(
-            "  Raise confidence only when ONE OR MORE of these risk amplifiers are present:"
-        )
-        for item in amplifiers:
-            lines.append(f"    + {item}")
-    lower = g.get("lower_confidence_when", [])
-    if lower:
-        lines.append("  Lower confidence when:")
-        for item in lower:
-            lines.append(f"    - {item}")
-    return "\n".join(lines) + "\n"
-
-
 def _fmt_table_notes(table_name: str) -> str:
     """Format table notes from YAML schema into a guidance paragraph for LLM prompts."""
     notes = _load_table_notes(table_name)

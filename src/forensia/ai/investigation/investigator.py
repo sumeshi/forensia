@@ -11,7 +11,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from forensia.ai.audit import LLMCallLogger
 from forensia.ai.case_profile import (
     CaseEvidenceProfile,
     _format_case_profile,
@@ -42,8 +41,12 @@ from forensia.ai.investigation.work_state import (
 )
 from forensia.ai.llm.llm_client import (
     LLMServerUnavailableError,
+    close_llm_clients,
+    reset_llm_client_scope,
+    set_llm_client_scope,
 )
 from forensia.ai.llm_telemetry import (
+    LLMBudgetExceededError,
     LLMTelemetry,
     reset_active_telemetry,
     set_active_telemetry,
@@ -100,7 +103,6 @@ async def _run_report_phase(
     report_sections: list[SectionSource],
     base_url: str,
     model: str,
-    llm_logger: LLMCallLogger,
     progress_callback: Callable[[dict[str, Any]], None] | None,
     focus_sections: list[str],
     report_max_queries_per_section: int,
@@ -132,12 +134,11 @@ async def _run_report_phase(
             session_id=session_id,
             iteration=plan_cycle,
             sections=report_sections,
-            llm_logger=llm_logger,
             progress_callback=progress_callback,
             focus_sections=focus_sections,
             max_queries_per_section=report_max_queries_per_section,
         )
-    except LLMServerUnavailableError:
+    except LLMServerUnavailableError, LLMBudgetExceededError:
         raise
     except Exception as exc:
         # Rule 12: loud, not dead. Log the full traceback and a typed progress
@@ -295,7 +296,6 @@ class _InvestigateEnv:
     state: Any
     ctx: Any
     memory: MemoryManager
-    llm_logger: LLMCallLogger
     session_id: str
     report_sections: list[SectionSource]
     case_profile: CaseEvidenceProfile
@@ -306,7 +306,6 @@ class _InvestigateEnv:
     report_every_n_cycles: int
     report_only: bool
     report_max_queries_per_section: int
-    max_llm_calls: int
 
 
 def _resolve_rulepacks(profile: str, db: CaseDB, auto_rulepacks: bool) -> set[str]:
@@ -352,16 +351,6 @@ def _prepare_case_profile(case: Case, db: CaseDB, profile: str) -> CaseEvidenceP
     )
 
 
-def _enforce_llm_budget(llm_logger: LLMCallLogger, max_llm_calls: int) -> None:
-    """Raise RuntimeError when the session's LLM call budget is exhausted."""
-    if max_llm_calls > 0 and llm_logger.total_calls >= max_llm_calls:
-        raise RuntimeError(
-            f"LLM call budget exceeded: {llm_logger.total_calls} calls >= {max_llm_calls} max. "
-            f"Per-phase: {llm_logger.count_by_phase()}. "
-            "Increase --max-llm-calls (or pass 0 for unlimited) or investigate the cause of excessive calls."
-        )
-
-
 async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
     """Run plan cycles until completion, interrupt, or no-progress limit.
 
@@ -371,7 +360,6 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
     report_refresh_failures = 0
     stop_reason_code = ""
     for plan_cycle in range(1, env.max_iter + 1):
-        _enforce_llm_budget(env.llm_logger, env.max_llm_calls)
         env.state.iteration = plan_cycle
         env.state.findings_snapshot = _finding_snapshot(env.db)
         sync_keypoint_cards(env.memory, env.state.findings_snapshot)
@@ -397,7 +385,6 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
             base_url=env.base_url,
             model=env.model,
             memory=env.memory,
-            llm_logger=env.llm_logger,
             progress_callback=env.progress_callback,
             max_queries_per_hypothesis=env.max_queries_per_hypothesis,
             plan_cycle=plan_cycle,
@@ -419,7 +406,6 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
             report_sections=env.report_sections,
             base_url=env.base_url,
             model=env.model,
-            llm_logger=env.llm_logger,
             progress_callback=env.progress_callback,
             focus_sections=focus_sections,
             report_max_queries_per_section=env.report_max_queries_per_section,
@@ -496,7 +482,6 @@ async def _final_report_refresh(env: _InvestigateEnv) -> int:
             base_url=env.base_url,
             model=env.model,
             sections=env.report_sections,
-            llm_logger=env.llm_logger,
             progress_callback=env.progress_callback,
             focus_sections=[],
             max_queries_per_section=env.report_max_queries_per_section,
@@ -505,6 +490,8 @@ async def _final_report_refresh(env: _InvestigateEnv) -> int:
         render_written_report(env.case, env.db)
         env.memory.regenerate_timeline_from_db(env.db)
         return 0
+    except LLMBudgetExceededError:
+        raise
     except Exception as exc:
         _log(
             "FINAL_REFRESH",
@@ -572,22 +559,17 @@ async def investigate(
     # by every report phase and the final refresh within this session.
     report_decision = decide_report_sources(case, db, template_root, report_spec)
     report_sections = report_decision.sections
-    state, ctx, memory, llm_logger, session_id, started_at, template_root = (
-        _init_session(
-            case,
-            db,
-            profile,
-            base_url,
-            model,
-            template_root,
-            active_pack_ids=active_pack_ids if auto_rulepacks else None,
-            report_only=report_only,
-            forensia_policy=forensia_policy,
-            report_input_record=report_decision.record,
-        )
+    case_profile = _prepare_case_profile(case, db, profile)
+    state, ctx, memory, session_id = _init_session(
+        case,
+        db,
+        profile,
+        template_root,
+        active_pack_ids=active_pack_ids if auto_rulepacks else None,
+        report_only=report_only,
+        forensia_policy=forensia_policy,
+        report_input_record=report_decision.record,
     )
-    if report_decision.notice:
-        _log("REPORT", report_decision.notice)
     owner_id = ctx.owner_id
     if not owner_id:
         raise RuntimeError("investigation session has no durable owner lease")
@@ -618,10 +600,6 @@ async def investigate(
             progress_callback(payload)
 
     ctx.progress_callback = session_progress
-    notice_event = collect_policy_progress_event(ctx.forensia_policy)
-    if notice_event is not None:
-        _log("FORENSIA", str(ctx.forensia_policy.notice))
-        session_progress(notice_event)
     env = _InvestigateEnv(
         case=case,
         db=db,
@@ -630,10 +608,9 @@ async def investigate(
         state=state,
         ctx=ctx,
         memory=memory,
-        llm_logger=llm_logger,
         session_id=session_id,
         report_sections=report_sections,
-        case_profile=_prepare_case_profile(case, db, profile),
+        case_profile=case_profile,
         progress_callback=session_progress,
         max_iter=max_iter,
         no_progress_limit=no_progress_limit,
@@ -641,17 +618,26 @@ async def investigate(
         report_every_n_cycles=report_every_n_cycles,
         report_only=report_only,
         report_max_queries_per_section=report_max_queries_per_section,
-        max_llm_calls=max_llm_calls,
     )
-    telemetry_token = set_active_telemetry(LLMTelemetry(db, session_id))
+    client_scope_id = session_id
+    client_scope_token = set_llm_client_scope(client_scope_id)
+    telemetry_token = set_active_telemetry(
+        LLMTelemetry(db, session_id, max_logical_calls=max_llm_calls)
+    )
     status = "running"
     stop_reason_code = ""
     report_refresh_failures = 0
     previous_sigint = signal.getsignal(signal.SIGINT)
-    signal.signal(
-        signal.SIGINT, lambda signum, frame: setattr(ctx, "interrupted", True)
-    )
     try:
+        signal.signal(
+            signal.SIGINT, lambda signum, frame: setattr(ctx, "interrupted", True)
+        )
+        if report_decision.notice:
+            _log("REPORT", report_decision.notice)
+        notice_event = collect_policy_progress_event(ctx.forensia_policy)
+        if notice_event is not None:
+            _log("FORENSIA", str(ctx.forensia_policy.notice))
+            session_progress(notice_event)
         (
             status,
             report_refresh_failures,
@@ -670,8 +656,21 @@ async def investigate(
                 stop_reason=format_stop_reason(status, stop_reason_code, summary),
                 stop_summary=summary,
             )
-        if status in {"completed", "stopped"} and not ctx.interrupted:
-            report_refresh_failures += await _final_report_refresh(env)
+        if (
+            status in {"completed", "stopped"}
+            and stop_reason_code != "budget_exhausted"
+            and not ctx.interrupted
+        ):
+            try:
+                report_refresh_failures += await _final_report_refresh(env)
+            except LLMBudgetExceededError:
+                status = "stopped"
+                stop_reason_code = "budget_exhausted"
+                _log("FINALIZE", "LLM logical-call budget exhausted", level="warning")
+    except LLMBudgetExceededError:
+        status = "stopped"
+        stop_reason_code = "budget_exhausted"
+        _log("FINALIZE", "LLM logical-call budget exhausted", level="warning")
     except Exception:
         status = "failed"
         stop_reason_code = "exception"
@@ -722,9 +721,10 @@ async def investigate(
         except Exception as exc:
             _log("FINALIZE", f"Memory timeline projection failed: {exc}", level="error")
         try:
-            llm_logger.write_summary()
+            await close_llm_clients(client_scope_id)
         except Exception as exc:
-            _log("FINALIZE", f"LLM audit summary failed: {exc}", level="error")
+            _log("FINALIZE", f"LLM client cleanup failed: {exc}", level="error")
+        reset_llm_client_scope(client_scope_token)
         signal.signal(signal.SIGINT, previous_sigint)
         reset_active_telemetry(telemetry_token)
     return _build_investigate_result(env, status, report_refresh_failures)

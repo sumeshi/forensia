@@ -174,7 +174,7 @@ def ingest_all(
                     )
                     counts["new_files"] += 1
                     counts["registry_files"] += 1
-                    counts["new_source_keys"].append(sha256[:12])
+                    counts["new_source_keys"].append(sha256)
 
         for path, adapter in iterator:
             iterator.set_postfix_str(f"{adapter.name}:{path.name}"[:60], refresh=False)
@@ -198,22 +198,16 @@ def ingest_all(
                 )
             except Exception as exc:
                 counts["skipped_files"] += 1
-                try:
-                    register_evidence_source(
-                        db,
-                        source_id=sha256,
-                        artifact_family=adapter.name,
-                        display_path=path.name,
-                        ingest_status="failed",
-                        parser_name=adapter.name,
-                        error_code="parser_error",
-                        error_summary=str(exc),
-                    )
-                except Exception:
-                    logger.debug(
-                        "Failed to register failed-ingest evidence source record",
-                        exc_info=True,
-                    )
+                register_evidence_source(
+                    db,
+                    source_id=sha256,
+                    artifact_family=adapter.name,
+                    display_path=path.name,
+                    ingest_status="failed",
+                    parser_name=adapter.name,
+                    error_code="parser_error",
+                    error_summary=str(exc),
+                )
                 if progress_callback:
                     progress_callback(f"ERROR ingesting {adapter.name}: {path}: {exc}")
                 continue
@@ -235,7 +229,7 @@ def ingest_all(
                     )
                 continue
             counts[f"{adapter.name}_files"] += 1
-            counts["new_source_keys"].append(sha256[:12])
+            counts["new_source_keys"].append(sha256)
 
             db.execute(
                 """
@@ -256,23 +250,15 @@ def ingest_all(
                 ),
             )
             counts["new_files"] += 1
-            try:
-                register_evidence_source(
-                    db,
-                    source_id=sha256,
-                    artifact_family=adapter.name,
-                    display_path=path.name,
-                    ingest_status="parsed",
-                    parser_name=adapter.name,
-                    row_count=0,
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to register parsed evidence source record; "
-                    "evidence_sources status may be stale for %s",
-                    path,
-                    exc_info=True,
-                )
+            register_evidence_source(
+                db,
+                source_id=sha256,
+                artifact_family=adapter.name,
+                display_path=path.name,
+                ingest_status="parsed",
+                parser_name=adapter.name,
+                row_count=0,
+            )
     finally:
         if owns_db:
             db.close()

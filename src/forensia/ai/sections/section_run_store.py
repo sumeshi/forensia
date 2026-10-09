@@ -66,19 +66,6 @@ def _safe_rows(rows: list[dict[str, Any]], *, limit: int = 20) -> list[dict[str,
     return safe
 
 
-def _audit_bridge(audit_callback):
-    """Wrap an audit_callback to adapt (messages, output, parsed) -> (messages, output)."""
-    if audit_callback is None:
-        return None
-
-    def inner(
-        messages: list[dict[str, str]], output: str, parsed: dict[str, Any]
-    ) -> None:
-        audit_callback(messages, output)
-
-    return inner
-
-
 def _store_section_run(
     db: CaseDB,
     *,

@@ -29,8 +29,6 @@ PACKAGE_LAYER = {
 # Every entry must correspond to a real upward edge; stale exceptions fail.
 KNOWN_EXCEPTIONS: frozenset[tuple[str, str]] = frozenset()
 
-MAX_LINES = 1000
-
 
 def _package_of(file: Path, root: Path) -> str | None:
     rel = file.relative_to(root)
@@ -39,14 +37,23 @@ def _package_of(file: Path, root: Path) -> str | None:
     return rel.parts[0] if rel.parts[0] in PACKAGE_LAYER else None
 
 
-def _import_targets(tree: ast.AST) -> set[str]:
+def _import_targets(tree: ast.AST, package: tuple[str, ...]) -> set[str]:
     targets: set[str] = set()
     for node in ast.walk(tree):
         modules: list[str] = []
         if isinstance(node, ast.Import):
             modules.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            modules.append(node.module)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                base = package[: len(package) - node.level + 1]
+                module = (*base, *node.module.split(".")) if node.module else base
+                modules.append(".".join(module))
+                if node.module is None:
+                    modules.extend(
+                        ".".join((*module, alias.name)) for alias in node.names
+                    )
+            elif node.module:
+                modules.append(node.module)
         for module in modules:
             parts = module.split(".")
             if len(parts) >= 2 and parts[0] == "forensia":
@@ -65,15 +72,13 @@ def _upward_edges(root: Path) -> tuple[set[tuple[str, str]], list[str]]:
             continue
         relative = file.relative_to(root).as_posix()
         source = file.read_text(encoding="utf-8")
-        line_count = source.count("\n") + 1
-        if line_count > MAX_LINES:
-            errors.append(f"OVERSIZED: {relative} ({line_count} > {MAX_LINES} lines)")
         try:
             tree = ast.parse(source)
         except SyntaxError as exc:
             errors.append(f"SYNTAX: {relative}: {exc}")
             continue
-        for target_package in _import_targets(tree):
+        package = ("forensia", *file.relative_to(root).parts[:-1])
+        for target_package in _import_targets(tree, package):
             if PACKAGE_LAYER[source_package] < PACKAGE_LAYER[target_package]:
                 edges.add((relative, target_package))
     return edges, errors

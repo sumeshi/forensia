@@ -37,10 +37,14 @@ jobs:
         uses: astral-sh/setup-uv@v7
       - name: Sync dependencies (Python 3.14 + dev group)
         run: uv sync --dev
-      - name: Quality gate (ruff + doctor)
+      - name: Quality gate
         run: |
           uv run ruff check
           uv run ruff format --check
+          uv run pytest tests/ -q
+          uv run python scripts/check_imports.py
+          uv run python scripts/audit_schema_coverage.py --strict
+          uv run python scripts/regenerate_playbook.py --check
           uv run forensia doctor
       - name: Build sdist + wheel
         run: uv build

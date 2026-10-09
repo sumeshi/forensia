@@ -30,7 +30,7 @@ class CheckerVerdictTests(unittest.TestCase):
             with (
                 CaseDB(case) as db,
                 patch(
-                    "forensia.ai.llm.llm_gateway.request_llm_json",
+                    "forensia.ai.llm.json_response.request_llm_json",
                     return_value={
                         "query_id": "Q1",
                         "verdict": "unclear",
@@ -87,7 +87,7 @@ class CheckerVerdictTests(unittest.TestCase):
             with (
                 CaseDB(case) as db,
                 patch(
-                    "forensia.ai.llm.llm_gateway.request_llm_json",
+                    "forensia.ai.llm.json_response.request_llm_json",
                     side_effect=responses,
                 ),
                 patch(
@@ -143,7 +143,7 @@ class CheckerVerdictTests(unittest.TestCase):
             with (
                 CaseDB(case) as db,
                 patch(
-                    "forensia.ai.llm.llm_gateway.request_llm_json",
+                    "forensia.ai.llm.json_response.request_llm_json",
                     side_effect=responses,
                 ),
                 patch(
@@ -196,7 +196,7 @@ class CheckerVerdictTests(unittest.TestCase):
             with (
                 CaseDB(case) as db,
                 patch(
-                    "forensia.ai.llm.llm_gateway.request_llm_json",
+                    "forensia.ai.llm.json_response.request_llm_json",
                     side_effect=responses,
                 ),
                 patch(
@@ -265,7 +265,7 @@ class CheckerVerdictTests(unittest.TestCase):
             with (
                 CaseDB(case) as db,
                 patch(
-                    "forensia.ai.llm.llm_gateway.request_llm_json",
+                    "forensia.ai.llm.json_response.request_llm_json",
                     side_effect=responses,
                 ),
                 patch(
@@ -319,7 +319,7 @@ class CheckerVerdictTests(unittest.TestCase):
             with (
                 CaseDB(case) as db,
                 patch(
-                    "forensia.ai.llm.llm_gateway.request_llm_json",
+                    "forensia.ai.llm.json_response.request_llm_json",
                     return_value={
                         "query_id": "Q1",
                         "verdict": "inconclusive",

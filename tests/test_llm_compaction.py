@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from forensia.ai.compaction import (
-    clear_compaction_cache,
+    CompactionPreservationError,
     llm_compact,
     structured_compact,
 )
@@ -13,8 +15,16 @@ from forensia.core.compaction import TRUNCATION_MARKER
 
 
 class TestLlmCompact:
-    def setup_method(self) -> None:
-        clear_compaction_cache()
+    def test_budget_exhaustion_propagates_instead_of_falling_back(self) -> None:
+        from forensia.core.session import LLMBudgetExceededError
+
+        text = "Event 4624 from evtx_events. " * 50
+        with patch(
+            "forensia.ai.compaction._call_llm",
+            side_effect=LLMBudgetExceededError(1, 1),
+        ):
+            with pytest.raises(LLMBudgetExceededError):
+                llm_compact(text, 200, base_url="http://x", model="m")
 
     def test_under_budget_returned_unchanged(self) -> None:
         result = llm_compact("short text", 100, base_url="http://x", model="m")
@@ -42,16 +52,22 @@ class TestLlmCompact:
         assert TRUNCATION_MARKER in result
 
     def test_fallback_on_missing_essential_tokens(self) -> None:
-        anchors = r"4624 evtx_events evtx-security-000000000001 C:\Temp\trace.evtx /cases/trace.evtx"
+        source_hash = "a" * 64
+        registry_hash = "b" * 64
+        anchors = (
+            rf"4624 evtx_events evtx-{source_hash}-security-000000000001 "
+            rf"registry-{registry_hash} registry_artifacts "
+            r"C:\Temp\trace.evtx /cases/trace.evtx"
+        )
         text = anchors + "\n" + "Investigation detail. " * 100
         # A plausible summary keeps the event/table but loses evidence identity and paths.
         llm_response = "Summary: Event 4624 from evtx_events on host WS-01."
         with patch("forensia.ai.compaction._call_llm", return_value=llm_response):
-            result = llm_compact(text, 200, base_url="http://x", model="m")
+            result = llm_compact(text, 400, base_url="http://x", model="m")
         assert TRUNCATION_MARKER in result
         assert "4624" in result and "evtx_events" in result
         assert all(anchor in result for anchor in anchors.split())
-        assert len(result) <= 200
+        assert len(result) <= 400
 
     def test_fallback_on_empty_llm_output(self) -> None:
         text = "Event 4624 from evtx_events. " * 50
@@ -69,7 +85,7 @@ class TestLlmCompact:
         assert "evtx_events" in result
         assert len(result) <= 200
 
-    def test_cache_hit_avoids_llm_call(self) -> None:
+    def test_repeated_call_does_not_reuse_generated_summary(self) -> None:
         text = "Event 4624 from evtx_events table. " * 50
         llm_response = "Summarised: Event 4624 from evtx_events."
         with patch(
@@ -80,9 +96,9 @@ class TestLlmCompact:
         assert r1 == r2
         assert r1 == llm_response
         assert "4624" in r1 and "evtx_events" in r1
-        assert mock_llm.call_count == 1  # second call used cache
+        assert mock_llm.call_count == 2
 
-    def test_different_budget_different_cache_entry(self) -> None:
+    def test_each_call_uses_its_requested_budget(self) -> None:
         text = "Event 4624 from evtx_events table. " * 50
         llm_response_200 = "A" * 180
         llm_response_300 = "B" * 280
@@ -94,6 +110,18 @@ class TestLlmCompact:
             r2 = llm_compact(text, 300, base_url="http://x", model="m")
         assert mock_llm.call_count == 2
         assert r1 != r2
+
+    def test_impossible_required_reference_preservation_is_explicit(self) -> None:
+        with (
+            patch("forensia.ai.compaction._call_llm", return_value="details"),
+            pytest.raises(CompactionPreservationError, match="too small"),
+        ):
+            llm_compact(
+                "evtx_events " + "details " * 100,
+                8,
+                base_url="http://x",
+                model="m",
+            )
 
     def test_preserve_pattern_with_capture_group_uses_full_match(self) -> None:
         text = ("case evidence ABC-1234 should remain. " * 30).strip()
@@ -383,9 +411,6 @@ class TestStructuredCompact:
     reconstructible.
     """
 
-    def setup_method(self) -> None:
-        clear_compaction_cache()
-
     def _many_sections(self) -> str:
         # Two older sections (large enough to exceed the LLM threshold) plus
         # three recent ones: needs >= preserve_recent_sections+2 sections.
@@ -424,9 +449,14 @@ class TestStructuredCompact:
         assert "Summary: Event 4624 from evtx_events." in out
 
     def test_reducing_a_reduction_changes_nothing(self) -> None:
-        first = structured_compact(
-            self._many_sections(), 2000, base_url="http://x", model="m"
-        )
+        with patch(
+            "forensia.ai.compaction._call_llm",
+            return_value="Summary: Event 4624 from evtx_events table.",
+        ) as first_call:
+            first = structured_compact(
+                self._many_sections(), 2000, base_url="http://x", model="m"
+            )
+        first_call.assert_called_once()
         # Content already produced by this reduction is never reduced again
         # (no recursive degradation).
         with patch("forensia.ai.compaction._call_llm") as mock_llm:

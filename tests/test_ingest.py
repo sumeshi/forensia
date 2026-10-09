@@ -10,12 +10,15 @@ from typer.testing import CliRunner
 
 from forensia.cli import app as cli_module
 from forensia.core.case import Case
+from forensia.core.evidence import make_evtx_evidence_id
 from forensia.db.database import CaseDB
+from forensia.db.evidence_lookup import lookup_evidence_record
 from forensia.evidence.artifacts import MftArtifactAdapter, PrefetchArtifactAdapter
-from forensia.evidence.evtx import normalize_evtx
+from forensia.evidence.evtx import ingest_evtx_file, normalize_evtx
 from forensia.evidence.ingest import ingest_all
 from forensia.evidence.mft import normalize_mft
 from forensia.evidence.normalize import normalize_all
+from forensia.pipeline import _run_normalize_stage
 
 
 class IngestTests(unittest.TestCase):
@@ -40,7 +43,7 @@ class IngestTests(unittest.TestCase):
                 progress_callback=None,
             ):
                 suffix = Path(source_path).suffix.lower()
-                output = case_obj.raw_dir / f"{source_sha[:12]}{suffix or '.jsonl'}"
+                output = case_obj.raw_dir / f"{source_sha}{suffix or '.jsonl'}"
                 output.write_text("{}", encoding="utf-8")
                 return output
 
@@ -66,6 +69,7 @@ class IngestTests(unittest.TestCase):
 
             self.assertEqual(3, first["new_files"])
             self.assertEqual(3, len(first["new_source_keys"]))
+            self.assertTrue(all(len(key) == 64 for key in first["new_source_keys"]))
             self.assertEqual(0, first["skipped_files"])
             self.assertEqual(0, second["new_files"])
             self.assertEqual([], second["new_source_keys"])
@@ -87,7 +91,7 @@ class IngestTests(unittest.TestCase):
                 source_sha: str,
                 progress_callback=None,
             ):
-                output = case_obj.raw_dir / f"prefetch-entries-{source_sha[:12]}.jsonl"
+                output = case_obj.raw_dir / f"prefetch-entries-{source_sha}.jsonl"
                 output.write_text("{}", encoding="utf-8")
                 return output, None
 
@@ -101,6 +105,201 @@ class IngestTests(unittest.TestCase):
             self.assertEqual(1, counts["prefetch_files"])
             self.assertEqual(0, counts["evtx_files"])
             self.assertEqual(0, counts["mft_files"])
+
+    def test_evtx_reimport_is_stable_and_source_replacement_is_distinct(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(Path(tmpdir) / "case")
+            input_dir = Path(tmpdir) / "input"
+            input_dir.mkdir()
+            source_path = input_dir / "Security.evtx"
+            source_path.write_text("first capture", encoding="utf-8")
+
+            class FakeEvtxParser:
+                def __init__(self, path):
+                    self.message = Path(path).read_text(encoding="utf-8")
+
+                def gen_records(self, **kwargs):
+                    del kwargs
+                    yield [
+                        {
+                            "@timestamp": "2015-06-15T10:00:00Z",
+                            "winlog": {
+                                "channel": "Security",
+                                "record_id": 7,
+                                "event_id": 4624,
+                                "computer_name": "HOST-A",
+                                "event_data": {"Message": self.message},
+                            },
+                        }
+                    ]
+
+            with (
+                CaseDB(case) as db,
+                patch("forensia.evidence.evtx.Evtx2es", FakeEvtxParser),
+            ):
+                first_ingest = ingest_all(case, input_dir, db=db)
+                first_source = first_ingest["new_source_keys"][0]
+                first_raw = case.raw_dir / f"evtx-{first_source}-security.jsonl"
+                _run_normalize_stage(
+                    case,
+                    db,
+                    init=True,
+                    ingest_counts=first_ingest,
+                    push_progress=lambda *args, **kwargs: None,
+                    status=None,
+                )
+                first_id = make_evtx_evidence_id(first_source, "Security", 7)
+                self.assertEqual(
+                    first_id, lookup_evidence_record(db, first_id)["evidence_id"]
+                )
+
+                same_ingest = ingest_all(case, input_dir, db=db)
+                self.assertEqual([], same_ingest["new_source_keys"])
+                self.assertEqual(
+                    first_id, lookup_evidence_record(db, first_id)["evidence_id"]
+                )
+
+                source_path.write_text("replacement capture", encoding="utf-8")
+                replacement_ingest = ingest_all(case, input_dir, db=db)
+                replacement_source = replacement_ingest["new_source_keys"][0]
+                replacement_id = make_evtx_evidence_id(
+                    replacement_source, "Security", 7
+                )
+                _run_normalize_stage(
+                    case,
+                    db,
+                    init=True,
+                    ingest_counts=replacement_ingest,
+                    push_progress=lambda *args, **kwargs: None,
+                    status=None,
+                )
+
+                self.assertNotEqual(first_source, replacement_source)
+                self.assertNotEqual(first_id, replacement_id)
+                self.assertTrue(first_raw.exists())
+                self.assertIsNone(lookup_evidence_record(db, first_id))
+                self.assertEqual(
+                    replacement_id,
+                    lookup_evidence_record(db, replacement_id)["evidence_id"],
+                )
+                normalize_all(case, db)
+                self.assertEqual(
+                    [(replacement_id,)],
+                    db.execute(
+                        "SELECT evidence_id FROM evtx_events WHERE source_file = ?",
+                        [replacement_source],
+                    ).fetchall(),
+                )
+
+    def test_evtx_streams_batches_and_replaces_raw_output_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(Path(tmpdir) / "case")
+            source = Path(tmpdir) / "Security.evtx"
+            source.write_bytes(b"fixture")
+            source_sha = "a" * 64
+            output = case.raw_dir / f"evtx-{source_sha}-security.jsonl"
+            output.write_text("previous raw data\n", encoding="utf-8")
+
+            records = [
+                {
+                    "winlog": {"channel": "Security", "record_id": index},
+                    "payload": index,
+                }
+                for index in (1, 2, 3)
+            ]
+            self_outer = self
+
+            class ChunkedParser:
+                def __init__(self, path):
+                    del path
+
+                def gen_records(self, **kwargs):
+                    self.kwargs = kwargs
+                    yield records[:1]
+                    temporary = list(case.raw_dir.glob(".*.tmp"))
+                    self_outer.assertEqual(1, len(temporary))
+                    self_outer.assertEqual(
+                        1, len(temporary[0].read_text().splitlines())
+                    )
+                    self_outer.assertEqual("previous raw data\n", output.read_text())
+                    yield records[1:]
+
+            with patch("forensia.evidence.evtx.Evtx2es", ChunkedParser):
+                result = ingest_evtx_file(case, source, source_sha)
+
+            self.assertEqual(output, result)
+            parsed = [json.loads(line) for line in output.read_text().splitlines()]
+            self.assertEqual([1, 2, 3], [row["payload"] for row in parsed])
+            self.assertTrue(all(row["source_file"] == source_sha for row in parsed))
+            self.assertEqual([output], list(case.raw_dir.glob("evtx-*.jsonl")))
+
+    def test_evtx_parser_failure_preserves_existing_raw_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(Path(tmpdir) / "case")
+            source = Path(tmpdir) / "Security.evtx"
+            source.write_bytes(b"fixture")
+            source_sha = "b" * 64
+            output = case.raw_dir / f"evtx-{source_sha}-security.jsonl"
+            output.write_text("preserve me\n", encoding="utf-8")
+
+            class BrokenParser:
+                def __init__(self, path):
+                    del path
+
+                def gen_records(self, **kwargs):
+                    del kwargs
+                    yield [{"winlog": {"channel": "Security", "record_id": 1}}]
+                    raise ValueError("malformed trailing record")
+
+            with patch("forensia.evidence.evtx.Evtx2es", BrokenParser):
+                with self.assertRaisesRegex(ValueError, "malformed trailing"):
+                    ingest_evtx_file(case, source, source_sha)
+
+            self.assertEqual("preserve me\n", output.read_text(encoding="utf-8"))
+            self.assertEqual([output], list(case.raw_dir.glob("evtx-*.jsonl")))
+
+    def test_evtx_empty_parser_writes_empty_atomic_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(Path(tmpdir) / "case")
+            source = Path(tmpdir) / "System.evtx"
+            source.write_bytes(b"fixture")
+            source_sha = "c" * 64
+
+            class EmptyParser:
+                def __init__(self, path):
+                    del path
+
+                def gen_records(self, **kwargs):
+                    del kwargs
+                    if False:
+                        yield []
+
+            with patch("forensia.evidence.evtx.Evtx2es", EmptyParser):
+                result = ingest_evtx_file(case, source, source_sha)
+
+            self.assertEqual(case.raw_dir / f"evtx-{source_sha}-system.jsonl", result)
+            self.assertEqual("", result.read_text(encoding="utf-8"))
+            self.assertEqual([result], list(case.raw_dir.glob("evtx-*.jsonl")))
+
+    def test_evtx_normalizer_ignores_legacy_unidentified_raw_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(Path(tmpdir) / "case")
+            (case.raw_dir / "evtx.jsonl").write_text(
+                json.dumps(
+                    {
+                        "source_file": "legacy-source",
+                        "evidence_id": "evtx-legacy",
+                        "winlog": {"channel": "Security", "record_id": 1},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with CaseDB(case) as db:
+                self.assertEqual(0, normalize_evtx(case, db))
+                self.assertEqual(
+                    0, db.execute("SELECT COUNT(*) FROM evtx_events").fetchone()[0]
+                )
 
     def test_prefetch_adapter_only_claims_pf_files(self) -> None:
         adapter = PrefetchArtifactAdapter()
@@ -166,13 +365,15 @@ class IngestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
 
-            def write_event(key: str, record_id: int) -> Path:
-                path = case.raw_dir / f"evtx-{key}-security.jsonl"
+            def write_event(source_sha: str, record_id: int) -> Path:
+                path = case.raw_dir / f"evtx-{source_sha}-security.jsonl"
                 path.write_text(
                     json.dumps(
                         {
-                            "evidence_id": f"evtx-security-{record_id}",
-                            "source_file": f"source-{key}.evtx",
+                            "evidence_id": make_evtx_evidence_id(
+                                source_sha, "Security", record_id
+                            ),
+                            "source_file": source_sha,
                             "winlog": {
                                 "channel": "Security",
                                 "event_id": 4624,
@@ -185,23 +386,28 @@ class IngestTests(unittest.TestCase):
                 )
                 return path
 
-            old_path = write_event("aaaaaaaaaaaa", 1)
-            write_event("bbbbbbbbbbbb", 2)
+            old_source = "a" * 64
+            new_source = "b" * 64
+            old_path = write_event(old_source, 1)
+            write_event(new_source, 2)
             with CaseDB(case) as db:
-                self.assertEqual(
-                    1, normalize_evtx(case, db, source_keys={"aaaaaaaaaaaa"})
-                )
+                self.assertEqual(1, normalize_evtx(case, db, source_keys={old_source}))
                 # If differential selection regresses, this malformed old file
                 # makes the second normalization fail instead of being skipped.
                 old_path.write_text("not-json\n", encoding="utf-8")
-                self.assertEqual(
-                    1, normalize_evtx(case, db, source_keys={"bbbbbbbbbbbb"})
-                )
+                self.assertEqual(1, normalize_evtx(case, db, source_keys={new_source}))
                 rows = db.execute(
-                    "SELECT record_id FROM evtx_events ORDER BY record_id"
+                    "SELECT record_id, evidence_id, source_file "
+                    "FROM evtx_events ORDER BY record_id"
                 ).fetchall()
 
-            self.assertEqual([(1,), (2,)], rows)
+            self.assertEqual(
+                [
+                    (1, make_evtx_evidence_id(old_source, "Security", 1), old_source),
+                    (2, make_evtx_evidence_id(new_source, "Security", 2), new_source),
+                ],
+                rows,
+            )
 
     def test_normalize_mft_uses_sql_projection_for_entries_and_timeline(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -234,7 +440,7 @@ class IngestTests(unittest.TestCase):
                 },
                 "source_type": "mft",
                 "source_file": "sample/cfreds/MFT_C",
-                "evidence_id": "mft-000000000042-00",
+                "evidence_id": "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000000042-00",
             }
             (case.raw_dir / "mft-entries-test.jsonl").write_text(
                 json.dumps(record) + "\n", encoding="utf-8"

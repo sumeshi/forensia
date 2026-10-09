@@ -1,8 +1,7 @@
 """Durable LLM telemetry: logical calls, provider attempts, deterministic ops.
 
-This is the trace-DB extension of the audit owner (``ai/audit.py`` writes
-per-call disk transcripts; this module writes the structured, queryable
-trajectory). It deliberately does NOT create a separate telemetry database:
+This module writes the structured, queryable trajectory. It deliberately does
+NOT create a separate telemetry database:
 all rows live in the existing attached ``trace`` database.
 
 Three record kinds are kept distinct (GOAL.md §5.1):
@@ -23,6 +22,7 @@ manager to guarantee finalization on every exit path).
 from __future__ import annotations
 
 import json
+import threading
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -31,6 +31,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from forensia.config import get_llm_settings
+from forensia.core.session import LLMBudgetExceededError
 from forensia.db.database import CaseDB
 
 # Active telemetry for the current run. The investigation session installs an
@@ -119,18 +120,30 @@ def compute_effective_output_limit(
         requested_override if requested_override is not None else configured
     )
     effective = requested + reserve
-    if known_context_limit and effective > known_context_limit:
+    if known_context_limit is not None:
         available = known_context_limit - max(0, estimated_input_tokens or 0)
-        effective = max(1, min(effective, available))
+        if available <= 0:
+            raise ValueError(
+                "Estimated input consumes the known context limit; no output budget remains"
+            )
+        effective = min(effective, available)
     return configured, reserve, requested, effective
 
 
 class LLMTelemetry:
     """Canonical sink for the three LLM telemetry record kinds."""
 
-    def __init__(self, db: CaseDB, session_id: str | None = None) -> None:
+    def __init__(
+        self,
+        db: CaseDB,
+        session_id: str | None = None,
+        *,
+        max_logical_calls: int = 0,
+    ) -> None:
         self.db = db
         self.session_id = session_id
+        self.max_logical_calls = max(0, int(max_logical_calls))
+        self._logical_call_lock = threading.Lock()
         self._last_attempt_by_call: dict[str, str] = {}
 
     # --- logical call -----------------------------------------------------
@@ -152,7 +165,8 @@ class LLMTelemetry:
         section_id = section_id or scope.get("section_id")
         action_id = action_id or scope.get("action_id")
         logical_call_id = f"lc-{uuid.uuid4().hex[:20]}"
-        self.db.execute(
+        target_session_id = session_id or self.session_id
+        insert = (
             """
             INSERT INTO llm_logical_calls (
                 logical_call_id, session_id, parent_logical_call_id, phase,
@@ -162,7 +176,7 @@ class LLMTelemetry:
             """,
             (
                 logical_call_id,
-                session_id or self.session_id,
+                target_session_id,
                 parent_logical_call_id,
                 phase,
                 iteration,
@@ -173,6 +187,20 @@ class LLMTelemetry:
                 now_utc(),
             ),
         )
+        if self.max_logical_calls > 0 and target_session_id:
+            with self._logical_call_lock:
+                used = int(
+                    self.db.execute(
+                        "SELECT COUNT(*) FROM llm_logical_calls WHERE session_id = ?",
+                        (target_session_id,),
+                    ).fetchone()[0]
+                    or 0
+                )
+                if used >= self.max_logical_calls:
+                    raise LLMBudgetExceededError(used, self.max_logical_calls)
+                self.db.execute(*insert)
+        else:
+            self.db.execute(*insert)
         return logical_call_id
 
     def close_logical_call(self, *, logical_call_id: str, status: RecordStatus) -> None:
@@ -437,7 +465,15 @@ class LLMTelemetry:
                 SUM(CASE WHEN retry_ordinal > 0 THEN 1 ELSE 0 END),
                 SUM(CASE WHEN duplicate_of IS NOT NULL THEN 1 ELSE 0 END),
                 SUM(CASE WHEN input_tokens_source = 'provider_actual' THEN input_tokens ELSE 0 END),
-                SUM(CASE WHEN output_tokens_source = 'provider_actual' THEN output_tokens ELSE 0 END)
+                SUM(CASE WHEN output_tokens_source = 'provider_actual' THEN output_tokens ELSE 0 END),
+                SUM(CASE WHEN input_tokens_source = 'local_estimate' THEN input_tokens ELSE 0 END),
+                SUM(CASE WHEN output_tokens_source = 'local_estimate' THEN output_tokens ELSE 0 END),
+                SUM(CASE WHEN input_tokens_source = 'unknown' OR input_tokens IS NULL THEN 1 ELSE 0 END),
+                SUM(CASE WHEN output_tokens_source = 'unknown' OR output_tokens IS NULL THEN 1 ELSE 0 END),
+                SUM(CASE WHEN input_tokens_source = 'provider_actual' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN output_tokens_source = 'provider_actual' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN input_tokens_source = 'local_estimate' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN output_tokens_source = 'local_estimate' THEN 1 ELSE 0 END)
             FROM llm_provider_attempts WHERE session_id = ?
             """,
             (sid,),
@@ -452,8 +488,16 @@ class LLMTelemetry:
             "provider_attempt_failures": row[1] or 0,
             "provider_attempt_retries": row[2] or 0,
             "duplicate_attempts": row[3] or 0,
-            "actual_input_tokens": row[4] or 0,
-            "actual_output_tokens": row[5] or 0,
+            "actual_input_tokens": row[4] if row[10] else None,
+            "actual_output_tokens": row[5] if row[11] else None,
+            "estimated_input_tokens": row[6] if row[12] else None,
+            "estimated_output_tokens": row[7] if row[13] else None,
+            "unknown_input_usage_attempts": row[8] or 0,
+            "unknown_output_usage_attempts": row[9] or 0,
+            "actual_input_usage_attempts": row[10] or 0,
+            "actual_output_usage_attempts": row[11] or 0,
+            "estimated_input_usage_attempts": row[12] or 0,
+            "estimated_output_usage_attempts": row[13] or 0,
             "deterministic_op_count": det,
         }
 
