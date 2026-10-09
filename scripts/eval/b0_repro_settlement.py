@@ -6,7 +6,7 @@ Runs decide_settlement (deterministic, no LLM) with the auto-refute trigger
 - B0 (rev 242ca6a): verdict="refuted" for every coverage state (partial,
   unavailable, unknown) — the zero-row branch returned `auto_refute_zero_rows`
   before any coverage gate was consulted (recorded in
-  docs/round-b0-baseline.md §4).
+  git revision `68b2ba6:docs/round-b0-baseline.md`, section 4).
 - M0 (T03): refutation additionally requires the runner-supplied scope-wise
   absence judgment (`absence_scope="observable"`).  Without it the hypothesis
   downgrades to untestable on `auto_untestable_zero_rows` with the reason

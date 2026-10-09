@@ -6,7 +6,7 @@ support_conditions declare `event_contexts`, `co_observed_event_ids` and
 
 - B0 (rev 242ca6a): role="contextual" for every case — `_condition_matches`
   rejected the un-shared `event_contexts` key even though admission accepted it
-  (recorded in docs/round-b0-baseline.md §4).
+  (recorded in git revision `68b2ba6:docs/round-b0-baseline.md`, section 4).
 - M0 (T01): the shared vocabulary (`core.verification.EVALUABLE_CONDITION_KEYS`)
   makes `event_contexts` evaluable through the co-observation adapter, so
   catalog-qualified rows reach `supporting`; rows that do not carry the declared

@@ -6,7 +6,7 @@ _check_termination with the completion inputs the investigator loop passes
 
 - B0 (rev 242ca6a): ("completed", ..., "no_gaps_no_hypotheses") although a
   durable open gap row remains — the gate only read the section-level
-  `total_gaps` prose aggregate (recorded in docs/round-b0-baseline.md §4).
+  `total_gaps` prose aggregate (recorded in git revision `68b2ba6:docs/round-b0-baseline.md`, section 4).
 - M0 (T05): completion reads the durable `report_gaps`/`investigation_tasks`
   unresolved counts passed by the loop; with durable work open the gate falls
   through to the no-progress machinery, and only truly drained work completes.

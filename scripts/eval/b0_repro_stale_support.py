@@ -6,7 +6,7 @@ removal) and runs the loaders + evaluate_sufficiency.
 
 - B0 (rev 242ca6a): the raw loader returned the stale link and sufficiency said
   "sufficient" — `load_evidence_links` never checked the evidence row (recorded
-  in docs/round-b0-baseline.md §4).
+  in git revision `68b2ba6:docs/round-b0-baseline.md`, section 4).
 - M0 (T04): `load_evidence_links(current_only=True)` drops links whose evidence
   row no longer exists (or whose source_file changed), so sufficiency degrades
   while the historical link row stays intact in `hypothesis_evidence`.
