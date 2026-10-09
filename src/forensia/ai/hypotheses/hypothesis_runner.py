@@ -65,25 +65,6 @@ from forensia.core.session import HistoryEntry, Hypothesis, SessionState
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
 from forensia.knowledge.coverage import derive_required_capabilities
-from forensia.knowledge.rules.loader import load_rule_by_id
-
-
-def _has_zero_rows_refute_condition(hypothesis: Hypothesis) -> bool:
-    """Check whether a hypothesis has a rule-declared refute_when with zero_rows condition."""
-    refute_when = hypothesis.refute_when or {}
-    if refute_when.get("zero_rows"):
-        return True
-    for source_rule_id in hypothesis.source_rule_ids:
-        rule = load_rule_by_id(source_rule_id)
-        if rule and rule.hypotheses:
-            for decl in rule.hypotheses:
-                if (
-                    decl.id == hypothesis.id
-                    and decl.refute_when
-                    and decl.refute_when.get("zero_rows")
-                ):
-                    return True
-    return False
 
 
 def _unavailable_missing_event_ids(
@@ -583,7 +564,7 @@ def _apply_sufficiency_guard(rs: _HypothesisRunState) -> None:
         assess_and_persist_sufficiency(
             rs.db,
             hypothesis_id=rs.hypothesis.id,
-            evidence_requirements=rs.hypothesis.evidence_requirements,
+            evidence_requirements=rs.hypothesis.verification_spec.evidence_requirements,
             llm_verdict=original_verdict,
             verification_spec=rs.hypothesis.verification_spec,
             session_id=rs.session_id,
@@ -650,7 +631,9 @@ def _build_settlement_input(rs: _HypothesisRunState) -> SettlementInput:
         checker_verdict=rs.check_result.verdict,
         check_summary=rs.check_result.report_text or "",
         sample_rows=rows or None,
-        has_rule_refute_when_zero_rows=_has_zero_rows_refute_condition(rs.hypothesis),
+        has_rule_refute_when_zero_rows=bool(
+            rs.hypothesis.verification_spec.refute_conditions.get("zero_rows")
+        ),
         consecutive_zero_row_inconclusive=rs.tracker.zero_row_inconclusive_count,
         consecutive_same_missing=rs.tracker.consecutive_same_missing,
         unavailable_missing_event_ids=unavailable_ids or None,
@@ -685,7 +668,7 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
         decision = settle_hypothesis(
             db=db,
             si=si,
-            evidence_requirements=hypothesis.evidence_requirements,
+            evidence_requirements=hypothesis.verification_spec.evidence_requirements,
         )
         pre_settlement_verdict = final_verdict
         _log(
@@ -868,7 +851,7 @@ def _phase_track_progress(rs: _HypothesisRunState) -> None:
     ) or _rationale_signature(
         str(check_result.report_text or check_result.raw_response.get("rationale", ""))
     )
-    tracker.register_check(check_result.verdict, row_count, missing_signature)
+    tracker.register_check(check_result.verdict, missing_signature)
     rs.missing_checks_raw = missing_checks_raw
 
 
@@ -893,7 +876,7 @@ def _phase_auto_resolve(rs: _HypothesisRunState) -> str:
     decision = settle_hypothesis(
         db=db,
         si=si,
-        evidence_requirements=hypothesis.evidence_requirements,
+        evidence_requirements=hypothesis.verification_spec.evidence_requirements,
     )
 
     if not decision.allowed:

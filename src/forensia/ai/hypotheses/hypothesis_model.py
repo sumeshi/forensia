@@ -239,12 +239,17 @@ def _merge_hypothesis_fields(existing: Hypothesis, incoming: Hypothesis) -> Hypo
         existing.required_entities, incoming.required_entities
     )
     spec = existing.verification_spec.model_copy(deep=True)
-    if not spec.support_conditions and incoming.confirm_when:
-        spec.support_conditions = dict(incoming.confirm_when)
-    if not spec.refute_conditions and incoming.refute_when:
-        spec.refute_conditions = dict(incoming.refute_when)
-    if not spec.evidence_requirements and incoming.evidence_requirements:
-        spec.evidence_requirements = dict(incoming.evidence_requirements)
+    if not spec.support_conditions and incoming.verification_spec.support_conditions:
+        spec.support_conditions = dict(incoming.verification_spec.support_conditions)
+    if not spec.refute_conditions and incoming.verification_spec.refute_conditions:
+        spec.refute_conditions = dict(incoming.verification_spec.refute_conditions)
+    if (
+        not spec.evidence_requirements
+        and incoming.verification_spec.evidence_requirements
+    ):
+        spec.evidence_requirements = dict(
+            incoming.verification_spec.evidence_requirements
+        )
     return Hypothesis(
         id=existing.id,
         description=existing.description or incoming.description,
@@ -283,8 +288,9 @@ def hypothesis_evidence_strength(hypothesis: Hypothesis) -> int:
     if not hypothesis.source_rule_ids:
         return 0
     has_evidence = bool(
-        hypothesis.confirm_when and hypothesis.confirm_when != {"zero_rows": True}
-    ) or bool(hypothesis.refute_when)
+        hypothesis.verification_spec.support_conditions
+        and hypothesis.verification_spec.support_conditions != {"zero_rows": True}
+    ) or bool(hypothesis.verification_spec.refute_conditions)
     return 2 if has_evidence else 1
 
 

@@ -238,13 +238,12 @@ Only when verdict==confirmed is `build_finding_extractor_messages` invoked to ex
 
 ### 5.6 Progress Tracker
 
-`HypothesisProgressTracker` is a per-hypothesis dataclass that records `(query_fingerprint, verdict, row_count)` for each query. On every check it makes the following deterministic decisions.
+`HypothesisProgressTracker` tracks query fingerprints and consecutive inconclusive feedback per hypothesis. The runner uses repeated fingerprints to stop duplicate attempts, then passes the counters to the Settlement gate. The tracker does not decide verdicts.
 
 | Method | Condition | Effect |
 |---|---|---|
-| `should_auto_confirm(rule_context, rows, hypothesis)` | `_co_observation_satisfied` ([ai/checking/check_guardrails.py](../src/forensia/ai/checking/check_guardrails.py)) groups rows by `same_host` and all `co_observed_event_ids` co-occur within the `within_minutes` time window | Forces confirmed, ignoring the LLM verdict. Rows without time / host columns are treated as unsatisfied. A hypothesis without a declared `co_observed_event_ids` is not auto-confirmed |
-| `should_auto_refute(threshold=3)` | 3 consecutive 0-row inconclusive (and no partial signal) | Refuted only when the rule declares `refute_when.zero_rows` AND the runner judged the absence observable (`SettlementInput.absence_scope == "observable"`: valid retrieval scope, observable emptiness, and all required capabilities `available` in Coverage). Otherwise untestable — partial/unknown/unavailable coverage, a rejected scope, or an incomplete retrieval never refute — with the blocking reason recorded in `absence_note` |
-| `should_pivot(fp)` | The same query fingerprint appears 2 or more times | Instructs the planner to pivot |
+| `should_pivot()` | The same query fingerprint appears 2 or more times | Stops this attempt so selection can choose a different path |
+| `SettlementInput` counters | Consecutive 0-row inconclusive results or repeated missing checks | Settlement considers rule-declared absence only when `absence_scope == "observable"`: valid retrieval scope, observable emptiness, and all required capabilities `available` in Coverage. Otherwise it records the blocker without refuting |
 | `_unavailable_missing_event_ids` | The inconclusive `missing_questions` reference only Event IDs that do not exist in the case (with no mft/prefetch alternative path) | Immediately untestable on the first check |
 | `_investigate_one_hypothesis` short-circuit ([ai/hypotheses/hypothesis_runner.py](../src/forensia/ai/hypotheses/hypothesis_runner.py)) | The first plan cannot compose SQL or a template | No observable absence is established; a planning failure cannot justify refutation |
 

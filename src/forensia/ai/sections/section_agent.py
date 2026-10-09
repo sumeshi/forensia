@@ -1,8 +1,4 @@
-"""Section block agent entry point; helpers live in focused submodules.
-
-Kept for backward compatibility: existing code and tests import these
-names from forensia.ai.sections.section_agent.
-"""
+"""Section block agent entry point and block orchestration."""
 
 from __future__ import annotations
 

@@ -3,7 +3,7 @@
 ``VerificationSpec`` is the single representation of one hypothesis' test
 policy.  Rule and LLM declarations use the planning vocabulary
 (``confirm_when`` / ``refute_when`` / ``evidence_requirements``);
-``VerificationSpec.from_legacy`` converts such declarations into a spec once
+``VerificationSpec.from_declaration`` converts such declarations into a spec once
 at admission.  Afterwards the model, storage, and evaluators read only the
 spec — there is no second condition representation to keep in sync, and no
 reader falls back to declaration-shaped fields.
@@ -125,28 +125,14 @@ class VerificationSpec(BaseModel):
     evidence_requirements: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
-    def from_legacy(
+    def from_declaration(
         cls,
         *,
         confirm_when: Any = None,
         refute_when: Any = None,
         evidence_requirements: Any = None,
-        verification_spec: Any = None,
     ) -> VerificationSpec:
-        """Convert a current rule/LLM declaration into a spec (admission seam).
-
-        This is the one-time conversion point for the declaration vocabulary;
-        it is not a storage format.  When ``verification_spec`` is supplied it
-        is the canonical form and is validated as-is: a broken spec raises
-        instead of being repaired or reinterpreted.
-        """
-
-        if verification_spec is not None:
-            if isinstance(verification_spec, cls):
-                return verification_spec.model_copy(deep=True)
-            if not isinstance(verification_spec, dict):
-                raise ValueError("verification_spec must be a JSON object")
-            return cls.model_validate(deepcopy(verification_spec))
+        """Convert the current rule/LLM declaration vocabulary at admission."""
 
         def object_or_empty(value: Any, name: str) -> dict[str, Any]:
             if value is None:

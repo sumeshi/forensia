@@ -1,8 +1,4 @@
-"""Checker entry point; helpers live in focused submodules.
-
-Kept for backward compatibility: existing code and tests import these
-names from forensia.ai.checking.checker.
-"""
+"""Checker entry point and result orchestration."""
 
 from __future__ import annotations
 

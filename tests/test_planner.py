@@ -12,10 +12,7 @@ from forensia.ai.investigation.planner import (
     request_with_optional_context,
     validate_select_sql,
 )
-from forensia.ai.investigation.progress import (
-    HypothesisProgressTracker,
-    query_fingerprint,
-)
+from forensia.ai.investigation.progress import query_fingerprint
 from forensia.ai.prompts.sql_schema import build_investigation_framework
 from forensia.config import (
     reload_settings,
@@ -49,75 +46,6 @@ class PlannerRetryTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         reload_settings()
-
-    def test_auto_confirm_requires_all_co_observed_event_ids(self) -> None:
-        tracker = HypothesisProgressTracker()
-        hypothesis = Hypothesis(
-            id="H-confirm",
-            description="RDP followed by PowerShell",
-            source_rule_ids=["windows-rdp-lsm-21-logon"],
-            confirm_when={
-                "co_observed_event_ids": [4624, 4104],
-                "event_contexts": [
-                    {
-                        "event_id": 4104,
-                        "channel": "Microsoft-Windows-PowerShell/Operational",
-                        "provider": "Microsoft-Windows-PowerShell",
-                    }
-                ],
-            },
-        )
-
-        self.assertFalse(
-            tracker.should_auto_confirm(
-                None,
-                [{"event_id": 4624}],
-                hypothesis,
-            )
-        )
-        self.assertTrue(
-            tracker.has_partial_confirm_signal(
-                None,
-                [{"event_id": 4624}],
-                hypothesis,
-            )
-        )
-        self.assertTrue(
-            tracker.should_auto_confirm(
-                None,
-                [
-                    {"event_id": 4624},
-                    {
-                        "event_id": 4104,
-                        "channel": "Microsoft-Windows-PowerShell/Operational",
-                        "raw_json": {
-                            "winlog": {
-                                "provider": {"name": "Microsoft-Windows-PowerShell"}
-                            }
-                        },
-                    },
-                ],
-                hypothesis,
-            )
-        )
-        self.assertFalse(
-            tracker.should_auto_confirm(
-                None,
-                [
-                    {"event_id": 4624},
-                    {
-                        "event_id": 4104,
-                        "channel": "Application",
-                        "raw_json": {
-                            "winlog": {
-                                "provider": {"name": "Microsoft-Windows-Winlogon"}
-                            }
-                        },
-                    },
-                ],
-                hypothesis,
-            )
-        )
 
     def test_validate_select_sql_allows_investigation_state_tables(self) -> None:
         for sql in (

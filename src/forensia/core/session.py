@@ -104,7 +104,9 @@ class Hypothesis(BaseModel):
                 if data.get(key) is not None
             }
             if declarations:
-                data["verification_spec"] = VerificationSpec.from_legacy(**declarations)
+                data["verification_spec"] = VerificationSpec.from_declaration(
+                    **declarations
+                )
             else:
                 # An explicit None means "no declared conditions"; the default
                 # empty spec applies.
@@ -112,21 +114,6 @@ class Hypothesis(BaseModel):
         for key in ("confirm_when", "refute_when", "evidence_requirements"):
             data.pop(key, None)
         return data
-
-    # Derived projections over the canonical spec.  They return the live
-    # condition dicts (or None when empty) so read-mutate callers keep the
-    # same aliasing the former fields had.
-    @property
-    def confirm_when(self) -> dict[str, Any] | None:
-        return self.verification_spec.support_conditions or None
-
-    @property
-    def refute_when(self) -> dict[str, Any] | None:
-        return self.verification_spec.refute_conditions or None
-
-    @property
-    def evidence_requirements(self) -> dict[str, Any] | None:
-        return self.verification_spec.evidence_requirements or None
 
 
 class PlannedQuery(BaseModel):

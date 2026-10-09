@@ -1,4 +1,4 @@
-"""Investigation progress heuristics: query fingerprinting, duplicate detection, auto-confirm checks."""
+"""Per-hypothesis query fingerprints and consecutive retrieval feedback."""
 
 from __future__ import annotations
 
@@ -8,15 +8,8 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
-try:
-    from sqlglot import exp, parse_one
-    from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
-except ImportError:  # pragma: no cover - optional until dependency is installed
-    exp = None
-    parse_one = None
-    normalize_identifiers = None
-
-from forensia.ai.checking.check_guardrails import _co_observation_satisfied
+from sqlglot import exp, parse_one
+from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
 
 logger = logging.getLogger(__name__)
 
@@ -24,15 +17,12 @@ logger = logging.getLogger(__name__)
 def query_fingerprint(sql: str | None) -> str:
     """Generate a fingerprint for a query to detect duplicates.
 
-    Uses sqlglot AST normalization when available so semantically equivalent
+    Uses sqlglot AST normalization so semantically equivalent
     queries produce the same fingerprint regardless of formatting or aliasing.
     """
     sql = (sql or "").strip()
     if not sql:
         return "generic"
-
-    if parse_one is None or exp is None:
-        return hashlib.sha1(f"raw:{sql.lower()}".encode()).hexdigest()[:8]
 
     try:
         expression = parse_one(sql, read="duckdb")
@@ -43,13 +33,12 @@ def query_fingerprint(sql: str | None) -> str:
             return hashlib.sha1(f"raw:{sql.lower()}".encode()).hexdigest()[:8]
 
     try:
-        if normalize_identifiers is not None:
-            try:
-                expression = normalize_identifiers(expression, dialect="duckdb")
-            except Exception:
-                logger.debug(
-                    "Failed to normalize SQL identifiers for fingerprint", exc_info=True
-                )
+        try:
+            expression = normalize_identifiers(expression, dialect="duckdb")
+        except Exception:
+            logger.debug(
+                "Failed to normalize SQL identifiers for fingerprint", exc_info=True
+            )
 
         def _column_name(node: Any) -> str | None:
             if isinstance(node, exp.Column):
@@ -121,7 +110,7 @@ def query_fingerprint(sql: str | None) -> str:
 
 @dataclass(slots=True)
 class HypothesisProgressTracker:
-    """Tracks hypothesis investigation progress for auto-refute/auto-confirm decisions."""
+    """Track duplicate queries and feedback consumed by the settlement gate."""
 
     zero_row_inconclusive_count: int = 0
     query_fingerprints: list[str] = field(default_factory=list)
@@ -136,9 +125,7 @@ class HypothesisProgressTracker:
         else:
             self.zero_row_inconclusive_count = 0
 
-    def register_check(
-        self, verdict: str, row_count: int, missing_signature: str = ""
-    ) -> None:
+    def register_check(self, verdict: str, missing_signature: str = "") -> None:
         """Track consecutive same-missing checks for auto-refute detection."""
         if verdict == "inconclusive" and missing_signature:
             if missing_signature == self._last_missing_signature:
@@ -150,14 +137,6 @@ class HypothesisProgressTracker:
             self.consecutive_same_missing = 0
             self._last_missing_signature = ""
 
-    def should_auto_refute_due_to_unobserved_events(self, threshold: int = 3) -> bool:
-        """Return True after threshold consecutive same-missing inconclusive results."""
-        return self.consecutive_same_missing >= threshold
-
-    def should_auto_refute(self, consecutive_threshold: int = 3) -> bool:
-        """Return True after consecutive_threshold consecutive 0-row inconclusive results."""
-        return self.zero_row_inconclusive_count >= consecutive_threshold
-
     def should_pivot(self, threshold: int = 2) -> bool:
         """Detect if any query fingerprint appears >= threshold times."""
         fp_counts = Counter(self.query_fingerprints)
@@ -165,105 +144,3 @@ class HypothesisProgressTracker:
         if most_common and most_common[0][1] >= threshold:
             return True
         return False
-
-    @staticmethod
-    def _extract_observed_event_ids(rows: list[dict[str, Any]]) -> set[int]:
-        """Extract unique event_ids from query result rows."""
-        observed: set[int] = set()
-        for row in rows:
-            event_id = row.get("event_id")
-            if event_id is not None:
-                try:
-                    observed.add(int(event_id))
-                except TypeError, ValueError:
-                    pass
-        return observed
-
-    def _confirm_set_from(self, rule_context: Any, hypothesis: Any = None) -> set[int]:
-        """Pull co_observed_event_ids from rule_context first, falling back to the
-        hypothesis itself (broad_plan-derived hypotheses have no rule_context)."""
-        confirm_when = None
-        if rule_context is not None:
-            confirm_when = getattr(rule_context, "confirm_when", None)
-        if not confirm_when and hypothesis is not None:
-            confirm_when = getattr(hypothesis, "confirm_when", None)
-        if not confirm_when:
-            return set()
-        required_event_ids = (
-            confirm_when.get("co_observed_event_ids")
-            if isinstance(confirm_when, dict)
-            else None
-        )
-        if not required_event_ids:
-            return set()
-        out: set[int] = set()
-        for eid in required_event_ids:
-            try:
-                out.add(int(str(eid).strip()))
-            except TypeError, ValueError:
-                continue
-        return out
-
-    def should_auto_confirm(
-        self, rule_context: Any, rows: list[dict[str, Any]], hypothesis: Any = None
-    ) -> bool:
-        """Return True if all co-observation constraints are satisfied.
-
-        Uses _co_observation_satisfied to check co_observed_event_ids along
-        with same_host and within_minutes correlation constraints.
-
-        Co-occurrence alone is correlation, not proof of maliciousness — it is
-        only treated as sufficient to force a "confirmed" verdict when the
-        hypothesis is rule-seeded (non-empty source_rule_ids), i.e. backed by
-        a detection rule that someone vetted. Gap/follow-up-derived hypotheses
-        (empty source_rule_ids) commonly have confirm_when filled in by a
-        heuristic safety net and can match ubiquitous baseline events
-        (e.g. 4624/4634), so they are never auto-confirmed here; the LLM
-        verdict and other gates decide their fate.
-        """
-        source_rule_ids = getattr(hypothesis, "source_rule_ids", None) or []
-        if not source_rule_ids:
-            return False
-        confirm_when = None
-        if rule_context is not None:
-            confirm_when = getattr(rule_context, "confirm_when", None)
-        if not confirm_when and hypothesis is not None:
-            confirm_when = getattr(hypothesis, "confirm_when", None)
-        if not confirm_when or not isinstance(confirm_when, dict):
-            return False
-        # Code-backfilled criteria (heuristic marker) are not vetted
-        # confirmation evidence. Rule-declared follow-up hypotheses carry
-        # source_rule_ids AND a heuristic confirm_when, and an entity-only
-        # confirm_when trivially "satisfies" co-observation (there are no
-        # event IDs to verify) — without this guard they would auto-confirm
-        # on any non-benign rows.
-        if confirm_when.get("heuristic"):
-            return False
-        satisfied, _ = _co_observation_satisfied(confirm_when, rows)
-        if satisfied and rows:
-            from forensia.report.benign_auth import is_benign_local_auth
-
-            if all(is_benign_local_auth(r) for r in rows):
-                return False
-        return satisfied
-
-    def has_partial_confirm_signal(
-        self, rule_context: Any, rows: list[dict[str, Any]], hypothesis: Any = None
-    ) -> bool:
-        """Return True when some, but not all, confirm_when event IDs are present."""
-        # Heuristic confirm_when entries (e.g. entity-name fallback) are too
-        # noisy to block auto-refute -- treat them as having no signal.
-        confirm_when = None
-        if rule_context is not None:
-            confirm_when = getattr(rule_context, "confirm_when", None)
-        if not confirm_when and hypothesis is not None:
-            confirm_when = getattr(hypothesis, "confirm_when", None)
-        if isinstance(confirm_when, dict) and confirm_when.get("heuristic"):
-            return False
-        required_set = self._confirm_set_from(rule_context, hypothesis)
-        if not required_set:
-            return False
-        observed_event_ids = self._extract_observed_event_ids(rows)
-        return bool(required_set & observed_event_ids) and not required_set.issubset(
-            observed_event_ids
-        )

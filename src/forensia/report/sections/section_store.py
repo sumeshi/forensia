@@ -460,19 +460,22 @@ def set_report_section_status(db: CaseDB, section_key: str, status: str) -> None
 
 def fetch_report_sections(db: CaseDB) -> list[dict[str, Any]]:
     """Fetch sections from the adopted report input, retaining older rows as history."""
-    rows = fetch_records(
+    keys = active_report_section_keys(db)
+    clause = (
+        "WHERE section_key IN (" + ", ".join("?" for _ in keys) + ")"
+        if keys is not None
+        else ""
+    )
+    return fetch_records(
         db,
-        """
+        f"""
         SELECT section_key, title, body, confidence, status, update_count, gaps, last_filled_session, last_filled_at
         FROM report_sections
+        {clause}
         ORDER BY section_key
         """,
+        tuple(keys) if keys is not None else (),
     )
-    keys = active_report_section_keys(db)
-    if keys is None:
-        return rows
-    active = set(keys)
-    return [row for row in rows if str(row["section_key"]) in active]
 
 
 def load_report_sections_map(db: CaseDB) -> dict[str, str]:

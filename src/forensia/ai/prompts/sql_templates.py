@@ -10,6 +10,7 @@ from string import Formatter
 from typing import Any
 
 import duckdb
+import sqlglot
 
 from forensia.ai.prompts.sql_schema import QUERY_TABLES
 from forensia.knowledge.resources import schema_dir
@@ -279,8 +280,6 @@ def validate_select_sql(sql: str) -> str:
     if unknown_tables:
         raise ValueError(f"Unknown table(s) referenced: {', '.join(unknown_tables)}")
     try:
-        import sqlglot
-
         tree = sqlglot.parse_one(normalized)
         for coalesce_node in tree.find_all(sqlglot.exp.Coalesce):
             arg_types = set()
@@ -306,8 +305,6 @@ def validate_select_sql(sql: str) -> str:
                     f"COALESCE has mixed literal types: {arg_types}. "
                     "All COALESCE arguments must be the same type. Use explicit CAST if needed."
                 )
-    except ImportError:
-        pass
     except ValueError:
         # Intentional validation failures (e.g. mixed COALESCE types) must propagate.
         raise

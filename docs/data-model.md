@@ -56,11 +56,10 @@ policy, and evidence requirements all live in it. Rule and LLM declarations
 vocabulary of rulepacks, the drafter/checker schemas, and report-gap drafts;
 `Hypothesis` converts them into a spec exactly once at construction
 (mode="before" validator in `core/session.py` calling
-`VerificationSpec.from_legacy` in `core/verification.py`, which also sanitizes
+`VerificationSpec.from_declaration` in `core/verification.py`, which also sanitizes
 `co_observed_event_ids` entries to finding/event IDs). After admission the
-model, storage, and evaluators read only the spec: `Hypothesis.confirm_when`,
-`.refute_when`, and `.evidence_requirements` are derived read-only properties
-over it, and there are no declaration-shaped storage columns.
+model, storage, and evaluators read only the spec; there are no declaration-shaped
+properties or storage columns on `Hypothesis`.
 
 The `hypotheses` table (schema version 2) stores `verification_spec` JSON plus
 the projection columns hypothesis metadata needs directly (`required_entities`

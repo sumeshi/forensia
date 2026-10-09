@@ -379,10 +379,10 @@ def build_query_intent_messages(
         else None
     )
     hypothesis_event_ids: set[int] = set()
-    if hasattr(hypothesis, "confirm_when") and isinstance(
-        hypothesis.confirm_when, dict
-    ):
-        extra = hypothesis.confirm_when.get("co_observed_event_ids", [])
+    if hypothesis.verification_spec.support_conditions:
+        extra = hypothesis.verification_spec.support_conditions.get(
+            "co_observed_event_ids", []
+        )
         hypothesis_event_ids.update(int(e) for e in extra if e is not None)
     _pb_ids: set[int] | None = hypothesis_event_ids or profile_event_ids
 
@@ -526,10 +526,10 @@ def build_verdict_review_messages(
             )
 
     _pb_ids: set[int] = set()
-    if hasattr(hypothesis, "confirm_when") and isinstance(
-        hypothesis.confirm_when, dict
-    ):
-        extra = hypothesis.confirm_when.get("co_observed_event_ids", [])
+    if hypothesis.verification_spec.support_conditions:
+        extra = hypothesis.verification_spec.support_conditions.get(
+            "co_observed_event_ids", []
+        )
         for event_id in extra:
             try:
                 _pb_ids.add(int(event_id))

@@ -1,8 +1,4 @@
-"""Hypothesis lifecycle; helpers live in focused submodules.
-
-Kept for backward compatibility: existing code and tests import these
-names from forensia.ai.hypotheses.hypothesis_manager.
-"""
+"""Hypothesis admission, merge, and settlement lifecycle."""
 
 from __future__ import annotations
 
@@ -225,9 +221,7 @@ def merge_active_hypotheses(
             source_decl_id=item.source_decl_id,
             source_gap_id=item.source_gap_id,
             required_entities=_merge_string_lists(item.required_entities),
-            confirm_when=item.confirm_when,
-            refute_when=item.refute_when,
-            evidence_requirements=item.evidence_requirements,
+            verification_spec=item.verification_spec.model_copy(deep=True),
             target_keypoint_id=item.target_keypoint_id,
         )
         by_id[assigned_id] = hypothesis
@@ -780,7 +774,7 @@ def qualify_event_contexts(candidate: Hypothesis, db: CaseDB) -> Hypothesis:
     while an Application/Winlogon 4104 cannot inherit PowerShell semantics.
     """
 
-    support = dict(candidate.confirm_when or {})
+    support = dict(candidate.verification_spec.support_conditions)
     event_ids = support.get("co_observed_event_ids")
     if not isinstance(event_ids, list):
         return candidate

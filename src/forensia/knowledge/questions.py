@@ -6,15 +6,11 @@ from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
-
-from forensia.knowledge.resources import schema_dir
-
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:
-    ZoneInfo = None  # type: ignore[assignment,misc]
+from zoneinfo import ZoneInfo
 
 import yaml
+
+from forensia.knowledge.resources import schema_dir
 
 # Aliases normalised to the canonical structured_status vocabulary.
 _STATUS_ALIASES = {
@@ -384,7 +380,7 @@ def extract_time_qualifiers(
             hour_to = f"{int(m.group(2)) + 12:02d}:00"
 
     # Convert hour qualifiers to UTC when timezone is known
-    if hour_from and hour_to and tz_name and tz_name != "UTC" and ZoneInfo is not None:
+    if hour_from and hour_to and tz_name and tz_name != "UTC":
         try:
             tz = ZoneInfo(tz_name)
             # Use a reference date (today) to get the UTC offset

@@ -243,10 +243,17 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual([], resolved)
             self.assertEqual(1, len(active))
             restored = active[0]
-            self.assertEqual(original.confirm_when, restored.confirm_when)
-            self.assertEqual(original.refute_when, restored.refute_when)
             self.assertEqual(
-                original.evidence_requirements, restored.evidence_requirements
+                original.verification_spec.support_conditions,
+                restored.verification_spec.support_conditions,
+            )
+            self.assertEqual(
+                original.verification_spec.refute_conditions,
+                restored.verification_spec.refute_conditions,
+            )
+            self.assertEqual(
+                original.verification_spec.evidence_requirements,
+                restored.verification_spec.evidence_requirements,
             )
             self.assertEqual("1", restored.verification_spec.spec_version)
             self.assertEqual(
@@ -289,7 +296,10 @@ class PersistenceTests(unittest.TestCase):
                 ).fetchone()
 
             restored = active[0]
-            self.assertEqual({"co_observed_event_ids": [4688]}, restored.confirm_when)
+            self.assertEqual(
+                {"co_observed_event_ids": [4688]},
+                restored.verification_spec.support_conditions,
+            )
             self.assertIn("4688", row[0])
             self.assertNotIn("4624", row[0])
 

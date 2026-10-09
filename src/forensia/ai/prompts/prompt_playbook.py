@@ -377,7 +377,7 @@ def _sections_for_hypothesis(
     usable signal, so behaviour degrades to the full playbook.
     """
     event_ids: set[int] = set()
-    confirm_when = getattr(hypothesis, "confirm_when", None)
+    confirm_when = hypothesis.verification_spec.support_conditions
     if isinstance(confirm_when, dict):
         for eid in confirm_when.get("co_observed_event_ids") or []:
             try:
@@ -916,10 +916,3 @@ def _format_artifact_inference() -> str:
     if len(lines) == 1:
         lines.append("- (no artifact inference data loaded)")
     return "\n".join(lines) + "\n"
-
-
-PLAYBOOK_SECTION_DROP_ORDER = _PLAYBOOK_SECTION_DROP_ORDER
-dfir_playbook = _dfir_playbook
-load_dfir_yamls_cached = _load_dfir_yamls
-render_event_narrative = _render_event_narrative
-sections_for_hypothesis = _sections_for_hypothesis

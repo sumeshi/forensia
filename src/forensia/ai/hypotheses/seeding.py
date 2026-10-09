@@ -253,7 +253,7 @@ def prescreen_telemetry_availability(
 
     screened = 0
     for hyp in list(state.active_hypotheses):
-        confirm_when = hyp.confirm_when or {}
+        confirm_when = hyp.verification_spec.support_conditions
         co_observed = confirm_when.get("co_observed_event_ids")
         if not co_observed or not isinstance(co_observed, list):
             continue

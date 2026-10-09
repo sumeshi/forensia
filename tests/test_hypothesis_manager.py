@@ -223,7 +223,9 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
                 )
                 qualify_event_contexts(candidate, db)
         self.assertEqual(
-            candidate.confirm_when["event_contexts"][0]["provider"],
+            candidate.verification_spec.support_conditions["event_contexts"][0][
+                "provider"
+            ],
             "Microsoft-Windows-PowerShell",
         )
         self.assertEqual(
@@ -662,54 +664,25 @@ class TestResolvedHypothesisDedup:
 
 
 class TestHypothesisEvidenceStrength:
-    """Unit tests for hypothesis_evidence_strength scoring."""
-
-    def test_llm_speculated_scores_zero(self) -> None:
-        h = Hypothesis(
-            id="H-000",
-            description="LLM-speculated hypothesis",
-            status="active",
-        )
-        assert hypothesis_evidence_strength(h) == 0
-
-    def test_rule_seeded_only_scores_one(self) -> None:
-        h = Hypothesis(
-            id="H-001",
-            description="Rule-seeded hypothesis",
-            status="active",
-            source_rule_ids=["rule-1"],
-        )
-        assert hypothesis_evidence_strength(h) == 1
-
-    def test_rule_seeded_with_evidence_scores_two(self) -> None:
-        h = Hypothesis(
-            id="H-002",
-            description="Rule-seeded with evidence",
-            status="active",
-            source_rule_ids=["rule-1"],
-            confirm_when={"co_observed_event_ids": [4624]},
-        )
-        assert hypothesis_evidence_strength(h) == 2
-
-    def test_zero_rows_placeholder_not_strong_evidence(self) -> None:
-        h = Hypothesis(
-            id="H-003",
-            description="Rule-seeded with zero_rows placeholder",
-            status="active",
-            source_rule_ids=["rule-1"],
-            confirm_when={"zero_rows": True},
-        )
-        assert hypothesis_evidence_strength(h) == 1
-
-    def test_refute_when_also_counts_as_evidence(self) -> None:
-        h = Hypothesis(
-            id="H-004",
-            description="Rule-seeded with refute criteria",
-            status="active",
-            source_rule_ids=["rule-1"],
-            refute_when={"zero_rows": True},
-        )
-        assert hypothesis_evidence_strength(h) == 2
+    def test_rule_origin_and_declared_evidence_strength(self) -> None:
+        cases = [
+            ({}, 0),
+            ({"source_rule_ids": ["rule-1"]}, 1),
+            ({"source_rule_ids": ["rule-1"], "confirm_when": {"zero_rows": True}}, 1),
+            (
+                {
+                    "source_rule_ids": ["rule-1"],
+                    "confirm_when": {"co_observed_event_ids": [4624]},
+                },
+                2,
+            ),
+            ({"source_rule_ids": ["rule-1"], "refute_when": {"zero_rows": True}}, 2),
+        ]
+        for index, (declaration, expected) in enumerate(cases):
+            hypothesis = Hypothesis(
+                id=f"H-{index:03d}", description="candidate", **declaration
+            )
+            assert hypothesis_evidence_strength(hypothesis) == expected
 
 
 def _insert_section(db: CaseDB, section_key: str, update_count: int = 0) -> None:

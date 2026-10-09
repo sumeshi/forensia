@@ -397,8 +397,11 @@ def verify_verdict_consistency(
 
     # -- Check 1: event_id claim vs observed event_ids --
     claimed_event_ids: set[int] = set()
-    if hypothesis and hasattr(hypothesis, "confirm_when") and hypothesis.confirm_when:
-        co_ids = hypothesis.confirm_when.get("co_observed_event_ids") or []
+    if hypothesis and hypothesis.verification_spec.support_conditions:
+        co_ids = (
+            hypothesis.verification_spec.support_conditions.get("co_observed_event_ids")
+            or []
+        )
         for eid in co_ids:
             try:
                 claimed_event_ids.add(int(eid))
@@ -431,8 +434,8 @@ def verify_verdict_consistency(
         except TypeError, ValueError:
             pass
     source_event_ids = authoritative_ids
-    if hypothesis and sample_rows and hasattr(hypothesis, "confirm_when"):
-        confirm_when = hypothesis.confirm_when or {}
+    if hypothesis and sample_rows:
+        confirm_when = hypothesis.verification_spec.support_conditions
         constrained_ids = {
             int(value)
             for value in confirm_when.get("co_observed_event_ids") or []
@@ -496,9 +499,9 @@ def verify_verdict_consistency(
                 )
 
     # -- Check 3: co-observation correlation constraints (same_host / within_minutes) --
-    if hypothesis and hasattr(hypothesis, "confirm_when") and hypothesis.confirm_when:
-        cw = hypothesis.confirm_when
-        if isinstance(cw, dict) and (cw.get("same_host") or cw.get("within_minutes")):
+    if hypothesis and hypothesis.verification_spec.support_conditions:
+        cw = hypothesis.verification_spec.support_conditions
+        if cw.get("same_host") or cw.get("within_minutes"):
             sample_rows = result_summary.get("sample_rows") or []
             satisfied, veto_reason = _co_observation_satisfied(cw, sample_rows)
             if not satisfied:

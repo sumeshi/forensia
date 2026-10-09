@@ -197,7 +197,7 @@ def _check_correlation_constraints(
 
     Returns (passed, reason).
     """
-    confirm_when = si.hypothesis.confirm_when or {}
+    confirm_when = si.hypothesis.verification_spec.support_conditions
     if not confirm_when:
         return True, "no correlation constraints declared"
 
@@ -364,7 +364,7 @@ def decide_settlement(
     persistence remains the runner's responsibility.
 
     Gates for confirmed:
-    1. Checker verdict must be confirmed (or auto-confirm conditions met)
+    1. Checker verdict must be confirmed
     2. Supporting EvidenceLink ≥ 1
     3. Machine sufficiency == sufficient
     4. Required entities have concrete values
@@ -670,14 +670,14 @@ def build_settlement_input_from_confirm_when(
     absence_note: str = "",
     sufficiency_result: SufficiencyResult | None = None,
 ) -> SettlementInput:
-    """Build SettlementInput by assessing co-observation from hypothesis.confirm_when.
+    """Build SettlementInput from the hypothesis' canonical support conditions.
 
     This helper extracts co_observed_event_ids, same_host, within_minutes from
     the hypothesis's confirm_when dict and evaluates co-observation satisfaction.
     """
     from forensia.ai.checking.check_guardrails import _co_observation_satisfied
 
-    confirm_when = hypothesis.confirm_when or {}
+    confirm_when = hypothesis.verification_spec.support_conditions
     rows = sample_rows or []
 
     co_observed_ids: list[int] = []

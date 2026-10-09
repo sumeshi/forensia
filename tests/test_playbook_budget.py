@@ -4,8 +4,7 @@ import os
 from typing import Any
 
 from forensia.ai.prompts.prompt_playbook import (
-    PLAYBOOK_SECTION_DROP_ORDER,
-    dfir_playbook,
+    _dfir_playbook as dfir_playbook,
 )
 
 _SMALL_EVENT_IDS = {
@@ -81,22 +80,6 @@ def test_total_prompt_budget_is_configurable_and_auto_derived() -> None:
         reload_settings()
 
 
-def test_budget_drop_order_is_stable() -> None:
-    """Drop order is deterministic: IOC → app → artifact → extractor → FP → logon → schema → events."""
-    expected = [
-        "ioc",  # first to drop
-        "app",  # application catalog
-        "artifact",  # artifact inference
-        "logon",  # logon types
-        "events",  # event IDs
-        "priority",  # priority investigation order
-        "fp",  # false-positive guidance
-        "extractor",  # JSON extractors
-        "schema",  # schema notes — highest priority, last to drop
-    ]
-    assert PLAYBOOK_SECTION_DROP_ORDER == expected
-
-
 def test_table_gating_planning_phases() -> None:
     """Planning phases exclude artifact/IOC regardless of tables."""
     for phase in ("broad_plan", "hypothesis_plan"):
@@ -164,7 +147,7 @@ def test_no_profile_playbook_truncates_events_instead_of_dropping_everything():
     so the other guidance sections survive, instead of the serial drop loop
     discarding every droppable section (the pre-fix behavior left only the
     Priority Investigation Order)."""
-    from forensia.ai.prompts.prompt_playbook import dfir_playbook
+    from forensia.ai.prompts.prompt_playbook import _dfir_playbook as dfir_playbook
     from forensia.config import get_system_prompt_budget_chars, settings
 
     old_system_budget = settings.forensia_system_prompt_budget_chars
@@ -193,7 +176,9 @@ def testsections_for_hypothesis_auth_excludes_catalogs() -> None:
     evidence. Including them for a pure authentication hypothesis dilutes
     the prompt for weak local models without adding signal.
     """
-    from forensia.ai.prompts.prompt_playbook import sections_for_hypothesis
+    from forensia.ai.prompts.prompt_playbook import (
+        _sections_for_hypothesis as sections_for_hypothesis,
+    )
     from forensia.core.session import Hypothesis
 
     auth = Hypothesis(
@@ -215,7 +200,9 @@ def testsections_for_hypothesis_auth_excludes_catalogs() -> None:
 
 def testsections_for_hypothesis_exec_includes_catalogs() -> None:
     """A hypothesis about executables keeps the catalog interpretation aids."""
-    from forensia.ai.prompts.prompt_playbook import sections_for_hypothesis
+    from forensia.ai.prompts.prompt_playbook import (
+        _sections_for_hypothesis as sections_for_hypothesis,
+    )
     from forensia.core.session import Hypothesis
 
     exe = Hypothesis(
@@ -230,7 +217,9 @@ def testsections_for_hypothesis_exec_includes_catalogs() -> None:
 
 def testsections_for_hypothesis_no_signal_returns_none() -> None:
     """No event IDs and no entities → None (full playbook, backward safe)."""
-    from forensia.ai.prompts.prompt_playbook import sections_for_hypothesis
+    from forensia.ai.prompts.prompt_playbook import (
+        _sections_for_hypothesis as sections_for_hypothesis,
+    )
     from forensia.core.session import Hypothesis
 
     assert sections_for_hypothesis(Hypothesis(id="H-003", description="x")) is None

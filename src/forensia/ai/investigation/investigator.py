@@ -1,8 +1,4 @@
-"""Investigation entry point; helpers live in focused submodules.
-
-Kept for backward compatibility: existing code and tests import these
-names from forensia.ai.investigation.investigator.
-"""
+"""Investigation entry point and session orchestration."""
 
 from __future__ import annotations
 

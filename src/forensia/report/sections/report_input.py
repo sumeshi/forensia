@@ -119,11 +119,19 @@ def _recorded_report_input(db: CaseDB) -> dict[str, object] | None:
 
 
 def active_report_section_keys(db: CaseDB) -> list[str] | None:
-    """Keys of the adopted report input; None means a pre-adoption case."""
-    record = _recorded_report_input(db)
-    if record is None:
+    """Extract active keys in DuckDB without transferring the recorded bodies."""
+    row = db.execute(
+        "SELECT json_extract_string(output_json, '$.sections[*].section_key') "
+        "FROM investigation_steps WHERE phase = ? "
+        "ORDER BY created_at DESC, step_id DESC LIMIT 1",
+        (REPORT_INPUT_PHASE,),
+    ).fetchone()
+    if row is None:
         return None
-    return [str(item["section_key"]) for item in record["sections"]]
+    keys = row[0]
+    if not isinstance(keys, list) or not keys:
+        raise ReportSpecError("recorded report input has no section keys")
+    return [str(key) for key in keys]
 
 
 def decide_report_sources(
