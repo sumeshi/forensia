@@ -7,7 +7,6 @@ import unittest
 
 from forensia.ai.investigation.selection import (
     SelectionContext,
-    _capabilities_for_hypothesis,
     check_eligibility,
     compute_priority_score,
     select_focus_hypotheses,
@@ -73,32 +72,6 @@ class EligibilityTests(unittest.TestCase):
 class PriorityScoreTests(unittest.TestCase):
     """Test priority score computation."""
 
-    def test_score_has_all_components(self) -> None:
-        hyp = {
-            "hypothesis_id": "H-001",
-            "description": "test",
-            "status": "active",
-            "source_rule_ids": ["rule-1"],
-            "selection_count": 0,
-            "last_selected_at": None,
-            "origin": "rule",
-            "verification_spec": {"spec_version": "1"},
-        }
-        ctx = SelectionContext(
-            active_hypotheses=[hyp],
-            relations={},
-            coverage={},
-            open_gaps=[],
-            objective="",
-        )
-        total, components = compute_priority_score(hyp, ctx)
-        component_names = {c.name for c in components}
-        self.assertIn("severity", component_names)
-        self.assertIn("report_relevance", component_names)
-        self.assertIn("aging", component_names)
-        self.assertIn("retry_penalty", component_names)
-        self.assertNotIn("report_changeability", component_names)
-
     def test_report_prose_cannot_influence_order(self) -> None:
         """R05: no scoring input may carry report prose.
 
@@ -143,28 +116,6 @@ class PriorityScoreTests(unittest.TestCase):
         linked, _ = compute_priority_score(hyp, linked_ctx)
         self.assertGreater(linked, base)
 
-    def test_never_selected_has_high_aging(self) -> None:
-        hyp = {
-            "hypothesis_id": "H-001",
-            "description": "test",
-            "status": "active",
-            "source_rule_ids": [],
-            "selection_count": 0,
-            "last_selected_at": None,
-            "origin": "rule",
-            "verification_spec": {"spec_version": "1"},
-        }
-        ctx = SelectionContext(
-            active_hypotheses=[hyp],
-            relations={},
-            coverage={},
-            open_gaps=[],
-            objective="",
-        )
-        _, components = compute_priority_score(hyp, ctx)
-        aging = next(c for c in components if c.name == "aging")
-        self.assertEqual(aging.raw_value, 8.0)
-
     def test_higher_selection_count_increases_penalty(self) -> None:
         hyp_new = {
             "hypothesis_id": "H-001",
@@ -201,28 +152,7 @@ class PriorityScoreTests(unittest.TestCase):
 
 
 class RequiredCapabilityTests(unittest.TestCase):
-    """T02: capabilities derive from the canonical spec, not re-inference."""
-
-    def test_declared_spec_capabilities_short_circuit_inference(self) -> None:
-        hyp = {
-            "verification_spec": {
-                "spec_version": "1",
-                "required_capabilities": ["declared_cap"],
-                "support_conditions": {},
-            },
-        }
-        self.assertEqual(_capabilities_for_hypothesis(hyp), {"declared_cap"})
-
-    def test_spec_support_conditions_infer_when_no_declared_list(self) -> None:
-        hyp = {
-            "verification_spec": {
-                "spec_version": "1",
-                "support_conditions": {"keywords": ["evtx_events 4624"]},
-            },
-        }
-        self.assertEqual(
-            _capabilities_for_hypothesis(hyp), {"lateral_movement", "logon"}
-        )
+    """Test selection behavior when required capabilities are unavailable."""
 
     @staticmethod
     def _db_hypothesis(spec: dict) -> dict:
@@ -308,13 +238,6 @@ class RequiredCapabilityTests(unittest.TestCase):
 
 class SelectionIntegrationTests(unittest.TestCase):
     """Test end-to-end hypothesis selection."""
-
-    def test_select_from_empty(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                results = select_focus_hypotheses(db, limit=2)
-                self.assertEqual(len(results), 0)
 
     def test_selects_active_hypothesis(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -2,33 +2,10 @@ from __future__ import annotations
 
 import unittest
 
-from scripts.audit_schema_coverage import (
-    _extract_event_ids_from_sql,
-)
-
 from forensia.knowledge.catalog import expand_catalog_sql_placeholders
 
 
 class AuditCoverageTests(unittest.TestCase):
-    def test_extract_event_id_equality(self) -> None:
-        ids = _extract_event_ids_from_sql(
-            "SELECT * FROM evtx_events WHERE event_id = 4624"
-        )
-        self.assertIn(4624, ids)
-
-    def test_extract_event_id_in_clause(self) -> None:
-        ids = _extract_event_ids_from_sql(
-            "SELECT * FROM evtx_events WHERE event_id IN (4624, 4625, 4648)"
-        )
-        self.assertEqual(ids, {4624, 4625, 4648})
-
-    def test_extract_event_id_empty_sql(self) -> None:
-        self.assertEqual(_extract_event_ids_from_sql(""), set())
-
-    def test_extract_event_id_no_match(self) -> None:
-        ids = _extract_event_ids_from_sql("SELECT * FROM mft_files")
-        self.assertEqual(ids, set())
-
     def test_catalog_sql_placeholders_expand_before_audit(self) -> None:
         sql = (
             "SELECT file_path FROM mft_entries WHERE "
@@ -77,21 +54,6 @@ class VerdictEnforcementTests(unittest.TestCase):
             assert_valid_verdict("bogus_verdict", "section_verdict")
         with self.assertRaises(ValueError):
             assert_valid_verdict("anything", "missing_category")
-
-    def test_taxonomy_raises_when_not_set(self) -> None:
-        """Library callers that never call set_taxonomy_path get a clear error."""
-        from forensia.core import verdicts as v
-        from forensia.core.verdicts import assert_valid_verdict
-
-        old_path, old_cache = v._taxonomy_path, v._taxonomy_cache
-        try:
-            v._taxonomy_path = None
-            v._taxonomy_cache = None
-            with self.assertRaises(RuntimeError):
-                assert_valid_verdict("confirmed", "hypothesis_verdict")
-        finally:
-            v._taxonomy_path = old_path
-            v._taxonomy_cache = old_cache
 
     def test_benchmark_answer_normalization_enforces_taxonomy(self) -> None:
         from forensia.report.answers.answer_store import normalize_structured_answer

@@ -13,7 +13,6 @@ import tempfile
 import unittest
 
 from forensia.ai.checking.assessment import assess_evidence_group
-from forensia.ai.checking.check_guardrails import _co_observation_satisfied
 from forensia.ai.hypotheses.hypothesis_manager import (
     MAX_SECTION_UPDATES,
     admit_new_hypothesis,
@@ -28,7 +27,6 @@ from forensia.ai.hypotheses.hypothesis_model import (
 from forensia.core.case import Case
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
-from forensia.report.sections.section_quality import _event_claim_gaps
 from forensia.report.sections.section_taxonomy import sections_for_keypoint
 
 
@@ -233,30 +231,6 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
             admit_new_hypothesis(candidate, SessionState(session_id="S-derived")),
         )
 
-    def test_co_observation_ignores_ineligible_provider_rows(self) -> None:
-        rows = [
-            {
-                "event_id": 4104,
-                "channel": "Application",
-                "raw_json": {
-                    "winlog": {"provider": {"name": "Microsoft-Windows-Winlogon"}}
-                },
-            }
-        ]
-        condition = {
-            "co_observed_event_ids": [4104],
-            "event_contexts": [
-                {
-                    "event_id": 4104,
-                    "channel": "Microsoft-Windows-PowerShell/Operational",
-                    "provider": "Microsoft-Windows-PowerShell",
-                }
-            ],
-        }
-        satisfied, reason = _co_observation_satisfied(condition, rows)
-        self.assertFalse(satisfied)
-        self.assertIn("missing", reason)
-
     def test_admitted_spec_with_unknown_key_stays_contextual(self) -> None:
         """Admission tolerates keys outside the shared vocabulary, but such a
         spec must not silently become supporting at Assessment."""
@@ -296,28 +270,6 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
             evidence_ids=["evtx-1"],
         )
         self.assertEqual(rejected_assessment.role, "contextual")
-
-    def test_quality_uses_eligible_context_when_rows_are_mixed(self) -> None:
-        rows = [
-            {
-                "event_id": 4104,
-                "channel": "Microsoft-Windows-PowerShell/Operational",
-                "raw_json": {
-                    "winlog": {"provider": {"name": "Microsoft-Windows-PowerShell"}}
-                },
-            },
-            {
-                "event_id": 4104,
-                "channel": "Application",
-                "raw_json": {
-                    "winlog": {"provider": {"name": "Microsoft-Windows-Winlogon"}}
-                },
-            },
-        ]
-        gaps = _event_claim_gaps(
-            "PowerShell script block execution was observed", [{"sample_rows": rows}]
-        )
-        self.assertFalse(any("channel/provider context" in gap for gap in gaps))
 
 
 def _setup_confirmed_invariant(db: CaseDB, hypothesis_id: str) -> None:

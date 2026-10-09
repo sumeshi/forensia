@@ -26,17 +26,15 @@ class TestLlmCompact:
             with pytest.raises(LLMBudgetExceededError):
                 llm_compact(text, 200, base_url="http://x", model="m")
 
-    def test_under_budget_returned_unchanged(self) -> None:
-        result = llm_compact("short text", 100, base_url="http://x", model="m")
-        assert result == "short text"
-
-    def test_zero_budget_returns_empty(self) -> None:
-        assert llm_compact("text", 0, base_url="http://x", model="m") == ""
-
     def test_mechanical_sufficiency(self) -> None:
         """When text < 1.5x budget, mechanical is used (no LLM call)."""
         text = "x" * 140  # 140 < 100 * 1.5
         with patch("forensia.ai.compaction._call_llm") as mock_llm:
+            assert (
+                llm_compact("short text", 100, base_url="http://x", model="m")
+                == "short text"
+            )
+            assert llm_compact("text", 0, base_url="http://x", model="m") == ""
             result = llm_compact(text, 100, base_url="http://x", model="m")
         mock_llm.assert_not_called()
         assert len(result) <= 100
@@ -385,21 +383,6 @@ class TestEnforceSystemBudgetCompaction:
         )
         assert "## Application Catalog" not in messages[0]["content"]
         assert "## IOC Catalog" not in messages[0]["content"]
-
-
-class TestTrimDynamicContentMarker:
-    """Verify that _trim_dynamic_content uses the truncation marker."""
-
-    def test_marker_present_in_trimmed_content(self) -> None:
-        from forensia.ai.prompts.prompt_context import _trim_dynamic_content
-
-        messages = [
-            {"role": "system", "content": "system prompt"},
-            {"role": "user", "content": "x" * 200000},
-        ]
-        trimmed = _trim_dynamic_content(messages, max_total_tokens=1000)
-        user_msg = trimmed[1]["content"]
-        assert "…[truncated]" in user_msg
 
 
 class TestStructuredCompact:

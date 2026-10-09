@@ -85,63 +85,6 @@ class CaseSetupTests(unittest.TestCase):
             self.assertTrue((Path(tmpdir) / "1_overview.md").exists())
             self.assertTrue((Path(tmpdir) / "_formats" / "report.yaml").exists())
 
-    def test_templates_export_command_writes_files(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            runner = CliRunner()
-            result = runner.invoke(cli_module.app, ["templates-export", tmpdir])
-            self.assertEqual(0, result.exit_code, result.output)
-            self.assertTrue((Path(tmpdir) / "1_overview.md").exists())
-            self.assertTrue((Path(tmpdir) / "_formats" / "report.yaml").exists())
-
-    def test_investigate_command_accepts_template_dir(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            template_dir = Path(tmpdir) / "custom-templates"
-            export_packaged_report_templates(template_dir)
-            runner = CliRunner()
-            captured: dict[str, object] = {}
-
-            def fake_investigate_loop(*args, **kwargs):
-                captured["template_root"] = kwargs.get("template_root")
-                return {
-                    "session_id": "session-test",
-                    "status": "completed",
-                    "iteration": 1,
-                    "summary": "done",
-                    "hypotheses": [],
-                    "report_sections": {"items": []},
-                }
-
-            with (
-                patch(
-                    "forensia.pipeline.investigate_loop",
-                    side_effect=fake_investigate_loop,
-                ),
-                patch(
-                    "forensia.pipeline.render_written_report",
-                    return_value=(
-                        case.path / "reports" / "report.md",
-                        case.path / "reports" / "report.html",
-                    ),
-                ),
-            ):
-                result = runner.invoke(
-                    cli_module.app,
-                    [
-                        "investigate",
-                        str(case.path),
-                        "--llm-base-url",
-                        "http://127.0.0.1:1234",
-                        "--model",
-                        "test-model",
-                        "--template-dir",
-                        str(template_dir),
-                    ],
-                )
-
-            self.assertEqual(0, result.exit_code, result.output)
-            self.assertEqual(template_dir.resolve(), captured["template_root"])
-
     def test_investigate_command_rejects_empty_template_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)

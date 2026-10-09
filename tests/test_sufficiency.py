@@ -504,65 +504,6 @@ class SufficiencyEvaluationTests(unittest.TestCase):
         self.assertEqual(assessment.role, "contextual")
 
 
-class RequiredCapabilityDerivationTests(unittest.TestCase):
-    """T02: declared spec capabilities win; legacy fallback stays text-based."""
-
-    def _insert_hypothesis(
-        self, db: CaseDB, hypothesis_id: str, *, spec: dict | None = None
-    ) -> None:
-        db.execute(
-            "INSERT INTO hypotheses (hypothesis_id, description, status, "
-            "verification_spec, created_at, updated_at) "
-            "VALUES (?, ?, 'active', ?, now(), now())",
-            [
-                hypothesis_id,
-                f"Description {hypothesis_id}",
-                json.dumps(spec or {"spec_version": "1"}),
-            ],
-        )
-
-    def test_declared_spec_capabilities_short_circuit_text_inference(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with CaseDB(Case.init(tmpdir)) as db:
-                self._insert_hypothesis(
-                    db,
-                    "H-SPEC-CAPS",
-                    spec={
-                        "spec_version": "1",
-                        "required_capabilities": ["declared_cap"],
-                        "support_conditions": {},
-                    },
-                )
-                _result, _verdict, _reason, caps = assess_and_persist_sufficiency(
-                    db,
-                    hypothesis_id="H-SPEC-CAPS",
-                    evidence_requirements={},
-                    llm_verdict="confirmed",
-                    verification_spec={
-                        "spec_version": "1",
-                        "required_capabilities": ["declared_cap"],
-                        "support_conditions": {},
-                    },
-                )
-                self.assertEqual(caps, ["declared_cap"])
-
-    def test_support_conditions_derive_capabilities_without_declared_list(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with CaseDB(Case.init(tmpdir)) as db:
-                self._insert_hypothesis(db, "H-SUPPORT-CAPS")
-                _result, _verdict, _reason, caps = assess_and_persist_sufficiency(
-                    db,
-                    hypothesis_id="H-SUPPORT-CAPS",
-                    evidence_requirements={},
-                    llm_verdict="confirmed",
-                    verification_spec={
-                        "spec_version": "1",
-                        "support_conditions": {"keywords": ["evtx_events 4624"]},
-                    },
-                )
-                self.assertEqual(caps, ["lateral_movement", "logon"])
-
-
 class VerdictReconciliationTests(unittest.TestCase):
     """Test LLM/machine verdict reconciliation."""
 

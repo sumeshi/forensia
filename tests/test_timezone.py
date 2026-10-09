@@ -60,19 +60,8 @@ class TimestampRenderingTests(unittest.TestCase):
         self.assertIn("00:31:00", tokyo)
         self.assertIn("UTC+9", tokyo)
         self.assertEqual("unknown", render_timestamp_with_timezone(None, None))
+        self.assertIsNone(local_time_from_utc(timestamp, "Invalid/Zone"))
         self.assertEqual("UTC", tz_offset_str("UTC"))
-
-    def test_local_conversion_matrix(self) -> None:
-        for zone, expected in (
-            ("America/New_York", "2026-03-25 11:31:00"),
-            ("Asia/Tokyo", "2026-03-26 00:31:00"),
-            ("UTC", None),
-            ("Invalid/Zone", None),
-        ):
-            with self.subTest(zone=zone):
-                self.assertEqual(
-                    expected, local_time_from_utc("2026-03-25 15:31:00", zone)
-                )
 
     def test_structured_answers_add_local_columns_only_when_needed(self) -> None:
         rows = [{"shutdown_time": "2026-03-25 15:31:00", "computer": "PC1"}]

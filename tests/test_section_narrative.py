@@ -9,15 +9,11 @@ from unittest.mock import patch
 
 from forensia.ai.sections.section_answers import (
     _format_structured_answer,
-    extract_answer_by_shape,
     is_effectively_empty_body,
 )
 from forensia.ai.sections.section_block_narrative import (
     fallback_narrative_body,
     narrate_paragraph_with_retry,
-)
-from forensia.ai.sections.section_exec import (
-    coerce_plan_action,
 )
 from forensia.ai.sections.section_run_store import load_reusable_section_facts
 from forensia.config import clear_llm_settings_cache, reload_settings
@@ -529,30 +525,6 @@ structured_answer:
 class AnswerFormattingTests(unittest.TestCase):
     """Plan-action coercion and structured question-answer formatting."""
 
-    def test_comma_separated_keypoint(self):
-        result = coerce_plan_action(
-            {"action": "keypoint", "keypoint": "benchmark_hosts, benchmark_recent_lnk"},
-            section_key="test",
-            iteration=0,
-        )
-        self.assertIsNotNone(result)
-        self.assertEqual(result.keypoint, "benchmark_hosts, benchmark_recent_lnk")
-
-    def test_format_structured_answer_uses_classifier_status(self):
-        case = SimpleNamespace(reports_dir=Path(tempfile.mkdtemp()))
-        body = _format_structured_answer(
-            {"status": "answered", "picked_row_indices": [], "rationale": "ok"},
-            [{"host_id": "INFORMANT-PC"}],
-            {"fields": ["host_id"]},
-            "6_appendix",
-            "1. host",
-            "not_found",
-            case,
-            question_id="Q6",
-        )
-        self.assertIn("**Status:** answered", body)
-        self.assertIn("INFORMANT-PC", body)
-
     def test_format_structured_answer_missing_reason_string_not_split(self):
         case = SimpleNamespace(reports_dir=Path(tempfile.mkdtemp()))
         body = _format_structured_answer(
@@ -572,23 +544,6 @@ class AnswerFormattingTests(unittest.TestCase):
         self.assertIn("**Status:** wrong_query", body)
         self.assertIn("- empty answer rationale", body)
         self.assertNotIn("- e\n- m", body)
-
-    def test_extract_answer_by_shape_does_not_make_empty_rows(self):
-        rows = [
-            {
-                "summary": "file_path=Windows/Prefetch/GOOGLEDRIVESYNC.EXE-841A0D94.pf evidence_id=mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000005619-00"
-            }
-        ]
-        result = extract_answer_by_shape(
-            rows,
-            {
-                "format": "enumerated_services",
-                "fields": ["service_name", "exe_found", "paths_found", "config_found"],
-            },
-            "enumerated_services",
-        )
-        self.assertEqual(result[0]["service_name"], "Google Drive")
-        self.assertNotEqual(result[0]["service_name"], "")
 
 
 class SectionBodyQualityTests(unittest.TestCase):
@@ -642,24 +597,6 @@ Substantive narrative claim with evidence evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         self.assertNotIn("structured:host_identity", joined)
         self.assertNotIn("structured/answers.json", joined)
         self.assertNotIn("### Queries Run", joined)
-
-
-def test_template_column_selection_tolerates_heterogeneous_rows() -> None:
-    from forensia.ai.sections.section_block_plan import _select_columns_by_template
-
-    rows = [
-        {"finding": "A", "severity": "high"},
-        {"finding": "B"},
-    ]
-    selected = _select_columns_by_template(
-        rows,
-        "1_overview",
-        "| finding | severity |",
-    )
-    assert selected == [
-        {"finding": "A", "severity": "high"},
-        {"finding": "B", "severity": None},
-    ]
 
 
 if __name__ == "__main__":

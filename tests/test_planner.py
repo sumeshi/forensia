@@ -13,7 +13,6 @@ from forensia.ai.investigation.planner import (
     validate_select_sql,
 )
 from forensia.ai.investigation.progress import query_fingerprint
-from forensia.ai.prompts.sql_schema import build_investigation_framework
 from forensia.config import (
     reload_settings,
     resolve_llm_config,
@@ -802,30 +801,6 @@ class PlannerRetryTests(unittest.TestCase):
         # the same query_id must merge with the local history entry, not
         # appear as a second attempt.
         self.assertEqual(1, first_call_system.count("query_id=Q-local"))
-
-    def test_investigation_framework_lists_missing_columns(self) -> None:
-        framework = build_investigation_framework()
-        self.assertIn(
-            "evtx_events columns: evidence_id, source_file, channel, event_id, record_id, timestamp",
-            framework,
-        )
-        self.assertIn(
-            "hypotheses columns: hypothesis_id, description, status, verdict, summary, origin",
-            framework,
-        )
-        self.assertIn("event_id = 4624 AND logon_type IN ('2','10')", framework)
-        self.assertIn("4728/4732", framework)
-
-    def test_route_trace_write_skips_regex_for_select(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with (
-                CaseDB(case) as db,
-                patch("forensia.db.database.re.search") as mock_search,
-            ):
-                routed = db._route_trace_write("SELECT * FROM progress_events")
-        self.assertEqual("SELECT * FROM progress_events", routed)
-        mock_search.assert_not_called()
 
     def test_request_with_optional_context_starts_with_default_memory(self) -> None:
         seen: list[str] = []

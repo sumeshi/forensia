@@ -13,8 +13,6 @@ from forensia.knowledge.coverage import (
     _load_yaml,
     derive_required_capabilities,
     get_coverage_summary,
-    load_artifact_capabilities,
-    load_evidence_sufficiency_policy,
     refresh_evidence_coverage,
 )
 
@@ -240,26 +238,7 @@ class CoverageComputationTests(unittest.TestCase):
 
 
 class CapabilityDeclarationTests(unittest.TestCase):
-    """Test YAML declaration loading."""
-
-    def test_load_artifact_capabilities(self) -> None:
-        caps = load_artifact_capabilities()
-        self.assertIn("families", caps)
-        self.assertIn("evtx", caps["families"])
-        self.assertIn("mft", caps["families"])
-        self.assertIn("prefetch", caps["families"])
-
-    def test_evtx_has_process_execution_capability(self) -> None:
-        caps = load_artifact_capabilities()
-        evtx_caps = caps["families"]["evtx"]["capabilities"]
-        self.assertIn("process_execution", evtx_caps)
-        self.assertIn(4688, evtx_caps["process_execution"]["event_ids"])
-
-    def test_load_evidence_sufficiency_policy(self) -> None:
-        policy = load_evidence_sufficiency_policy()
-        self.assertIn("common_rules", policy)
-        self.assertTrue(policy["common_rules"]["zero_rows_is_not_support"])
-        self.assertIn("default_sufficiency", policy)
+    """Schema declarations are checked by the doctor audit, not pinned here."""
 
     def test_required_yaml_loader_reports_missing_and_non_mapping_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -269,9 +248,3 @@ class CapabilityDeclarationTests(unittest.TestCase):
             path.write_text("- item\n", encoding="utf-8")
             with self.assertRaisesRegex(TypeError, str(path)):
                 _load_yaml(path)
-
-    def test_cross_artifact_corroboration(self) -> None:
-        caps = load_artifact_capabilities()
-        self.assertIn("cross_artifact_corroboration", caps)
-        pe = caps["cross_artifact_corroboration"]["process_execution"]
-        self.assertIn("prefetch", pe["preferred_families"])

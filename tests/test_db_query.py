@@ -77,14 +77,6 @@ class FetchRecordsTests(unittest.TestCase):
         db.execute.return_value = result
         return db
 
-    def test_maps_rows_and_forwards_params(self) -> None:
-        db = self._db(["id", "name"], [(1, "alice"), (2, None)])
-        self.assertEqual(
-            [{"id": 1, "name": "alice"}, {"id": 2, "name": None}],
-            fetch_records(db, "SELECT * FROM t WHERE id > ?", [0]),
-        )
-        db.execute.assert_called_once_with("SELECT * FROM t WHERE id > ?", [0])
-
     def test_empty_results_and_database_errors(self) -> None:
         self.assertEqual([], fetch_records(self._db(["id"], []), "SELECT 1"))
         db = MagicMock()

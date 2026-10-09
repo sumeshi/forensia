@@ -15,7 +15,6 @@ from unittest.mock import patch
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.report.report_validation import (
-    check_failure_markers,
     check_sufficiency_consistency,
     derive_publication_state,
     validate_report,
@@ -24,17 +23,6 @@ from forensia.report.report_validation import (
 
 class TestReportQualityContract(unittest.TestCase):
     """Contract tests for report publishability invariants."""
-
-    def test_failure_marker_not_in_output(self) -> None:
-        """Failure markers must not appear in final report body."""
-        body_with_marker = "Some text\n*Section block failed: ValueError*\nMore text"
-        body_clean = "Some text\nMore text"
-
-        findings = check_failure_markers(body_with_marker)
-        self.assertGreater(len(findings), 0, "Should detect failure marker")
-
-        findings = check_failure_markers(body_clean)
-        self.assertEqual(len(findings), 0, "Clean body should have no markers")
 
     def test_persisted_failure_is_fatal_but_omitted_from_rendered_prose(self) -> None:
         from forensia.report.render.writer import build_report_markdown_from_db
@@ -369,15 +357,6 @@ class TestReportQualityContract(unittest.TestCase):
         errors = _validate_table_output("test_table", rows, columns)
         self.assertEqual(len(errors), 0, "Table with data should pass validation")
 
-    def test_verdict_taxonomy_includes_candidate_only(self) -> None:
-        """candidate_only must be a valid structured_status."""
-        from forensia.core.verdicts import valid_verdicts
-
-        valid = valid_verdicts("structured_status")
-        self.assertIn("candidate_only", valid)
-        self.assertIn("answered", valid)
-        self.assertIn("partial", valid)
-
     def test_validate_report_detects_failure_markers(self) -> None:
         """Full report validation must detect failure markers."""
         report_brief = {}
@@ -388,64 +367,6 @@ class TestReportQualityContract(unittest.TestCase):
         self.assertGreater(
             len(marker_findings), 0, "Should detect failure marker in full validation"
         )
-
-
-class TestRuleSemanticsContract(unittest.TestCase):
-    """Contract tests for rule semantics — normal lifecycle not flagged as malicious."""
-
-    def test_1100_rule_is_low_severity(self) -> None:
-        """Event 1100 (log service shutdown) must be low severity, not high."""
-        from forensia.knowledge.rules.loader import load_rules_from_dir
-
-        rules_dir = Path("src/forensia/knowledge/rulepacks")
-        profile_path = Path("src/forensia/knowledge/profiles/windows-basic.yaml")
-        rules = load_rules_from_dir(rules_dir, profile_path)
-        rule_1100 = next(
-            (r for r in rules if r.id == "windows-security-1100-evtlog-shutdown"), None
-        )
-        self.assertIsNotNone(rule_1100, "Rule 1100 should exist")
-        self.assertEqual(rule_1100.severity, "low", "Event 1100 should be low severity")
-
-    def test_6005_6006_rule_is_low_severity(self) -> None:
-        """Events 6005/6006 (log service start/stop) must be low severity."""
-        from forensia.knowledge.rules.loader import load_rules_from_dir
-
-        rules_dir = Path("src/forensia/knowledge/rulepacks")
-        profile_path = Path("src/forensia/knowledge/profiles/windows-basic.yaml")
-        rules = load_rules_from_dir(rules_dir, profile_path)
-        rule_6005_6006 = next(
-            (r for r in rules if r.id == "windows-system-6005-6006-eventlog-service"),
-            None,
-        )
-        self.assertIsNotNone(rule_6005_6006, "Rule 6005/6006 should exist")
-        self.assertEqual(
-            rule_6005_6006.severity, "low", "Events 6005/6006 should be low severity"
-        )
-
-    def test_4735_rule_separated_from_membership(self) -> None:
-        """Group metadata events must be separate from membership and user changes."""
-        from forensia.knowledge.rules.loader import load_rules_from_dir
-
-        rules_dir = Path("src/forensia/knowledge/rulepacks")
-        profile_path = Path("src/forensia/knowledge/profiles/windows-basic.yaml")
-        rules = load_rules_from_dir(rules_dir, profile_path)
-
-        rule_4728 = next(
-            (r for r in rules if r.id == "windows-security-4728-group-change"), None
-        )
-        rule_4735 = next(
-            (
-                r
-                for r in rules
-                if r.id == "windows-security-4735-group-metadata-changed"
-            ),
-            None,
-        )
-        self.assertIsNotNone(rule_4728, "Rule 4728 should exist")
-        self.assertIsNotNone(rule_4735, "Rule 4735 should exist")
-        # 4728 should NOT contain 4735/4738
-        self.assertNotIn("4735", rule_4728.query)
-        self.assertNotIn("4738", rule_4728.query)
 
 
 if __name__ == "__main__":

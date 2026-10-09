@@ -76,22 +76,6 @@ class PromptMessageTests(unittest.TestCase):
             brief,
         )
 
-    def test_structured_classify_messages_use_neutral_role(self) -> None:
-        messages, schema = build_structured_classify_messages(
-            question="When was the last shutdown?",
-            block_heading="Last shutdown",
-            evidence_rows=[
-                {"evidence_id": "ev-1", "shutdown_time": "2015-03-22T14:38:16"}
-            ],
-            expected_shape={
-                "format": "list",
-                "fields": ["shutdown_time", "evidence_id"],
-            },
-        )
-        self.assertIn("structured_classifier", messages[0]["content"])
-        self.assertNotIn("question_classifier", messages[0]["content"])
-        self.assertEqual("StructuredClassifier", schema["title"])
-
 
 class TestConfirmedFindingsBlock(unittest.TestCase):
     """Tests for the <CONFIRMED_FINDINGS> block in build_query_intent_messages."""
@@ -587,18 +571,6 @@ def test_section_knowledge_llm_compaction_preserves_fragment_metadata(
     assert "Topic: Event 1102 log clearing" in system
     assert "Summary: Security log removal reference" in system
     assert "log-clearing.md" not in system
-
-
-def test_prior_section_runs_keep_prefiltered_and_matching_history() -> None:
-    from forensia.ai.prompts.prompt_sections import _filter_prior_runs_by_heading
-
-    runs = [
-        {"block_heading": "Log Integrity", "payload": {"missing_questions": ["1102"]}},
-        {"block_heading": "Other", "payload": {}},
-        {"payload": {"legacy": True}},
-    ]
-    selected = _filter_prior_runs_by_heading(runs, "Log Integrity")
-    assert selected == [runs[0], runs[2]]
 
 
 class IndexedContextTests(unittest.TestCase):

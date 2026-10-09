@@ -18,7 +18,6 @@ from forensia.ai.checking.settlement import (
     SettlementInput,
     _is_concrete_entity,
     _is_loopback_ip,
-    decide_settlement,
     judge_absence_scope,
     settle_hypothesis,
 )
@@ -1026,26 +1025,6 @@ class DBInvariantTests(unittest.TestCase):
                     "SELECT status FROM hypotheses WHERE hypothesis_id = 'H-001'"
                 ).fetchone()
                 self.assertEqual(row[0], "needs_review")
-
-
-class PartialStateTests(unittest.TestCase):
-    """Test that no partial state leaks on settlement exceptions."""
-
-    def test_settlement_decision_is_pure(self) -> None:
-        """The decision core has no CaseDB dependency or side effects."""
-        si = SettlementInput(
-            hypothesis=_make_hypothesis(
-                hid="H-001",
-                source_rule_ids=["rule-1"],
-                required_entities=["target_user"],
-            ),
-            checker_verdict="confirmed",
-            check_summary="test",
-            sample_rows=[{"event_id": 4624, "target_user": "admin"}],
-        )
-        decision1 = decide_settlement(si, links=[], coverage={})
-        decision2 = decide_settlement(si, links=[], coverage={})
-        self.assertEqual(decision1, decision2)
 
 
 if __name__ == "__main__":

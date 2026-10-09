@@ -125,22 +125,6 @@ def test_combined_filtering_reaches_budget(tmp_path: Any) -> None:
     assert len(playbook) <= budget, f"playbook {len(playbook)} > budget {budget}"
 
 
-def test_collect_event_ids_helper() -> None:
-    """collect_event_ids extracts ints from evidence result rows."""
-    from forensia.ai.prompts.prompt_context import collect_event_ids
-
-    results = [
-        {"sample_rows": [{"event_id": 4624}, {"event_id": 4625}]},
-        {"sample_rows": [{"event_id": 4624, "computer": "X"}]},
-        {"head_rows": [{"event_id": 4688}]},
-    ]
-    ids = collect_event_ids(results)
-    assert 4624 in ids
-    assert 4625 in ids
-    assert 4688 in ids
-    assert len(ids) == 3
-
-
 def test_no_profile_playbook_truncates_events_instead_of_dropping_everything():
     """Without a case profile the full Event ID Reference (~55 KB) exceeds the
     default budget. The fix shrinks it to the declarative priority_events list

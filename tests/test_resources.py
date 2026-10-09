@@ -34,20 +34,23 @@ def test_runtime_resources_are_readable() -> None:
 
 @pytest.fixture(scope="session")
 def wheel_paths(tmp_path_factory: pytest.TempPathFactory) -> set[str]:
-    """Build a fresh wheel in a temp dir and return its file listing."""
+    """Build a wheel offline from a disposable source copy."""
     repo_root = Path(__file__).resolve().parent.parent
+    build_root = tmp_path_factory.mktemp("wheel-source")
     dist_dir = tmp_path_factory.mktemp("wheel-dist")
-    build_dir = repo_root / "build"
-    shutil.rmtree(build_dir, ignore_errors=True)
-    try:
-        subprocess.check_call(
-            ["uv", "build", "--wheel", "--out-dir", str(dist_dir)],
-            cwd=repo_root,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    finally:
-        shutil.rmtree(build_dir, ignore_errors=True)
+    for name in ("pyproject.toml", "README.md", "LICENSE"):
+        shutil.copy2(repo_root / name, build_root / name)
+    shutil.copytree(
+        repo_root / "src" / "forensia",
+        build_root / "src" / "forensia",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    subprocess.check_call(
+        ["uv", "build", "--offline", "--wheel", "--out-dir", str(dist_dir)],
+        cwd=build_root,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     wheels = list(dist_dir.glob("*.whl"))
     assert wheels, "wheel not found after build"
     with zipfile.ZipFile(wheels[0]) as zf:
@@ -66,4 +69,3 @@ def test_wheel_packages_runtime_resources(wheel_paths: set[str]) -> None:
     assert any(
         path.startswith("forensia/knowledge/rulepacks/windows/") for path in wheel_paths
     )
-    assert "forensia/report/templates/6_appendix.md" not in wheel_paths

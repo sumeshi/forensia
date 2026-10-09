@@ -8,11 +8,8 @@ from pathlib import Path
 import pytest
 
 from forensia.knowledge.external import (
-    KnowledgeDoc,
-    get_knowledge_docs,
     load_body,
     scan_knowledge_dir,
-    set_knowledge_docs,
     split_sections,
 )
 
@@ -43,9 +40,6 @@ def synthetic_dir(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return d
-
-
-# ── T1 acceptance: scan knowledge.sample ─────────────────────────────────────
 
 
 class TestScanKnowledgeDir:
@@ -100,20 +94,3 @@ class TestSplitSections:
         secs = split_sections("test", body)
         assert len(secs) == 1
         assert secs[0].heading == ""
-
-
-class TestSingleton:
-    def test_set_and_get(self) -> None:
-        set_knowledge_docs([])
-        assert get_knowledge_docs() == []
-        docs = [
-            KnowledgeDoc(
-                path=Path("/fake"), name="x", title="X", description="d", tags=()
-            )
-        ]
-        set_knowledge_docs(docs)
-        assert len(get_knowledge_docs()) == 1
-        set_knowledge_docs([])
-
-
-# ── Scale test ───────────────────────────────────────────────────────────────

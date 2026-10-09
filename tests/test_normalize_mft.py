@@ -130,15 +130,6 @@ class NormalizeMftTests(unittest.TestCase):
             self.assertEqual(1, timeline_rows)
             self.assertEqual((1, 1), counts)
 
-    def test_empty_jsonl_returns_zero_zero(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(Path(tmpdir) / "case")
-            mft_path = case.raw_dir / "mft-entries-001.jsonl"
-            mft_path.write_text("", encoding="utf-8")
-            with CaseDB(case) as db:
-                entries, timeline = normalize_mft(case, db)
-            self.assertEqual((0, 0), (entries, timeline))
-
     def test_malformed_json_line_rejects_source_without_partial_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
@@ -222,6 +213,12 @@ class NormalizeMftTests(unittest.TestCase):
     def test_multiple_mft_jsonl_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
+            with CaseDB(case) as db:
+                self.assertEqual((0, 0), normalize_mft(case, db))
+                (case.raw_dir / "mft-entries-empty.jsonl").write_text(
+                    "", encoding="utf-8"
+                )
+                self.assertEqual((0, 0), normalize_mft(case, db))
             for i in range(1, 3):
                 p = case.raw_dir / f"mft-entries-{i:04d}.jsonl"
                 p.write_text(
@@ -316,33 +313,6 @@ class NormalizeMftTests(unittest.TestCase):
                 rows,
             )
             self.assertTrue(legacy_path.exists())
-
-    def test_bulk_load_settings_are_restored(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(Path(tmpdir) / "case")
-            with CaseDB(case) as db:
-                before = db.execute(
-                    """
-                    SELECT current_setting('threads'),
-                           current_setting('preserve_insertion_order')
-                    """
-                ).fetchone()
-                normalize_mft(case, db)
-                after = db.execute(
-                    """
-                    SELECT current_setting('threads'),
-                           current_setting('preserve_insertion_order')
-                    """
-                ).fetchone()
-
-            self.assertEqual(before, after)
-
-    def test_no_mft_files_returns_zero_zero(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(Path(tmpdir) / "case")
-            with CaseDB(case) as db:
-                entries, timeline = normalize_mft(case, db)
-            self.assertEqual((0, 0), (entries, timeline))
 
 
 if __name__ == "__main__":

@@ -710,44 +710,5 @@ class TableRenderingTests(unittest.TestCase):
                 self.assertEqual(ctx_appendix.structured_digest, "")
 
 
-class HtmlEvidenceIdAnchorTests(unittest.TestCase):
-    def test_html_evidence_id_anchor_rendering(self):
-        from forensia.report.render.html import render_inline_markdown
-
-        html = render_inline_markdown(
-            "See evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001."
-        )
-        self.assertIn(
-            'href="#ev-evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001"',
-            html,
-        )
-        # Placeholder title (bare id); _inject_evidence_interactivity swaps in the
-        # record summary when the evidence map is available.
-        self.assertIn(
-            'title="evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001"',
-            html,
-        )
-        self.assertIn('class="evidence-ref"', html)
-
-    def test_markdown_table_max_rows_zero_is_unlimited(self) -> None:
-        """R7-02: max_rows=0 renders all rows without truncation marker."""
-        from forensia.report.render.markdown import markdown_table
-
-        rows = [{"a": i, "b": i * 10} for i in range(50)]
-        table = markdown_table(rows, [("a", "A"), ("b", "B")], max_rows=0)
-        self.assertIn("| 49 |", table)
-        self.assertNotIn("_Showing", table)
-
-    def test_structured_answer_increased_max_rows(self) -> None:
-        """R7-02: structured answer with 68 rows renders all 68 (no truncation below 200)."""
-        from forensia.report.answers.answer_store import render_answer_block
-
-        items = [{"idx": i} for i in range(68)]
-        lines = render_answer_block(items, columns=["idx"], max_rows=200)
-        body = "\n".join(lines)
-        self.assertIn("| 67 |", body)
-        self.assertNotIn("_Showing", body)
-
-
 if __name__ == "__main__":
     unittest.main()

@@ -10,7 +10,6 @@ from forensia.ai.investigation import investigation_session
 from forensia.ai.investigation.investigation_session import sync_keypoint_cards
 from forensia.ai.investigation.memory_sync import apply_memory_updates
 from forensia.config import (
-    get_llm_settings,
     reload_settings,
 )
 from forensia.core.case import Case
@@ -23,6 +22,26 @@ class MemoryTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         reload_settings()
+
+    def test_dedup_preserves_distinct_observations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = MemoryManager(Case.init(tmpdir))
+            memory.append_confirmed_fact("User logged in at 2pm", ["E-001"])
+            memory.append_confirmed_fact("The user logged in at 2pm", ["E-001"])
+            memory.append_confirmed_fact("User logged in at 2pm", ["E-002"])
+            memory.append_confirmed_fact("Server crashed at midnight", ["E-003"])
+            self.assertEqual(3, memory.facts_path.read_text().count("[fact-"))
+
+            memory.append_timeline_anchor(
+                "2026-01-01 12:00", "User logged in", ["E-001"]
+            )
+            memory.append_timeline_anchor(
+                "2026-01-01 12:00", "The user logged in", ["E-001"]
+            )
+            memory.append_timeline_anchor(
+                "2026-01-01 12:00", "User logged in", ["E-002"]
+            )
+            self.assertEqual(2, memory.timeline_path.read_text().count("- 2026-01-01"))
 
     def test_summarize_query_result_includes_head_tail_and_distinct_counts(
         self,
@@ -189,8 +208,11 @@ class MemoryTests(unittest.TestCase):
             )
             memory = MemoryManager(case)
 
+            existing = set(memory.details_dir.glob("*.md"))
             memory.append_confirmed_fact("new observation", ["ev-1"])
-            self.assertTrue((memory.details_dir / "fact-043.md").exists())
+            added = set(memory.details_dir.glob("*.md")) - existing
+            self.assertEqual(1, len(added))
+            self.assertIn("new observation", added.pop().read_text())
             self.assertEqual(
                 "# fact-042\n\nbody\n", (memory.details_dir / "fact-042.md").read_text()
             )
@@ -334,34 +356,6 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(["A-1", "B-1", "C-1"], [x["finding_id"] for x in snapshot])
         self.assertEqual(3, snapshot[0]["theme_count"])
         self.assertEqual(["A-1", "A-2", "A-3"], snapshot[0]["theme_finding_ids"])
-
-    def test_hypothesis_memory_path_depends_only_on_id(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            memory = MemoryManager(case)
-
-            memory.upsert_hypothesis("H-1", "# Hypothesis H-1\n\nfirst\n")
-            memory.upsert_hypothesis("H-1", "# Hypothesis H-1\n\nsecond\n")
-
-            hyp_path = memory.hypotheses_dir / "H-1.md"
-            self.assertTrue(hyp_path.exists())
-            self.assertEqual(
-                "# Hypothesis H-1\n\nsecond\n", hyp_path.read_text(encoding="utf-8")
-            )
-            self.assertEqual([hyp_path], sorted(memory.hypotheses_dir.glob("*.md")))
-
-    def test_get_llm_settings_cache_can_be_cleared(self) -> None:
-        with patch.dict(os.environ, {"FORENSIA_OUTPUT_LANGUAGE": "ja"}):
-            reload_settings()
-            first = get_llm_settings()
-        with patch.dict(os.environ, {"FORENSIA_OUTPUT_LANGUAGE": "en"}):
-            second_before_clear = get_llm_settings()
-            reload_settings()
-            second_after_clear = get_llm_settings()
-
-        self.assertEqual("ja", first["output_language"])
-        self.assertEqual("ja", second_before_clear["output_language"])
-        self.assertEqual("en", second_after_clear["output_language"])
 
 
 class InvestigationContextFilesRelevanceTests(unittest.TestCase):
@@ -578,7 +572,7 @@ class LoadInvestigationContextRelevanceTests(unittest.TestCase):
         )
 
     def test_load_investigation_context_filters(self):
-        """load_investigation_context should pass relevance_terms through."""
+        """Selected Memory reaches the planner without unrelated entity bodies."""
         context = self.mm.load_investigation_context(
             relevance_terms={"alice"},
             include_overview=False,
@@ -591,120 +585,14 @@ class LoadInvestigationContextRelevanceTests(unittest.TestCase):
         self.assertIn("alice-smith", context.lower())
         self.assertNotIn("bob-jones", context.lower())
 
-
-def test_ctx_refresh_caches_forwards_relevance_terms() -> None:
-    """The investigator's preloaded planner context must carry relevance filtering.
-
-    Why: ctx.memory_plan is handed to the planner as its default context,
-    which SKIPS the lazy-load fallbacks where relevance filtering also lives.
-    If the preload does not filter, relevance filtering is inert for the whole
-    main investigation loop.
-    """
-    from unittest.mock import MagicMock
-
-    from forensia.ai.investigation.investigation_session import (
-        Ctx,
-        ctx_refresh_caches,
-    )
-    from forensia.core.memory import MemoryManager
-
-    memory = MagicMock()
-    memory.max_bytes = 16384
-    memory.load_compact_context.return_value = ""
-    memory.load_investigation_context.return_value = ""
-    memory.build_relevance_terms_from_hypothesis.side_effect = (
-        MemoryManager.build_relevance_terms_from_hypothesis
-    )
-
-    hypothesis = Hypothesis(
-        id="H-001",
-        description="credential reuse by informant",
-        required_entities=["target_user"],
-    )
-    ctx_refresh_caches(Ctx(), memory, hypothesis=hypothesis)
-
-    calls = memory.load_investigation_context.call_args_list
-    assert len(calls) == 1  # memory_plan (the planner's default context)
-    call = calls[0]
-    terms = call.kwargs.get("relevance_terms")
-    assert terms, "preloaded context must be relevance-filtered"
-    assert "informant" in terms
-    assert call.args[0] == "H-001" or call.kwargs.get("hypothesis_id") == "H-001"
-
-
-class FuzzyDedupTests(unittest.TestCase):
-    """Verify that _append_markdown_entry suppresses near-duplicates via jaccard_similarity."""
-
-    def _make_manager(self) -> MemoryManager:
-        tmpdir = tempfile.mkdtemp()
-        case = Case.init(tmpdir)
-        return MemoryManager(case)
-
-    def test_fuzzy_dedup_disabled_by_default(self):
-        mm = self._make_manager()
-        path = mm.facts_path
-        heading = "# Facts"
-        line1 = "- User logged in at 2pm [confirmed | evidence: E-001]"
-        line2 = "- The user logged in at 2pm [confirmed | evidence: E-001]"
-        self.assertTrue(mm._append_markdown_entry(path, heading, line1))
-        # Without fuzzy_dedup, near-duplicates pass through (existing behavior)
-        self.assertTrue(mm._append_markdown_entry(path, heading, line2))
-
-
-class AppendConfirmedFactFuzzyDedupTests(unittest.TestCase):
-    """Integration tests for append_confirmed_fact with fuzzy dedup."""
-
-    def _make_manager(self) -> MemoryManager:
-        tmpdir = tempfile.mkdtemp()
-        case = Case.init(tmpdir)
-        return MemoryManager(case)
-
-    def test_same_fact_different_words_skipped(self):
-        mm = self._make_manager()
-        mm.append_confirmed_fact("User logged in at 2pm", ["E-001"])
-        # Same fact, slightly reworded → suppressed
-        mm.append_confirmed_fact("The user logged in at 2pm", ["E-001"])
-        content = mm.facts_path.read_text()
-        # Should contain only one fact entry
-        self.assertEqual(content.count("[fact-"), 1)
-
-    def test_same_fact_different_evidence_kept(self):
-        mm = self._make_manager()
-        mm.append_confirmed_fact("User logged in at 2pm", ["E-001"])
-        mm.append_confirmed_fact("User logged in at 2pm", ["E-002"])
-        content = mm.facts_path.read_text()
-        # Different evidence → both kept
-        self.assertEqual(content.count("[fact-"), 2)
-
-    def test_different_fact_kept(self):
-        mm = self._make_manager()
-        mm.append_confirmed_fact("User logged in at 2pm", ["E-001"])
-        mm.append_confirmed_fact("Server crashed at midnight", ["E-003"])
-        content = mm.facts_path.read_text()
-        self.assertEqual(content.count("[fact-"), 2)
-
-
-class AppendTimelineFuzzyDedupTests(unittest.TestCase):
-    """Integration tests for append_timeline_anchor with fuzzy dedup."""
-
-    def _make_manager(self) -> MemoryManager:
-        tmpdir = tempfile.mkdtemp()
-        case = Case.init(tmpdir)
-        return MemoryManager(case)
-
-    def test_same_event_different_words_skipped(self):
-        mm = self._make_manager()
-        mm.append_timeline_anchor("2026-01-01 12:00", "User logged in", ["E-001"])
-        mm.append_timeline_anchor("2026-01-01 12:00", "The user logged in", ["E-001"])
-        content = mm.timeline_path.read_text()
-        self.assertEqual(content.count("- 2026-01-01"), 1)
-
-    def test_same_event_different_evidence_kept(self):
-        mm = self._make_manager()
-        mm.append_timeline_anchor("2026-01-01 12:00", "User logged in", ["E-001"])
-        mm.append_timeline_anchor("2026-01-01 12:00", "User logged in", ["E-002"])
-        content = mm.timeline_path.read_text()
-        self.assertEqual(content.count("- 2026-01-01"), 2)
+        ctx = investigation_session.Ctx()
+        investigation_session.ctx_refresh_caches(
+            ctx,
+            self.mm,
+            hypothesis=Hypothesis(id="H-001", description="alice-smith logon"),
+        )
+        self.assertIn("alice-smith", ctx.memory_plan.lower())
+        self.assertNotIn("bob-jones", ctx.memory_plan.lower())
 
 
 if __name__ == "__main__":

@@ -77,22 +77,6 @@ class NormalizePrefetchTests(unittest.TestCase):
             self.assertIsNotNone(row[10])
             self.assertIsNone(row[11])
 
-    def test_empty_jsonl_returns_zero(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(Path(tmpdir) / "case")
-            prefetch_path = case.raw_dir / "prefetch-entries-001.jsonl"
-            prefetch_path.write_text("", encoding="utf-8")
-            with CaseDB(case) as db:
-                inserted, _ = normalize_prefetch(case, db)
-            self.assertEqual(0, inserted)
-
-    def test_no_prefetch_files_returns_zero(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(Path(tmpdir) / "case")
-            with CaseDB(case) as db:
-                inserted, _ = normalize_prefetch(case, db)
-            self.assertEqual(0, inserted)
-
     def test_malformed_json_line_rejects_source_without_partial_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
@@ -128,6 +112,12 @@ class NormalizePrefetchTests(unittest.TestCase):
     def test_multiple_prefetch_jsonl_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
+            with CaseDB(case) as db:
+                self.assertEqual((0, 0), normalize_prefetch(case, db))
+                (case.raw_dir / "prefetch-entries-empty.jsonl").write_text(
+                    "", encoding="utf-8"
+                )
+                self.assertEqual((0, 0), normalize_prefetch(case, db))
             for i in range(1, 4):
                 p = case.raw_dir / f"prefetch-entries-{i:04d}.jsonl"
                 p.write_text(

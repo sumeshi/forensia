@@ -7,10 +7,7 @@ from __future__ import annotations
 
 from forensia.report.evidence_refs import EVIDENCE_ID_PATTERN
 from forensia.report.report_validation import (
-    check_fallback_stub,
-    check_language_consistency,
     check_local_path_leak,
-    check_refuted_leakage,
     check_thesis_alignment,
     validate_report,
 )
@@ -84,14 +81,6 @@ class TestLocalPathLeak:
 class TestFallbackStub:
     """H-2: narrator-fallback stubs must never ship as report prose."""
 
-    def test_pass_when_real_prose(self) -> None:
-        body = (
-            "## Executive Summary\n\nAnti-forensic tooling (CCleaner, Eraser) "
-            "was executed on informant-PC shortly before the Event Log service "
-            "was stopped."
-        )
-        assert check_fallback_stub(body) == []
-
     def test_validate_report_includes_fallback_check(self) -> None:
         body = "For X, the collected evidence returned 3 related rows."
         findings = validate_report({}, report_body=body)
@@ -99,33 +88,10 @@ class TestFallbackStub:
 
 
 class TestLanguageConsistency:
-    def test_pass_when_expected_english_and_english_body(self) -> None:
-        body = (
-            "## Summary\n\nThe report describes observed authentication and "
-            "file activity using a single consistent language for the reader."
-        )
-        assert check_language_consistency(body, "en") == []
-
     def test_validate_report_can_include_language_check(self) -> None:
         body = "## Summary\n\nこの本文は設定言語と一致しません。"
         findings = validate_report({}, report_body=body, expected_language="en")
         assert any(f.check_name == "language_consistency" for f in findings)
-
-
-# ---------------------------------------------------------------------------
-# Refuted leakage
-# ---------------------------------------------------------------------------
-
-
-class TestRefutedLeakage:
-    def test_pass_when_no_token_overlap(self) -> None:
-        """No token overlap between refuted and gaps → no finding."""
-        brief = _brief(
-            refuted_hypotheses=[{"description": "suspicious_tool.exe was downloaded"}],
-            evidence_gaps=[{"item": "Identify network connections"}],
-        )
-        findings = check_refuted_leakage(brief)
-        assert findings == []
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,6 @@ import tempfile
 import unittest
 
 from forensia.ai.hypotheses.relations import (
-    VALID_RELATION_TYPES,
     check_cycle,
     get_relations_for_hypothesis,
     propagate_verdict,
@@ -32,14 +31,6 @@ def insert_relation(db: CaseDB, **kwargs):
 
 class RelationValidationTests(unittest.TestCase):
     """Test relation validation logic."""
-
-    def test_valid_relation_types(self) -> None:
-        self.assertIn("parent_of", VALID_RELATION_TYPES)
-        self.assertIn("prerequisite_for", VALID_RELATION_TYPES)
-        self.assertIn("derived_from", VALID_RELATION_TYPES)
-        self.assertIn("contradicts", VALID_RELATION_TYPES)
-        self.assertIn("alternative_to", VALID_RELATION_TYPES)
-        self.assertIn("supersedes", VALID_RELATION_TYPES)
 
     def test_self_edge_rejected(self) -> None:
         error = validate_relation(

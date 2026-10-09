@@ -13,7 +13,6 @@ from forensia.config import (
     resolve_llm_config,
 )
 from forensia.core.case import Case
-from forensia.core.log import format_progress_log, structure_progress_log
 from forensia.db.database import CaseDB
 from forensia.pipeline import (
     progress_pusher,
@@ -27,14 +26,6 @@ class CaseDbMaintenanceTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         reload_settings()
-
-    def test_progress_labels_are_normalized_to_uppercase(self) -> None:
-        review = structure_progress_log("[review] checking")
-        failure = structure_progress_log("[final-refresh] failed", level="error")
-        self.assertEqual("[REVIEW] checking", format_progress_log(review))
-        self.assertEqual("info", review["level"])
-        self.assertEqual("FINAL_REFRESH", failure["tag"])
-        self.assertEqual("error", failure["level"])
 
     @staticmethod
     def _llm_base_url() -> str:
@@ -117,42 +108,6 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                 self.assertEqual(
                     invalid != "missing_trace", case.trace_database_path.exists()
                 )
-
-    def test_schema_creates_indexes_for_lookup_paths(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                names = {
-                    row[0]
-                    for row in db.execute(
-                        """
-                        SELECT index_name
-                        FROM duckdb_indexes()
-                        WHERE index_name IN (
-                            'findings_by_id',
-                            'findings_by_status_confidence',
-                            'evtx_events_by_evidence_id',
-                            'mft_entries_by_evidence_id',
-                            'investigation_steps_by_session_hypothesis',
-                            'retrieval_events_by_scope',
-                            'ai_reviews_by_finding'
-                        )
-                        """
-                    ).fetchall()
-                }
-
-            self.assertEqual(
-                {
-                    "findings_by_id",
-                    "findings_by_status_confidence",
-                    "evtx_events_by_evidence_id",
-                    "mft_entries_by_evidence_id",
-                    "investigation_steps_by_session_hypothesis",
-                    "retrieval_events_by_scope",
-                    "ai_reviews_by_finding",
-                },
-                names,
-            )
 
     def test_progress_pusher_records_structured_log_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

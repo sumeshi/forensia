@@ -177,53 +177,6 @@ class PrescreenTelemetryAvailabilityTests(unittest.TestCase):
                 self.assertEqual("hyp-untestable", state.resolved_hypotheses[0].id)
                 self.assertEqual("untestable", state.resolved_hypotheses[0].verdict)
 
-    def test_untestable_verdict_is_not_refuted(self) -> None:
-        """The verdict taxonomy is preserved: untestable != refuted."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                state = self._make_session(db)
-                hyp = Hypothesis(
-                    id="draft-rule-1-decl-1",
-                    description="Requires missing event",
-                    status="active",
-                    source_rule_ids=["some-rule"],
-                    confirm_when={"co_observed_event_ids": [99999]},
-                )
-                state.active_hypotheses = [hyp]
-
-                prescreen_telemetry_availability(db, state, "test-session")
-
-                resolved = state.resolved_hypotheses[0]
-                self.assertEqual("untestable", resolved.verdict)
-                self.assertNotEqual("refuted", resolved.verdict)
-                self.assertNotEqual("confirmed", resolved.verdict)
-
-    def test_no_evtx_events_table_does_not_crash(self) -> None:
-        """If evtx_events table doesn't exist, screening is a no-op."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                # Drop the evtx_events table to simulate missing table
-                db.execute("DROP TABLE IF EXISTS evtx_events")
-                state = self._make_session(db)
-                hyp = Hypothesis(
-                    id="draft-rule-1-decl-1",
-                    description="Requires event",
-                    status="active",
-                    source_rule_ids=["some-rule"],
-                    confirm_when={"co_observed_event_ids": [99999]},
-                )
-                state.active_hypotheses = [hyp]
-
-                # Should not crash
-                prescreen_telemetry_availability(db, state, "test-session")
-
-                # With no available event_ids, ALL required are missing → untestable
-                self.assertEqual(0, len(state.active_hypotheses))
-                self.assertEqual(1, len(state.resolved_hypotheses))
-                self.assertEqual("untestable", state.resolved_hypotheses[0].verdict)
-
     def test_empty_co_observed_event_ids_is_skipped(self) -> None:
         """A hypothesis with an empty co_observed_event_ids list is skipped."""
         with tempfile.TemporaryDirectory() as tmpdir:

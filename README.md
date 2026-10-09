@@ -1,5 +1,7 @@
 # forensia
 
+[English](README.md) · [日本語](README.ja.md)
+
 ![forensia-logo](https://gist.githubusercontent.com/sumeshi/c2f430d352ae763273faadf9616a29e5/raw/afaaa9317a3170fc22b17e0a833632b0018acd12/forensia.svg)
 
 **Your local AI assistant for weekend forensic work.**
@@ -395,7 +397,7 @@ Keep pytest offline and use disposable cases. Mock the model/provider boundary, 
 
 When changing declarations, run [audit_schema_coverage.py](scripts/audit_schema_coverage.py). [regenerate_playbook.py](scripts/regenerate_playbook.py) regenerates marked playbook sections from YAML; `--check` detects drift. [cycle_summary.py](scripts/cycle_summary.py) reads recent progress from Trace, so older pruned cycles may not appear.
 
-This README owns current usage, architecture, extension, and development guidance. Link to executable schemas and source owners instead of maintaining duplicate table catalogs or per-file prose maps. Keep design proposals and pending tasks separate from current capability claims, and use git for historical implementation notes. Update the affected README section with a behavior change. PRs should state the concrete change, reason, and checks; sanitized reproductions belong in issues. The project accepts intentional breaking changes and does not retain obsolete paths for tests or old documentation.
+This README owns current usage, architecture, extension, and development guidance; [README.ja.md](README.ja.md) is its Japanese translation. Link to executable schemas and source owners instead of maintaining duplicate table catalogs or per-file prose maps. Keep design proposals and pending tasks separate from current capability claims, and use git for historical implementation notes. Update the affected sections in both language versions with a behavior change. PRs should state the concrete change, reason, and checks; sanitized reproductions belong in issues. The project accepts intentional breaking changes and does not retain obsolete paths for tests or old documentation.
 
 ## Evaluation
 

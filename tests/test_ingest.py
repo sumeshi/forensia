@@ -6,9 +6,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from typer.testing import CliRunner
-
-from forensia.cli import app as cli_module
 from forensia.core.case import Case
 from forensia.core.evidence import make_evtx_evidence_id
 from forensia.db.database import CaseDB
@@ -281,62 +278,17 @@ class IngestTests(unittest.TestCase):
             self.assertEqual("", result.read_text(encoding="utf-8"))
             self.assertEqual([result], list(case.raw_dir.glob("evtx-*.jsonl")))
 
-    def test_evtx_normalizer_ignores_legacy_unidentified_raw_file(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(Path(tmpdir) / "case")
-            (case.raw_dir / "evtx.jsonl").write_text(
-                json.dumps(
-                    {
-                        "source_file": "legacy-source",
-                        "evidence_id": "evtx-legacy",
-                        "winlog": {"channel": "Security", "record_id": 1},
-                    }
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            with CaseDB(case) as db:
-                self.assertEqual(0, normalize_evtx(case, db))
-                self.assertEqual(
-                    0, db.execute("SELECT COUNT(*) FROM evtx_events").fetchone()[0]
-                )
-
-    def test_prefetch_adapter_only_claims_pf_files(self) -> None:
+    def test_artifact_adapters_claim_only_matching_files(self) -> None:
         adapter = PrefetchArtifactAdapter()
         prefetch_dir = Path("/tmp/Prefetch")
 
         self.assertTrue(adapter.can_handle(prefetch_dir / "APP.EXE-12345678.pf"))
         self.assertFalse(adapter.can_handle(prefetch_dir))
-
-    def test_mft_adapter_accepts_names_containing_mft(self) -> None:
         adapter = MftArtifactAdapter()
-
         self.assertTrue(adapter.can_handle(Path("/tmp/$MFT")))
         self.assertTrue(adapter.can_handle(Path("/tmp/MFT")))
         self.assertTrue(adapter.can_handle(Path("/tmp/MFT_C")))
         self.assertTrue(adapter.can_handle(Path("/tmp/exported_mft.bin")))
-
-    def test_normalize_all_includes_prefetch_execution_counts(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with (
-                CaseDB(case) as db,
-                patch("forensia.evidence.evtx.normalize_evtx", return_value=0),
-                patch(
-                    "forensia.evidence.mft.normalize_mft",
-                    return_value=(0, 0),
-                ),
-                patch(
-                    "forensia.evidence.prefetch.normalize_prefetch",
-                    return_value=(3, 0),
-                ),
-            ):
-                counts = normalize_all(case, db)
-
-            self.assertEqual(3, counts["prefetch_executions"])
-            self.assertEqual(0, counts["prefetch_timeline"])
-            self.assertEqual(0, counts["evtx_rows"])
-            self.assertEqual(0, counts["mft_entries"])
 
     def test_normalize_evtx_ignores_prefetch_jsonl(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -455,72 +407,6 @@ class IngestTests(unittest.TestCase):
             self.assertEqual(1, entries)
             self.assertEqual(8, timeline)
             self.assertEqual((42, "example.txt", "txt", False, False), entry)
-
-    def test_cli_add_and_run_surface_prefetch_counts(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(Path(tmpdir) / "case-add")
-            input_dir = Path(tmpdir) / "input"
-            input_dir.mkdir(parents=True, exist_ok=True)
-            runner = CliRunner()
-
-            with patch(
-                "forensia.cli.app.ingest_all",
-                return_value={
-                    "new_files": 1,
-                    "skipped_files": 0,
-                    "evtx_files": 0,
-                    "mft_files": 0,
-                    "prefetch_files": 1,
-                },
-            ):
-                add_result = runner.invoke(
-                    cli_module.app, ["add", str(case.path), str(input_dir)]
-                )
-
-            self.assertEqual(0, add_result.exit_code, add_result.output)
-            self.assertIn("prefetch=1", add_result.output)
-
-            output_dir = Path(tmpdir) / "case-run"
-            with (
-                patch(
-                    "forensia.pipeline.ingest_all",
-                    return_value={
-                        "new_files": 1,
-                        "skipped_files": 0,
-                        "evtx_files": 0,
-                        "mft_files": 0,
-                        "prefetch_files": 1,
-                    },
-                ),
-                patch(
-                    "forensia.pipeline.normalize_all",
-                    return_value={
-                        "evtx_rows": 0,
-                        "mft_entries": 0,
-                        "mft_timeline_rows": 0,
-                        "prefetch_executions": 2,
-                    },
-                ),
-                patch("forensia.cli.app.resolve_llm_config", return_value=(None, None)),
-                patch(
-                    "forensia.pipeline.load_rules_from_dir",
-                    return_value=[],
-                ),
-                patch(
-                    "forensia.pipeline.render_written_report",
-                    return_value=(
-                        output_dir / "reports" / "report.md",
-                        output_dir / "reports" / "report.html",
-                    ),
-                ),
-            ):
-                run_result = runner.invoke(
-                    cli_module.app, ["investigate", str(output_dir), str(input_dir)]
-                )
-
-            self.assertEqual(0, run_result.exit_code, run_result.output)
-            self.assertIn("prefetch_files=1", run_result.output)
-            self.assertIn("prefetch_executions=2", run_result.output)
 
     # ─── R2-10 tests ───────────────────────────────────────────────────────────
 

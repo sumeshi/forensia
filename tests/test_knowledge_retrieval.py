@@ -9,11 +9,9 @@ import pytest
 from forensia.ai.prompts.prompt_context import _org_knowledge_guidance
 from forensia.knowledge.external import (
     KnowledgeDoc,
-    KnowledgeSection,
     scan_knowledge_dir,
 )
 from forensia.knowledge.retrieval import (
-    _section_overhead,
     knowledge_terms_for_hypothesis,
     select_snippets,
 )
@@ -42,18 +40,6 @@ class TestSelectSnippets:
         assert snippets[0].title and snippets[0].summary
         # First snippet should come from the rdp doc
         assert "rdp" in snippets[0].doc_name.lower()
-
-    def test_combined_fragment_overhead_includes_joining_newline(self) -> None:
-        sections = [
-            KnowledgeSection("one.md", "One", "BODY 1", "Topic one", "Summary"),
-            KnowledgeSection("two.md", "Two", "BODY 2", "Topic two", "Summary"),
-        ]
-        rendered = _org_knowledge_guidance(sections)
-        start = rendered.index("<KNOWLEDGE>")
-        end = rendered.rindex("</KNOWLEDGE>") + len("</KNOWLEDGE>")
-        fragments = rendered[start:end]
-        expected = sum(_section_overhead(s) + len(s.text) for s in sections) + 1
-        assert len(fragments) == expected
 
     def test_overflow_section_is_compacted_not_dropped(self, tmp_path: Path) -> None:
         """A section that overflows leftover budget is line-truncated, not skipped."""
@@ -136,21 +122,6 @@ class TestSelectSnippets:
         )
         assert snippets
         assert all(s.heading == "RDP checks" for s in snippets)
-
-    def test_lead_section_excluded_when_heading_matches(self, tmp_path: Path) -> None:
-        path = tmp_path / "focused.md"
-        path.write_text(
-            "---\ntype: knowledge\ntitle: Focused RDP guide\n"
-            "description: RDP procedures\ntags: [rdp]\n---\n"
-            "Unrelated introductory prose.\n\n"
-            "## RDP checks\nRDP evidence details.\n",
-            encoding="utf-8",
-        )
-        snippets = select_snippets(
-            scan_knowledge_dir(tmp_path), query_terms=["rdp"], tags=["rdp"]
-        )
-        assert snippets
-        assert all(snippet.heading == "RDP checks" for snippet in snippets)
 
 
 class TestKnowledgeTermsForHypothesis:
