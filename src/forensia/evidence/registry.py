@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from forensia.db.database import CaseDB
     from forensia.evidence.artifacts import IngestResult
 
-REG2ES_VERSION = "2.0.0"
+REG2ES_VERSION = "2.3.0"
 _PARSER_CONFIG = {"error_policy": "raise", "primary_only_inputs": True}
 
 
@@ -615,7 +615,9 @@ class RegistryArtifactAdapter:
     ) -> IngestResult:
         from forensia.evidence.artifacts import IngestResult
 
-        digest = _dataset_id(dataset, source_ids)[:12]
+        # Keep the complete parser/config/member digest in the raw filename so
+        # distinct datasets cannot collide through a shortened prefix.
+        digest = _dataset_id(dataset, source_ids)
         output_path = case.raw_dir / f"registry-{digest}.jsonl"
         temporary_path = output_path.with_suffix(".jsonl.tmp")
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -629,7 +631,7 @@ class RegistryArtifactAdapter:
                         + "\n"
                     )
             temporary_path.replace(output_path)
-        except Exception:
+        except BaseException:
             temporary_path.unlink(missing_ok=True)
             raise
         if progress_callback:

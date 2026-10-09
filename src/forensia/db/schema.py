@@ -15,7 +15,7 @@
 # Case databases with a different version are rejected before any
 # persistent DDL/DML (see db/database._check_schema_version); existing
 # cases are preserved and their artifacts are re-ingested into new cases.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 CORE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS evtx_events (

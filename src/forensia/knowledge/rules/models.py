@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -35,20 +35,14 @@ class CorrelateEvent(BaseModel):
     rationale: str
 
 
-class RulePackMetadata(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: str
-    title: str
-    applies_when: dict = Field(default_factory=dict)
-
-
 class Rule(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
     title: str
     severity: str = "medium"
+    rule_format: Literal["sql", "sigma"] = "sql"
+    definition_sha256: str = ""
     confidence: float = 0.5
     required_fields: list[str] = Field(default_factory=list)
     query: str
@@ -58,7 +52,6 @@ class Rule(BaseModel):
     hypotheses: list[HypothesisDeclaration] = Field(default_factory=list)
     correlate_with: list[CorrelateEvent] = Field(default_factory=list)
     fallback_search: list[dict[str, Any]] = Field(default_factory=list)
-    applies_when: dict | None = None
 
 
 class Finding(BaseModel):

@@ -1,7 +1,7 @@
 """Display helpers for CLI commands: status printing, case opening, LLM flag resolution.
 
 Pipeline-side helpers (progress recording, stage runners, table reset,
-template/knowledge/profile resolution) live in ``forensia.pipeline`` so the
+template and knowledge resolution) live in ``forensia.pipeline`` so the
 kernel entry stays typer/rich-free.
 """
 

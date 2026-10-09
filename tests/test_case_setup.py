@@ -180,26 +180,6 @@ class CaseSetupTests(unittest.TestCase):
             self.assertEqual(0, result.exit_code, result.output)
             self.assertEqual(template_dir.resolve(), captured["template_root"])
 
-    def test_run_command_rejects_unknown_profile(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            input_dir = Path(tmpdir) / "input"
-            input_dir.mkdir()
-            output_dir = Path(tmpdir) / "case"
-            runner = CliRunner()
-            result = runner.invoke(
-                cli_module.app,
-                [
-                    "investigate",
-                    str(output_dir),
-                    str(input_dir),
-                    "--profile",
-                    "does-not-exist",
-                ],
-            )
-
-            self.assertNotEqual(0, result.exit_code)
-            self.assertIn("Available profiles", result.output)
-
 
 if __name__ == "__main__":
     unittest.main()

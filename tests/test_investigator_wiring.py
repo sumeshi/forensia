@@ -1,7 +1,7 @@
 """No-LLM smoke test for the investigate() entry point wiring.
 
 Runs one full report_only cycle against an empty case. This exercises session
-init (rule seeding, case profile, memory), the cycle body, termination, and
+init (finding snapshot, case evidence summary, memory), the cycle body, termination, and
 session bookkeeping WITHOUT any LLM call. The periodic report refresh is
 skipped and the mandatory final refresh is mocked. A missing or renamed
 argument in the investigate() wiring fails this test.
@@ -20,6 +20,7 @@ from forensia.db.database import CaseDB
 
 class InvestigateWiringTests(unittest.TestCase):
     def test_report_only_cycle_completes_without_llm(self) -> None:
+        from forensia.ai.investigation import investigation_session
         from forensia.ai.investigation import investigator as investigator_module
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -42,7 +43,7 @@ class InvestigateWiringTests(unittest.TestCase):
                     "kind, retry_condition) VALUES ('TASK-SEL-1', 'unresolved task', "
                     "'open', 'blocked', 'required_capability_available')"
                 )
-                ensure_investigation_state(db)
+                ensure_investigation_state(db, objective="preserve this objective")
                 save_stop_reason(
                     db,
                     status="stopped",
@@ -62,6 +63,9 @@ class InvestigateWiringTests(unittest.TestCase):
                         "async_refresh_report_sections",
                         new=mock.AsyncMock(return_value={}),
                     ) as refresh_sections,
+                    mock.patch.object(
+                        investigation_session, "_seed_rule_hypotheses"
+                    ) as seed_rule_hypotheses,
                 ):
                     result = asyncio.run(
                         investigator_module.investigate(
@@ -75,6 +79,7 @@ class InvestigateWiringTests(unittest.TestCase):
                         )
                     )
                 refresh_sections.assert_awaited_once()
+                seed_rule_hypotheses.assert_not_called()
                 self.assertEqual(result["status"], "completed")
                 self.assertEqual(result["iteration"], 1)
                 row = db.execute(
@@ -105,10 +110,21 @@ class InvestigateWiringTests(unittest.TestCase):
                 # last real stop value is kept, open work is not reopened and
                 # not classified.
                 state_row = db.execute(
-                    "SELECT status, stop_reason_code FROM investigation_state "
+                    "SELECT status, stop_reason_code, objective FROM investigation_state "
                     "WHERE state_id = 'case'"
                 ).fetchone()
-                self.assertEqual(("stopped", "no_progress_limit"), tuple(state_row))
+                self.assertEqual(
+                    ("stopped", "no_progress_limit", "preserve this objective"),
+                    tuple(state_row),
+                )
+                self.assertEqual(
+                    0,
+                    db.execute("SELECT COUNT(*) FROM hypotheses").fetchone()[0],
+                )
+                self.assertEqual(
+                    1,
+                    db.execute("SELECT COUNT(*) FROM report_gaps").fetchone()[0],
+                )
                 self.assertEqual(
                     ("open", "open"),
                     tuple(
@@ -747,6 +763,11 @@ class ProgressBudgetTests(unittest.TestCase):
     @staticmethod
     def _run_loop(case, db, *, no_progress_limit, hook):
         from forensia.ai.investigation import investigator as investigator_module
+        from forensia.knowledge.coverage import refresh_evidence_coverage
+
+        # The pipeline refreshes coverage during analysis before investigation
+        # starts; direct investigator tests model that completed boundary.
+        refresh_evidence_coverage(db)
 
         async def _refresh(**kwargs):
             db = kwargs["db"]

@@ -35,12 +35,6 @@ from forensia.knowledge.coverage import disclosure_tables_for_spec
 from forensia.knowledge.retrieval import knowledge_terms_for_hypothesis, select_snippets
 
 
-def _profile_tags(case_profile: CaseEvidenceProfile | None) -> list[str]:
-    """Knowledge tags derived from the active profile name (windows-basic → ["windows"])."""
-    name = case_profile.profile_name if case_profile else ""
-    return [name.split("-", 1)[0]] if name else []
-
-
 def _work_disclosure_tables(
     hypothesis: Any, spec_payload: Any = None
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -442,7 +436,7 @@ def build_query_intent_messages(
         + f"{_dfir_playbook('hypothesis_plan', event_ids=_pb_ids, tables=playbook_tables, sections=_sections_for_hypothesis(hypothesis), db=db, session_id=session_id)}\n"
         f"{_time_range_guidance(time_range)}"
         f"{_case_profile_guidance(case_profile.summary if case_profile else None)}"
-        f"{_org_knowledge_block(description=getattr(hypothesis, 'description', ''), extra_words=knowledge_extra, tags=_profile_tags(case_profile), db=db, session_id=session_id, phase='hypothesis_plan')}"
+        f"{_org_knowledge_block(description=getattr(hypothesis, 'description', ''), extra_words=knowledge_extra, db=db, session_id=session_id, phase='hypothesis_plan')}"
         "<TASK>You are the bounded query action planner. Choose one action and, for sql.query, provide either an exact executable template_catalog ID with params or a bounded SELECT fallback. Cookbook/RECIPE_INDEX IDs are reference-only and must be adapted into raw SQL with template_id=null. The host validates and executes it; do not delegate SQL composition to another model.</TASK>\n"
         "<INPUT_SCHEMA>\n"
         f"hypothesis: {json.dumps(_hypothesis_prompt_projection(hypothesis), ensure_ascii=False, default=str)}\n"
@@ -724,7 +718,7 @@ def build_gap_identifier_messages(
         (f"{case_policy_block(case_policy)}" if case_policy is not None else "")
         + "<TASK>You are a gap_identifier. From available_keypoints, pick the ones that lack active hypothesis coverage.</TASK>\n"
         f"{_case_profile_guidance(case_profile.summary if case_profile else None)}"
-        f"{_org_knowledge_block(extra_words=_gap_extra, tags=_profile_tags(case_profile), db=db, session_id=session_id, phase='plan_broad_gap')}"
+        f"{_org_knowledge_block(extra_words=_gap_extra, db=db, session_id=session_id, phase='plan_broad_gap')}"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
         '  "gap_areas": [{"keypoint_id": "EXACT name from available_keypoints", "why_uncovered": "str", "required_entities": ["snake_case column names"]}]\n'
@@ -777,7 +771,7 @@ def build_hypothesis_drafter_messages(
         (f"{case_policy_block(case_policy)}" if case_policy is not None else "")
         + "<TASK>You are a hypothesis_drafter. Draft ONE falsifiable hypothesis targeting the given gap_area.</TASK>\n"
         f"{_case_profile_guidance(case_profile.summary if case_profile else None)}"
-        f"{_org_knowledge_block(extra_words=_gap_words, tags=_profile_tags(case_profile), db=db, session_id=session_id, phase='plan_broad_draft')}"
+        f"{_org_knowledge_block(extra_words=_gap_words, db=db, session_id=session_id, phase='plan_broad_draft')}"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
         '  "hypothesis": {\n'
@@ -810,11 +804,11 @@ def build_hypothesis_drafter_messages(
         "</RULES>\n"
         "<EXAMPLE>\n"
         'Input gap_area: {"keypoint_id": "account_bruteforce_clusters", "required_entities": ["src_ip", "target_user"]}\n'
-        'Output: {"hypothesis": {"description": "Repeated 4625 failures from a single src_ip targeting one or more users indicate brute-force attempts that may have been followed by a successful 4624 logon.", "required_entities": ["src_ip", "target_user", "computer"], "source_rule_ids": ["windows-security-4625-failed-logon"], "confirm_when": {"co_observed_event_ids": [4625, 4624], "same_host": true, "within_minutes": 30}, "refute_when": {"zero_rows": true}}}\n'
+        'Output: {"hypothesis": {"description": "Repeated 4625 failures from a single src_ip targeting one or more users indicate brute-force attempts that may have been followed by a successful 4624 logon.", "required_entities": ["src_ip", "target_user", "computer"], "source_rule_ids": [], "confirm_when": {"co_observed_event_ids": [4625, 4624], "same_host": true, "within_minutes": 30}, "refute_when": {"zero_rows": true}}}\n'
         "</EXAMPLE>\n"
         "<EXAMPLE_GOOD>\n"
         'Input: gap_area={"keypoint_id": "host_execution_activity", "required_entities": ["computer", "process_name"]}\n'
-        'Output: {"hypothesis": {"description": "Unauthorized execution of LOLBAS binaries (powershell.exe, mshta.exe) on WS-SALES-03 indicates initial code execution.", "required_entities": ["computer", "process_name", "command_line"], "source_rule_ids": ["windows-security-4688-suspicious-tools"], "confirm_when": {"co_observed_event_ids": [4688, 4624], "same_host": true, "within_minutes": 5}, "refute_when": {"zero_rows": true}}}\n'
+        'Output: {"hypothesis": {"description": "Unauthorized execution of LOLBAS binaries (powershell.exe, mshta.exe) on WS-SALES-03 indicates initial code execution.", "required_entities": ["computer", "process_name", "command_line"], "source_rule_ids": [], "confirm_when": {"co_observed_event_ids": [4688, 4624], "same_host": true, "within_minutes": 5}, "refute_when": {"zero_rows": true}}}\n'
         "</EXAMPLE_GOOD>\n"
         "<EXAMPLE_BAD>\n"
         'Output: {"hypothesis": {"description": "...", "required_entities": ["user_identity", "computer_name", "logon_type", "credential_usage"]}}\n'

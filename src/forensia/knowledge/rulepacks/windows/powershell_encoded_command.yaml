@@ -1,0 +1,28 @@
+title: Encoded PowerShell Command In Windows Process Creation
+id: a91f778c-413b-4f21-a3fc-c775dac718b2
+status: experimental
+description: A PowerShell process was created with an encoded-command argument. Decode and inspect the command and its execution context; encoding alone is not malicious.
+author: forensia
+logsource:
+  product: windows
+  service: security
+detection:
+  selection_event:
+    EventID: 4688
+  selection_image:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+  selection_command:
+    CommandLine|contains:
+      - ' -enc '
+      - ' -encodedcommand '
+      - ' -e '
+      - ' -ec '
+  condition: selection_event and selection_image and selection_command
+falsepositives:
+  - Authorized automation and administration
+level: medium
+tags:
+  - attack.execution
+  - attack.t1059.001

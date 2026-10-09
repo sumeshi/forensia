@@ -8,7 +8,7 @@ from typing import Any
 
 import yaml
 
-from forensia.knowledge.resources import schema_dir
+from forensia.knowledge.resources import rulepacks_dir, schema_dir
 
 _SCHEMA_DIR = schema_dir()
 
@@ -535,6 +535,11 @@ def load_event_class_definitions() -> dict[str, dict[str, Any]]:
 
 def validate_declarations() -> None:
     """Validate packaged contracts before an investigation changes Case State."""
+    from forensia.knowledge.rules.loader import (
+        _get_rule_cache,
+        load_rules_from_dir,
+    )
+
     loaders = (
         load_dfir_yamls,
         load_schema_hints,
@@ -548,6 +553,7 @@ def validate_declarations() -> None:
     # Adopt bundled declarations at each run boundary, never stale process data.
     for loader in loaders:
         loader.cache_clear()
+    _get_rule_cache.cache_clear()
     for loader in loaders:
         loader()
     for name in (
@@ -556,6 +562,7 @@ def validate_declarations() -> None:
         "verdict_taxonomy.yaml",
     ):
         _load_yaml(name)
+    load_rules_from_dir(rulepacks_dir())
 
 
 # ── Cache management ───────────────────────────────────────────────────────

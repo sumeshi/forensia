@@ -339,7 +339,6 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                 run_investigation(
                     str(output_dir),
                     input_dir=str(input_dir),
-                    profile="windows-basic",
                     llm_base_url=None,
                     model=None,
                 )

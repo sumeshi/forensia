@@ -132,7 +132,7 @@ class PrefetchArtifactAdapter:
     ) -> IngestResult:
         from forensia.evidence.prefetch import ingest_prefetch_file
 
-        entries_path, _timeline_path = ingest_prefetch_file(
+        entries_path = ingest_prefetch_file(
             case, path, source_sha=source_sha, progress_callback=progress_callback
         )
         return IngestResult(

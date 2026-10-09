@@ -13,8 +13,9 @@ from forensia.db.evidence_lookup import lookup_evidence_record
 from forensia.evidence.artifacts import MftArtifactAdapter, PrefetchArtifactAdapter
 from forensia.evidence.evtx import ingest_evtx_file, normalize_evtx
 from forensia.evidence.ingest import ingest_all
-from forensia.evidence.mft import normalize_mft
+from forensia.evidence.mft import ingest_mft_file, normalize_mft
 from forensia.evidence.normalize import normalize_all
+from forensia.evidence.prefetch import ingest_prefetch_file
 from forensia.pipeline import _run_normalize_stage
 
 
@@ -90,7 +91,7 @@ class IngestTests(unittest.TestCase):
             ):
                 output = case_obj.raw_dir / f"prefetch-entries-{source_sha}.jsonl"
                 output.write_text("{}", encoding="utf-8")
-                return output, None
+                return output
 
             with patch(
                 "forensia.evidence.prefetch.ingest_prefetch_file",
@@ -115,8 +116,11 @@ class IngestTests(unittest.TestCase):
                 def __init__(self, path):
                     self.message = Path(path).read_text(encoding="utf-8")
 
-                def gen_records(self, **kwargs):
-                    del kwargs
+                def close(self):
+                    pass
+
+                def gen_records(self, *args):
+                    del args
                     yield [
                         {
                             "@timestamp": "2015-06-15T10:00:00Z",
@@ -132,11 +136,11 @@ class IngestTests(unittest.TestCase):
 
             with (
                 CaseDB(case) as db,
-                patch("forensia.evidence.evtx.Evtx2es", FakeEvtxParser),
+                patch("evtx2es.presenters.Evtx2jsonPresenter.Evtx2es", FakeEvtxParser),
             ):
                 first_ingest = ingest_all(case, input_dir, db=db)
                 first_source = first_ingest["new_source_keys"][0]
-                first_raw = case.raw_dir / f"evtx-{first_source}-security.jsonl"
+                first_raw = case.raw_dir / f"evtx-{first_source}-records.jsonl"
                 _run_normalize_stage(
                     case,
                     db,
@@ -194,7 +198,7 @@ class IngestTests(unittest.TestCase):
             source = Path(tmpdir) / "Security.evtx"
             source.write_bytes(b"fixture")
             source_sha = "a" * 64
-            output = case.raw_dir / f"evtx-{source_sha}-security.jsonl"
+            output = case.raw_dir / f"evtx-{source_sha}-records.jsonl"
             output.write_text("previous raw data\n", encoding="utf-8")
 
             records = [
@@ -210,25 +214,86 @@ class IngestTests(unittest.TestCase):
                 def __init__(self, path):
                     del path
 
-                def gen_records(self, **kwargs):
-                    self.kwargs = kwargs
+                def close(self):
+                    pass
+
+                def gen_records(self, *args):
+                    self.kwargs = args
                     yield records[:1]
                     temporary = list(case.raw_dir.glob(".*.tmp"))
                     self_outer.assertEqual(1, len(temporary))
-                    self_outer.assertEqual(
-                        1, len(temporary[0].read_text().splitlines())
-                    )
                     self_outer.assertEqual("previous raw data\n", output.read_text())
                     yield records[1:]
 
-            with patch("forensia.evidence.evtx.Evtx2es", ChunkedParser):
+            with patch("evtx2es.presenters.Evtx2jsonPresenter.Evtx2es", ChunkedParser):
                 result = ingest_evtx_file(case, source, source_sha)
 
             self.assertEqual(output, result)
             parsed = [json.loads(line) for line in output.read_text().splitlines()]
+            self.assertEqual(records, parsed)
             self.assertEqual([1, 2, 3], [row["payload"] for row in parsed])
-            self.assertTrue(all(row["source_file"] == source_sha for row in parsed))
+            self.assertTrue(all("source_file" not in row for row in parsed))
             self.assertEqual([output], list(case.raw_dir.glob("evtx-*.jsonl")))
+
+    def test_mft_presenter_jsonl_is_unchanged_and_normalization_assigns_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(Path(tmpdir) / "case")
+            source = Path(tmpdir) / "$MFT"
+            source.write_bytes(b"fixture")
+            source_sha = "9" * 64
+            records = [
+                {
+                    "header": {
+                        "record_number": 23,
+                        "sequence": 7,
+                        "flags": "ALLOCATED",
+                    },
+                    "attributes": {
+                        "FileName": {"data": {"path": "C:\\one.txt", "name": "one.txt"}}
+                    },
+                    "tags": ["mft"],
+                }
+            ]
+
+            class FakeMftParser:
+                def __init__(self, path):
+                    del path
+
+                def gen_timeline_records(self, **kwargs):
+                    self_outer.assertEqual(
+                        {
+                            "multiprocess": False,
+                            "chunk_size": 500,
+                            "timeline_mode": False,
+                            "tags": None,
+                        },
+                        kwargs,
+                    )
+                    yield records
+
+                def close(self):
+                    pass
+
+            self_outer = self
+            with patch("mft2es.presenters.Mft2jsonPresenter.Mft2es", FakeMftParser):
+                raw_path = ingest_mft_file(case, source, source_sha)
+
+            raw_records = [
+                json.loads(line) for line in raw_path.read_text().splitlines()
+            ]
+            self.assertEqual(records, raw_records)
+            self.assertEqual(raw_path.name, f"mft-entries-{source_sha}.jsonl")
+            with CaseDB(case) as db:
+                entries, _timeline = normalize_mft(case, db)
+                evidence_id, source_file, raw_json = db.execute(
+                    "SELECT evidence_id, source_file, raw_json FROM mft_entries"
+                ).fetchone()
+            self.assertEqual(1, entries)
+            self.assertEqual(f"mft-{source_sha}-000000000023-07", evidence_id)
+            self.assertEqual(source_sha, source_file)
+            self.assertEqual(records[0], json.loads(raw_json))
 
     def test_evtx_parser_failure_preserves_existing_raw_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -236,19 +301,22 @@ class IngestTests(unittest.TestCase):
             source = Path(tmpdir) / "Security.evtx"
             source.write_bytes(b"fixture")
             source_sha = "b" * 64
-            output = case.raw_dir / f"evtx-{source_sha}-security.jsonl"
+            output = case.raw_dir / f"evtx-{source_sha}-records.jsonl"
             output.write_text("preserve me\n", encoding="utf-8")
 
             class BrokenParser:
                 def __init__(self, path):
                     del path
 
-                def gen_records(self, **kwargs):
-                    del kwargs
+                def close(self):
+                    pass
+
+                def gen_records(self, *args):
+                    del args
                     yield [{"winlog": {"channel": "Security", "record_id": 1}}]
                     raise ValueError("malformed trailing record")
 
-            with patch("forensia.evidence.evtx.Evtx2es", BrokenParser):
+            with patch("evtx2es.presenters.Evtx2jsonPresenter.Evtx2es", BrokenParser):
                 with self.assertRaisesRegex(ValueError, "malformed trailing"):
                     ingest_evtx_file(case, source, source_sha)
 
@@ -266,17 +334,52 @@ class IngestTests(unittest.TestCase):
                 def __init__(self, path):
                     del path
 
-                def gen_records(self, **kwargs):
-                    del kwargs
+                def close(self):
+                    pass
+
+                def gen_records(self, *args):
+                    del args
                     if False:
                         yield []
 
-            with patch("forensia.evidence.evtx.Evtx2es", EmptyParser):
+            with patch("evtx2es.presenters.Evtx2jsonPresenter.Evtx2es", EmptyParser):
                 result = ingest_evtx_file(case, source, source_sha)
 
-            self.assertEqual(case.raw_dir / f"evtx-{source_sha}-system.jsonl", result)
+            self.assertEqual(case.raw_dir / f"evtx-{source_sha}-records.jsonl", result)
             self.assertEqual("", result.read_text(encoding="utf-8"))
             self.assertEqual([result], list(case.raw_dir.glob("evtx-*.jsonl")))
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO evtx_events(evidence_id, source_file, record_id) "
+                    "VALUES ('prior-record', ?, 1)",
+                    [source_sha],
+                )
+                self.assertEqual(0, normalize_evtx(case, db))
+                self.assertEqual(
+                    (0,), db.execute("SELECT COUNT(*) FROM evtx_events").fetchone()
+                )
+
+    def test_empty_prefetch_export_preserves_previous_raw(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            source_sha = "d" * 64
+            raw = case.raw_dir / f"prefetch-entries-{source_sha}.jsonl"
+            raw.write_text("previous raw\n", encoding="utf-8")
+
+            class EmptyPresenter:
+                def __init__(self, **kwargs):
+                    self.output_path = Path(kwargs["output_path"])
+
+                def export_json(self):
+                    self.output_path.write_text("", encoding="utf-8")
+
+            with patch(
+                "forensia.evidence.prefetch.Prefetch2jsonPresenter", EmptyPresenter
+            ):
+                with self.assertRaisesRegex(ValueError, "empty JSONL"):
+                    ingest_prefetch_file(case, Path(tmpdir) / "empty.pf", source_sha)
+            self.assertEqual("previous raw\n", raw.read_text())
+            self.assertEqual([raw], list(case.raw_dir.iterdir()))
 
     def test_artifact_adapters_claim_only_matching_files(self) -> None:
         adapter = PrefetchArtifactAdapter()
@@ -318,7 +421,7 @@ class IngestTests(unittest.TestCase):
             case = Case.init(tmpdir)
 
             def write_event(source_sha: str, record_id: int) -> Path:
-                path = case.raw_dir / f"evtx-{source_sha}-security.jsonl"
+                path = case.raw_dir / f"evtx-{source_sha}-records.jsonl"
                 path.write_text(
                     json.dumps(
                         {
@@ -366,9 +469,9 @@ class IngestTests(unittest.TestCase):
             case = Case.init(tmpdir)
             record = {
                 "header": {
-                    "flags": "EntryFlags(ALLOCATED)",
                     "record_number": 42,
-                    "is_directory": False,
+                    "sequence": 0,
+                    "flags": "EntryFlags(ALLOCATED)",
                 },
                 "attributes": {
                     "StandardInformation": {
@@ -394,7 +497,7 @@ class IngestTests(unittest.TestCase):
                 "source_file": "sample/cfreds/MFT_C",
                 "evidence_id": "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000000042-00",
             }
-            (case.raw_dir / "mft-entries-test.jsonl").write_text(
+            (case.raw_dir / f"mft-entries-{'f' * 64}.jsonl").write_text(
                 json.dumps(record) + "\n", encoding="utf-8"
             )
 

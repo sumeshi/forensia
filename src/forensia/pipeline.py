@@ -60,7 +60,7 @@ from forensia.evidence.invalidation import (
 from forensia.evidence.normalize import normalize_all
 from forensia.knowledge.catalog import validate_declarations
 from forensia.knowledge.external import scan_knowledge_dir, set_knowledge_docs
-from forensia.knowledge.resources import profiles_dir, rulepacks_dir
+from forensia.knowledge.resources import rulepacks_dir
 from forensia.knowledge.rules.engine import (
     clear_rule_findings,
     generate_findings,
@@ -77,7 +77,6 @@ from forensia.report.template_export import (
 
 StatusCallback = Callable[[str], None]
 
-PROFILE_ROOT = profiles_dir()
 
 _PARSER_REVISION_FILES = (
     "core/evidence.py",
@@ -85,6 +84,7 @@ _PARSER_REVISION_FILES = (
     "db/schema.py",
     "evidence/artifacts.py",
     "evidence/normalize.py",
+    "evidence/jsonl.py",
     "evidence/evtx.py",
     "evidence/mft.py",
     "evidence/prefetch.py",
@@ -96,7 +96,7 @@ _PARSER_REVISION_FILES = (
 
 class UsageError(ValueError):
     """Invalid pipeline user input that a display adapter should surface as a
-    parameter error (missing input_dir, unknown profile, unusable
+    parameter error (missing input_dir, unusable
     template/knowledge directory)."""
 
 
@@ -160,17 +160,19 @@ def _parser_revision() -> str:
     ).hexdigest()
 
 
-def _analysis_revision(case: Case, profile_path: Path) -> str:
+def _analysis_revision(case: Case) -> str:
     rules_root = rulepacks_dir()
     rule_files = list(rules_root.rglob("*.yaml"))
     code_root = Path(__file__).parent / "knowledge" / "rules"
     code_files = list(code_root.rglob("*.py"))
     catalog_file = Path(__file__).parent / "knowledge" / "catalog.py"
-    revision = _content_revision([profile_path, *rule_files, *code_files, catalog_file])
+    revision = _content_revision([*rule_files, *code_files, catalog_file])
     suppression = (
         case.allowlist_path.read_bytes() if case.allowlist_path.exists() else b""
     )
-    return hashlib.sha256(revision.encode("ascii") + suppression).hexdigest()
+    return hashlib.sha256(
+        revision.encode("ascii") + suppression + version("pysigma").encode("ascii")
+    ).hexdigest()
 
 
 def _stage_receipt(db: CaseDB, phase: str) -> tuple[str, str, str] | None:
@@ -412,18 +414,6 @@ def resolve_forensia_policy_input(
     return CasePolicyInput(body=body, source=source, source_path=str(path))
 
 
-def resolve_profile_path(profile: str) -> Path:
-    """Resolve a profile name to a YAML file path, raising an error if not found."""
-    profile_name = str(profile).strip()
-    path = PROFILE_ROOT / f"{profile_name}.yaml"
-    if path.exists():
-        return path
-    available = ", ".join(sorted(p.stem for p in PROFILE_ROOT.glob("*.yaml"))) or "none"
-    raise UsageError(
-        f"unknown profile: {profile_name}. Available profiles: {available}"
-    )
-
-
 def _make_initial_progress_state(
     model: str | None,
     llm_base_url: str | None,
@@ -611,8 +601,6 @@ def _run_normalize_stage(
 def _run_analyze_stage(
     case: Case,
     db: CaseDB,
-    profile: str,
-    profile_path: Path,
     init: bool,
     normalized_this_run: bool,
     push_progress: Callable[..., None],
@@ -620,8 +608,8 @@ def _run_analyze_stage(
 ) -> int:
     """Run rule-based analysis to generate findings."""
     rules_dir = rulepacks_dir()
-    rules = load_rules_from_dir(rules_dir, profile_path)
-    revision = _analysis_revision(case, profile_path)
+    rules = load_rules_from_dir(rules_dir)
+    revision = _analysis_revision(case)
     receipt = _stage_receipt(db, "pipeline-analyze")
     if (
         not init
@@ -643,9 +631,9 @@ def _run_analyze_stage(
         )
         return existing_findings
 
-    _show(status, f"Stage 3/4: analyze with profile={profile} ({len(rules)} rules)")
+    _show(status, f"Stage 3/4: analyze ({len(rules)} common rules)")
     push_progress(
-        f"[analyze] profile={profile}, rules={len(rules)}",
+        f"[analyze] common rules={len(rules)}",
         stage="analyze",
         status="running",
     )
@@ -675,7 +663,19 @@ def _run_analyze_stage(
         db,
         "pipeline-analyze",
         revision,
-        f"profile={profile}, findings={total_findings}",
+        f"rules={len(rules)}, findings={total_findings}",
+        details={
+            "pysigma_version": version("pysigma"),
+            "rules": [
+                {
+                    "id": rule.id,
+                    "format": rule.rule_format,
+                    "definition_sha256": rule.definition_sha256,
+                    "query": rule.query,
+                }
+                for rule in rules
+            ],
+        },
     )
     _show(status, f"Analyze complete: findings={total_findings}")
     push_progress(
@@ -694,7 +694,6 @@ def _run_investigate_stage(
     llm_base_url: str | None,
     model: str | None,
     template_root: Path | None,
-    profile: str,
     push_progress: Callable[..., None],
     status: StatusCallback | None,
     *,
@@ -704,7 +703,6 @@ def _run_investigate_stage(
     report_every_n_cycles: int,
     report_max_queries_per_section: int,
     max_llm_calls: int,
-    auto_rulepacks: bool = True,
     forensia_policy: CasePolicyInput | None = None,
     report_spec: str | Path | None = None,
     report_only: bool = False,
@@ -737,12 +735,10 @@ def _run_investigate_stage(
                 max_iter=max_iter,
                 max_queries_per_hypothesis=max_queries_per_hypothesis,
                 no_progress_limit=no_progress_limit,
-                profile=profile,
                 report_every_n_cycles=report_every_n_cycles,
                 report_max_queries_per_section=report_max_queries_per_section
                 or get_llm_settings()["report_max_queries_per_section"],
                 max_llm_calls=max_llm_calls,
-                auto_rulepacks=auto_rulepacks,
                 forensia_policy=forensia_policy,
                 report_spec=report_spec,
                 report_only=report_only,
@@ -817,7 +813,6 @@ def _run_report_stage(
 def _run_evidence_stages(
     case: Case,
     db: CaseDB,
-    profile: str,
     input_dir: str | None,
     rerun: bool,
     push_progress: Callable[..., None],
@@ -840,7 +835,6 @@ def _run_evidence_stages(
     )
 
     if input_dir is not None:
-        profile_path = resolve_profile_path(profile)
         ingest_counts = _run_ingest_stage(case, db, input_dir, push_progress, status)
         normalized_this_run = _run_normalize_stage(
             case, db, rerun, ingest_counts, push_progress, status
@@ -848,15 +842,12 @@ def _run_evidence_stages(
         _run_analyze_stage(
             case,
             db,
-            profile,
-            profile_path,
             rerun,
             normalized_this_run,
             push_progress,
             status,
         )
     elif needs_normalize_from_raw:
-        profile_path = resolve_profile_path(profile)
         _show(status, "Re-normalizing from existing raw/ (no input_dir provided)")
         normalized_this_run = _run_normalize_stage(
             case, db, True, {"new_files": 1}, push_progress, status
@@ -864,24 +855,17 @@ def _run_evidence_stages(
         _run_analyze_stage(
             case,
             db,
-            profile,
-            profile_path,
             True,
             normalized_this_run,
             push_progress,
             status,
         )
     elif input_dir is None:
-        profile_path = resolve_profile_path(profile)
         analyze_receipt = _stage_receipt(db, "pipeline-analyze")
-        if analyze_receipt is None or analyze_receipt[0] != _analysis_revision(
-            case, profile_path
-        ):
+        if analyze_receipt is None or analyze_receipt[0] != _analysis_revision(case):
             _run_analyze_stage(
                 case,
                 db,
-                profile,
-                profile_path,
                 False,
                 False,
                 push_progress,
@@ -893,7 +877,6 @@ def run_investigation(
     case_dir: str | Path,
     *,
     input_dir: str | None = None,
-    profile: str = "windows-basic",
     llm_base_url: str | None = None,
     model: str | None = None,
     template_dir: str | Path | None = None,
@@ -908,7 +891,6 @@ def run_investigation(
     report_every_n_cycles: int = 3,
     report_max_queries_per_section: int = 0,
     max_llm_calls: int = 0,
-    auto_rulepacks: bool = True,
     timezone: str = "",
     status: StatusCallback | None = None,
     pre_investigation: Callable[[Case, CaseDB], None] | None = None,
@@ -986,9 +968,7 @@ def run_investigation(
         )
 
         if not report_only:
-            _run_evidence_stages(
-                case, db, profile, input_dir, rerun, push_progress, status
-            )
+            _run_evidence_stages(case, db, input_dir, rerun, push_progress, status)
             if pre_investigation is not None:
                 pre_investigation(case, db)
             _run_investigate_stage(
@@ -997,7 +977,6 @@ def run_investigation(
                 llm_base_url,
                 model,
                 template_root,
-                profile,
                 push_progress,
                 status,
                 max_iter=max_iter,
@@ -1006,7 +985,6 @@ def run_investigation(
                 report_every_n_cycles=report_every_n_cycles,
                 report_max_queries_per_section=report_max_queries_per_section,
                 max_llm_calls=max_llm_calls,
-                auto_rulepacks=auto_rulepacks,
                 forensia_policy=forensia_policy,
                 report_spec=report_spec,
             )
@@ -1086,7 +1064,6 @@ def run_report(
                 llm_base_url,
                 model,
                 template_root,
-                "windows-basic",
                 discard_progress,
                 None,
                 max_iter=1,
@@ -1095,7 +1072,6 @@ def run_report(
                 report_every_n_cycles=3,
                 report_max_queries_per_section=max_queries,
                 max_llm_calls=0,
-                auto_rulepacks=True,
                 report_spec=report_spec,
                 report_only=True,
             )

@@ -25,20 +25,16 @@ def main() -> None:
     print(f"File: {pf} ({pf.stat().st_size} bytes)")
 
     parser = Prefetch2es(pf)
-    chunks = list(parser.gen_records(multiprocess=False, chunk_size=500))
-    total_records = sum(len(c) for c in chunks)
-    print(f"gen_records: {len(chunks)} chunks, {total_records} total records")
-    if chunks:
-        for r in chunks[0][:2]:
-            print(f"  sample: {r}")
-
-    tl_parser = Prefetch2es(pf)
-    tl_chunks = list(tl_parser.gen_timeline_records(multiprocess=False, chunk_size=500))
-    total_tl = sum(len(c) for c in tl_chunks)
-    print(f"gen_timeline_records: {len(tl_chunks)} chunks, {total_tl} total records")
-    if tl_chunks:
-        for r in tl_chunks[0][:2]:
-            print(f"  sample: {r}")
+    total_records = total_executions = 0
+    for chunk in parser.gen_records(multiprocess=False, chunk_size=500):
+        for record in chunk:
+            total_records += 1
+            total_executions += len(record["last_exec_times"])
+            if total_records <= 2:
+                print(f"  sample: {record}")
+    print(
+        f"gen_records: {total_records} entries, {total_executions} derived executions"
+    )
 
 
 if __name__ == "__main__":

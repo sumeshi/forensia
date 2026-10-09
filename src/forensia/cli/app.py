@@ -7,14 +7,11 @@ is translated here into ``typer.BadParameter``.
 """
 
 import logging
-from collections.abc import Callable
 from pathlib import Path
 
 import typer
 from rich import print
-from rich.markup import escape
 
-from forensia.ai.case_profile import profile_advisor
 from forensia.ai.llm.llm_client import LLMServerUnavailableError
 from forensia.cli.doctor import run_doctor
 from forensia.cli.support import _open_case_or_die, _status
@@ -32,7 +29,7 @@ from forensia.report.template_export import export_packaged_report_templates
 
 logger = logging.getLogger(__name__)
 
-app = typer.Typer(help="forensia incident response tool")
+app = typer.Typer(help="forensia evidence investigation tool")
 
 
 @app.command(hidden=True)
@@ -124,12 +121,8 @@ def report(
     print(f"HTML report written to {report_path}")
 
 
-def _print_pre_investigation_hints(case: Case, profile: str, db: CaseDB) -> None:
-    """Print profile advice and a conservative timezone hint before investigating."""
-    advice = profile_advisor(profile, db)
-    if advice:
-        # rich's print would swallow [bracketed] pack names as markup tags.
-        print(escape(advice))
+def _print_pre_investigation_hints(case: Case, db: CaseDB) -> None:
+    """Print a conservative timezone hint before investigating."""
     if case.source_timezone == "UTC":
         # R2-14: surface a conservative timezone hint when no explicit
         # timezone was provided; rendering stays UTC-only until the
@@ -165,7 +158,6 @@ def investigate(
     input_dir: str | None = typer.Argument(
         None, help="Evidence input directory (required for new cases)"
     ),
-    profile: str = typer.Option("windows-basic", "--profile"),
     llm_base_url: str | None = typer.Option(None, "--llm-base-url"),
     model: str | None = typer.Option(None, "--model"),
     template_dir: str | None = typer.Option(None, "--template-dir"),
@@ -209,11 +201,6 @@ def investigate(
         "--max-llm-calls",
         help="Hard cap on total LLM calls per investigation session. 0 = unlimited (default for local LLM).",
     ),
-    auto_rulepacks: bool = typer.Option(
-        True,
-        "--auto-rulepacks/--no-auto-rulepacks",
-        help="Automatically enable rulepacks whose applies_when artifact_families are detected in case data",
-    ),
     timezone: str = typer.Option(
         "",
         "--timezone",
@@ -226,7 +213,6 @@ def investigate(
         report_path = run_investigation(
             case_dir,
             input_dir=input_dir,
-            profile=profile,
             llm_base_url=llm_base_url,
             model=model,
             template_dir=template_dir,
@@ -241,10 +227,9 @@ def investigate(
             report_every_n_cycles=report_every_n_cycles,
             report_max_queries_per_section=report_max_queries_per_section,
             max_llm_calls=max_llm_calls,
-            auto_rulepacks=auto_rulepacks,
             timezone=timezone,
             status=_status,
-            pre_investigation=_print_pre_investigation_hints_with(profile),
+            pre_investigation=_print_pre_investigation_hints,
         )
     except (UsageError, ReportSpecError) as exc:
         raise typer.BadParameter(str(exc)) from None
@@ -255,15 +240,6 @@ def investigate(
         # only the process exit policy is the adapter's concern here.
         raise typer.Exit(2) from None
     print(f"Investigation complete. Report: {report_path}")
-
-
-def _print_pre_investigation_hints_with(
-    profile: str,
-) -> Callable[[Case, CaseDB], None]:
-    def render(case: Case, db: CaseDB) -> None:
-        _print_pre_investigation_hints(case, profile, db)
-
-    return render
 
 
 if __name__ == "__main__":

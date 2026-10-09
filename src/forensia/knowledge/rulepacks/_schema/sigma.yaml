@@ -1,0 +1,18 @@
+# Trusted binding from Sigma's event vocabulary to normalized native EVTX rows.
+# A service is a concrete channel; category-based telemetry needs a separate mapping.
+services:
+  security: Security
+  system: System
+  windefend: Microsoft-Windows-Windows Defender/Operational
+fields:
+  EventID: event_id
+  Channel: channel
+  Computer: computer
+  Image: process_name
+  CommandLine: command_line
+  TargetUserName: target_user
+  SubjectUserName: subject_user
+  IpAddress: src_ip
+  LogonType: logon_type
+  ServiceName: service_name
+  Provider_Name: "json_extract_string(raw_json, '$.winlog.provider.name')"

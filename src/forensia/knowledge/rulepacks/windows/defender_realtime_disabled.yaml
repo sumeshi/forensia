@@ -1,0 +1,18 @@
+title: Windows Defender Real-Time Protection Disabled
+id: 5e8c6210-2521-4e48-9f8c-9fc91d8c9353
+status: experimental
+description: Defender recorded disabled real-time protection. Check policy changes and nearby activity before attributing intent.
+author: forensia
+logsource:
+  product: windows
+  service: windefend
+detection:
+  selection:
+    EventID: 5001
+  condition: selection
+falsepositives:
+  - Authorized policy changes or maintenance
+level: high
+tags:
+  - attack.defense-evasion
+  - attack.t1562.001

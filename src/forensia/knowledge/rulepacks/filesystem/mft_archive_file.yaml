@@ -1,0 +1,15 @@
+id: "filesystem-mft-archive-file"
+title: "Archive file in a user path"
+severity: "medium"
+confidence: 0.6
+required_fields:
+- file_name
+- file_path
+query: "SELECT\n    evidence_id,\n    file_name,\n    file_path,\n    extension,\n    si_created,\n    si_modified\nFROM mft_entries\nWHERE\n    extension IN ('zip', '7z', 'rar')\n    AND (\n        LOWER(file_path) LIKE '%/desktop/%' OR\n        LOWER(file_path) LIKE '%/documents/%' OR\n        LOWER(file_path) LIKE '%/downloads/%' OR\n        LOWER(file_path) LIKE '%/temp/%'\n    )\n"
+finding:
+  title: "Archive file in user path: {file_name}"
+  summary: "An archive file ({file_name}, extension {extension}) was recorded at {file_path}. The location alone does not show whether the archive was staged or transferred."
+tags:
+- filesystem
+- mft
+- archive

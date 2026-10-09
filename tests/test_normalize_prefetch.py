@@ -15,9 +15,10 @@ class NormalizePrefetchTests(unittest.TestCase):
     def test_normalize_prefetch_basic(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
-            prefetch_path = case.raw_dir / "prefetch-entries-001.jsonl"
+            source_sha = "1" * 64
+            prefetch_path = case.raw_dir / f"prefetch-entries-{source_sha}.jsonl"
             source_file = "disk-image-1/PREFETCH/CALC.EXE-ABCD1234.pf"
-            evidence_id = "pf-000000000001-01"
+            evidence_id = f"prefetch-{source_sha}-calc-exe-abcd1234"
 
             prefetch_path.write_text(
                 "\n".join(
@@ -52,7 +53,7 @@ class NormalizePrefetchTests(unittest.TestCase):
             )
 
             with CaseDB(case) as db:
-                inserted, _ = normalize_prefetch(case, db)
+                inserted, timeline_count = normalize_prefetch(case, db)
                 row = db.execute(
                     """
                     SELECT
@@ -64,8 +65,9 @@ class NormalizePrefetchTests(unittest.TestCase):
                 ).fetchone()
 
             self.assertEqual(1, inserted)
+            self.assertEqual(2, timeline_count)
             self.assertEqual(evidence_id, row[0])
-            self.assertEqual(source_file, row[1])
+            self.assertEqual(source_sha, row[1])
             self.assertEqual("CALC.EXE", row[2])
             self.assertEqual(5, row[3])
             self.assertEqual(datetime(2024, 1, 15, 10, 30, 0), row[4])
@@ -76,37 +78,48 @@ class NormalizePrefetchTests(unittest.TestCase):
             self.assertIsNotNone(row[9])
             self.assertIsNotNone(row[10])
             self.assertIsNone(row[11])
+            with CaseDB(case) as db:
+                timeline = db.execute(
+                    "SELECT timeline_id, exec_time, exec_index, source_file "
+                    "FROM prefetch_timeline ORDER BY exec_index"
+                ).fetchall()
+            self.assertEqual(
+                [
+                    (f"{evidence_id}-00", datetime(2024, 1, 15, 10, 30), 0, source_sha),
+                    (f"{evidence_id}-01", datetime(2024, 1, 14, 9, 0), 1, source_sha),
+                ],
+                timeline,
+            )
 
     def test_malformed_json_line_rejects_source_without_partial_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
-            prefetch_path = case.raw_dir / "prefetch-entries-001.jsonl"
-            prefetch_path.write_text(
-                "not valid json\n"
-                + json.dumps(
-                    {
-                        "evidence_id": "pf-0001",
-                        "source_file": "disk-image-1/PREFETCH/NOTEPAD.EXE-5678.pf",
-                        "name": "NOTEPAD.EXE",
-                        "exec_count": 3,
-                        "last_exec_times": ["2024-02-01T12:00:00Z"],
-                        "prefetch_hash": "5678",
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
+            prefetch_path = case.raw_dir / f"prefetch-entries-{'2' * 64}.jsonl"
+            original = {
+                "name": "NOTEPAD.EXE",
+                "exec_count": 3,
+                "last_exec_times": ["2024-02-01T12:00:00Z"],
+                "prefetch_hash": "5678",
+            }
+            prefetch_path.write_text(json.dumps(original) + "\n", encoding="utf-8")
             with CaseDB(case) as db:
-                with self.assertRaises(Exception):
+                self.assertEqual((1, 1), normalize_prefetch(case, db))
+                previous = db.execute("SELECT * FROM prefetch_executions").fetchall()
+                previous_timeline = db.execute(
+                    "SELECT * FROM prefetch_timeline"
+                ).fetchall()
+                replacement = {**original, "exec_count": 99}
+                prefetch_path.write_text(
+                    json.dumps(replacement) + "\nnot valid json\n", encoding="utf-8"
+                )
+                with self.assertRaises(ValueError):
                     normalize_prefetch(case, db)
                 self.assertEqual(
-                    (0,),
-                    db.execute("SELECT COUNT(*) FROM prefetch_executions").fetchone(),
+                    previous, db.execute("SELECT * FROM prefetch_executions").fetchall()
                 )
                 self.assertEqual(
-                    (0,),
-                    db.execute("SELECT COUNT(*) FROM prefetch_timeline").fetchone(),
+                    previous_timeline,
+                    db.execute("SELECT * FROM prefetch_timeline").fetchall(),
                 )
 
     def test_multiple_prefetch_jsonl_files(self) -> None:
@@ -114,12 +127,15 @@ class NormalizePrefetchTests(unittest.TestCase):
             case = Case.init(Path(tmpdir) / "case")
             with CaseDB(case) as db:
                 self.assertEqual((0, 0), normalize_prefetch(case, db))
-                (case.raw_dir / "prefetch-entries-empty.jsonl").write_text(
+                (case.raw_dir / f"prefetch-entries-{'3' * 64}.jsonl").write_text(
                     "", encoding="utf-8"
                 )
-                self.assertEqual((0, 0), normalize_prefetch(case, db))
+                with self.assertRaisesRegex(ValueError, "output is empty"):
+                    normalize_prefetch(case, db)
+                (case.raw_dir / f"prefetch-entries-{'3' * 64}.jsonl").unlink()
             for i in range(1, 4):
-                p = case.raw_dir / f"prefetch-entries-{i:04d}.jsonl"
+                source_sha = f"{i:x}" * 64
+                p = case.raw_dir / f"prefetch-entries-{source_sha}.jsonl"
                 p.write_text(
                     json.dumps(
                         {
@@ -146,7 +162,8 @@ class NormalizePrefetchTests(unittest.TestCase):
     def test_reingest_same_source_file_clears_old_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
-            prefetch_path = case.raw_dir / "prefetch-entries-001.jsonl"
+            source_sha = "4" * 64
+            prefetch_path = case.raw_dir / f"prefetch-entries-{source_sha}.jsonl"
             source_file = "disk-image-1/PREFETCH/REDO.EXE-0000.pf"
 
             prefetch_path.write_text(
@@ -184,7 +201,8 @@ class NormalizePrefetchTests(unittest.TestCase):
                 ).fetchall()
 
             self.assertEqual(2, inserted)
-            self.assertEqual([("pf-v1", 1), ("pf-v2", 99)], rows)
+            evidence_id = f"prefetch-{source_sha}-redo-exe-0000"
+            self.assertEqual([(evidence_id, 1), (evidence_id, 99)], rows)
 
             prefetch_path.write_text(
                 json.dumps(
@@ -209,7 +227,7 @@ class NormalizePrefetchTests(unittest.TestCase):
                 ).fetchall()
 
             self.assertEqual(1, inserted)
-            self.assertEqual([("pf-v2", 100)], rows)
+            self.assertEqual([(evidence_id, 100)], rows)
 
 
 class PrefetchPathSanitizationTests(unittest.TestCase):

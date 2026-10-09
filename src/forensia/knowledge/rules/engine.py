@@ -19,11 +19,9 @@ from forensia.knowledge.catalog import (
 from forensia.knowledge.catalog import (
     load_finding_benign_context_rules as _load_finding_benign_context_rules,
 )
-from forensia.knowledge.resources import schema_dir
 from forensia.knowledge.rules.models import Finding, FindingTemplate, Rule
 
 _MISSING_TEXT_VALUES = {"", "-", "n/a", "na", "none", "null", "unknown"}
-_BUILTIN_ALLOWLIST_PATH = schema_dir() / "suppression" / "allowlist_services.yaml"
 
 FALLBACK_PHASES = {"keyword_in_raw_json", "related_event_ids", "artifact_table"}
 
@@ -143,34 +141,6 @@ def _load_allowlist(case: Case) -> list[dict[str, Any]]:
     return []
 
 
-def _load_builtin_benign_allowlist() -> dict[str, list[str]]:
-    if not _BUILTIN_ALLOWLIST_PATH.exists():
-        return {"service_names": [], "process_names": [], "title_keywords": []}
-    data = yaml.safe_load(_BUILTIN_ALLOWLIST_PATH.read_text(encoding="utf-8")) or {}
-    return {
-        "rule_ids": [
-            str(item).strip()
-            for item in data.get("rule_ids") or []
-            if str(item).strip()
-        ],
-        "service_names": [
-            str(item).strip().lower()
-            for item in data.get("service_names") or []
-            if str(item).strip()
-        ],
-        "process_names": [
-            str(item).strip().lower()
-            for item in data.get("process_names") or []
-            if str(item).strip()
-        ],
-        "title_keywords": [
-            str(item).strip().lower()
-            for item in data.get("title_keywords") or []
-            if str(item).strip()
-        ],
-    }
-
-
 def _value_matches(actual: Any, expected_values: Any) -> bool:
     if not isinstance(expected_values, list):
         return False
@@ -201,58 +171,6 @@ def _is_suppressed(finding: Finding, allowlist_rules: list[dict[str, Any]]) -> b
         ):
             return True
     return False
-
-
-def _builtin_benign_match(
-    finding: Finding, allowlist_data: dict[str, list[str]]
-) -> str | None:
-    """Return a description string if the finding matches built-in benign allowlists.
-
-    Checks service_name, process_name, and title/summary keywords in that order.
-    Returns a description of the first match (e.g. 'service_name=wuauserv') or None.
-    """
-    row = (
-        finding.evidence[0]
-        if finding.evidence and isinstance(finding.evidence[0], dict)
-        else {}
-    )
-    scoped_rule_ids = set(allowlist_data.get("rule_ids") or [])
-    if scoped_rule_ids and finding.rule_id not in scoped_rule_ids:
-        return None
-    service_name = str(row.get("service_name") or "").strip().lower()
-    process_name = str(row.get("process_name") or "").strip().lower()
-    title = str(finding.title or "").strip().lower()
-    summary = str(finding.summary or "").strip().lower()
-    for candidate in allowlist_data.get("service_names") or []:
-        if candidate and candidate in service_name:
-            return f"service_name={candidate}"
-    for candidate in allowlist_data.get("process_names") or []:
-        if candidate and candidate in process_name:
-            return f"process_name={candidate}"
-    for candidate in allowlist_data.get("title_keywords") or []:
-        if candidate and (candidate in title or candidate in summary):
-            return f"title_keyword={candidate}"
-    return None
-
-
-def _downgrade_builtin_benign_finding(
-    finding: Finding, allowlist_data: dict[str, list[str]]
-) -> None:
-    """Downgrade severity and confidence for findings matching built-in benign allowlists.
-
-    Sets status to 'suppressed', caps confidence at 0.2, and reduces severity to 'low'.
-    Appends the matched rule detail to missing_checks for auditability.
-    """
-    matched = _builtin_benign_match(finding, allowlist_data)
-    if not matched:
-        return
-    finding.status = "suppressed"
-    finding.confidence = min(float(finding.confidence), 0.2)
-    if finding.severity in {"critical", "high", "medium"}:
-        finding.severity = "low"
-    note = f"Matched built-in benign allowlist: {matched}"
-    if note not in finding.missing_checks:
-        finding.missing_checks.append(note)
 
 
 def _parse_event_ts(value: Any) -> datetime | None:
@@ -442,16 +360,14 @@ def feed_findings_to_timeline(db: CaseDB) -> None:
 def save_findings(case: Case, db: CaseDB, findings: list[Finding]) -> None:
     """Persist findings to individual JSON files and the findings database table.
 
-    Applies built-in benign allowlist downgrading and user-defined suppression
+    Applies benign-context annotations and user-defined suppression
     before writing. Each finding is written as a JSON file for easy inspection
     and inserted as a row in the findings table for structured querying.
     """
     now = datetime.now(UTC).replace(tzinfo=None)
     allowlist_rules = _load_allowlist(case)
-    builtin_allowlist = _load_builtin_benign_allowlist()
     co_occur_index = build_co_occur_index(db)
     for finding in findings:
-        _downgrade_builtin_benign_finding(finding, builtin_allowlist)
         _annotate_finding_benign_context(finding, co_occur_index)
         if _is_suppressed(finding, allowlist_rules):
             finding.status = "suppressed"

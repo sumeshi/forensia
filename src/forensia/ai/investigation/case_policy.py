@@ -3,7 +3,7 @@
 One operator-authored Markdown input — ``case_root/FORENSIA.md`` or an
 explicitly given path — is adopted at run start as investigation policy
 (objective / scope / priority / constraints / guidance). It replaces the
-same-purpose default (profile) guidance *inside* the host-fixed structure:
+neutral default investigation guidance *inside* the host-fixed structure:
 role prompts, output schemas, typed action validation and the
 evidence/assessment/settlement gates stay untouched. Adoption is fixed for
 the whole run; a later edit never reopens admitted work — Case State remains
@@ -121,7 +121,7 @@ def policy_objective(policy: AppliedCasePolicy) -> str:
 
     The first paragraph of the ``objective`` (or ``scope``) section is used;
     without such section the policy carries no admission objective and the
-    objective stays configured by the existing profile/default path.
+    objective stays configured by the existing default path.
     """
     if not policy:
         return ""
@@ -137,7 +137,7 @@ def load_recorded_policy(db: CaseDB) -> dict[str, Any] | None:
     """Read the latest recorded adoption receipt (one step per session).
 
     Resume reads this recorded revision — never the current file. A payload
-    recording ``policy_state="unset"`` (revert to profile/default) counts as
+    recording ``policy_state="unset"`` (revert to neutral default) counts as
     "no policy in force" so the next run can adopt again.
     """
     row = db.execute(

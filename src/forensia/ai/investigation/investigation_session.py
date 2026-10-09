@@ -14,13 +14,10 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-import yaml
-
 from forensia.ai.case_profile import propose_scope_candidates
 from forensia.ai.hypotheses.hypothesis_store import load_persisted_hypotheses
 from forensia.ai.hypotheses.seeding import (
     _seed_rule_hypotheses,
-    seed_findings,
 )
 from forensia.ai.investigation.case_policy import (
     CASE_POLICY_STEP_PHASE,
@@ -55,8 +52,6 @@ from forensia.db.investigation_state import (
     load_investigation_state,
     mark_investigation_started,
 )
-from forensia.knowledge.coverage import refresh_evidence_coverage
-from forensia.knowledge.resources import profile_path
 from forensia.report.finding_themes import classify_finding_theme
 from forensia.report.sections.report_input import REPORT_INPUT_PHASE
 from forensia.report.template_export import seed_case_report_templates
@@ -70,6 +65,9 @@ def _to_json(value: Any) -> str:
 # may be abandoned (R07 keeps the writer-always-reasons contract; past terminal
 # rows keep their original ``terminal_reason``).
 _SESSION_LEASE_TIMEOUT_S = 600
+_DEFAULT_INVESTIGATION_OBJECTIVE = (
+    "Reconstruct evidence-backed activity and identify unresolved questions."
+)
 
 
 def persist_session_terminal_receipt(
@@ -433,14 +431,6 @@ def append_settlement_feedback(
     )
 
 
-def _load_profile_config(profile: str) -> dict[str, Any]:
-    """Load the YAML configuration for a given profile name."""
-    profile_file = profile_path(profile)
-    if not profile_file.exists():
-        return {}
-    return yaml.safe_load(profile_file.read_text(encoding="utf-8")) or {}
-
-
 def _initialize_overview(
     memory: MemoryManager, case: Case, objective: str = ""
 ) -> None:
@@ -451,9 +441,7 @@ def _initialize_overview(
     open_question_seed = {
         "en": "Awaiting initial investigation",
     }.get(output_language, "Awaiting initial investigation")
-    objective_line = objective or {
-        "en": "Establish the evidence-backed incident narrative.",
-    }.get(output_language, "Establish the evidence-backed incident narrative.")
+    objective_line = objective or _DEFAULT_INVESTIGATION_OBJECTIVE
     memory.update_overview(
         f"# Investigation Overview\n\n"
         f"Case: {case.path.name}\n\n"
@@ -465,35 +453,6 @@ def _initialize_overview(
         "## Investigation Policy\n- preserve evidence fidelity\n\n"
         f"## Active Tasks\n- {open_question_seed}\n"
     )
-
-
-def _ensure_profile_objective(memory: MemoryManager, objective: str) -> None:
-    """Patch the investigation objective into overview and tasks."""
-    objective = str(objective or "").strip()
-    if not objective:
-        return
-    overview = memory.load_overview()
-    if "## Investigation Objective" not in overview:
-        memory.update_overview(
-            overview.rstrip() + f"\n\n## Investigation Objective\n- {objective}\n"
-        )
-    elif objective not in overview:
-        memory.update_overview(
-            overview.replace(
-                "## Investigation Objective\n",
-                f"## Investigation Objective\n- {objective}\n",
-                1,
-            )
-            if "## Investigation Objective\n- " not in overview
-            else overview
-        )
-    if memory.tasks_memory_path.exists():
-        tasks_text = memory.tasks_memory_path.read_text(encoding="utf-8")
-    else:
-        tasks_text = ""
-    objective_task = f"Investigation objective: {objective}"
-    if objective_task not in tasks_text:
-        memory.append_task(objective_task, "human_decision")
 
 
 def _finding_snapshot(db: CaseDB, limit: int = 20) -> list[dict[str, Any]]:
@@ -661,9 +620,7 @@ def _sync_hypothesis_cards(
 def _init_session(
     case: Case,
     db: CaseDB,
-    profile: str,
     template_root: Path | None,
-    active_pack_ids: set[str] | None = None,
     *,
     report_only: bool = False,
     forensia_policy: CasePolicyInput | None = None,
@@ -704,7 +661,6 @@ def _init_session(
         )
     try:
         memory = MemoryManager(case)
-        profile_config = _load_profile_config(profile)
         if template_root is None:
             seed_case_report_templates(case)
             template_root = case.report_template_dir
@@ -742,18 +698,23 @@ def _init_session(
         policy_objective_line = (
             policy_objective(policy.applied) if policy.applied else ""
         )
-        seed_findings(case, db, profile, active_pack_ids=active_pack_ids)
-        refresh_evidence_coverage(db)
-        profile_objective = str((profile_config or {}).get("objective") or "").strip()
-        effective_objective = policy_objective_line or profile_objective
+        if not report_only:
+            ensure_investigation_state(
+                db,
+                objective=policy_objective_line or _DEFAULT_INVESTIGATION_OBJECTIVE,
+            )
+            persisted_investigation = load_investigation_state(db) or {}
+            ensure_objective_gap(
+                db, str(persisted_investigation.get("objective") or "")
+            )
+        else:
+            persisted_investigation = load_investigation_state(db) or {}
+        effective_objective = str(
+            persisted_investigation.get("objective")
+            or policy_objective_line
+            or _DEFAULT_INVESTIGATION_OBJECTIVE
+        )
         _initialize_overview(memory, case, effective_objective)
-        # The explicit case instruction replaces the same-purpose profile default
-        # (GOAL §10.5): a second objective line would stack even as contradictory
-        # policy in Memory, so the profile objective is superseded when adopted.
-        _ensure_profile_objective(memory, effective_objective)
-        ensure_investigation_state(db, objective=effective_objective)
-        persisted_investigation = load_investigation_state(db) or {}
-        ensure_objective_gap(db, str(persisted_investigation.get("objective") or ""))
         if not report_only:
             reopen_retryable_work(db)
             mark_investigation_started(db)
@@ -770,7 +731,8 @@ def _init_session(
             active_hypotheses=active_hypotheses,
             resolved_hypotheses=resolved_hypotheses,
         )
-        _seed_rule_hypotheses(db, state, session_id, active_pack_ids=active_pack_ids)
+        if not report_only:
+            _seed_rule_hypotheses(db, state, session_id)
         sync_keypoint_cards(memory, state.findings_snapshot)
         _sync_hypothesis_cards(
             memory, state.active_hypotheses, state.resolved_hypotheses

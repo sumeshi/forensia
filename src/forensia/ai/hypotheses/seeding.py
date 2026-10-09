@@ -1,4 +1,4 @@
-"""Session seeding: create initial findings and rule-derived hypotheses from profile rulepacks."""
+"""Seed investigation hypotheses from persisted findings and curated rules."""
 
 from __future__ import annotations
 
@@ -20,59 +20,17 @@ from forensia.core.log import log as _log
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
-from forensia.knowledge.resources import profile_path, rulepacks_dir
-from forensia.knowledge.rules.engine import (
-    clear_rule_findings,
-    generate_findings,
-    run_rule,
-    save_findings,
-)
-from forensia.knowledge.rules.loader import (
-    _get_pack_map,
-    _get_rule_cache,
-    load_rules_from_dir,
-)
+from forensia.knowledge.rules.loader import _get_rule_cache
 from forensia.report.answers.keypoint_catalog import (
     _resolve_evidence_results,
     investigation_keypoint_names,
 )
 
 
-def seed_findings(
-    case: Case, db: CaseDB, profile: str, active_pack_ids: set[str] | None = None
-) -> int:
-    """Run profile rules and replace rule-derived seed findings on resume."""
-    profile_file = profile_path(profile)
-    rules_dir = rulepacks_dir()
-    if active_pack_ids is not None:
-        pack_map = _get_pack_map()
-        rules = [
-            r
-            for r in load_rules_from_dir(rules_dir, profile_file)
-            if pack_map.get(r.id) in active_pack_ids
-        ]
-    else:
-        rules = load_rules_from_dir(rules_dir, profile_file)
-    total = 0
-    for rule in rules:
-        clear_rule_findings(case, db, rule.id)
-        findings = generate_findings(rule, run_rule(db, rule))
-        save_findings(case, db, findings)
-        total += len(findings)
-    # Tag any findings that are entirely benign local auth (e.g. loopback 4648).
-    from forensia.report.benign_auth import tag_benign_local_auth_findings
-
-    tagged = tag_benign_local_auth_findings(db)
-    if tagged:
-        _log("TAG", f"tagged {tagged} findings as benign-context:loopback-local-auth")
-    return total
-
-
 def _seed_rule_hypotheses(
     db: CaseDB,
     state: SessionState,
     session_id: str,
-    active_pack_ids: set[str] | None = None,
 ) -> None:
     """Seed hypotheses declared in rulepacks into active hypotheses.
 
@@ -82,17 +40,13 @@ def _seed_rule_hypotheses(
     into active hypotheses via merge_active_hypotheses with origin 'rule'.
     Called once after initial findings are seeded.
 
-    When active_pack_ids is provided, only rules from those packs are considered.
     At most 2 hypotheses are seeded per rule to prevent EVTX rules from crowding
     out file/cloud/email hypotheses.
     """
     rule_cache = _get_rule_cache()
-    pack_map = _get_pack_map() if active_pack_ids else {}
     seeded: list[Hypothesis] = []
     for rule in rule_cache.values():
         if not rule.hypotheses:
-            continue
-        if active_pack_ids and pack_map.get(rule.id) not in active_pack_ids:
             continue
 
         finding_rows = fetch_records(

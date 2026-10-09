@@ -1,0 +1,17 @@
+id: "filesystem-mft-cloud-sync-db-deleted"
+title: "Cloud-sync-related database marked deleted"
+severity: "medium"
+confidence: 0.7
+required_fields:
+- file_name
+- file_path
+- is_deleted
+tags:
+- filesystem
+- mft
+- cloud-sync
+- deletion
+query: "SELECT\n    evidence_id,\n    file_name,\n    file_path,\n    is_deleted\nFROM mft_entries\nWHERE\n    (\n        LOWER(file_name) LIKE '%sync_config.db%' OR\n        LOWER(file_name) LIKE '%snapshot.db%' OR\n        LOWER(file_name) LIKE '%snapshot.db-wal%'\n    )\n    AND is_deleted = 1\n"
+finding:
+  title: "Cloud-sync-related database deleted: {file_name}"
+  summary: "MFT marks the cloud-sync-related file {file_name} at {file_path} as deleted. The record does not establish why the file was deleted or whether data was transferred."

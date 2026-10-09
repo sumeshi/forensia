@@ -1,27 +1,21 @@
-"""Case profile: summarize observed event IDs / artifact families and advise on profiles/rulepacks."""
+"""Session-owned projection of currently available case evidence."""
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from typing import Any
-
-from forensia.knowledge.resources import profile_path, profiles_dir, rulepacks_dir
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class CaseEvidenceProfile:
     """Session-owned projection of the case's evidence availability.
 
-    ``event_ids=None`` means "no profile computed" (unknown); an empty set
-    means "profile computed and the case has zero EVTX event IDs" (e.g. an
-    MFT-only case). Callers such as the drafter event-ID filter and the
-    untestable detector rely on that distinction.
+    ``event_ids=None`` means "availability not computed" (unknown); an empty
+    set means "availability computed and the case has zero EVTX event IDs"
+    (e.g. an MFT-only case). Callers such as the drafter event-ID filter and
+    the untestable detector rely on that distinction.
     """
 
-    profile_name: str = ""
     event_ids: frozenset[int] | None = None
     summary: str = ""
 
@@ -146,100 +140,6 @@ def propose_scope_candidates(db, objective: str = "") -> dict[str, Any]:
         "hosts": hosts,
         "time_ranges": time_candidates,
     }
-
-
-def profile_advisor(profile_name: str, db) -> str:
-    """Check which rulepacks are not covered by the active profile and return recommendations.
-
-    Works purely deterministically:
-    - Enumerates rulepack directories under rulepacks/ (excluding _schema/).
-    - Loads the active profile YAML to identify enabled packs.
-    - Queries the case DB for evidence of uncovered artifact families (cloud sync
-      executables in prefetch, .ost/.pst in MFT) and maps them to profiles that
-      include the matching rulepacks.
-    """
-
-    import yaml
-
-    rules_root = rulepacks_dir()
-    all_packs = sorted(
-        d.name for d in rules_root.iterdir() if d.is_dir() and d.name != "_schema"
-    )
-    profile_file = profile_path(profile_name)
-    if not profile_file.exists():
-        return ""
-    profile = yaml.safe_load(profile_file.read_text(encoding="utf-8")) or {}
-    enabled_packs = {str(p) for p in (profile.get("rulepacks") or [])}
-    uncovered = [p for p in all_packs if p not in enabled_packs]
-    if not uncovered:
-        return ""
-
-    hints: list[str] = []
-
-    # Detect cloud-sync executables in prefetch
-    try:
-        rows = db.execute(
-            """
-            SELECT DISTINCT executable_name FROM prefetch_executions
-            WHERE LOWER(executable_name) IN (
-                'googledrivesync.exe', 'onedrive.exe', 'dropbox.exe', 'icloudsetup.exe',
-                'googledrivesync', 'onedrive', 'dropbox', 'icloudsetup'
-            )
-            """
-        ).fetchall()
-        detected = [str(r[0]) for r in rows if r[0]]
-        if detected:
-            hints.append(
-                f"Cloud sync executables detected in prefetch: {', '.join(detected[:3])}"
-            )
-    except Exception:
-        logger.debug(
-            "Failed to detect cloud-sync executables in prefetch", exc_info=True
-        )
-
-    # Detect email cache files in MFT
-    try:
-        row = db.execute(
-            "SELECT COUNT(*) FROM mft_entries WHERE extension IN ('ost', 'pst')"
-        ).fetchone()
-        count = int(row[0]) if row else 0
-        if count > 0:
-            hints.append(
-                f"Email cache files (.ost/.pst) found in MFT ({count} entries)"
-            )
-    except Exception:
-        logger.debug("Failed to detect email cache files in MFT", exc_info=True)
-
-    # Map uncovered packs to available profiles
-    profile_pack_map: dict[str, set[str]] = {}
-    for pf_path in sorted(profiles_dir().glob("*.yaml")):
-        try:
-            pf_data = yaml.safe_load(pf_path.read_text(encoding="utf-8")) or {}
-            pf_name = str(pf_data.get("name") or pf_path.stem)
-            pf_packs = {str(p) for p in (pf_data.get("rulepacks") or [])}
-            profile_pack_map[pf_name] = pf_packs
-        except Exception:
-            continue
-
-    covering = sorted(
-        pf_name
-        for pf_name, pf_packs in profile_pack_map.items()
-        if pf_name != profile_name and any(p in pf_packs for p in uncovered)
-    )
-
-    lines: list[str] = []
-    lines.append(
-        f"[RULES] profile '{profile_name}' enables packs [{', '.join(sorted(enabled_packs))}]; "
-        f"packs not enabled: [{', '.join(uncovered)}]."
-    )
-    if hints:
-        lines.extend(f"[RULES] Indicator hint: {h}." for h in hints)
-    if covering:
-        lines.append(
-            f"[RULES] Use --profile {' or '.join(covering[:3])} "
-            f"to include rulepacks covering these artifacts."
-        )
-    return "\n".join(lines)
 
 
 def _format_case_profile(profile: dict[str, Any]) -> str:

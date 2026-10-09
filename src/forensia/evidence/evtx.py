@@ -1,19 +1,15 @@
 from __future__ import annotations
 
-import json
-import os
-import tempfile
 from collections.abc import Callable, Collection
-from datetime import UTC, datetime
 from pathlib import Path
 
-from evtx2es.models.Evtx2es import Evtx2es
+from evtx2es.presenters.Evtx2jsonPresenter import Evtx2jsonPresenter
 
 from forensia.core.case import Case
-from forensia.core.evidence import make_evtx_evidence_id
+from forensia.core.textutil import strict_slugify
 from forensia.db.database import CaseDB
+from forensia.evidence.jsonl import duckdb_path_literal, export_jsonl, raw_source_hash
 from forensia.evidence.normalize import select_source_paths
-from forensia.evidence.timeline_sql import duckdb_path_literal
 
 
 def ingest_evtx_file(
@@ -22,98 +18,22 @@ def ingest_evtx_file(
     source_sha: str,
     progress_callback: Callable[[str], None] | None = None,
 ) -> Path:
-    """Parse an EVTX file with evtx2es, enrich records with metadata, and write as JSONL.
-
-    Each record gets an evidence_id derived from the full source hash, channel,
-    and record_id, plus source tracking and ingestion timestamp. The output filename
-    encodes the channel name and source hash for traceability.
-    """
+    """Write the parser's records unchanged as atomically published JSONL."""
     evtx_path = Path(evtx_path)
-    ingested_at = datetime.now(UTC).isoformat()
-
+    output_path = case.raw_dir / f"evtx-{source_sha}-records.jsonl"
     if progress_callback:
         progress_callback(f"Parsing EVTX records from {evtx_path}")
-    parser = Evtx2es(evtx_path)
-    output_path: Path | None = None
-    temporary_path: Path | None = None
-    count = 0
-    first_channel = evtx_path.stem
-    try:
-        for batch in parser.gen_records(shift="0", multiprocess=False, chunk_size=500):
-            for record in batch:
-                if output_path is None:
-                    first_channel = record.get("winlog", {}).get(
-                        "channel", evtx_path.stem
-                    )
-                    safe_name = (
-                        first_channel.lower()
-                        .replace("/", "_")
-                        .replace(" ", "_")
-                        .replace("\\", "_")
-                    )
-                    output_path = case.raw_dir / f"evtx-{source_sha}-{safe_name}.jsonl"
-                    handle = tempfile.NamedTemporaryFile(
-                        mode="w",
-                        encoding="utf-8",
-                        dir=case.raw_dir,
-                        prefix=f".{output_path.name}.",
-                        suffix=".tmp",
-                        delete=False,
-                    )
-                    temporary_path = Path(handle.name)
-                else:
-                    handle = temporary_path.open("a", encoding="utf-8")
-                with handle:
-                    _write_evtx_record(
-                        handle, record, source_sha, ingested_at, first_channel
-                    )
-                count += 1
-
-        if output_path is None:
-            safe_name = (
-                first_channel.lower()
-                .replace("/", "_")
-                .replace(" ", "_")
-                .replace("\\", "_")
-            )
-            output_path = case.raw_dir / f"evtx-{source_sha}-{safe_name}.jsonl"
-            handle = tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                dir=case.raw_dir,
-                prefix=f".{output_path.name}.",
-                suffix=".tmp",
-                delete=False,
-            )
-            temporary_path = Path(handle.name)
-            handle.close()
-        os.replace(temporary_path, output_path)
-    except BaseException:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
-        raise
-
+    export_jsonl(
+        Evtx2jsonPresenter,
+        evtx_path,
+        output_path,
+        shift="0",
+        multiprocess=False,
+        chunk_size=500,
+    )
     if progress_callback:
-        progress_callback(f"Parsed {count} EVTX records from {evtx_path}")
         progress_callback(f"Wrote JSONL: {output_path}")
     return output_path
-
-
-def _write_evtx_record(handle, record, source_sha, ingested_at, first_channel):
-    winlog = record.get("winlog", {})
-    channel = winlog.get("channel", first_channel)
-    record_id = int(winlog.get("record_id") or 0)
-    enriched = {
-        **record,
-        "source_type": "evtx",
-        # Stable source identity; display paths live in evidence_sources.
-        "source_file": source_sha,
-        "channel": channel,
-        "parser": "evtx2es",
-        "ingested_at": ingested_at,
-        "evidence_id": make_evtx_evidence_id(source_sha, channel, record_id),
-    }
-    handle.write(json.dumps(enriched, ensure_ascii=False) + "\n")
 
 
 def normalize_evtx(
@@ -121,31 +41,42 @@ def normalize_evtx(
     db: CaseDB,
     source_keys: Collection[str] | None = None,
 ) -> int:
-    """Load EVTX JSONL files into the evtx_events database table.
-
-    Deletes existing rows for each source_file before insert so re-ingestion
-    replaces rather than duplicates data. Returns total rows inserted.
-    """
+    """Load native EVTX JSONL, assigning source identity during projection."""
     inserted = 0
-    paths = select_source_paths(
-        case.raw_dir.glob("evtx-*.jsonl"),
-        source_keys,
-    )
+    paths = select_source_paths(case.raw_dir.glob("evtx-*.jsonl"), source_keys)
     for path in paths:
+        source_sha = raw_source_hash(path)
         path_sql = duckdb_path_literal(path)
+        channel_rows = db.execute(
+            f"SELECT DISTINCT json_extract_string(json, '$.winlog.channel') "
+            f"FROM read_ndjson_objects('{path_sql}')"
+        ).fetchall()
+        channels = {row[0] for row in channel_rows if row[0] is not None}
+        slug_cases = " ".join(
+            f"WHEN channel_value = '{channel.replace(chr(39), chr(39) * 2)}' "
+            f"THEN '{strict_slugify(channel)}'"
+            for channel in sorted(channels)
+        )
+        slug_expression = (
+            f"CASE {slug_cases} ELSE 'unknown' END" if slug_cases else "'unknown'"
+        )
         db.execute(
             f"""
             CREATE OR REPLACE TEMP TABLE evtx_stage AS
+            WITH extracted AS (
+                SELECT json,
+                    json_extract_string(json, '$.winlog.channel') AS channel_value
+                FROM read_ndjson_objects('{path_sql}')
+            )
             SELECT
-                json_extract_string(json, '$.evidence_id') AS evidence_id,
-                json_extract_string(json, '$.source_file') AS source_file,
-                coalesce(
-                    json_extract_string(json, '$.winlog.channel'),
-                    json_extract_string(json, '$.channel')
-                ) AS channel,
+                'evtx-' || '{source_sha}' || '-' ||
+                    ({slug_expression}) || '-' ||
+                    printf('%012d', coalesce(try_cast(json_extract_string(json, '$.winlog.record_id') AS BIGINT), error('EVTX record_id missing or invalid'))) AS evidence_id,
+                '{source_sha}' AS source_file,
+                json_extract_string(json, '$.winlog.channel') AS channel,
                 try_cast(json_extract_string(json, '$.winlog.event_id') AS INTEGER) AS event_id,
                 try_cast(json_extract_string(json, '$.winlog.record_id') AS BIGINT) AS record_id,
-                try_cast(json_extract_string(json, '$.\"@timestamp\"') AS TIMESTAMP) AS timestamp,
+                try_cast(json_extract_string(json, '$."@timestamp"') AS TIMESTAMP) AS timestamp,
                 json_extract_string(json, '$.winlog.computer_name') AS computer,
                 json_extract_string(json, '$.winlog.user.name') AS user_name,
                 json_extract_string(json, '$.winlog.event_data.TargetUserName') AS target_user,
@@ -159,28 +90,16 @@ def normalize_evtx(
                 ) AS process_name,
                 json_extract_string(json, '$.winlog.event_data.CommandLine') AS command_line,
                 json_extract_string(json, '$.winlog.event_data.ServiceName') AS service_name,
-                coalesce(
-                    json_extract_string(json, '$.winlog.event_data.Message'),
-                    json_extract_string(json, '$.userdata.Message')
-                ) AS message,
+                json_extract_string(json, '$.winlog.event_data.Message') AS message,
                 json AS raw_json,
                 json_extract(json, '$.tags') AS tags,
                 NULL AS severity
-            FROM read_ndjson_objects('{path_sql}')
+            FROM extracted
             """
         )
         row_count = int(db.execute("SELECT COUNT(*) FROM evtx_stage").fetchone()[0])
-        if row_count == 0:
-            continue
         with db.transaction():
-            db.execute(
-                """
-                DELETE FROM evtx_events
-                WHERE source_file IN (
-                    SELECT DISTINCT source_file FROM evtx_stage WHERE source_file IS NOT NULL
-                )
-                """
-            )
+            db.execute("DELETE FROM evtx_events WHERE source_file = ?", (source_sha,))
             db.execute(
                 """
                 INSERT INTO evtx_events (
@@ -188,8 +107,7 @@ def normalize_evtx(
                     computer, user_name, target_user, subject_user, src_ip, logon_type,
                     process_name, command_line, service_name, message, raw_json, tags, severity
                 )
-                SELECT
-                    evidence_id, source_file, channel, event_id, record_id, timestamp,
+                SELECT evidence_id, source_file, channel, event_id, record_id, timestamp,
                     computer, user_name, target_user, subject_user, src_ip, logon_type,
                     process_name, command_line, service_name, message, raw_json, tags, severity
                 FROM evtx_stage

@@ -14,7 +14,7 @@ column_descriptions:
   file_path: "Full path under the volume, e.g. 'C:/Users/alice/Documents/x.docx'. Use LIKE '%pattern%' for substring match."
   extension: "Lowercase extension without dot, e.g. 'docx', 'exe', 'pf'."
   is_deleted: "TRUE if the MFT entry is marked deleted."
-  size: "File size in bytes."
+  size: "FileName attribute logical size in bytes (metadata snapshot, not a current DATA-stream size)."
   si_created: "$STANDARD_INFORMATION created (TIMESTAMP). Often manipulated by timestomp."
   si_modified: "$STANDARD_INFORMATION modified time."
   si_accessed: "$STANDARD_INFORMATION accessed time."

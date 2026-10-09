@@ -1,0 +1,18 @@
+title: Windows Security Audit Log Cleared
+id: 481d216e-1f57-4e2a-9ad0-927c51148819
+status: experimental
+description: The Security audit log was cleared. Check the initiating account and maintenance context before attributing intent.
+author: forensia
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 1102
+  condition: selection
+falsepositives:
+  - Authorized log maintenance
+level: high
+tags:
+  - attack.defense-evasion
+  - attack.t1070.001

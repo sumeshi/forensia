@@ -23,13 +23,13 @@ classifiers = [
 ]
 dependencies = [
     "duckdb==1.5.3",
-    "evtx2es==1.10.0",
+    "evtx2es==1.12.0",
     "httpx==0.28.1",
     "jinja2==3.1.6",
-    "mft2es==1.8.0",
+    "mft2es==1.10.0",
     "orjson==3.11.9",
-    "prefetch2es==2.4.1",
-    "reg2es==2.0.0",
+    "prefetch2es==2.6.0",
+    "reg2es==2.3.0",
     "pyarrow==24.0.0",
     "pydantic==2.13.4",
     "python-dateutil==2.9.0.post0",
@@ -37,7 +37,8 @@ dependencies = [
     "pyyaml==6.0.3",
     "rich==15.0.0",
     "sqlglot==30.11.0",
-    "typer==0.26.7"
+    "typer==0.26.7",
+    "pysigma==2.0.0",
 ]
 
 [project.scripts]
@@ -56,14 +57,12 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 forensia = [
-    "knowledge/profiles/*.yaml",
     "report/render/templates/*.j2",
     "report/render/templates/partials/*.j2",
     "report/templates/*.md",
     "report/templates/_formats/*.yaml",
     "knowledge/rulepacks/*/*.yaml",
     "knowledge/rulepacks/_schema/*.yaml",
-    "knowledge/rulepacks/_schema/suppression/*.yaml",
     "knowledge/rulepacks/_schema/playbook/*.md",
 ]
 

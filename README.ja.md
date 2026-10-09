@@ -52,7 +52,7 @@ FORENSIA_OUTPUT_LANGUAGE=ja
 取得済みのアーティファクトを`./input`に置いて実行します。
 
 ```bash
-uv run forensia investigate ./case001 ./input --profile windows-basic
+uv run forensia investigate ./case001 ./input
 ```
 
 コマンドをグローバルにインストールした場合は`uv run`を省略できます。エンドポイントとモデルの両方が設定されていなければ、`investigate`は決定論的な証拠処理だけを実行し、LLMによる調査を省略します。設定済みのサーバーが利用できない場合は、上限付きの障害復旧処理に入ります。モデル未設定とは区別されます。
@@ -84,7 +84,7 @@ uv run forensia investigate ./case001 ./input --profile windows-basic
 
 ```bash
 # 新規ケースを開始する、または追加の入力を取り込んで調査する。
-forensia investigate ./case001 ./input --profile windows-basic
+forensia investigate ./case001 ./input
 
 # 既存ケースと、受け付け済みの調査作業から再開する。
 forensia investigate ./case001 --max-iter 50
@@ -108,14 +108,12 @@ forensia report --help
 
 | 調査オプション | 既定値・動作 |
 |---|---|
-| `--profile` | `windows-basic`。ルールの選択 |
 | `--max-iter` | 調査サイクル数`20` |
 | `--max-queries-per-hypothesis` | 選択した仮説ごとのクエリ数`5` |
 | `--no-progress-limit` | 意味上の進展がないサイクル数`3` |
 | `--report-every-n-cycles` | `3`。報告書セクションの定期更新間隔 |
 | `--report-max-queries-per-section` | `0`なら環境変数の設定を使う |
 | `--max-llm-calls` | `0`ならセッションの呼出し上限なし。正の値なら各論理呼出しの前に確認し、コンテキスト縮約や失敗した呼出しも数える |
-| `--auto-rulepacks / --no-auto-rulepacks` | 有効。観測したアーティファクト種別に適用可能なpackを追加する |
 | `--timezone` | `America/New_York`などのIANA名。ケースのmanifestより優先される |
 | `--forensia-md`, `--report-spec`, `--knowledge` | 後述するMarkdown入力の明示指定 |
 | `--template-dir` | 既存の報告書ディレクトリ入力。`--report-spec`とは排他的 |
@@ -123,9 +121,9 @@ forensia report --help
 
 通常の再開ではケース状態を保持します。調査中のCtrl-Cは、エンジンが次に中断を扱う境界での停止を要求します。現在の処理が終わるまで待つ場合があります。セッションは終了理由を記録し、後の`investigate`は永続化された作業から再開します。
 
-再開の判定には、Traceのステージreceiptと、有効なsourceの正規化状態を使います。パーサー実装や依存関係が変われば正規化を、ルール・profile・ケースの抑制設定が変われば分析を再実行します。sourceの状態が欠落または失敗している場合、正規化の完了条件を満たしません。
+再開の判定には、Traceのステージreceiptと、有効なsourceの正規化状態を使います。パーサー実装や依存関係が変われば正規化を、ルール定義やケースの抑制設定が変われば分析を再実行します。sourceの状態が欠落または失敗している場合、正規化の完了条件を満たしません。
 
-`--rerun`は、対応するスキーマのケース内で調査をやり直す機能です。正規化済みの状態、調査・報告書の状態、入力採用receiptを消去し、有効なsource登録、rawレコード、Memoryを保持します。独立した実験には新しいケースディレクトリを使ってください。現在のスキーマバージョンは**6**です。非対応のスキーマは移行せず拒否します。`--rerun`でも更新できません。
+`--rerun`は、対応するスキーマのケース内で調査をやり直す機能です。正規化済みの状態、調査・報告書の状態、入力採用receiptを消去し、有効なsource登録、rawレコード、Memoryを保持します。現在のスキーマバージョンは**7**です。非対応のスキーマは移行せず拒否し、`--rerun`でも更新できません。このバージョンではparserのrawレコード契約も変わったため、以前のケースから移行する場合は新しいケースを作り、取得済みの原本を再取込みしてください。
 
 ## Markdown入力
 
@@ -134,6 +132,8 @@ forensia report --help
 ### FORENSIA.md: 調査方針
 
 ケースのルートに`FORENSIA.md`を置くか、ケースの開始・再開時に`--forensia-md <path>`を指定します。エンジンは親ディレクトリや証拠ディレクトリから指示を探しません。
+
+既定の調査では、特定のインシデント種別を仮定しません。ケースの目的と範囲は`FORENSIA.md`に記述してください。
 
 ```markdown
 # Investigation policy
@@ -287,6 +287,10 @@ CaseDBはCaseの接続にTraceをattachし、接続内のviewでTraceのテー�
 
 Evidenceは、観測を正規化したレコードです。EVTX、MFT、Prefetchの識別子は、source内容の完全なSHA-256と、そのsource内でのレコード識別子を組み合わせます。Registryの識別子はデータセットの構成元を保持します。そのため、異なるsourceに同じローカル番号があっても区別できます。Findingは導出した兆候、Hypothesisは検証する解釈、Claimは報告書の主張、Gapは未解決の情報、Taskは対応する作業を表します。保存されているからといって、同じ証拠上の重みを持つわけではありません。entityのMemory cardは観測された名前と参照を整理するもので、ケース全体のmulti-host identity graphを確立するものではありません。
 
+EVTX、MFT、Registry、Prefetchの取込みには、evtx2es 1.12、mft2es 1.10、reg2es 2.3、prefetch2es 2.6を使います。parserのnative JSONLをraw入力として保持します。正規化時に入力の完全なSHA-256からsource IDを割り当て、EVTX、MFT、PrefetchのEvidence IDにもこの識別子を使います。Registry artifact IDはデータセットの構成元を保持します。MFTの`size`はFileName属性のlogical sizeの記録値です。DATA属性の全体は`raw_json`に保持します。MFTとPrefetchのtimelineはDuckDB正規化時にparserのentryレコードから導出し、sourceを再parseしません。RegistryのJSONLはstreamで厳密に検証してからレコードを受け付けます。
+
+正常な空のEVTXはemptyとして記録し、0件のPrefetch出力はrawの公開前に拒否します。Registryは`error_policy="raise"`を使いますが、plugin内部で警告を出し未対応レコードをskipする場合があります。parserの成功や件数は完全性の証明ではなく、pluginの完全性が未証明のRegistry capability coverageはpartialのままです。
+
 ### 検証とライフサイクル
 
 | 境界 | 判断と実装 |
@@ -344,16 +348,18 @@ case001/
 
 ## ルールと拡張点
 
-既定の[windows-basic profile](src/forensia/knowledge/profiles/windows-basic.yaml)は、Windows、Registry、Prefetch、filesystemのpackを選択します。profileはルールを選び、ルールは検出内容と調査のhintを記述します。観測したアーティファクト種別から適用可能なpackを選ぶこともできます。受け付けるYAMLフィールドは[ルールモデル](src/forensia/knowledge/rules/models.py)が定義し、[rulepacks/](src/forensia/knowledge/rulepacks/)に実行可能な例があります。
+厳選したEvidenceルールはすべてのケースで実行します。インシデントprofile、自動pack選択、独立したartifact eligibility段階はありません。SQLルールはアーティファクト別の正規化テーブルを検索し、Sigmaルールは具体的なEVTX channelに結び付けます。テレメトリーの欠落やルール不一致だけでは、侵入がなかったとは証明できません。[ルールモデル](src/forensia/knowledge/rules/models.py)はSQL宣言と共通の実行モデルを、[Sigma compiler](src/forensia/knowledge/rules/sigma.py)はEVTX検出のコンパイルを扱います。[rulepacks/](src/forensia/knowledge/rulepacks/)以下のディレクトリはルールの整理用であり、選択には使いません。
 
-ルールの仮説は`confirm_when`、`refute_when`、任意の`evidence_requirements`を宣言し、admissionでVerificationSpecへ変換します。相関、追加調査の問い、制約付きの代替検索は宣言に記載します。event ID、schema card、recipe、artifact capability、Sufficiencyの方針、構造化した質問、判定の語彙は[_schema/](src/forensia/knowledge/rulepacks/_schema/)に置きます。ケースの`allowlist.yaml`による抑制は、Finding生成後にルールIDと証拠行のフィールドを照合します。Findingと証拠は保持します。
+Windows EVTXの検出には、pySigmaを通じてDuckDB向けにコンパイルする、独自に作成した実験段階のSigmaルールを3つ含みます。対象はSecurity 1102（監査ログ消去）、Defender 5001（リアルタイム保護の無効化）、Security 4688（エンコードされたPowerShellのプロセス作成）です。対応範囲は意図的に小さく、SigmaHQ全般との互換性はありません。未対応の相関、正規表現、category、汎用keyword、および未知のlogsource・field・modifierは拒否します。ルールの一致は調査の手掛かりであり、侵入確定を意味しません。共通セットには、ファイルシステムの観測、Prefetchの実行履歴、Registryの設定・履歴を扱う22件のSQLルールも含まれます。ファイル名やアプリケーション名だけで転送・マルウェア・悪意を断定せず、観測事実を記録します。Sigma fieldとWindows channelの対応は[sigma.yaml](src/forensia/knowledge/rulepacks/_schema/sigma.yaml)にあります。条件はAND/OR/NOT、selectorのグループ、fieldの値・リスト、wildcard、`contains`/`startswith`/`endswith`、`all`、`exists`を扱います。analysis receiptには定義hash、コンパイル済みquery、pySigmaのversionを記録し、ルールや対応表の変更時はresumeで再分析します。
+
+SQLルールには任意で仮説を追加でき、`confirm_when`、`refute_when`、任意の`evidence_requirements`を宣言し、admissionでVerificationSpecへ変換します。相関、追加調査の問い、制約付きの代替検索は宣言に記載します。event ID、schema card、recipe、artifact capability、Sufficiencyの方針、構造化した質問、判定の語彙は[_schema/](src/forensia/knowledge/rulepacks/_schema/)に置きます。ケースの`allowlist.yaml`による抑制は、Finding生成後にルールIDと証拠行のフィールドを照合します。Findingと証拠は保持します。
 
 既存の最小の拡張点を使ってください。
 
 | 変更 | 実装・宣言の配置先 |
 |---|---|
 | アーティファクト種別 | [ArtifactAdapter registry](src/forensia/evidence/artifacts.py)、parser/normalizer、現在のDBスキーマ、Coverage、source置換の経路 |
-| 検出やルールの選択 | Rulepack YAMLと[profiles](src/forensia/knowledge/profiles/) |
+| 検出 | [rulepacks/](src/forensia/knowledge/rulepacks/)以下の共通SQL・Sigma rule YAMLと、[_schema/sigma.yaml](src/forensia/knowledge/rulepacks/_schema/sigma.yaml)のchannel対応 |
 | 構造化した質問 | [question_routing.yaml](src/forensia/knowledge/rulepacks/_schema/question_routing.yaml)。汎用SQLで足りない場合だけ専用の[answer builder](src/forensia/report/answers/answer_registry.py)を追加する |
 | 報告書の構成 | REPORT.mdと既存のsection parser。登録済みの[keypoints](src/forensia/report/answers/keypoint_catalog.py)を再利用する |
 | 決定論的な報告書の表 | [table_registry.py](src/forensia/report/answers/table_registry.py)と[report_tables.yaml](src/forensia/knowledge/rulepacks/_schema/report_tables.yaml) |

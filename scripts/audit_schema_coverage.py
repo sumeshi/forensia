@@ -21,6 +21,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from forensia.knowledge.catalog import expand_catalog_sql_placeholders
+from forensia.knowledge.rules.loader import load_rules_from_dir
 
 SCHEMA_DIR = REPO_ROOT / "src" / "forensia" / "knowledge" / "rulepacks" / "_schema"
 RULES_DIR = REPO_ROOT / "src" / "forensia" / "knowledge" / "rulepacks"
@@ -79,14 +80,8 @@ def _extract_event_ids_from_sql(sql: str) -> set[int]:
 def _collect_rule_event_ids(rules_dir: Path) -> set[int]:
     """Extract all event_id values from rule YAML query fields using sqlglot."""
     event_ids: set[int] = set()
-    for yaml_path in sorted(rules_dir.rglob("*.yaml")):
-        if "_schema" in yaml_path.parts:
-            continue
-        data = _load_yaml(yaml_path)
-        if not data:
-            continue
-        query = data.get("query", "")
-        event_ids.update(_extract_event_ids_from_sql(query))
+    for rule in load_rules_from_dir(rules_dir):
+        event_ids.update(_extract_event_ids_from_sql(rule.query))
     return event_ids
 
 

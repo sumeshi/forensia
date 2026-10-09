@@ -1,5 +1,5 @@
 id: registry-office-macro-trusted-doc
-title: Office document trusted for macros
+title: "Office TrustRecord observed"
 severity: medium
 confidence: 0.55
 required_fields:
@@ -7,15 +7,9 @@ required_fields:
 - hive
 tags:
 - registry
-- phishing
-- initial-access
-- macro
-- t1204
-attack:
-- tactic: execution
-  technique_id: T1204.002
-  technique_name: 'User Execution: Malicious File'
+- office
+- trust-record
 query: "SELECT\n    artifact_id AS evidence_id,\n    key_path,\n    value_name,\n    hive,\n    timestamp\nFROM registry_artifacts\nWHERE plugin = 'office_macros'\n"
 finding:
-  title: 'Office macro-trusted document: {value_name}'
-  summary: 'A Microsoft Office document was marked as trusted for macros: {value_name}. Macro-enabled documents are a common phishing delivery vector; review how this document arrived and what it executed (ATT&CK T1204.002).'
+  title: "Office TrustRecord: {value_name}"
+  summary: "The Registry parser reported an Office TrustRecord for {value_name} in {hive}. It records an Office trust setting and does not establish how the document arrived or whether a macro ran."

@@ -1,0 +1,16 @@
+id: prefetch-finding-data-staging
+title: "Cloud-sync or file-transfer client execution recorded"
+severity: medium
+confidence: 0.7
+required_fields:
+- executable_name
+- last_exec_time
+tags:
+- prefetch
+- execution
+- cloud-sync
+- file-transfer
+query: "SELECT evidence_id, executable_name, last_exec_time, exec_count, source_file FROM prefetch_executions WHERE ({{catalog_exe_sql:cloud_sync_artifacts:executable_name}}) ORDER BY last_exec_time DESC"
+finding:
+  title: "Client execution recorded: {executable_name}"
+  summary: "Prefetch records execution history for {executable_name} (last run: {last_exec_time}, count: {exec_count}). This does not establish that files were synchronized, staged, or transferred."

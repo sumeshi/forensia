@@ -67,8 +67,6 @@ from forensia.core.session import SessionState
 from forensia.db.database import CaseDB
 from forensia.db.investigation_state import save_stop_reason
 from forensia.knowledge.coverage import refresh_evidence_coverage
-from forensia.knowledge.resources import profile_path
-from forensia.knowledge.rules.loader import resolve_active_packs
 from forensia.report.render.writer import render_written_report
 from forensia.report.sections.report_input import (
     SectionSource,
@@ -308,33 +306,7 @@ class _InvestigateEnv:
     report_max_queries_per_section: int
 
 
-def _resolve_rulepacks(profile: str, db: CaseDB, auto_rulepacks: bool) -> set[str]:
-    """Resolve active rulepack ids for the profile, logging auto-enabled packs."""
-    profile_file = profile_path(profile)
-    active_pack_ids = resolve_active_packs(
-        profile_file if profile_file.exists() else None,
-        db,
-        auto_rulepacks=auto_rulepacks,
-    )
-    if auto_rulepacks and active_pack_ids:
-        expected = set()
-        if profile_file.exists():
-            import yaml
-
-            profile_data = (
-                yaml.safe_load(profile_file.read_text(encoding="utf-8")) or {}
-            )
-            expected = set(profile_data.get("rulepacks") or [])
-        auto_enabled = active_pack_ids - expected
-        if auto_enabled:
-            _log(
-                "PLAN",
-                f"auto-rulepacks enabled: {sorted(auto_enabled)} (detected families trigger pack activation)",
-            )
-    return active_pack_ids
-
-
-def _prepare_case_profile(case: Case, db: CaseDB, profile: str) -> CaseEvidenceProfile:
+def _prepare_case_profile(case: Case, db: CaseDB) -> CaseEvidenceProfile:
     """Build the session projection from current evidence, without global state."""
     case.extract_time_range(db.conn)
     case_profile_dict = build_case_profile(db)
@@ -345,7 +317,6 @@ def _prepare_case_profile(case: Case, db: CaseDB, profile: str) -> CaseEvidenceP
         if isinstance(e.get("event_id"), int)
     }
     return CaseEvidenceProfile(
-        profile_name=profile,
         event_ids=frozenset(profile_event_ids),
         summary=case_profile,
     )
@@ -534,7 +505,6 @@ async def investigate(
     model: str,
     max_iter: int = 20,
     no_progress_limit: int = 3,
-    profile: str = "windows-basic",
     max_queries_per_hypothesis: int = 5,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     report_every_n_cycles: int = 1,
@@ -543,11 +513,9 @@ async def investigate(
     report_spec: str | Path | None = None,
     report_max_queries_per_section: int = 3,
     max_llm_calls: int = 200,
-    auto_rulepacks: bool = True,
     forensia_policy: CasePolicyInput | None = None,
 ) -> dict[str, Any]:
     """Run the full investigation loop: broad plan → hypothesis loop → report refresh, with termination checks and LLM budget enforcement."""
-    active_pack_ids = _resolve_rulepacks(profile, db, auto_rulepacks)
     ensure_report_output_paths(
         case,
         (case.reports_dir / "report.md", case.reports_dir / "report.html"),
@@ -559,13 +527,11 @@ async def investigate(
     # by every report phase and the final refresh within this session.
     report_decision = decide_report_sources(case, db, template_root, report_spec)
     report_sections = report_decision.sections
-    case_profile = _prepare_case_profile(case, db, profile)
+    case_profile = _prepare_case_profile(case, db)
     state, ctx, memory, session_id = _init_session(
         case,
         db,
-        profile,
         template_root,
-        active_pack_ids=active_pack_ids if auto_rulepacks else None,
         report_only=report_only,
         forensia_policy=forensia_policy,
         report_input_record=report_decision.record,

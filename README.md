@@ -52,7 +52,7 @@ FORENSIA_OUTPUT_LANGUAGE=ja
 Run with acquired artifacts in `./input`:
 
 ```bash
-uv run forensia investigate ./case001 ./input --profile windows-basic
+uv run forensia investigate ./case001 ./input
 ```
 
 After installing the command globally, omit `uv run`. Without both an endpoint and model, `investigate` runs the deterministic evidence stages and skips the LLM investigation. A configured but unavailable server enters bounded outage recovery; it is not treated as an unconfigured model.
@@ -84,7 +84,7 @@ Character and token estimates guide context selection; they are not measured pro
 
 ```bash
 # Start a new case, or ingest and investigate additional input.
-forensia investigate ./case001 ./input --profile windows-basic
+forensia investigate ./case001 ./input
 
 # Resume using the existing case and its admitted work.
 forensia investigate ./case001 --max-iter 50
@@ -108,14 +108,12 @@ forensia report --help
 
 | Investigation option | Default / behavior |
 |---|---|
-| `--profile` | `windows-basic`; rule selection |
 | `--max-iter` | `20` investigation cycles |
 | `--max-queries-per-hypothesis` | `5` queries per selected hypothesis |
 | `--no-progress-limit` | `3` cycles without semantic progress |
 | `--report-every-n-cycles` | `3`; periodic section refresh |
 | `--report-max-queries-per-section` | `0` uses the environment setting |
 | `--max-llm-calls` | `0` disables the session cap; a positive cap is checked before each logical call, including compaction and failed calls |
-| `--auto-rulepacks / --no-auto-rulepacks` | Enabled; add packs eligible for observed artifact families |
 | `--timezone` | An IANA name, such as `America/New_York`; overrides the case manifest |
 | `--forensia-md`, `--report-spec`, `--knowledge` | Explicit Markdown inputs described below |
 | `--template-dir` | Existing report-directory input; mutually exclusive with `--report-spec` |
@@ -123,9 +121,9 @@ forensia report --help
 
 Ordinary resume preserves case state. Ctrl-C during the investigation requests a stop at the engine's next handling boundary; it may wait for the current operation. The session records its terminal reason, and later `investigate` resumes from durable work.
 
-Resume uses Trace stage receipts and the active sources' normalization status. Changes to parser implementation/dependencies rerun normalization; rule/profile or case suppression changes rerun analysis. A missing or failed source status cannot satisfy the normalization gate.
+Resume uses Trace stage receipts and the active sources' normalization status. Changes to parser implementation/dependencies rerun normalization; rule definitions or case suppression changes rerun analysis. A missing or failed source status cannot satisfy the normalization gate.
 
-`--rerun` is a fresh investigation within a compatible case: it clears normalized and investigation/report state and input-adoption receipts, while retaining active source registrations, raw records, and memory. Use a new case directory for an isolated experiment. The current schema version is **6**. Unsupported schema versions are rejected, not migrated; `--rerun` cannot upgrade them.
+`--rerun` is a fresh investigation within a compatible case: it clears normalized and investigation/report state and input-adoption receipts, while retaining active source registrations, raw records, and memory. The current schema version is **7**; unsupported schema versions are rejected, not migrated, and `--rerun` cannot upgrade them. The parser raw-record contract also changed in this version, so create a new case and reingest the acquired originals when moving from an earlier case.
 
 ## Markdown inputs
 
@@ -134,6 +132,8 @@ These inputs have different roles. Operator instructions, reference knowledge, a
 ### FORENSIA.md: investigation policy
 
 Place `FORENSIA.md` in the case root, or pass `--forensia-md <path>` when starting or resuming a case. The engine does not search parent directories or the evidence directory for instructions.
+
+The default investigation does not assume an incident type. Describe the purpose and scope of a case in `FORENSIA.md`.
 
 ```markdown
 # Investigation policy
@@ -287,6 +287,10 @@ CaseDB attaches Trace to the Case connection and exposes its tables through conn
 
 Evidence is an observed normalized record. EVTX, MFT, and Prefetch identifiers combine the full source-content SHA-256 with the record's identity within that source; Registry identifiers retain dataset contributors. Records with the same local number in different sources therefore remain distinct. A Finding is a derived signal; a Hypothesis is an interpretation to test; a Claim is an assertion in the report; a Gap describes unresolved information and a Task the associated work. Persisting these objects does not give them equal evidentiary weight. Entity memory cards organize observed names and references; they do not establish a case-wide multi-host identity graph.
 
+EVTX, MFT, Registry, and Prefetch ingestion uses evtx2es 1.12, mft2es 1.10, reg2es 2.3, and prefetch2es 2.6. The parser's native JSONL is retained as raw input. Normalization assigns source IDs from the full input SHA-256 and uses that identity for EVTX, MFT, and Prefetch Evidence IDs; Registry artifact IDs retain their dataset contributors. MFT `size` denotes the FileName attribute logical-size snapshot; full DATA attributes remain in `raw_json`. MFT and Prefetch timelines are derived during DuckDB normalization from parser entry records, without parsing the source a second time. Registry JSONL is streamed and validated strictly before its records are admitted.
+
+A valid empty EVTX is recorded as empty; a zero-record Prefetch export is rejected before publication. Registry uses `error_policy="raise"`, but plugins can still warn and skip unsupported records internally. Parser success and row counts do not prove completeness; Registry capability coverage remains partial where plugin completeness is unproven.
+
 ### Verification and lifecycle
 
 | Boundary | Decision and owner |
@@ -344,16 +348,18 @@ case001/
 
 ## Rules and extension points
 
-The default [windows-basic profile](src/forensia/knowledge/profiles/windows-basic.yaml) selects Windows, Registry, Prefetch, and filesystem packs. Profiles select rules; rules describe detections and investigation hints. Applicable packs can also be selected from observed artifact families. [Rule models](src/forensia/knowledge/rules/models.py) own the accepted YAML fields, and [rulepacks/](src/forensia/knowledge/rulepacks/) contains executable examples.
+The curated evidence rules run for every case; there is no incident profile, automatic pack selection, or separate artifact-eligibility stage. SQL rules query their artifact-specific normalized tables, while Sigma rules bind to concrete EVTX channels. Missing telemetry or no rule matches do not prove that an intrusion did not occur. The [rule model](src/forensia/knowledge/rules/models.py) owns SQL declarations and the shared execution model; the [Sigma compiler](src/forensia/knowledge/rules/sigma.py) owns EVTX detection compilation. Directories under [rulepacks/](src/forensia/knowledge/rulepacks/) organize rules; they do not control selection.
 
-Rule hypotheses declare `confirm_when`, `refute_when`, and optional `evidence_requirements`; admission converts them to VerificationSpec. Correlation, follow-up questions, and bounded fallback searches belong in declarations. Event IDs, schema cards, recipes, artifact capabilities, sufficiency policy, structured questions, and verdict vocabulary live in [_schema/](src/forensia/knowledge/rulepacks/_schema/). Suppression in case `allowlist.yaml` matches a rule ID and evidence-row fields after finding generation; it retains the finding and its evidence.
+Windows EVTX detection includes three original experimental Sigma rules compiled to DuckDB through pySigma: Security event 1102 (audit log cleared), Defender event 5001 (real-time protection disabled), and Security event 4688 (encoded PowerShell process creation). This is a deliberately small supported subset, not general SigmaHQ compatibility. Unsupported correlations, regular expressions, categories, generic keywords, and unknown log sources, fields, or modifiers are rejected. A match is a lead for investigation, not a confirmed intrusion. The common set also includes 22 artifact SQL rules for filesystem observations, Prefetch execution history, and Registry configuration/history. These record observations without asserting transfer, malware, or hostile intent from a filename or application alone. Sigma fields and exact Windows channel bindings live in [sigma.yaml](src/forensia/knowledge/rulepacks/_schema/sigma.yaml). Conditions support AND/OR/NOT, selector groups, field values and lists, wildcards, `contains`/`startswith`/`endswith`, `all`, and `exists`. Analysis receipts retain definition hashes, compiled queries, and the pySigma version; a rule or binding change triggers reanalysis on resume.
+
+SQL rules can optionally declare hypotheses with `confirm_when`, `refute_when`, and optional `evidence_requirements`; admission converts them to VerificationSpec. Correlation, follow-up questions, and bounded fallback searches belong in declarations. Event IDs, schema cards, recipes, artifact capabilities, sufficiency policy, structured questions, and verdict vocabulary live in [_schema/](src/forensia/knowledge/rulepacks/_schema/). Suppression in case `allowlist.yaml` matches a rule ID and evidence-row fields after finding generation; it retains the finding and its evidence.
 
 Prefer the smallest existing extension point:
 
 | Change | Owner |
 |---|---|
 | Artifact family | [ArtifactAdapter registry](src/forensia/evidence/artifacts.py), parser/normalizer, current DB schema, Coverage, and source replacement path |
-| Detection or rule selection | Rulepack YAML and [profiles](src/forensia/knowledge/profiles/) |
+| Detection | Shared SQL and Sigma rule YAML under [rulepacks/](src/forensia/knowledge/rulepacks/), with channel bindings in [_schema/sigma.yaml](src/forensia/knowledge/rulepacks/_schema/sigma.yaml) |
 | Structured question | [question_routing.yaml](src/forensia/knowledge/rulepacks/_schema/question_routing.yaml); add a specialized [answer builder](src/forensia/report/answers/answer_registry.py) only when generic SQL is insufficient |
 | Report structure | REPORT.md and the existing section parser; reuse registered [keypoints](src/forensia/report/answers/keypoint_catalog.py) |
 | Deterministic report table | [table_registry.py](src/forensia/report/answers/table_registry.py) and [report_tables.yaml](src/forensia/knowledge/rulepacks/_schema/report_tables.yaml) |

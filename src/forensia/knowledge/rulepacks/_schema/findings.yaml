@@ -8,7 +8,7 @@ core_columns:
   - status
   - created_at
 column_descriptions:
-  finding_id: "Stable ID like 'windows-security-4624-logon-0001'."
+  finding_id: "Rule ID followed by a result ordinal, such as '481d216e-1f57-4e2a-9ad0-927c51148819-0001'."
   rule_id: "Rule that produced this finding."
   title: "One-line title — human-readable summary."
   severity: "'high', 'medium', 'low'."
