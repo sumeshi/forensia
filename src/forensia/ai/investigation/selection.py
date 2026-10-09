@@ -11,8 +11,13 @@ from typing import Any
 
 import yaml
 
+from forensia.ai.investigation.work_judgment import (
+    blocker_message,
+    count_consecutive_inconclusive,
+    judge_work,
+    spec_capabilities,
+)
 from forensia.db.database import CaseDB
-from forensia.knowledge.coverage import derive_required_capabilities
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +30,6 @@ DEFAULT_WEIGHTS = {
     "dependency_impact": 1.0,
     "related_hypotheses": 1.0,
     "information_gain_proxy": 1.0,
-    "report_changeability": 1.0,
     "aging": 1.0,
     "execution_cost": 1.0,
     "retry_penalty": 1.0,
@@ -33,6 +37,12 @@ DEFAULT_WEIGHTS = {
     "repeated_inconclusive_penalty": 1.0,
 }
 
+# The ordering is deliberately small and explainable (V2-03/R05): evidence
+# severity and availability, admitted Gap references, objective token
+# relevance, relation structure, aging, execution cost, and the
+# self-referential repetition penalties.  Everything derived from report
+# prose, section confidence, or staleness was removed — a report reword must
+# not change the investigation order.
 COMPONENT_RANGES = {
     "severity": (0, 24),
     "report_relevance": (0, 12),
@@ -42,7 +52,6 @@ COMPONENT_RANGES = {
     "dependency_impact": (0, 12),
     "related_hypotheses": (0, 5),
     "information_gain_proxy": (0, 10),
-    "report_changeability": (0, 8),
     "aging": (0, 8),
     "execution_cost": (0, 10),
     "retry_penalty": (0, 24),
@@ -55,30 +64,6 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
-def _count_consecutive_inconclusive(db: CaseDB, hypothesis_id: str) -> int:
-    """Count consecutive inconclusive verdicts from recent reasoning."""
-    rows = db.execute(
-        "SELECT verdict FROM trace.hypothesis_reasoning "
-        "WHERE hypothesis_id = ? AND phase = 'sufficiency' "
-        "ORDER BY created_at DESC LIMIT 10",
-        [hypothesis_id],
-    ).fetchall()
-    if not rows:
-        rows = db.execute(
-            "SELECT verdict FROM trace.hypothesis_reasoning "
-            "WHERE hypothesis_id = ? AND phase = 'check' "
-            "ORDER BY created_at DESC LIMIT 10",
-            [hypothesis_id],
-        ).fetchall()
-    count = 0
-    for r in rows:
-        if r[0] == "inconclusive":
-            count += 1
-        else:
-            break
-    return count
-
-
 def _tokenize(text: str) -> set[str]:
     """Lowercase tokenize for simple overlap checks."""
     return {w for w in text.lower().split() if len(w) > 2}
@@ -87,24 +72,14 @@ def _tokenize(text: str) -> set[str]:
 def _capabilities_for_hypothesis(hyp: dict[str, Any]) -> set[str]:
     """Derive the capabilities a hypothesis can actually consume.
 
-    Declared ``required_capabilities`` on the canonical spec take priority;
-    otherwise structured event IDs map through the artifact catalog.  The
-    canonical ``verification_spec`` is the only stored condition
-    representation; a row without a parsable spec is an explicit failure.
+    Delegates to the single spec owner (``spec_capabilities``).  The canonical
+    ``verification_spec`` is the only stored condition representation; a row
+    without a parsable spec is an explicit failure.
     """
-    spec = hyp.get("verification_spec")
-    if isinstance(spec, str):
-        spec = _json_value(spec, None)
-    if not isinstance(spec, dict) or not spec:
-        raise ValueError(
-            f"hypothesis {hyp.get('hypothesis_id')} has no canonical "
-            "verification_spec; the case database does not match the current "
-            "format (preserve the case and ingest into a new case directory)"
-        )
     return set(
-        derive_required_capabilities(
-            spec.get("required_capabilities") or [],
-            spec.get("support_conditions"),
+        spec_capabilities(
+            hyp.get("verification_spec"),
+            hypothesis_id=str(hyp.get("hypothesis_id") or hyp.get("id") or ""),
         )
     )
 
@@ -135,11 +110,8 @@ class SelectionContext:
     active_hypotheses: list[dict[str, Any]]
     relations: dict[str, list[dict[str, Any]]]
     coverage: dict[str, dict[str, str]]
-    report_sections: dict[str, dict[str, Any]]
     open_gaps: list[dict[str, Any]]
     objective: str
-    hypothesis_statuses: dict[str, str] | None = None
-    open_tasks: list[dict[str, Any]] | None = None
 
 
 def _json_value(value: Any, default: Any) -> Any:
@@ -230,19 +202,6 @@ def gather_selection_context(db: CaseDB) -> SelectionContext:
         key = f"{r[3]}:{r[0]}"
         coverage[key] = {"state": r[1], "reason": r[2] or "", "family": r[3]}
 
-    sections = db.execute(
-        "SELECT section_key, title, status, confidence, gaps, stale FROM report_sections"
-    ).fetchall()
-    report_sections = {}
-    for r in sections:
-        report_sections[r[0]] = {
-            "title": r[1] or "",
-            "status": r[2] or "draft",
-            "confidence": r[3] or 0.0,
-            "gaps": _json_value(r[4], []) if r[4] else [],
-            "stale": bool(r[5]),
-        }
-
     gaps = db.execute(
         "SELECT gap_id, section_key, description, kind, status, hypothesis_id "
         "FROM report_gaps WHERE status = 'open'"
@@ -259,24 +218,6 @@ def gather_selection_context(db: CaseDB) -> SelectionContext:
         for r in gaps
     ]
 
-    statuses = {
-        str(row[0]): str(row[1] or "active")
-        for row in db.execute("SELECT hypothesis_id, status FROM hypotheses").fetchall()
-    }
-    task_rows = db.execute(
-        "SELECT task_id, hypothesis_id, required_capability, kind "
-        "FROM investigation_tasks WHERE status = 'open'"
-    ).fetchall()
-    open_tasks = [
-        {
-            "task_id": row[0],
-            "hypothesis_id": row[1] or "",
-            "required_capability": row[2] or "",
-            "kind": row[3] or "",
-        }
-        for row in task_rows
-    ]
-
     objective_row = db.execute(
         "SELECT objective FROM investigation_state WHERE state_id = 'case'"
     ).fetchone()
@@ -286,11 +227,8 @@ def gather_selection_context(db: CaseDB) -> SelectionContext:
         active_hypotheses=active_hypotheses,
         relations=relations,
         coverage=coverage,
-        report_sections=report_sections,
         open_gaps=open_gaps,
         objective=objective,
-        hypothesis_statuses=statuses,
-        open_tasks=open_tasks,
     )
 
 
@@ -318,7 +256,13 @@ def _compute_severity(hyp: dict[str, Any], findings_snapshot: Any) -> float:
 
 
 def _compute_report_relevance(hyp: dict[str, Any], ctx: SelectionContext) -> float:
-    """How relevant is this hypothesis to report gaps/stale sections."""
+    """Score admitted-work references only (V2-03/R05).
+
+    A linked open Gap is admitted Case State, so it stays ranked.  Section
+    titles, gap strings, staleness, and confidence are report prose: their
+    token overlap was removed so a report reword cannot change the
+    investigation order.
+    """
     score = 0.0
     hid = hyp["hypothesis_id"]
     for gap in ctx.open_gaps:
@@ -326,13 +270,6 @@ def _compute_report_relevance(hyp: dict[str, Any], ctx: SelectionContext) -> flo
             "source_gap_id"
         ):
             score += 4.0
-    hyp_tokens = _tokenize(hyp.get("description", ""))
-    for sec in ctx.report_sections.values():
-        section_tokens = _tokenize(
-            " ".join(str(item) for item in [sec.get("title", ""), *sec.get("gaps", [])])
-        )
-        if sec.get("stale") and hyp_tokens & section_tokens:
-            score += 2.0
     return min(score, 12.0)
 
 
@@ -524,14 +461,11 @@ def compute_priority_score(
         )
     )
 
-    # information_gain_proxy: competing alternatives + weak section targeting
+    # information_gain_proxy: competing alternatives; section confidence/stale
+    # prose was removed from the signal (V2-03/R05).
     alternatives = sum(1 for r in rels if r.get("relation_type") == "alternative_to")
-    weak_sections = sum(
-        1 for s in ctx.report_sections.values() if s.get("confidence", 0) < 0.5
-    )
-    raw = 3.0 + alternatives * 2.0 + min(weak_sections, 2) * 2.0
-    raw = min(raw, 10.0)
-    reason = f"{alternatives} alternatives, {weak_sections} weak sections"
+    raw = min(3.0 + alternatives * 2.0, 10.0)
+    reason = f"{alternatives} alternatives"
     clamped = _clamp(raw, *COMPONENT_RANGES["information_gain_proxy"])
     components.append(
         PriorityComponent(
@@ -541,19 +475,6 @@ def compute_priority_score(
             weights["information_gain_proxy"],
             clamped * weights["information_gain_proxy"],
             reason,
-        )
-    )
-
-    raw = 4.0 if any(s.get("stale") for s in ctx.report_sections.values()) else 0.0
-    clamped = _clamp(raw, *COMPONENT_RANGES["report_changeability"])
-    components.append(
-        PriorityComponent(
-            "report_changeability",
-            raw,
-            clamped,
-            weights["report_changeability"],
-            clamped * weights["report_changeability"],
-            "default",
         )
     )
 
@@ -617,7 +538,7 @@ def compute_priority_score(
 
     # repeated_inconclusive_penalty: consecutive inconclusive verdicts
     if db:
-        inconclusive_count = _count_consecutive_inconclusive(db, hyp_id)
+        inconclusive_count = count_consecutive_inconclusive(db, hyp_id)
         raw = min(inconclusive_count * 3.0, 12.0)
         reason = f"{inconclusive_count} consecutive inconclusive"
     else:
@@ -643,68 +564,21 @@ def check_eligibility(
     hyp: dict[str, Any],
     now: datetime | None = None,
     *,
-    ctx: SelectionContext | None = None,
-    db: CaseDB | None = None,
+    db: CaseDB,
 ) -> tuple[bool, str]:
-    """Check if a hypothesis is eligible for selection."""
-    now = now or datetime.now(UTC)
+    """Check if a hypothesis is eligible for selection.
 
-    if hyp.get("status") not in ("active",):
-        return False, f"status={hyp.get('status')}"
-
-    next_eligible = hyp.get("next_eligible_at")
-    if next_eligible:
-        if isinstance(next_eligible, str):
-            try:
-                next_eligible = datetime.fromisoformat(next_eligible)
-            except ValueError:
-                next_eligible = None
-        if next_eligible and now < next_eligible:
-            return False, f"blocked until {next_eligible}"
-
-    if hyp.get("blocked_reason"):
-        return False, f"blocked: {hyp['blocked_reason']}"
-
-    if (hyp.get("selection_count", 0) or 0) >= 8:
-        return False, "retry budget exhausted"
-
-    if (
-        db is not None
-        and _count_consecutive_inconclusive(db, hyp.get("hypothesis_id", "")) >= 4
-    ):
-        return False, "repeated inconclusive limit"
-
-    if ctx is not None:
-        statuses = ctx.hypothesis_statuses or {}
-        for relation in ctx.relations.get(hyp.get("hypothesis_id", ""), []):
-            if relation.get("relation_type") == "prerequisite_for" and relation.get(
-                "to_hypothesis_id"
-            ) == hyp.get("hypothesis_id"):
-                prerequisite = str(relation.get("from_hypothesis_id") or "")
-                if statuses.get(prerequisite) != "confirmed":
-                    return False, f"waiting for prerequisite {prerequisite}"
-
-        if any(
-            task.get("hypothesis_id") == hyp.get("hypothesis_id")
-            and task.get("kind")
-            in {"human_decision", "external_lookup", "evidence_acquisition"}
-            for task in (ctx.open_tasks or [])
-        ):
-            return False, "waiting for external investigation task"
-
-        capabilities = _capabilities_for_hypothesis(hyp)
-        if capabilities:
-            relevant = [
-                cov
-                for key, cov in ctx.coverage.items()
-                if key.split(":", 1)[-1] in capabilities
-            ]
-            if relevant and not any(
-                cov.get("state") == "available" for cov in relevant
-            ):
-                return False, "required evidence capability unavailable"
-
-    return True, ""
+    Reads the single work judgment (``work_judgment.judge_work``) so
+    eligibility, stop classification, and reopen agree on the same Case
+    State; only the selection-specific gating is added there.
+    """
+    hid = str(hyp.get("hypothesis_id") or hyp.get("id") or "")
+    judgment = judge_work(db, [hid], selection_gate=True, now=now).get(hid)
+    if judgment is None:
+        return False, "hypothesis not persisted"
+    if judgment.runnable:
+        return True, ""
+    return False, blocker_message(judgment)
 
 
 def select_focus_hypotheses(
@@ -726,7 +600,7 @@ def select_focus_hypotheses(
     scored: list[tuple[float, list[PriorityComponent], dict[str, Any], bool, str]] = []
 
     for hyp in ctx.active_hypotheses:
-        eligible, block_reason = check_eligibility(hyp, now, ctx=ctx, db=db)
+        eligible, block_reason = check_eligibility(hyp, now, db=db)
         if eligible:
             total, components = compute_priority_score(
                 hyp, ctx, findings_snapshot, db=db

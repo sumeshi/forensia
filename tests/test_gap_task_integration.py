@@ -8,6 +8,8 @@ import tempfile
 import unittest
 
 from forensia.ai.hypotheses.hypothesis_store import load_persisted_hypotheses
+from forensia.ai.investigation.investigator import _durable_open_work_counts
+from forensia.ai.investigation.work_judgment import judge_work, open_work_refs
 from forensia.ai.investigation.work_state import (
     classify_active_hypotheses_on_stop,
     ensure_objective_gap,
@@ -16,7 +18,11 @@ from forensia.ai.investigation.work_state import (
     resolve_linked_work,
     stop_summary,
 )
-from forensia.ai.report_gap import inject_gap_hypotheses
+from forensia.ai.report_gap import (
+    evaluation_snapshot,
+    inject_gap_hypotheses,
+    report_cycle_progress,
+)
 from forensia.core.case import Case
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
@@ -351,6 +357,197 @@ class ProseChangeResolutionTests(unittest.TestCase):
 
 
 class RetryAndProjectionTests(unittest.TestCase):
+    def test_linked_stop_work_is_one_ref_not_two(self) -> None:
+        """A terminal hypothesis's Gap+Task pair is one unresolved work item.
+
+        The completion gate and blocker counts read per work ref (V2-03), so
+        a linked pair cannot inflate open-item counts by describing the same
+        work twice.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                hypothesis = _insert_hypothesis(db, "H-001")
+                unlinked = open_work_refs(db)
+                self.assertEqual(len(unlinked), 1)
+                self.assertEqual(unlinked[0].hypothesis_ids, ("H-001",))
+                self.assertEqual(unlinked[0].gap_ids, ())
+                classify_active_hypotheses_on_stop(
+                    db, [hypothesis], "no_progress_limit"
+                )
+                refs = open_work_refs(db)
+                self.assertEqual(len(refs), 1)
+                ref = refs[0]
+                self.assertEqual(ref.ref_id, "H-001")
+                self.assertEqual(len(ref.gap_ids), 1)
+                self.assertEqual(len(ref.task_ids), 1)
+                self.assertEqual(_durable_open_work_counts(db), (1, 1))
+                before = evaluation_snapshot(db)
+                _insert_hypothesis(db, "H-002")
+                db.execute(
+                    "UPDATE hypotheses SET source_gap_id = ? WHERE hypothesis_id = 'H-002'",
+                    [ref.gap_ids[0]],
+                )
+                self.assertEqual(len(open_work_refs(db)), 1)
+                self.assertTrue(report_cycle_progress(before, evaluation_snapshot(db)))
+
+    def test_stop_persists_external_blocker_with_owner_and_retry(self) -> None:
+        """Blocked work with no runnable action stops with persisted blocker,
+        owner, and reopen condition — never recorded as completed."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                state = SessionState(session_id="S-1")
+                inject_gap_hypotheses(
+                    db,
+                    state,
+                    ["Manager approval for incident response action"],
+                    "S-1",
+                )
+                classify_active_hypotheses_on_stop(db, [], "no_progress_limit")
+                task = db.execute(
+                    "SELECT kind, status, reason, retry_condition, owner_phase "
+                    "FROM investigation_tasks WHERE kind = 'human_decision'"
+                ).fetchone()
+                self.assertEqual(task[1], "open")
+                self.assertIn("human decision required", task[2])
+                self.assertEqual(task[3], "human_or_external_result")
+                self.assertEqual(task[4], "report_admission")
+                # Externally-owned work never auto-reopens.
+                self.assertEqual(reopen_retryable_work(db), [])
+
+    def test_external_blocker_stays_owned_after_coverage_becomes_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                hypothesis = _insert_hypothesis(db, "H-EXT")
+                db.execute(
+                    "UPDATE hypotheses SET verification_spec = ? WHERE hypothesis_id = ?",
+                    [json.dumps({"required_capabilities": ["logon"]}), hypothesis.id],
+                )
+                db.execute(
+                    "INSERT INTO investigation_tasks "
+                    "(task_id, kind, status, hypothesis_id, created_at, updated_at) "
+                    "VALUES ('TASK-EXT', 'human_decision', 'open', 'H-EXT', now(), now())"
+                )
+                classify_active_hypotheses_on_stop(
+                    db, [hypothesis], "no_progress_limit"
+                )
+                condition = db.execute(
+                    "SELECT retry_condition FROM investigation_tasks "
+                    "WHERE hypothesis_id = 'H-EXT' AND owner_phase = 'termination'"
+                ).fetchone()[0]
+                self.assertEqual(condition, "human_or_external_result")
+                db.execute(
+                    "INSERT INTO evidence_coverage (capability, source_family, state) "
+                    "VALUES ('logon', 'evtx', 'available')"
+                )
+                self.assertEqual(reopen_retryable_work(db), [])
+
+    def test_gap_linked_external_task_blocks_its_hypothesis(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                _insert_hypothesis(db, "H-GAP")
+                db.execute(
+                    "INSERT INTO report_gaps "
+                    "(gap_id, description, kind, status, hypothesis_id, task_id) "
+                    "VALUES ('G-EXT', 'approval', 'human_decision', 'open', "
+                    "'H-GAP', 'T-EXT')"
+                )
+                db.execute(
+                    "INSERT INTO investigation_tasks "
+                    "(task_id, kind, status, gap_id) "
+                    "VALUES ('T-EXT', 'human_decision', 'open', 'G-EXT')"
+                )
+                judgment = judge_work(db, ["H-GAP"], selection_gate=True)["H-GAP"]
+                self.assertFalse(judgment.runnable)
+                self.assertEqual(judgment.external_task_ids, ("T-EXT",))
+                self.assertEqual(judgment.retry_condition, "human_or_external_result")
+
+    def test_reopen_checks_the_saved_retry_condition_not_kind(self) -> None:
+        """The persisted retry_condition is the reopen contract (V2-03)."""
+        for condition, should_reopen in (
+            ("required_capability_available", True),
+            ("new_evidence_or_human_review", False),
+            ("human_or_external_result", False),
+            (None, False),
+        ):
+            with self.subTest(condition=condition):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    with CaseDB(Case.init(tmpdir)) as db:
+                        db.execute(
+                            "INSERT INTO hypotheses (hypothesis_id, description, "
+                            "status, created_at, updated_at, verification_spec) "
+                            "VALUES ('H-CAP', 'needs telemetry', 'blocked', "
+                            'now(), now(), \'{"spec_version": "1"}\')'
+                        )
+                        db.execute(
+                            "INSERT INTO investigation_tasks "
+                            "(task_id, kind, status, hypothesis_id, "
+                            "required_capability, retry_condition, created_at, "
+                            "updated_at) VALUES ('TASK-1', 'needs_review', 'open', "
+                            "'H-CAP', 'logon', ?, now(), now())",
+                            [condition],
+                        )
+                        db.execute(
+                            "INSERT INTO evidence_coverage "
+                            "(capability, source_family, state) "
+                            "VALUES ('logon', 'evtx', 'available')"
+                        )
+                        reopened = reopen_retryable_work(db)
+                        self.assertEqual(reopened, ["H-CAP"] if should_reopen else [])
+
+    def test_new_evidence_retry_uses_latest_stop_as_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                _insert_hypothesis(db, "H-RETRY")
+                db.execute(
+                    "UPDATE hypotheses SET status = 'needs_review' "
+                    "WHERE hypothesis_id = 'H-RETRY'"
+                )
+                db.execute(
+                    "INSERT INTO investigation_tasks "
+                    "(task_id, kind, status, hypothesis_id, retry_condition, "
+                    "created_at, updated_at) VALUES "
+                    "('TASK-RETRY', 'needs_review', 'open', 'H-RETRY', "
+                    "'new_evidence_or_human_review', '2024-01-01', '2024-03-01')"
+                )
+                db.execute(
+                    "INSERT INTO evidence_sources "
+                    "(source_id, artifact_family, ingest_status, updated_at) VALUES "
+                    "('SRC-1', 'evtx', 'normalized', '2024-02-01')"
+                )
+                self.assertEqual(reopen_retryable_work(db), [])
+                db.execute(
+                    "UPDATE evidence_sources SET updated_at = '2024-04-01' "
+                    "WHERE source_id = 'SRC-1'"
+                )
+                self.assertEqual(reopen_retryable_work(db), ["H-RETRY"])
+
+    def test_partial_coverage_reopens_blocked_work(self) -> None:
+        """Selection, stop, and reopen share the ready rule: an
+        available/partial Coverage row makes the capability retrievable."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                db.execute(
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                    "created_at, updated_at, verification_spec) "
+                    "VALUES ('H-SSO', 'suspicious logon series', 'blocked', "
+                    "now(), now(), "
+                    '\'{"spec_version": "1", '
+                    '"required_capabilities": ["logon"]}\')'
+                )
+                db.execute(
+                    "INSERT INTO investigation_tasks "
+                    "(task_id, kind, status, hypothesis_id, required_capability, "
+                    "owner_phase, retry_condition, created_at, updated_at) "
+                    "VALUES ('TASK-SSO', 'blocked', 'open', 'H-SSO', 'logon', "
+                    "'termination', 'required_capability_available', now(), now())"
+                )
+                db.execute(
+                    "INSERT INTO evidence_coverage "
+                    "(capability, source_family, state) "
+                    "VALUES ('logon', 'evtx', 'partial')"
+                )
+                self.assertEqual(reopen_retryable_work(db), ["H-SSO"])
+
     def test_only_task_with_satisfied_capability_reopens(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with CaseDB(Case.init(tmpdir)) as db:

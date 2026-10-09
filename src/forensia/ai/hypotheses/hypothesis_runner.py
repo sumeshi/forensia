@@ -540,6 +540,11 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
                 role=role,
                 created_session=session_id,
                 assessment_id=assessment.assessment_id,
+                # Judgment grounds (R08) travel with the link so each
+                # assessment stays explainable via existing IDs after the
+                # observed rows themselves are gone or re-normalized.
+                assessment_reason=assessment.reason,
+                matched_conditions=assessment.matched_conditions,
                 # Each link's derivation root is its own evidence row;
                 # explicit derivation groups are not derived from the query.
                 # The query id remains acquisition history: the same evidence

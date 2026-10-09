@@ -447,25 +447,55 @@ class PersistenceTests(unittest.TestCase):
                 self.assertEqual("H-010", merged[0].id)
                 self.assertIn("rule-2", str(rows[0][2]))
 
-    def test_report_cycle_progress_can_be_true_from_gap_reduction_alone(self) -> None:
-        self.assertTrue(
-            report_cycle_progress(
-                {"total_gaps": 3, "total_body_chars": 120},
-                {"total_gaps": 2, "total_body_chars": 120},
+    def test_report_cycle_progress_reads_evaluation_snapshots(self) -> None:
+        """R06: progress compares durable semantic state, never prose.
+
+        New unresolved work is progress; prose growth is not; a Coverage or
+        source change triggers re-evaluation; a same-root refetch does not.
+        """
+        with self.subTest("new open work ref"):
+            self.assertTrue(
+                report_cycle_progress(
+                    {"open_work": ()},
+                    {"open_work": ("H-1",)},
+                )
             )
-        )
-        self.assertFalse(
-            report_cycle_progress(
-                {"total_gaps": 2, "total_body_chars": 120},
-                {"total_gaps": 2, "total_body_chars": 240},
+        with self.subTest("prose totals are irrelevant"):
+            self.assertFalse(
+                report_cycle_progress(
+                    {"open_work": ("H-1",), "observations": ("row:1",)},
+                    {
+                        "open_work": ("H-1",),
+                        "observations": ("row:1",),
+                        "total_gaps": 99,
+                        "total_body_chars": 99,
+                    },
+                )
             )
-        )
-        self.assertTrue(
-            report_cycle_progress(
-                {"semantic_state": {"gap_lifecycle": 0}},
-                {"semantic_state": {"gap_lifecycle": 1}},
+        with self.subTest("source replacement triggers re-evaluation"):
+            self.assertTrue(
+                report_cycle_progress(
+                    {"identity": "aaaa", "open_work": (), "observations": ()},
+                    {"identity": "bbbb", "open_work": (), "observations": ()},
+                )
             )
-        )
+        with self.subTest("unchanged state round-trip"):
+            self.assertFalse(
+                report_cycle_progress(
+                    {
+                        "identity": "aaaa",
+                        "open_work": ("H-1",),
+                        "observations": ("row:1",),
+                        "contradictions": ("row:2",),
+                    },
+                    {
+                        "identity": "aaaa",
+                        "open_work": ("H-1",),
+                        "observations": ("row:1",),
+                        "contradictions": ("row:2",),
+                    },
+                )
+            )
 
     def test_non_testable_report_gap_stays_a_review_gap(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

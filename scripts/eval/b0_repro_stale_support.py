@@ -39,6 +39,16 @@ def main() -> None:
                 "VALUES (?, 'sample.evtx', 4624)",
                 [EVIDENCE_ID],
             )
+            # R01 contract: an evidence link records a judgment against the
+            # canonical VerificationSpec, so the hypothesis row with its spec
+            # must exist before the link is created.
+            spec = {"spec_version": "1"}
+            db.execute(
+                "INSERT INTO hypotheses (hypothesis_id, status, created_at, "
+                "updated_at, verification_spec) "
+                "VALUES ('H-001', 'active', now(), now(), ?) ",
+                [json.dumps(spec)],
+            )
             create_hypothesis_evidence_link(
                 db,
                 hypothesis_id="H-001",
@@ -47,7 +57,6 @@ def main() -> None:
                 source_family="evtx",
                 source_file="sample.evtx",
                 strength="moderate",
-                query_id="Q-001",
                 assessment_id="EA-test-0001",
             )
             db.execute("DELETE FROM evtx_events WHERE evidence_id = ?", [EVIDENCE_ID])

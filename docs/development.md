@@ -121,7 +121,7 @@ and `test_persistence.py`. Round completion still requires the separate full
 | `--report-every-n-cycles` | `3` | Increase when report re-fill cost is too high |
 | `--report-max-queries-per-section` | `0` | Maximum number of queries for the section block agent. `0` uses the `FORENSIA_REPORT_MAX_QUERIES_PER_SECTION` setting (default 3) |
 | `--profile` | `windows-basic` | Switch to a different rule profile |
-| `--report-only` | `false` | Render the current report without running the hypothesis loop; use `forensia report --write` to re-fill sections |
+| `--report-only` | `false` | Skip the investigation stages and render the report only; the Case stop state and open Gaps/Tasks are not rewritten (a report job is not an investigation result — resume with `forensia investigate <case_dir>`) |
 | `--rerun` | `false` | Reset case tables and runtime outputs, then redo normalize / analyze using the existing `raw/` |
 
 ### 4.2 Rerun semantics
@@ -168,6 +168,15 @@ ingest → normalize → analyze → `investigator.investigate` → report. The 
   `pre_investigation` hook renders profile/timezone advice before the loop;
 - structured progress is persisted in the trace DB (`db/progress.py`, capped
   recent view of 1000 rows); audit receipts remain in the trace tables;
+  log entries are stored once, in structured `tag`/`level`/`message` form
+  (`recent_log_entries`), with any string form derived at render time;
+- log severity is decided where the log is produced: unspecified entries are
+  neutral `info`, and a call site that records a raised or caught exception
+  passes `error`/`warning` explicitly, so evidence names (e.g. a *failed
+  logon* rule id) never read as a processing failure. Entries marked `debug`
+  are rendered like every entry today — filtering them out would be an
+  explicit display decision owned by the future TUI (V2-09), not an implicit
+  one;
 - SIGINT capture and stop application stay in `investigator.investigate`, and
   the session terminal receipt is persisted before fallible projections, so an
   interrupted run finalizes lifecycle and report without a UI.

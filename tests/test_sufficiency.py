@@ -841,6 +841,8 @@ class CurrentLinkTests(unittest.TestCase):
                 query_id="Q-current",
                 role=assessment.role,
                 assessment_id=assessment.assessment_id,
+                assessment_reason=assessment.reason,
+                matched_conditions=assessment.matched_conditions,
                 derivation_group=assessment.derivation_group,
             )
 
@@ -1102,6 +1104,117 @@ class CurrentLinkTests(unittest.TestCase):
                 db.execute("UPDATE hypothesis_evidence SET source_file = ''")
                 self.assertEqual(self._assess(db).status, "insufficient")
                 self.assertEqual(load_evidence_links(db, "H-CUR")[0].source_file, "")
+
+    def test_re_evaluation_keeps_old_assessment_grounds_per_link(self) -> None:
+        """R08: the judgment grounds ride on the existing link payload.
+
+        Each link carries the ``reason``/``matched_conditions`` of exactly one
+        deterministic Assessment; a re-evaluation under a changed Spec adds a
+        new link with new grounds instead of overwriting the old judgment.
+        """
+        from forensia.core.verification import VerificationSpec
+
+        first_spec = {
+            "spec_version": "1",
+            "support_conditions": {"co_observed_event_ids": [4624]},
+        }
+        changed_spec = {
+            "spec_version": "1",
+            "support_conditions": {"co_observed_event_ids": [4624], "same_host": True},
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, source_file, event_id) "
+                    "VALUES ('evtx-1', 'sha-a', 4624)"
+                )
+                db.execute(
+                    "INSERT INTO hypotheses (hypothesis_id, status, created_at, "
+                    "updated_at, verification_spec) VALUES ('H-CUR', 'active', "
+                    "now(), now(), ?)",
+                    [json.dumps(first_spec)],
+                )
+
+                def _assess_under(spec: dict, rows: list[dict]):
+                    hypothesis = Hypothesis(
+                        id="H-CUR",
+                        description="currentness fixture",
+                        status="active",
+                        verification_spec=VerificationSpec.model_validate(spec),
+                    )
+                    return assess_evidence_group(
+                        hypothesis=hypothesis,
+                        rows=rows,
+                        evidence_ids=["evtx-1"],
+                        derivation_group="evtx-1",
+                    )
+
+                assessment = _assess_under(first_spec, [{"event_id": 4624}])
+                self.assertEqual(assessment.role, "supporting")
+                create_hypothesis_evidence_link(
+                    db,
+                    hypothesis_id="H-CUR",
+                    evidence_id="evtx-1",
+                    query_id="Q-20",
+                    role=assessment.role,
+                    assessment_id=assessment.assessment_id,
+                    assessment_reason=assessment.reason,
+                    matched_conditions=assessment.matched_conditions,
+                    derivation_group=assessment.derivation_group,
+                )
+                grounds = db.execute(
+                    "SELECT assessment_reason, matched_conditions, assessment_id "
+                    "FROM hypothesis_evidence WHERE hypothesis_id = 'H-CUR'"
+                ).fetchall()
+                self.assertEqual(len(grounds), 1)
+                self.assertEqual(grounds[0][0], "matched support conditions")
+                self.assertEqual(
+                    json.loads(grounds[0][1]),
+                    ["co_observed_event_ids"],
+                )
+
+                # Re-evaluation under a narrowed Spec: new assessment id,
+                # new link, new grounds; the old link is untouched.
+                db.execute(
+                    "UPDATE hypotheses SET verification_spec = ? "
+                    "WHERE hypothesis_id = 'H-CUR'",
+                    [json.dumps(changed_spec)],
+                )
+                re_assessment = _assess_under(
+                    changed_spec, [{"event_id": 4624, "computer": "host-a"}]
+                )
+                self.assertEqual(re_assessment.role, "supporting")
+                self.assertNotEqual(re_assessment.assessment_id, grounds[0][2])
+                create_hypothesis_evidence_link(
+                    db,
+                    hypothesis_id="H-CUR",
+                    evidence_id="evtx-1",
+                    query_id="Q-21",
+                    role=re_assessment.role,
+                    assessment_id=re_assessment.assessment_id,
+                    assessment_reason=re_assessment.reason,
+                    matched_conditions=re_assessment.matched_conditions,
+                    derivation_group=re_assessment.derivation_group,
+                )
+                rows = db.execute(
+                    "SELECT assessment_id, role, assessment_reason, "
+                    "matched_conditions FROM hypothesis_evidence "
+                    "WHERE hypothesis_id = 'H-CUR' ORDER BY query_id, link_id"
+                ).fetchall()
+                self.assertEqual(len(rows), 2)
+                self.assertEqual(
+                    [row[2] for row in rows],
+                    ["matched support conditions", "matched support conditions"],
+                )
+                self.assertEqual(
+                    json.loads(rows[0][3]),
+                    ["co_observed_event_ids"],
+                )
+                self.assertEqual(
+                    json.loads(rows[1][3]),
+                    ["co_observed_event_ids", "same_host"],
+                )
+                self.assertNotEqual(rows[0][0], rows[1][0])
 
 
 class CrossQueryIndependenceTests(unittest.TestCase):

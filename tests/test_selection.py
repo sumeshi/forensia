@@ -16,14 +16,58 @@ from forensia.core.case import Case
 from forensia.db.database import CaseDB
 
 
+def _spec(spec_dict: dict) -> dict:
+    return {"verification_spec": spec_dict}
+
+
 class EligibilityTests(unittest.TestCase):
     """Test eligibility filtering."""
 
     def test_resolved_hypothesis_not_eligible(self) -> None:
-        hyp = {"status": "resolved", "blocked_reason": "", "next_eligible_at": None}
-        eligible, reason = check_eligibility(hyp)
-        self.assertFalse(eligible)
-        self.assertIn("resolved", reason)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                db.execute(
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                    "verification_spec) VALUES "
+                    "('H-001', 'resolved hypothesis', 'resolved', "
+                    '\'{"spec_version": "1"}\')'
+                )
+                hyp = {
+                    "hypothesis_id": "H-001",
+                    "status": "resolved",
+                    "blocked_reason": "",
+                    "next_eligible_at": None,
+                }
+                eligible, reason = check_eligibility(hyp, db=db)
+                self.assertFalse(eligible)
+                self.assertIn("resolved", reason)
+
+    def test_partial_coverage_is_runnable(self) -> None:
+        """Selection, stop, and reopen share the ready rule: any
+        available/partial Coverage row makes the capability retrievable."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                db.execute(
+                    "INSERT INTO evidence_coverage "
+                    "(capability, source_family, state) "
+                    "VALUES ('logon', 'evtx', 'partial')"
+                )
+                db.execute(
+                    "INSERT INTO hypotheses (hypothesis_id, description, "
+                    "status, verification_spec) VALUES "
+                    "('H-PARTIAL', 'partial telemetry', 'active', "
+                    '\'{"spec_version": "1", '
+                    '"required_capabilities": ["logon"]}\')'
+                )
+                hyp = {
+                    "hypothesis_id": "H-PARTIAL",
+                    "status": "active",
+                    "blocked_reason": "",
+                    "next_eligible_at": None,
+                }
+                eligible, reason = check_eligibility(hyp, db=db)
+                self.assertTrue(eligible, reason)
+                self.assertEqual(reason, "")
 
 
 class PriorityScoreTests(unittest.TestCase):
@@ -44,7 +88,6 @@ class PriorityScoreTests(unittest.TestCase):
             active_hypotheses=[hyp],
             relations={},
             coverage={},
-            report_sections={},
             open_gaps=[],
             objective="",
         )
@@ -54,6 +97,51 @@ class PriorityScoreTests(unittest.TestCase):
         self.assertIn("report_relevance", component_names)
         self.assertIn("aging", component_names)
         self.assertIn("retry_penalty", component_names)
+        self.assertNotIn("report_changeability", component_names)
+
+    def test_report_prose_cannot_influence_order(self) -> None:
+        """R05: no scoring input may carry report prose.
+
+        The SelectionContext has no section body/title/stale/confidence
+        fields, so a report reword cannot change the investigation order.
+        Admitted Gap references stay scoreable.
+        """
+        hyp = {
+            "hypothesis_id": "H-001",
+            "description": "test",
+            "status": "active",
+            "source_rule_ids": [],
+            "selection_count": 0,
+            "last_selected_at": None,
+            "origin": "rule",
+            "verification_spec": {"spec_version": "1"},
+        }
+        ctx = SelectionContext(
+            active_hypotheses=[hyp],
+            relations={},
+            coverage={},
+            open_gaps=[],
+            objective="",
+        )
+        with self.assertRaises(TypeError):
+            SelectionContext(
+                active_hypotheses=[hyp],
+                relations={},
+                coverage={},
+                open_gaps=[],
+                objective="",
+                report_sections={"summary": {"title": "summary", "stale": True}},
+            )
+        base, _ = compute_priority_score(hyp, ctx)
+        linked_ctx = SelectionContext(
+            active_hypotheses=[hyp],
+            relations={},
+            coverage={},
+            open_gaps=[{"gap_id": "GAP-1", "hypothesis_id": "H-001"}],
+            objective="",
+        )
+        linked, _ = compute_priority_score(hyp, linked_ctx)
+        self.assertGreater(linked, base)
 
     def test_never_selected_has_high_aging(self) -> None:
         hyp = {
@@ -70,7 +158,6 @@ class PriorityScoreTests(unittest.TestCase):
             active_hypotheses=[hyp],
             relations={},
             coverage={},
-            report_sections={},
             open_gaps=[],
             objective="",
         )
@@ -103,7 +190,6 @@ class PriorityScoreTests(unittest.TestCase):
             active_hypotheses=[hyp_new, hyp_old],
             relations={},
             coverage={},
-            report_sections={},
             open_gaps=[],
             objective="",
         )
@@ -138,45 +224,86 @@ class RequiredCapabilityTests(unittest.TestCase):
             _capabilities_for_hypothesis(hyp), {"lateral_movement", "logon"}
         )
 
-    def test_unavailable_inferred_capability_blocks_until_spec_declares(self) -> None:
-        ctx = SelectionContext(
-            active_hypotheses=[],
-            relations={},
-            coverage={
-                "evtx:logon": {
-                    "state": "unavailable",
-                    "reason": "artifact_not_collected",
-                    "family": "evtx",
-                }
-            },
-            report_sections={},
-            open_gaps=[],
-            objective="",
-        )
-        spec = {
+    @staticmethod
+    def _db_hypothesis(spec: dict) -> dict:
+        return {
             "hypothesis_id": "H-SPEC",
             "status": "active",
             "blocked_reason": "",
             "next_eligible_at": None,
-            "verification_spec": {
-                "spec_version": "1",
-                "support_conditions": {"keywords": ["evtx_events 4624"]},
-            },
+            "verification_spec": spec,
         }
-        eligible, reason = check_eligibility(spec, ctx=ctx)
-        self.assertFalse(eligible)
-        self.assertIn("capability unavailable", reason)
-        declared = {
-            **spec,
-            "verification_spec": {
-                "spec_version": "1",
-                "required_capabilities": ["declared_cap"],
-                "support_conditions": {},
-            },
-        }
-        eligible, reason = check_eligibility(declared, ctx=ctx)
-        self.assertTrue(eligible)
-        self.assertEqual(reason, "")
+
+    def test_unavailable_inferred_capability_blocks_until_spec_declares(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                db.execute(
+                    "INSERT INTO hypotheses (hypothesis_id, description, "
+                    "status, verification_spec) "
+                    "VALUES ('H-SPEC', 'spec hypothesis', 'active', "
+                    '\'{"spec_version": "1", '
+                    '"support_conditions": {"keywords": ["evtx_events 4624"]}}\')'
+                )
+                db.execute(
+                    "INSERT INTO evidence_coverage "
+                    "(capability, source_family, state) "
+                    "VALUES ('logon', 'evtx', 'unavailable')"
+                )
+                hyp = self._db_hypothesis(
+                    {
+                        "spec_version": "1",
+                        "support_conditions": {"keywords": ["evtx_events 4624"]},
+                    }
+                )
+                eligible, reason = check_eligibility(hyp, db=db)
+                self.assertFalse(eligible)
+                self.assertIn("capability unavailable", reason)
+                db.execute(
+                    "INSERT INTO evidence_coverage "
+                    "(capability, source_family, state) "
+                    "VALUES ('declared_cap', 'evtx', 'available')"
+                )
+                db.execute(
+                    "UPDATE hypotheses SET verification_spec = "
+                    '\'{"spec_version": "1", '
+                    '"required_capabilities": ["declared_cap"], '
+                    "\"support_conditions\": {}}' WHERE hypothesis_id = 'H-SPEC'"
+                )
+                declared = self._db_hypothesis(
+                    {
+                        "spec_version": "1",
+                        "required_capabilities": ["declared_cap"],
+                        "support_conditions": {},
+                    }
+                )
+                eligible, reason = check_eligibility(declared, db=db)
+                self.assertTrue(eligible)
+                self.assertEqual(reason, "")
+
+    def test_required_capability_without_coverage_row_blocks(self) -> None:
+        """A declared capability the Coverage projection cannot represent is
+        not runnable: selection and stop classification must agree on the
+        same Case State instead of flipping eligibility/terminal status."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                db.execute(
+                    "INSERT INTO hypotheses (hypothesis_id, description, "
+                    "status, verification_spec) "
+                    "VALUES ('H-SPEC', 'spec hypothesis', 'active', "
+                    '\'{"spec_version": "1", '
+                    '"required_capabilities": ["declared_cap"], '
+                    '"support_conditions": {}}\')'
+                )
+                declared = self._db_hypothesis(
+                    {
+                        "spec_version": "1",
+                        "required_capabilities": ["declared_cap"],
+                        "support_conditions": {},
+                    }
+                )
+                eligible, reason = check_eligibility(declared, db=db)
+                self.assertFalse(eligible)
+                self.assertIn("capability unavailable", reason)
 
 
 class SelectionIntegrationTests(unittest.TestCase):

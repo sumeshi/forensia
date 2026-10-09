@@ -25,6 +25,31 @@ class InvestigateWiringTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
+                # R07 boundary: report-only must not claim Case completion for
+                # an unresolved Case — durable gaps/tasks stay open and the
+                # stop state keeps the value of the last real stop.
+                from forensia.db.investigation_state import (
+                    ensure_investigation_state,
+                    save_stop_reason,
+                )
+
+                db.execute(
+                    "INSERT INTO report_gaps (gap_id, description, status, origin) "
+                    "VALUES ('GAP-SEL-1', 'unresolved gap', 'open', 'termination')"
+                )
+                db.execute(
+                    "INSERT INTO investigation_tasks (task_id, description, status, "
+                    "kind, retry_condition) VALUES ('TASK-SEL-1', 'unresolved task', "
+                    "'open', 'blocked', 'required_capability_available')"
+                )
+                ensure_investigation_state(db)
+                save_stop_reason(
+                    db,
+                    status="stopped",
+                    stop_reason_code="no_progress_limit",
+                    stop_reason="seeded prior stop",
+                    stop_summary={"active": 1},
+                )
                 db.execute(
                     "INSERT INTO investigation_sessions "
                     "(session_id, started_at, finished_at, iterations, status, heartbeat_at) "
@@ -78,6 +103,24 @@ class InvestigateWiringTests(unittest.TestCase):
                                 "WHERE session_id = 'old-running'"
                             ).fetchone(),
                         )
+                    ),
+                )
+                # The Case stop state is not the report job's business: the
+                # last real stop value is kept, open work is not reopened and
+                # not classified.
+                state_row = db.execute(
+                    "SELECT status, stop_reason_code FROM investigation_state "
+                    "WHERE state_id = 'case'"
+                ).fetchone()
+                self.assertEqual(("stopped", "no_progress_limit"), tuple(state_row))
+                self.assertEqual(
+                    ("open", "open"),
+                    tuple(
+                        db.execute(
+                            "SELECT (SELECT status FROM report_gaps WHERE gap_id = "
+                            "'GAP-SEL-1'), (SELECT status FROM investigation_tasks "
+                            "WHERE task_id = 'TASK-SEL-1')"
+                        ).fetchone()
                     ),
                 )
 
@@ -329,7 +372,10 @@ class InvestigateWiringTests(unittest.TestCase):
                             base_url="http://127.0.0.1:9",
                             model="dummy-model",
                             max_iter=1,
-                            report_only=True,
+                            # The loop is mocked; report_only stays off so the
+                            # under-test contract here is the state-before-
+                            # refresh ordering of a real (non-report-only) stop.
+                            report_only=False,
                             report_every_n_cycles=2,
                         )
                     )
@@ -394,7 +440,7 @@ class ReportRefreshFailureTests(unittest.TestCase):
                     investigator_module, "async_refresh_report_sections", _boom
                 ):
                     with redirect_stdout(buffer):
-                        report_after, progress, refresh_status = asyncio.run(
+                        report_after, refresh_status = asyncio.run(
                             investigator_module._run_report_phase(
                                 case=case,
                                 db=db,
@@ -409,12 +455,11 @@ class ReportRefreshFailureTests(unittest.TestCase):
                                 focus_sections=[],
                                 report_max_queries_per_section=1,
                                 state=state,
-                                report_before={"total_gaps": 0},
                                 memory=MemoryManager(case),
                             )
                         )
         self.assertTrue(refresh_status.startswith("failed: TypeError"), refresh_status)
-        self.assertFalse(progress)
+        self.assertIsNotNone(report_after)
         output = buffer.getvalue()
         self.assertIn(
             "Traceback", output, "full traceback must be printed, not just str(exc)"
@@ -435,7 +480,7 @@ class ReportRefreshFailureTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 state = SessionState(session_id="S-1", iteration=1)
-                _, _, refresh_status = asyncio.run(
+                _, refresh_status = asyncio.run(
                     investigator_module._run_report_phase(
                         case=case,
                         db=db,
@@ -450,7 +495,6 @@ class ReportRefreshFailureTests(unittest.TestCase):
                         focus_sections=[],
                         report_max_queries_per_section=1,
                         state=state,
-                        report_before={},
                         memory=MemoryManager(case),
                     )
                 )
@@ -477,6 +521,31 @@ class ReportRefreshFailureTests(unittest.TestCase):
                         "WHERE session_id = 'live'"
                     ).fetchone()[0],
                     "running",
+                )
+
+    def test_stale_session_reconcile_keeps_historical_terminal_reasons(self) -> None:
+        """Crash recovery abandons only expired running leases; past terminal
+        rows keep whatever reason they were written with (R07)."""
+        from forensia.ai.investigation.investigation_session import (
+            reconcile_stale_sessions,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO investigation_sessions "
+                    "(session_id, started_at, finished_at, status, terminal_reason) "
+                    "VALUES ('old-done', '2020-01-02 03:04:05', '2020-01-02 03:05:05', "
+                    "'completed', 'historical reason')"
+                )
+                self.assertEqual(reconcile_stale_sessions(db), 0)
+                self.assertEqual(
+                    db.execute(
+                        "SELECT status, terminal_reason FROM investigation_sessions "
+                        "WHERE session_id = 'old-done'"
+                    ).fetchone(),
+                    ("completed", "historical reason"),
                 )
 
     def test_run_report_phase_propagates_exhausted_llm_outage(self) -> None:
@@ -537,7 +606,6 @@ class ReportRefreshFailureTests(unittest.TestCase):
                                 focus_sections=[],
                                 report_max_queries_per_section=1,
                                 state=state,
-                                report_before={},
                                 memory=MemoryManager(case),
                             )
                         )
@@ -622,6 +690,103 @@ class TerminationDurableWorkTests(unittest.TestCase):
                     "VALUES ('GAP-old', 't', 'resolved', 'section')"
                 )
                 self.assertEqual(_durable_open_work_counts(db), (1, 1))
+
+
+class ProgressBudgetTests(unittest.TestCase):
+    """R06: the no-progress budget is compared from evaluation snapshots at
+    the loop's state-commit point — prose edits cannot extend it, source
+    replacements still trigger re-evaluation."""
+
+    @staticmethod
+    def _run_loop(case, db, *, no_progress_limit, hook):
+        from forensia.ai.investigation import investigator as investigator_module
+
+        async def _refresh(**kwargs):
+            db = kwargs["db"]
+            db.execute(
+                "INSERT INTO report_sections (section_key, title, body, gaps, "
+                "confidence, status) VALUES ('1_overview', 'Overview', ?, '[]', "
+                "0.0, 'draft') ON CONFLICT (section_key) DO UPDATE SET "
+                "body = EXCLUDED.body",
+                ["x" * hook(db)],
+            )
+            return {"report_status": {"current_section": None}, "gaps": []}
+
+        with (
+            mock.patch.object(
+                investigator_module, "async_refresh_report_sections", _refresh
+            ),
+            mock.patch(
+                "forensia.ai.investigation.investigation_cycle._run_broad_plan_step",
+                new=mock.AsyncMock(return_value=False),
+            ),
+            mock.patch(
+                "forensia.ai.investigation.investigation_cycle.select_focus_hypotheses",
+                return_value=[],
+            ),
+        ):
+            return asyncio.run(
+                investigator_module.investigate(
+                    case=case,
+                    db=db,
+                    base_url="http://127.0.0.1:9",
+                    model="none",
+                    max_iter=10,
+                    no_progress_limit=no_progress_limit,
+                    report_every_n_cycles=1,
+                )
+            )
+
+    def test_report_prose_growth_does_not_refresh_no_progress_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            length = [10]
+
+            def grow(db) -> int:
+                length[0] *= 2
+                return length[0]
+
+            with CaseDB(case) as db:
+                result = self._run_loop(case, db, no_progress_limit=2, hook=grow)
+                self.assertEqual(result["status"], "stopped")
+                # Body growth gave no extra cycles: the budget expired on plan.
+                self.assertEqual(result["iteration"], 2)
+                row = db.execute(
+                    "SELECT stop_reason_code FROM investigation_state "
+                    "WHERE state_id = 'case'"
+                ).fetchone()
+                self.assertEqual(row[0], "no_progress_limit")
+
+    def test_same_count_source_replacement_triggers_re_evaluation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            calls = [0]
+
+            def replace_source(db) -> int:
+                calls[0] += 1
+                if calls[0] == 2:
+                    # Same source row count, different identity: the evaluation
+                    # comparison must trigger re-evaluation, not miss it.
+                    db.execute("DELETE FROM evidence_sources")
+                    db.execute(
+                        "INSERT INTO evidence_sources (source_id, artifact_family, "
+                        "display_path, ingest_status, parser_name, row_count, "
+                        "created_at, updated_at) VALUES ('src-replacement', "
+                        "'evtx', '/evtx/backup.evtx', 'normalized', 'evtx', 5, "
+                        "now(), now())"
+                    )
+                return 10
+
+            with CaseDB(case) as db:
+                result = self._run_loop(
+                    case, db, no_progress_limit=2, hook=replace_source
+                )
+                # Without the replacement the budget would expire in cycle 2;
+                # the identity change resets it and the loop runs two more.
+                self.assertEqual(result["status"], "stopped")
+                self.assertEqual(result["iteration"], 4)
+                # 4 in-loop report phases + the closing full refresh.
+                self.assertEqual(calls[0], 5)
 
 
 if __name__ == "__main__":

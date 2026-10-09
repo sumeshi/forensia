@@ -1,3 +1,7 @@
+# Version 5: hypothesis_evidence gained assessment_reason/matched_conditions —
+# the judgment grounds of the deterministic Assessment that admitted the link.
+# Re-evaluation writes a new link with a new assessment id; grounds stay
+# readable per link without re-running the matcher over vanished rows.
 # Version 4: hypothesis_evidence gained verification_spec_fingerprint — the
 # canonical Spec in force when its assessment was admitted.
 # Version 3: hypothesis_evidence gained content_fingerprint — the canonical
@@ -10,7 +14,7 @@
 # Case databases with a different version are rejected before any
 # persistent DDL/DML (see db/database._check_schema_version); existing
 # cases are preserved and their artifacts are re-ingested into new cases.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 CORE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS evtx_events (
@@ -488,6 +492,8 @@ CREATE TABLE IF NOT EXISTS hypothesis_evidence (
     derivation_group VARCHAR,
     content_fingerprint VARCHAR,
     verification_spec_fingerprint VARCHAR,
+    assessment_reason VARCHAR,
+    matched_conditions VARCHAR,
     strength VARCHAR,
     created_session VARCHAR,
     created_at TIMESTAMP

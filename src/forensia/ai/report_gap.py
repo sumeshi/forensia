@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+from forensia.ai.checking.sufficiency import EvidenceLink, derivation_root_key
 from forensia.ai.hypotheses.hypothesis_manager import admit_new_hypothesis
 from forensia.ai.hypotheses.hypothesis_model import (
     _extract_entities_from_text,
@@ -17,6 +18,7 @@ from forensia.ai.hypotheses.hypothesis_model import (
     hypothesis_similarity,
 )
 from forensia.ai.hypotheses.hypothesis_store import _upsert_hypothesis
+from forensia.ai.investigation.work_judgment import open_work_refs
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, SessionState
 from forensia.core.textutil import normalize_text as _normalize_text
@@ -96,59 +98,77 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-def _semantic_progress_snapshot(db: CaseDB) -> dict[str, Any]:
-    """Capture monotonic semantic state; report prose is deliberately absent."""
+def evaluation_snapshot(db: CaseDB) -> dict[str, Any]:
+    """Durable semantic evaluation state, read at the loop's state-commit point.
 
-    def status_score(table: str, ranks: dict[str, int]) -> int:
-        return sum(
-            ranks.get(str(row[0] or ""), 0)
-            for row in db.execute(f"SELECT status FROM {table}").fetchall()
-        )
+    Only what actually requires work or re-evaluation is captured (V2-03/R06):
+    - ``identity``: a digest of Evidence source identity/scope and Coverage
+      states.  A change — including a same-count source replacement or a
+      Coverage downgrade — requires re-evaluation of existing conclusions
+      and refreshes the progress budget;
+    - ``open_work``: merged unresolved work refs (linked Gap/Task/Hypothesis
+      rows count once).  Additions and resolutions are real semantic change;
+      ``open``↔``in_progress`` round-trips are not;
+    - ``observations``: derivation roots of assessed Evidence links
+      (``derivation_root_key``), so a same-root refetch collapses to the same
+      root and never refreshes the no-progress budget;
+    - ``contradictions``: derivation roots carrying an unhandled
+      ``contradictory`` role.
 
-    assessed_groups = db.execute(
-        "SELECT COUNT(DISTINCT assessment_id) FROM hypothesis_evidence "
-        "WHERE COALESCE(assessment_id, '') != ''"
-    ).fetchone()[0]
-    contradictions = db.execute(
-        "SELECT COUNT(DISTINCT assessment_id) FROM hypothesis_evidence "
-        "WHERE role = 'contradictory' AND COALESCE(assessment_id, '') != ''"
-    ).fetchone()[0]
-    coverage_score = sum(
-        _COVERAGE_RANK.get(str(row[0] or ""), 0)
-        for row in db.execute("SELECT state FROM evidence_coverage").fetchall()
+    Report prose (``total_gaps``, body text, section titles) is deliberately
+    absent: prose growth is not investigation progress.
+    """
+    sources = db.execute(
+        "SELECT source_id, artifact_family, ingest_status, row_count, error_code "
+        "FROM evidence_sources ORDER BY source_id"
+    ).fetchall()
+    coverage = db.execute(
+        "SELECT capability, host, channel, source_family, state "
+        "FROM evidence_coverage ORDER BY capability, host, channel, source_family"
+    ).fetchall()
+    links = [
+        {
+            "root": derivation_root_key(
+                EvidenceLink(
+                    link_id=str(row[0]),
+                    hypothesis_id=str(row[1] or ""),
+                    evidence_id=str(row[2] or ""),
+                    finding_id="",
+                    query_id="",
+                    assessment_id=str(row[3] or ""),
+                    role=str(row[4] or ""),
+                    source_family="",
+                    source_file=str(row[5] or ""),
+                    derivation_group=str(row[6] or ""),
+                    strength="moderate",
+                )
+            ),
+            "assessed": bool(str(row[3] or "")),
+            "contradictory": str(row[4] or "") == "contradictory",
+        }
+        for row in db.execute(
+            "SELECT link_id, hypothesis_id, evidence_id, assessment_id, role, "
+            "source_file, derivation_group FROM hypothesis_evidence"
+        ).fetchall()
+    ]
+    observations = sorted({link["root"] for link in links if link["assessed"]})
+    contradictions = sorted(
+        {link["root"] for link in links if link["assessed"] and link["contradictory"]}
+    )
+    identity_payload = json.dumps(
+        {"sources": sources, "coverage": coverage},
+        default=str,
+        sort_keys=True,
     )
     return {
-        "gap_lifecycle": status_score(
-            "report_gaps", {"in_progress": 1, "needs_review": 1, "resolved": 2}
+        "identity": hashlib.sha256(identity_payload.encode()).hexdigest()[:16],
+        "open_work": tuple(
+            (ref.hypothesis_ids, ref.gap_ids, ref.task_ids)
+            for ref in open_work_refs(db)
         ),
-        "task_lifecycle": status_score(
-            "investigation_tasks",
-            {"in_progress": 1, "blocked": 1, "resolved": 2, "completed": 2},
-        ),
-        "hypothesis_lifecycle": status_score(
-            "hypotheses",
-            {
-                "blocked": 1,
-                "deferred": 1,
-                "needs_review": 1,
-                "confirmed": 2,
-                "refuted": 2,
-                "untestable": 2,
-            },
-        ),
-        "assessed_groups": int(assessed_groups or 0),
-        "contradictions": int(contradictions or 0),
-        "coverage": coverage_score,
+        "observations": tuple(observations),
+        "contradictions": tuple(contradictions),
     }
-
-
-_COVERAGE_RANK = {
-    "unavailable": 0,
-    "degraded": 1,
-    "unknown": 1,
-    "partial": 2,
-    "available": 3,
-}
 
 
 def _build_report_status(
@@ -194,9 +214,7 @@ def _build_report_status(
         "focus_sections": focus_sections or [],
         "items": items,
         "total_gaps": total_gaps,
-        # Retained for UI/status compatibility; report_cycle_progress ignores it.
         "total_body_chars": total_body_chars,
-        "semantic_state": _semantic_progress_snapshot(db),
     }
 
 
@@ -224,16 +242,28 @@ def _overlay_report_status(
 
 
 def report_cycle_progress(previous: dict[str, Any], current: dict[str, Any]) -> bool:
-    """Check for durable semantic progress; report prose never qualifies."""
-    previous_state = previous.get("semantic_state")
-    current_state = current.get("semantic_state")
-    if isinstance(previous_state, dict) and isinstance(current_state, dict):
-        return any(
-            int(current_state.get(key, 0)) > int(previous_state.get(key, 0))
-            for key in current_state
-        )
-    # Compatibility for callers that only have section status snapshots.
-    return current.get("total_gaps", 0) < previous.get("total_gaps", 0)
+    """Whether durable semantic state changed in a way that requires work.
+
+    Compares two ``evaluation_snapshot`` dicts.  Two categories count:
+    genuinely new information (an unresolved work ref appeared or was
+    resolved, a new observation root, a new unhandled contradiction root) and
+    a change that triggers re-evaluation (source / Coverage identity changed —
+    same-count source replacements and Coverage downgrades included).  Prose
+    growth, same-root refetches, and status round-trips that leave the same
+    refs never count, so the no-progress budget is not refreshed by
+    uninformative activity.
+    """
+    previous_open = previous.get("open_work")
+    current_open = current.get("open_work")
+    if previous_open is None and current_open is None:
+        return False
+    if set(previous_open or ()) != set(current_open or ()):
+        return True
+    for name in ("observations", "contradictions"):
+        added = set(current.get(name) or ()) - set(previous.get(name) or ())
+        if added:
+            return True
+    return previous.get("identity") != current.get("identity")
 
 
 def _has_internal_db_signals(text: str) -> bool:

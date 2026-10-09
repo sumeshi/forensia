@@ -17,7 +17,9 @@ Display independence contract:
 - terminal display is the injected ``status`` callback (plain message text) —
   the kernel never imports a presentation library;
 - structured progress is recorded in the trace DB via the existing
-  ``db.progress`` owner (one row per emit, capped recent view); audit receipts
+  ``db.progress`` owner (one row per emit, capped recent view); progress log
+  entries are stored once, in structured tag/level/message form, and any
+  string rendering is derived at display time; audit receipts
   remain in the trace tables and are never replaced by the display view;
 - SIGINT capture and stop application stay where they are today
   (``investigator.investigate`` owns the converter flag), and the session's
@@ -37,7 +39,7 @@ from forensia.ai.llm.llm_client import LLMServerUnavailableError
 from forensia.config import get_llm_settings
 from forensia.core.case import Case, resolve_timezone
 from forensia.core.case_tasks import CaseTasks
-from forensia.core.log import format_progress_log, structure_progress_log
+from forensia.core.log import structure_progress_log
 from forensia.core.progress_event import progress_event
 from forensia.db.database import CaseDB
 from forensia.db.progress import clear_progress_events, record_progress_event
@@ -157,21 +159,20 @@ def _normalize_counts_summary(counts: dict[str, int]) -> str:
 
 
 def progress_pusher(db: CaseDB, initial_state: dict[str, Any]) -> Callable[..., None]:
-    """Return a closure that records progress events in the trace DB."""
+    """Return a closure that records progress events in the trace DB.
+
+    Log entries are stored once, in structured ``tag``/``level``/``message``
+    form (``recent_log_entries``); the string form is derived from the entry
+    at render time. ``level`` is the producer's explicit decision
+    (unspecified messages stay neutral ``info``), never word-inferred.
+    """
     state = dict(initial_state)
 
     def push(message: str | None = None, **updates: Any) -> None:
         explicit_log_level = updates.pop("log_level", None)
         if message:
-            entry = structure_progress_log(message)
-            if explicit_log_level in {"debug", "info", "success", "warning", "error"}:
-                entry["level"] = explicit_log_level
-            message = format_progress_log(entry)
-            recent = list(state.get("recent_logs", []))
-            recent.append(message)
-            state["recent_logs"] = recent[-20:]
-            entries = list(state.get("recent_log_entries", []))
-            entries.append(entry)
+            entry = structure_progress_log(message, level=explicit_log_level)
+            entries = [*state.get("recent_log_entries", []), entry]
             state["recent_log_entries"] = entries[-20:]
         state.update(updates)
         payload = {**state, "counts": _count_records(db)}
@@ -235,7 +236,6 @@ def _make_initial_progress_state(
         iteration=0,
         summary=summary,
         current_query=None,
-        recent_logs=[],
         llm_model=model,
         llm_base_url=llm_base_url,
         hypotheses=[],
@@ -422,6 +422,7 @@ def _run_analyze_stage(
         stage="analyze",
         status="running",
         summary=f"findings={total_findings}",
+        log_level="success",
     )
     return total_findings
 
@@ -483,6 +484,14 @@ def _run_investigate_stage(
             )
         )
     except LLMServerUnavailableError as exc:
+        # Producer-decided severity: a raised exception here is a processing
+        # failure, not evidence content, so it is classified explicitly.
+        push_progress(
+            f"[investigate] aborted - LLM server unavailable ({exc})",
+            stage="investigate",
+            status="running",
+            log_level="error",
+        )
         _show(status, f"investigation aborted: LLM server unavailable ({exc})")
         raise
     tasks.mark_done(
@@ -501,6 +510,7 @@ def _run_investigate_stage(
         summary=result["summary"],
         hypotheses=result.get("hypotheses", []),
         report_sections=result.get("report_sections", {}),
+        log_level="success",
     )
 
 
@@ -538,6 +548,7 @@ def _run_report_stage(
         stage="completed",
         status="completed",
         summary=f"Report: {report_path}",
+        log_level="success",
     )
     return report_path
 

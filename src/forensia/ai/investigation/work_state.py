@@ -1,14 +1,23 @@
-"""Authoritative Gap, Task, hypothesis, and termination state transitions."""
+"""Authoritative Gap, Task, hypothesis, and termination state transitions.
+
+Write owner of the stop → terminal-classification → Gap/Task transition and of
+reopen.  All readiness inputs (required capabilities, Coverage readiness,
+derived retry condition, blocker owners) are read from the shared judgment in
+``work_judgment.py``; this module owns the writes that persist them.
+"""
 
 from __future__ import annotations
 
 import hashlib
-import json
 from typing import Any
 
+from forensia.ai.investigation.work_judgment import (
+    coverage_readiness,
+    judge_work,
+    load_spec_capabilities,
+)
 from forensia.core.session import Hypothesis
 from forensia.db.database import CaseDB
-from forensia.knowledge.coverage import derive_required_capabilities
 
 _OBJECTIVE_GAP_TEXT = "Investigation objective not configured"
 _TERMINAL_CLASSIFICATIONS = {"deferred", "blocked", "needs_review", "untestable"}
@@ -42,69 +51,19 @@ def ensure_objective_gap(db: CaseDB, objective: str) -> str:
     return gap_id
 
 
+# Default reopen condition per stop classification; the shared judgment
+# overrides it whenever the current Case State derives a more specific one.
+_CLASSIFICATION_RETRY_CONDITIONS = {
+    "untestable": "required_capability_available",
+    "blocked": "required_capability_available",
+    "needs_review": "new_evidence_or_human_review",
+    "deferred": "new_evidence_or_manual_resume",
+}
+
+
 def _required_capabilities(db: CaseDB, hypothesis_id: str) -> list[str]:
-    """Derive required capabilities from the canonical VerificationSpec.
-
-    The spec is the only stored condition representation: declared
-    ``required_capabilities`` win, otherwise its support conditions map
-    through the shared artifact catalog.  A row without a parsable spec is an
-    explicit failure, never a text-inference fallback.
-    """
-    row = db.execute(
-        "SELECT verification_spec FROM hypotheses WHERE hypothesis_id = ?",
-        [hypothesis_id],
-    ).fetchone()
-    raw_spec = row[0] if row else None
-    if isinstance(raw_spec, str):
-        try:
-            raw_spec = json.loads(raw_spec)
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"hypothesis {hypothesis_id} has an unparsable verification_spec: {exc}"
-            ) from exc
-    if not isinstance(raw_spec, dict) or not raw_spec:
-        raise ValueError(
-            f"hypothesis {hypothesis_id} has no canonical verification_spec; "
-            "the case database does not match the current format "
-            "(preserve the case and ingest into a new case directory)"
-        )
-    return derive_required_capabilities(
-        raw_spec.get("required_capabilities") or [],
-        raw_spec.get("support_conditions"),
-    )
-
-
-def _coverage_state(db: CaseDB, capabilities: list[str]) -> tuple[list[str], list[str]]:
-    """Return unavailable capabilities and their source families."""
-    if not capabilities:
-        return [], []
-    placeholders = ", ".join("?" for _ in capabilities)
-    rows = db.execute(
-        f"SELECT capability, state, source_family FROM evidence_coverage "
-        f"WHERE capability IN ({placeholders})",
-        capabilities,
-    ).fetchall()
-    states: dict[str, list[str]] = {capability: [] for capability in capabilities}
-    families: dict[str, set[str]] = {capability: set() for capability in capabilities}
-    for capability, state, family in rows:
-        key = str(capability)
-        states.setdefault(key, []).append(str(state or "unavailable"))
-        if family:
-            families.setdefault(key, set()).add(str(family))
-    unavailable = [
-        capability
-        for capability in capabilities
-        if not states.get(capability)
-        or all(state in {"unavailable", "degraded"} for state in states[capability])
-    ]
-    required_sources = sorted(
-        {
-            family
-            for capability in capabilities
-            for family in families.get(capability, set())
-        }
-    )
-    return unavailable, required_sources
+    """Read the canonical VerificationSpec of one hypothesis for its capabilities."""
+    return load_spec_capabilities(db, hypothesis_id)
 
 
 def _classification_for(
@@ -115,13 +74,14 @@ def _classification_for(
     blocked_reason: str,
     required_capabilities: list[str],
     unavailable_capabilities: list[str],
+    external_task_ids: tuple[str, ...],
 ) -> str:
     if sufficiency_status == "unobservable" or (
         required_capabilities
         and len(unavailable_capabilities) == len(required_capabilities)
     ):
         return "untestable"
-    if blocked_reason or unavailable_capabilities:
+    if blocked_reason or unavailable_capabilities or external_task_ids:
         return "blocked"
     if reasoning_count == 0:
         return "deferred"
@@ -144,24 +104,25 @@ def _upsert_terminal_work(
     classification: str,
     reason: str,
 ) -> None:
-    """Create or refresh the authoritative Task/Gap pair for a terminal hypothesis."""
-    required_capabilities = _required_capabilities(db, hypothesis_id)
-    unavailable_capabilities, required_sources = _coverage_state(
-        db, required_capabilities
-    )
+    """Create or refresh the authoritative Task/Gap pair for a terminal hypothesis.
+
+    Blockers, owners and the persisted retry condition all come from the one
+    judgment; the per-classification default only fills what the Case State
+    cannot derive (e.g. manual resume after deferral).
+    """
+    judgment = judge_work(db, [hypothesis_id])[hypothesis_id]
+    required_capabilities = list(judgment.capabilities)
+    unavailable_capabilities = list(judgment.unavailable_capabilities)
     if unavailable_capabilities and not any(
         capability in reason for capability in unavailable_capabilities
     ):
         reason += ": " + ", ".join(unavailable_capabilities)
+    _, required_sources = coverage_readiness(db, required_capabilities)
 
     task_id = _stable_id("TASK-STOP", hypothesis_id)
     gap_id = _stable_id("GAP-STOP", hypothesis_id)
     retry_condition = (
-        "required_capability_available"
-        if classification in {"blocked", "untestable"}
-        else "new_evidence_or_human_review"
-        if classification == "needs_review"
-        else "new_evidence_or_manual_resume"
+        judgment.retry_condition or _CLASSIFICATION_RETRY_CONDITIONS[classification]
     )
     db.execute(
         """
@@ -241,17 +202,15 @@ def classify_active_hypotheses_on_stop(
             evidence_count = int(row[1] or 0) if row else 0
             sufficiency_status = str(row[2] or "") if row else ""
             prior_blocked_reason = str(row[3] or "") if row else ""
-            required_capabilities = _required_capabilities(db, hypothesis_id)
-            unavailable_capabilities, required_sources = _coverage_state(
-                db, required_capabilities
-            )
+            judgment = judge_work(db, [hypothesis_id])[hypothesis_id]
             classification = _classification_for(
                 reasoning_count=reasoning_count,
                 evidence_count=evidence_count,
                 sufficiency_status=sufficiency_status,
                 blocked_reason=prior_blocked_reason,
-                required_capabilities=required_capabilities,
-                unavailable_capabilities=unavailable_capabilities,
+                required_capabilities=list(judgment.capabilities),
+                unavailable_capabilities=list(judgment.unavailable_capabilities),
+                external_task_ids=judgment.external_task_ids,
             )
             counts[classification] += 1
             reason = {
@@ -260,8 +219,11 @@ def classify_active_hypotheses_on_stop(
                 "needs_review": f"Human review or more evidence required after {stop_reason_code}",
                 "untestable": f"Required telemetry unavailable at {stop_reason_code}",
             }[classification]
-            if unavailable_capabilities:
-                reason += ": " + ", ".join(unavailable_capabilities)
+            if judgment.unavailable_capabilities or judgment.external_task_ids:
+                owners = list(judgment.unavailable_capabilities)
+                if judgment.external_task_ids:
+                    owners.append("open external task " + judgment.external_task_ids[0])
+                reason += ": " + ", ".join(owners)
 
             hypothesis.status = classification
             db.execute(
@@ -317,22 +279,45 @@ def classify_active_hypotheses_on_stop(
                 classification=str(classification),
                 reason=reason,
             )
+
+        # Report-admitted external/human work may have no hypothesis; the stop
+        # still persists its blocker (owner already on the Task) so the stop
+        # record never looks completed while runnable work is zero.
+        db.execute(
+            """
+            UPDATE investigation_tasks SET reason =
+                CASE kind
+                    WHEN 'human_decision' THEN
+                        'human decision required; no runnable work at stop'
+                    ELSE 'external result required; no runnable work at stop'
+                END,
+                updated_at = now()
+            WHERE status IN ('open', 'in_progress')
+              AND kind IN ('human_decision', 'external_lookup', 'evidence_acquisition')
+              AND (reason IS NULL OR reason = '')
+            """
+        )
     return counts
 
 
 def reopen_retryable_work(db: CaseDB) -> list[str]:
-    """Reactivate only hypotheses whose persisted retry condition became true."""
-    coverage = db.execute("SELECT capability, state FROM evidence_coverage").fetchall()
-    available_capabilities = {
-        str(capability)
-        for capability, state in coverage
-        if state in {"available", "partial"}
-    }
+    """Reactivate only work whose persisted retry condition became true.
+
+    The saved ``retry_condition`` is the reopen contract and is checked, not
+    re-derived from ``kind`` (V2-03): ``required_capability_available`` is
+    evaluated over the Task's persisted ``required_capability`` — which the
+    same judgment wrote at stop — with the shared ready rule: every required
+    capability must have an ``available``/``partial`` Coverage row.  The
+    ``new_evidence_*`` conditions need a normalized source newer than the
+    Task's last stop update, so the same source cannot reopen it twice.
+    Unrecognized or ``human_or_external_result``
+    conditions never auto-reopen; their Task is resolved by its own owner.
+    """
     reopened: list[str] = []
     rows = db.execute(
         """
-        SELECT task_id, gap_id, hypothesis_id, kind, required_capability,
-               required_source, created_at
+        SELECT task_id, gap_id, hypothesis_id, retry_condition,
+               required_capability, required_source, updated_at
         FROM investigation_tasks
         WHERE status = 'open' AND kind IN ('deferred', 'blocked', 'needs_review', 'untestable')
           AND hypothesis_id IS NOT NULL
@@ -343,31 +328,39 @@ def reopen_retryable_work(db: CaseDB) -> list[str]:
             task_id,
             gap_id,
             hypothesis_id,
-            kind,
+            retry_condition,
             raw_caps,
             raw_sources,
-            created_at,
+            updated_at,
         ) in rows:
-            capabilities = {item for item in str(raw_caps or "").split(",") if item}
-            sources = {item for item in str(raw_sources or "").split(",") if item}
-            capability_ready = (
-                bool(capabilities) and capabilities <= available_capabilities
-            )
-            source_query = (
-                "SELECT 1 FROM evidence_sources WHERE updated_at > ? "
-                "AND ingest_status IN ('normalized', 'parsed')"
-            )
-            params: list[Any] = [created_at]
-            if sources:
-                placeholders = ", ".join("?" for _ in sources)
-                source_query += f" AND artifact_family IN ({placeholders})"
-                params.extend(sorted(sources))
-            new_evidence = db.execute(source_query + " LIMIT 1", params).fetchone()
-            should_reopen = (
-                capability_ready
-                if kind in {"blocked", "untestable"}
-                else bool(new_evidence)
-            )
+            hypothesis_id = str(hypothesis_id)
+            condition = str(retry_condition or "").strip()
+            if condition == "required_capability_available":
+                capabilities = [item for item in str(raw_caps or "").split(",") if item]
+                not_ready, _ = coverage_readiness(db, capabilities)
+                should_reopen = bool(capabilities) and not not_ready
+            elif condition in {
+                "new_evidence_or_coverage",
+                "new_evidence_or_human_review",
+                "new_evidence_or_manual_resume",
+            }:
+                sources = {item for item in str(raw_sources or "").split(",") if item}
+                source_query = (
+                    "SELECT 1 FROM evidence_sources WHERE updated_at > ? "
+                    "AND ingest_status IN ('normalized', 'parsed')"
+                )
+                params: list[Any] = [updated_at]
+                if sources:
+                    placeholders = ", ".join("?" for _ in sources)
+                    source_query += f" AND artifact_family IN ({placeholders})"
+                    params.extend(sorted(sources))
+                should_reopen = (
+                    db.execute(source_query + " LIMIT 1", params).fetchone() is not None
+                )
+            else:
+                # Unrecognized or human/external-owned conditions are never
+                # auto-reopened; the saved value is the reopen contract.
+                should_reopen = False
             if not should_reopen:
                 continue
             db.execute(

@@ -66,8 +66,11 @@ The `hypotheses` table (schema version 2) stores `verification_spec` JSON plus
 the projection columns hypothesis metadata needs directly (`required_entities`
 among them). The former `confirm_when`, `refute_when`, and
 `evidence_requirements` columns were removed together with every read/write
-path. Schema version 4 added `hypothesis_evidence.verification_spec_fingerprint`
-and version 3 added `hypothesis_evidence.content_fingerprint`
+path. Schema version 5 added `hypothesis_evidence.assessment_reason` and
+`hypothesis_evidence.matched_conditions` — the judgment grounds of the one
+deterministic Assessment that admitted each link (V2-04/R08). Version 4 added
+`hypothesis_evidence.verification_spec_fingerprint` and version 3 added
+`hypothesis_evidence.content_fingerprint`
 (evidence/content_identity.py). Case databases with a different
 `forensia_schema` version (including all earlier shapes) are rejected before any
 persistent DDL/DML
@@ -180,7 +183,7 @@ Source identity:
 | `findings` | Rule detection results | `finding_id`, `rule_id`, `title`, `summary`, `severity`, `confidence`, `status` (`new`/`accepted`/`suppressed`), `tags`, `attack`, `evidence`, `ai_summary`, `missing_checks`, `created_at` |
 | `hypotheses` | Hypotheses under investigation | Hypothesis fields plus canonical `verification_spec` (`required_entities` column), selection/retry state, blocking state, sufficiency status/score/reason and human-review flag |
 | `hypothesis_relations` | Validated hypothesis graph | endpoint IDs, `relation_type`, `origin`, `confidence`, `rationale`, creation session/time |
-| `hypothesis_evidence` | Typed, deduplicated assessed evidence-to-hypothesis provenance (historical records; current support is derived at read time) | hypothesis/evidence/query IDs, `assessment_id` (`EA-v1-*` for deterministic assessments), `role`, `source_family`, `derivation_group`, `content_fingerprint`, `strength` |
+| `hypothesis_evidence` | Typed, deduplicated assessed evidence-to-hypothesis provenance (historical records; current support is derived at read time) | hypothesis/evidence/query IDs, `assessment_id` (`EA-v1-*` for deterministic assessments), `role`, `assessment_reason`, `matched_conditions` (the grounds of that one assessment), `source_family`, `derivation_group`, `content_fingerprint`, `strength` |
 | `hypothesis_reasoning` | Reasoning history of hypothesis verification | `entry_id`, `hypothesis_id`, `session_id`, `iteration`, `phase` (including `sufficiency`), `verdict`, `query_id`, `body`, `created_at` |
 
 `findings.attack` is a JSON string in `[{tactic, technique_id, technique_name}]` form, persisted on the finding row. The Web-only matrix aggregation that consumed it (`list_attack_coverage_dto`) was removed together with the Web layer; no Case/Trace producer writes attack coverage beyond the declared rule metadata.
@@ -201,10 +204,10 @@ in the investigation/check trace and does not create a Finding row.
 | `llm_logical_calls` (trace DB) | One application-level model decision, independent of retry count | `logical_call_id`, session/phase/scope IDs, request fingerprint, status |
 | `llm_provider_attempts` (trace DB) | One actual provider request, including failed attempts and retry lineage | attempt/parent/logical IDs, exact API `request_body`, raw `response_body`, effective limits, usage source, prompt metadata, HTTP/provider error, finish/parse/truncation state, timing |
 | `llm_deterministic_ops` (trace DB) | Non-LLM render/validate/query/wait work; never contributes LLM tokens or call latency | `op_id`, session/phase/scope, operation type, target, duration |
-| `progress_events` | Bounded recent progress view for display and debugging | `event_index`, `stage`, `status`, `iteration`, `current_query`, `summary`, `payload` |
+| `progress_events` | Bounded recent progress view for display and debugging | `event_index`, `stage`, `status`, `iteration`, `current_query`, `summary`, `payload` (log entries stored once as structured `recent_log_entries` with producer-decided `tag`/`level`/`message`; the string form is derived at render time) |
 | `query_cache` | Result cache for SQL emitted by the LLM | `sql_hash`, `sql_text`, `result_json`, `executed_at` |
 | `investigation_state` | Singleton case objective/lifecycle | `objective`, `status`, `termination_policy`, stable `stop_reason_code`, human-readable `stop_reason`, machine-readable `stop_summary` |
-| `investigation_tasks` | Non-SQL evidence acquisition, external lookup and human work | `kind`, `status`, linked Gap/Hypothesis, `owner_phase`, `retry_condition`, required capability/source, blocked reason |
+| `investigation_tasks` | Non-SQL evidence acquisition, external lookup and human work | `kind`, `status`, linked Gap/Hypothesis, `owner_phase`, `retry_condition` (the reopen contract, checked at reopen against the current readiness — not re-derived from `kind`), required capability/source, blocked reason |
 
 SQL `do` steps embed a versioned `tool_receipt` and one-attempt
 `retrieval_evaluation` in `investigation_steps.output_json`. These are trace
@@ -216,9 +219,10 @@ its provider retries and from deterministic rendering. Token counts carry a
 source (`provider_actual`, `local_estimate`, or `unknown`); configured output,
 reasoning reserve, requested output, and effective wire output are separate
 fields. Prompt telemetry stores named section sizes and selected IDs rather
-than secrets or unbounded prompt/error bodies. API reads never reconcile or
-mutate session state. The owning worker refreshes `heartbeat_at` and records
-its current phase/reason; startup may abandon only an expired lease. A terminal
+than secrets or unbounded prompt/error bodies. Read-only consumers never
+reconcile or mutate session state. The owning worker refreshes
+`heartbeat_at` and records its current phase/reason; startup may abandon only
+an expired lease. A terminal
 session receipt is written before fallible Memory/report projections so the API
 can reconstruct failure and abandonment without treating rolling progress text
 as authority.
@@ -228,11 +232,15 @@ For an adequate, non-empty observation group, `assessment.py` matches the
 supported `VerificationSpec` event/host/time conditions against observed rows;
 unsupported condition types remain contextual. The existing link stores the
 resulting `assessment_id`, role, query/evidence IDs, and source/derivation
-provenance columns; it does not persist the full assessment object. Legacy
-links with an empty assessment ID are retained for compatibility and are not
-represented as independently assessed history or counted by Sufficiency and
-Settlement. Sufficiency consumes assessed links without assigning their roles.
-The existing settlement guard remains the state-transition boundary.
+provenance columns, plus the judgment grounds of that one assessment
+(`assessment_reason`, `matched_conditions`; schema version 5). New links are
+insert-only: re-evaluation with a new assessment ID adds a new link and the
+old link keeps its grounds, so a past judgment is explainable via existing IDs
+(V2-04/R08). Legacy links with an empty assessment ID are retained for
+compatibility and are not represented as independently assessed history or
+counted by Sufficiency and Settlement. Sufficiency consumes assessed links
+without assigning their roles. The existing settlement guard remains the
+state-transition boundary.
 
 Settlement also carries the runner-computed scope-wise absence judgment
 (`SettlementInput.absence_scope`/`absence_note`). A rule-declared
@@ -254,6 +262,14 @@ incomplete retrieval downgrade the repeated zero-row/same-missing paths to
 | `section_run_coverage` | Per-block keypoint coverage | `section_key`, `block_heading`, `keypoint`, `queried`, `rows`, `used_in_answer` |
 | `claims` | Claims extracted from report paragraphs | `claim_id`, `section_key`, `claim_text`, `support_status`, `finding_ids`, `hypothesis_ids`, `evidence_ids` |
 | `report_gaps` | Authoritative normalized work gaps | section/block, description, kind, lifecycle `status`, `origin`, linked Claim/Hypothesis/Task, Coverage reason |
+
+Open work is read per work ref (`work_judgment.open_work_refs`): a Gap, its
+linked Task, and the Hypothesis it admitted merge through the existing link
+columns into one unresolved work item, so blockers, stop summaries, and the
+completion gate never count the same work twice. An unlinked unresolved
+Hypothesis is also a work ref; adding it changes semantic progress. There is no
+Agenda table or cached read state: selection eligibility, stop classification, and reopen all
+re-derive the readiness judgment from these rows on demand.
 
 When source replacement removes or changes a referenced evidence ID, assessed
 `hypothesis_evidence` links are retained for history. Linked Hypotheses reopen
@@ -290,7 +306,12 @@ normalized Evidence. A new source, content fingerprint, assessment ID, or
 derivation root creates a new link even if the query ID is reused; identical
 observations are deduplicated. Read-time checks never fill a historical blank
 source using today's row. Excluded links remain
-historical records in `hypothesis_evidence`.
+historical records in `hypothesis_evidence`. Each link separately stores the
+grounds of its own deterministic Assessment (`assessment_reason`,
+`matched_conditions`; schema version 5), so what was matched — and why an
+observation stayed contextual — is readable from the existing link ID even
+after the observed rows are gone; a re-evaluation under a changed Spec creates
+a new link with a new assessment ID and keeps the old grounds on the old link.
 
 Two grouped sources also move dependents to review at ingest time
 (`evidence/invalidation.py`): removal of a referenced ID, and a content

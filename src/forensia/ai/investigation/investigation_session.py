@@ -59,9 +59,9 @@ def _to_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
 
 
-# Terminal status vocabulary written by the investigation harness
-# (investigator.py `finally` block) and reconciled here for stale runs.
-_TERMINAL_STATUS_CODES = ("completed", "stopped", "failed", "cancelled", "abandoned")
+# Session lease timeout used by startup crash recovery: only an expired lease
+# may be abandoned (R07 keeps the writer-always-reasons contract; past terminal
+# rows keep their original ``terminal_reason``).
 _SESSION_LEASE_TIMEOUT_S = 600
 
 
@@ -147,8 +147,11 @@ def reconcile_stale_sessions(db: CaseDB) -> int:
 
     Runs on startup (in ``_init_session``). Only an expired or legacy
     heartbeat may be abandoned; a live owner's lease is never changed by a
-    different process. Terminal sessions missing a ``terminal_reason`` are
-    backfilled from their status. Returns the number of sessions reconciled.
+    different process. Past terminal rows keep whatever reason they were
+    written with: the current writer always persists a ``terminal_reason``
+    (T-12.1), so a missing reason stays as historical evidence instead of
+    being fabricated from today's status (R07). Returns the number of
+    sessions reconciled.
     """
     reconciled = 0
     cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(
@@ -176,14 +179,6 @@ def reconcile_stale_sessions(db: CaseDB) -> int:
         raise RuntimeError(
             "an investigation session already owns this case: " + ", ".join(active)
         )
-    # Backfill structured terminal reasons for any terminal session missing one.
-    for status in _TERMINAL_STATUS_CODES:
-        db.execute(
-            "UPDATE investigation_sessions SET terminal_reason = ? "
-            "WHERE status = ? AND terminal_reason IS NULL",
-            (format_terminal_reason(status), status),
-        )
-        reconciled += 0  # backfill is non-destructive; not counted as a reopen
     return reconciled
 
 
@@ -667,8 +662,14 @@ def _init_session(
     model: str,
     template_root: Path | None,
     active_pack_ids: set[str] | None = None,
+    *,
+    report_only: bool = False,
 ) -> tuple[SessionState, Ctx, MemoryManager, LLMCallLogger, str, datetime, Path]:
-    """Initialize a new investigation session. Returns (state, ctx, memory, llm_logger, session_id, started_at, template_root)."""
+    """Initialize a new investigation session. Returns (state, ctx, memory, llm_logger, session_id, started_at, template_root).
+
+    With ``report_only=True`` the resume writes are skipped (R07): a report
+    job does not reopen retryable work and does not mark the investigation
+    started, so the Case stop state keeps the value of the last real stop."""
     session_id = f"session-{uuid4().hex[:12]}"
     started_at = datetime.now(UTC).replace(tzinfo=None)
     owner_id = f"worker-{uuid4().hex[:12]}"
@@ -712,8 +713,9 @@ def _init_session(
     ensure_investigation_state(db, objective=objective)
     persisted_investigation = load_investigation_state(db) or {}
     ensure_objective_gap(db, str(persisted_investigation.get("objective") or ""))
-    reopen_retryable_work(db)
-    mark_investigation_started(db)
+    if not report_only:
+        reopen_retryable_work(db)
+        mark_investigation_started(db)
     sync_scope_candidates(
         memory, db, str(persisted_investigation.get("objective") or objective)
     )

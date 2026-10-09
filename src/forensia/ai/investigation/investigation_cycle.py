@@ -511,7 +511,7 @@ async def _run_cycle_body(
 ) -> tuple[bool, bool, list[str], dict[str, Any]]:
     """Run one plan cycle: broad plan + hypothesis loop.
 
-    Returns (broad_plan_stop, cycle_progress, focus_sections, report_before).
+    Returns (broad_plan_stop, cycle_progress, focus_sections).
     """
 
     def _emit(
@@ -544,7 +544,6 @@ async def _run_cycle_body(
     broad_plan_stop = False
     cycle_progress = False
     focus_sections: list[str] = []
-    report_before = _ctx_get_report_status(ctx, db)
     observed_keypoints = _scan_report_keypoints(case, db)
     _save_step(
         db=db,
@@ -643,4 +642,4 @@ async def _run_cycle_body(
             if progress:
                 cycle_progress = True
 
-    return broad_plan_stop, cycle_progress, focus_sections, report_before
+    return broad_plan_stop, cycle_progress, focus_sections

@@ -30,7 +30,7 @@ class CaseDbMaintenanceTests(unittest.TestCase):
 
     def test_progress_labels_are_normalized_to_uppercase(self) -> None:
         review = structure_progress_log("[review] checking")
-        failure = structure_progress_log("[final-refresh] failed")
+        failure = structure_progress_log("[final-refresh] failed", level="error")
         self.assertEqual("[REVIEW] checking", format_progress_log(review))
         self.assertEqual("info", review["level"])
         self.assertEqual("FINAL_REFRESH", failure["tag"])
@@ -168,7 +168,7 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                         "status": "running",
                         "iteration": 0,
                         "summary": "start",
-                        "recent_logs": [],
+                        "recent_log_entries": [],
                     },
                 )
                 push("[review] unresolved rewrite", stage="investigate")
@@ -177,14 +177,34 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                     stage="analyze",
                     log_level="info",
                 )
+                push(
+                    "[report] written: report.md",
+                    stage="completed",
+                    log_level="success",
+                )
 
-            payload = record_progress.call_args_list[0].args[1]
+            payloads = [call.args[1] for call in record_progress.call_args_list]
+            # Single structured storage; no legacy string-array dual list.
+            for payload in payloads:
+                self.assertNotIn("recent_logs", payload)
+            entry = payloads[0]["recent_log_entries"][-1]
             self.assertEqual(
-                {"tag": "REVIEW", "level": "warning", "message": "unresolved rewrite"},
-                payload["recent_log_entries"][0],
+                {"tag": "REVIEW", "level": "info", "message": "unresolved rewrite"},
+                entry,
             )
-            entry = record_progress.call_args_list[1].args[1]["recent_log_entries"][-1]
-            self.assertEqual("info", entry["level"])
+            rule_entry = payloads[1]["recent_log_entries"][-1]
+            self.assertEqual("info", rule_entry["level"])
+            self.assertTrue(
+                rule_entry["message"].endswith("windows-security-4625-failed-logon")
+            )
+            self.assertEqual(
+                {
+                    "tag": "REPORT",
+                    "level": "success",
+                    "message": "written: report.md",
+                },
+                payloads[2]["recent_log_entries"][-1],
+            )
 
     def test_reset_case_tables_clears_derived_report_and_ingest_tables(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

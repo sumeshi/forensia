@@ -34,6 +34,7 @@ from forensia.ai.investigation.investigation_session import (
     sync_keypoint_cards,
     touch_session_heartbeat,
 )
+from forensia.ai.investigation.work_judgment import open_work_refs
 from forensia.ai.investigation.work_state import (
     classify_active_hypotheses_on_stop,
     format_stop_reason,
@@ -49,6 +50,7 @@ from forensia.ai.llm_telemetry import (
 )
 from forensia.ai.report_gap import (
     _build_report_status,
+    evaluation_snapshot,
     inject_gap_hypotheses,
     project_investigation_tasks,
     report_cycle_progress,
@@ -98,17 +100,18 @@ async def _run_report_phase(
     focus_sections: list[str],
     report_max_queries_per_section: int,
     state: SessionState,
-    report_before: dict[str, Any],
     memory: MemoryManager,
-) -> tuple[dict[str, Any], bool, str]:
+) -> tuple[dict[str, Any], str]:
     """Run the report refresh phase.
 
-    Returns (report_after, cycle_progress_from_report, refresh_status) where
-    refresh_status is "skipped" (off-cycle), "ok", or "failed: <type>: <msg>".
+    Returns (report_after, refresh_status) where refresh_status is "skipped"
+    (off-cycle), "ok", or "failed: <type>: <msg>".  Cycle progress is not
+    decided here: the loop compares evaluation snapshots at its state-commit
+    point (after the Coverage refresh), so Coverage changes are visible to the
+    comparison in the same cycle they commit.
     """
-    cycle_progress = False
     if plan_cycle % max(1, report_every_n_cycles) != 0:
-        return report_before, cycle_progress, "skipped"
+        return _build_report_status(db), "skipped"
     report_result: dict[str, Any] | None = None
     try:
         template_paths = sorted(template_root.glob("[0-9]*_*.md"))
@@ -157,29 +160,25 @@ async def _run_report_phase(
                 f"fallback render failed: {render_exc}",
                 level="warning",
             )
-        return report_before, cycle_progress, f"failed: {error_label}"
+        return _build_report_status(db), f"failed: {error_label}"
     if report_result is None:
-        return report_before, cycle_progress, "ok"
+        return _build_report_status(db), "ok"
     report_after = report_result["report_status"]
-    gap_new_hypotheses = inject_gap_hypotheses(
+    inject_gap_hypotheses(
         db=db,
         state=state,
         gaps=report_result["gaps"],
         session_id=session_id,
         memory=memory,
     )
-    if gap_new_hypotheses:
-        cycle_progress = True
     # Gap/Task/Hypothesis admission mutates Case State after section refresh;
-    # take the semantic snapshot after that mutation, while retaining the
-    # section body for the report UI.
+    # rebuild the status after that mutation, while retaining the section body
+    # for the report UI.
     refreshed_status = _build_report_status(db, focus_sections=focus_sections)
     refreshed_status["current_section"] = report_after.get("current_section")
     report_after = refreshed_status
-    if report_cycle_progress(report_before, report_after):
-        cycle_progress = True
     render_written_report(case, db)
-    return report_after, cycle_progress, "ok"
+    return report_after, "ok"
 
 
 def _classify_active_hypotheses_on_stop(
@@ -200,22 +199,16 @@ def _durable_open_work_counts(db: CaseDB) -> tuple[int, int]:
 
     The report's prose gap array is an editorial projection: a section reword
     can drop every gap string while admitted work remains open.  Completion
-    therefore reads the authoritative ``report_gaps`` and
-    ``investigation_tasks`` lifecycle rows instead of ``total_gaps``.
+    reads the shared per-work-ref read (``work_judgment.open_work_refs``):
+    a linked Gap/Task pair is one work item counted once per column, so the
+    gate stays "no open Gap and no open Task" without double counting the
+    same work.  Returns (open-gap refs, open-task refs).
     """
-    open_gaps = int(
-        db.execute(
-            "SELECT COUNT(*) FROM report_gaps "
-            "WHERE status IN ('open', 'in_progress', 'needs_review')"
-        ).fetchone()[0]
+    refs = open_work_refs(db)
+    return (
+        sum(1 for ref in refs if ref.gap_ids),
+        sum(1 for ref in refs if ref.task_ids),
     )
-    open_tasks = int(
-        db.execute(
-            "SELECT COUNT(*) FROM investigation_tasks "
-            "WHERE status IN ('open', 'in_progress')"
-        ).fetchone()[0]
-    )
-    return open_gaps, open_tasks
 
 
 def _check_termination(
@@ -231,6 +224,9 @@ def _check_termination(
 ) -> tuple[str | None, int, str]:
     """Check if the investigation loop should stop. Returns (terminal_status or None, updated_no_progress_count, stop_reason_code)."""
     if report_only:
+        # Report-only is a report job, not objective work (GOAL 9.4): it must
+        # not claim Case completion while durable gaps/tasks remain open. The
+        # caller keeps the terminal receipt at session level only (R07).
         return "completed", no_progress_count, "report_only_mode"
     # Completion reads durable admitted work, not the report prose (GOAL 9.4):
     # with prose gaps exhausted but durable gaps/tasks still open, the loop
@@ -381,11 +377,13 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
         )
         if env.ctx.interrupted:
             return "stopped", report_refresh_failures, "interrupted"
+        # Snapshot at the cycle's state-commit boundary: this read equals the
+        # state the previous cycle committed (Coverage refresh included).
+        evaluation_before = evaluation_snapshot(env.db)
         (
             broad_plan_stop,
             cycle_progress,
             focus_sections,
-            report_before,
         ) = await _run_cycle_body(
             state=env.state,
             ctx=env.ctx,
@@ -407,7 +405,6 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
             return "stopped", report_refresh_failures, "interrupted"
         (
             report_after,
-            report_cycle_progress,
             refresh_status,
         ) = await _run_report_phase(
             case=env.case,
@@ -423,15 +420,20 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
             focus_sections=focus_sections,
             report_max_queries_per_section=env.report_max_queries_per_section,
             state=env.state,
-            report_before=report_before,
             memory=env.memory,
         )
         if refresh_status.startswith("failed"):
             report_refresh_failures += 1
         env.ctx.report_status = report_after
-        cycle_progress = cycle_progress or report_cycle_progress
         env.memory.regenerate_timeline_from_db(env.db)
         refresh_evidence_coverage(env.db)
+        # Compare at the commit point: the cycle's own Coverage refresh and
+        # Gap/Task admissions are visible to the comparison in the same cycle
+        # (V2-03/R06).
+        evaluation_after = evaluation_snapshot(env.db)
+        cycle_progress = cycle_progress or report_cycle_progress(
+            evaluation_before, evaluation_after
+        )
         durable_open_gaps, durable_open_tasks = _durable_open_work_counts(env.db)
         terminal_status, no_progress_count, stop_reason_code = _check_termination(
             report_only=env.report_only,
@@ -563,6 +565,7 @@ async def investigate(
             model,
             template_root,
             active_pack_ids=active_pack_ids if auto_rulepacks else None,
+            report_only=report_only,
         )
     )
     owner_id = ctx.owner_id
@@ -632,14 +635,17 @@ async def investigate(
         ) = await _run_investigation_loop(env)
         # Persist the terminal state before the closing report pass so report
         # validation and narratives observe the same final state as the API.
+        # Report-only is a report job (R07): it must not rewrite the Case stop
+        # state — an unresolved Case stays resumable after report-only.
         summary = stop_summary(db, len(state.active_hypotheses))
-        save_stop_reason(
-            db,
-            status=status,
-            stop_reason_code=stop_reason_code,
-            stop_reason=format_stop_reason(status, stop_reason_code, summary),
-            stop_summary=summary,
-        )
+        if not env.report_only:
+            save_stop_reason(
+                db,
+                status=status,
+                stop_reason_code=stop_reason_code,
+                stop_reason=format_stop_reason(status, stop_reason_code, summary),
+                stop_summary=summary,
+            )
         if status in {"completed", "stopped"} and not ctx.interrupted:
             report_refresh_failures += await _final_report_refresh(env)
     except Exception:
@@ -673,13 +679,14 @@ async def investigate(
             _log("FINALIZE", f"session receipt failed: {exc}", level="error")
         try:
             summary = stop_summary(db, len(state.active_hypotheses))
-            save_stop_reason(
-                db,
-                status=status,
-                stop_reason_code=stop_reason_code,
-                stop_reason=format_stop_reason(status, stop_reason_code, summary),
-                stop_summary=summary,
-            )
+            if not env.report_only:
+                save_stop_reason(
+                    db,
+                    status=status,
+                    stop_reason_code=stop_reason_code,
+                    stop_reason=format_stop_reason(status, stop_reason_code, summary),
+                    stop_summary=summary,
+                )
         except Exception as exc:
             _log(
                 "FINALIZE",

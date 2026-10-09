@@ -9,7 +9,6 @@ weights:
   dependency_impact: 1.0
   related_hypotheses: 1.0
   information_gain_proxy: 1.0
-  report_changeability: 1.0
   aging: 1.0
   execution_cost: 1.0
   retry_penalty: 1.0

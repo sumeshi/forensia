@@ -43,7 +43,13 @@ Contract for adapters (the headless CLI today, the TUI later — GOAL §6.3):
   (signal → `ctx.interrupted` flag → `stopped` classification), and the session
   terminal receipt is persisted before fallible projections (`investigator.py`
   `finally` block): a run interrupted or stopped without any UI still finalizes
-  its session, stop reason, and report.
+  its session, stop reason, and report. The receipt always carries a structured
+  `terminal_reason`, and startup crash recovery
+  (`reconcile_stale_sessions`) only abandons an expired `running` lease — it
+  never rewrites the reasons of past terminal rows (V2-04/R07). The Case stop
+  state is written only by real investigation stops, before the final report
+  render; a report-only run is a report job, so it never rewrites the Case stop
+  state and an unresolved Case with open Gaps/Tasks stays resumable afterwards.
 
 ---
 
@@ -240,10 +246,10 @@ sequenceDiagram
 Main stages:
 
 1. **broad_plan**: `gap_identifier` extracts uncovered observation points, and `hypothesis_drafter` drafts a hypothesis per gap
-2. **select**: `selection.py` filters blocked/unobservable/exhausted candidates and ranks eligible hypotheses from deterministic priority components. Required capabilities come from the shared derivation owner `derive_required_capabilities` (`knowledge/coverage.py`): a declared `required_capabilities` list on the canonical VerificationSpec wins, otherwise structured event IDs in its support conditions map through the existing artifact capability catalog. A canonical condition payload takes priority over legacy fields and prose; callers without it retain legacy inference. The full score breakdown is stored in Trace. CaseDB initializes the required schema; selection errors propagate to the investigation's failed terminal receipt instead of invoking a second selector that bypasses eligibility.
+2. **select**: `selection.py` filters blocked/unobservable/exhausted candidates and ranks eligible hypotheses from deterministic priority components. Eligibility is read from the shared work judgment (`work_judgment.judge_work` with the candidate-flow gates): the same read backs stop classification and reopen. Required capabilities come from the shared derivation owner `derive_required_capabilities` / `spec_capabilities` (`knowledge/coverage.py`, `ai/investigation/work_judgment.py`): a declared `required_capabilities` list on the canonical VerificationSpec wins, otherwise structured event IDs in its support conditions map through the existing artifact capability catalog. The score keeps admitted-work references, evidence severity/availability, objective token relevance, relation structure, aging, execution cost, and the repetition penalties; report-prose, section-confidence, and staleness terms were removed so a report reword cannot change the investigation order. The full score breakdown is stored in Trace. CaseDB initializes the required schema; selection errors propagate to the investigation's failed terminal receipt instead of invoking a second selector that bypasses eligibility.
 3. **plan**: The query-intent kernel validates a small typed action menu: the initial phase permits `memory.read_more` or `sql.query`, while the post-expansion phase permits only `sql.query`. One LLM decision selects a parameterized recipe or bounded fallback SQL. The host then checks schema/table eligibility, SELECT-only policy, limits and dry-run deterministically; there is no LLM schema-readiness or second SQL-composer call. The normalized nested action is the sole query source; the original wrapper is retained for audit. A host-rejected action records a planner-validation reason and gets one bounded repair opportunity through the next planner prompt before the hypothesis is stopped.
 4. **execute/check**: Issues a safe SELECT, applies fallback behavior and obtains the Checker's proposed verdict. The existing hypothesis SQL execution records a versioned `ToolReceipt` and one-attempt `RetrievalEvaluation` inside the same `trace.investigation_steps.output_json`; the receipt records query/provenance/result observations only and does not assign Evidence roles or consume checker verdicts. Planner-only validation failures are not execution progress and cannot substitute for `do`/`check` receipts.
-5. **assessment/sufficiency/settlement**: `assess_evidence_group` classifies each adequate observation group from `VerificationSpec`, observation fields and provenance; it never reads the checker verdict, and the query ID is acquisition history only — the derivation root is the observed content (a declared derivation group, or the evidence row itself). Sufficiency groups assessed links by that root (`derivation_root_key`), so the same evidence re-fetched under a different query is one group and cannot inflate independent support; declared groups still keep their same-root conservatism. Sufficiency ignores legacy links without an assessment ID, and Settlement does not pass through checker `refuted` / `untestable` proposals without an assessed contradiction or an explicit observable/unavailable auto condition. Support counting further distinguishes historical from currently-usable links through the shared read-time predicate `evidence_link_currentness`: a link whose evidence row was removed, whose source identity is unverifiable, or whose recorded `content_fingerprint` no longer matches the materialized row is excluded from sufficiency scoring, settlement gates, and the confirmed invariant, while the `hypothesis_evidence` row itself is kept (never deleted) as history.
+5. **assessment/sufficiency/settlement**: `assess_evidence_group` classifies each adequate observation group from `VerificationSpec`, observation fields and provenance; it never reads the checker verdict, and the query ID is acquisition history only — the derivation root is the observed content (a declared derivation group, or the evidence row itself). Sufficiency groups assessed links by that root (`derivation_root_key`), so the same evidence re-fetched under a different query is one group and cannot inflate independent support; declared groups still keep their same-root conservatism. Sufficiency ignores legacy links without an assessment ID, and Settlement does not pass through checker `refuted` / `untestable` proposals without an assessed contradiction or an explicit observable/unavailable auto condition. Support counting further distinguishes historical from currently-usable links through the shared read-time predicate `evidence_link_currentness`: a link whose evidence row was removed, whose source identity is unverifiable, or whose recorded `content_fingerprint` no longer matches the materialized row is excluded from sufficiency scoring, settlement gates, and the confirmed invariant, while the `hypothesis_evidence` row itself is kept (never deleted) as history. Each link also carries the judgment grounds of its one deterministic Assessment (`assessment_reason`, `matched_conditions`), so a past judgment stays explainable via existing IDs even after the observed rows are re-normalized away; re-evaluation adds a new link with a new assessment ID instead of overwriting the old one (V2-04/R08).
 For absence-based refutation, `sql_absence_scope` certifies only a direct,
 case-wide EVTX lookup of exactly the Spec's event IDs, with column projections,
 no narrowing predicates, sampling, joins, derived rows or offset. Ordinary
@@ -270,12 +276,28 @@ or source condition became satisfiable. The stop reason code remains stable for
 automation, while classification counts are stored separately in
 `investigation_state.stop_summary`.
 
-Readiness predicates that consume required capabilities (selection eligibility,
-work-state reopen, stop classification, sufficiency observability) still apply
-their own per-question rules, for example "block if some relevant coverage is
-unavailable" versus "reopen only when all required capabilities are at least
-partial". Unifying these predicates into one shared work judgment is deferred
-to the M1 Agenda work (TASKS T06/T07), not silently dropped.
+Readiness predicates that consume required capabilities share one read-side
+derivation (`work_judgment.py`, V2-03): `judge_work` answers, per work ref,
+whether the work is runnable, which conditions block it and who owns each
+condition, and what would reopen it, read on demand from Case State. The
+shared availability rule is that a required capability is ready when any
+Coverage row reports `available` or `partial`; selection eligibility, stop
+classification, and reopen all apply this rule, so the same work cannot flip
+between readers on one Case State. What stays deliberately distinct:
+eligibility additionally applies candidate-flow gates (cooldown, retry
+budget, prerequisites, open external tasks) that only selection asks; stop
+classification maps the same blockers to `deferred`/`blocked`/
+`needs_review`/`untestable` labels plus the persisted reasoning counts; and
+the retrieval-eligibility readiness is not an absence certification — whether
+an empty result may support a refutation is owned by the settlement gate on
+the observed retrieval scope. Open work is merged through the existing link
+columns (`report_gaps.task_id`/`hypothesis_id`,
+`investigation_tasks.gap_id`/`hypothesis_id`, `hypotheses.source_gap_id`)
+into one read result per work ref, so a Gap plus its linked Task/Hypothesis
+never counts as separate open work; an unlinked unresolved Hypothesis remains
+its own ref. Write owners (stop transition, reopen writes) remain in
+`work_state.py`; reopen checks the persisted
+`retry_condition` rather than re-deriving it from `kind`.
 
 For the input/output schema of each LLM role, see [llm-roles.md](llm-roles.md).
 
@@ -456,7 +478,13 @@ and a linked
 `untestable` hypothesis keeps the Gap open rather than completing acquisition.
 Termination observes durable Gap/Task/Hypothesis lifecycle, assessed evidence,
 contradiction, and Coverage changes; body length and formatting are not
-progress. The completion gate counts durable open `report_gaps` and
-`investigation_tasks` rows instead of the report prose `total_gaps`, so a
-section reword cannot report a session as completed while admitted work is
-open.
+progress. Progress and re-evaluation are compared by `report_cycle_progress`
+between `evaluation_snapshot` reads taken at the loop's state-commit point
+(after the cycle's Coverage refresh): new unresolved work refs, new assessed
+observation roots (same-root refetch collapses to the same root), new
+unhandled contradiction roots, and source/Coverage identity changes —
+including same-count source replacements and Coverage downgrades — count;
+prose growth, uninformative queries, and status round-trips that leave the
+same refs do not. The completion gate counts durable open work refs instead
+of the report prose `total_gaps`, so a section reword cannot report a session
+as completed while admitted work is open.

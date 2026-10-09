@@ -271,12 +271,13 @@ Gap resolution distinguishes report-side edits from actual outcomes
   admission still links equivalent existing hypotheses through its owner.
 
 Completion therefore never reads the report's prose gap array
-(`report_status.total_gaps`): the loop counts durable open `report_gaps`
-(`open`/`in_progress`/`needs_review`) and open `investigation_tasks`
-(`open`/`in_progress`), and `no_gaps_no_hypotheses` is reported only when both
-durable sets are empty. With prose gaps exhausted but durable work open, the
-loop falls through to the no-progress machinery and stops with a reason
-instead of completing.
+(`report_status.total_gaps`): the loop counts durable open work via the
+per-work-ref read (`work_judgment.open_work_refs`: gaps in
+`open`/`in_progress`/`needs_review` linked with open `investigation_tasks`
+into one ref each), and `no_gaps_no_hypotheses` is reported only when that
+read is empty as both columns. With prose gaps exhausted but durable work
+open, the loop falls through to the no-progress machinery and stops with a
+reason instead of completing.
 
 `query_fingerprint` canonicalizes the sqlglot AST and hashes it together with event_id / computer markers. It absorbs whitespace and alias differences. When sqlglot is unavailable, it falls back to string normalization.
 
@@ -316,9 +317,11 @@ A cycle ends when any of the following holds:
 - 3 consecutive cycles with no progress (`--no-progress-limit`)
 - `--max-iter` cycles completed
 
-"No progress" is based on semantic Case State deltas: Gap/Task/Hypothesis
-lifecycle, distinct assessed evidence groups, contradiction, or Coverage
-improvement. Formatting-only edits, paragraph growth, repeated queries, reused
-evidence, and successful LLM calls are excluded. A section gap is admitted
-through the existing Gap/Task request first; equivalent work is linked before a
-candidate Hypothesis is normalized and admitted.
+"No progress" is based on evaluation snapshots (`ai/report_gap.py:
+evaluation_snapshot`) compared by `report_cycle_progress` at the loop's
+state-commit point, right after the cycle's Coverage refresh: open work refs
+(additions or resolutions), new derivation-root observations, new unhandled
+contradictions, and source/Coverage identity changes require work or
+re-evaluation. A section gap is admitted through the existing Gap/Task
+request first; equivalent work is linked before a candidate Hypothesis is
+normalized and admitted.

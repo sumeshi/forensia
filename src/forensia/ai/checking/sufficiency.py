@@ -717,10 +717,19 @@ def create_hypothesis_evidence_link(
     finding_id: str = "",
     query_id: str = "",
     assessment_id: str = "",
+    assessment_reason: str = "",
+    matched_conditions: tuple[str, ...] | list[str] = (),
     strength: str = "moderate",
     created_session: str = "",
 ) -> str:
-    """Create an evidence link for a hypothesis. Returns the link_id."""
+    """Create an evidence link for a hypothesis. Returns the link_id.
+
+    ``assessment_reason``/``matched_conditions`` are the judgment grounds of
+    the deterministic Assessment that produced ``assessment_id`` (R08). They
+    are per-link history: re-evaluation with a new assessment id writes a new
+    link and the old link keeps its own grounds, so a legacy judgment stays
+    explainable via existing IDs even after the observed rows are gone.
+    """
     import uuid
 
     if role not in VALID_ROLES:
@@ -786,15 +795,16 @@ def create_hypothesis_evidence_link(
     if not source_family and evidence_id:
         prefix = evidence_id.split("-")[0] if "-" in evidence_id else ""
         source_family = prefix
+    matched = list(dict.fromkeys(str(key) for key in matched_conditions if key))
     db.execute(
         """
         INSERT INTO hypothesis_evidence (
             link_id, hypothesis_id, evidence_id, finding_id, query_id,
             assessment_id, role, source_family, source_file,
             derivation_group, content_fingerprint, verification_spec_fingerprint,
-            strength,
+            assessment_reason, matched_conditions, strength,
             created_session, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())
         """,
         [
             link_id,
@@ -809,6 +819,8 @@ def create_hypothesis_evidence_link(
             derivation_group,
             content_fingerprint,
             spec_fingerprint,
+            assessment_reason,
+            json.dumps(matched, ensure_ascii=False) if matched else None,
             strength,
             created_session,
         ],
@@ -826,6 +838,8 @@ def create_evidence_links_for_query(
     created_session: str = "",
     strengths: dict[str, str] | None = None,
     assessment_id: str = "",
+    assessment_reason: str = "",
+    matched_conditions: tuple[str, ...] | list[str] = (),
     derivation_group: str = "",
     finding_ids_by_evidence: dict[str, str] | None = None,
 ) -> list[str]:
@@ -842,6 +856,8 @@ def create_evidence_links_for_query(
             finding_id=(finding_ids_by_evidence or {}).get(eid, ""),
             strength=(strengths or {}).get(eid, "moderate"),
             assessment_id=assessment_id,
+            assessment_reason=assessment_reason,
+            matched_conditions=matched_conditions,
             derivation_group=derivation_group,
         )
         link_ids.append(lid)
