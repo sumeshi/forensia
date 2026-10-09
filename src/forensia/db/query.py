@@ -35,3 +35,80 @@ def normalize_value(value: Any) -> Any:
             except json.JSONDecodeError:
                 return value
     return value
+
+
+def summarize_query_result(
+    rows: list[dict[str, Any]], sample_size: int = 10
+) -> dict[str, Any]:
+    """Summarize SQL query rows for checker and report-section consumers."""
+    evidence_ids: list[str] = []
+    seen: set[str] = set()
+    finding_ids: list[str] = []
+    finding_seen: set[str] = set()
+    finding_ids_by_evidence: dict[str, str] = {}
+    for row in rows:
+        value = row.get("evidence_id")
+        normalized = str(value).strip() if value else ""
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            evidence_ids.append(normalized)
+        finding = str(row.get("finding_id") or "").strip()
+        if finding and finding not in finding_seen:
+            finding_seen.add(finding)
+            finding_ids.append(finding)
+        if normalized and finding:
+            finding_ids_by_evidence.setdefault(normalized, finding)
+
+    head_size = min(max(sample_size // 2, 1), sample_size) if sample_size > 0 else 0
+    tail_size = max(sample_size - head_size, 0)
+    head_rows = rows[:head_size]
+    tail_rows = rows[-tail_size:] if tail_size else []
+    if tail_rows and head_rows:
+        last_head_index = len(head_rows) - 1
+        first_tail_index = len(rows) - len(tail_rows)
+        if first_tail_index <= last_head_index:
+            tail_rows = []
+    sample_rows = head_rows + tail_rows
+    distinct_counts = {
+        column: len({row.get(column) for row in rows if row.get(column)})
+        for column in ("target_user", "computer", "src_ip", "event_id")
+        if any(row.get(column) for row in rows)
+    }
+
+    event_id_set: set[int] = set()
+    for row in rows:
+        try:
+            event_id_set.add(int(row.get("event_id")))
+        except TypeError, ValueError:
+            pass
+
+    return {
+        "row_count": len(rows),
+        "head_rows": head_rows,
+        "tail_rows": tail_rows,
+        "sample_rows": sample_rows,
+        "distinct_counts": distinct_counts,
+        "evidence_ids": evidence_ids[:sample_size],
+        "event_id_set": sorted(event_id_set),
+        "finding_ids": finding_ids[:sample_size],
+        "finding_ids_by_evidence": finding_ids_by_evidence,
+    }
+
+
+def findings_snapshot(
+    db: CaseDB, limit: int = 12, *, include_evidence: bool = False
+) -> list[dict[str, Any]]:
+    """Fetch top findings ordered by confidence for prompts and memory sync."""
+    columns = "finding_id, title, severity, confidence, status, summary"
+    if include_evidence:
+        columns += ", evidence"
+    return fetch_records(
+        db,
+        f"""
+        SELECT {columns}
+        FROM findings
+        ORDER BY confidence DESC, created_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )

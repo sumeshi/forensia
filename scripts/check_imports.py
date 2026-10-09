@@ -14,8 +14,9 @@ LAYERS: tuple[tuple[str, frozenset[str]], ...] = (
     ("platform", frozenset({"core", "db", "config"})),
     ("evidence", frozenset({"evidence"})),
     ("knowledge", frozenset({"knowledge"})),
+    ("model support", frozenset({"llm", "context"})),
     ("reporting", frozenset({"report"})),
-    ("workflow", frozenset({"ai"})),
+    ("investigation", frozenset({"investigation"})),
     ("interface", frozenset({"cli", "pipeline"})),
 )
 
@@ -69,6 +70,8 @@ def _upward_edges(root: Path) -> tuple[set[tuple[str, str]], list[str]]:
     for file in sorted(root.rglob("*.py")):
         source_package = _package_of(file, root)
         if source_package is None:
+            if file.relative_to(root).as_posix() != "__init__.py":
+                errors.append(f"UNOWNED: {file.relative_to(root).as_posix()}")
             continue
         relative = file.relative_to(root).as_posix()
         source = file.read_text(encoding="utf-8")

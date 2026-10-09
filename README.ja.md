@@ -159,7 +159,7 @@ forensia report --help
 forensia investigate ./case001 --forensia-md ./case001/FORENSIA.md
 ```
 
-採用した方針は、そのセッション中は固定されます。初回採用または明示的な再読込みで、設定したシステムプロンプト文字数予算の半分を超える入力は、理由付きで拒否します。固定のrole・出力スキーマと、Evidence/Assessment/Sufficiency/Settlementの検査は引き続き適用されます。[case_policy.py](src/forensia/ai/investigation/case_policy.py)を参照してください。
+採用した方針は、そのセッション中は固定されます。初回採用または明示的な再読込みで、設定したシステムプロンプト文字数予算の半分を超える入力は、理由付きで拒否します。固定のrole・出力スキーマと、Evidence/Assessment/Sufficiency/Settlementの検査は引き続き適用されます。[case_policy.py](src/forensia/investigation/case_policy.py)を参照してください。
 
 ### REPORT.md: 報告書仕様
 
@@ -187,7 +187,7 @@ instructions: |
 
 各`#`見出しがsectionを、`##`見出しがblockを定義します。任意のfrontmatterの`instructions`は、ファイル内の全sectionに適用されます。メタデータには`type`、`title`、`description`、`tags`、`timestamp`も使えます。実行時の言語は`FORENSIA_OUTPUT_LANGUAGE`で設定します。
 
-少なくとも1つの`#`セクションが必要です。最初のセクションの前に本文を置いたり、正規化後のslugが重複する見出しを使ったりすることはできません。sectionのkeyは見出しの順序と文字列から決まるため、名前や順序の変更は報告書revision内での識別子も変えます。決定論的なblockには、既存のパーサーが`evidence_keypoints`、`mode`、`builder`、`answer_id`、`answer_spec`、`question`のhintを受け付けます。定義は[template_parsing.py](src/forensia/report/sections/template_parsing.py)と[同梱テンプレート](src/forensia/report/templates/)にあります。
+少なくとも1つの`#`セクションが必要です。最初のセクションの前に本文を置いたり、正規化後のslugが重複する見出しを使ったりすることはできません。sectionのkeyは見出しの順序と文字列から決まるため、名前や順序の変更は報告書revision内での識別子も変えます。決定論的なblockには、既存のパーサーが`evidence_keypoints`、`mode`、`builder`、`answer_id`、`answer_spec`、`question`のhintを受け付けます。定義は[template_parsing.py](src/forensia/report/sections/template_parsing.py)と[同梱テンプレート](src/forensia/data/report/)にあります。
 
 初回採用または明示的な再読込みでの優先順位は、明示した`--report-spec`、明示した`--template-dir`、ケースのルートにある`REPORT.md`、ケース内の同梱テンプレートの順です。明示的な報告書入力には、LLMを使う書込み実行が必要です。編集した仕様を採用する場合:
 
@@ -248,7 +248,7 @@ Knowledgeは参考資料であり、証拠やツールの実行許可ではあ�
 | 解釈 | 観測を説明し、判定を提案する | 宣言された条件を評価し、有効な支持と反証を集約し、状態遷移を検査する |
 | 報告 | 説明文を書き、未回答の問いを特定する | 構造化した回答・表を生成し、証拠参照を保持し、公開を検証し、追加調査を受け付ける |
 
-CLIは[pipeline.run_investigation](src/forensia/pipeline.py)を呼び、ケースの作成・再開、取込み、正規化、ルール実行、調査、報告書の出力を行います。`pipeline.run_report`は調査指示を採用せず、報告書入力の採用、任意の書込み、出力を組み立てます。各ケースへの書込みは1つのプロセスが所有します。[調査ループ](src/forensia/ai/investigation/investigator.py)は作業の選択と個々の制約付き試行を調整し、セッション処理は実行状態と予算を記録します。報告書の書込みにも、同じCase/Traceと検証処理を使います。
+CLIは[pipeline.run_investigation](src/forensia/pipeline.py)を呼び、ケースの作成・再開、取込み、正規化、ルール実行、調査、報告書の出力を行います。`pipeline.run_report`は調査指示を採用せず、報告書入力の採用、任意の書込み、出力を組み立てます。各ケースへの書込みは1つのプロセスが所有します。[調査ループ](src/forensia/investigation/investigator.py)は作業の選択と個々の制約付き試行を調整し、セッション処理は実行状態と予算を記録します。報告書の書込みは同じCase/Traceを読み、報告書固有のEvidence参照・公開検査を適用します。追加調査の採否は調査ループが判断します。
 
 ```mermaid
 flowchart TD
@@ -296,23 +296,23 @@ EVTX、MFT、Registry、Prefetchの取込みには、evtx2es 1.12、mft2es 1.10�
 | 境界 | 判断と実装 |
 |---|---|
 | VerificationSpec | 受け付けた検証契約を1つに定める。ルール・LLMの宣言は一度だけ正規化し、読出側は保存済みSpecを使う。[verification.py](src/forensia/core/verification.py) |
-| Plan/execute | モデルは型付きの`sql.query`または範囲を限定した`memory.read_more`を提案する。ホストはaction、path、読取り専用SQL、テーブル参照、クエリの上限を検証する。[planner.py](src/forensia/ai/investigation/planner.py)、[sql_templates.py](src/forensia/ai/prompts/sql_templates.py) |
-| RetrievalEvaluation | 試行の妥当性、観測可能性、部分的な結果、空結果、利用不能を評価する。証拠の支持は判定しない。[retrieval_telemetry.py](src/forensia/ai/retrieval_telemetry.py) |
-| Evidence Assessment | 観測を評価可能なSpec条件と照合し、支持・反証・文脈の役割と根拠を記録する。対応できない条件は、流暢な説明があっても満たした扱いにしない。[assessment.py](src/forensia/ai/checking/assessment.py) |
-| Evidence Sufficiency | 現在有効な評価済みリンク、Coverage、独立した導出元、反証を集約する。同じ観測への複数クエリは、独立した支持を増やさない。[sufficiency.py](src/forensia/ai/checking/sufficiency.py) |
-| Settlement | 上記の結果に照らしてcheckerの判定案を検査する。runnerが受け入れた状態遷移を保存する。[settlement.py](src/forensia/ai/checking/settlement.py) |
+| Plan/execute | モデルは型付きの`sql.query`または範囲を限定した`memory.read_more`を提案する。ホストはaction、path、読取り専用SQL、テーブル参照、クエリの上限を検証する。[planner.py](src/forensia/investigation/planner.py)、[sql_templates.py](src/forensia/context/sql_templates.py) |
+| RetrievalEvaluation | 試行の妥当性、観測可能性、部分的な結果、空結果、利用不能を評価する。証拠の支持は判定しない。[retrieval.py](src/forensia/context/retrieval.py) |
+| Evidence Assessment | 観測を評価可能なSpec条件と照合し、支持・反証・文脈の役割と根拠を記録する。対応できない条件は、流暢な説明があっても満たした扱いにしない。[assessment.py](src/forensia/investigation/verification/assessment.py) |
+| Evidence Sufficiency | 現在有効な評価済みリンク、Coverage、独立した導出元、反証を集約する。同じ観測への複数クエリは、独立した支持を増やさない。[sufficiency.py](src/forensia/investigation/verification/sufficiency.py) |
+| Settlement | 上記の結果に照らしてcheckerの判定案を検査する。runnerが受け入れた状態遷移を保存する。[settlement.py](src/forensia/investigation/verification/settlement.py) |
 
-モデルはOpenAI互換のchat endpointを通じて、roleごとの構造化した応答を返します。native tool calling、任意のshell、Python実行はaction spaceに含まれません。プロンプト・スキーマ定義は[ai/prompts/](src/forensia/ai/prompts/)と[ai/llm/schemas.py](src/forensia/ai/llm/schemas.py)にあり、正確なフィールド一覧はここに重複掲載しません。
+モデルはOpenAI互換のchat endpointを通じて、roleごとの構造化した応答を返します。native tool calling、任意のshell、Python実行はaction spaceに含まれません。調査と報告書のプロンプトは[investigation/prompts.py](src/forensia/investigation/prompts.py)と[report/sections/prompts.py](src/forensia/report/sections/prompts.py)が所有します。[context/](src/forensia/context/)のprojectionと[llm/schemas.py](src/forensia/llm/schemas.py)の応答契約を共有し、正確なフィールド一覧はここに重複掲載しません。
 
 Coverageは、テレメトリーの欠落、部分的な取得、失敗、非対応、利用可能を区別します。パーサーの成功や0行の結果だけでは、完全性を証明できません。空結果による棄却には、明示したrefute条件と、観測可能性を保証した範囲が必要です。現在の保証は保守的で、主にケース全体を対象としたEVTXのevent ID直接検索に限られます。パーサー・pluginの完全性を確認できないRegistry観測は、部分的な取得として扱います。Registry hiveと付随ログはデータセット単位の構成元を保持し、不確かな観測を架空のhostや単一sourceに割り当てません。
 
 証拠リンクにはsource・内容・SpecのfingerprintとAssessmentの根拠を保持します。sourceの置換、内容の変更、Specの変更によって、過去の支持が無効になり、依存する作業が再開される場合があります。古いsourceを退役させるのは、選択した新revisionの正規化が成功するか、明示的に空と確認された後です。最新revisionが失敗している場合、それ以前のrevisionの成功で退役を正当化できません。sourceの遷移はTraceに記録し、保持した置換済みrawファイルは通常の正規化から除外します。[invalidation.py](src/forensia/evidence/invalidation.py)と[content_identity.py](src/forensia/evidence/content_identity.py)を参照してください。
 
-選択、停止分類、再開は、[work_judgment.py](src/forensia/ai/investigation/work_judgment.py)の読出側判断を共有し、[work_state.py](src/forensia/ai/investigation/work_state.py)が永続的な状態遷移を管理します。調査agendaは既存のHypothesis/Gap/Task状態から導出します。未解決なのに実行可能なactionがない作業には、blockerと再試行条件が必要です。成功扱いにはしません。意味上の進展は、作業、観測、反証、source/Coverage状態の変化であり、報告書の文章量が増えることではありません。
+選択、停止分類、再開は、[work_judgment.py](src/forensia/investigation/work_judgment.py)の読出側判断を共有し、[work_state.py](src/forensia/investigation/work_state.py)が永続的な状態遷移を管理します。調査agendaは既存のHypothesis/Gap/Task状態から導出します。未解決なのに実行可能なactionがない作業には、blockerと再試行条件が必要です。成功扱いにはしません。意味上の進展は、作業、観測、反証、source/Coverage状態の変化であり、報告書の文章量が増えることではありません。
 
 セッションは、失敗し得る最終投影を作る前に終了理由を記録し、最後の報告書処理まで所有権を保持します。期限切れのleaseは起動時に整合させます。実行状態と予算がセッションの継続可否を決め、証拠と未解決作業が調査で何を結論できるかを決めます。
 
-Traceは、論理的なLLM呼出し、プロバイダーへのattempt、決定論的な処理を区別します。JSON修復とtransportの再試行は、親request配下のattemptです。復旧後に処理全体を呼び直した場合は、新しいrequestになります。セッションの上限は論理呼出しの入口で適用します。使い切った場合は、モデルを使う最終報告書処理を追加せず、再開可能な停止を記録します。使用量の集計では、プロバイダーが報告したトークン数、ローカルの推定値、不明な使用量を分けます。HTTPクライアントは調査ごとに管理し、終了時に閉じます。[llm_telemetry.py](src/forensia/ai/llm_telemetry.py)を参照してください。
+Traceは、論理的なLLM呼出し、プロバイダーへのattempt、決定論的な処理を区別します。JSON修復とtransportの再試行は、親request配下のattemptです。復旧後に処理全体を呼び直した場合は、新しいrequestになります。セッションの上限は論理呼出しの入口で適用します。使い切った場合は、モデルを使う最終報告書処理を追加せず、再開可能な停止を記録します。使用量の集計では、プロバイダーが報告したトークン数、ローカルの推定値、不明な使用量を分けます。HTTPクライアントは調査ごとに管理し、終了時に閉じます。[telemetry.py](src/forensia/llm/telemetry.py)を参照してください。
 
 ### 作業用コンテキスト
 
@@ -348,21 +348,25 @@ case001/
 
 ## ルールと拡張点
 
-厳選したEvidenceルールはすべてのケースで実行します。インシデントprofile、自動pack選択、独立したartifact eligibility段階はありません。SQLルールはアーティファクト別の正規化テーブルを検索し、Sigmaルールは具体的なEVTX channelに結び付けます。テレメトリーの欠落やルール不一致だけでは、侵入がなかったとは証明できません。[ルールモデル](src/forensia/knowledge/rules/models.py)はSQL宣言と共通の実行モデルを、[Sigma compiler](src/forensia/knowledge/rules/sigma.py)はEVTX検出のコンパイルを扱います。[rulepacks/](src/forensia/knowledge/rulepacks/)以下のディレクトリはルールの整理用であり、選択には使いません。
+共通のEvidenceルールはすべてのケースで利用できます。インシデントprofile、自動pack選択、独立したartifact eligibility段階はありません。SQLルールはアーティファクト別の正規化テーブルを検索します。Sigma targetは宣言されたEVTX channel、provider、指定があればevent IDに結び付きます。ケースごとのreceiptは、検索を完了した`completed`と、対象テレメトリーがなく検索しなかった`not_observed`を区別します。検索完了後の0件と対象ログ未観測は別の結果です。どちらも侵入がなかった証明にはなりません。[ルールモデル](src/forensia/knowledge/rules/models.py)が共通の実行契約を持ちます。[data/rules/](src/forensia/data/rules/)以下のディレクトリはルールの整理用であり、選択には使いません。
 
-Windows EVTXの検出には、pySigmaを通じてDuckDB向けにコンパイルする、独自に作成した実験段階のSigmaルールを3つ含みます。対象はSecurity 1102（監査ログ消去）、Defender 5001（リアルタイム保護の無効化）、Security 4688（エンコードされたPowerShellのプロセス作成）です。対応範囲は意図的に小さく、SigmaHQ全般との互換性はありません。未対応の相関、正規表現、category、汎用keyword、および未知のlogsource・field・modifierは拒否します。ルールの一致は調査の手掛かりであり、侵入確定を意味しません。共通セットには、ファイルシステムの観測、Prefetchの実行履歴、Registryの設定・履歴を扱う22件のSQLルールも含まれます。ファイル名やアプリケーション名だけで転送・マルウェア・悪意を断定せず、観測事実を記録します。Sigma fieldとWindows channelの対応は[sigma.yaml](src/forensia/knowledge/rulepacks/_schema/sigma.yaml)にあります。条件はAND/OR/NOT、selectorのグループ、fieldの値・リスト、wildcard、`contains`/`startswith`/`endswith`、`all`、`exists`を扱います。analysis receiptには定義hash、コンパイル済みquery、pySigmaのversionを記録し、ルールや対応表の変更時はresumeで再分析します。
+SigmaHQの`rules/windows/`全体は、親リポジトリのgitlinkでcommitを固定した[submodule](knowledge/sigmahq/)です。現在のcommitは`8a4813404ea3074890e0cda9272d4d1a8b2941d6`です。開発時の依存にはpySigmaとWindows・Sysmon pipelineを含みます。builderは原本ルールを宣言されたtarget pipelineごとに変換し、category型ルールはSecurity、Sysmon、serviceなど複数の独立したbindingを生成する場合があります。各bindingはtarget別のRule IDを持ち、一つの原本ルールから複数の結果ができます。fieldとeventの対応は[schema.yaml](scripts/sigma/schema.yaml)にあります。生成した[Sigma bundle](src/forensia/data/sigma/sigma_bundle.json)には、既存のDuckDBルール・Finding経路で実行する事前コンパイル済み`Rule`を保存します。runtimeはこのbundleをオフラインで読み込み、submodule、regression fixture、pySigma、ネットワークを必要としません。
 
-SQLルールには任意で仮説を追加でき、`confirm_when`、`refute_when`、任意の`evidence_requirements`を宣言し、admissionでVerificationSpecへ変換します。相関、追加調査の問い、制約付きの代替検索は宣言に記載します。event ID、schema card、recipe、artifact capability、Sufficiencyの方針、構造化した質問、判定の語彙は[_schema/](src/forensia/knowledge/rulepacks/_schema/)に置きます。ケースの`allowlist.yaml`による抑制は、Finding生成後にルールIDと証拠行のフィールドを照合します。Findingと証拠は保持します。
+bundleでは各target bindingの変換、SQL検証、fixture検証を分けて記録します。変換状態は`converted`、`unsupported`、`failed`、SQL検証状態は`passed`、`failed`、fixture検証状態は`passed`、`mismatch`、`error`、`not_applicable`、`absent`です。共通の採用条件は、変換成功、SQL検証成功、fixture状態が`passed`・`not_applicable`・`absent`のいずれかです。`not_applicable`は原本が宣言したfixtureとtargetのtelemetryが異なる状態、`absent`は原本にfixture宣言がない状態です。共通の意味論境界検査はbundle上部に一度だけ記録します。変換済みqueryはすべてDuckDBの`EXPLAIN`とschema上での実行検査を通します。共通の意味論契約では、小規模な型付きsynthetic rowを一度だけ使い、共通変換の挙動を確認します。いずれもqueryの実行可能性と共通意味論を検査するもので、個々のruleの検出正しさの証明ではありません。fixtureの`passed`は、そのfixtureで宣言された期待件数とEvidence参照が検証経路を通して一致したことを示します。false positive rate、検出網羅性、インシデントの有無は示しません。bundleのtarget対応やfixture結果から、ケースに対象telemetryがあるとは判断しません。ケースreceiptでは対象を観測した場合に`completed`とmatch件数を記録し、対象がない場合は`not_observed`とします。telemetryの欠落や0件は侵入がない根拠になりません。
+
+bundle summaryは原本ルールとtarget bindingを分け、`total`、`bindings`、`admitted_rules`、`admitted_bindings`を記録します。`by_conversion`、`by_fixture`、`by_target`では各状態とtargetごとの数を確認できます。変換できなかったtargetではSQL・fixture検証を実行せず、`by_fixture`では`not_run`として集計します。実際のsubmodule commitとsource hashを整合性・再現性確認のため記録します。source revisionを指定する唯一のauthorityは親repositoryのgitlinkです。共通セットには、ファイルシステムの観測、Prefetchの実行履歴、Registryの設定・履歴を扱う22件のSQLルールも含まれます。ファイル名やアプリケーション名だけで転送・マルウェア・悪意を断定せず、観測事実を記録します。bundleはsource pathとrule authorを保持し、runtimeには[Detection Rule License 1.1](src/forensia/data/sigma/SIGMA_LICENSE.txt)を同梱します。SigmaHQのlicense noticeはsubmoduleの原本とともに保持します。
+
+SQLルールには任意で仮説を追加でき、`confirm_when`、`refute_when`、任意の`evidence_requirements`を宣言し、admissionでVerificationSpecへ変換します。相関、追加調査の問い、制約付きの代替検索は宣言に記載します。event ID、schema card、recipe、artifact capability、Sufficiencyの方針、構造化した質問、判定の語彙は[data/schema/](src/forensia/data/schema/)に置きます。ケースの`allowlist.yaml`による抑制は、Finding生成後にルールIDと証拠行のフィールドを照合します。Findingと証拠は保持します。
 
 既存の最小の拡張点を使ってください。
 
 | 変更 | 実装・宣言の配置先 |
 |---|---|
 | アーティファクト種別 | [ArtifactAdapter registry](src/forensia/evidence/artifacts.py)、parser/normalizer、現在のDBスキーマ、Coverage、source置換の経路 |
-| 検出 | [rulepacks/](src/forensia/knowledge/rulepacks/)以下の共通SQL・Sigma rule YAMLと、[_schema/sigma.yaml](src/forensia/knowledge/rulepacks/_schema/sigma.yaml)のchannel対応 |
-| 構造化した質問 | [question_routing.yaml](src/forensia/knowledge/rulepacks/_schema/question_routing.yaml)。汎用SQLで足りない場合だけ専用の[answer builder](src/forensia/report/answers/answer_registry.py)を追加する |
+| 検出 | [data/rules/](src/forensia/data/rules/)以下のSQL rule YAML。[knowledge/sigmahq/rules/windows/](knowledge/sigmahq/rules/windows/)のSigma submodule原本を[converter.py](scripts/sigma/converter.py)と[build.py](scripts/sigma/build.py)で変換し、[schema.yaml](scripts/sigma/schema.yaml)で対応付けます |
+| 構造化した質問 | [question_routing.yaml](src/forensia/data/schema/question_routing.yaml)。汎用SQLで足りない場合だけ専用の[answer builder](src/forensia/report/answers/answer_registry.py)を追加する |
 | 報告書の構成 | REPORT.mdと既存のsection parser。登録済みの[keypoints](src/forensia/report/answers/keypoint_catalog.py)を再利用する |
-| 決定論的な報告書の表 | [table_registry.py](src/forensia/report/answers/table_registry.py)と[report_tables.yaml](src/forensia/knowledge/rulepacks/_schema/report_tables.yaml) |
+| 決定論的な報告書の表 | [table_registry.py](src/forensia/report/answers/table_registry.py)と[report_tables.yaml](src/forensia/data/schema/report_tables.yaml) |
 | 報告書の品質検査 | [quality_gates.py](src/forensia/report/sections/quality_gates.py)。理由とconfidenceの上限を持つ、副作用のない検査 |
 
 [tests/test_extension_points.py](tests/test_extension_points.py)に実行可能な例があります。これらはプロセス内の登録用の接続点で、plugin loaderではありません。ケース固有の回答や識別子を汎用Pythonに埋め込まず、どの拡張でも証拠参照を維持してください。
@@ -376,12 +380,37 @@ SQLルールには任意で仮説を追加でき、`confirm_when`、`refute_when
 | [pipeline.py](src/forensia/pipeline.py)、[cli/](src/forensia/cli/) | ステージの組立てと、コマンド・表示への適応 |
 | [core/](src/forensia/core/)、[db/](src/forensia/db/) | Case/session/verificationの基本要素、保存契約、状態へのアクセス |
 | [evidence/](src/forensia/evidence/) | アーティファクトの受付、parse、正規化、識別、無効化 |
-| [knowledge/](src/forensia/knowledge/) | 宣言的なルール・catalog、Coverage、Knowledgeの選択 |
-| [ai/investigation/](src/forensia/ai/investigation/)、[ai/hypotheses/](src/forensia/ai/hypotheses/) | 作業の選択、ライフサイクル、計画、仮説の実行 |
-| [ai/checking/](src/forensia/ai/checking/)、[ai/llm/](src/forensia/ai/llm/) | 検証gateと、制約付きのモデル通信 |
-| [ai/sections/](src/forensia/ai/sections/)、[report/](src/forensia/report/) | 報告書blockの実行、決定論的な回答、Claims、公開検査、出力 |
+| [knowledge/](src/forensia/knowledge/) | ルール実行、catalog読込み、Coverage、Knowledgeの選択 |
+| [data/](src/forensia/data/) | packaged schema、SQL rule、playbook、report template、Sigma bundle |
+| [investigation/](src/forensia/investigation/) | 作業選択・計画、仮説のライフサイクルと実行、検証gate、report gapの採否 |
+| [report/](src/forensia/report/) | 報告書blockの実行と永続化、決定論的な回答、Claims、公開検査、出力、読取り専用の状態表示 |
+| [context/](src/forensia/context/) | 両domainが使うprojection、schema/recipe/playbookの開示、予算、retrieval telemetry |
+| [llm/](src/forensia/llm/) | 制約付きのモデル通信、応答契約、request縮約、call/attempt telemetry |
+| [scripts/sigma/](scripts/sigma/)、[scripts/eval/](scripts/eval/)、[scripts/debug/](scripts/debug/) | 開発用の変換・検証、評価fixtureとツール、parser診断 |
+
+依存検査は `core/db → evidence → knowledge → llm/context → report → investigation → cli/pipeline` の方向を保証します。各層は下位層を利用できます。report生成から調査のadmissionやsettlementを呼びません。domain固有のプロンプトはそれぞれのdomainが所有し、共有projectionは調査判断を行いません。Memoryのファイル操作は`core/memory.py`が所有し、reportのsection・run・answer storeは`report/`以下でそれぞれのテーブルを所有します。
 
 状態を追加する前に、既存の書込み責務を確認してください。別のagenda、planner、cache、status modelを追加するより、その責務を拡張します。同じ不変条件を守り、同程度の品質が得られるなら、独立した状態、同期経路、モデル呼出しが少ない構成を優先します。[scripts/check_imports.py](scripts/check_imports.py)は依存方向を検査します。互換性のない永続化の変更では、全consumerと現在のスキーマバージョンを一緒に更新します。自動migration/backfillやaliasの維持は行いません。古いケースデータは保全し、必要なら新しいディレクトリへ原本を再取込みしてください。
+
+### Sigma bundleの再生成
+
+bundle生成は開発時に行います。sourceとregression fixtureは初期化済みSigmaHQ submoduleから取得します。source YAMLとfixtureはruntime packageには含めません。revisionは親repositoryのgitlinkで指定します。lockedな開発依存関係を使って再生成します。
+
+```bash
+git submodule update --init knowledge/sigmahq
+uv sync --locked
+uv run python scripts/sigma/build.py
+```
+
+builderはsubmoduleが初期化済みで、変更がなく、checkoutのHEADが親indexのgitlinkと一致することを確認します。その後にconversion・validationを行い、完成したbundleをatomicに書き込みます。source不一致の場合は既存bundleを置き換えません。source commit/tree hash、license hash、dependency version、build input hashを記録します。これらのhashは整合性確認用で、追加のrevision pinではありません。pySigmaとWindows・Sysmon pipelineは開発依存です。生成後のruntimeはpackaged bundleとlicense textだけを使い、Sigma原本や変換依存なしでオフライン実行できます。
+
+生成した[bundle](src/forensia/data/sigma/sigma_bundle.json)は原本ルールの一覧、target別変換・検証report、runtime入力です。`summary.total`は原本ルール数、`bindings`はtarget別の結果数、`admitted_rules`は少なくとも一つのtargetを採用した原本ルール数、`admitted_bindings`は採用したtarget数です。`by_conversion`、`by_fixture`、`by_target`で状態とtarget別件数を確認できます。bindingには原本ID/path、target key、変換理由、SQL検証、fixture結果、採用時の実行Ruleを記録します。概要と採用済みbindingを表示するには、次を実行します。
+
+```bash
+uv run python -c 'import json; from pathlib import Path; b=json.loads(Path("src/forensia/data/sigma/sigma_bundle.json").read_text()); print(json.dumps(b["summary"], indent=2)); print("\n".join(" ".join((x["rule_id"], x["target_key"])) for x in b["bindings"] if x["rule"] is not None))'
+```
+
+個別bindingをJSONで開くと、変換、SQL、fixtureそれぞれの理由を確認できます。rule authorとsource pathを残し、[DRL 1.1 license](src/forensia/data/sigma/SIGMA_LICENSE.txt)をruntimeに同梱します。SigmaHQのlicense noticeはsubmoduleとともに保持します。
 
 ### 検証
 
@@ -401,7 +430,7 @@ uv run forensia doctor
 
 pytestはオフラインで、使い捨てのケースに対して実行してください。モデル・プロバイダーとの境界をmockし、実際の保存処理、CLIの動作、生成物を確認します。Evidence/provenance、Assessment/Sufficiency/Settlement、実行上限、作業の受付、停止、再開のテストを保持します。各不変条件には主となるテストを1つ定めます。廃止したAPIのテストは削除し、実装の形を固定するだけの定数、SQL文字列、内部counter、文章のassertionを避けてください。実モデルによる品質・性能実験はpytestの外で行います。
 
-宣言を変更した場合は[audit_schema_coverage.py](scripts/audit_schema_coverage.py)を実行します。[regenerate_playbook.py](scripts/regenerate_playbook.py)はYAMLからplaybookの指定部分を再生成し、`--check`でずれを検出します。[cycle_summary.py](scripts/cycle_summary.py)はTraceの最近のprogressを読むため、件数上限で削除した古いサイクルは表示されない場合があります。
+宣言を変更した場合は[audit_schema_coverage.py](scripts/audit_schema_coverage.py)を実行します。[regenerate_playbook.py](scripts/regenerate_playbook.py)はYAMLからplaybookの指定部分を再生成し、`--check`でずれを検出します。[cycle_summary.py](scripts/eval/cycle_summary.py)は実験用のprogress診断です。call/query数は表示文字列からの推定であり、report progressの参照先も旧構造を前提としているため、計測にはCase/Traceのdurable recordを使ってください。件数上限で削除した古いサイクルは表示されない場合があります。
 
 現在の使い方、アーキテクチャ、拡張、開発方針の正本は[README.md](README.md)で、この文書はその日本語訳です。テーブル一覧やファイルごとの説明を別途重複管理せず、実行可能なスキーマと責務を持つソースへリンクします。設計案や未完了タスクは現在の機能説明と分け、実装の履歴はgitに残します。動作を変えた場合は、両言語版の該当箇所を更新してください。PRには具体的な変更、理由、確認内容を記載し、機密情報を除いた再現手順はissueに置きます。意図的な破壊的変更を許容し、古いテストやドキュメントのために廃止した経路を残しません。
 
@@ -416,7 +445,7 @@ pytestはオフラインで、使い捨てのケースに対して実行して�
 既存のオフライン診断スクリプトは、完了済みケースの**コピー**に対して実行できます。
 
 ```bash
-uv run python scripts/eval_run.py ./case-copy --output ./evaluation.json
+uv run python scripts/eval/run.py ./case-copy --output ./evaluation.json
 ```
 
 指標はヒューリスティックで、完全な採点器ではありません。一部はMarkdown Memoryや古い報告書JSON exportを読みます。`confirmed_while_benign_rate`は現在、注記付きで0を返すplaceholderであり、計測したfalse positive率ではありません。入力やannotationが欠けた指標では品質を証明できません。評価を現在のCase/Trace出力へ対応させ、条件を統制したローカルモデルの比較を行う作業は未完了です。

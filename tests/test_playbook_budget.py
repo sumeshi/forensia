@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from forensia.ai.prompts.prompt_playbook import (
+from forensia.context.playbook import (
     _dfir_playbook as dfir_playbook,
 )
 
@@ -131,8 +131,8 @@ def test_no_profile_playbook_truncates_events_instead_of_dropping_everything():
     so the other guidance sections survive, instead of the serial drop loop
     discarding every droppable section (the pre-fix behavior left only the
     Priority Investigation Order)."""
-    from forensia.ai.prompts.prompt_playbook import _dfir_playbook as dfir_playbook
     from forensia.config import get_system_prompt_budget_chars, settings
+    from forensia.context.playbook import _dfir_playbook as dfir_playbook
 
     old_system_budget = settings.forensia_system_prompt_budget_chars
     old_prompt_budget = settings.forensia_prompt_budget_tokens
@@ -160,7 +160,7 @@ def testsections_for_hypothesis_auth_excludes_catalogs() -> None:
     evidence. Including them for a pure authentication hypothesis dilutes
     the prompt for weak local models without adding signal.
     """
-    from forensia.ai.prompts.prompt_playbook import (
+    from forensia.context.playbook import (
         _sections_for_hypothesis as sections_for_hypothesis,
     )
     from forensia.core.session import Hypothesis
@@ -184,7 +184,7 @@ def testsections_for_hypothesis_auth_excludes_catalogs() -> None:
 
 def testsections_for_hypothesis_exec_includes_catalogs() -> None:
     """A hypothesis about executables keeps the catalog interpretation aids."""
-    from forensia.ai.prompts.prompt_playbook import (
+    from forensia.context.playbook import (
         _sections_for_hypothesis as sections_for_hypothesis,
     )
     from forensia.core.session import Hypothesis
@@ -201,7 +201,7 @@ def testsections_for_hypothesis_exec_includes_catalogs() -> None:
 
 def testsections_for_hypothesis_no_signal_returns_none() -> None:
     """No event IDs and no entities → None (full playbook, backward safe)."""
-    from forensia.ai.prompts.prompt_playbook import (
+    from forensia.context.playbook import (
         _sections_for_hypothesis as sections_for_hypothesis,
     )
     from forensia.core.session import Hypothesis

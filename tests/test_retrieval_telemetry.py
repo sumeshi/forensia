@@ -6,14 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from forensia.ai.checking.settlement import decide_settlement
-from forensia.ai.hypotheses.execution import build_sql_receipt
-from forensia.ai.hypotheses.hypothesis_runner import (
-    _build_settlement_input,
-    _phase_execute,
-)
-from forensia.ai.investigation.planner import _materialize_planned_query
-from forensia.ai.retrieval_telemetry import (
+from forensia.context.retrieval import (
     RetrievalEvaluation,
     ToolReceipt,
     evaluate_retrieval,
@@ -22,6 +15,13 @@ from forensia.ai.retrieval_telemetry import (
 from forensia.core.case import Case
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.db.database import CaseDB
+from forensia.investigation.hypotheses.execution import build_sql_receipt
+from forensia.investigation.hypotheses.hypothesis_runner import (
+    _build_settlement_input,
+    _phase_execute,
+)
+from forensia.investigation.planner import _materialize_planned_query
+from forensia.investigation.verification.settlement import decide_settlement
 
 
 def test_retrieval_event_is_written_to_attached_trace_db(tmp_path) -> None:
@@ -270,7 +270,7 @@ def test_runner_empty_sql_reaches_only_observable_refutation(
             check_result=SimpleNamespace(verdict="inconclusive", report_text="empty"),
         )
         with patch(
-            "forensia.ai.hypotheses.hypothesis_runner.resolve_zero_row_fallbacks",
+            "forensia.investigation.hypotheses.hypothesis_runner.resolve_zero_row_fallbacks",
             side_effect=lambda **kwargs: (kwargs["rows"], None),
         ):
             assert _phase_execute(rs) == "ok"

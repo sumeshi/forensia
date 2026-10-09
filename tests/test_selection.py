@@ -5,14 +5,14 @@ from __future__ import annotations
 import tempfile
 import unittest
 
-from forensia.ai.investigation.selection import (
+from forensia.core.case import Case
+from forensia.db.database import CaseDB
+from forensia.investigation.selection import (
     SelectionContext,
     check_eligibility,
     compute_priority_score,
     select_focus_hypotheses,
 )
-from forensia.core.case import Case
-from forensia.db.database import CaseDB
 
 
 def _spec(spec_dict: dict) -> dict:

@@ -5,7 +5,7 @@ from types import ModuleType
 
 import pytest
 
-from forensia.ai.prompts.sql_schema import get_allowed_tables
+from forensia.context.sql_schema import get_allowed_tables
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.db.evidence_lookup import fetch_evidence_records

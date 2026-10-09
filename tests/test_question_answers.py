@@ -5,7 +5,6 @@ import tempfile
 import unittest
 from datetime import UTC, datetime
 
-from forensia.ai.sections.section_agent import run_section_block_agent
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.knowledge.catalog import load_event_class_definitions
@@ -16,6 +15,7 @@ from forensia.report.sections.quality_gates import (
     check_citation_token_no_finding_id,
     check_hedge_no_citation,
 )
+from forensia.report.sections.section_agent import run_section_block_agent
 from forensia.report.sections.section_finalize import (
     validate_section_evidence_ids,
 )

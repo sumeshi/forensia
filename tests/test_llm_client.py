@@ -7,7 +7,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from forensia.ai.llm import llm_client, schema_compat
+from forensia.llm import llm_client, schema_compat
 
 
 @pytest.fixture(autouse=True)

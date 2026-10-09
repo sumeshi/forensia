@@ -63,7 +63,7 @@ class SectionFinalizeTests(unittest.TestCase):
     def setUp(self) -> None:
         # Patch the owning JSON request implementation.
         llm_json_patch = patch(
-            "forensia.ai.llm.json_response.request_llm_json",
+            "forensia.llm.json_response.request_llm_json",
             side_effect=_agent_plan_router,
         )
         llm_json_patch.start()

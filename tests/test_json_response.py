@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from forensia.ai.llm.json_response import parse_llm_json
+from forensia.llm.json_response import parse_llm_json
 
 
 class ParseLlmJsonTests(unittest.TestCase):
@@ -52,14 +52,14 @@ class ParseLlmJsonTests(unittest.TestCase):
 
 
 def test_repeated_invalid_response_closes_owned_logical_call(tmp_path) -> None:
-    from forensia.ai.llm import json_response
-    from forensia.ai.llm_telemetry import (
+    from forensia.core.case import Case
+    from forensia.db.database import CaseDB
+    from forensia.llm import json_response
+    from forensia.llm.telemetry import (
         LLMTelemetry,
         reset_active_telemetry,
         set_active_telemetry,
     )
-    from forensia.core.case import Case
-    from forensia.db.database import CaseDB
 
     case = Case.init(tmp_path / "case")
     with CaseDB(case) as db:

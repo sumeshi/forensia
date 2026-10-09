@@ -5,17 +5,17 @@ from __future__ import annotations
 import tempfile
 import unittest
 
-from forensia.ai.hypotheses.relations import (
+from forensia.core.case import Case
+from forensia.db.database import CaseDB
+from forensia.investigation.hypotheses.relations import (
     check_cycle,
     get_relations_for_hypothesis,
     propagate_verdict,
     validate_relation,
 )
-from forensia.ai.hypotheses.relations import (
+from forensia.investigation.hypotheses.relations import (
     insert_relation as _insert_relation,
 )
-from forensia.core.case import Case
-from forensia.db.database import CaseDB
 
 
 def insert_relation(db: CaseDB, **kwargs):

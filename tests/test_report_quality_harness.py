@@ -216,7 +216,9 @@ class TestReportQualityContract(unittest.TestCase):
 
     def test_confirmation_without_links_is_reconciled_to_inconclusive(self) -> None:
         """An LLM confirmation cannot override an empty evidence graph."""
-        from forensia.ai.checking.sufficiency import assess_and_persist_sufficiency
+        from forensia.investigation.verification.sufficiency import (
+            assess_and_persist_sufficiency,
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)

@@ -6,10 +6,6 @@ __pycache__/
 .pytest_cache
 .ruff_cache
 
-web_ui/node_modules/
-web_ui/dist/
-src/forensia/web/static
-
 .env
 .env.*
 !.env.example
@@ -27,11 +23,7 @@ sample/
 dist/
 build/
 test_output*
-templates/
-!src/forensia/report/templates/
-!src/forensia/report/templates/*.j2
-!src/forensia/report/templates/partials/
-!src/forensia/report/templates/partials/*.j2
+/templates/
 
 # Case/runtime outputs and forensic evidence that must not be committed.
 *.duckdb

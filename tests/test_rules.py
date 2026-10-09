@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import tempfile
 import unittest
@@ -9,29 +10,110 @@ from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.evidence.evtx import normalize_evtx
 from forensia.knowledge.rules.engine import generate_findings, save_findings
-from forensia.knowledge.rules.loader import load_rules_from_dir
+from forensia.knowledge.rules.loader import load_rules
 from forensia.knowledge.rules.models import Finding, Rule
 
-RULES_DIR = Path("src/forensia/knowledge/rulepacks")
 SHA = "a" * 64
 
 
 class RuleDeclarationTests(unittest.TestCase):
+    def test_analysis_revision_tracks_runtime_analysis_inputs(self) -> None:
+        from unittest.mock import patch
+
+        from forensia.pipeline import _analysis_revision
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            case = Case.init(root / "case")
+            rules = root / "rules"
+            rules.mkdir()
+            schema = root / "schema"
+            schema.mkdir(parents=True)
+            package_root = root / "package"
+            rules_code = package_root / "knowledge" / "rules"
+            rules_code.mkdir(parents=True)
+            catalog_code = package_root / "knowledge" / "catalog.py"
+            sigma_contract = package_root / "knowledge" / "sigma_bundle.py"
+            pipeline_code = package_root / "pipeline.py"
+            catalog_code.parent.mkdir(parents=True, exist_ok=True)
+            catalog_code.write_text("# catalog one\n", encoding="utf-8")
+            sigma_contract.write_text("# sigma contract one\n", encoding="utf-8")
+            pipeline_code.write_text("# pipeline one\n", encoding="utf-8")
+            (rules_code / "engine.py").write_text("# engine one\n", encoding="utf-8")
+            sql_rule = rules / "rule.yaml"
+            sql_rule.write_text("id: rule-one\n", encoding="utf-8")
+            false_positive = schema / "false_positive_rules.yaml"
+            dfir_ioc = schema / "dfir_ioc_catalog.yaml"
+            sigma_schema = schema / "sigma.yaml"
+            bundle = root / "sigma_bundle.json"
+            false_positive.write_text("version: one\n", encoding="utf-8")
+            dfir_ioc.write_text("version: one\n", encoding="utf-8")
+            sigma_schema.write_text("version: one\n", encoding="utf-8")
+            bundle.write_text("{}\n", encoding="utf-8")
+
+            with (
+                patch("forensia.pipeline.rules_dir", return_value=rules),
+                patch("forensia.pipeline.schema_dir", return_value=schema),
+                patch("forensia.pipeline.sigma_bundle_path", return_value=bundle),
+                patch("forensia.pipeline.__file__", str(pipeline_code)),
+            ):
+                original = _analysis_revision(case)
+                false_positive.write_text("version: two\n", encoding="utf-8")
+                self.assertNotEqual(original, _analysis_revision(case))
+
+                false_positive.write_text("version: one\n", encoding="utf-8")
+                dfir_ioc.write_text("version: two\n", encoding="utf-8")
+                self.assertNotEqual(original, _analysis_revision(case))
+
+                dfir_ioc.write_text("version: one\n", encoding="utf-8")
+                bundle.write_text('{"version": 2}\n', encoding="utf-8")
+                self.assertNotEqual(original, _analysis_revision(case))
+
+                bundle.write_text("{}\n", encoding="utf-8")
+                sql_rule.write_text("id: rule-two\n", encoding="utf-8")
+                self.assertNotEqual(original, _analysis_revision(case))
+
+                sql_rule.write_text("id: rule-one\n", encoding="utf-8")
+                sigma_contract.write_text("# sigma contract two\n", encoding="utf-8")
+                self.assertNotEqual(original, _analysis_revision(case))
+
+                sigma_contract.write_text("# sigma contract one\n", encoding="utf-8")
+                pipeline_code.write_text("# pipeline two\n", encoding="utf-8")
+                self.assertNotEqual(original, _analysis_revision(case))
+
+                pipeline_code.write_text("# pipeline one\n", encoding="utf-8")
+                sigma_schema.write_text("version: two\n", encoding="utf-8")
+                self.assertEqual(original, _analysis_revision(case))
+
     def test_catalog_and_sigma_rule_ids_are_unique(self) -> None:
-        rules = load_rules_from_dir(RULES_DIR)
+        rules = load_rules()
         ids = {rule.id for rule in rules}
         self.assertEqual(len(rules), len(ids))
         self.assertTrue(
             {
-                "481d216e-1f57-4e2a-9ad0-927c51148819",
-                "5e8c6210-2521-4e48-9f8c-9fc91d8c9353",
-                "a91f778c-413b-4f21-a3fc-c775dac718b2",
                 "prefetch-finding-antiforensic-tools",
                 "prefetch-finding-data-staging",
                 "filesystem-mft-cloud-sync-db-deleted",
                 "registry-autorun-run-key-reference",
             }.issubset(ids)
         )
+
+    def test_invalid_sigma_bundle_fails_before_case_creation(self) -> None:
+        from unittest.mock import patch
+
+        from forensia.pipeline import run_investigation
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case_path = Path(tmpdir) / "case"
+            broken_bundle = Path(tmpdir) / "sigma_bundle.json"
+            broken_bundle.write_text("{}", encoding="utf-8")
+            with patch(
+                "forensia.knowledge.resources.sigma_bundle_path",
+                return_value=broken_bundle,
+            ):
+                with self.assertRaisesRegex(ValueError, "schema"):
+                    run_investigation(case_path)
+            self.assertFalse(case_path.exists())
 
     def test_analysis_replaces_existing_rule_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -97,7 +179,9 @@ class AllowlistTests(unittest.TestCase):
 
 
 class SigmaRuleBoundaryTests(unittest.TestCase):
-    def test_native_evtx_jsonl_normalizes_and_runs_three_sigma_detections(self) -> None:
+    def test_native_evtx_jsonl_runs_admitted_sigma_rules_with_source_evidence(
+        self,
+    ) -> None:
         events = [
             {
                 "@timestamp": "2026-05-16T01:00:00Z",
@@ -153,6 +237,34 @@ class SigmaRuleBoundaryTests(unittest.TestCase):
                 },
             },
         ]
+        providers = {
+            "Security": "Microsoft-Windows-Security-Auditing",
+            "Microsoft-Windows-Windows Defender/Operational": "Microsoft-Windows-Windows Defender",
+            "Application": "Application",
+            # A known channel/provider pair mismatch must not count as observed.
+            "PowerShellCore/Operational": "Microsoft-Windows-PowerShell",
+        }
+        events.append(
+            {
+                "@timestamp": "2026-05-16T01:05:00Z",
+                "winlog": {
+                    "channel": "PowerShellCore/Operational",
+                    "event_id": 4104,
+                    "record_id": 6,
+                    "computer_name": "host1",
+                    "event_data": {"ScriptBlockText": "Get-Process"},
+                },
+            }
+        )
+        for event in events:
+            event["winlog"]["provider"] = {
+                "name": providers[event["winlog"]["channel"]]
+            }
+            if (
+                event["winlog"]["channel"] == "Security"
+                and event["winlog"]["event_id"] == 1102
+            ):
+                event["winlog"]["provider"]["name"] = "Microsoft-Windows-Eventlog"
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             raw = case.raw_dir / f"evtx-{SHA}-records.jsonl"
@@ -160,7 +272,7 @@ class SigmaRuleBoundaryTests(unittest.TestCase):
                 "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
             )
             with CaseDB(case) as db:
-                self.assertEqual(5, normalize_evtx(case, db))
+                self.assertEqual(len(events), normalize_evtx(case, db))
                 rows = db.execute(
                     "SELECT raw_json FROM evtx_events ORDER BY record_id"
                 ).fetchall()
@@ -168,178 +280,700 @@ class SigmaRuleBoundaryTests(unittest.TestCase):
                 self.assertTrue(
                     all("evidence_id" not in json.loads(row[0]) for row in rows)
                 )
+                from unittest.mock import patch
+
+                from forensia.knowledge.rules.engine import (
+                    feed_findings_to_timeline as actual_timeline_feed,
+                )
+                from forensia.knowledge.rules.engine import (
+                    prepare_finding_run as actual_prepare_context,
+                )
                 from forensia.pipeline import _run_analyze_stage
 
-                def progress(*args, **kwargs):
-                    pass
+                progress_messages: list[str] = []
 
-                self.assertEqual(
-                    3,
-                    _run_analyze_stage(case, db, True, True, progress, None),
+                def progress(*args, **kwargs):
+                    if args and isinstance(args[0], str):
+                        progress_messages.append(args[0])
+
+                revision_rules = Path(tmpdir) / "analysis-rules"
+                revision_rules.mkdir()
+                revision_schema = Path(tmpdir) / "analysis-schema"
+                revision_schema.mkdir(parents=True)
+                false_positive_rules = revision_schema / "false_positive_rules.yaml"
+                (revision_schema / "dfir_ioc_catalog.yaml").write_text(
+                    "# revision one\n", encoding="utf-8"
                 )
+                false_positive_rules.write_text("# revision one\n", encoding="utf-8")
+                with (
+                    patch(
+                        "forensia.pipeline.prepare_finding_run",
+                        wraps=actual_prepare_context,
+                    ) as prepare_context,
+                    patch(
+                        "forensia.pipeline.feed_findings_to_timeline",
+                        wraps=actual_timeline_feed,
+                    ) as timeline_feed,
+                    patch(
+                        "forensia.pipeline.rules_dir",
+                        return_value=revision_rules,
+                    ),
+                    patch(
+                        "forensia.pipeline.schema_dir",
+                        return_value=revision_schema,
+                    ),
+                ):
+                    finding_count = _run_analyze_stage(
+                        case, db, True, True, progress, None
+                    )
+                    progress_messages.clear()
+                    self.assertEqual(
+                        finding_count,
+                        _run_analyze_stage(case, db, False, False, progress, None),
+                    )
+                    false_positive_rules.write_text(
+                        "# revision two\n", encoding="utf-8"
+                    )
+                    changed_declaration_count = _run_analyze_stage(
+                        case, db, False, False, progress, None
+                    )
+                    self.assertEqual(finding_count, changed_declaration_count)
+                self.assertEqual(2, prepare_context.call_count)
+                self.assertEqual(2, timeline_feed.call_count)
+                self.assertGreater(finding_count, 0)
                 receipt = json.loads(
                     db.execute(
-                        "SELECT output_json FROM trace.investigation_steps WHERE phase = 'pipeline-analyze'"
+                        "SELECT output_json FROM trace.investigation_steps "
+                        "WHERE phase = 'pipeline-analyze' "
+                        "ORDER BY created_at DESC LIMIT 1"
                     ).fetchone()[0]
                 )
                 sigma_rules = [
                     rule for rule in receipt["rules"] if rule["format"] == "sigma"
                 ]
-                self.assertEqual(3, len(sigma_rules))
-                self.assertEqual("2.0.0", receipt["pysigma_version"])
+                rule_progress = [
+                    message
+                    for message in progress_messages
+                    if message.startswith("[analyze] rule:")
+                ]
+                self.assertLess(len(rule_progress), len(receipt["rules"]))
+                expected_upstream_rule = (
+                    "sigma-b28e58e4-2a72-4fae-bdee-0fbe904db642-windefend"
+                )
+                self.assertIn(
+                    expected_upstream_rule, {rule["id"] for rule in sigma_rules}
+                )
                 self.assertTrue(
-                    all(
-                        len(rule["definition_sha256"]) == 64
-                        and "evtx_events" in rule["query"]
+                    all(len(rule["definition_sha256"]) == 64 for rule in sigma_rules)
+                )
+                sigma_receipt = receipt["sigma_bundle"]
+                self.assertEqual(40, len(sigma_receipt["source"]["commit"]))
+                self.assertTrue(sigma_receipt["build_id"])
+                self.assertEqual(64, len(sigma_receipt["artifact_sha256"]))
+                self.assertGreater(sigma_receipt["summary"]["admitted_rules"], 0)
+                self.assertTrue(
+                    any(
+                        rule["execution"]["status"] == "not_observed"
+                        and rule["execution"]["matches"] is None
                         for rule in sigma_rules
                     )
                 )
-                self.assertEqual(
-                    3,
-                    _run_analyze_stage(case, db, False, False, progress, None),
+                self.assertTrue(
+                    all(
+                        rule["execution"]["status"] == "not_observed"
+                        for rule in sigma_rules
+                        if rule["target"]["service"] == "powershell"
+                    )
                 )
                 self.assertEqual(
-                    1,
+                    4,
                     db.execute(
                         "SELECT COUNT(*) FROM trace.investigation_steps WHERE phase = 'pipeline-analyze'"
                     ).fetchone()[0],
                 )
                 self.assertEqual(
-                    3, db.execute("SELECT COUNT(*) FROM findings").fetchone()[0]
+                    finding_count,
+                    db.execute("SELECT COUNT(*) FROM findings").fetchone()[0],
                 )
+                upstream_findings = db.execute(
+                    "SELECT evidence FROM findings WHERE rule_id = ?",
+                    (expected_upstream_rule,),
+                ).fetchall()
+                self.assertEqual(1, len(upstream_findings))
+                self.assertIn("evtx-" + SHA, upstream_findings[0][0])
                 references = [
                     json.loads(row[0])[0]["evidence_id"]
                     for row in db.execute("SELECT evidence FROM findings").fetchall()
                 ]
-                self.assertEqual(3, len(set(references)))
+                self.assertEqual(finding_count, len(references))
+                self.assertTrue(references)
                 self.assertTrue(
                     all(ref.startswith("evtx-" + SHA) for ref in references)
                 )
 
+                from forensia.knowledge.resources import sigma_bundle_path
+                from forensia.knowledge.sigma_bundle import (
+                    bundle_build_id,
+                    bundle_summary,
+                    write_bundle_atomic,
+                )
+
+                changed_bundle = json.loads(
+                    sigma_bundle_path().read_text(encoding="utf-8")
+                )
+                for binding in changed_bundle["bindings"]:
+                    if (
+                        binding["rule"]
+                        and binding["rule"]["id"] == expected_upstream_rule
+                    ):
+                        binding["conversion"] = {
+                            "status": "unsupported",
+                            "reason_code": "runtime_revision_test",
+                            "reason": "Removed from the test bundle",
+                        }
+                        binding["validation"] = {}
+                        binding["rule"] = None
+                        break
+                else:
+                    self.fail(
+                        f"Missing expected admitted rule {expected_upstream_rule}"
+                    )
+                changed_bundle["summary"] = bundle_summary(changed_bundle["bindings"])
+                changed_bundle["build_id"] = bundle_build_id(changed_bundle)
+                test_bundle_path = Path(tmpdir) / "sigma_bundle.json"
+                write_bundle_atomic(test_bundle_path, changed_bundle)
+                with (
+                    patch(
+                        "forensia.knowledge.resources.sigma_bundle_path",
+                        return_value=test_bundle_path,
+                    ),
+                    patch(
+                        "forensia.pipeline.sigma_bundle_path",
+                        return_value=test_bundle_path,
+                    ),
+                ):
+                    updated_count = _run_analyze_stage(
+                        case, db, False, False, progress, None
+                    )
+                self.assertLess(updated_count, finding_count)
+                self.assertEqual(
+                    0,
+                    db.execute(
+                        "SELECT COUNT(*) FROM findings WHERE rule_id = ?",
+                        (expected_upstream_rule,),
+                    ).fetchone()[0],
+                )
+
+                import duckdb
+
+                from forensia.knowledge.rules.engine import run_rule as actual_run_rule
+                from forensia.knowledge.rules.loader import load_rules
+
+                with (
+                    patch(
+                        "forensia.knowledge.resources.sigma_bundle_path",
+                        return_value=test_bundle_path,
+                    ),
+                    patch(
+                        "forensia.pipeline.sigma_bundle_path",
+                        return_value=test_bundle_path,
+                    ),
+                ):
+                    valid_rules = load_rules()
+                    failed_rules = copy.deepcopy(valid_rules)
+                    failed_sigma_rule = next(
+                        rule
+                        for rule in failed_rules
+                        if rule.id
+                        in {
+                            item["id"]
+                            for item in sigma_rules
+                            if item["execution"]["status"] == "completed"
+                        }
+                    )
+                    failed_sigma_rule.query = (
+                        "SELECT * FROM missing_sigma_runtime_test_table"
+                    )
+                    completed_before_failure = db.execute(
+                        "SELECT COUNT(*) FROM trace.investigation_steps "
+                        "WHERE phase = 'pipeline-analyze' "
+                        "AND json_extract_string(output_json, '$.status') = 'completed'"
+                    ).fetchone()[0]
+                    with (
+                        patch(
+                            "forensia.pipeline.load_rules", return_value=failed_rules
+                        ),
+                        self.assertRaises(duckdb.CatalogException),
+                    ):
+                        _run_analyze_stage(case, db, False, True, progress, None)
+                    failed_receipt = json.loads(
+                        db.execute(
+                            "SELECT output_json FROM trace.investigation_steps "
+                            "WHERE phase = 'pipeline-analyze' "
+                            "ORDER BY created_at DESC LIMIT 1"
+                        ).fetchone()[0]
+                    )
+                    self.assertEqual("failed", failed_receipt["status"])
+                    self.assertEqual(
+                        failed_sigma_rule.id, failed_receipt["failed_rule_id"]
+                    )
+                    self.assertEqual(
+                        completed_before_failure,
+                        db.execute(
+                            "SELECT COUNT(*) FROM trace.investigation_steps "
+                            "WHERE phase = 'pipeline-analyze' "
+                            "AND json_extract_string(output_json, '$.status') = 'completed'"
+                        ).fetchone()[0],
+                    )
+                    with patch(
+                        "forensia.pipeline.run_rule", wraps=actual_run_rule
+                    ) as resumed_queries:
+                        resumed_count = _run_analyze_stage(
+                            case, db, False, False, progress, None
+                        )
+                    self.assertEqual(updated_count, resumed_count)
+                    completed_rules = db.execute(
+                        "SELECT output_json FROM trace.investigation_steps "
+                        "WHERE phase = 'pipeline-analyze' ORDER BY created_at DESC LIMIT 1"
+                    ).fetchone()[0]
+                    self.assertEqual(
+                        sum(
+                            item["execution"]["status"] == "completed"
+                            for item in json.loads(completed_rules)["rules"]
+                        ),
+                        resumed_queries.call_count,
+                    )
+
 
 class SigmaCompilerTests(unittest.TestCase):
-    def _rule(self, detection: dict, **overrides: object) -> dict:
-        data: dict = {
-            "title": "compiler test",
+    def _rule(self, detection: dict, *, logsource: dict | None = None) -> dict:
+        return {
+            "title": "shared Sigma boundary",
             "id": "6f0454e5-0918-4d03-ae3b-98c719b0f407",
-            "logsource": {"product": "windows", "service": "security"},
+            "logsource": logsource or {"product": "windows", "service": "security"},
             "detection": detection,
         }
-        data.update(overrides)
-        return data
 
-    def test_rejects_unimplemented_sigma_shapes(self) -> None:
-        from forensia.knowledge.rules.sigma import compile_sigma_rule
+    def _converted(self, data: dict, target_key: str = "security"):
+        from scripts.sigma.converter import compile_sigma_targets
 
-        invalid = [
+        outcomes = compile_sigma_targets(data)
+        return next(
+            result
+            for result in outcomes
+            if result.target_key == target_key and result.status == "converted"
+        )
+
+    def _insert(
+        self,
+        db: CaseDB,
+        evidence_id: str,
+        *,
+        channel: str,
+        provider: str,
+        event_id: int,
+        event_data: dict | None = None,
+        logon_type: str | None = None,
+        userdata: dict | None = None,
+    ) -> None:
+        event = {
+            "winlog": {
+                "channel": channel,
+                "event_id": event_id,
+                "provider": {"name": provider},
+                "event_data": event_data or {},
+            }
+        }
+        if userdata is not None:
+            event["userdata"] = userdata
+        db.execute(
+            "INSERT INTO evtx_events "
+            "(evidence_id, source_file, channel, event_id, logon_type, raw_json) "
+            "VALUES (?, 'fixture', ?, ?, ?, ?)",
+            (evidence_id, channel, event_id, logon_type, json.dumps(event)),
+        )
+
+    def test_category_targets_preserve_security_and_sysmon_meaning(self) -> None:
+        from scripts.sigma.converter import compile_sigma_targets
+
+        data = self._rule(
+            {
+                "selection": {
+                    "OriginalFileName": "powershell.exe",
+                    "Signed": "false",
+                    "Hashes|contains": "SHA256=abc",
+                },
+                "condition": "selection",
+            },
+            logsource={"product": "windows", "category": "process_creation"},
+        )
+        results = {item.target_key: item for item in compile_sigma_targets(data)}
+        self.assertEqual({"security", "sysmon"}, set(results))
+        self.assertEqual("unsupported", results["security"].status)
+        self.assertEqual("converted", results["sysmon"].status)
+        sysmon = results["sysmon"]
+        self.assertEqual(data["id"], sysmon.sigma_id)
+        self.assertEqual(f"sigma-{data['id']}-sysmon", sysmon.rule.id)
+        self.assertEqual(
+            ["Microsoft-Windows-Sysmon/Operational"], sysmon.target_binding["channels"]
+        )
+        self.assertEqual(
+            ["Microsoft-Windows-Sysmon"], sysmon.target_binding["providers"]
+        )
+        self.assertEqual([1], sysmon.target_binding["event_ids"])
+        self.assertIn('$.winlog.event_data."Signed"', sysmon.rule.query)
+        self.assertIn('$.winlog.event_data."Hashes"', sysmon.rule.query)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                self._insert(
+                    db,
+                    "sysmon-match",
+                    channel="Microsoft-Windows-Sysmon/Operational",
+                    provider="Microsoft-Windows-Sysmon",
+                    event_id=1,
+                    event_data={
+                        "OriginalFileName": "powershell.exe",
+                        "Signed": "false",
+                        "Hashes": "SHA256=abc",
+                    },
+                )
+                self._insert(
+                    db,
+                    "security-lookalike",
+                    channel="Security",
+                    provider="Microsoft-Windows-Security-Auditing",
+                    event_id=4688,
+                    event_data={
+                        "OriginalFileName": "powershell.exe",
+                        "Signed": "false",
+                        "Hashes": "SHA256=abc",
+                    },
+                )
+                self._insert(
+                    db,
+                    "wrong-provider",
+                    channel="Microsoft-Windows-Sysmon/Operational",
+                    provider="Other Provider",
+                    event_id=1,
+                    event_data={
+                        "OriginalFileName": "powershell.exe",
+                        "Signed": "false",
+                        "Hashes": "SHA256=abc",
+                    },
+                )
+                self.assertEqual(
+                    ["sysmon-match"],
+                    [row[0] for row in db.execute(sysmon.rule.query).fetchall()],
+                )
+
+    def test_fieldless_keyword_semantics_are_explicitly_unsupported(self) -> None:
+        from scripts.sigma.converter import compile_sigma_targets
+
+        results = compile_sigma_targets(
             self._rule(
-                {"selection": {"EventID": 1}, "condition": "selection"},
-                logsource={"product": "linux", "service": "security"},
+                {"keywords": ["zerologon"], "condition": "keywords"},
+                logsource={"product": "windows", "service": "system"},
+            )
+        )
+        self.assertTrue(results)
+        self.assertTrue(all(item.status == "unsupported" for item in results))
+        self.assertTrue(all("fieldless" in item.reason.lower() for item in results))
+
+    def test_security_provider_channel_and_typed_numeric_scope(self) -> None:
+        data = self._rule(
+            {
+                "event": {"EventID": 4624},
+                "selection": {"LogonType": 3},
+                "condition": "event and selection",
+            }
+        )
+        result = self._converted(data)
+        self.assertIn("try_cast(logon_type AS BIGINT)", result.rule.query)
+        self.assertIn("channel IN ('Security')", result.rule.query)
+        self.assertIn("Microsoft-Windows-Security-Auditing", result.rule.query)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                self._insert(
+                    db,
+                    "match",
+                    channel="Security",
+                    provider="Microsoft-Windows-Security-Auditing",
+                    event_id=4624,
+                    event_data={"LogonType": "3"},
+                    logon_type="3",
+                )
+                self._insert(
+                    db,
+                    "wrong-provider",
+                    channel="Security",
+                    provider="Other",
+                    event_id=4624,
+                    event_data={"LogonType": "3"},
+                    logon_type="3",
+                )
+                self._insert(
+                    db,
+                    "wrong-channel",
+                    channel="Application",
+                    provider="Microsoft-Windows-Security-Auditing",
+                    event_id=4624,
+                    event_data={"LogonType": "3"},
+                    logon_type="3",
+                )
+                self.assertEqual(
+                    ["match"],
+                    [row[0] for row in db.execute(result.rule.query).fetchall()],
+                )
+
+    def test_system_channel_keeps_multiple_providers_and_userdata_override(
+        self,
+    ) -> None:
+        system = self._converted(
+            self._rule(
+                {"selection": {"EventID": [104, 7045]}, "condition": "selection"},
+                logsource={"product": "windows", "service": "system"},
             ),
+            target_key="system",
+        )
+        self.assertEqual(["System"], system.target_binding["channels"])
+        self.assertEqual([], system.target_binding["providers"])
+        self.assertEqual([104, 7045], system.target_binding["event_ids"])
+        self.assertNotIn("winlog.provider.name", system.rule.query)
+
+        terminal_services = self._converted(
             self._rule(
-                {"selection": {"EventID": 1}, "condition": "selection"},
-                logsource={"product": "windows", "service": "sysmon"},
+                {
+                    "event": {"EventID": 21},
+                    "selection": {"Address": "10.0.0.1"},
+                    "condition": "event and selection",
+                },
+                logsource={
+                    "product": "windows",
+                    "service": "terminalservices-localsessionmanager",
+                },
             ),
+            target_key="terminalservices-localsessionmanager",
+        )
+        self.assertIn("$.userdata.EventXML.Address", terminal_services.rule.query)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                self._insert(
+                    db,
+                    "terminal-address",
+                    channel="Microsoft-Windows-TerminalServices-LocalSessionManager/Operational",
+                    provider="Microsoft-Windows-TerminalServices-LocalSessionManager",
+                    event_id=21,
+                    userdata={"EventXML": {"Address": "10.0.0.1"}},
+                )
+                self.assertEqual(
+                    ["terminal-address"],
+                    [
+                        row[0]
+                        for row in db.execute(terminal_services.rule.query).fetchall()
+                    ],
+                )
+
+    def test_powershell_classic_data_text_array_mapping(self) -> None:
+        logsource = {"product": "windows", "category": "ps_classic_script"}
+        positive = self._converted(
             self._rule(
-                {"selection": {"EventID": 1}, "condition": "selection"},
+                {
+                    "selection": {"Data|contains": "Bad*"},
+                    "condition": "selection",
+                },
+                logsource=logsource,
+            ),
+            target_key="powershell-classic",
+        )
+        negative = self._converted(
+            self._rule(
+                {
+                    "selection": {"Data|contains": "Bad*"},
+                    "condition": "not selection",
+                },
+                logsource=logsource,
+            ),
+            target_key="powershell-classic",
+        )
+        self.assertEqual([800], positive.target_binding["event_ids"])
+        self.assertIn('Data."#text"[*]', positive.rule.query)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                for evidence_id, data in (
+                    ("classic-match", {"#text": ["benign", "BadCommand"]}),
+                    ("classic-other", {"#text": ["clean"]}),
+                ):
+                    self._insert(
+                        db,
+                        evidence_id,
+                        channel="Windows PowerShell",
+                        provider="PowerShell",
+                        event_id=800,
+                        event_data={"Data": data},
+                    )
+                self._insert(
+                    db,
+                    "classic-missing",
+                    channel="Windows PowerShell",
+                    provider="PowerShell",
+                    event_id=800,
+                )
+                self.assertEqual(
+                    ["classic-match"],
+                    [row[0] for row in db.execute(positive.rule.query).fetchall()],
+                )
+                self.assertEqual(
+                    ["classic-missing", "classic-other"],
+                    [row[0] for row in db.execute(negative.rule.query).fetchall()],
+                )
+
+        powershell = self._converted(
+            self._rule(
+                {
+                    "selection": {"ScriptBlockText|contains": "Invoke-WebRequest"},
+                    "condition": "selection",
+                },
+                logsource={"product": "windows", "category": "ps_script"},
+            ),
+            target_key="powershell",
+        )
+        self.assertEqual(
+            [
+                "Microsoft-Windows-PowerShell/Operational",
+                "PowerShellCore/Operational",
+            ],
+            powershell.target_binding["channels"],
+        )
+        self.assertEqual(
+            [
+                {
+                    "channel": "Microsoft-Windows-PowerShell/Operational",
+                    "provider": "Microsoft-Windows-PowerShell",
+                },
+                {"channel": "PowerShellCore/Operational", "provider": "PowerShellCore"},
+            ],
+            powershell.target_binding["provider_scopes"],
+        )
+
+    def test_newvalue_path_is_scoped_to_windefend(self) -> None:
+        data = self._rule(
+            {"selection": {"NewValue|contains": "Exclusion"}, "condition": "selection"},
+            logsource={"product": "windows", "service": "windefend"},
+        )
+        defender = self._converted(data, target_key="windefend")
+        self.assertIn('$.winlog.event_data."New Value"', defender.rule.query)
+
+        security_data = self._rule(
+            {"selection": {"NewValue|contains": "Exclusion"}, "condition": "selection"}
+        )
+        security = self._converted(security_data)
+        self.assertIn('$.winlog.event_data."NewValue"', security.rule.query)
+        self.assertNotIn('$.winlog.event_data."New Value"', security.rule.query)
+
+    def test_wildcard_or_missing_not_and_numeric_event_comparison(self) -> None:
+        wildcard = self._converted(
+            self._rule(
+                {
+                    "event": {"EventID": 4624},
+                    "ntlm": {"AuthenticationPackageName|contains": "NTLM*"},
+                    "kerberos": {"AuthenticationPackageName|contains": "Kerberos?"},
+                    "condition": "event and (ntlm or kerberos)",
+                }
+            )
+        )
+        negated = self._converted(
+            self._rule(
+                {
+                    "event": {"EventID": 4624},
+                    "selection": {"AuthenticationPackageName|contains": "NTLM*"},
+                    "condition": "event and not selection",
+                }
+            )
+        )
+        numeric = self._converted(
+            self._rule({"selection": {"EventID|gt": 1000}, "condition": "selection"})
+        )
+        windash = self._converted(
+            self._rule(
+                {
+                    "selection": {"CommandLine|contains|windash": " -enc "},
+                    "condition": "selection",
+                },
                 logsource={"product": "windows", "category": "process_creation"},
             ),
-            self._rule({"selection": {"UnknownField": "x"}, "condition": "selection"}),
-            self._rule(
-                {"selection": {"CommandLine|regex": "x"}, "condition": "selection"}
-            ),
-            self._rule({"keywords": ["powershell"], "condition": "keywords"}),
-            self._rule(
-                {"selection": {"EventID": 1}, "condition": "selection"},
-                correlation={"type": "temporal"},
-            ),
-            self._rule(
-                {"selection": {"EventID": 1}, "condition": "selection"}, timeframe="5m"
-            ),
-            self._rule(
-                {"selection": {"EventID": 1}, "condition": ["selection", "selection"]}
-            ),
-        ]
-        for data in invalid:
-            with self.subTest(data=data), self.assertRaises(ValueError):
-                compile_sigma_rule(data)
-
-    def test_compiles_supported_modifiers_and_sql_literal_escaping(self) -> None:
-        from forensia.knowledge.rules.sigma import compile_sigma_rule
-
-        checks = [
-            ("CommandLine", "O'Brien", "O'Brien"),
-            ("CommandLine|contains", "literal%_part", "literal%_part"),
-            ("CommandLine|contains", "powershell*", "powershellXYZ"),
-            ("CommandLine|startswith", "start*", "startXYZ"),
-            ("CommandLine|endswith", "*finish", "will-finish"),
-            ("CommandLine|contains|all", ["alpha", "beta"], "alpha beta"),
-            ("EventID", 1102, 1102),
-            ("EventID", True, 1),
-            ("CommandLine", None, None),
-            ("CommandLine|exists", True, "present"),
-            ("CommandLine|exists", False, None),
-        ]
+            target_key="sysmon",
+        )
+        self.assertIn("TRY_CAST(event_id AS BIGINT) > 1000", numeric.rule.query)
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                for field, value, matching in checks:
-                    with self.subTest(field=field, value=value):
-                        rule = compile_sigma_rule(
-                            self._rule(
-                                {"selection": {field: value}, "condition": "selection"}
-                            )
-                        )
-                        db.execute("DELETE FROM evtx_events")
-                        column = "event_id" if field == "EventID" else "command_line"
-                        db.execute(
-                            f"INSERT INTO evtx_events (evidence_id, source_file, channel, {column}) "
-                            "VALUES ('match', 's', 'Security', ?)",
-                            (matching,),
-                        )
-                        self.assertEqual(
-                            ["match"],
-                            [row[0] for row in db.execute(rule.query).fetchall()],
-                        )
 
-    def test_contains_escapes_sql_wildcards_and_negation_includes_null(self) -> None:
-        from forensia.knowledge.rules.sigma import compile_sigma_rule
+                def add(
+                    evidence_id: str, event_id: int, package: str | list[str] | None
+                ) -> None:
+                    self._insert(
+                        db,
+                        evidence_id,
+                        channel="Security",
+                        provider=(
+                            "Microsoft-Windows-Eventlog"
+                            if event_id == 1102
+                            else "Microsoft-Windows-Security-Auditing"
+                        ),
+                        event_id=event_id,
+                        event_data={}
+                        if package is None
+                        else {"AuthenticationPackageName": package},
+                    )
 
-        contains = compile_sigma_rule(
-            self._rule(
-                {
-                    "selection": {"CommandLine|contains": "100%_safe"},
-                    "condition": "selection",
-                }
-            )
-        )
-        negated = compile_sigma_rule(
-            self._rule(
-                {
-                    "selection": {"CommandLine|contains": "needle"},
-                    "condition": "not selection",
-                }
-            )
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                db.execute(
-                    "INSERT INTO evtx_events (evidence_id, source_file, channel, command_line) VALUES ('match', 's', 'Security', '100%_safe')"
+                add("ntlm", 4624, "NTLM V2")
+                add("kerberos", 4624, "Kerberos5")
+                add("array", 4624, ["Other", "NTLM V2"])
+                add("missing", 4624, None)
+                add("event-above", 1102, None)
+                add("event-below", 999, None)
+                self.assertEqual(
+                    {"ntlm", "kerberos", "array"},
+                    {row[0] for row in db.execute(wildcard.rule.query).fetchall()},
                 )
-                db.execute(
-                    "INSERT INTO evtx_events (evidence_id, source_file, channel, command_line) VALUES ('wild', 's', 'Security', '100XXsafe')"
+                self.assertEqual(
+                    {"kerberos", "missing"},
+                    {row[0] for row in db.execute(negated.rule.query).fetchall()},
                 )
-                db.execute(
-                    "INSERT INTO evtx_events (evidence_id, source_file, channel, command_line) VALUES ('null', 's', 'Security', NULL)"
+                self.assertEqual(
+                    ["array", "event-above", "kerberos", "missing", "ntlm"],
+                    [row[0] for row in db.execute(numeric.rule.query).fetchall()],
                 )
-                db.execute(
-                    "INSERT INTO evtx_events (evidence_id, source_file, channel, command_line) VALUES ('excluded', 's', 'Security', 'NEEDLE')"
+                for evidence_id, command_line in (
+                    ("windash-minus", "powershell -enc payload"),
+                    ("windash-slash", "powershell /enc payload"),
+                    ("windash-en", "powershell –enc payload"),
+                    ("windash-em", "powershell —enc payload"),
+                    ("windash-horizontal", "powershell ―enc payload"),
+                ):
+                    self._insert(
+                        db,
+                        evidence_id,
+                        channel="Microsoft-Windows-Sysmon/Operational",
+                        provider="Microsoft-Windows-Sysmon",
+                        event_id=1,
+                        event_data={"CommandLine": command_line},
+                    )
+                self.assertEqual(
+                    {
+                        "windash-minus",
+                        "windash-slash",
+                        "windash-en",
+                        "windash-em",
+                        "windash-horizontal",
+                    },
+                    {row[0] for row in db.execute(windash.rule.query).fetchall()},
                 )
-                actual = {row[0] for row in db.execute(contains.query).fetchall()}
-                self.assertEqual({"match"}, actual)
-                rejected = {row[0] for row in db.execute(negated.query).fetchall()}
-                self.assertEqual({"match", "wild", "null"}, rejected)
 
 
 class RuleAndFindingTests(unittest.TestCase):

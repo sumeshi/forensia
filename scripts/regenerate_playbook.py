@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate auto-generated sections within _schema/playbook/*.md files.
+"""Regenerate auto-generated sections within data/playbook/*.md files.
 
 Scans each MD file for section markers like:
     <!-- AUTO-FROM: event_ids.yaml -->
@@ -18,8 +18,8 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SCHEMA_DIR = REPO_ROOT / "src" / "forensia" / "knowledge" / "rulepacks" / "_schema"
-PLAYBOOK_DIR = SCHEMA_DIR / "playbook"
+SCHEMA_DIR = REPO_ROOT / "src" / "forensia" / "data" / "schema"
+PLAYBOOK_DIR = REPO_ROOT / "src" / "forensia" / "data" / "playbook"
 
 
 def _load_yaml(path: Path) -> dict:

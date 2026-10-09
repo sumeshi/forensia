@@ -6,7 +6,6 @@ import tempfile
 import unittest
 from unittest import mock
 
-from forensia.ai.report_gap import inject_gap_hypotheses, project_investigation_tasks
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import SessionState
@@ -16,6 +15,10 @@ from forensia.db.investigation_state import (
     load_investigation_state,
     mark_investigation_started,
     save_stop_reason,
+)
+from forensia.investigation.report_gap import (
+    inject_gap_hypotheses,
+    project_investigation_tasks,
 )
 
 
@@ -45,7 +48,7 @@ class InvestigationStateTests(unittest.TestCase):
     def test_session_persists_neutral_default_objective_and_projects_it_to_memory(
         self,
     ) -> None:
-        from forensia.ai.investigation import investigation_session
+        from forensia.investigation import investigation_session
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -54,7 +57,7 @@ class InvestigationStateTests(unittest.TestCase):
                 mock.patch.object(investigation_session, "_seed_rule_hypotheses"),
                 mock.patch.object(investigation_session, "ctx_refresh_caches"),
                 mock.patch.object(
-                    investigation_session, "_build_report_status", return_value={}
+                    investigation_session, "build_report_status", return_value={}
                 ),
             ):
                 _state, _ctx, memory, _session_id = investigation_session._init_session(

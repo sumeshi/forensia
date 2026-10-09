@@ -155,9 +155,7 @@ def _stub_llm(captured: list[tuple[str, str]]):
         return {"action": "write", "enough_to_write": True}
 
     return (
-        mock.patch(
-            "forensia.ai.llm.json_response.request_llm_json", side_effect=router
-        ),
+        mock.patch("forensia.llm.json_response.request_llm_json", side_effect=router),
     )
 
 
@@ -180,10 +178,10 @@ def test_case_root_forensia_md_is_adopted_recorded_and_routed_to_investigation_r
     """V2-05 real CLI path: adoption, recording, prompt routing, gate isolation."""
     from typer.testing import CliRunner
 
-    from forensia.ai.investigation import case_policy as case_policy_module
     from forensia.cli import app as cli_app
     from forensia.core.case import Case
     from forensia.db.database import CaseDB
+    from forensia.investigation import case_policy as case_policy_module
 
     captured: list[tuple[str, str]] = []
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -267,10 +265,10 @@ def test_resume_keeps_recorded_policy_and_explicit_path_adopts_edited_body() -> 
     """V2-05 resume semantics on the real investigate() path with a real DB:
     recorded revision stays in force, differences surface explicitly, and an
     explicit path reload adopts the edited body without touching Case State."""
-    from forensia.ai.investigation import investigator as investigator_module
-    from forensia.ai.investigation.case_policy import CasePolicyInput
     from forensia.core.case import Case
     from forensia.db.database import CaseDB
+    from forensia.investigation import investigator as investigator_module
+    from forensia.investigation.case_policy import CasePolicyInput
     from forensia.pipeline import UsageError, resolve_forensia_policy_input
 
     body_a = (
@@ -291,7 +289,7 @@ def test_resume_keeps_recorded_policy_and_explicit_path_adopts_edited_body() -> 
     def stubs():
         return (
             mock.patch(
-                "forensia.ai.llm.json_response.request_llm_json", side_effect=router
+                "forensia.llm.json_response.request_llm_json", side_effect=router
             ),
             mock.patch.object(
                 investigator_module,
@@ -434,7 +432,7 @@ def test_oversized_forensia_md_policy_refuses_with_reason() -> None:
                 return_value=2 * _POLICY_BUDGET_SMALL,
             ),
             mock.patch(
-                "forensia.ai.llm.json_response.request_llm_json",
+                "forensia.llm.json_response.request_llm_json",
                 side_effect=AssertionError("LLM must not be called"),
             ),
         ):

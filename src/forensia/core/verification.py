@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # - ``co_observed_event_ids``: integer event IDs that must all be observed in
 #   the evidence group.  Required by the admission pre-screen
 #   (``_claim_spec_conformance_error``); evaluated through the co-observation
-#   adapter (``ai/checking/check_guardrails._co_observation_satisfied``).
+#   adapter (``investigation/verification/check_guardrails._co_observation_satisfied``).
 # - ``event_contexts``: catalog-qualified channel/provider declarations for
 #   provider-reused event IDs.  Admission validates each declaration against
 #   the event catalog; the co-observation adapter filters rows through

@@ -12,13 +12,13 @@ from pathlib import Path
 import typer
 from rich import print
 
-from forensia.ai.llm.llm_client import LLMServerUnavailableError
 from forensia.cli.doctor import run_doctor
 from forensia.cli.support import _open_case_or_die, _status
 from forensia.config import resolve_llm_config
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.evidence.ingest import ingest_all
+from forensia.llm.llm_client import LLMServerUnavailableError
 from forensia.pipeline import (
     UsageError,
     run_investigation,

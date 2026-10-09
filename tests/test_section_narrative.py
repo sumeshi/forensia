@@ -7,15 +7,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from forensia.ai.sections.section_answers import (
-    _format_structured_answer,
-    is_effectively_empty_body,
-)
-from forensia.ai.sections.section_block_narrative import (
-    fallback_narrative_body,
-    narrate_paragraph_with_retry,
-)
-from forensia.ai.sections.section_run_store import load_reusable_section_facts
 from forensia.config import clear_llm_settings_cache, reload_settings
 from forensia.core.case import Case
 from forensia.core.textutil import normalize_localized_dates
@@ -27,10 +18,19 @@ from forensia.report.sections.quality_gates import (
     check_json_object_leak,
     check_recommendations_strength,
 )
+from forensia.report.sections.section_answers import (
+    _format_structured_answer,
+    is_effectively_empty_body,
+)
 from forensia.report.sections.section_assembly import assemble_section_body
+from forensia.report.sections.section_block_narrative import (
+    fallback_narrative_body,
+    narrate_paragraph_with_retry,
+)
 from forensia.report.sections.section_finalize import (
     preprocess_section_body,
 )
+from forensia.report.sections.section_run_store import load_reusable_section_facts
 from forensia.report.sections.section_store import extract_claim_texts
 
 
@@ -270,9 +270,7 @@ structured_answer:
             {"role": "system", "content": "narrate system"},
             {"role": "user", "content": "narrate user"},
         ]
-        with patch(
-            "forensia.ai.llm.json_response.request_llm_json", side_effect=fake_llm
-        ):
+        with patch("forensia.llm.json_response.request_llm_json", side_effect=fake_llm):
             body = narrate_paragraph_with_retry(
                 narrate_messages=base_messages,
                 narrate_schema={"type": "object"},
@@ -298,9 +296,7 @@ structured_answer:
                 "body": "A concrete paragraph long enough to pass the empty-body check."
             }
 
-        with patch(
-            "forensia.ai.llm.json_response.request_llm_json", side_effect=fake_llm
-        ):
+        with patch("forensia.llm.json_response.request_llm_json", side_effect=fake_llm):
             narrate_paragraph_with_retry(
                 narrate_messages=[{"role": "system", "content": "s"}],
                 narrate_schema={"type": "object"},

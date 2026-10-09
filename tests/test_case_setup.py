@@ -47,7 +47,7 @@ class CaseSetupTests(unittest.TestCase):
     def setUp(self) -> None:
         # Patch the owning JSON request implementation.
         llm_json_patch = patch(
-            "forensia.ai.llm.json_response.request_llm_json",
+            "forensia.llm.json_response.request_llm_json",
             side_effect=_agent_plan_router,
         )
         llm_json_patch.start()
@@ -149,7 +149,7 @@ class CaseSetupTests(unittest.TestCase):
                         "prefetch_executions": 0,
                     },
                 ),
-                patch("forensia.pipeline.load_rules_from_dir", return_value=[]),
+                patch("forensia.pipeline.load_rules", return_value=[]),
                 patch(
                     "forensia.pipeline.investigate_loop",
                     side_effect=fake_investigate_loop,

@@ -38,9 +38,6 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
-from forensia.ai.investigation.case_policy import CasePolicyInput, load_recorded_policy
-from forensia.ai.investigation.investigator import investigate as investigate_loop
-from forensia.ai.llm.llm_client import LLMServerUnavailableError
 from forensia.config import (
     get_llm_settings,
     get_system_prompt_budget_chars,
@@ -58,16 +55,22 @@ from forensia.evidence.invalidation import (
     retire_replaced_sources,
 )
 from forensia.evidence.normalize import normalize_all
+from forensia.investigation.case_policy import CasePolicyInput, load_recorded_policy
+from forensia.investigation.investigator import investigate as investigate_loop
 from forensia.knowledge.catalog import validate_declarations
 from forensia.knowledge.external import scan_knowledge_dir, set_knowledge_docs
-from forensia.knowledge.resources import rulepacks_dir
+from forensia.knowledge.resources import rules_dir, schema_dir, sigma_bundle_path
 from forensia.knowledge.rules.engine import (
-    clear_rule_findings,
+    clear_rule_findings_batch,
+    feed_findings_to_timeline,
     generate_findings,
+    prepare_finding_run,
     run_rule,
     save_findings,
 )
-from forensia.knowledge.rules.loader import load_rules_from_dir
+from forensia.knowledge.rules.loader import load_rules
+from forensia.knowledge.sigma_bundle import binding_admitted, load_sigma_bundle
+from forensia.llm.llm_client import LLMServerUnavailableError
 from forensia.report.render.writer import render_written_report
 from forensia.report.sections.report_input import ensure_report_output_paths
 from forensia.report.template_export import (
@@ -90,7 +93,7 @@ _PARSER_REVISION_FILES = (
     "evidence/prefetch.py",
     "evidence/registry.py",
     "evidence/timestamp_policy.py",
-    "knowledge/rulepacks/_schema/artifact_capabilities.yaml",
+    "data/schema/artifact_capabilities.yaml",
 )
 
 
@@ -161,18 +164,32 @@ def _parser_revision() -> str:
 
 
 def _analysis_revision(case: Case) -> str:
-    rules_root = rulepacks_dir()
+    rules_root = rules_dir()
     rule_files = list(rules_root.rglob("*.yaml"))
     code_root = Path(__file__).parent / "knowledge" / "rules"
     code_files = list(code_root.rglob("*.py"))
     catalog_file = Path(__file__).parent / "knowledge" / "catalog.py"
-    revision = _content_revision([*rule_files, *code_files, catalog_file])
+    sigma_contract_file = Path(__file__).parent / "knowledge" / "sigma_bundle.py"
+    pipeline_file = Path(__file__).resolve()
+    runtime_catalog_files = [
+        schema_dir() / "false_positive_rules.yaml",
+        schema_dir() / "dfir_ioc_catalog.yaml",
+    ]
+    revision = _content_revision(
+        [
+            *rule_files,
+            *code_files,
+            catalog_file,
+            sigma_contract_file,
+            pipeline_file,
+            *runtime_catalog_files,
+            sigma_bundle_path(),
+        ]
+    )
     suppression = (
         case.allowlist_path.read_bytes() if case.allowlist_path.exists() else b""
     )
-    return hashlib.sha256(
-        revision.encode("ascii") + suppression + version("pysigma").encode("ascii")
-    ).hexdigest()
+    return hashlib.sha256(revision.encode("ascii") + suppression).hexdigest()
 
 
 def _stage_receipt(db: CaseDB, phase: str) -> tuple[str, str, str] | None:
@@ -607,8 +624,13 @@ def _run_analyze_stage(
     status: StatusCallback | None,
 ) -> int:
     """Run rule-based analysis to generate findings."""
-    rules_dir = rulepacks_dir()
-    rules = load_rules_from_dir(rules_dir)
+    bundle = load_sigma_bundle()
+    rules = load_rules()
+    sigma_bindings = {
+        item["rule"]["id"]: item
+        for item in bundle["bindings"]
+        if binding_admitted(item)
+    }
     revision = _analysis_revision(case)
     receipt = _stage_receipt(db, "pipeline-analyze")
     if (
@@ -631,50 +653,141 @@ def _run_analyze_stage(
         )
         return existing_findings
 
-    _show(status, f"Stage 3/4: analyze ({len(rules)} common rules)")
-    push_progress(
-        f"[analyze] common rules={len(rules)}",
-        stage="analyze",
+    _record_stage_receipt(
+        db,
+        "pipeline-analyze",
+        revision,
+        f"rules={len(rules)}, analysis started",
         status="running",
+        details={"rule_count": len(rules)},
     )
     total_findings = 0
     active_rule_ids = {rule.id for rule in rules}
-    old_rule_ids = {
-        str(row[0])
-        for row in db.execute(
-            "SELECT DISTINCT rule_id FROM findings WHERE rule_id IS NOT NULL"
-        ).fetchall()
-    }
-    for stale_rule_id in old_rule_ids - active_rule_ids:
-        clear_rule_findings(case, db, stale_rule_id)
-    for rule in rules:
+    current_rule_id: str | None = None
+    rule_runs: list[dict[str, object]] = []
+    try:
+        _show(status, f"Stage 3/4: analyze ({len(rules)} common rules)")
         push_progress(
-            f"[analyze] rule: {rule.id}",
+            f"[analyze] common rules={len(rules)}",
             stage="analyze",
             status="running",
-            log_level="info",
         )
-        clear_rule_findings(case, db, rule.id)
-        findings = generate_findings(rule, run_rule(db, rule))
-        save_findings(case, db, findings)
-        total_findings += len(findings)
-    _prune_orphan_reviews(db)
+        old_rule_ids = {
+            str(row[0])
+            for row in db.execute(
+                "SELECT DISTINCT rule_id FROM findings WHERE rule_id IS NOT NULL"
+            ).fetchall()
+        }
+        clear_rule_findings_batch(case, db, old_rule_ids | active_rule_ids)
+        run_context = prepare_finding_run(case, db)
+        observed_logs = db.execute(
+            "SELECT DISTINCT channel, event_id, "
+            "json_extract_string(raw_json, '$.winlog.provider.name') "
+            "FROM evtx_events"
+        ).fetchall()
+        for rule in rules:
+            current_rule_id = rule.id
+            binding = sigma_bindings.get(rule.id)
+            result: dict[str, object] = {
+                "id": rule.id,
+                "format": rule.rule_format,
+                "definition_sha256": rule.definition_sha256,
+                "execution": {"status": "running", "matches": None},
+            }
+            rule_runs.append(result)
+            if binding is not None:
+                target = binding["target_binding"]
+                result.update(
+                    source_rule_id=binding["rule_id"],
+                    target=target,
+                    fixture=binding["validation"]["fixture"]["status"],
+                )
+                if not any(
+                    channel in target["channels"]
+                    and (not target.get("event_ids") or event_id in target["event_ids"])
+                    and (not target.get("providers") or provider in target["providers"])
+                    and (
+                        not target.get("provider_scopes")
+                        or any(
+                            channel == scope["channel"]
+                            and provider == scope["provider"]
+                            for scope in target["provider_scopes"]
+                        )
+                    )
+                    and (
+                        not target.get("provider_event_ids")
+                        or (
+                            event_id in target["provider_event_ids"][provider]
+                            if provider in target["provider_event_ids"]
+                            else all(
+                                event_id not in ids
+                                for ids in target["provider_event_ids"].values()
+                            )
+                        )
+                    )
+                    for channel, event_id, provider in observed_logs
+                ):
+                    result["execution"] = {"status": "not_observed", "matches": None}
+                    continue
+            result["query"] = rule.query
+            findings = generate_findings(rule, run_rule(db, rule))
+            if findings:
+                push_progress(
+                    f"[analyze] rule: {rule.id} matches={len(findings)}",
+                    stage="analyze",
+                    status="running",
+                    log_level="info",
+                )
+                save_findings(
+                    case,
+                    db,
+                    findings,
+                    run_context=run_context,
+                    feed_timeline=False,
+                )
+            total_findings += len(findings)
+            result["execution"] = {"status": "completed", "matches": len(findings)}
+        current_rule_id = None
+        feed_findings_to_timeline(db)
+        _prune_orphan_reviews(db)
+    except BaseException as exc:
+        failure_status = "failed" if isinstance(exc, Exception) else "interrupted"
+        if rule_runs and rule_runs[-1]["execution"]["status"] == "running":
+            rule_runs[-1]["execution"] = {"status": failure_status, "matches": None}
+        _record_stage_receipt(
+            db,
+            "pipeline-analyze",
+            revision,
+            f"rules={len(rules)}, analysis {failure_status}",
+            status=failure_status,
+            details={
+                "rule_count": len(rules),
+                "failed_rule_id": current_rule_id,
+                "failure": {"type": type(exc).__name__, "message": str(exc)},
+                "rules": rule_runs,
+            },
+        )
+        raise
     _record_stage_receipt(
         db,
         "pipeline-analyze",
         revision,
         f"rules={len(rules)}, findings={total_findings}",
         details={
-            "pysigma_version": version("pysigma"),
-            "rules": [
-                {
-                    "id": rule.id,
-                    "format": rule.rule_format,
-                    "definition_sha256": rule.definition_sha256,
-                    "query": rule.query,
-                }
-                for rule in rules
-            ],
+            "sigma_bundle": {
+                "build_id": bundle["build_id"],
+                "artifact_sha256": hashlib.sha256(
+                    sigma_bundle_path().read_bytes()
+                ).hexdigest(),
+                "source": {
+                    "repository": bundle["source"]["repository"],
+                    "commit": bundle["source"]["commit"],
+                    "tree_sha256": bundle["source"]["tree_sha256"],
+                },
+                "environment_hashes": bundle["environment"]["hashes"],
+                "summary": bundle["summary"],
+            },
+            "rules": rule_runs,
         },
     )
     _show(status, f"Analyze complete: findings={total_findings}")

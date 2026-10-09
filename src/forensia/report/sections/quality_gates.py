@@ -23,7 +23,7 @@ from forensia.report.evidence_refs import EVIDENCE_ID_PATTERN
 def failure_markers() -> tuple[str, ...]:
     """Block-failure phrases shared with final report validation.
 
-    Single vocabulary owner: ``_schema/report_validation_vocab.yaml``.
+    Single vocabulary owner: ``data/schema/report_validation_vocab.yaml``.
     """
     path = schema_dir() / "report_validation_vocab.yaml"
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}

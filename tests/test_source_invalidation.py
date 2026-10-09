@@ -6,7 +6,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from forensia.ai.investigation.selection import select_focus_hypotheses
 from forensia.core.case import Case
 from forensia.core.evidence import make_evtx_evidence_id
 from forensia.db.database import CaseDB
@@ -17,6 +16,7 @@ from forensia.evidence.invalidation import (
     retire_replaced_sources,
 )
 from forensia.evidence.normalize import normalize_all
+from forensia.investigation.selection import select_focus_hypotheses
 from forensia.report.sections.section_store import _claim_support_status
 
 

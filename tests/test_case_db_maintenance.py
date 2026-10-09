@@ -327,7 +327,7 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                     },
                 ),
                 patch("forensia.cli.app.resolve_llm_config", return_value=(None, None)),
-                patch("forensia.pipeline.load_rules_from_dir", return_value=[]),
+                patch("forensia.pipeline.load_rules", return_value=[]),
                 patch(
                     "forensia.pipeline.render_written_report",
                     return_value=(

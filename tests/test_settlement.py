@@ -14,20 +14,20 @@ import json
 import tempfile
 import unittest
 
-from forensia.ai.checking.settlement import (
+from forensia.core.session import Hypothesis
+from forensia.core.verification import VerificationSpec
+from forensia.db.database import CaseDB
+from forensia.investigation.verification.settlement import (
     SettlementInput,
     _is_concrete_entity,
     _is_loopback_ip,
     judge_absence_scope,
     settle_hypothesis,
 )
-from forensia.ai.checking.sufficiency import (
+from forensia.investigation.verification.sufficiency import (
     SufficiencyResult,
     create_hypothesis_evidence_link,
 )
-from forensia.core.session import Hypothesis
-from forensia.core.verification import VerificationSpec
-from forensia.db.database import CaseDB
 
 
 def _make_hypothesis(
@@ -847,7 +847,7 @@ class AbsenceJudgmentTests(unittest.TestCase):
 
     @staticmethod
     def _evaluation(**kwargs):
-        from forensia.ai.retrieval_telemetry import RetrievalEvaluation
+        from forensia.context.retrieval import RetrievalEvaluation
 
         defaults = {
             "receipt_id": "R-1",
@@ -958,9 +958,11 @@ class DBInvariantTests(unittest.TestCase):
     def test_confirmed_without_sufficient_becomes_needs_review(self) -> None:
         """confirmed + insufficient sufficiency → needs_review."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            from forensia.ai.hypotheses.hypothesis_manager import resolve_hypothesis
             from forensia.core.case import Case
             from forensia.core.session import SessionState
+            from forensia.investigation.hypotheses.hypothesis_manager import (
+                resolve_hypothesis,
+            )
 
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -995,9 +997,11 @@ class DBInvariantTests(unittest.TestCase):
     def test_confirmed_without_evidence_links_becomes_needs_review(self) -> None:
         """confirmed + no supporting EvidenceLink → needs_review."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            from forensia.ai.hypotheses.hypothesis_manager import resolve_hypothesis
             from forensia.core.case import Case
             from forensia.core.session import SessionState
+            from forensia.investigation.hypotheses.hypothesis_manager import (
+                resolve_hypothesis,
+            )
 
             case = Case.init(tmpdir)
             with CaseDB(case) as db:

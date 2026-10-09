@@ -6,8 +6,9 @@ from pathlib import Path
 
 import yaml
 
-from forensia.knowledge.resources import rulepacks_dir
+from forensia.knowledge.resources import rules_dir, schema_dir
 from forensia.knowledge.rules.models import Rule
+from forensia.knowledge.sigma_bundle import binding_admitted, load_sigma_bundle
 
 
 def _expand_rule_query(rule: Rule) -> Rule:
@@ -18,44 +19,47 @@ def _expand_rule_query(rule: Rule) -> Rule:
     return rule
 
 
-# REFACTOR-21: Cache id → Rule mapping for O(1) lookup
 @cache
 def _get_rule_cache() -> dict[str, Rule]:
-    """Build and cache a mapping of rule_id to Rule objects.
-
-    Called once on first use, then cached indefinitely.
-    """
-    rules = _load_all_rules()
+    """Build the cached mapping of rule ID to executable Rule."""
+    rules = load_rules()
     return {rule.id: rule for rule in rules}
 
 
-def _load_all_rules() -> list[Rule]:
-    """Internal function to load all rules without caching."""
-    return load_rules_from_dir(rulepacks_dir())
-
-
 def load_rule_by_id(rule_id: str) -> Rule | None:
-    """Load a single rule by its ID from the cached rule mapping (DESIGN-A5).
-
-    Rules are loaded once from the packaged rulepacks/ directory and cached.
-    """
+    """Load a rule by ID from the process-local rule mapping."""
     cache = _get_rule_cache()
     return cache.get(rule_id)
 
 
+def load_rules() -> list[Rule]:
+    """Load the installed SQL rules and admitted Sigma bundle as one set."""
+    sql_rules = load_rules_from_dir(rules_dir())
+    bundle = load_sigma_bundle()
+    sigma_rules = [
+        Rule.model_validate(binding["rule"])
+        for binding in bundle["bindings"]
+        if binding_admitted(binding)
+    ]
+    rules = [*sql_rules, *sigma_rules]
+    seen: set[str] = set()
+    for rule in rules:
+        if rule.id in seen:
+            raise ValueError(f"Duplicate executable rule ID: {rule.id}")
+        seen.add(rule.id)
+    return rules
+
+
 def load_rules_from_dir(directory: str | Path) -> list[Rule]:
-    """Load the common rule set; directories only organize declarations.
+    """Load SQL rule declarations from a directory.
 
-    Schema cards and allowlist declarations are not detection rules.
+    This generic loader remains available for extension directories. Packaged
+    Sigma rules are loaded only from the validated executable bundle.
     """
-    from forensia.knowledge.rules.sigma import compile_sigma_rule
-
     directory = Path(directory)
     rules: list[Rule] = []
     seen_ids: set[str] = set()
     for path in sorted(directory.rglob("*.yaml")):
-        if "_schema" in path.parts:
-            continue
         content = path.read_bytes()
         data = yaml.safe_load(content)
         if isinstance(data, dict) and str(data.get("kind") or "").startswith(
@@ -65,9 +69,10 @@ def load_rules_from_dir(directory: str | Path) -> list[Rule]:
         if data:
             try:
                 if "logsource" in data or "detection" in data or "correlation" in data:
-                    rule = compile_sigma_rule(data)
-                else:
-                    rule = _expand_rule_query(Rule.model_validate(data))
+                    raise ValueError(
+                        "Sigma declarations are build inputs; runtime loads only sigma_bundle.json"
+                    )
+                rule = _expand_rule_query(Rule.model_validate(data))
             except Exception as exc:
                 raise ValueError(f"Invalid rule {path}: {exc}") from exc
             rule.definition_sha256 = hashlib.sha256(content).hexdigest()
@@ -86,8 +91,7 @@ def detect_artifact_families(db) -> set[str]:
     Returns a set of family names (e.g. {'cloud_sync', 'mailbox', 'mft_user_files'}).
     """
     families: set[str] = set()
-    rules_root = rulepacks_dir()
-    ioc_path = rules_root / "_schema" / "dfir_ioc_catalog.yaml"
+    ioc_path = schema_dir() / "dfir_ioc_catalog.yaml"
     if not ioc_path.exists():
         return families
     ioc = yaml.safe_load(ioc_path.read_text(encoding="utf-8")) or {}

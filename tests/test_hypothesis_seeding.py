@@ -10,10 +10,10 @@ from __future__ import annotations
 import tempfile
 import unittest
 
-from forensia.ai.hypotheses.seeding import prescreen_telemetry_availability
 from forensia.core.case import Case
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
+from forensia.investigation.hypotheses.seeding import prescreen_telemetry_availability
 
 
 class PrescreenTelemetryAvailabilityTests(unittest.TestCase):

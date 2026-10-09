@@ -37,7 +37,7 @@ def normalize_structured_status(status: str) -> str:
 
 
 def _schema_dir() -> Path:
-    # knowledge/ is a sibling of the packaged rulepacks/ data directory.
+    # The packaged catalog is independent from Python module locations.
     return schema_dir()
 
 

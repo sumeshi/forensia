@@ -5,7 +5,6 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from forensia.ai.investigation.memory_sync import apply_memory_updates
 from forensia.config import (
     reload_settings,
     resolve_llm_config,
@@ -14,6 +13,7 @@ from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis
 from forensia.db.database import CaseDB
+from forensia.investigation.memory_sync import apply_memory_updates
 
 
 class MemorySyncTests(unittest.TestCase):
@@ -107,7 +107,7 @@ class MemorySyncTests(unittest.TestCase):
             with (
                 CaseDB(case) as db,
                 patch(
-                    "forensia.ai.hypotheses.hypothesis_store._recent_reasoning_rows"
+                    "forensia.investigation.hypotheses.hypothesis_store._recent_reasoning_rows"
                 ) as mock_reasoning,
             ):
                 mock_reasoning.return_value = [

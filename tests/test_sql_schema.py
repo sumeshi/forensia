@@ -1,6 +1,6 @@
 """The assembled investigation guidance must carry its declaration-backed policy."""
 
-from forensia.ai.prompts.sql_schema import build_investigation_framework
+from forensia.context.sql_schema import build_investigation_framework
 
 
 def test_investigation_framework_contains_reference_and_read_only_policy() -> None:

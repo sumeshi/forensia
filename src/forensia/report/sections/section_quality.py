@@ -97,7 +97,7 @@ def _correlation_finding_ids(finding_ids: list[str], db: CaseDB) -> list[str]:
 
 @lru_cache(maxsize=1)
 def _load_event_id_hints() -> dict[int, dict[str, Any]]:
-    """Load the event_id to hints mapping from _schema/event_ids.yaml."""
+    """Load the event_id to hints mapping from data/schema/event_ids.yaml."""
     import yaml
 
     path = schema_dir() / "event_ids.yaml"

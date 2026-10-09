@@ -144,12 +144,12 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 
 def load_artifact_capabilities() -> dict[str, Any]:
-    """Load artifact capability declarations from _schema/artifact_capabilities.yaml."""
+    """Load artifact capability declarations from data/schema/artifact_capabilities.yaml."""
     return load_artifact_capabilities_config()
 
 
 def load_evidence_sufficiency_policy() -> dict[str, Any]:
-    """Load evidence sufficiency policy from _schema/evidence_sufficiency.yaml."""
+    """Load evidence sufficiency policy from data/schema/evidence_sufficiency.yaml."""
     path = schema_dir() / "evidence_sufficiency.yaml"
     if not path.exists():
         logger.warning("evidence_sufficiency.yaml not found at %s", path)

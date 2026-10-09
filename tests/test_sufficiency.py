@@ -7,12 +7,15 @@ import tempfile
 import unittest
 from typing import Any
 
-from forensia.ai.checking.assessment import assess_evidence_group
-from forensia.ai.checking.settlement import (
+from forensia.core.case import Case
+from forensia.core.session import Hypothesis
+from forensia.db.database import CaseDB
+from forensia.investigation.verification.assessment import assess_evidence_group
+from forensia.investigation.verification.settlement import (
     build_settlement_input_from_confirm_when,
     decide_settlement,
 )
-from forensia.ai.checking.sufficiency import (
+from forensia.investigation.verification.sufficiency import (
     EvidenceLink,
     SufficiencyResult,
     assess_and_persist_sufficiency,
@@ -26,9 +29,6 @@ from forensia.ai.checking.sufficiency import (
     record_unlinkable_observation,
     update_claim_support_for_hypothesis,
 )
-from forensia.core.case import Case
-from forensia.core.session import Hypothesis
-from forensia.db.database import CaseDB
 
 
 class SufficiencyEvaluationTests(unittest.TestCase):
@@ -407,7 +407,7 @@ class SufficiencyEvaluationTests(unittest.TestCase):
         self.assertEqual(assessment.reason, "unsupported condition keys: ['keywords']")
 
     def test_event_constraints_share_host_entity_and_time_witnesses(self) -> None:
-        from forensia.ai.checking.settlement import (
+        from forensia.investigation.verification.settlement import (
             build_settlement_input_from_confirm_when,
             decide_settlement,
         )

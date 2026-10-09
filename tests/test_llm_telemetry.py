@@ -6,16 +6,16 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from forensia.ai.llm import llm_client
-from forensia.ai.llm_telemetry import (
+from forensia.core.case import Case
+from forensia.core.session import LLMBudgetExceededError
+from forensia.db.database import CaseDB
+from forensia.llm import llm_client
+from forensia.llm.telemetry import (
     LLMTelemetry,
     compute_effective_output_limit,
     set_active_telemetry,
     telemetry_scope,
 )
-from forensia.core.case import Case
-from forensia.core.session import LLMBudgetExceededError
-from forensia.db.database import CaseDB
 
 
 def test_context_budget_subtracts_known_input_even_when_output_alone_fits() -> None:
@@ -159,7 +159,7 @@ def test_unexpected_transport_error_finalizes_attempt_and_call(tmp_path) -> None
 
 
 def test_json_plan_and_repair_share_one_budgeted_logical_call(tmp_path) -> None:
-    from forensia.ai.llm import json_response
+    from forensia.llm import json_response
 
     case = Case.init(tmp_path)
     db = CaseDB(case)
@@ -184,7 +184,7 @@ def test_json_plan_and_repair_share_one_budgeted_logical_call(tmp_path) -> None:
 
 
 def test_nested_context_compaction_budget_exhaustion_propagates(tmp_path) -> None:
-    from forensia.ai.llm import json_response
+    from forensia.llm import json_response
 
     case = Case.init(tmp_path)
     db = CaseDB(case)
@@ -441,7 +441,7 @@ def test_unusable_truncation_closes_owned_call_failed_and_marks_attempt(
 
     # JSON-level recovery must change the request without exceeding the configured
     # model completion cap. Keep this in the existing truncation contract test.
-    from forensia.ai.llm import json_response
+    from forensia.llm import json_response
 
     attempts: list[dict] = []
 

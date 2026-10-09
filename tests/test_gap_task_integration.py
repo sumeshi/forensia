@@ -7,15 +7,25 @@ import json
 import tempfile
 import unittest
 
-from forensia.ai.checking.sufficiency import create_hypothesis_evidence_link
-from forensia.ai.hypotheses.hypothesis_store import load_persisted_hypotheses
-from forensia.ai.investigation.investigator import _durable_open_work_counts
-from forensia.ai.investigation.work_judgment import (
+from forensia.core.case import Case
+from forensia.core.session import Hypothesis, SessionState
+from forensia.db.database import CaseDB
+from forensia.investigation.hypotheses.hypothesis_store import load_persisted_hypotheses
+from forensia.investigation.investigator import _durable_open_work_counts
+from forensia.investigation.report_gap import (
+    evaluation_snapshot,
+    inject_gap_hypotheses,
+    report_cycle_progress,
+)
+from forensia.investigation.verification.sufficiency import (
+    create_hypothesis_evidence_link,
+)
+from forensia.investigation.work_judgment import (
     judge_work,
     open_work_refs,
     work_context_snapshot,
 )
-from forensia.ai.investigation.work_state import (
+from forensia.investigation.work_state import (
     classify_active_hypotheses_on_stop,
     ensure_objective_gap,
     format_stop_reason,
@@ -23,14 +33,6 @@ from forensia.ai.investigation.work_state import (
     resolve_linked_work,
     stop_summary,
 )
-from forensia.ai.report_gap import (
-    evaluation_snapshot,
-    inject_gap_hypotheses,
-    report_cycle_progress,
-)
-from forensia.core.case import Case
-from forensia.core.session import Hypothesis, SessionState
-from forensia.db.database import CaseDB
 from forensia.report.answers.gap_tables import _build_gaps_unresolved_table
 from forensia.report.report_validation import check_work_state_consistency
 
@@ -407,7 +409,7 @@ class ProseChangeResolutionTests(unittest.TestCase):
                 self.assertEqual(row, ("open", "report_request_absent"))
 
     def test_unrelated_question_in_same_section_cannot_complete_old_work(self) -> None:
-        from forensia.ai.investigation.investigator import (
+        from forensia.investigation.investigator import (
             _check_termination,
             _durable_open_work_counts,
         )

@@ -8,7 +8,7 @@ from typing import Any
 
 import yaml
 
-from forensia.knowledge.resources import rulepacks_dir, schema_dir
+from forensia.knowledge.resources import schema_dir
 
 _SCHEMA_DIR = schema_dir()
 
@@ -30,7 +30,7 @@ def _load_yaml(name: str) -> dict[str, Any]:
 
 @lru_cache(maxsize=1)
 def load_dfir_yamls() -> dict[str, Any]:
-    """Load all DFIR YAML schemas from _schema/ directory with caching."""
+    """Load all DFIR YAML schemas from data/schema/ directory with caching."""
 
     return {
         "evtx_events": _load_yaml("evtx_events.yaml"),
@@ -48,7 +48,7 @@ def load_dfir_yamls() -> dict[str, Any]:
 
 @lru_cache(maxsize=1)
 def load_event_id_hints() -> dict[int, dict[str, Any]]:
-    """Load event ID hints from _schema/event_ids.yaml keyed by integer event ID."""
+    """Load event ID hints from data/schema/event_ids.yaml keyed by integer event ID."""
     data = load_dfir_yamls()["event_ids"]
     events: dict[int, dict[str, Any]] = {}
     raw_events = data.get("events")
@@ -158,7 +158,7 @@ def load_finding_benign_context_rules() -> list[dict[str, Any]]:
 
 @lru_cache(maxsize=1)
 def load_schema_hints() -> dict[str, dict[str, Any]]:
-    """Load schema hints from rulepacks/_schema/*.yaml for planner guidance."""
+    """Load schema hints from data/schema/*.yaml for planner guidance."""
     hints: dict[str, dict[str, Any]] = {}
     if not _SCHEMA_DIR.is_dir():
         raise ValueError(f"Required declaration directory is missing: {_SCHEMA_DIR}")
@@ -175,7 +175,7 @@ def load_schema_hints() -> dict[str, dict[str, Any]]:
 
 @lru_cache(maxsize=1)
 def load_question_routing_raw() -> dict[str, Any]:
-    """Load raw question-routing schema from _schema/question_routing.yaml."""
+    """Load raw question-routing schema from data/schema/question_routing.yaml."""
     return _load_yaml("question_routing.yaml")
 
 
@@ -537,7 +537,7 @@ def validate_declarations() -> None:
     """Validate packaged contracts before an investigation changes Case State."""
     from forensia.knowledge.rules.loader import (
         _get_rule_cache,
-        load_rules_from_dir,
+        load_rules,
     )
 
     loaders = (
@@ -562,7 +562,7 @@ def validate_declarations() -> None:
         "verdict_taxonomy.yaml",
     ):
         _load_yaml(name)
-    load_rules_from_dir(rulepacks_dir())
+    load_rules()
 
 
 # ── Cache management ───────────────────────────────────────────────────────

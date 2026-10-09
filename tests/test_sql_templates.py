@@ -7,7 +7,7 @@ import unittest
 
 import duckdb
 
-from forensia.ai.prompts.sql_templates import (
+from forensia.context.sql_templates import (
     query_template_catalog,
     render_query_template,
     validate_select_sql,

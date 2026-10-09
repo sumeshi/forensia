@@ -20,8 +20,8 @@ from forensia.db.database import CaseDB
 
 class InvestigateWiringTests(unittest.TestCase):
     def test_report_only_cycle_completes_without_llm(self) -> None:
-        from forensia.ai.investigation import investigation_session
-        from forensia.ai.investigation import investigator as investigator_module
+        from forensia.investigation import investigation_session
+        from forensia.investigation import investigator as investigator_module
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -137,7 +137,7 @@ class InvestigateWiringTests(unittest.TestCase):
                 )
 
     def test_planner_only_session_gets_explicit_terminal_reason(self) -> None:
-        from forensia.ai.investigation import investigator as investigator_module
+        from forensia.investigation import investigator as investigator_module
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -168,7 +168,7 @@ class InvestigateWiringTests(unittest.TestCase):
                 )
 
     def test_terminal_reason_ignores_unrelated_or_executed_steps(self) -> None:
-        from forensia.ai.investigation import investigator as investigator_module
+        from forensia.investigation import investigator as investigator_module
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -214,10 +214,10 @@ class InvestigateWiringTests(unittest.TestCase):
     def test_cycle_executes_only_durably_eligible_hypotheses(self) -> None:
         """The cycle uses durable eligibility before calling the deep-dive runner."""
 
-        from forensia.ai.investigation import investigation_cycle
-        from forensia.ai.investigation.investigation_session import Ctx
         from forensia.core.memory import MemoryManager
         from forensia.core.session import Hypothesis, SessionState
+        from forensia.investigation import investigation_cycle
+        from forensia.investigation.investigation_session import Ctx
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -289,8 +289,8 @@ class InvestigateWiringTests(unittest.TestCase):
                 )
 
     def test_selection_failure_persists_failed_session_without_execution(self) -> None:
-        from forensia.ai.investigation import investigation_cycle
-        from forensia.ai.investigation import investigator as investigator_module
+        from forensia.investigation import investigation_cycle
+        from forensia.investigation import investigator as investigator_module
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -363,7 +363,7 @@ class InvestigateWiringTests(unittest.TestCase):
                 )
 
     def test_stopped_cycle_persists_state_before_final_refresh(self) -> None:
-        from forensia.ai.investigation import investigator as investigator_module
+        from forensia.investigation import investigator as investigator_module
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -415,8 +415,8 @@ class InvestigateWiringTests(unittest.TestCase):
                 self.assertEqual(states_seen_by_refresh, ["stopped"])
 
     def test_stop_classification_projects_terminal_tasks_to_memory(self) -> None:
-        from forensia.ai.investigation import investigator as investigator_module
         from forensia.core.memory import MemoryManager
+        from forensia.investigation import investigator as investigator_module
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -452,9 +452,9 @@ class ReportRefreshFailureTests(unittest.TestCase):
         from contextlib import redirect_stdout
         from unittest import mock
 
-        from forensia.ai.investigation import investigator as investigator_module
         from forensia.core.memory import MemoryManager
         from forensia.core.session import SessionState
+        from forensia.investigation import investigator as investigator_module
 
         async def _boom(**kwargs):
             raise TypeError("tuple indices must be integers or slices, not str")
@@ -498,9 +498,9 @@ class ReportRefreshFailureTests(unittest.TestCase):
         )
 
     def test_run_report_phase_skipped_off_cycle(self) -> None:
-        from forensia.ai.investigation import investigator as investigator_module
         from forensia.core.memory import MemoryManager
         from forensia.core.session import SessionState
+        from forensia.investigation import investigator as investigator_module
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -526,7 +526,7 @@ class ReportRefreshFailureTests(unittest.TestCase):
         self.assertEqual("skipped", refresh_status)
 
     def test_live_session_lease_blocks_startup_reconciliation(self) -> None:
-        from forensia.ai.investigation.investigation_session import (
+        from forensia.investigation.investigation_session import (
             reconcile_stale_sessions,
         )
 
@@ -551,7 +551,7 @@ class ReportRefreshFailureTests(unittest.TestCase):
     def test_stale_session_reconcile_keeps_historical_terminal_reasons(self) -> None:
         """Crash recovery abandons only expired running leases; past terminal
         rows keep whatever reason they were written with (R07)."""
-        from forensia.ai.investigation.investigation_session import (
+        from forensia.investigation.investigation_session import (
             reconcile_stale_sessions,
         )
 
@@ -579,11 +579,11 @@ class ReportRefreshFailureTests(unittest.TestCase):
         outage budget propagates and stops the session."""
         from unittest import mock
 
-        from forensia.ai.investigation import investigation_session
-        from forensia.ai.investigation import investigator as investigator_module
-        from forensia.ai.llm.llm_client import LLMServerUnavailableError
         from forensia.core.memory import MemoryManager
         from forensia.core.session import SessionState
+        from forensia.investigation import investigation_session
+        from forensia.investigation import investigator as investigator_module
+        from forensia.llm.llm_client import LLMServerUnavailableError
 
         async def _outage(**kwargs):
             raise LLMServerUnavailableError("server gone")
@@ -644,7 +644,7 @@ class TerminationDurableWorkTests(unittest.TestCase):
     """T05: the completion gate reads durable Gap/Task rows, not report prose."""
 
     def test_open_durable_gap_blocks_completion(self) -> None:
-        from forensia.ai.investigation.investigator import _check_termination
+        from forensia.investigation.investigator import _check_termination
 
         # B0 repro: prose total_gaps == 0 but one open termination-origin gap.
         status, no_progress_count, reason = _check_termination(
@@ -662,7 +662,7 @@ class TerminationDurableWorkTests(unittest.TestCase):
         self.assertEqual(reason, "")
 
     def test_empty_durable_work_completes_with_no_gaps_no_hypotheses(self) -> None:
-        from forensia.ai.investigation.investigator import _check_termination
+        from forensia.investigation.investigator import _check_termination
 
         status, no_progress_count, reason = _check_termination(
             report_only=False,
@@ -680,7 +680,7 @@ class TerminationDurableWorkTests(unittest.TestCase):
         )
 
     def test_open_durable_task_blocks_completion(self) -> None:
-        from forensia.ai.investigation.investigator import _check_termination
+        from forensia.investigation.investigator import _check_termination
 
         status, _, _ = _check_termination(
             report_only=False,
@@ -695,7 +695,7 @@ class TerminationDurableWorkTests(unittest.TestCase):
         self.assertIsNone(status)
 
     def test_durable_open_work_counts_read_authoritative_rows(self) -> None:
-        from forensia.ai.investigation.investigator import _durable_open_work_counts
+        from forensia.investigation.investigator import _durable_open_work_counts
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with CaseDB(Case.init(tmpdir)) as db:
@@ -715,8 +715,8 @@ class TerminationDurableWorkTests(unittest.TestCase):
                 self.assertEqual(_durable_open_work_counts(db), (1, 1))
 
     def test_llm_budget_exhaustion_is_resumable_terminal_stop(self) -> None:
-        from forensia.ai.investigation import investigator as investigator_module
         from forensia.core.session import LLMBudgetExceededError
+        from forensia.investigation import investigator as investigator_module
 
         async def exhausted(env):
             raise LLMBudgetExceededError(1, 1)
@@ -762,7 +762,7 @@ class ProgressBudgetTests(unittest.TestCase):
 
     @staticmethod
     def _run_loop(case, db, *, no_progress_limit, hook):
-        from forensia.ai.investigation import investigator as investigator_module
+        from forensia.investigation import investigator as investigator_module
         from forensia.knowledge.coverage import refresh_evidence_coverage
 
         # The pipeline refreshes coverage during analysis before investigation
@@ -785,11 +785,11 @@ class ProgressBudgetTests(unittest.TestCase):
                 investigator_module, "async_refresh_report_sections", _refresh
             ),
             mock.patch(
-                "forensia.ai.investigation.investigation_cycle._run_broad_plan_step",
+                "forensia.investigation.investigation_cycle._run_broad_plan_step",
                 new=mock.AsyncMock(return_value=False),
             ),
             mock.patch(
-                "forensia.ai.investigation.investigation_cycle.select_focus_hypotheses",
+                "forensia.investigation.investigation_cycle.select_focus_hypotheses",
                 return_value=[],
             ),
         ):

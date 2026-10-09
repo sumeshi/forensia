@@ -12,21 +12,21 @@ from __future__ import annotations
 import tempfile
 import unittest
 
-from forensia.ai.checking.assessment import assess_evidence_group
-from forensia.ai.hypotheses.hypothesis_manager import (
+from forensia.core.case import Case
+from forensia.core.session import Hypothesis, SessionState
+from forensia.db.database import CaseDB
+from forensia.investigation.hypotheses.hypothesis_manager import (
     MAX_SECTION_UPDATES,
     admit_new_hypothesis,
     merge_active_hypotheses,
     qualify_event_contexts,
     resolve_hypothesis,
 )
-from forensia.ai.hypotheses.hypothesis_model import (
+from forensia.investigation.hypotheses.hypothesis_model import (
     extract_semantic_triple,
     hypothesis_evidence_strength,
 )
-from forensia.core.case import Case
-from forensia.core.session import Hypothesis, SessionState
-from forensia.db.database import CaseDB
+from forensia.investigation.verification.assessment import assess_evidence_group
 from forensia.report.sections.section_taxonomy import sections_for_keypoint
 
 
@@ -286,7 +286,9 @@ def _setup_confirmed_invariant(db: CaseDB, hypothesis_id: str) -> None:
         "sufficiency_score = 0.8 WHERE hypothesis_id = ?",
         (hypothesis_id,),
     )
-    from forensia.ai.checking.sufficiency import create_hypothesis_evidence_link
+    from forensia.investigation.verification.sufficiency import (
+        create_hypothesis_evidence_link,
+    )
 
     db.execute(
         "INSERT INTO evtx_events (evidence_id, source_file) VALUES (?, 'test-source')",
@@ -429,16 +431,16 @@ class TestResolvedHypothesisDedup:
                 )
 
     def test_spec_change_reopens_resolved_hypothesis(self) -> None:
-        from forensia.ai.checking.sufficiency import (
+        from forensia.investigation.hypotheses.hypothesis_store import (
+            _upsert_hypothesis,
+            load_persisted_hypotheses,
+        )
+        from forensia.investigation.selection import select_focus_hypotheses
+        from forensia.investigation.verification.sufficiency import (
             create_hypothesis_evidence_link,
             evidence_link_currentness,
             load_evidence_links,
         )
-        from forensia.ai.hypotheses.hypothesis_store import (
-            _upsert_hypothesis,
-            load_persisted_hypotheses,
-        )
-        from forensia.ai.investigation.selection import select_focus_hypotheses
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with CaseDB(Case.init(tmpdir)) as db:
@@ -567,7 +569,9 @@ class TestResolvedHypothesisDedup:
                 )
 
     def test_same_id_spec_update_with_different_description_reopens_once(self) -> None:
-        from forensia.ai.hypotheses.hypothesis_store import _upsert_hypothesis
+        from forensia.investigation.hypotheses.hypothesis_store import (
+            _upsert_hypothesis,
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with CaseDB(Case.init(tmpdir)) as db:
@@ -909,8 +913,8 @@ class CollectSectionRequestsTests(unittest.TestCase):
     def test_stale_section_produces_render_request(self) -> None:
         from pathlib import Path
 
-        from forensia.ai.sections.section_refresher import collect_section_requests
         from forensia.report.sections.report_input import sections_from_template_dir
+        from forensia.report.sections.section_refresher import collect_section_requests
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -956,8 +960,8 @@ class CollectSectionRequestsTests(unittest.TestCase):
     def test_failure_marker_produces_retry_request_even_when_fresh(self) -> None:
         from pathlib import Path
 
-        from forensia.ai.sections.section_refresher import collect_section_requests
         from forensia.report.sections.report_input import section_source_from_path
+        from forensia.report.sections.section_refresher import collect_section_requests
 
         marker = "_Section could not be generated due to an internal error._"
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -990,8 +994,8 @@ class CollectSectionRequestsTests(unittest.TestCase):
     def test_force_all_returns_every_template(self) -> None:
         from pathlib import Path
 
-        from forensia.ai.sections.section_refresher import collect_section_requests
         from forensia.report.sections.report_input import sections_from_template_dir
+        from forensia.report.sections.section_refresher import collect_section_requests
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)

@@ -10,28 +10,28 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from forensia.ai.prompts.prompt_context import (
+from forensia.config import (
+    reload_settings,
+)
+from forensia.context.prompt_context import (
     _build_event_id_guidance,
     _build_schema_guidance,
     _trim_dynamic_content,
     slim_report_brief_for_section,
     truncate_context_sections,
 )
-from forensia.ai.prompts.prompt_sections import (
+from forensia.core.case import Case
+from forensia.core.session import Hypothesis, PlannedQuery
+from forensia.db.database import CaseDB
+from forensia.report.sections.evidence_projection import (
+    project_report_evidence_row,
+)
+from forensia.report.sections.prompts import (
     build_paragraph_narrate_messages,
     build_section_outline_messages,
     build_structured_classify_messages,
 )
-from forensia.ai.prompts.report_evidence_projection import (
-    project_report_evidence_row,
-)
-from forensia.ai.sections.section_exec import question_report_brief
-from forensia.config import (
-    reload_settings,
-)
-from forensia.core.case import Case
-from forensia.core.session import Hypothesis, PlannedQuery
-from forensia.db.database import CaseDB
+from forensia.report.sections.section_exec import question_report_brief
 from forensia.report.sections.section_quality import validate_body_evidence_ids
 
 
@@ -81,7 +81,7 @@ class TestConfirmedFindingsBlock(unittest.TestCase):
     """Tests for the <CONFIRMED_FINDINGS> block in build_query_intent_messages."""
 
     def test_no_findings_omits_block(self) -> None:
-        from forensia.ai.prompts.prompt_investigation import build_query_intent_messages
+        from forensia.investigation.prompts import build_query_intent_messages
 
         h = Hypothesis(description="test", id="H-001")
         msgs = build_query_intent_messages(
@@ -94,7 +94,7 @@ class TestConfirmedFindingsBlock(unittest.TestCase):
         self.assertNotIn("<CONFIRMED_FINDINGS>", system_content)
 
     def test_evidence_ids_string_parsed(self) -> None:
-        from forensia.ai.prompts.prompt_investigation import build_query_intent_messages
+        from forensia.investigation.prompts import build_query_intent_messages
 
         h = Hypothesis(description="test", id="H-001")
         findings = [
@@ -126,7 +126,7 @@ class PriorAttemptsBlockTests(unittest.TestCase):
     """
 
     def test_render_prior_attempts_structured_fields(self) -> None:
-        from forensia.ai.prompts.prompt_investigation import render_prior_attempts
+        from forensia.investigation.prompts import render_prior_attempts
 
         block = render_prior_attempts(
             [
@@ -155,7 +155,7 @@ class PriorAttemptsBlockTests(unittest.TestCase):
         self.assertIn("do_not_repeat_query_ids: q-001, q-002", block)
 
     def test_intent_messages_carry_structured_attempts(self) -> None:
-        from forensia.ai.prompts.prompt_investigation import build_query_intent_messages
+        from forensia.investigation.prompts import build_query_intent_messages
 
         msgs = build_query_intent_messages(
             hypothesis=Hypothesis(id="H-001", description="test hypothesis"),
@@ -177,7 +177,7 @@ class PriorAttemptsBlockTests(unittest.TestCase):
         self.assertNotIn("recent_history:", system)
 
     def test_investigation_prompts_project_repeated_and_raw_context(self) -> None:
-        from forensia.ai.prompts.prompt_investigation import (
+        from forensia.investigation.prompts import (
             build_query_intent_messages,
             build_verdict_review_messages,
         )
@@ -188,7 +188,7 @@ class PriorAttemptsBlockTests(unittest.TestCase):
             confirm_when={"co_observed_event_ids": [4625]},
         )
         with patch(
-            "forensia.ai.prompts.prompt_investigation._org_knowledge_block",
+            "forensia.investigation.prompts._org_knowledge_block",
             return_value="",
         ):
             plan_messages = build_query_intent_messages(
@@ -250,10 +250,10 @@ class PriorAttemptsBlockTests(unittest.TestCase):
         self.assertNotIn("discard-me", verdict_user)
 
     def test_intent_knowledge_terms_include_previous_check_feedback(self) -> None:
-        from forensia.ai.prompts.prompt_investigation import build_query_intent_messages
+        from forensia.investigation.prompts import build_query_intent_messages
 
         with patch(
-            "forensia.ai.prompts.prompt_investigation._org_knowledge_block",
+            "forensia.investigation.prompts._org_knowledge_block",
             return_value="",
         ) as knowledge_block:
             build_query_intent_messages(
@@ -474,8 +474,8 @@ class NarratePromptContractTests(unittest.TestCase):
 def test_section_knowledge_selection_uses_template_frontmatter_tags(
     tmp_path: Path,
 ) -> None:
-    from forensia.ai.sections.section_block_plan import _inject_org_knowledge
     from forensia.knowledge.external import scan_knowledge_dir, set_knowledge_docs
+    from forensia.report.sections.section_block_plan import _inject_org_knowledge
 
     (tmp_path / "allowed.md").write_text(
         "---\ntype: knowledge\ntitle: Timeline notes\n"
@@ -509,8 +509,8 @@ def test_section_knowledge_selection_uses_template_frontmatter_tags(
 def test_section_knowledge_selection_uses_latest_missing_question(
     tmp_path: Path,
 ) -> None:
-    from forensia.ai.sections.section_block_plan import _inject_org_knowledge
     from forensia.knowledge.external import scan_knowledge_dir, set_knowledge_docs
+    from forensia.report.sections.section_block_plan import _inject_org_knowledge
 
     (tmp_path / "log-clearing.md").write_text(
         "---\ntype: knowledge\ntitle: Event 1102 log clearing\n"
@@ -540,8 +540,8 @@ def test_section_knowledge_selection_uses_latest_missing_question(
 def test_section_knowledge_llm_compaction_preserves_fragment_metadata(
     tmp_path: Path, monkeypatch
 ) -> None:
-    from forensia.ai.sections.section_block_plan import _inject_org_knowledge
     from forensia.knowledge.external import scan_knowledge_dir, set_knowledge_docs
+    from forensia.report.sections.section_block_plan import _inject_org_knowledge
 
     (tmp_path / "log-clearing.md").write_text(
         "---\ntype: knowledge\ntitle: Event 1102 log clearing\n"
@@ -550,7 +550,7 @@ def test_section_knowledge_llm_compaction_preserves_fragment_metadata(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "forensia.ai.compaction.llm_compact",
+        "forensia.llm.compaction.llm_compact",
         lambda text, budget, **kwargs: "Check event 1102 and adjacent service events.",
     )
     set_knowledge_docs(scan_knowledge_dir(tmp_path))

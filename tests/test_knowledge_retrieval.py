@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from forensia.ai.prompts.prompt_context import _org_knowledge_guidance
+from forensia.context.prompt_context import _org_knowledge_guidance
 from forensia.knowledge.external import (
     KnowledgeDoc,
     scan_knowledge_dir,

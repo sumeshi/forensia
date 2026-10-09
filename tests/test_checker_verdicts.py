@@ -4,7 +4,6 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from forensia.ai.checking.checker import check_query_result
 from forensia.config import (
     reload_settings,
     resolve_llm_config,
@@ -12,6 +11,7 @@ from forensia.config import (
 from forensia.core.case import Case
 from forensia.core.session import Hypothesis, PlannedQuery
 from forensia.db.database import CaseDB
+from forensia.investigation.verification.checker import check_query_result
 
 
 def _llm_base_url() -> str:
@@ -30,7 +30,7 @@ class CheckerVerdictTests(unittest.TestCase):
             with (
                 CaseDB(case) as db,
                 patch(
-                    "forensia.ai.llm.json_response.request_llm_json",
+                    "forensia.llm.json_response.request_llm_json",
                     return_value={
                         "query_id": "Q1",
                         "verdict": "unclear",
@@ -38,7 +38,7 @@ class CheckerVerdictTests(unittest.TestCase):
                     },
                 ),
                 patch(
-                    "forensia.ai.checking.checker.apply_check_result",
+                    "forensia.investigation.verification.checker.apply_check_result",
                     return_value=(0, False),
                 ),
             ):
@@ -87,11 +87,11 @@ class CheckerVerdictTests(unittest.TestCase):
             with (
                 CaseDB(case) as db,
                 patch(
-                    "forensia.ai.llm.json_response.request_llm_json",
+                    "forensia.llm.json_response.request_llm_json",
                     side_effect=responses,
                 ),
                 patch(
-                    "forensia.ai.checking.checker.apply_check_result",
+                    "forensia.investigation.verification.checker.apply_check_result",
                     side_effect=_capture,
                 ),
             ):
@@ -143,11 +143,11 @@ class CheckerVerdictTests(unittest.TestCase):
             with (
                 CaseDB(case) as db,
                 patch(
-                    "forensia.ai.llm.json_response.request_llm_json",
+                    "forensia.llm.json_response.request_llm_json",
                     side_effect=responses,
                 ),
                 patch(
-                    "forensia.ai.checking.checker.apply_check_result",
+                    "forensia.investigation.verification.checker.apply_check_result",
                     side_effect=_capture,
                 ),
             ):
@@ -196,11 +196,11 @@ class CheckerVerdictTests(unittest.TestCase):
             with (
                 CaseDB(case) as db,
                 patch(
-                    "forensia.ai.llm.json_response.request_llm_json",
+                    "forensia.llm.json_response.request_llm_json",
                     side_effect=responses,
                 ),
                 patch(
-                    "forensia.ai.checking.checker.apply_check_result",
+                    "forensia.investigation.verification.checker.apply_check_result",
                     side_effect=_capture,
                 ),
             ):
@@ -265,11 +265,11 @@ class CheckerVerdictTests(unittest.TestCase):
             with (
                 CaseDB(case) as db,
                 patch(
-                    "forensia.ai.llm.json_response.request_llm_json",
+                    "forensia.llm.json_response.request_llm_json",
                     side_effect=responses,
                 ),
                 patch(
-                    "forensia.ai.checking.checker.apply_check_result",
+                    "forensia.investigation.verification.checker.apply_check_result",
                     side_effect=_capture,
                 ),
             ):
@@ -319,7 +319,7 @@ class CheckerVerdictTests(unittest.TestCase):
             with (
                 CaseDB(case) as db,
                 patch(
-                    "forensia.ai.llm.json_response.request_llm_json",
+                    "forensia.llm.json_response.request_llm_json",
                     return_value={
                         "query_id": "Q1",
                         "verdict": "inconclusive",
@@ -360,7 +360,7 @@ class CheckerVerdictTests(unittest.TestCase):
                     },
                 ),
                 patch(
-                    "forensia.ai.checking.checker.apply_check_result",
+                    "forensia.investigation.verification.checker.apply_check_result",
                     side_effect=_capture,
                 ),
             ):

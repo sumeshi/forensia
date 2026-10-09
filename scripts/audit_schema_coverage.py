@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Audit coverage of _schema/event_ids.yaml and question_routing.yaml against rulepacks and templates.
+"""Audit SQL rule event IDs and question-routing contracts against packaged schemas.
+
+The event-ID check covers SQL fallback rules. Admitted Sigma rules have their own
+target bindings and validation evidence in sigma_bundle.json and are not measured here.
 
 Usage:
     python scripts/audit_schema_coverage.py
@@ -23,9 +26,12 @@ if str(SRC_ROOT) not in sys.path:
 from forensia.knowledge.catalog import expand_catalog_sql_placeholders
 from forensia.knowledge.rules.loader import load_rules_from_dir
 
-SCHEMA_DIR = REPO_ROOT / "src" / "forensia" / "knowledge" / "rulepacks" / "_schema"
-RULES_DIR = REPO_ROOT / "src" / "forensia" / "knowledge" / "rulepacks"
-TEMPLATES_DIR = REPO_ROOT / "src" / "forensia" / "report" / "templates"
+SCHEMA_DIR = REPO_ROOT / "src" / "forensia" / "data" / "schema"
+RULES_DIR = REPO_ROOT / "src" / "forensia" / "data" / "rules"
+QUESTION_ROUTING_EVAL = (
+    REPO_ROOT / "scripts" / "eval" / "fixtures" / "question_routing.yaml"
+)
+TEMPLATES_DIR = REPO_ROOT / "src" / "forensia" / "data" / "report"
 
 
 def _load_yaml(path: Path) -> dict:
@@ -78,7 +84,7 @@ def _extract_event_ids_from_sql(sql: str) -> set[int]:
 
 
 def _collect_rule_event_ids(rules_dir: Path) -> set[int]:
-    """Extract all event_id values from rule YAML query fields using sqlglot."""
+    """Extract event_id values from SQL fallback rule queries using sqlglot."""
     event_ids: set[int] = set()
     for rule in load_rules_from_dir(rules_dir):
         event_ids.update(_extract_event_ids_from_sql(rule.query))
@@ -287,7 +293,7 @@ def _audit_question_specs() -> list[str]:
 
 
 def _audit_question_routing_eval() -> list[str]:
-    path = SCHEMA_DIR / "question_routing_eval.yaml"
+    path = QUESTION_ROUTING_EVAL
     if not path.exists():
         return ["question_routing_eval.yaml is missing"]
     data = _load_yaml(path)
@@ -343,17 +349,23 @@ def main() -> None:
     rule_event_ids = _collect_rule_event_ids(RULES_DIR)
 
     uncovered_rules = rule_event_ids - schema_event_ids
-    unused_schema = schema_event_ids - rule_event_ids
+    unused_schema = schema_event_ids - rule_event_ids if rule_event_ids else set()
 
     if uncovered_rules:
         print(
-            f"\n⚠  Event IDs in rules but NOT in _schema/event_ids.yaml ({len(uncovered_rules)} uncovered):"
+            f"\n⚠  Event IDs in rules but NOT in data/schema/event_ids.yaml ({len(uncovered_rules)} uncovered):"
         )
         for eid in sorted(uncovered_rules):
             print(f"   - {eid}")
         coverage_issues += len(uncovered_rules)
     else:
-        print("\n✓ All rule-event IDs are covered in event_ids.yaml")
+        if rule_event_ids:
+            print("\n✓ All SQL fallback rule-event IDs are covered in event_ids.yaml")
+        else:
+            print(
+                "\nNo SQL fallback rule-event IDs to compare with event_ids.yaml; "
+                "Sigma bindings are validated from sigma_bundle.json."
+            )
 
     if unused_schema:
         print(f"  Schema entries not referenced by any rule: {sorted(unused_schema)}")
@@ -364,7 +376,7 @@ def main() -> None:
             f"\n✓ Question routing defines {len(schema_questions)} types: {sorted(schema_questions)}"
         )
     else:
-        print("\n⚠  No question types found in _schema/question_routing.yaml")
+        print("\n⚠  No question types found in data/schema/question_routing.yaml")
         coverage_issues += 1
 
     question_issues = _audit_question_specs()

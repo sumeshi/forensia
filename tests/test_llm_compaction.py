@@ -1,4 +1,4 @@
-"""Tests for forensia.ai.compaction — stage-2 LLM compaction with guards."""
+"""Tests for forensia.llm.compaction — stage-2 LLM compaction with guards."""
 
 from __future__ import annotations
 
@@ -6,12 +6,12 @@ from unittest.mock import patch
 
 import pytest
 
-from forensia.ai.compaction import (
+from forensia.core.compaction import TRUNCATION_MARKER
+from forensia.llm.compaction import (
     CompactionPreservationError,
     llm_compact,
     structured_compact,
 )
-from forensia.core.compaction import TRUNCATION_MARKER
 
 
 class TestLlmCompact:
@@ -20,7 +20,7 @@ class TestLlmCompact:
 
         text = "Event 4624 from evtx_events. " * 50
         with patch(
-            "forensia.ai.compaction._call_llm",
+            "forensia.llm.compaction._call_llm",
             side_effect=LLMBudgetExceededError(1, 1),
         ):
             with pytest.raises(LLMBudgetExceededError):
@@ -29,7 +29,7 @@ class TestLlmCompact:
     def test_mechanical_sufficiency(self) -> None:
         """When text < 1.5x budget, mechanical is used (no LLM call)."""
         text = "x" * 140  # 140 < 100 * 1.5
-        with patch("forensia.ai.compaction._call_llm") as mock_llm:
+        with patch("forensia.llm.compaction._call_llm") as mock_llm:
             assert (
                 llm_compact("short text", 100, base_url="http://x", model="m")
                 == "short text"
@@ -43,7 +43,7 @@ class TestLlmCompact:
     def test_fallback_on_llm_exception(self) -> None:
         text = "Event 4624 from evtx_events. " * 50
         with patch(
-            "forensia.ai.compaction._call_llm", side_effect=RuntimeError("LLM down")
+            "forensia.llm.compaction._call_llm", side_effect=RuntimeError("LLM down")
         ):
             result = llm_compact(text, 200, base_url="http://x", model="m")
         assert len(result) <= 200
@@ -60,7 +60,7 @@ class TestLlmCompact:
         text = anchors + "\n" + "Investigation detail. " * 100
         # A plausible summary keeps the event/table but loses evidence identity and paths.
         llm_response = "Summary: Event 4624 from evtx_events on host WS-01."
-        with patch("forensia.ai.compaction._call_llm", return_value=llm_response):
+        with patch("forensia.llm.compaction._call_llm", return_value=llm_response):
             result = llm_compact(text, 400, base_url="http://x", model="m")
         assert TRUNCATION_MARKER in result
         assert "4624" in result and "evtx_events" in result
@@ -69,7 +69,7 @@ class TestLlmCompact:
 
     def test_fallback_on_empty_llm_output(self) -> None:
         text = "Event 4624 from evtx_events. " * 50
-        with patch("forensia.ai.compaction._call_llm", return_value=""):
+        with patch("forensia.llm.compaction._call_llm", return_value=""):
             result = llm_compact(text, 200, base_url="http://x", model="m")
         assert len(result) <= 200
         assert result  # not empty
@@ -77,7 +77,7 @@ class TestLlmCompact:
     def test_followup_compaction_cannot_drop_essential_tokens(self) -> None:
         text = "Event 4624 from evtx_events. " + "original detail. " * 100
         llm_response = "x" * 500 + " Event 4624 from evtx_events"
-        with patch("forensia.ai.compaction._call_llm", return_value=llm_response):
+        with patch("forensia.llm.compaction._call_llm", return_value=llm_response):
             result = llm_compact(text, 200, base_url="http://x", model="m")
         assert "4624" in result
         assert "evtx_events" in result
@@ -87,7 +87,7 @@ class TestLlmCompact:
         text = "Event 4624 from evtx_events table. " * 50
         llm_response = "Summarised: Event 4624 from evtx_events."
         with patch(
-            "forensia.ai.compaction._call_llm", return_value=llm_response
+            "forensia.llm.compaction._call_llm", return_value=llm_response
         ) as mock_llm:
             r1 = llm_compact(text, 200, base_url="http://x", model="m")
             r2 = llm_compact(text, 200, base_url="http://x", model="m")
@@ -101,7 +101,7 @@ class TestLlmCompact:
         llm_response_200 = "A" * 180
         llm_response_300 = "B" * 280
         with patch(
-            "forensia.ai.compaction._call_llm",
+            "forensia.llm.compaction._call_llm",
             side_effect=[llm_response_200, llm_response_300],
         ) as mock_llm:
             r1 = llm_compact(text, 200, base_url="http://x", model="m")
@@ -111,7 +111,7 @@ class TestLlmCompact:
 
     def test_impossible_required_reference_preservation_is_explicit(self) -> None:
         with (
-            patch("forensia.ai.compaction._call_llm", return_value="details"),
+            patch("forensia.llm.compaction._call_llm", return_value="details"),
             pytest.raises(CompactionPreservationError, match="too small"),
         ):
             llm_compact(
@@ -124,7 +124,7 @@ class TestLlmCompact:
     def test_preserve_pattern_with_capture_group_uses_full_match(self) -> None:
         text = ("case evidence ABC-1234 should remain. " * 30).strip()
         response = "case evidence ABC-1234 should remain."
-        with patch("forensia.ai.compaction._call_llm", return_value=response):
+        with patch("forensia.llm.compaction._call_llm", return_value=response):
             result = llm_compact(
                 text,
                 100,
@@ -139,7 +139,7 @@ class TestEnforceSystemBudgetCompaction:
     """Verify that _enforce_system_budget tries compacting before dropping."""
 
     def test_compacted_xml_section_keeps_closing_tag(self) -> None:
-        from forensia.ai.prompts.prompt_context import _enforce_system_budget
+        from forensia.context.prompt_context import _enforce_system_budget
 
         playbook = "A" * 5000
         knowledge_lines = "\n".join(f"knowledge line {i}" for i in range(600))
@@ -152,11 +152,11 @@ class TestEnforceSystemBudgetCompaction:
     def test_real_section_plan_prompt_respects_default_budget(self) -> None:
         import os
 
-        from forensia.ai.prompts.prompt_context import _enforce_system_budget
-        from forensia.ai.prompts.prompt_sections import (
+        from forensia.config import reload_settings
+        from forensia.context.prompt_context import _enforce_system_budget
+        from forensia.report.sections.prompts import (
             build_section_agent_plan_messages,
         )
-        from forensia.config import reload_settings
 
         old_budget = os.environ.get("FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS")
         old_total = os.environ.get("FORENSIA_PROMPT_BUDGET_TOKENS")
@@ -197,11 +197,11 @@ class TestEnforceSystemBudgetCompaction:
     def test_real_section_plan_retains_question_specific_reference(self) -> None:
         import os
 
-        from forensia.ai.prompts.prompt_context import _enforce_system_budget
-        from forensia.ai.prompts.prompt_sections import (
+        from forensia.config import reload_settings
+        from forensia.context.prompt_context import _enforce_system_budget
+        from forensia.report.sections.prompts import (
             build_section_agent_plan_messages,
         )
-        from forensia.config import reload_settings
 
         old_budget = os.environ.get("FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS")
         old_total = os.environ.get("FORENSIA_PROMPT_BUDGET_TOKENS")
@@ -245,7 +245,7 @@ class TestEnforceSystemBudgetCompaction:
             reload_settings()
 
     def test_section_plan_uses_neutral_playbook_for_methodology(self) -> None:
-        from forensia.ai.prompts.prompt_sections import (
+        from forensia.report.sections.prompts import (
             build_section_agent_plan_messages,
         )
 
@@ -274,7 +274,7 @@ class TestEnforceSystemBudgetCompaction:
         )
 
     def test_section_plan_scopes_event_reference_to_contract(self) -> None:
-        from forensia.ai.prompts.prompt_sections import (
+        from forensia.report.sections.prompts import (
             build_section_agent_plan_messages,
         )
 
@@ -297,7 +297,7 @@ class TestEnforceSystemBudgetCompaction:
         assert "4624" in messages[0]["content"]
 
     def test_section_plan_prior_runs_keep_action_result_reason(self) -> None:
-        from forensia.ai.prompts.report_evidence_projection import (
+        from forensia.report.sections.evidence_projection import (
             project_section_plan_prior_runs,
         )
 
@@ -329,7 +329,7 @@ class TestEnforceSystemBudgetCompaction:
         ]
 
     def test_section_plan_catalog_keeps_late_explicit_candidate(self) -> None:
-        from forensia.ai.prompts.prompt_sections import (
+        from forensia.report.sections.prompts import (
             build_section_agent_plan_messages,
         )
 
@@ -358,7 +358,7 @@ class TestEnforceSystemBudgetCompaction:
         assert "target_late_keypoint" in messages[1]["content"]
 
     def test_neutral_plan_ignores_global_catalog_terms(self) -> None:
-        from forensia.ai.prompts.prompt_sections import (
+        from forensia.report.sections.prompts import (
             build_section_agent_plan_messages,
         )
 
@@ -412,7 +412,7 @@ class TestStructuredCompact:
         text = self._many_sections()
         llm_response = "Summary: Event 4624 from evtx_events."
         with patch(
-            "forensia.ai.compaction._call_llm", return_value=llm_response
+            "forensia.llm.compaction._call_llm", return_value=llm_response
         ) as mock_llm:
             out = structured_compact(text, 2000, base_url="http://x", model="m")
         mock_llm.assert_called_once()
@@ -433,7 +433,7 @@ class TestStructuredCompact:
 
     def test_reducing_a_reduction_changes_nothing(self) -> None:
         with patch(
-            "forensia.ai.compaction._call_llm",
+            "forensia.llm.compaction._call_llm",
             return_value="Summary: Event 4624 from evtx_events table.",
         ) as first_call:
             first = structured_compact(
@@ -442,7 +442,7 @@ class TestStructuredCompact:
         first_call.assert_called_once()
         # Content already produced by this reduction is never reduced again
         # (no recursive degradation).
-        with patch("forensia.ai.compaction._call_llm") as mock_llm:
+        with patch("forensia.llm.compaction._call_llm") as mock_llm:
             out = structured_compact(first, 2000, base_url="http://x", model="m")
         mock_llm.assert_not_called()
         assert out == first

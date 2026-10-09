@@ -64,22 +64,6 @@ def report_slug_family(key: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Section key → playbook section name
-# ---------------------------------------------------------------------------
-
-SECTION_KEY_PLAYBOOK_MAP: dict[str, str] = {
-    "events": "event_ids",
-    "priority": "event_ids",
-    "logon": "logon_types",
-    "fp": "fp_guidance",
-    "schema": "schema",
-    "extractor": "schema",
-    "app": "app_catalog",
-    "artifact": "artifact_inference",
-    "ioc": "ioc_catalog",
-}
-
-# ---------------------------------------------------------------------------
 # Keypoint → section keys (which sections include a given keypoint)
 # ---------------------------------------------------------------------------
 

@@ -6,16 +6,16 @@ import datetime
 import unittest
 from typing import Any
 
-from forensia.ai.checking.check_guardrails import (
+from forensia.core.session import Hypothesis
+from forensia.investigation.verification.check_guardrails import (
     annotate_benign_context,
     guardrail_check_payload,
     verify_verdict_consistency,
 )
-from forensia.ai.checking.check_normalize import (
+from forensia.investigation.verification.check_normalize import (
     filter_memory_updates,
     validate_extracted_findings,
 )
-from forensia.core.session import Hypothesis
 
 
 def _hypothesis(

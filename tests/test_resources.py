@@ -9,7 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from forensia.knowledge.resources import rulepacks_dir, schema_dir
+from forensia.knowledge.resources import (
+    schema_dir,
+    sigma_bundle_path,
+    sigma_license_path,
+)
 from forensia.report.resources import (
     render_templates_dir,
     report_formats_path,
@@ -19,12 +23,10 @@ from forensia.report.resources import (
 
 def test_runtime_resources_are_readable() -> None:
     resources = (
-        rulepacks_dir() / "windows",
-        schema_dir() / "sigma.yaml",
+        schema_dir() / "artifact_capabilities.yaml",
         schema_dir() / "verdict_taxonomy.yaml",
-        rulepacks_dir() / "windows" / "security_log_cleared.yaml",
-        rulepacks_dir() / "windows" / "defender_realtime_disabled.yaml",
-        rulepacks_dir() / "windows" / "powershell_encoded_command.yaml",
+        sigma_bundle_path(),
+        sigma_license_path(),
         report_templates_dir() / "1_overview.md",
         report_formats_path(),
         render_templates_dir() / "report.html.j2",
@@ -62,16 +64,19 @@ def wheel_paths(tmp_path_factory: pytest.TempPathFactory) -> set[str]:
 
 def test_wheel_packages_runtime_resources(wheel_paths: set[str]) -> None:
     required = {
-        "forensia/knowledge/rulepacks/_schema/verdict_taxonomy.yaml",
-        "forensia/knowledge/rulepacks/_schema/sigma.yaml",
-        "forensia/knowledge/rulepacks/windows/security_log_cleared.yaml",
-        "forensia/knowledge/rulepacks/windows/defender_realtime_disabled.yaml",
-        "forensia/knowledge/rulepacks/windows/powershell_encoded_command.yaml",
-        "forensia/report/templates/1_overview.md",
-        "forensia/report/templates/_formats/report.yaml",
-        "forensia/report/render/templates/report.html.j2",
+        "forensia/data/schema/verdict_taxonomy.yaml",
+        "forensia/data/schema/artifact_capabilities.yaml",
+        "forensia/data/sigma/sigma_bundle.json",
+        "forensia/data/sigma/SIGMA_LICENSE.txt",
+        "forensia/data/report/1_overview.md",
+        "forensia/data/report/_formats/report.yaml",
+        "forensia/data/render/report.html.j2",
     }
     assert required <= wheel_paths
-    assert any(
-        path.startswith("forensia/knowledge/rulepacks/windows/") for path in wheel_paths
+    assert not any(
+        path.startswith(("forensia/ai/", "scripts/")) for path in wheel_paths
+    )
+    assert not any(
+        path.endswith(("/sigma.yaml", "/question_routing_eval.yaml", "/rules/sigma.py"))
+        for path in wheel_paths
     )

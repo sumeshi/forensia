@@ -8,12 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from forensia.ai.case_profile import build_case_profile, observed_event_ids
-from forensia.ai.prompts.prompt_sections import (
-    build_paragraph_narrate_messages,
-    build_section_outline_messages,
-)
-from forensia.ai.prompts.sql_templates import validate_select_sql
+from forensia.context.case_profile import build_case_profile, observed_event_ids
+from forensia.context.sql_templates import validate_select_sql
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.db.database import CaseDB
@@ -28,6 +24,10 @@ from forensia.report.render.writer import (
 from forensia.report.report_brief import _query_prior_sections
 from forensia.report.report_validation import derive_publication_state
 from forensia.report.sections.narrative_review import review_narrative_body
+from forensia.report.sections.prompts import (
+    build_paragraph_narrate_messages,
+    build_section_outline_messages,
+)
 from forensia.report.sections.report_input import (
     ReportSpecError,
     decide_report_sources,

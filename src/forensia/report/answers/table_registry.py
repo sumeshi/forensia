@@ -337,7 +337,7 @@ def _table_block_columns(
 
 @lru_cache(maxsize=1)
 def _load_table_captions() -> dict[str, dict[str, str]]:
-    """Load per-builder caption/empty templates from rulepacks/_schema/report_tables.yaml."""
+    """Load per-builder caption/empty templates from data/schema/report_tables.yaml."""
     import yaml
 
     path = schema_dir() / "report_tables.yaml"

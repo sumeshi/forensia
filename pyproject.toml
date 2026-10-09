@@ -38,7 +38,6 @@ dependencies = [
     "rich==15.0.0",
     "sqlglot==30.11.0",
     "typer==0.26.7",
-    "pysigma==2.0.0",
 ]
 
 [project.scripts]
@@ -57,17 +56,22 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 forensia = [
-    "report/render/templates/*.j2",
-    "report/render/templates/partials/*.j2",
-    "report/templates/*.md",
-    "report/templates/_formats/*.yaml",
-    "knowledge/rulepacks/*/*.yaml",
-    "knowledge/rulepacks/_schema/*.yaml",
-    "knowledge/rulepacks/_schema/playbook/*.md",
+    "data/render/*.j2",
+    "data/render/partials/*.j2",
+    "data/report/*.md",
+    "data/report/_formats/*.yaml",
+    "data/rules/*/*.yaml",
+    "data/schema/*.yaml",
+    "data/playbook/*.md",
+    "data/sigma/*.json",
+    "data/sigma/*.txt",
 ]
 
 [dependency-groups]
 dev = [
+    "pysigma==1.5.1",
+    "pysigma-pipeline-sysmon==2.0.0",
+    "pysigma-pipeline-windows==2.0.1",
     "pytest>=9.0.3",
     "ruff>=0.15",
 ]
@@ -87,3 +91,6 @@ select = ["F", "I", "UP"]
 [tool.ruff.lint.per-file-ignores]
 # scripts/ are standalone audit tools, not part of the package import graph.
 "scripts/*" = ["E402"]
+
+[tool.uv.sources]
+pysigma-pipeline-windows = { git = "https://github.com/SigmaHQ/pySigma-pipeline-windows", rev = "5d7170663e3799e6cafaa2d0847ce30a5489827c" }

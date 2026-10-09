@@ -1,0 +1,134 @@
+# Native EVTX targets are scoped by channel and exact provider. Event payload keys
+# default to case-sensitive reads from winlog.event_data; this mapping holds only
+# normalized envelope fields and narrow semantic/type exceptions.
+services:
+  security: Security
+  sysmon: Microsoft-Windows-Sysmon/Operational
+  system: System
+  windefend: Microsoft-Windows-Windows Defender/Operational
+  powershell:
+    - Microsoft-Windows-PowerShell/Operational
+    - PowerShellCore/Operational
+  powershell-classic: Windows PowerShell
+  diagnosis-scripted: Microsoft-Windows-Diagnosis-Scripted/Operational
+  terminalservices-localsessionmanager: Microsoft-Windows-TerminalServices-LocalSessionManager/Operational
+
+providers:
+  security:
+    - Microsoft-Windows-Security-Auditing
+    - Microsoft-Windows-Eventlog
+  sysmon: Microsoft-Windows-Sysmon
+  system: []
+  windefend: Microsoft-Windows-Windows Defender
+  powershell:
+    - Microsoft-Windows-PowerShell
+    - PowerShellCore
+  powershell-classic: PowerShell
+  diagnosis-scripted: Microsoft-Windows-Diagnosis-Scripted
+  terminalservices-localsessionmanager: Microsoft-Windows-TerminalServices-LocalSessionManager
+
+# Security 1102 is emitted by the Eventlog provider; other Security audit
+# events use Microsoft-Windows-Security-Auditing.
+provider_event_ids:
+  security:
+    Microsoft-Windows-Eventlog: [1102]
+
+fields:
+  EventID:
+    expression: event_id
+    type: number
+  Channel:
+    expression: channel
+    type: string
+  Computer:
+    expression: computer
+    type: string
+  Provider_Name:
+    expression: "json_extract_string(raw_json, '$.winlog.provider.name')"
+    type: string
+  Address:
+    expression: "json_extract_string(raw_json, '$.userdata.EventXML.Address')"
+    type: string
+    services: [terminalservices-localsessionmanager]
+    event_ids: [21]
+  NewValue:
+    type: string
+    paths:
+      windefend: '$.winlog.event_data."New Value"'
+  # Windows PowerShell classic serializes named Data as an XML text array.
+  Data:
+    path: '$.winlog.event_data.Data."#text"'
+    type: string
+    services: [powershell-classic]
+  LogonType:
+    expression: "try_cast(logon_type AS BIGINT)"
+    type: number
+    services: [security]
+    event_ids: [4624, 4625, 4634]
+  # Security 4688 has no OriginalFileName field; Sysmon's event 1 does.
+  OriginalFileName:
+    type: string
+    services: [sysmon]
+  Company:
+    type: string
+    services: [sysmon]
+  Product:
+    type: string
+    services: [sysmon]
+  Description:
+    type: string
+    services: [sysmon]
+  FileVersion:
+    type: string
+    services: [sysmon]
+  Signed:
+    type: string
+    services: [sysmon]
+  Signature:
+    type: string
+    services: [sysmon]
+  SignatureStatus:
+    type: string
+    services: [sysmon]
+  CurrentDirectory:
+    type: string
+    services: [sysmon]
+  User:
+    type: string
+    services: [sysmon]
+  LogonGuid:
+    type: string
+    services: [sysmon]
+  LogonId:
+    type: string
+    services: [sysmon]
+  TerminalSessionId:
+    type: string
+    services: [sysmon]
+  ProcessId:
+    type: string
+    services: [sysmon]
+  ProcessGuid:
+    type: string
+    services: [sysmon]
+  ParentProcessGuid:
+    type: string
+    services: [sysmon]
+  ParentProcessId:
+    type: string
+    services: [sysmon]
+  ParentCommandLine:
+    type: string
+    services: [sysmon]
+  ParentUser:
+    type: string
+    services: [sysmon]
+  ParentIntegrityLevel:
+    type: string
+    services: [sysmon]
+  IntegrityLevel:
+    type: string
+    services: [sysmon]
+  Hashes:
+    type: string
+    services: [sysmon]

@@ -355,7 +355,7 @@ def check_failure_markers(content: str) -> list[ValidationFinding]:
     """Detect section block failure markers shipped in the final report body.
 
     Markers are the shared vocabulary from
-    ``_schema/report_validation_vocab.yaml`` (see quality_gates.failure_markers);
+    ``data/schema/report_validation_vocab.yaml`` (see quality_gates.failure_markers);
     they indicate that a block error was rendered as report prose instead of
     being handled gracefully.
     """

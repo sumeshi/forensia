@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from string import Formatter
 from typing import Any
@@ -141,6 +142,25 @@ def _load_allowlist(case: Case) -> list[dict[str, Any]]:
     return []
 
 
+@dataclass(frozen=True, slots=True)
+class FindingRunContext:
+    """Immutable annotations shared while one rule-analysis run saves findings."""
+
+    allowlist_rules: list[dict[str, Any]]
+    benign_context_rules: list[dict[str, Any]]
+    co_occur_index: dict[int, list[tuple[datetime, str]]]
+
+
+def prepare_finding_run(case: Case, db: CaseDB) -> FindingRunContext:
+    """Load finding annotations and event context once for a pipeline rule run."""
+    benign_rules = _load_finding_benign_context_rules()
+    return FindingRunContext(
+        allowlist_rules=_load_allowlist(case),
+        benign_context_rules=benign_rules,
+        co_occur_index=build_co_occur_index(db, benign_rules),
+    )
+
+
 def _value_matches(actual: Any, expected_values: Any) -> bool:
     if not isinstance(expected_values, list):
         return False
@@ -248,6 +268,7 @@ def _co_occurs_satisfied(
 def _annotate_finding_benign_context(
     finding: Finding,
     co_occur_index: dict[int, list[tuple[datetime, str]]] | None = None,
+    rules: list[dict[str, Any]] | None = None,
 ) -> None:
     """Annotate findings with benign-context tags if they match finding-level rules.
 
@@ -256,7 +277,7 @@ def _annotate_finding_benign_context(
     All when_all conditions must positively match: a missing column or an
     unverifiable co-occurrence means NO downgrade (conservative default).
     """
-    rules = _load_finding_benign_context_rules()
+    rules = rules if rules is not None else _load_finding_benign_context_rules()
     if not rules:
         return
 
@@ -314,20 +335,26 @@ def _annotate_finding_benign_context(
             finding.missing_checks = list(finding.missing_checks or []) + [note]
 
 
-def clear_rule_findings(case: Case, db: CaseDB, rule_id: str) -> None:
-    rows = db.execute(
-        "SELECT finding_id FROM findings WHERE rule_id = ?", (rule_id,)
-    ).fetchall()
-    for row in rows:
-        finding_id = str(row[0] or "")
-        if finding_id:
-            db.execute(
-                "DELETE FROM case_timeline WHERE entry_id = ?",
-                (f"tl-finding-{finding_id}",),
-            )
-    db.execute("DELETE FROM findings WHERE rule_id = ?", (rule_id,))
-    for path in case.findings_dir.glob(f"{rule_id}-*.json"):
-        path.unlink(missing_ok=True)
+def clear_rule_findings_batch(case: Case, db: CaseDB, rule_ids: set[str]) -> None:
+    """Remove findings and timeline projections for a set of rule IDs."""
+    ids = sorted(rule_id for rule_id in rule_ids if rule_id)
+    if not ids:
+        return
+    placeholders = ", ".join("?" for _ in ids)
+    params = ids
+    with db.transaction():
+        db.execute(
+            "DELETE FROM case_timeline WHERE entry_id IN ("
+            "SELECT 'tl-finding-' || finding_id FROM findings "
+            f"WHERE rule_id IN ({placeholders}))",
+            params,
+        )
+        db.execute(f"DELETE FROM findings WHERE rule_id IN ({placeholders})", params)
+    rule_id_set = set(ids)
+    for path in case.findings_dir.glob("*.json"):
+        rule_id, separator, ordinal = path.stem.rpartition("-")
+        if separator and ordinal.isdigit() and rule_id in rule_id_set:
+            path.unlink(missing_ok=True)
 
 
 def feed_findings_to_timeline(db: CaseDB) -> None:
@@ -357,29 +384,34 @@ def feed_findings_to_timeline(db: CaseDB) -> None:
     """)
 
 
-def save_findings(case: Case, db: CaseDB, findings: list[Finding]) -> None:
+def save_findings(
+    case: Case,
+    db: CaseDB,
+    findings: list[Finding],
+    *,
+    run_context: FindingRunContext | None = None,
+    feed_timeline: bool = True,
+) -> None:
     """Persist findings to individual JSON files and the findings database table.
 
     Applies benign-context annotations and user-defined suppression
     before writing. Each finding is written as a JSON file for easy inspection
-    and inserted as a row in the findings table for structured querying.
+    and inserted as a row in the findings table for structured querying. A
+    caller can reuse ``run_context`` and defer the timeline projection when it
+    coordinates persistence for a complete rule-analysis pass.
     """
     now = datetime.now(UTC).replace(tzinfo=None)
-    allowlist_rules = _load_allowlist(case)
-    co_occur_index = build_co_occur_index(db)
+    context = run_context or prepare_finding_run(case, db)
+    rows: list[tuple[Any, ...]] = []
     for finding in findings:
-        _annotate_finding_benign_context(finding, co_occur_index)
-        if _is_suppressed(finding, allowlist_rules):
+        _annotate_finding_benign_context(
+            finding, context.co_occur_index, context.benign_context_rules
+        )
+        if _is_suppressed(finding, context.allowlist_rules):
             finding.status = "suppressed"
         path = case.findings_dir / f"{finding.finding_id}.json"
         path.write_bytes(orjson.dumps(finding.model_dump(), option=orjson.OPT_INDENT_2))
-        db.execute(
-            """
-            INSERT INTO findings (
-                finding_id, rule_id, title, summary, severity, confidence,
-                status, tags, attack, evidence, ai_summary, missing_checks, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+        rows.append(
             (
                 finding.finding_id,
                 finding.rule_id,
@@ -396,9 +428,21 @@ def save_findings(case: Case, db: CaseDB, findings: list[Finding]) -> None:
                 finding.ai_summary,
                 json.dumps(finding.missing_checks, ensure_ascii=False),
                 now,
-            ),
+            )
         )
-    feed_findings_to_timeline(db)
+    if rows:
+        with db.transaction():
+            db.insert_many(
+                """
+            INSERT INTO findings (
+                finding_id, rule_id, title, summary, severity, confidence,
+                status, tags, attack, evidence, ai_summary, missing_checks, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+    if feed_timeline:
+        feed_findings_to_timeline(db)
 
 
 def _escape_like_pattern(keyword: str) -> str:
@@ -491,7 +535,7 @@ def execute_event_keyword_fallback_search(
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Fallback for queries that explicitly reference event_ids but return no rows.
 
-    Looks up event-specific string search keywords in rulepacks/_schema/event_ids.yaml,
+    Looks up event-specific string search keywords in data/schema/event_ids.yaml,
     then re-queries evtx_events by matching raw_json text.
     """
     event_ids = _extract_event_ids_from_sql(sql)

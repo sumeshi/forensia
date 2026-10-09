@@ -49,9 +49,7 @@ def timestamp_year_range_sql(column: str, policy: TimestampPolicy) -> str:
 
 def load_artifact_capabilities_config() -> dict[str, Any]:
     """Load the required capability catalog as a YAML mapping."""
-    path = files("forensia").joinpath(
-        "knowledge", "rulepacks", "_schema", "artifact_capabilities.yaml"
-    )
+    path = files("forensia").joinpath("data", "schema", "artifact_capabilities.yaml")
     if not path.is_file():
         raise FileNotFoundError(f"required policy file is missing: {path}")
     config = yaml.safe_load(path.read_text(encoding="utf-8"))

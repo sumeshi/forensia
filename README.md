@@ -159,7 +159,7 @@ At adoption, the body, SHA-256, source, and receiving roles are saved in a `fore
 forensia investigate ./case001 --forensia-md ./case001/FORENSIA.md
 ```
 
-The adopted policy is fixed for that session. A first adoption or explicit reload exceeding half the configured system-prompt character budget is rejected with a reason. The fixed role/output schema and Evidence/Assessment/Sufficiency/Settlement gates continue to apply. See [case_policy.py](src/forensia/ai/investigation/case_policy.py).
+The adopted policy is fixed for that session. A first adoption or explicit reload exceeding half the configured system-prompt character budget is rejected with a reason. The fixed role/output schema and Evidence/Assessment/Sufficiency/Settlement gates continue to apply. See [case_policy.py](src/forensia/investigation/case_policy.py).
 
 ### REPORT.md: report specification
 
@@ -187,7 +187,7 @@ Describe the next evidence needed to resolve each material uncertainty.
 
 Each `#` heading defines a section; `##` headings define blocks. Optional frontmatter `instructions` applies to every section in the file. Supported metadata also includes `type`, `title`, `description`, `tags`, and `timestamp`. Use `FORENSIA_OUTPUT_LANGUAGE` for the runtime language setting.
 
-A file must have at least one `#` section, no prose before the first section, and no headings that normalize to the same slug. Section keys are based on heading order and text, so renaming/reordering headings changes their identity within the report revision. For deterministic blocks, the existing parser accepts `evidence_keypoints`, `mode`, `builder`, `answer_id`, `answer_spec`, and `question` hints; definitions live in [template_parsing.py](src/forensia/report/sections/template_parsing.py) and the [bundled templates](src/forensia/report/templates/).
+A file must have at least one `#` section, no prose before the first section, and no headings that normalize to the same slug. Section keys are based on heading order and text, so renaming/reordering headings changes their identity within the report revision. For deterministic blocks, the existing parser accepts `evidence_keypoints`, `mode`, `builder`, `answer_id`, `answer_spec`, and `question` hints; definitions live in [template_parsing.py](src/forensia/report/sections/template_parsing.py) and the [bundled templates](src/forensia/data/report/).
 
 Input priority on first adoption or explicit reload is: explicit `--report-spec`, explicit `--template-dir`, case-root `REPORT.md`, then case-local packaged templates. Explicit report inputs require an LLM-backed writing run. To adopt an edited specification:
 
@@ -248,7 +248,7 @@ Three boundaries support this loop:
 | Interpretation | Explain observations and propose a verdict | Assess declared conditions, aggregate eligible support and contradictions, gate the state transition |
 | Reporting | Write explanatory passages and identify unanswered questions | Generate structured answers/tables, retain evidence references, validate publication, admit follow-up work |
 
-The CLI calls [pipeline.run_investigation](src/forensia/pipeline.py) for case creation/resume, ingest, normalization, rules, investigation, and report rendering. `pipeline.run_report` assembles report input adoption, optional writing, and rendering without adopting investigation instructions. One process owns writes to each case. The [investigation loop](src/forensia/ai/investigation/investigator.py) coordinates work selection and individual bounded attempts; session handling records execution status and budgets. Report writing uses the same Case/Trace and verification owners.
+The CLI calls [pipeline.run_investigation](src/forensia/pipeline.py) for case creation/resume, ingest, normalization, rules, investigation, and report rendering. `pipeline.run_report` assembles report input adoption, optional writing, and rendering without adopting investigation instructions. One process owns writes to each case. The [investigation loop](src/forensia/investigation/investigator.py) coordinates work selection and individual bounded attempts; session handling records execution status and budgets. Report writing reads the same Case/Trace state and applies report-specific evidence and publication checks. Follow-up admission remains with the investigation loop.
 
 ```mermaid
 flowchart TD
@@ -296,23 +296,23 @@ A valid empty EVTX is recorded as empty; a zero-record Prefetch export is reject
 | Boundary | Decision and owner |
 |---|---|
 | VerificationSpec | One admitted verification contract. Rule/LLM declarations are normalized once; readers use the stored Spec. [verification.py](src/forensia/core/verification.py) |
-| Plan/execute | The model proposes typed `sql.query` or scoped `memory.read_more` actions. The host validates action, paths, read-only SQL, table references, and query bounds. [planner.py](src/forensia/ai/investigation/planner.py), [sql_templates.py](src/forensia/ai/prompts/sql_templates.py) |
-| RetrievalEvaluation | Whether that attempt was valid, observable, partial, empty, or unavailable; it does not assign evidentiary support. [retrieval_telemetry.py](src/forensia/ai/retrieval_telemetry.py) |
-| Evidence Assessment | Match observations to evaluable Spec conditions and record supporting/contradictory/contextual roles with grounds. Unsupported conditions are not satisfied by a fluent explanation. [assessment.py](src/forensia/ai/checking/assessment.py) |
-| Evidence Sufficiency | Aggregate current assessed links, Coverage, independent derivation roots, and contradictions. Multiple queries over the same observation do not create independent support. [sufficiency.py](src/forensia/ai/checking/sufficiency.py) |
-| Settlement | Gate the checker's proposed verdict against those results; the runner persists the accepted transition. [settlement.py](src/forensia/ai/checking/settlement.py) |
+| Plan/execute | The model proposes typed `sql.query` or scoped `memory.read_more` actions. The host validates action, paths, read-only SQL, table references, and query bounds. [planner.py](src/forensia/investigation/planner.py), [sql_templates.py](src/forensia/context/sql_templates.py) |
+| RetrievalEvaluation | Whether that attempt was valid, observable, partial, empty, or unavailable; it does not assign evidentiary support. [retrieval.py](src/forensia/context/retrieval.py) |
+| Evidence Assessment | Match observations to evaluable Spec conditions and record supporting/contradictory/contextual roles with grounds. Unsupported conditions are not satisfied by a fluent explanation. [assessment.py](src/forensia/investigation/verification/assessment.py) |
+| Evidence Sufficiency | Aggregate current assessed links, Coverage, independent derivation roots, and contradictions. Multiple queries over the same observation do not create independent support. [sufficiency.py](src/forensia/investigation/verification/sufficiency.py) |
+| Settlement | Gate the checker's proposed verdict against those results; the runner persists the accepted transition. [settlement.py](src/forensia/investigation/verification/settlement.py) |
 
-The model uses role-specific structured responses through an OpenAI-compatible chat endpoint. Native tool calling, arbitrary shell, and Python execution are not part of the action space. Prompt/schema definitions live in [ai/prompts/](src/forensia/ai/prompts/) and [ai/llm/schemas.py](src/forensia/ai/llm/schemas.py); their exact fields are not duplicated here.
+The model uses role-specific structured responses through an OpenAI-compatible chat endpoint. Native tool calling, arbitrary shell, and Python execution are not part of the action space. Domain prompt builders live in [investigation/prompts.py](src/forensia/investigation/prompts.py) and [report/sections/prompts.py](src/forensia/report/sections/prompts.py). They share [context/](src/forensia/context/) projections and [llm/schemas.py](src/forensia/llm/schemas.py) response contracts; their exact fields are not duplicated here.
 
 Coverage separates absent, partial, failed, unsupported, and available telemetry. Parser success or zero rows alone does not prove completeness. Empty-result refutation needs an explicit refute condition and a certified observable scope; the present certification is conservative and centered on direct case-wide EVTX event-ID lookups. Registry observations remain partial when parser/plugin completeness is unproven. Registry hives and companion logs retain dataset-level contributors rather than assigning uncertain observations to an invented host or single source.
 
 Evidence links retain source/content/Spec fingerprints and assessment grounds. Source replacement, content changes, or a changed Spec can make historical support ineligible and reopen dependent work. A replacement retires the old source only after the selected new revision normalizes successfully or is explicitly empty; a failed latest revision cannot authorize retirement through an earlier revision. Trace records the source transition, and retained superseded raw files are excluded from ordinary normalization. See [invalidation.py](src/forensia/evidence/invalidation.py) and [content_identity.py](src/forensia/evidence/content_identity.py).
 
-Selection, stop classification, and reopening share the read-side judgment in [work_judgment.py](src/forensia/ai/investigation/work_judgment.py); [work_state.py](src/forensia/ai/investigation/work_state.py) owns the durable transitions. The investigation agenda is derived from existing Hypothesis/Gap/Task state. Unresolved work with no runnable action needs a blocker and retry condition, not a successful completion label. Semantic progress is a change in work, observations, contradictions, or source/Coverage state, not growth in report prose.
+Selection, stop classification, and reopening share the read-side judgment in [work_judgment.py](src/forensia/investigation/work_judgment.py); [work_state.py](src/forensia/investigation/work_state.py) owns the durable transitions. The investigation agenda is derived from existing Hypothesis/Gap/Task state. Unresolved work with no runnable action needs a blocker and retry condition, not a successful completion label. Semantic progress is a change in work, observations, contradictions, or source/Coverage state, not growth in report prose.
 
 Session lifecycle records a terminal reason before fallible final projections and retains ownership through the closing report pass. Expired leases are reconciled at startup. Execution status and budgets govern whether the session continues; evidence and unresolved work govern what the investigation can conclude.
 
-Trace distinguishes logical LLM calls, provider attempts, and deterministic operations. JSON repair and transport retries are attempts under their parent request; a recovered operation that is invoked again starts new requests. The session cap applies at the logical-call entry, and exhaustion records a resumable stop without another model-dependent final report pass. Usage aggregates keep provider-reported tokens, local estimates, and unknown usage separate. HTTP clients are scoped to the investigation and closed at its end. See [llm_telemetry.py](src/forensia/ai/llm_telemetry.py).
+Trace distinguishes logical LLM calls, provider attempts, and deterministic operations. JSON repair and transport retries are attempts under their parent request; a recovered operation that is invoked again starts new requests. The session cap applies at the logical-call entry, and exhaustion records a resumable stop without another model-dependent final report pass. Usage aggregates keep provider-reported tokens, local estimates, and unknown usage separate. HTTP clients are scoped to the investigation and closed at its end. See [telemetry.py](src/forensia/llm/telemetry.py).
 
 ### Working context
 
@@ -348,21 +348,25 @@ case001/
 
 ## Rules and extension points
 
-The curated evidence rules run for every case; there is no incident profile, automatic pack selection, or separate artifact-eligibility stage. SQL rules query their artifact-specific normalized tables, while Sigma rules bind to concrete EVTX channels. Missing telemetry or no rule matches do not prove that an intrusion did not occur. The [rule model](src/forensia/knowledge/rules/models.py) owns SQL declarations and the shared execution model; the [Sigma compiler](src/forensia/knowledge/rules/sigma.py) owns EVTX detection compilation. Directories under [rulepacks/](src/forensia/knowledge/rulepacks/) organize rules; they do not control selection.
+The common evidence rules are available to every case; there is no incident profile, automatic pack selection, or separate artifact-eligibility stage. SQL rules query their artifact-specific normalized tables. A Sigma target is bound to declared EVTX channels, providers, and, when specified, event IDs. Its per-case receipt distinguishes a completed query from `not_observed`, when the case has no matching telemetry and the query was skipped. A completed query with zero matches and a target that was not observed are different results; neither proves that an intrusion did not occur. The [rule model](src/forensia/knowledge/rules/models.py) owns the shared execution contract. Directories under [data/rules/](src/forensia/data/rules/) organize rules; they do not control selection.
 
-Windows EVTX detection includes three original experimental Sigma rules compiled to DuckDB through pySigma: Security event 1102 (audit log cleared), Defender event 5001 (real-time protection disabled), and Security event 4688 (encoded PowerShell process creation). This is a deliberately small supported subset, not general SigmaHQ compatibility. Unsupported correlations, regular expressions, categories, generic keywords, and unknown log sources, fields, or modifiers are rejected. A match is a lead for investigation, not a confirmed intrusion. The common set also includes 22 artifact SQL rules for filesystem observations, Prefetch execution history, and Registry configuration/history. These record observations without asserting transfer, malware, or hostile intent from a filename or application alone. Sigma fields and exact Windows channel bindings live in [sigma.yaml](src/forensia/knowledge/rulepacks/_schema/sigma.yaml). Conditions support AND/OR/NOT, selector groups, field values and lists, wildcards, `contains`/`startswith`/`endswith`, `all`, and `exists`. Analysis receipts retain definition hashes, compiled queries, and the pySigma version; a rule or binding change triggers reanalysis on resume.
+The full SigmaHQ `rules/windows/` source is a Git submodule at [knowledge/sigmahq](knowledge/sigmahq/). Its commit is fixed by the parent repository's gitlink, currently `8a4813404ea3074890e0cda9272d4d1a8b2941d6`. The developer-only dependencies include pySigma and its Windows and Sysmon pipelines. The builder converts each source rule for its declared target pipeline; category rules can produce independent Security, Sysmon, or service bindings. Each binding has a target-specific Rule ID, so one source rule can have more than one result. Field and event mappings are declared in [schema.yaml](scripts/sigma/schema.yaml). The generated [Sigma bundle](src/forensia/data/sigma/sigma_bundle.json) contains precompiled Rules for the existing DuckDB rule and Finding path. Runtime reads this bundle offline; it does not need the submodule, regression fixtures, pySigma, or network access.
 
-SQL rules can optionally declare hypotheses with `confirm_when`, `refute_when`, and optional `evidence_requirements`; admission converts them to VerificationSpec. Correlation, follow-up questions, and bounded fallback searches belong in declarations. Event IDs, schema cards, recipes, artifact capabilities, sufficiency policy, structured questions, and verdict vocabulary live in [_schema/](src/forensia/knowledge/rulepacks/_schema/). Suppression in case `allowlist.yaml` matches a rule ID and evidence-row fields after finding generation; it retains the finding and its evidence.
+The bundle keeps three outcomes separate for each target binding: conversion (`converted`, `unsupported`, or `failed`), SQL validation (`passed` or `failed`), and fixture validation (`passed`, `mismatch`, `error`, `not_applicable`, or `absent`). One shared admission rule accepts a binding only when conversion succeeded, SQL validation passed, and its fixture result is `passed`, `not_applicable`, or `absent`. `not_applicable` means the source's declared fixtures do not match that target's telemetry; `absent` means the source declares no fixture. The top-level semantic contract records common boundary checks once. Every converted query gets a DuckDB `EXPLAIN` and execution check against the schema. A small shared semantic contract uses typed synthetic rows to check common converter behavior once. These establish query viability and shared semantics, not per-rule detection correctness. A `passed` fixture means its declared expectations and Evidence references matched through the validation path. It describes only that fixture and does not measure false-positive rate, detection coverage, or whether an incident occurred. Bundle target support and fixture outcomes do not claim that a case contains that telemetry. Per-case receipts report `completed` and match counts when the target is observed, and `not_observed` when it is absent. Missing telemetry or zero matches is not evidence that no incident occurred.
+
+The bundle summary separates original source rules from target bindings with `total`, `bindings`, `admitted_rules`, and `admitted_bindings`; `by_conversion`, `by_fixture`, and `by_target` show their outcomes and target counts. Targets that did not convert have no SQL or fixture validation and count as `not_run` in `by_fixture`. It records the actual submodule commit and source hashes for integrity and reproducibility; the parent gitlink is the sole source revision pin. The common rule set also includes 22 artifact SQL rules for filesystem observations, Prefetch execution history, and Registry configuration/history. These record observations without asserting transfer, malware, or hostile intent from a filename or application alone. The bundle preserves source paths and rule authors, and the runtime includes the [Detection Rule License 1.1](src/forensia/data/sigma/SIGMA_LICENSE.txt). The SigmaHQ license notice remains with the submodule source.
+
+SQL rules can optionally declare hypotheses with `confirm_when`, `refute_when`, and optional `evidence_requirements`; admission converts them to VerificationSpec. Correlation, follow-up questions, and bounded fallback searches belong in declarations. Event IDs, schema cards, recipes, artifact capabilities, sufficiency policy, structured questions, and verdict vocabulary live in [data/schema/](src/forensia/data/schema/). Suppression in case `allowlist.yaml` matches a rule ID and evidence-row fields after finding generation; it retains the finding and its evidence.
 
 Prefer the smallest existing extension point:
 
 | Change | Owner |
 |---|---|
 | Artifact family | [ArtifactAdapter registry](src/forensia/evidence/artifacts.py), parser/normalizer, current DB schema, Coverage, and source replacement path |
-| Detection | Shared SQL and Sigma rule YAML under [rulepacks/](src/forensia/knowledge/rulepacks/), with channel bindings in [_schema/sigma.yaml](src/forensia/knowledge/rulepacks/_schema/sigma.yaml) |
-| Structured question | [question_routing.yaml](src/forensia/knowledge/rulepacks/_schema/question_routing.yaml); add a specialized [answer builder](src/forensia/report/answers/answer_registry.py) only when generic SQL is insufficient |
+| Detection | SQL rule YAML under [data/rules/](src/forensia/data/rules/); Sigma submodule source under [knowledge/sigmahq/rules/windows/](knowledge/sigmahq/rules/windows/), compiled by [converter.py](scripts/sigma/converter.py) and [build.py](scripts/sigma/build.py), with bindings in [schema.yaml](scripts/sigma/schema.yaml) |
+| Structured question | [question_routing.yaml](src/forensia/data/schema/question_routing.yaml); add a specialized [answer builder](src/forensia/report/answers/answer_registry.py) only when generic SQL is insufficient |
 | Report structure | REPORT.md and the existing section parser; reuse registered [keypoints](src/forensia/report/answers/keypoint_catalog.py) |
-| Deterministic report table | [table_registry.py](src/forensia/report/answers/table_registry.py) and [report_tables.yaml](src/forensia/knowledge/rulepacks/_schema/report_tables.yaml) |
+| Deterministic report table | [table_registry.py](src/forensia/report/answers/table_registry.py) and [report_tables.yaml](src/forensia/data/schema/report_tables.yaml) |
 | Report quality check | [quality_gates.py](src/forensia/report/sections/quality_gates.py); a side-effect-free check with a reason and confidence cap |
 
 [tests/test_extension_points.py](tests/test_extension_points.py) provides executable examples. These are in-process registration seams, not a plugin loader. Keep case-specific answers and identifiers out of generic Python, and preserve evidence references across every extension.
@@ -376,12 +380,37 @@ Prefer the smallest existing extension point:
 | [pipeline.py](src/forensia/pipeline.py), [cli/](src/forensia/cli/) | Stage assembly and command/display adaptation |
 | [core/](src/forensia/core/), [db/](src/forensia/db/) | Case/session/verification primitives, storage contracts, and state access |
 | [evidence/](src/forensia/evidence/) | Artifact admission, parsing, normalization, identity, invalidation |
-| [knowledge/](src/forensia/knowledge/) | Declarative rules/catalogs, Coverage, and Knowledge selection |
-| [ai/investigation/](src/forensia/ai/investigation/), [ai/hypotheses/](src/forensia/ai/hypotheses/) | Work selection, lifecycle, planning, and hypothesis execution |
-| [ai/checking/](src/forensia/ai/checking/), [ai/llm/](src/forensia/ai/llm/) | Verification gates and bounded model transport |
-| [ai/sections/](src/forensia/ai/sections/), [report/](src/forensia/report/) | Report block execution, deterministic answers, Claims, publication checks, rendering |
+| [knowledge/](src/forensia/knowledge/) | Rule execution, catalog loading, Coverage, and Knowledge selection |
+| [data/](src/forensia/data/) | Packaged schemas, SQL rules, playbooks, report templates, and Sigma bundle |
+| [investigation/](src/forensia/investigation/) | Work selection, planning, hypothesis lifecycle/execution, verification gates, and report-gap admission |
+| [report/](src/forensia/report/) | Report block execution and persistence, deterministic answers, Claims, publication checks, rendering, and read-only status |
+| [context/](src/forensia/context/) | Read projections, schema/recipe/playbook disclosure, budgets, and retrieval telemetry shared by both domains |
+| [llm/](src/forensia/llm/) | Bounded model transport, response contracts, request compaction, and call/attempt telemetry |
+| [scripts/sigma/](scripts/sigma/), [scripts/eval/](scripts/eval/), [scripts/debug/](scripts/debug/) | Development-only conversion/validation, evaluation fixtures/tools, and parser diagnostics |
+
+Dependency checks enforce `core/db → evidence → knowledge → llm/context → report → investigation → cli/pipeline`. Each layer may use lower layers; report generation cannot call investigation admission or settlement. Domain prompt builders stay with their domain, while shared projections make no investigation decisions. Memory file access has one owner in `core/memory.py`; report section, run, and answer stores own their respective tables under `report/`.
 
 Identify the existing writer before adding state. Extend that owner rather than adding another agenda, planner, cache, or status model. When alternatives preserve the same invariants and deliver comparable quality, prefer fewer independent states, synchronization paths, and model calls. [scripts/check_imports.py](scripts/check_imports.py) enforces dependency direction. For incompatible persisted changes, update consumers and the current schema version together; there is no automatic migration/backfill path or alias policy. Preserve old case data and re-ingest original artifacts into a new directory when needed.
+
+### Rebuild the Sigma bundle
+
+Bundle generation is a development task. The complete source and regression fixtures come from the initialized SigmaHQ submodule; neither the source YAML nor fixtures are included in the runtime package. The commit is recorded by the parent repository's gitlink. Rebuild with the locked development dependencies:
+
+```bash
+git submodule update --init knowledge/sigmahq
+uv sync --locked
+uv run python scripts/sigma/build.py
+```
+
+The builder requires an initialized, clean submodule checkout whose HEAD matches the parent index gitlink. It checks that before conversion and writes the validated bundle atomically, so a source mismatch does not replace the existing bundle. The source commit and tree hash, license hashes, dependency versions, and build-input hashes are recorded; those hashes support integrity checks and do not create another revision pin. pySigma and both pipelines are development dependencies. After the bundle is generated, the installed runtime uses only the packaged bundle and license text and can execute offline without Sigma source or conversion dependencies.
+
+The generated [bundle](src/forensia/data/sigma/sigma_bundle.json) is the source-rule inventory, target conversion and validation report, and runtime input. `summary.total` counts original source rules; `bindings` counts target-specific results; `admitted_rules` counts source rules with at least one admitted target; and `admitted_bindings` counts admitted targets. `by_conversion`, `by_fixture`, and `by_target` show status and target totals. Each binding records its source ID and path, distinct target key, conversion reason, SQL validation, fixture result, and executable Rule when admitted. For a quick view of the summary and admitted bindings:
+
+```bash
+uv run python -c 'import json; from pathlib import Path; b=json.loads(Path("src/forensia/data/sigma/sigma_bundle.json").read_text()); print(json.dumps(b["summary"], indent=2)); print("\n".join(" ".join((x["rule_id"], x["target_key"])) for x in b["bindings"] if x["rule"] is not None))'
+```
+
+Open a binding in the JSON to review its conversion, SQL, and fixture reasons. Rule authors and source paths are retained for attribution under the bundled [DRL 1.1 license](src/forensia/data/sigma/SIGMA_LICENSE.txt); the SigmaHQ license notice is retained with the submodule source.
 
 ### Verification
 
@@ -401,7 +430,7 @@ uv run forensia doctor
 
 Keep pytest offline and use disposable cases. Mock the model/provider boundary, then exercise real storage, CLI behavior, and generated outputs. Retain tests for Evidence/provenance, Assessment/Sufficiency/Settlement, bounded execution, admitted work, termination, and resume. Give each invariant a primary test owner. Remove tests for retired APIs and avoid copying constants, SQL strings, internal counters, or prose into assertions merely to freeze implementation details. Live-model quality/performance experiments belong outside pytest.
 
-When changing declarations, run [audit_schema_coverage.py](scripts/audit_schema_coverage.py). [regenerate_playbook.py](scripts/regenerate_playbook.py) regenerates marked playbook sections from YAML; `--check` detects drift. [cycle_summary.py](scripts/cycle_summary.py) reads recent progress from Trace, so older pruned cycles may not appear.
+When changing declarations, run [audit_schema_coverage.py](scripts/audit_schema_coverage.py). [regenerate_playbook.py](scripts/regenerate_playbook.py) regenerates marked playbook sections from YAML; `--check` detects drift. [cycle_summary.py](scripts/eval/cycle_summary.py) is an experimental progress diagnostic. Its call/query estimates are inferred from display text and its report progress lookup still assumes an older layout; use durable Case/Trace records for measurements. Pruned cycles may not appear.
 
 This README owns current usage, architecture, extension, and development guidance; [README.ja.md](README.ja.md) is its Japanese translation. Link to executable schemas and source owners instead of maintaining duplicate table catalogs or per-file prose maps. Keep design proposals and pending tasks separate from current capability claims, and use git for historical implementation notes. Update the affected sections in both language versions with a behavior change. PRs should state the concrete change, reason, and checks; sanitized reproductions belong in issues. The project accepts intentional breaking changes and does not retain obsolete paths for tests or old documentation.
 
@@ -416,7 +445,7 @@ For a meaningful comparison, fix source content, code/model revision, endpoint s
 The existing offline diagnostic script can be run against a **copy** of a completed case:
 
 ```bash
-uv run python scripts/eval_run.py ./case-copy --output ./evaluation.json
+uv run python scripts/eval/run.py ./case-copy --output ./evaluation.json
 ```
 
 Its metrics are heuristics, not a complete scorer: some read Markdown Memory and older report JSON exports; `confirmed_while_benign_rate` is currently a placeholder returning zero with a note, not a measured false-positive rate. A metric missing its input or annotation cannot establish quality. Updating evaluation to current Case/Trace outputs and running a controlled local-model comparison remain pending.

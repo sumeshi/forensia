@@ -1,7 +1,7 @@
 """Build an evidence_id -> source-record reference map for the rendered report.
 
 Derived from the final report body (one-directional: section writers never see
-it), so it adds no coupling into the ai/ layer. The map feeds the Evidence
+it), so it adds no coupling into investigation. The map feeds the Evidence
 References appendix in report.md and the hover/anchor links in report.html.
 """
 

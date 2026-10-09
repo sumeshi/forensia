@@ -8,20 +8,6 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from unittest.mock import patch
 
-from forensia.ai.checking.check_apply import (
-    apply_check_result,
-    insert_investigation_finding,
-)
-from forensia.ai.checking.check_normalize import CheckResult
-from forensia.ai.hypotheses.hypothesis_manager import merge_active_hypotheses
-from forensia.ai.hypotheses.hypothesis_store import load_persisted_hypotheses
-from forensia.ai.investigation.investigation_session import append_hypothesis_reasoning
-from forensia.ai.investigation.investigator import final_summary
-from forensia.ai.report_gap import (
-    classify_gap_kind,
-    inject_gap_hypotheses,
-    report_cycle_progress,
-)
 from forensia.config import (
     reload_settings,
     resolve_llm_config,
@@ -31,6 +17,20 @@ from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.core.verification import VerificationSpec
 from forensia.db.database import CaseDB
+from forensia.investigation.hypotheses.hypothesis_manager import merge_active_hypotheses
+from forensia.investigation.hypotheses.hypothesis_store import load_persisted_hypotheses
+from forensia.investigation.investigation_session import append_hypothesis_reasoning
+from forensia.investigation.investigator import final_summary
+from forensia.investigation.report_gap import (
+    classify_gap_kind,
+    inject_gap_hypotheses,
+    report_cycle_progress,
+)
+from forensia.investigation.verification.check_apply import (
+    apply_check_result,
+    insert_investigation_finding,
+)
+from forensia.investigation.verification.check_normalize import CheckResult
 from forensia.report.sections.section_quality import collect_gaps, section_confidence
 from forensia.report.sections.section_store import extract_claim_texts
 
@@ -91,7 +91,7 @@ class PersistenceTests(unittest.TestCase):
     def setUp(self) -> None:
         # Patch the owning JSON request implementation.
         llm_json_patch = patch(
-            "forensia.ai.llm.json_response.request_llm_json",
+            "forensia.llm.json_response.request_llm_json",
             side_effect=_agent_plan_router,
         )
         llm_json_patch.start()
@@ -195,7 +195,9 @@ class PersistenceTests(unittest.TestCase):
 
     def test_verification_spec_round_trips_canonical_conditions(self) -> None:
         """The canonical spec is the only stored condition representation."""
-        from forensia.ai.hypotheses.hypothesis_store import _upsert_hypothesis
+        from forensia.investigation.hypotheses.hypothesis_store import (
+            _upsert_hypothesis,
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -262,7 +264,9 @@ class PersistenceTests(unittest.TestCase):
 
     def test_upsert_persists_canonical_spec_not_declaration_projection(self) -> None:
         """Changing canonical support conditions survives upsert (4624→4688)."""
-        from forensia.ai.hypotheses.hypothesis_store import _upsert_hypothesis
+        from forensia.investigation.hypotheses.hypothesis_store import (
+            _upsert_hypothesis,
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -293,7 +297,9 @@ class PersistenceTests(unittest.TestCase):
 
     def test_broken_or_missing_spec_is_an_explicit_load_failure(self) -> None:
         """A stored spec that fails validation is rejected, never reinterpreted."""
-        from forensia.ai.hypotheses.hypothesis_store import load_persisted_hypotheses
+        from forensia.investigation.hypotheses.hypothesis_store import (
+            load_persisted_hypotheses,
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)

@@ -5,9 +5,6 @@ import tempfile
 import unittest
 from datetime import datetime
 
-from forensia.ai.sections.section_exec import (
-    structured_digest_from_answers,
-)
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.report.answers.gap_tables import hypothesis_rows
@@ -17,6 +14,9 @@ from forensia.report.answers.keypoint_catalog import (
 )
 from forensia.report.evidence_refs import extract_needed_evidence
 from forensia.report.sections.report_input import section_source_from_path
+from forensia.report.sections.section_exec import (
+    structured_digest_from_answers,
+)
 from forensia.report.sections.template_parsing import parse_block_hints
 
 
@@ -84,8 +84,8 @@ class TableRenderingTests(unittest.TestCase):
         blocks through the LLM agent."""
         import asyncio
 
-        from forensia.ai.sections.section_refresher import render_section_blocks
         from forensia.core.memory import MemoryManager
+        from forensia.report.sections.section_refresher import render_section_blocks
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -217,7 +217,7 @@ class TableRenderingTests(unittest.TestCase):
 
     def test_prepare_block_context_merges_section_table_digest(self) -> None:
         """R6-05: same-section table digest reaches the narrator context."""
-        from forensia.ai.sections.section_block_context import prepare_block_context
+        from forensia.report.sections.section_block_context import prepare_block_context
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -248,9 +248,9 @@ class TableRenderingTests(unittest.TestCase):
         import asyncio
         from unittest import mock
 
-        from forensia.ai.sections import section_refresher
-        from forensia.ai.sections.section_exec import SectionBlockResult
         from forensia.core.memory import MemoryManager
+        from forensia.report.sections import section_refresher
+        from forensia.report.sections.section_exec import SectionBlockResult
 
         captured: dict = {}
 
@@ -619,7 +619,7 @@ class TableRenderingTests(unittest.TestCase):
 
     def test_structured_digest_in_prompt_for_overview(self) -> None:
         """Verify that build_paragraph_narrate_messages injects STRUCTURED_OBSERVATIONS for overview blocks."""
-        from forensia.ai.prompts.prompt_sections import build_paragraph_narrate_messages
+        from forensia.report.sections.prompts import build_paragraph_narrate_messages
 
         messages, _schema = build_paragraph_narrate_messages(
             heading="Executive Summary",
@@ -640,7 +640,7 @@ class TableRenderingTests(unittest.TestCase):
 
     def test_structured_digest_not_in_prompt_for_appendix(self) -> None:
         """Verify appendix blocks get no STRUCTURED_OBSERVATIONS."""
-        from forensia.ai.prompts.prompt_sections import build_paragraph_narrate_messages
+        from forensia.report.sections.prompts import build_paragraph_narrate_messages
 
         messages, _schema = build_paragraph_narrate_messages(
             heading="Appendix Details",
@@ -653,7 +653,7 @@ class TableRenderingTests(unittest.TestCase):
 
     def test_structured_digest_context_in_prepare_block_context(self) -> None:
         """Verify prepare_block_context computes digest for overview and not for appendix."""
-        from forensia.ai.sections.section_block_context import prepare_block_context
+        from forensia.report.sections.section_block_context import prepare_block_context
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)

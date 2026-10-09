@@ -5,16 +5,16 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from forensia.ai.checking.check_normalize import summarize_query_result
-from forensia.ai.investigation import investigation_session
-from forensia.ai.investigation.investigation_session import sync_keypoint_cards
-from forensia.ai.investigation.memory_sync import apply_memory_updates
 from forensia.config import (
     reload_settings,
 )
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis
+from forensia.db.query import summarize_query_result
+from forensia.investigation import investigation_session
+from forensia.investigation.investigation_session import sync_keypoint_cards
+from forensia.investigation.memory_sync import apply_memory_updates
 
 
 class MemoryTests(unittest.TestCase):
@@ -343,7 +343,7 @@ class MemoryTests(unittest.TestCase):
         ]
         with (
             patch.object(
-                investigation_session, "_findings_snapshot", return_value=candidates
+                investigation_session, "findings_snapshot", return_value=candidates
             ),
             patch.object(
                 investigation_session,
