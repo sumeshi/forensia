@@ -2,7 +2,7 @@
 
 One run entry shared by display adapters: the headless CLI today, a TUI later
 (GOAL §6.3). It owns the assembly of the existing stages — case open/init,
-``--rerun`` reset, knowledge indexing, ingest, normalize, rule analysis,
+explicit case reset, knowledge indexing, ingest, normalize, rule analysis,
 ``investigator.investigate`` (the existing ``investigate_loop``),
 and the existing report renderer — and owns no planning, stage state, or
 service layer of its own.
@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import shutil
 import uuid
 from collections.abc import Callable
 from importlib.metadata import version
@@ -447,6 +448,43 @@ def _rerun_reset(
     seed_case_report_templates(case)
     _show(status, f"Re-initialized case at {case.path}")
     return case
+
+
+def _overwrite_case(
+    case_dir: str | Path,
+    input_dir: str | None,
+    inputs: dict[str, str | Path | None],
+    status: StatusCallback | None,
+) -> None:
+    """Delete an explicitly selected case after protecting all run inputs."""
+    if input_dir is None or not Path(input_dir).is_dir():
+        raise UsageError("--overwrite requires an existing input_dir directory")
+    target = Path(case_dir)
+    if target.is_symlink():
+        raise UsageError("--overwrite cannot delete a symlinked case directory")
+    target = target.resolve()
+    if Path.cwd().resolve().is_relative_to(target):
+        raise UsageError(
+            "--overwrite cannot delete the current working directory or its parents"
+        )
+    source = Path(input_dir).resolve()
+    if source.is_relative_to(target) or target.is_relative_to(source):
+        raise UsageError("--overwrite requires non-overlapping input_dir and case_dir")
+    for name, path in inputs.items():
+        if path:
+            resolved = Path(path).resolve()
+            if resolved.is_relative_to(target) or (
+                resolved.is_dir() and target.is_relative_to(resolved)
+            ):
+                raise UsageError(f"--overwrite requires {name} outside case_dir")
+            if not resolved.exists():
+                raise UsageError(f"{name} not found: {resolved}")
+    if target.exists():
+        if not (target / "manifest.yaml").is_file():
+            raise UsageError("--overwrite refuses a directory without a case manifest")
+        _show(status, f"Deleting entire case directory: {target}")
+        # shortcut: caller must stop the case; add ownership locking with the Runtime.
+        shutil.rmtree(target)
 
 
 def _run_ingest_stage(
@@ -1024,6 +1062,7 @@ def run_investigation(
     knowledge_dir: str | Path | None = None,
     forensia_md: str | Path | None = None,
     rerun: bool = False,
+    overwrite: bool = False,
     report_only: bool = False,
     max_iter: int = 20,
     max_queries_per_hypothesis: int = 5,
@@ -1057,10 +1096,11 @@ def run_investigation(
 
     Returns the rendered report path. Raises :class:`UsageError` for invalid
     user inputs and propagates ``LLMServerUnavailableError`` (adapters decide
-    the process exit policy).
+    the process exit policy). ``overwrite=True`` deletes the entire existing
+    case, including its policy and templates, before fresh initialization;
+    every explicit input must be outside it. Use only on a stopped case.
     """
     validate_declarations()
-    case = _open_or_init_case(case_dir, input_dir, timezone, status)
     if report_spec and template_dir:
         raise UsageError(
             "report_spec and template_dir are alternative report inputs; pass one"
@@ -1071,6 +1111,23 @@ def run_investigation(
         )
     if (report_spec or template_dir) and not (llm_base_url and model):
         raise UsageError("a report input requires an LLM-backed writing run")
+    if overwrite:
+        if rerun or report_only:
+            raise UsageError(
+                "--overwrite cannot be combined with --rerun or --report-only"
+            )
+        _overwrite_case(
+            case_dir,
+            input_dir,
+            {
+                "template_dir": template_dir,
+                "report_spec": report_spec,
+                "knowledge_dir": knowledge_dir,
+                "forensia_md": forensia_md,
+            },
+            status,
+        )
+    case = _open_or_init_case(case_dir, input_dir, timezone, status)
     if rerun:
         case = _rerun_reset(case, case_dir, timezone, status)
 

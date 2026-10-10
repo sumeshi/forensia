@@ -184,6 +184,11 @@ def investigate(
         ),
     ),
     rerun: bool = typer.Option(False, "--rerun", help="Reset case tables before rerun"),
+    overwrite: bool = typer.Option(
+        False,
+        "--overwrite",
+        help="Delete the entire existing case directory and start fresh from input_dir",
+    ),
     report_only: bool = typer.Option(
         False, "--report-only", help="Skip investigation, just write report"
     ),
@@ -220,6 +225,7 @@ def investigate(
             knowledge_dir=knowledge,
             forensia_md=forensia_md,
             rerun=rerun,
+            overwrite=overwrite,
             report_only=report_only,
             max_iter=max_iter,
             max_queries_per_hypothesis=max_queries_per_hypothesis,

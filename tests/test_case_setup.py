@@ -13,6 +13,7 @@ from forensia.config import (
     resolve_llm_config,
 )
 from forensia.core.case import Case
+from forensia.db.database import CaseDB
 from forensia.report.template_export import (
     export_packaged_report_templates,
     seed_case_report_templates,
@@ -77,6 +78,153 @@ class CaseSetupTests(unittest.TestCase):
             self.assertTrue(
                 (case.report_template_dir / "_formats" / "report.yaml").exists()
             )
+
+    def test_overwrite_cli_recreates_case_and_reingests_original_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case_dir = Path(tmpdir) / "case"
+            input_dir = Path(tmpdir) / "input"
+            input_dir.mkdir()
+            evidence = input_dir / "Security.evtx"
+            evidence.write_bytes(b"original evidence")
+
+            class FakeEvtxParser:
+                def __init__(self, path):
+                    pass
+
+                def close(self):
+                    pass
+
+                def gen_records(self, *args):
+                    yield [
+                        {
+                            "@timestamp": "2025-01-01T00:00:00Z",
+                            "winlog": {
+                                "channel": "Security",
+                                "record_id": 1,
+                                "event_id": 4624,
+                                "computer_name": "HOST-A",
+                            },
+                        }
+                    ]
+
+            runner = CliRunner()
+            with (
+                patch("forensia.cli.app.resolve_llm_config", return_value=(None, None)),
+                patch("forensia.pipeline.load_rules", return_value=[]),
+                patch("evtx2es.presenters.Evtx2jsonPresenter.Evtx2es", FakeEvtxParser),
+            ):
+                args = ["investigate", str(case_dir), str(input_dir)]
+                first = runner.invoke(cli_module.app, args)
+                self.assertEqual(0, first.exit_code, first.output)
+                case = Case.open(case_dir)
+                with CaseDB(case) as db:
+                    original_id = db.execute(
+                        "SELECT evidence_id FROM evtx_events"
+                    ).fetchone()[0]
+                    db.execute(
+                        "INSERT INTO findings (finding_id) VALUES ('old-finding')"
+                    )
+                    db.execute("CREATE TABLE old_state AS SELECT 1 AS marker")
+                old_paths = [
+                    case_dir / "FORENSIA.md",
+                    case_dir / "REPORT.md",
+                    case.raw_dir / "old.jsonl",
+                    case.reports_dir / "old.html",
+                    case.db_dir / "trace.duckdb",
+                    case_dir / "old-extra.txt",
+                ]
+                for path in old_paths:
+                    path.write_text("old case content", encoding="utf-8")
+                overwritten = runner.invoke(cli_module.app, [*args, "--overwrite"])
+                self.assertEqual(0, overwritten.exit_code, overwritten.output)
+
+            self.assertEqual(b"original evidence", evidence.read_bytes())
+            self.assertTrue(all(not path.exists() for path in old_paths))
+            self.assertTrue((case.reports_dir / "report.html").is_file())
+            with CaseDB(Case.open(case_dir)) as db:
+                self.assertEqual(
+                    [(original_id,)],
+                    db.execute("SELECT evidence_id FROM evtx_events").fetchall(),
+                )
+                self.assertEqual(
+                    1, db.execute("SELECT COUNT(*) FROM ingested_files").fetchone()[0]
+                )
+                self.assertEqual(
+                    0, db.execute("SELECT COUNT(*) FROM findings").fetchone()[0]
+                )
+                self.assertEqual(
+                    0,
+                    db.execute(
+                        "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'old_state'"
+                    ).fetchone()[0],
+                )
+
+    def test_overwrite_rejects_unsafe_inputs_without_deleting_case(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            case = Case.init(root / "case")
+            evidence = root / "input"
+            evidence.mkdir()
+            nested = case.path / "input"
+            nested.mkdir()
+            policy = case.path / "FORENSIA.md"
+            policy.write_text("keep this policy", encoding="utf-8")
+            original_manifest = case.manifest_path.read_bytes()
+            link = root / "linked-case"
+            link.symlink_to(case.path, target_is_directory=True)
+            other = root / "not-a-case"
+            other.mkdir()
+            marker = other / "keep.txt"
+            marker.write_text("keep this file", encoding="utf-8")
+            variants = (
+                (case.path, [], "requires an existing input_dir"),
+                (case.path, [str(root / "missing")], "requires an existing input_dir"),
+                (case.path, [str(nested)], "non-overlapping"),
+                (case.path, [str(root)], "non-overlapping"),
+                (
+                    case.path,
+                    [str(evidence), "--forensia-md", str(policy)],
+                    "outside case_dir",
+                ),
+                (
+                    case.path,
+                    [str(evidence), "--knowledge", str(root)],
+                    "outside case_dir",
+                ),
+                (
+                    case.path,
+                    [str(evidence), "--forensia-md", str(root / "missing.md")],
+                    "not found",
+                ),
+                (case.path, [str(evidence), "--rerun"], "cannot be combined"),
+                (case.path, [str(evidence), "--report-only"], "cannot be combined"),
+                (link, [str(evidence)], "symlinked case directory"),
+                (other, [str(evidence)], "without a case manifest"),
+            )
+            for target, extra, reason in variants:
+                with self.subTest(target=target, extra=extra):
+                    result = CliRunner().invoke(
+                        cli_module.app,
+                        ["investigate", str(target), *extra, "--overwrite"],
+                    )
+                    self.assertEqual(2, result.exit_code, result.output)
+                    self.assertIn(reason, result.output)
+                    self.assertEqual(original_manifest, case.manifest_path.read_bytes())
+                    self.assertEqual(
+                        "keep this policy", policy.read_text(encoding="utf-8")
+                    )
+                    self.assertEqual(
+                        "keep this file", marker.read_text(encoding="utf-8")
+                    )
+
+            with patch("pathlib.Path.cwd", return_value=case.path):
+                result = CliRunner().invoke(
+                    cli_module.app,
+                    ["investigate", str(case.path), str(evidence), "--overwrite"],
+                )
+            self.assertEqual(2, result.exit_code, result.output)
+            self.assertIn("current working directory", result.output)
+            self.assertEqual(original_manifest, case.manifest_path.read_bytes())
 
     def test_export_packaged_report_templates_writes_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
