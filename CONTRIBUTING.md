@@ -18,17 +18,17 @@ LLM接続は`.env`で設定します。`LLM_BASE_URL`は`/v1`を含まないサ�
 
 ```bash
 # 新規ケースを開始する、または追加の入力を取り込んで調査する。
-forensia investigate ./case001 ./input
+forensia investigate ./input --out ./case001
 
 # 検証用：ケース全体を削除し、同じ出力先へ原本から作り直す。
-forensia investigate ./case001 ./input --overwrite
+forensia investigate ./input --out ./case001 --overwrite
 
 # 既存ケースと、受け付け済みの調査作業から再開する。
-forensia investigate ./case001 --max-iter 50
+forensia investigate --out ./case001 --max-iter 50
 
 # 追加アーティファクトを取り込み、次の調査実行で正規化・分析する。
 forensia add ./case001 ./new-input
-forensia investigate ./case001
+forensia investigate --out ./case001
 
 # LLMを呼ばず、既存の報告書セクションを出力する。
 forensia report ./case001
@@ -45,6 +45,7 @@ forensia report --help
 
 | 調査オプション | 既定値・動作 |
 |---|---|
+| `--out` | 必須。DB、raw、履歴、報告書を含むケース全体の保存先。報告書のファイル名ではない |
 | `--max-iter` | 調査サイクル数`20` |
 | `--max-queries-per-hypothesis` | 選択した仮説ごとのクエリ数`5` |
 | `--no-progress-limit` | 意味上の進展がないサイクル数`3` |
@@ -96,7 +97,7 @@ forensia report --help
 採用時には、本文、SHA-256、入力元、受け取るroleを、Traceの`forensia-md`ステップに保存します。明示指定なしの再開では、ファイルが変わったり消えたりしても記録済みの方針を再利用し、差異を知らせます。編集を明示的に採用する場合:
 
 ```bash
-forensia investigate ./case001 --forensia-md ./case001/FORENSIA.md
+forensia investigate --out ./case001 --forensia-md ./case001/FORENSIA.md
 ```
 
 採用した方針は、そのセッション中は固定されます。初回採用または明示的な再読込みで、設定したシステムプロンプト文字数予算の半分を超える入力は、理由付きで拒否します。固定のrole・出力スキーマと、Evidence/Assessment/Sufficiency/Settlementの検査は引き続き適用されます。[case_policy.py](src/forensia/investigation/case_policy.py)を参照してください。
@@ -164,7 +165,7 @@ tags: [windows, logon, rdp]
 ```
 
 ```bash
-forensia investigate ./case001 --knowledge ./knowledge.sample
+forensia investigate --out ./case001 --knowledge ./knowledge.sample
 ```
 
 選択は決定論的に行います。tagと検索語で文書を絞り、プロンプト予算内で関連する`##`セクションを選びます。振り分けのための追加LLM呼出しはありません。ファイルごとに1つの話題を扱い、`description`と`tags`を付けてください。`##`セクションがあるファイルでは冒頭の段落を一緒に渡さないため、必須の前提はdescriptionか各sectionに記載してください。

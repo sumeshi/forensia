@@ -29,5 +29,5 @@ def _open_case_or_die(case_dir: str, timezone: str | None = None) -> Case:
         raise typer.BadParameter(
             "case_dir must point to an initialized case directory.\n"
             f"missing: {target / 'manifest.yaml'}\n"
-            f"initialize with: forensia investigate {target} <input_dir>"
+            f"initialize with: forensia investigate <input_dir> --out {target}"
         ) from exc

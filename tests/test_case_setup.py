@@ -113,7 +113,13 @@ class CaseSetupTests(unittest.TestCase):
                 patch("forensia.pipeline.load_rules", return_value=[]),
                 patch("evtx2es.presenters.Evtx2jsonPresenter.Evtx2es", FakeEvtxParser),
             ):
-                args = ["investigate", str(case_dir), str(input_dir)]
+                args = ["investigate", str(input_dir), "--out", str(case_dir)]
+                missing_out = runner.invoke(
+                    cli_module.app, ["investigate", str(input_dir)]
+                )
+                self.assertEqual(2, missing_out.exit_code, missing_out.output)
+                self.assertIn("--out", missing_out.output)
+                self.assertFalse((input_dir / "manifest.yaml").exists())
                 first = runner.invoke(cli_module.app, args)
                 self.assertEqual(0, first.exit_code, first.output)
                 case = Case.open(case_dir)
@@ -135,6 +141,19 @@ class CaseSetupTests(unittest.TestCase):
                 ]
                 for path in old_paths:
                     path.write_text("old case content", encoding="utf-8")
+                old_syntax = runner.invoke(
+                    cli_module.app,
+                    [
+                        "investigate",
+                        str(case_dir),
+                        str(input_dir),
+                        "--out",
+                        str(case_dir),
+                        "--overwrite",
+                    ],
+                )
+                self.assertEqual(2, old_syntax.exit_code, old_syntax.output)
+                self.assertTrue(all(path.exists() for path in old_paths))
                 overwritten = runner.invoke(cli_module.app, [*args, "--overwrite"])
                 self.assertEqual(0, overwritten.exit_code, overwritten.output)
 
@@ -205,7 +224,7 @@ class CaseSetupTests(unittest.TestCase):
                 with self.subTest(target=target, extra=extra):
                     result = CliRunner().invoke(
                         cli_module.app,
-                        ["investigate", str(target), *extra, "--overwrite"],
+                        ["investigate", *extra, "--out", str(target), "--overwrite"],
                     )
                     self.assertEqual(2, result.exit_code, result.output)
                     self.assertIn(reason, result.output)
@@ -220,7 +239,13 @@ class CaseSetupTests(unittest.TestCase):
             with patch("pathlib.Path.cwd", return_value=case.path):
                 result = CliRunner().invoke(
                     cli_module.app,
-                    ["investigate", str(case.path), str(evidence), "--overwrite"],
+                    [
+                        "investigate",
+                        str(evidence),
+                        "--out",
+                        str(case.path),
+                        "--overwrite",
+                    ],
                 )
             self.assertEqual(2, result.exit_code, result.output)
             self.assertIn("current working directory", result.output)
@@ -243,6 +268,7 @@ class CaseSetupTests(unittest.TestCase):
                 cli_module.app,
                 [
                     "investigate",
+                    "--out",
                     str(case.path),
                     "--llm-base-url",
                     "http://127.0.0.1:1234",
@@ -314,8 +340,9 @@ class CaseSetupTests(unittest.TestCase):
                     cli_module.app,
                     [
                         "investigate",
-                        str(output_dir),
                         str(input_dir),
+                        "--out",
+                        str(output_dir),
                         "--llm-base-url",
                         "http://127.0.0.1:1234",
                         "--model",

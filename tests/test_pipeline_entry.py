@@ -255,8 +255,9 @@ def test_case_root_forensia_md_is_adopted_recorded_and_routed_to_investigation_r
                 cli_app.app,
                 [
                     "investigate",
-                    str(case_dir),
                     str(input_dir),
+                    "--out",
+                    str(case_dir),
                     "--llm-base-url",
                     "http://127.0.0.1:1",
                     "--model",
@@ -498,8 +499,9 @@ def test_oversized_forensia_md_policy_refuses_with_reason() -> None:
                 cli_app.app,
                 [
                     "investigate",
-                    str(case_dir),
                     str(input_dir),
+                    "--out",
+                    str(case_dir),
                     "--llm-base-url",
                     "http://127.0.0.1:1",
                     "--model",
@@ -514,6 +516,7 @@ def test_oversized_forensia_md_policy_refuses_with_reason() -> None:
             cli_app.app,
             [
                 "investigate",
+                "--out",
                 str(case_dir),
                 "--forensia-md",
                 str(case_dir / "nope.md"),
@@ -580,8 +583,9 @@ def test_knowledge_index_binds_to_the_run_input_not_the_process() -> None:
                     cli_app.app,
                     [
                         "investigate",
-                        str(case_dir),
                         str(input_dir),
+                        "--out",
+                        str(case_dir),
                         "--llm-base-url",
                         "http://127.0.0.1:1",
                         "--model",

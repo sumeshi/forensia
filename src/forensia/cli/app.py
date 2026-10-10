@@ -148,15 +148,19 @@ def _missing_case_message(case_dir: str) -> str:
     return (
         "case_dir must point to an initialized case directory.\n"
         f"missing: {target / 'manifest.yaml'}\n"
-        f"initialize with: forensia investigate {target} <input_dir>"
+        f"initialize with: forensia investigate <input_dir> --out {target}"
     )
 
 
 @app.command()
 def investigate(
-    case_dir: str,
     input_dir: str | None = typer.Argument(
         None, help="Evidence input directory (required for new cases)"
+    ),
+    case_dir: str = typer.Option(
+        ...,
+        "--out",
+        help="Case directory for evidence, database, investigation history, and reports",
     ),
     llm_base_url: str | None = typer.Option(None, "--llm-base-url"),
     model: str | None = typer.Option(None, "--model"),
